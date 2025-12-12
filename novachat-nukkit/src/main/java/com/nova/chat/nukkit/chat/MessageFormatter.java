@@ -1,0 +1,277 @@
+package com.nova.chat.nukkit.chat;
+
+import cn.nukkit.Player;
+import cn.nukkit.utils.TextFormat;
+import com.nova.chat.nukkit.NovaChatNukkit;
+import com.nova.chat.nukkit.config.NovaChatConfig;
+
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * Handles message formatting including color codes for Bedrock clients.
+ * 
+ * Supports:
+ * - Legacy color codes (&a, &b, etc.)
+ * - Hex color codes (&#RRGGBB) - converted to nearest Bedrock color
+ * - Custom placeholders ({player}, {channel}, etc.)
+ * 
+ * Note: Bedrock Edition has limited color support compared to Java Edition.
+ * Hex colors are approximated to the nearest standard color.
+ * 
+ * Requirements: 10.1-10.6, 23.4
+ */
+public class MessageFormatter {
+    
+    private final NovaChatNukkit plugin;
+    private final NovaChatConfig config;
+    
+    /** Pattern for hex color codes: &#RRGGBB */
+    private static final Pattern HEX_PATTERN = Pattern.compile("&#([A-Fa-f0-9]{6})");
+    
+    /** Pattern for legacy color codes: &X where X is 0-9, a-f, k-o, r */
+    private static final Pattern LEGACY_PATTERN = Pattern.compile("&([0-9a-fk-orA-FK-OR])");
+    
+    /**
+     * Creates a new MessageFormatter.
+     *
+     * @param plugin the plugin instance
+     */
+    public MessageFormatter(NovaChatNukkit plugin) {
+        this.plugin = plugin;
+        this.config = plugin.getNovaChatConfig();
+    }
+    
+    /**
+     * Formats a chat message with all placeholders and color codes.
+     *
+     * @param player the player sending/receiving the message
+     * @param channelId the channel ID
+     * @param channelName the channel display name
+     * @param senderName the sender's name
+     * @param message the raw message content
+     * @return the formatted message
+     */
+    public String formatChatMessage(Player player, String channelId, String channelName, 
+                                    String senderName, String message) {
+        // Get the format template for this channel
+        String format = config.getChannelFormat(channelId);
+        
+        // Replace custom placeholders
+        String result = format
+            .replace("{player}", senderName)
+            .replace("{display_name}", player != null ? player.getDisplayName() : senderName)
+            .replace("{channel}", channelId)
+            .replace("{channel_name}", channelName != null ? channelName : channelId)
+            .replace("{message}", message)
+            .replace("{world}", player != null ? player.getLevel().getName() : "")
+            .replace("{server}", plugin.getServer().getName());
+        
+        // Apply color codes (Bedrock-compatible)
+        result = translateColorCodes(result);
+        
+        return result;
+    }
+    
+    /**
+     * Formats a chat message with custom placeholders map.
+     *
+     * @param player the player (can be null for console)
+     * @param channelId the channel ID
+     * @param channelName the channel display name
+     * @param senderName the sender's name
+     * @param message the raw message content
+     * @param placeholders additional placeholders to apply
+     * @return the formatted message
+     */
+    public String formatChatMessage(Player player, String channelId, String channelName,
+                                    String senderName, String message, 
+                                    Map<String, String> placeholders) {
+        // Get the format template for this channel
+        String format = config.getChannelFormat(channelId);
+        
+        // Replace custom placeholders from map first
+        String result = format;
+        if (placeholders != null) {
+            for (Map.Entry<String, String> entry : placeholders.entrySet()) {
+                result = result.replace("{" + entry.getKey() + "}", entry.getValue());
+            }
+        }
+        
+        // Replace standard placeholders
+        result = result
+            .replace("{player}", senderName)
+            .replace("{display_name}", player != null ? player.getDisplayName() : senderName)
+            .replace("{channel}", channelId)
+            .replace("{channel_name}", channelName != null ? channelName : channelId)
+            .replace("{message}", message)
+            .replace("{world}", player != null ? player.getLevel().getName() : "")
+            .replace("{server}", plugin.getServer().getName());
+        
+        // Apply color codes (Bedrock-compatible)
+        result = translateColorCodes(result);
+        
+        return result;
+    }
+    
+    /**
+     * Formats a system message (success, error, etc.).
+     *
+     * @param type the message type ("error", "success", or custom)
+     * @param message the message content
+     * @return the formatted message
+     */
+    public String formatSystemMessage(String type, String message) {
+        String format;
+        switch (type.toLowerCase()) {
+            case "error":
+                format = config.getErrorFormat();
+                break;
+            case "success":
+                format = config.getSuccessFormat();
+                break;
+            default:
+                format = "{message}";
+        }
+        
+        String result = config.getPrefix() + format.replace("{message}", message);
+        return translateColorCodes(result);
+    }
+    
+    /**
+     * Translates all color codes in a string.
+     * Supports both legacy (&X) and hex (&#RRGGBB) formats.
+     * Hex colors are approximated to nearest Bedrock color.
+     *
+     * @param text the text to translate
+     * @return the translated text with color codes applied
+     */
+    public String translateColorCodes(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        
+        // First, convert hex colors to nearest Bedrock color
+        text = translateHexColors(text);
+        
+        // Then, translate legacy colors (&X to §X)
+        text = translateLegacyColors(text);
+        
+        return text;
+    }
+    
+    /**
+     * Translates hex color codes (&#RRGGBB) to nearest Bedrock color.
+     * Bedrock doesn't support true hex colors, so we approximate.
+     *
+     * @param text the text to translate
+     * @return the translated text
+     */
+    private String translateHexColors(String text) {
+        Matcher matcher = HEX_PATTERN.matcher(text);
+        StringBuffer buffer = new StringBuffer();
+        
+        while (matcher.find()) {
+            String hex = matcher.group(1);
+            // Convert hex to nearest Bedrock color code
+            String nearestColor = hexToNearestBedrockColor(hex);
+            matcher.appendReplacement(buffer, nearestColor);
+        }
+        matcher.appendTail(buffer);
+        
+        return buffer.toString();
+    }
+    
+    /**
+     * Converts a hex color to the nearest Bedrock color code.
+     *
+     * @param hex the hex color (RRGGBB)
+     * @return the nearest Bedrock color code (§X)
+     */
+    private String hexToNearestBedrockColor(String hex) {
+        int r = Integer.parseInt(hex.substring(0, 2), 16);
+        int g = Integer.parseInt(hex.substring(2, 4), 16);
+        int b = Integer.parseInt(hex.substring(4, 6), 16);
+        
+        // Bedrock color palette (approximate RGB values)
+        int[][] colors = {
+            {0, 0, 0},       // 0 - Black
+            {0, 0, 170},     // 1 - Dark Blue
+            {0, 170, 0},     // 2 - Dark Green
+            {0, 170, 170},   // 3 - Dark Aqua
+            {170, 0, 0},     // 4 - Dark Red
+            {170, 0, 170},   // 5 - Dark Purple
+            {255, 170, 0},   // 6 - Gold
+            {170, 170, 170}, // 7 - Gray
+            {85, 85, 85},    // 8 - Dark Gray
+            {85, 85, 255},   // 9 - Blue
+            {85, 255, 85},   // a - Green
+            {85, 255, 255},  // b - Aqua
+            {255, 85, 85},   // c - Red
+            {255, 85, 255},  // d - Light Purple
+            {255, 255, 85},  // e - Yellow
+            {255, 255, 255}  // f - White
+        };
+        
+        String[] codes = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"};
+        
+        int minDistance = Integer.MAX_VALUE;
+        String nearestCode = "f";
+        
+        for (int i = 0; i < colors.length; i++) {
+            int dr = r - colors[i][0];
+            int dg = g - colors[i][1];
+            int db = b - colors[i][2];
+            int distance = dr * dr + dg * dg + db * db;
+            
+            if (distance < minDistance) {
+                minDistance = distance;
+                nearestCode = codes[i];
+            }
+        }
+        
+        return "§" + nearestCode;
+    }
+    
+    /**
+     * Translates legacy color codes (&X) to Minecraft format (§X).
+     *
+     * @param text the text to translate
+     * @return the translated text
+     */
+    private String translateLegacyColors(String text) {
+        return TextFormat.colorize('&', text);
+    }
+    
+    /**
+     * Strips all color codes from a string.
+     *
+     * @param text the text to strip
+     * @return the text without color codes
+     */
+    public String stripColors(String text) {
+        if (text == null) {
+            return null;
+        }
+        
+        // Remove hex colors first
+        text = HEX_PATTERN.matcher(text).replaceAll("");
+        
+        // Remove legacy colors using Nukkit's TextFormat
+        text = TextFormat.clean(text);
+        
+        // Remove any remaining & codes
+        text = LEGACY_PATTERN.matcher(text).replaceAll("");
+        
+        return text;
+    }
+    
+    /**
+     * Reloads the formatter configuration.
+     */
+    public void reload() {
+        // Nothing to reload for Nukkit version
+        // PlaceholderAPI is not available on Bedrock
+    }
+}

@@ -1,0 +1,53 @@
+plugins {
+    id 'fabric-loom' version '1.7.4'
+    id 'maven-publish'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+repositories {
+    mavenCentral()
+    maven { url 'https://maven.quiltmc.org/repository/release' }
+    maven { url 'https://maven.fabricmc.net/' }
+    maven { url 'https://maven.architectury.dev/' }
+}
+
+dependencies {
+    // Minecraft
+    minecraft "com.mojang:minecraft:${project(':novachat-mod').ext.minecraftVersion}"
+    mappings loom.officialMojangMappings()
+    
+    // Quilt Loader
+    modImplementation "org.quiltmc:quilt-loader:${project(':novachat-mod').ext.quiltLoaderVersion}"
+    
+    // Fabric API - Quilt is compatible with Fabric API
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project(':novachat-mod').ext.fabricApiVersion}"
+    
+    // Architectury (Fabric version works with Quilt)
+    modImplementation "dev.architectury:architectury-fabric:${project(':novachat-mod').ext.architecturyVersion}"
+    
+    // Common mod logic
+    implementation project(':novachat-mod:common')
+}
+
+processResources {
+    inputs.property "version", project.version
+    
+    filesMatching("quilt.mod.json") {
+        expand "version": project.version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+    options.release = 17
+}
+
+jar {
+    from("LICENSE") {
+        rename { "${it}_${project.archivesBaseName}" }
+    }
+}

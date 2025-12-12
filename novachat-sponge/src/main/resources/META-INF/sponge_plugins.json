@@ -1,0 +1,36 @@
+{
+  "loader": {
+    "name": "java_plain",
+    "version": "1.0"
+  },
+  "license": "MIT",
+  "global": {
+    "version": "${version}",
+    "links": {
+      "homepage": "https://github.com/nova/novachat",
+      "source": "https://github.com/nova/novachat",
+      "issues": "https://github.com/nova/novachat/issues"
+    },
+    "contributors": [
+      {
+        "name": "Nova Team",
+        "description": "Lead Developer"
+      }
+    ]
+  },
+  "plugins": [
+    {
+      "id": "novachat",
+      "name": "NovaChat",
+      "version": "${version}",
+      "entrypoint": "com.nova.chat.sponge.NovaChatSponge",
+      "description": "Cross-server chat channel system for Sponge",
+      "dependencies": [
+        {
+          "id": "spongeapi",
+          "version": "8.0.0"
+        }
+      ]
+    }
+  ]
+}

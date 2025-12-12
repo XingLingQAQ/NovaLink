@@ -1,0 +1,257 @@
+# ==========================================
+# NovaChat Plugin Configuration / NovaChat 插件配置文件
+# ==========================================
+# This is a complete example configuration for NovaChat plugins.
+# 这是 NovaChat 插件的完整示例配置文件。
+# Works with: Bukkit/Spigot/Paper, Velocity, BungeeCord, Nukkit
+# 适用于：Bukkit/Spigot/Paper、Velocity、BungeeCord、Nukkit
+
+# ==========================================
+# Backend Connection / 后端连接
+# ==========================================
+backend:
+  # NovaLink backend server address
+  # NovaLink 后端服务器地址
+  host: "127.0.0.1"
+  
+  # NovaLink backend server port
+  # NovaLink 后端服务器端口
+  port: 8888
+  
+  # Client username (must match NovaLink config)
+  # 客户端用户名（必须与 NovaLink 配置匹配）
+  username: "Survival_Server"
+  
+  # Client password (plain text, will be hashed before sending)
+  # 客户端密码（明文，发送前会进行哈希处理）
+  password: "your-password-here"
+  
+  # Reconnection delay in seconds after disconnect
+  # 断开连接后的重连延迟（秒）
+  reconnect-delay: 5
+  
+  # Connection timeout in seconds
+  # 连接超时时间（秒）
+  timeout: 30
+
+# ==========================================
+# Chat Settings / 聊天设置
+# ==========================================
+chat:
+  # Replace vanilla chat with NovaChat
+  # 用 NovaChat 替换原版聊天
+  # - true: All chat messages go through NovaChat
+  # - false: Only /nc commands use NovaChat, vanilla chat preserved
+  replace_vanilla: false
+  
+  # Default channel for new players
+  # 新玩家的默认频道
+  default_channel: "local"
+  
+  # Auto-join channels on login
+  # 登录时自动加入的频道
+  auto_join:
+    - "local"
+    - "global"
+
+# ==========================================
+# Message Formats / 消息格式
+# ==========================================
+# Available placeholders / 可用占位符:
+#   {player}       - Player name / 玩家名称
+#   {display_name} - Player display name / 玩家显示名称
+#   {channel}      - Channel ID / 频道 ID
+#   {channel_name} - Channel display name / 频道显示名称
+#   {message}      - Message content / 消息内容
+#   {world}        - Player's current world / 玩家当前世界
+#   {server}       - Server name / 服务器名称
+#   %placeholder%  - PlaceholderAPI variables / PlaceholderAPI 变量
+#
+# Color codes / 颜色代码:
+#   &0-9, &a-f    - Standard colors / 标准颜色
+#   &l, &m, &n, &o, &r - Formatting / 格式化
+#   &#RRGGBB      - Hex colors / 十六进制颜色
+format:
+  # ========================================
+  # System Messages / 系统消息
+  # ========================================
+  # Plugin prefix / 插件前缀
+  prefix: "&8[&bNovaChat&8]&r "
+  
+  # Error message format / 错误消息格式
+  error: "&c错误: {message}"
+  
+  # Success message format / 成功消息格式
+  success: "&a成功: {message}"
+  
+  # Info message format / 信息消息格式
+  info: "&7信息: {message}"
+  
+  # Warning message format / 警告消息格式
+  warning: "&e警告: {message}"
+  
+  # ========================================
+  # Channel Messages / 频道消息
+  # ========================================
+  # Format for each channel (by channel ID)
+  # 每个频道的格式（按频道 ID）
+  channels:
+    # Global channel / 全服频道
+    global: "&c[全服] &7{player}&f: {message}"
+    
+    # Staff channel / 员工频道
+    staff: "&4[Staff] &c{player}&f: {message}"
+    
+    # VIP channel / VIP 频道
+    vip: "&6[VIP] &e{player}&f: {message}"
+    
+    # Local channel / 本地频道
+    local: "&e[本地] &7{player}&f: {message}"
+    
+    # Resource world channel / 资源世界频道
+    resource: "&a[资源] &7{player}&f: {message}"
+    
+    # Mining channel / 矿区频道
+    mining: "&8[矿区] &7{player}&f: {message}"
+    
+    # PVP channel / PVP 频道
+    pvp: "&c[PVP] &7{player}&f: {message}"
+    
+    # Private channel default format / 私有频道默认格式
+    private_default: "&d[私聊] &7{player}&f: {message}"
+  
+  # Default format for channels not listed above
+  # 未列出频道的默认格式
+  default: "&7[{channel_name}] {player}&f: {message}"
+  
+  # ========================================
+  # Event Messages / 事件消息
+  # ========================================
+  # Player joined channel / 玩家加入频道
+  channel_join: "&7{player} 加入了频道 {channel_name}"
+  
+  # Player left channel / 玩家离开频道
+  channel_leave: "&7{player} 离开了频道 {channel_name}"
+  
+  # Channel switch notification / 频道切换通知
+  channel_switch: "&7你已切换到频道: &e{channel_name}"
+  
+  # Muted notification / 禁言通知
+  muted: "&c你已被禁言，剩余时间: {time}"
+  
+  # Announcement format / 公告格式
+  announcement: "&6[公告] &f{message}"
+
+# ==========================================
+# World Auto-Routing / 世界自动路由
+# ==========================================
+# Automatically switch channels based on player's world
+# 根据玩家所在世界自动切换频道
+auto_routing:
+  # Enable auto-routing / 启用自动路由
+  enabled: true
+  
+  # Show notification when auto-switching / 自动切换时显示通知
+  notify: true
+  
+  # Fallback channel when no world channel matches
+  # 没有匹配的世界频道时的回退频道
+  fallback_channel: "local"
+
+# ==========================================
+# Commands / 命令
+# ==========================================
+commands:
+  # Enable tab completion / 启用 Tab 补全
+  tab_complete: true
+  
+  # Filter commands by permission / 按权限过滤命令
+  permission_filter: true
+  
+  # Command cooldown in seconds (0 = disabled)
+  # 命令冷却时间（秒，0 = 禁用）
+  cooldown: 0
+
+# ==========================================
+# Private Channels / 私有频道
+# ==========================================
+private_channels:
+  # Allow players to create private channels
+  # 允许玩家创建私有频道
+  enabled: true
+  
+  # Maximum private channels per player
+  # 每个玩家最多可创建的私有频道数
+  max_per_player: 3
+  
+  # Default max members for private channels
+  # 私有频道默认最大成员数
+  default_max_members: 20
+  
+  # Auto-generate password if not provided
+  # 未提供密码时自动生成
+  auto_password: true
+  
+  # Password length for auto-generated passwords
+  # 自动生成密码的长度
+  password_length: 6
+
+# ==========================================
+# Notifications / 通知
+# ==========================================
+notifications:
+  # Sound effects / 音效
+  sounds:
+    # Play sound on message receive / 收到消息时播放音效
+    message_receive: true
+    message_receive_sound: "ENTITY_EXPERIENCE_ORB_PICKUP"
+    
+    # Play sound on mention / 被提及时播放音效
+    mention: true
+    mention_sound: "BLOCK_NOTE_BLOCK_PLING"
+  
+  # Title notifications / Title 通知
+  title:
+    # Show title for announcements / 公告显示 Title
+    announcements: true
+    # Title fade in/stay/fade out times (ticks)
+    # Title 淡入/停留/淡出时间（刻）
+    fade_in: 10
+    stay: 70
+    fade_out: 20
+
+# ==========================================
+# PlaceholderAPI Integration / PlaceholderAPI 集成
+# ==========================================
+# Requires PlaceholderAPI plugin / 需要 PlaceholderAPI 插件
+placeholders:
+  # Enable PlaceholderAPI support / 启用 PlaceholderAPI 支持
+  enabled: true
+  
+  # Custom placeholders for NovaChat / NovaChat 自定义占位符
+  # %novachat_channel% - Current channel ID
+  # %novachat_channel_name% - Current channel display name
+  # %novachat_channel_members% - Number of members in current channel
+
+# ==========================================
+# Debug Mode / 调试模式
+# ==========================================
+# Enable detailed logging for troubleshooting
+# 启用详细日志以便排查问题
+debug: false
+
+# ==========================================
+# Advanced Settings / 高级设置
+# ==========================================
+advanced:
+  # Message queue size / 消息队列大小
+  queue_size: 1000
+  
+  # Packet timeout in milliseconds / 数据包超时时间（毫秒）
+  packet_timeout: 5000
+  
+  # Enable metrics / 启用统计
+  metrics: true
+  
+  # Update checker / 更新检查
+  update_check: true

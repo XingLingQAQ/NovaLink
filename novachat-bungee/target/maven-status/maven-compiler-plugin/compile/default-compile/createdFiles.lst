@@ -1,0 +1,11 @@
+com\nova\chat\bungee\network\NetworkClient$1.class
+com\nova\chat\bungee\chat\MessageFormatter.class
+com\nova\chat\bungee\chat\PlayerChatState.class
+com\nova\chat\bungee\network\ClientChannelHandler.class
+com\nova\chat\bungee\chat\ChatMode.class
+com\nova\chat\bungee\listener\ServerSwitchHandler.class
+com\nova\chat\bungee\chat\ChatListener.class
+com\nova\chat\bungee\network\NetworkClient.class
+com\nova\chat\bungee\config\NovaChatConfig.class
+com\nova\chat\bungee\command\NovaChatCommand.class
+com\nova\chat\bungee\NovaChatBungee.class

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "novachat",
+  "version": "${version}",
+  "name": "NovaChat",
+  "description": "Cross-server chat system for Minecraft - Enables seamless communication across multiple servers with channel support, message formatting, and admin controls. NovaProtocol version: 1",
+  "authors": [
+    "NovaChat Team"
+  ],
+  "contact": {
+    "homepage": "https://github.com/nova-chat/novachat",
+    "sources": "https://github.com/nova-chat/novachat",
+    "issues": "https://github.com/nova-chat/novachat/issues"
+  },
+  "license": "MIT",
+  "icon": "assets/novachat/icon.png",
+  "environment": "server",
+  "entrypoints": {
+    "main": [
+      "com.nova.chat.mod.fabric.NovaChatFabric"
+    ],
+    "server": [
+      "com.nova.chat.mod.fabric.NovaChatFabric"
+    ]
+  },
+  "mixins": [],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-api": "*",
+    "minecraft": ">=${minecraft_version}",
+    "java": ">=17"
+  },
+  "suggests": {
+    "architectury": ">=9.0.0"
+  },
+  "custom": {
+    "modmenu": {
+      "links": {
+        "modmenu.discord": "https://discord.gg/novachat"
+      }
+    }
+  }
+}

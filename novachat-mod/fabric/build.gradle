@@ -1,0 +1,31 @@
+plugins {
+    id 'fabric-loom' version '1.7.4'
+    id 'maven-publish'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+repositories {
+    mavenCentral()
+    maven { url 'https://maven.fabricmc.net/' }
+    maven { url 'https://maven.architectury.dev/' }
+}
+
+dependencies {
+    // Minecraft
+    minecraft "com.mojang:minecraft:${project(':novachat-mod').ext.minecraftVersion}"
+    mappings loom.officialMojangMappings()
+
+    // Fabric
+    modImplementation "net.fabricmc:fabric-loader:${project(':novachat-mod').ext.fabricLoaderVersion}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project(':novachat-mod').ext.fabricApiVersion}"
+
+    // Architectury (shared abstractions)
+    modImplementation "dev.architectury:architectury-fabric:${project(':novachat-mod').ext.architecturyVersion}"
+
+    // Common mod logic
+    implementation project(':novachat-mod:common')
+}

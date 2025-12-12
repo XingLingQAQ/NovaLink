@@ -1,0 +1,66 @@
+plugins {
+    id 'java'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+dependencies {
+    // Common Module
+    implementation project(':novachat-common')
+
+    // Netty
+    implementation "io.netty:netty-all:${nettyVersion}"
+
+    // Database
+    implementation "com.zaxxer:HikariCP:${hikariCpVersion}"
+    implementation "com.mysql:mysql-connector-j:${mysqlVersion}"
+    implementation "redis.clients:jedis:${jedisVersion}"
+
+    // Configuration
+    implementation "org.yaml:snakeyaml:${snakeYamlVersion}"
+    implementation "com.google.code.gson:gson:${gsonVersion}"
+
+    // Logging
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+    implementation "ch.qos.logback:logback-classic:${logbackVersion}"
+
+    // Utilities
+    compileOnly "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+    implementation "com.google.guava:guava:${guavaVersion}"
+
+    // JWT
+    implementation "io.jsonwebtoken:jjwt-api:${jjwtVersion}"
+    runtimeOnly "io.jsonwebtoken:jjwt-impl:${jjwtVersion}"
+    runtimeOnly "io.jsonwebtoken:jjwt-jackson:${jjwtVersion}"
+
+    // Testing
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+    testImplementation "net.jqwik:jqwik:${jqwikVersion}"
+    testImplementation "org.assertj:assertj-core:${assertjVersion}"
+    testImplementation "org.mockito:mockito-core:${mockitoVersion}"
+    testImplementation "org.mockito:mockito-junit-jupiter:${mockitoVersion}"
+    
+    // Testcontainers for integration testing
+    testImplementation "org.testcontainers:testcontainers:${testcontainersVersion}"
+    testImplementation "org.testcontainers:junit-jupiter:${testcontainersVersion}"
+    testImplementation "org.testcontainers:mysql:${testcontainersVersion}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform {
+        includeEngines 'junit-jupiter', 'jqwik'
+    }
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
+}
+
+jar {
+    manifest {
+        attributes 'Main-Class': 'com.nova.link.NovaLinkMain'
+    }
+}

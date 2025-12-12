@@ -1,0 +1,28 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven { url 'https://maven.fabricmc.net/' }
+        maven { url 'https://maven.neoforged.net/releases' }
+        maven { url 'https://maven.quiltmc.org/repository/release' }
+        maven { url 'https://files.minecraftforge.net/maven' }
+    }
+}
+
+rootProject.name = 'nova-parent'
+
+include 'novachat-common'
+include 'novalink-core'
+include 'novachat-bukkit'
+include 'novachat-velocity'
+include 'novachat-bungee'
+include 'novachat-nukkit'
+include 'novachat-mod'
+include 'novachat-mod:common'
+include 'novachat-mod:fabric'
+include 'novachat-mod:neoforge'
+include 'novachat-mod:quilt'
+include 'novachat-mod:forge'
+include 'novachat-pnx'
+include 'novachat-multipaper'
+include 'novachat-folia'
+include 'novachat-sponge'

@@ -1,0 +1,304 @@
+# ==========================================
+# NovaLink Backend Configuration / NovaLink 后端配置文件
+# ==========================================
+# This is a complete example configuration for NovaLink backend.
+# 这是 NovaLink 后端的完整示例配置文件。
+
+# ==========================================
+# Server Settings / 服务器设置
+# ==========================================
+server:
+  # Bind address for TCP connections
+  # TCP 连接绑定地址
+  bind-address: 0.0.0.0
+  
+  # Port for NovaProtocol TCP connections
+  # NovaProtocol TCP 连接端口
+  port: 8888
+  
+  # Port for WebSocket connections (Web Panel)
+  # WebSocket 连接端口（Web 面板）
+  websocket-port: 8889
+  
+  # Secret key for JWT token generation
+  # JWT 令牌生成密钥
+  secret-key: "change-this-to-a-secure-random-string"
+  
+  # Number of worker threads for handling connections
+  # 处理连接的工作线程数
+  worker-threads: 4
+
+# ==========================================
+# Database Settings / 数据库设置
+# ==========================================
+database:
+  # Database type: mysql, redis, memory
+  # 数据库类型：mysql, redis, memory
+  # - mysql: Persistent storage with MySQL
+  # - redis: Cache with Redis (requires MySQL for persistence)
+  # - memory: In-memory storage (data lost on restart)
+  type: mysql
+  
+  # MySQL Configuration / MySQL 配置
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    database: novalink
+    username: root
+    password: your-mysql-password
+    # Connection pool size / 连接池大小
+    pool-size: 10
+  
+  # Redis Configuration (Optional) / Redis 配置（可选）
+  redis:
+    # Enable Redis caching / 启用 Redis 缓存
+    enabled: false
+    host: 127.0.0.1
+    port: 6379
+    password: ""
+    # Database index / 数据库索引
+    database: 0
+
+# ==========================================
+# Security Settings / 安全设置
+# ==========================================
+security:
+  # Allowed IP addresses/ranges for client connections
+  # 允许连接的 IP 地址/范围
+  allowed-ips:
+    - 127.0.0.1
+    - 192.168.1.0/24
+    - 10.0.0.0/8
+  
+  # Duration (seconds) to ban IP after consecutive auth failures
+  # 连续认证失败后封禁 IP 的时长（秒）
+  ip-ban-duration: 300
+  
+  # Number of consecutive failures before IP ban
+  # 触发 IP 封禁的连续失败次数
+  max-auth-failures: 3
+
+# ==========================================
+# Super Admins / 超级管理员
+# ==========================================
+# Super admins have full system access across all clients
+# 超级管理员拥有跨所有客户端的完整系统访问权限
+super-admins:
+  - uuid: "00000000-0000-0000-0000-000000000000"
+    # Password hash (SHA-256)
+    # 密码哈希（SHA-256）
+    # Generate with: echo -n "your-password" | sha256sum
+    password-hash: "5e884898da28047d9166e1c7d8b9e8f8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8"
+
+# ==========================================
+# Debug Mode / 调试模式
+# ==========================================
+# Enable detailed logging for troubleshooting
+# 启用详细日志以便排查问题
+debug: false
+
+# ==========================================
+# Global Channels / 全网频道 (GLOBAL Scope)
+# ==========================================
+# These channels are available across all connected clients
+# 这些频道在所有连接的客户端中可用
+# Note: Message formats are configured in plugin config.yml
+# 注意：消息格式在插件端的 config.yml 中配置
+global_channels:
+  # Global chat channel / 全服聊天频道
+  global:
+    display_name: "Global"
+    # Permission required to join / 加入所需权限
+    permission: "novachat.channel.global"
+    # Maximum members (0 = unlimited) / 最大成员数（0 = 无限制）
+    max_capacity: 0
+  
+  # Staff channel example / 员工频道示例
+  staff:
+    display_name: "Staff"
+    permission: "novachat.channel.staff"
+    max_capacity: 100
+  
+  # VIP channel example / VIP 频道示例
+  vip:
+    display_name: "VIP"
+    permission: "novachat.channel.vip"
+    max_capacity: 500
+
+# ==========================================
+# Channel Templates / 频道模板
+# ==========================================
+# Reusable templates for channel configuration
+# 可复用的频道配置模板
+templates:
+  # Standard local channel template / 标准本地频道模板
+  standard_local:
+    display_name: "Local"
+    scope: SERVER
+    max_capacity: 100
+  
+  # World-specific channel template / 世界专属频道模板
+  world_channel:
+    display_name: "World"
+    scope: SERVER
+    max_capacity: 50
+  
+  # Private channel template / 私有频道模板
+  private_template:
+    display_name: "Private"
+    scope: PRIVATE
+    max_capacity: 20
+
+# ==========================================
+# Client Configurations / 客户端配置
+# ==========================================
+# Each client represents a Minecraft server connecting to NovaLink
+# 每个客户端代表一个连接到 NovaLink 的 Minecraft 服务器
+clients:
+  # ========================================
+  # Survival Server / 生存服务器
+  # ========================================
+  - username: "Survival_Server"
+    # Password hash (SHA-256) / 密码哈希（SHA-256）
+    password: "5e884898da28047d9166e1c7d8b9e8f8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8"
+    display_name: "Survival"
+    
+    # Server-specific channels / 服务器专属频道
+    channels:
+      # Local channel using template / 使用模板的本地频道
+      local:
+        use_template: "standard_local"
+        display_name: "Survival Local"
+      
+      # World channel with world filter / 带世界过滤的世界频道
+      resource:
+        display_name: "Resource World"
+        scope: SERVER
+        max_capacity: 100
+        # Only players in these worlds can join
+        # 仅在这些世界中的玩家可以加入
+        allowed_worlds:
+          - "resource_world"
+          - "resource_nether"
+          - "resource_end"
+      
+      # Mining world channel / 矿区频道
+      mining:
+        display_name: "Mining"
+        scope: SERVER
+        allowed_worlds:
+          - "mining_world"
+      
+      # PVP arena channel / PVP 竞技场频道
+      pvp:
+        display_name: "PVP Arena"
+        scope: SERVER
+        permission: "novachat.channel.pvp"
+        allowed_worlds:
+          - "pvp_arena"
+
+  # ========================================
+  # Creative Server / 创造服务器
+  # ========================================
+  - username: "Creative_Server"
+    password: "another-password-hash-here"
+    display_name: "Creative"
+    
+    channels:
+      local:
+        use_template: "standard_local"
+        display_name: "Creative Local"
+      
+      # Build world channel / 建筑世界频道
+      build:
+        display_name: "Build World"
+        scope: SERVER
+        allowed_worlds:
+          - "build_world"
+          - "build_plots"
+
+  # ========================================
+  # Skyblock Server / 空岛服务器
+  # ========================================
+  - username: "Skyblock_Server"
+    password: "skyblock-password-hash"
+    display_name: "Skyblock"
+    
+    channels:
+      local:
+        use_template: "standard_local"
+        display_name: "Skyblock Local"
+      
+      # Island channel / 岛屿频道
+      island:
+        display_name: "Island Chat"
+        scope: SERVER
+        max_capacity: 50
+
+# ==========================================
+# Webhook Configuration / Webhook 配置
+# ==========================================
+# Send notifications to external services
+# 向外部服务发送通知
+webhooks:
+  # Discord webhook example / Discord Webhook 示例
+  - url: "https://discord.com/api/webhooks/your-webhook-url"
+    # Events to trigger webhook / 触发 Webhook 的事件
+    events:
+      - "message"      # Chat messages / 聊天消息
+      - "join"         # Player joins channel / 玩家加入频道
+      - "leave"        # Player leaves channel / 玩家离开频道
+      - "mute"         # Player muted / 玩家被禁言
+      - "kick"         # Player kicked / 玩家被踢出
+    # Secret for webhook verification / Webhook 验证密钥
+    secret: "your-webhook-secret"
+    # Enable/disable this webhook / 启用/禁用此 Webhook
+    enabled: false
+
+# ==========================================
+# Sensitive Word Filter / 敏感词过滤
+# ==========================================
+filter:
+  # Enable sensitive word filtering / 启用敏感词过滤
+  enabled: true
+  
+  # Custom sensitive words (in addition to built-in list)
+  # 自定义敏感词（除内置列表外）
+  custom_words:
+    - "badword1"
+    - "badword2"
+  
+  # Regex patterns for filtering / 过滤用正则表达式
+  patterns:
+    - "\\b(spam|advertisement)\\b"
+  
+  # Replacement character / 替换字符
+  replacement: "***"
+
+# ==========================================
+# Announcements / 公告
+# ==========================================
+announcements:
+  # Scheduled announcements / 定时公告
+  scheduled:
+    - id: "server_rules"
+      # Cron expression (minute hour day month weekday)
+      # Cron 表达式（分 时 日 月 周）
+      cron: "0 */30 * * *"  # Every 30 minutes / 每30分钟
+      channels:
+        - "global"
+      message: "&6[Server] &fRemember to follow the server rules!"
+      enabled: true
+    
+    - id: "vote_reminder"
+      cron: "0 12 * * *"  # Daily at noon / 每天中午
+      channels:
+        - "global"
+      message: "&a[Vote] &fDon't forget to vote for the server!"
+      enabled: true
+  
+  # Join announcements / 加入公告
+  join:
+    - channel: "global"
+      message: "&7Welcome to the server! Type /help for commands."
+      enabled: true

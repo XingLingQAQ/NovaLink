@@ -1,0 +1,23 @@
+# Composer
+/vendor/
+composer.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.phar
+
+# Test coverage
+/coverage/
+.phpunit.result.cache
+
+# PHPStan
+phpstan.neon.local

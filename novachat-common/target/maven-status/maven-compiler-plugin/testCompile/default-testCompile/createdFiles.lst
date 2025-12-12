@@ -1,0 +1,4 @@
+com\nova\chat\common\NovaConstantsTest.class
+com\nova\chat\common\PropertyTestExample.class
+com\nova\chat\common\protocol\VarIntPropertyTest.class
+com\nova\chat\common\protocol\PacketSerializationPropertyTest.class

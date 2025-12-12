@@ -1,0 +1,33 @@
+plugins {
+    id 'java'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+dependencies {
+    // Netty
+    implementation "io.netty:netty-all:${nettyVersion}"
+
+    // Utilities
+    compileOnly "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+    implementation "com.google.code.gson:gson:${gsonVersion}"
+    implementation "org.yaml:snakeyaml:${snakeYamlVersion}"
+
+    // Testing
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+    testImplementation "net.jqwik:jqwik:${jqwikVersion}"
+    testImplementation "org.assertj:assertj-core:${assertjVersion}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform {
+        includeEngines 'junit-jupiter', 'jqwik'
+    }
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
+}

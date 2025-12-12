@@ -1,0 +1,43 @@
+plugins {
+    id 'java'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+dependencies {
+    // Common Module
+    implementation project(':novachat-common')
+
+    // Netty
+    implementation "io.netty:netty-all:${nettyVersion}"
+
+    // Utilities
+    compileOnly "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+    implementation "com.google.code.gson:gson:${gsonVersion}"
+
+    // Logging
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+    implementation "ch.qos.logback:logback-classic:${logbackVersion}"
+
+    // Minecraft Platform
+    compileOnly "com.velocitypowered:velocity-api:${velocityVersion}"
+    annotationProcessor "com.velocitypowered:velocity-api:${velocityVersion}"
+
+    // Testing
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+    testImplementation "net.jqwik:jqwik:${jqwikVersion}"
+    testImplementation "org.assertj:assertj-core:${assertjVersion}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform {
+        includeEngines 'junit-jupiter', 'jqwik'
+    }
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
+}

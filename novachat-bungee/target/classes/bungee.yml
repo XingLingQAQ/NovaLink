@@ -1,0 +1,8 @@
+name: NovaChat
+version: 1.0.0-SNAPSHOT
+main: com.nova.chat.bungee.NovaChatBungee
+description: Cross-server chat channel system for BungeeCord
+author: Nova Team
+
+# Commands are registered programmatically in the plugin
+# /novachat and /nc are the main commands

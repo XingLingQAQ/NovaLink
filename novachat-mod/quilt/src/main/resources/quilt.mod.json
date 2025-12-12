@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "quilt_loader": {
+    "group": "com.nova.chat.mod",
+    "id": "novachat",
+    "version": "${version}",
+    "metadata": {
+      "name": "NovaChat",
+      "description": "Cross-server chat system for Minecraft - Quilt Edition. NovaProtocol version: 1",
+      "authors": [
+        "NovaChat Team"
+      ],
+      "contact": {
+        "homepage": "https://github.com/nova-chat/novachat",
+        "issues": "https://github.com/nova-chat/novachat/issues",
+        "sources": "https://github.com/nova-chat/novachat"
+      },
+      "license": "MIT",
+      "icon": "assets/novachat/icon.png"
+    },
+    "intermediate_mappings": "net.fabricmc:intermediary",
+    "entrypoints": {
+      "main": [
+        "com.nova.chat.mod.quilt.NovaChatQuilt"
+      ]
+    },
+    "depends": [
+      {
+        "id": "quilt_loader",
+        "versions": ">=0.21.0"
+      },
+      {
+        "id": "quilted_fabric_api",
+        "versions": "*",
+        "optional": true
+      },
+      {
+        "id": "fabric_api",
+        "versions": "*",
+        "optional": true
+      },
+      {
+        "id": "minecraft",
+        "versions": ">=1.20.4"
+      },
+      {
+        "id": "java",
+        "versions": ">=17"
+      }
+    ],
+    "provides": [
+      {
+        "id": "novachat",
+        "version": "${version}"
+      }
+    ]
+  }
+}

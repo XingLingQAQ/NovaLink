@@ -1,0 +1,42 @@
+name: NovaChat
+version: ${project.version}
+main: com.nova.chat.nukkit.NovaChatNukkit
+api: ["1.0.0"]
+description: Cross-server chat channel system for Nukkit Bedrock
+author: Nova Team
+website: https://github.com/nova/novachat
+
+# ==========================================
+# Version Compatibility
+# ==========================================
+# Supported Nukkit API: 1.0.0+
+# Supported Minecraft Bedrock: All versions
+# NovaProtocol version: 1
+# Minimum Java version: 8
+# ==========================================
+
+commands:
+  novachat:
+    description: NovaChat main command
+    usage: /<command> [subcommand] [args]
+    aliases: [nc]
+
+permissions:
+  novachat.admin:
+    description: Client administrator permission
+    default: op
+  novachat.bypass.world:
+    description: Bypass world restrictions for channels
+    default: op
+  novachat.channel.*:
+    description: Access to all channels
+    default: false
+  novachat.channel.global:
+    description: Access to global channel
+    default: true
+  novachat.create:
+    description: Create private channels
+    default: true
+  novachat.invite:
+    description: Invite players to channels
+    default: true
