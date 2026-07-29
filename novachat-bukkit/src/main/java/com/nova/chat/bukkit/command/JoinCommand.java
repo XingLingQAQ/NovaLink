@@ -1,8 +1,9 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
-import com.nova.chat.common.protocol.ChannelAction;
-import com.nova.chat.common.protocol.packets.ChannelActionPacket;
+import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.state.PlayerChannelState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
@@ -12,7 +13,14 @@ import java.util.List;
 
 /**
  * Join command - allows players to join a channel.
- * 
+ *
+ * <p>Delegates the JOIN packet and the optimistic local active-channel update
+ * to {@link ChannelCommandService} (Architecture B client-core). The pending-
+ * request correlation is preserved automatically because the shared service
+ * sends through {@code NetworkClient#sendPacket}, which hooks the tracker for
+ * every {@code ChannelActionPacket}. Keeps the Bukkit command shape, permission
+ * check, tab completion, and Chinese UX copy.
+ *
  * Requirements: 3
  */
 public class JoinCommand extends AbstractSubCommand {
@@ -61,13 +69,11 @@ public class JoinCommand extends AbstractSubCommand {
         String channelId = args[0];
         String password = args.length > 1 ? args[1] : "";
 
-        // Create and send join packet
-        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.JOIN, channelId, password);
-        packet.addExtra("playerId", player.getUniqueId().toString());
-        packet.addExtra("playerName", player.getName());
-        packet.addExtra("world", player.getWorld().getName());
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
+        ChannelCommandService channelCommands = plugin.getChannelCommandService();
 
-        if (sendPacket(packet)) {
+        CommandResult result = channelCommands.join(state, channelId, password, player.getName());
+        if (result.isSuccess()) {
             messageHelper.sendMessage(sender, "正在加入频道 &e" + channelId + "&7...");
 
             // Optimistically update local active channel so incoming Title/announcement routing works immediately.

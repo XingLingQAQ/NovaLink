@@ -1,8 +1,10 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
-import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.command.CommandResult;
 import com.nova.chat.client.state.ChatMode;
+import com.nova.chat.client.state.PlayerChannelState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
@@ -11,7 +13,11 @@ import java.util.List;
 
 /**
  * Toggle command - allows players to toggle between chat modes.
- * 
+ *
+ * <p>Delegates the local mode flip to {@link ChannelCommandService#toggle}
+ * (Architecture B client-core). No network packet is sent. Keeps the Bukkit
+ * command shape, permission check, and Chinese UX copy.
+ *
  * Requirements: 11
  */
 public class ToggleCommand extends AbstractSubCommand {
@@ -52,7 +58,7 @@ public class ToggleCommand extends AbstractSubCommand {
 
         if (state == null) {
             // Create new state with default values
-            ChatMode defaultMode = plugin.getNovaChatConfig().isReplaceVanilla() 
+            ChatMode defaultMode = plugin.getNovaChatConfig().isReplaceVanilla()
                     ? ChatMode.REPLACE : ChatMode.HYBRID;
             state = new PlayerChannelState(
                     player.getUniqueId(),
@@ -62,8 +68,14 @@ public class ToggleCommand extends AbstractSubCommand {
             plugin.getChatInterceptor().setPlayerState(player.getUniqueId(), state);
         }
 
-        // Toggle the mode
-        ChatMode newMode = state.toggleMode();
+        ChannelCommandService channelCommands = plugin.getChannelCommandService();
+        CommandResult result = channelCommands.toggle(state);
+        if (!result.isSuccess()) {
+            messageHelper.sendError(sender, result.getMessage());
+            return true;
+        }
+
+        ChatMode newMode = state.getChatMode();
 
         if (newMode == ChatMode.REPLACE) {
             messageHelper.sendSuccess(sender, "聊天模式已切换为 &e频道模式");

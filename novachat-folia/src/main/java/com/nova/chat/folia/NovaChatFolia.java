@@ -285,11 +285,20 @@ public class NovaChatFolia extends JavaPlugin {
     
     /**
      * Gets the network client.
-     * 
+     *
      * @return the network client
      */
     public AsyncNetworkClient getNetworkClient() {
         return networkClient;
+    }
+
+    /**
+     * Gets the shared channel command service.
+     *
+     * @return the channel command service
+     */
+    public ChannelCommandService getChannelCommandService() {
+        return channelCommandService;
     }
     
     /**

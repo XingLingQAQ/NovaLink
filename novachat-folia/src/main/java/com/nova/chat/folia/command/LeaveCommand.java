@@ -1,9 +1,10 @@
 package com.nova.chat.folia.command;
 
+import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.folia.NovaChatFolia;
 import com.nova.chat.folia.chat.PlayerChatState;
-import com.nova.chat.common.protocol.ChannelAction;
-import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
@@ -12,7 +13,11 @@ import java.util.List;
 
 /**
  * Leave command - allows players to leave a channel.
- * 
+ *
+ * <p>Delegates the LEAVE packet and the local membership update to
+ * {@link ChannelCommandService} (Architecture B client-core). Keeps the Folia
+ * command shape, permissions, tab completion, and Chinese UX copy.
+ *
  * Requirements: 2.1
  */
 public class LeaveCommand extends AbstractSubCommand {
@@ -53,26 +58,37 @@ public class LeaveCommand extends AbstractSubCommand {
         }
 
         Player player = (Player) sender;
-        PlayerChatState state = getPlayerState(player);
-        
+        PlayerChatState foliaState = plugin.getChatInterceptor().getOrCreateState(player);
+        PlayerChannelState state = foliaState.getChannelState();
+
         String channelId;
         if (args.length > 0) {
             channelId = args[0];
-        } else if (state != null) {
+        } else if (state.getActiveChannel() != null && !state.getActiveChannel().isBlank()) {
             channelId = state.getActiveChannel();
         } else {
             messageHelper.sendError(sender, "请指定要离开的频道");
             return true;
         }
 
-        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.LEAVE, channelId, "");
-        packet.addExtra("playerId", player.getUniqueId().toString());
-        packet.addExtra("playerName", player.getName());
-
-        if (sendPacket(packet)) {
+        ChannelCommandService channelCommands = plugin.getChannelCommandService();
+        CommandResult result = channelCommands.leave(state, channelId, player.getName());
+        if (result.isSuccess()) {
+            // The shared service updates joined membership; the Folia active-channel
+            // mirror is intentionally left untouched to match the historical Folia
+            // leave behaviour (chat kept routing to the prior channel until a new
+            // join). Tab completion and permissions are unchanged.
             messageHelper.sendMessage(sender, "正在离开频道 &e" + channelId + "&7...");
+            plugin.debug("Player " + player.getName() + " left channel: " + channelId);
         } else {
-            messageHelper.sendError(sender, "发送请求失败");
+            // Distinguish "not in channel" from network failure when possible.
+            if (result.getMessage() != null && result.getMessage().contains("Not in a channel")) {
+                messageHelper.sendError(sender, "你当前不在任何频道中");
+            } else {
+                messageHelper.sendError(sender, "发送请求失败");
+            }
+            plugin.debug("Player " + player.getName() + " failed to leave channel "
+                    + channelId + ": " + result.getMessage());
         }
 
         return true;

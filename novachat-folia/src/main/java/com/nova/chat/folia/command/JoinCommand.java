@@ -1,8 +1,10 @@
 package com.nova.chat.folia.command;
 
+import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.folia.NovaChatFolia;
-import com.nova.chat.common.protocol.ChannelAction;
-import com.nova.chat.common.protocol.packets.ChannelActionPacket;
+import com.nova.chat.folia.chat.PlayerChatState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
@@ -12,7 +14,11 @@ import java.util.List;
 
 /**
  * Join command - allows players to join a channel.
- * 
+ *
+ * <p>Delegates the JOIN packet and the optimistic local active-channel update
+ * to {@link ChannelCommandService} (Architecture B client-core). Keeps the
+ * Folia command shape, permissions, tab completion, and Chinese UX copy.
+ *
  * Requirements: 2.1
  */
 public class JoinCommand extends AbstractSubCommand {
@@ -61,15 +67,20 @@ public class JoinCommand extends AbstractSubCommand {
         String channelId = args[0];
         String password = args.length > 1 ? args[1] : "";
 
-        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.JOIN, channelId, password);
-        packet.addExtra("playerId", player.getUniqueId().toString());
-        packet.addExtra("playerName", player.getName());
-        packet.addExtra("world", player.getWorld().getName());
+        PlayerChatState foliaState = plugin.getChatInterceptor().getOrCreateState(player);
+        PlayerChannelState state = foliaState.getChannelState();
+        ChannelCommandService channelCommands = plugin.getChannelCommandService();
 
-        if (sendPacket(packet)) {
+        CommandResult result = channelCommands.join(state, channelId, password, player.getName());
+        if (result.isSuccess()) {
+            // Keep the Folia active-channel mirror in sync with the shared state.
+            foliaState.setActiveChannel(state.getActiveChannel());
             messageHelper.sendMessage(sender, "正在加入频道 &e" + channelId + "&7...");
+            plugin.debug("Player " + player.getName() + " joined channel: " + channelId);
         } else {
             messageHelper.sendError(sender, "发送请求失败");
+            plugin.debug("Player " + player.getName() + " failed to join channel " + channelId
+                    + ": " + result.getMessage());
         }
 
         return true;

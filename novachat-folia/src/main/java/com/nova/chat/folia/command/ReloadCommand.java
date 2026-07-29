@@ -5,7 +5,12 @@ import org.bukkit.command.CommandSender;
 
 /**
  * Reload command - reloads plugin configuration.
- * 
+ *
+ * <p>{@link com.nova.chat.client.command.ChannelCommandService#reload()} is
+ * intentionally a no-op on the wire; the platform still owns config reload /
+ * reconnect, performed via {@link NovaChatFolia#reload()}. Keeps the Folia
+ * permission node, sender scope, and Chinese UX copy.
+ *
  * Requirements: 2.1
  */
 public class ReloadCommand extends AbstractSubCommand {
@@ -41,6 +46,9 @@ public class ReloadCommand extends AbstractSubCommand {
 
     @Override
     public boolean execute(CommandSender sender, String[] args) {
+        // Signal reload intent through the shared service (documented no-op), then
+        // perform the platform-owned config reload / reconnect.
+        plugin.getChannelCommandService().reload();
         plugin.reload();
         messageHelper.sendSuccess(sender, "配置已重新加载");
         return true;

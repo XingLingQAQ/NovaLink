@@ -1,9 +1,9 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.command.CommandResult;
 import com.nova.chat.client.state.PlayerChannelState;
-import com.nova.chat.common.protocol.ChannelAction;
-import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
@@ -13,7 +13,16 @@ import java.util.List;
 
 /**
  * Leave command - allows players to leave a channel.
- * 
+ *
+ * <p>Delegates the LEAVE packet to {@link ChannelCommandService} (Architecture B
+ * client-core). The pending-request correlation is preserved automatically
+ * because the shared service sends through {@code NetworkClient#sendPacket},
+ * which hooks the tracker for every {@code ChannelActionPacket}. After a
+ * successful leave of the active channel, the Bukkit default-channel reset is
+ * re-applied on top of the service's membership update to keep the original
+ * "leave current → default" UX. Keeps the Bukkit command shape, permission
+ * check, tab completion, and Chinese UX copy.
+ *
  * Requirements: 3
  */
 public class LeaveCommand extends AbstractSubCommand {
@@ -54,15 +63,16 @@ public class LeaveCommand extends AbstractSubCommand {
         }
 
         Player player = (Player) sender;
-        String channelId;
-        boolean leavingCurrent = false;
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
 
+        String channelId;
+        boolean leavingCurrent;
         if (args.length > 0) {
             channelId = args[0];
+            leavingCurrent = false;
         } else {
             // Leave current channel
-            PlayerChannelState state = getPlayerState(player);
-            if (state == null || state.getActiveChannel() == null) {
+            if (state.getActiveChannel() == null) {
                 errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.NOT_IN_CHANNEL);
                 return true;
             }
@@ -70,20 +80,25 @@ public class LeaveCommand extends AbstractSubCommand {
             leavingCurrent = true;
         }
 
-        // Create and send leave packet
-        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.LEAVE, channelId);
-        packet.addExtra("playerId", player.getUniqueId().toString());
-        packet.addExtra("playerName", player.getName());
-
-        if (sendPacket(packet)) {
+        ChannelCommandService channelCommands = plugin.getChannelCommandService();
+        CommandResult result = channelCommands.leave(state, channelId, player.getName());
+        if (result.isSuccess()) {
             messageHelper.sendMessage(sender, "正在离开频道 &e" + channelId + "&7...");
 
             // Optimistically adjust local active channel if leaving the current one.
+            // The service's leaveChannel() falls back to the next joined channel (or null);
+            // Bukkit UX lands on the configured default instead, so override after success.
             if (leavingCurrent) {
                 plugin.getChatInterceptor().setPlayerChannel(player, plugin.getNovaChatConfig().getDefaultChannel());
             }
         } else {
-            errorHandler.sendRequestFailed(sender);
+            // Distinguish "not in a channel" (service short-circuit) from a send failure.
+            String message = result.getMessage();
+            if (message != null && message.contains("Not in a channel")) {
+                errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.NOT_IN_CHANNEL);
+            } else {
+                errorHandler.sendRequestFailed(sender);
+            }
         }
 
         return true;

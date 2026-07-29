@@ -1,7 +1,7 @@
 # novachat-client-core — Design
 
-**Status:** Architecture B confirmed. Helper adoption FULL/partial as before. **`CoreNetworkClient`:** extracted + **Velocity facade wired**. **Scaffolded:** `CommandIntent` / `ChannelCommandService` (not platform-wired). **Not:** other platforms on core engine, mod (own `ChatMode`). See §5.1.  
-**Date:** 2026-07-29  
+**Status:** Architecture B confirmed. Helper adoption FULL/partial as before. **`CoreNetworkClient`:** extracted + **ALL 8 platform facades wired** (velocity, bungee, nukkit, sponge, multipaper, folia, pnx, bukkit). **`ChannelCommandService`:** wired on bungee, nukkit, velocity, sponge, pnx, folia, bukkit (multipaper FROZEN). **Not:** mod (own `ChatMode`). See §5.1.  
+**Date:** 2026-07-30  
 **Scope:** Plugin-side shared runtime (connection lifecycle helpers, reconnect policy, client state, optional Netty engine). **Not** used by `novalink-core`.
 
 ---
@@ -250,15 +250,14 @@ Shared slice inventory: `PasswordHasher`, config → `ReconnectPolicy` (`ClientC
 | **FULL network** (nested state kept) | `pnx` | Network helpers adopted (`PasswordHasher`, reconnect policy); nested local player state kept (not swapped to shared `PlayerChannelState`). |
 | **FULL network + `ChatMode`** | `folia`, `multipaper`, `sponge` | Network helpers + `ChatMode`; local `PlayerChatState` wrappers OK (not full `PlayerChannelState` adoption). |
 | **Not** | `mod` | Own `ChatMode` model; divergent API/pipeline (second wave). |
-| **Partial** | `CoreNetworkClient` | Engine + ports in client-core; **Velocity** facade delegates fully. Other platforms still own local Netty bodies. |
-| **Scaffolded** | `CommandIntent` service | `command` package: `CommandIntent`, `CommandResult`, `PacketSender`, `ChannelCommandService` (join/leave/toggle/reload). Not wired to platform commands yet. |
-| **Not** | platform command wiring | Bukkit/Velocity/… still use local command classes. |
+| **FULL** | `CoreNetworkClient` | Engine + ports in client-core; **ALL 8 platform facades delegate fully** (velocity, bungee, nukkit, sponge, multipaper, folia, pnx, bukkit). Local `ClientChannelHandler.java` deleted on every platform. |
+| **FULL** | `ChannelCommandService` | Wired on bungee, nukkit, velocity, sponge, pnx, folia, bukkit. **multipaper FROZEN** (not pursuing). PNX delegates join/leave/reload only — toggle kept local (PNX `chatEnabled` ≠ `ChatMode`). |
 
 #### Next slices
 
-1. ~~`CoreNetworkClient` + `SchedulerBridge` (Velocity-first)~~ **done (Velocity)** — next: Bungee → thin clients → Bukkit facade → Folia → mod
-2. Format template engine — **types landed** (`format.FormatTemplateEngine`, `LegacyColorCodes`); platform `MessageFormatter` migration not started
-3. Wire platforms to `ChannelCommandService`
+1. ~~`CoreNetworkClient` + `SchedulerBridge` (Velocity-first)~~ **done — all 8 platforms**
+2. ~~Format template engine platform migration~~ **done — bukkit/nukkit/velocity/sponge/multipaper/folia**
+3. ~~Wire platforms to `ChannelCommandService`~~ **done — 7/8 (multipaper frozen)**
 
 ### Recommendation: **Velocity first**, then Bungee, then Bukkit
 

@@ -9,6 +9,7 @@ import com.nova.chat.bukkit.config.NovaChatConfig;
 import com.nova.chat.bukkit.error.ErrorMessageHandler;
 import com.nova.chat.bukkit.network.NetworkClient;
 import com.nova.chat.bukkit.world.WorldMonitor;
+import com.nova.chat.client.command.ChannelCommandService;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -52,7 +53,14 @@ public class NovaChatBukkit extends JavaPlugin {
     
     /** Public API for other plugins */
     private NovaChatAPI api;
-    
+
+    /**
+     * Shared channel command intents (join/leave/toggle/reload).
+     * PacketSender resolves {@link #networkClient} on each send so reload/reconnect
+     * does not leave a stale client reference.
+     */
+    private ChannelCommandService channelCommandService;
+
     /** Debug mode flag */
     private boolean debugMode = false;
     
@@ -74,7 +82,10 @@ public class NovaChatBukkit extends JavaPlugin {
         
         // Initialize network client
         initializeNetworkClient();
-        
+
+        // Shared command intent service (Architecture B client-core)
+        initializeChannelCommandService();
+
         // Register event listeners
         registerListeners();
         
@@ -159,6 +170,27 @@ public class NovaChatBukkit extends JavaPlugin {
         });
     }
     
+    /**
+     * Builds {@link ChannelCommandService} with a PacketSender that delegates to
+     * the live {@link NetworkClient}. Send is accepted only when the client is
+     * connected and authenticated.
+     *
+     * <p>The pending-request tracker lives inside {@link NetworkClient#sendPacket}
+     * (it calls {@code trackPendingRequest} for every {@code ChannelActionPacket}
+     * before delegating to the core), so channel-action packets sent via the
+     * service are correlated automatically — no command-side tracker code needed.
+     */
+    private void initializeChannelCommandService() {
+        channelCommandService = new ChannelCommandService(packet -> {
+            NetworkClient client = networkClient;
+            if (client == null || !client.isConnected() || !client.isAuthenticated()) {
+                return false;
+            }
+            client.sendPacket(packet);
+            return true;
+        });
+    }
+
     /**
      * Registers event listeners.
      */
@@ -270,11 +302,20 @@ public class NovaChatBukkit extends JavaPlugin {
     
     /**
      * Gets the network client.
-     * 
+     *
      * @return the network client
      */
     public NetworkClient getNetworkClient() {
         return networkClient;
+    }
+
+    /**
+     * Gets the shared channel command service (join/leave/toggle/reload intents).
+     *
+     * @return the channel command service
+     */
+    public ChannelCommandService getChannelCommandService() {
+        return channelCommandService;
     }
     
     /**
