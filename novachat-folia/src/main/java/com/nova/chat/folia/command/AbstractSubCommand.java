@@ -1,5 +1,6 @@
 package com.nova.chat.folia.command;
 
+import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.folia.NovaChatFolia;
 import com.nova.chat.folia.chat.PlayerChatState;
 import com.nova.chat.folia.network.AsyncNetworkClient;
@@ -50,11 +51,11 @@ public abstract class AbstractSubCommand implements SubCommand {
     protected boolean checkConnection(CommandSender sender) {
         AsyncNetworkClient client = plugin.getNetworkClient();
         if (client == null || !client.isConnected()) {
-            messageHelper.sendError(sender, "未连接到聊天服务器 (NC-500)");
+            messageHelper.sendError(sender, ErrorMessageFormatter.format("NC-500"));
             return false;
         }
         if (!client.isAuthenticated()) {
-            messageHelper.sendError(sender, "未通过身份验证 (NC-401)");
+            messageHelper.sendError(sender, ErrorMessageFormatter.format("NC-401"));
             return false;
         }
         return true;

@@ -4,6 +4,7 @@ import cn.nukkit.Player;
 import cn.nukkit.command.CommandSender;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.pnx.NovaChatPNX;
 
@@ -72,7 +73,9 @@ public class JoinCommand extends AbstractSubCommand {
             sendSuccess(sender, "已加入频道: " + channelId);
             plugin.debug("Player " + player.getName() + " joined channel: " + channelId);
         } else {
-            sendError(sender, "未连接到聊天服务器，请稍后再试");
+            // Actionable error via shared ErrorCode system (NC-503 network failure here).
+            String code = result.getErrorCode() != null ? result.getErrorCode() : "NC-503";
+            sendError(sender, ErrorMessageFormatter.format(code));
             plugin.debug("Player " + player.getName() + " failed to join channel " + channelId
                     + ": " + result.getMessage());
         }

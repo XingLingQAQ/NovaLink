@@ -2,6 +2,7 @@ package com.nova.chat.sponge.command;
 
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.sponge.NovaChatSponge;
@@ -186,7 +187,9 @@ public class NovaChatCommand {
             sendMessage(ctx.subject(), "正在加入频道 &e" + channelId + "&7...");
             plugin.debug("Player " + player.name() + " joined channel: " + channelId);
         } else {
-            sendError(ctx.subject(), "发送请求失败");
+            // Actionable error via shared ErrorCode system (NC-503 network failure here).
+            String code = result.getErrorCode() != null ? result.getErrorCode() : "NC-503";
+            sendError(ctx.subject(), ErrorMessageFormatter.format(code));
             plugin.debug("Player " + player.name() + " failed to join channel " + channelId
                     + ": " + result.getMessage());
         }
@@ -227,12 +230,9 @@ public class NovaChatCommand {
             sendMessage(ctx.subject(), "正在离开频道 &e" + channelId + "&7...");
             plugin.debug("Player " + player.name() + " left channel: " + channelId);
         } else {
-            // Distinguish "not in channel" from network failure when possible.
-            if (result.getMessage() != null && result.getMessage().contains("Not in a channel")) {
-                sendError(ctx.subject(), "你当前没有加入任何频道");
-            } else {
-                sendError(ctx.subject(), "发送请求失败");
-            }
+            // Actionable error: NC-433 not-in-channel vs NC-503 network failure (via ErrorCode).
+            String code = result.getErrorCode() != null ? result.getErrorCode() : "NC-503";
+            sendError(ctx.subject(), ErrorMessageFormatter.format(code));
             plugin.debug("Player " + player.name() + " failed to leave channel "
                     + channelId + ": " + result.getMessage());
         }
@@ -308,7 +308,7 @@ public class NovaChatCommand {
 
     private boolean checkConnection(Subject subject) {
         if (!plugin.getNetworkClient().isAuthenticated()) {
-            sendError(subject, "未连接到聊天服务器 (NC-503)");
+            sendError(subject, ErrorMessageFormatter.format("NC-503"));
             return false;
         }
         return true;

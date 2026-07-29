@@ -2,6 +2,7 @@ package com.nova.chat.folia.command;
 
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.folia.NovaChatFolia;
 import com.nova.chat.folia.chat.PlayerChatState;
@@ -78,7 +79,9 @@ public class JoinCommand extends AbstractSubCommand {
             messageHelper.sendMessage(sender, "正在加入频道 &e" + channelId + "&7...");
             plugin.debug("Player " + player.getName() + " joined channel: " + channelId);
         } else {
-            messageHelper.sendError(sender, "发送请求失败");
+            // Actionable error via shared ErrorCode system (NC-503 network failure here).
+            String code = result.getErrorCode() != null ? result.getErrorCode() : "NC-503";
+            messageHelper.sendError(sender, ErrorMessageFormatter.format(code));
             plugin.debug("Player " + player.getName() + " failed to join channel " + channelId
                     + ": " + result.getMessage());
         }

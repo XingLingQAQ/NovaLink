@@ -2,6 +2,7 @@ package com.nova.chat.bungee.command;
 
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 
@@ -131,7 +132,9 @@ public class NovaChatCommand extends Command implements TabExecutor {
             player.sendMessage(messageFormatter.formatSuccess("已加入频道: " + channelId));
             plugin.debug("Player " + player.getName() + " joined channel: " + channelId);
         } else {
-            player.sendMessage(messageFormatter.formatError("未连接到聊天服务器，请稍后再试"));
+            // Actionable error via shared ErrorCode system (NC-503 network failure here).
+            String code = result.getErrorCode() != null ? result.getErrorCode() : "NC-503";
+            player.sendMessage(messageFormatter.formatError(ErrorMessageFormatter.format(code)));
             plugin.debug("Player " + player.getName() + " failed to join channel " + channelId
                     + ": " + result.getMessage());
         }
@@ -173,12 +176,9 @@ public class NovaChatCommand extends Command implements TabExecutor {
                     "已离开频道: " + leavingChannel + "，已切换到默认频道: " + defaultChannel));
             plugin.debug("Player " + player.getName() + " left channel: " + leavingChannel);
         } else {
-            // Distinguish "not in channel" from network failure when possible.
-            if (result.getMessage() != null && result.getMessage().contains("Not in a channel")) {
-                player.sendMessage(messageFormatter.formatError("你当前不在任何频道中"));
-            } else {
-                player.sendMessage(messageFormatter.formatError("未连接到聊天服务器，请稍后再试"));
-            }
+            // Actionable error: NC-433 not-in-channel vs NC-503 network failure (via ErrorCode).
+            String code = result.getErrorCode() != null ? result.getErrorCode() : "NC-503";
+            player.sendMessage(messageFormatter.formatError(ErrorMessageFormatter.format(code)));
             plugin.debug("Player " + player.getName() + " failed to leave channel "
                     + leavingChannel + ": " + result.getMessage());
         }
