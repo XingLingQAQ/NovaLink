@@ -1,7 +1,12 @@
 package com.nova.chat.sponge.chat;
 
+import com.nova.chat.client.error.ErrorCode;
+import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.sponge.NovaChatSponge;
 import com.nova.chat.sponge.config.NovaChatConfig;
@@ -57,6 +62,51 @@ public class ChatListener {
      */
     private void registerIncomingMessageHandler() {
         plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
+        plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
+    }
+
+    /**
+     * Handles channel action responses from the backend.
+     *
+     * <p>Correlates the response back to the originating player via the shared
+     * {@link ChannelResponseTracker}. On failure, surfaces an actionable, formatted
+     * error via the shared {@link ErrorCode} system; NC-503 (network down) is already
+     * reported at send time and is suppressed here to avoid a double message.
+     */
+    private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
+        plugin.debug("Received channel action response: " + packet);
+
+        ChannelResponseTracker tracker = plugin.getNetworkClient().getChannelResponseTracker();
+        ChannelResponseTracker.PendingChannelAction pending = tracker.consume(packet.getRequestId());
+        if (pending == null || pending.getPlayerId() == null) {
+            return;
+        }
+
+        // Hop to the plugin executor for safe player lookup / message sending.
+        Sponge.server().scheduler().executor(plugin.getContainer()).execute(() -> {
+            Optional<ServerPlayer> opt = Sponge.server().player(pending.getPlayerId());
+            if (opt.isEmpty()) {
+                return;
+            }
+            ServerPlayer player = opt.get();
+
+            if (packet.isSuccess()) {
+                if (packet.getAction() == ChannelAction.JOIN
+                        && packet.getChannelId() != null && !packet.getChannelId().isEmpty()) {
+                    PlayerChannelState state = getState(pending.getPlayerId());
+                    if (state != null) {
+                        state.setActiveChannel(packet.getChannelId());
+                    }
+                }
+                return;
+            }
+
+            String code = packet.getErrorCode();
+            if (code == null || code.isEmpty() || ErrorCode.SERVICE_UNAVAILABLE.getCode().equals(code)) {
+                return;
+            }
+            player.sendMessage(plugin.getMessageFormatter().formatError(ErrorMessageFormatter.format(code)));
+        });
     }
     
     /**

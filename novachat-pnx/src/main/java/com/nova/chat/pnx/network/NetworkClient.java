@@ -1,12 +1,18 @@
 package com.nova.chat.pnx.network;
 
+import com.nova.chat.client.error.ErrorCode;
+import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.client.network.ClientLogger;
 import com.nova.chat.client.network.CoreNetworkClient;
 import com.nova.chat.client.network.SchedulerBridge;
+import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketRegistry;
 import com.nova.chat.common.protocol.PlatformType;
+import com.nova.chat.common.protocol.packets.ChannelActionPacket;
+import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.pnx.NovaChatPNX;
@@ -30,6 +36,7 @@ public class NetworkClient {
 
     private final NovaChatPNX plugin;
     private final CoreNetworkClient core;
+    private final ChannelResponseTracker channelResponseTracker = new ChannelResponseTracker();
 
     /**
      * Creates a new NetworkClient.
@@ -75,12 +82,25 @@ public class NetworkClient {
     }
 
     /**
-     * Sends a packet to the backend.
+     * Sends a packet to the backend, first recording channel-action context for
+     * asynchronous response correlation.
      *
      * @param packet the packet to send
      */
     public void sendPacket(Packet packet) {
+        if (packet instanceof ChannelActionPacket) {
+            channelResponseTracker.cleanupExpired();
+            channelResponseTracker.track((ChannelActionPacket) packet);
+        }
         core.sendPacket(packet);
+    }
+
+    /**
+     * @return the tracker mapping in-flight channel-action request ids to players,
+     *         used by the platform's {@code ChannelActionResponsePacket} handler
+     */
+    public ChannelResponseTracker getChannelResponseTracker() {
+        return channelResponseTracker;
     }
 
     /**
@@ -138,6 +158,7 @@ public class NetworkClient {
     private void registerPnxHandlers() {
         registerHandler(ChatMessagePacket.class, this::handleChatMessage);
         registerHandler(TitlePacket.class, this::handleTitleMessage);
+        registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
     }
 
     /**
@@ -170,6 +191,45 @@ public class NetworkClient {
             String coloredSubtitle = plugin.getMessageFormatter().colorize(subtitle);
             plugin.getServer().getOnlinePlayers().values().forEach(player ->
                     player.sendTitle(coloredTitle, coloredSubtitle, fadeIn, stay, fadeOut));
+        });
+    }
+
+    /**
+     * Correlates an asynchronous channel-action response back to its originating
+     * player via the shared {@link ChannelResponseTracker} and, on failure, renders
+     * an actionable error via the shared {@link ErrorCode} system. NC-503 is
+     * suppressed (already reported at send time). Runs on the PNX main thread for
+     * safe player lookup / messaging.
+     */
+    private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
+        ChannelResponseTracker.PendingChannelAction pending =
+                channelResponseTracker.consume(packet.getRequestId());
+        if (pending == null || pending.getPlayerId() == null) {
+            return;
+        }
+
+        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+            cn.nukkit.Player player = plugin.getServer().getPlayer(pending.getPlayerId()).orElse(null);
+            if (player == null) {
+                return;
+            }
+            if (packet.isSuccess()) {
+                if (packet.getAction() == ChannelAction.JOIN
+                        && packet.getChannelId() != null && !packet.getChannelId().isEmpty()) {
+                    plugin.getChatInterceptor().getOrCreateState(player)
+                            .getChannelState().setActiveChannel(packet.getChannelId());
+                }
+                return;
+            }
+            String code = packet.getErrorCode();
+            if (code == null || code.isEmpty() || ErrorCode.SERVICE_UNAVAILABLE.getCode().equals(code)) {
+                return;
+            }
+            NovaChatConfig cfg = plugin.getNovaChatConfig();
+            String prefix = cfg.getFormatPrefix();
+            String format = cfg.getFormatError();
+            String text = prefix + format.replace("{message}", ErrorMessageFormatter.format(code));
+            player.sendMessage(cn.nukkit.utils.TextFormat.colorize('&', text));
         });
     }
 

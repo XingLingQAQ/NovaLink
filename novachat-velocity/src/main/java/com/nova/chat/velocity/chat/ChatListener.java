@@ -1,5 +1,8 @@
 package com.nova.chat.velocity.chat;
 
+import com.nova.chat.client.error.ErrorCode;
+import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
@@ -67,51 +70,44 @@ public class ChatListener {
     
     /**
      * Handles channel action responses from the backend.
-     * Updates player state based on the response.
      *
-     * @param packet the channel action response packet
+     * <p>Correlates the response back to the originating player via the shared
+     * {@link ChannelResponseTracker} (the backend echoes the request id). On
+     * failure, surfaces an actionable, formatted error via the shared
+     * {@link ErrorCode} system. Network failures (NC-503) are already reported
+     * at send time, so they are suppressed here to avoid a double message.
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         plugin.debug("Received channel action response: " + packet);
-        
-        // Get player UUID from extra data if available
-        String playerUuidStr = packet.getExtra("player_uuid");
-        if (playerUuidStr == null) {
+
+        ChannelResponseTracker tracker = plugin.getNetworkClient().getChannelResponseTracker();
+        ChannelResponseTracker.PendingChannelAction pending = tracker.consume(packet.getRequestId());
+        if (pending == null || pending.getPlayerId() == null) {
+            // No correlation context (e.g. console-issued or already expired) — nothing to render.
             return;
         }
-        
-        try {
-            java.util.UUID playerId = java.util.UUID.fromString(playerUuidStr);
-            PlayerChannelState state = getState(playerId);
-            
-            if (state == null) {
+
+        plugin.getServer().getPlayer(pending.getPlayerId()).ifPresent(player -> {
+            if (packet.isSuccess()) {
+                // Success messaging stays owned by the command's immediate feedback;
+                // the proxy only needs to mirror the authoritative active channel.
+                if (packet.getAction() == com.nova.chat.common.protocol.ChannelAction.JOIN
+                        && packet.getChannelId() != null && !packet.getChannelId().isEmpty()) {
+                    PlayerChannelState state = getState(pending.getPlayerId());
+                    if (state != null) {
+                        state.setActiveChannel(packet.getChannelId());
+                    }
+                }
                 return;
             }
-            
-            // Find the player
-            plugin.getServer().getPlayer(playerId).ifPresent(player -> {
-                if (packet.isSuccess()) {
-                    // Update player's active channel on successful join
-                    if (packet.getAction() == com.nova.chat.common.protocol.ChannelAction.JOIN) {
-                        state.setActiveChannel(packet.getChannelId());
-                        player.sendMessage(messageFormatter.formatSuccess("已加入频道: " + packet.getChannelId()));
-                    } else if (packet.getAction() == com.nova.chat.common.protocol.ChannelAction.LEAVE) {
-                        // Reset to default channel on leave
-                        state.setActiveChannel(config.getDefaultChannel());
-                        player.sendMessage(messageFormatter.formatSuccess("已离开频道: " + packet.getChannelId()));
-                    }
-                } else {
-                    // Show error message
-                    String errorMsg = packet.getMessage();
-                    if (errorMsg == null || errorMsg.isEmpty()) {
-                        errorMsg = "操作失败: " + packet.getErrorCode();
-                    }
-                    player.sendMessage(messageFormatter.formatError(errorMsg));
-                }
-            });
-        } catch (IllegalArgumentException e) {
-            plugin.debug("Invalid player UUID in channel action response: " + playerUuidStr);
-        }
+
+            String code = packet.getErrorCode();
+            if (code == null || code.isEmpty() || ErrorCode.SERVICE_UNAVAILABLE.getCode().equals(code)) {
+                // Network-down is already reported at command send time; skip double prompt.
+                return;
+            }
+            player.sendMessage(messageFormatter.formatError(ErrorMessageFormatter.format(code)));
+        });
     }
     
     /**

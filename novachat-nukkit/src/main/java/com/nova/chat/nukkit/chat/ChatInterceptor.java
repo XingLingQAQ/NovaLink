@@ -1,5 +1,8 @@
 package com.nova.chat.nukkit.chat;
 
+import com.nova.chat.client.error.ErrorCode;
+import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 
@@ -12,6 +15,8 @@ import cn.nukkit.event.player.PlayerJoinEvent;
 import cn.nukkit.event.player.PlayerQuitEvent;
 import com.nova.chat.nukkit.NovaChatNukkit;
 import com.nova.chat.nukkit.config.NovaChatConfig;
+import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 
 import java.util.Map;
@@ -60,6 +65,48 @@ public class ChatInterceptor implements Listener {
      */
     private void registerIncomingMessageHandler() {
         plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
+        plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
+    }
+
+    /**
+     * Handles channel action responses from the backend.
+     *
+     * <p>Correlates the response back to the originating player via the shared
+     * {@link ChannelResponseTracker}. On failure, surfaces an actionable, formatted
+     * error via the shared {@link ErrorCode} system; NC-503 (network down) is already
+     * reported at send time and is suppressed here to avoid a double message. Player
+     * lookup / message sending run on the Nukkit main thread.
+     */
+    private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
+        plugin.debug("Received channel action response: " + packet);
+
+        ChannelResponseTracker tracker = plugin.getNetworkClient().getChannelResponseTracker();
+        ChannelResponseTracker.PendingChannelAction pending = tracker.consume(packet.getRequestId());
+        if (pending == null || pending.getPlayerId() == null) {
+            return;
+        }
+
+        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+            Player player = plugin.getServer().getPlayer(pending.getPlayerId()).orElse(null);
+            if (player == null) {
+                return;
+            }
+            if (packet.isSuccess()) {
+                if (packet.getAction() == ChannelAction.JOIN
+                        && packet.getChannelId() != null && !packet.getChannelId().isEmpty()) {
+                    PlayerChannelState state = getState(pending.getPlayerId());
+                    if (state != null) {
+                        state.setActiveChannel(packet.getChannelId());
+                    }
+                }
+                return;
+            }
+            String code = packet.getErrorCode();
+            if (code == null || code.isEmpty() || ErrorCode.SERVICE_UNAVAILABLE.getCode().equals(code)) {
+                return;
+            }
+            plugin.getMessageHelper().sendError(player, ErrorMessageFormatter.format(code));
+        });
     }
     
     /**
