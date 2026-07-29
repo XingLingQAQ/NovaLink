@@ -1,0 +1,890 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="com.nova.link.filter.SensitiveWordFilterPropertyTest" time="0.598" tests="8" errors="0" skipped="0" failures="0">
+  <properties>
+    <property name="java.specification.version" value="21"/>
+    <property name="sun.cpu.isalist" value="amd64"/>
+    <property name="sun.jnu.encoding" value="GBK"/>
+    <property name="java.class.path" value="D:\project\NovaLink\novalink-core\target\test-classes;D:\project\NovaLink\novalink-core\target\classes;D:\project\NovaLink\novachat-common\target\classes;D:\Maven Rep\io\netty\netty-all\4.1.100.Final\netty-all-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-buffer\4.1.100.Final\netty-buffer-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec\4.1.100.Final\netty-codec-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-dns\4.1.100.Final\netty-codec-dns-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-haproxy\4.1.100.Final\netty-codec-haproxy-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-http\4.1.100.Final\netty-codec-http-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-http2\4.1.100.Final\netty-codec-http2-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-memcache\4.1.100.Final\netty-codec-memcache-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-mqtt\4.1.100.Final\netty-codec-mqtt-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-redis\4.1.100.Final\netty-codec-redis-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-smtp\4.1.100.Final\netty-codec-smtp-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-socks\4.1.100.Final\netty-codec-socks-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-stomp\4.1.100.Final\netty-codec-stomp-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-xml\4.1.100.Final\netty-codec-xml-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-common\4.1.100.Final\netty-common-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-handler\4.1.100.Final\netty-handler-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-native-unix-common\4.1.100.Final\netty-transport-native-unix-common-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-handler-proxy\4.1.100.Final\netty-handler-proxy-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-handler-ssl-ocsp\4.1.100.Final\netty-handler-ssl-ocsp-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-resolver\4.1.100.Final\netty-resolver-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-resolver-dns\4.1.100.Final\netty-resolver-dns-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport\4.1.100.Final\netty-transport-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-rxtx\4.1.100.Final\netty-transport-rxtx-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-sctp\4.1.100.Final\netty-transport-sctp-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-udt\4.1.100.Final\netty-transport-udt-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-classes-epoll\4.1.100.Final\netty-transport-classes-epoll-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-classes-kqueue\4.1.100.Final\netty-transport-classes-kqueue-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-resolver-dns-classes-macos\4.1.100.Final\netty-resolver-dns-classes-macos-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-native-epoll\4.1.100.Final\netty-transport-native-epoll-4.1.100.Final-linux-x86_64.jar;D:\Maven Rep\io\netty\netty-transport-native-epoll\4.1.100.Final\netty-transport-native-epoll-4.1.100.Final-linux-aarch_64.jar;D:\Maven Rep\io\netty\netty-transport-native-kqueue\4.1.100.Final\netty-transport-native-kqueue-4.1.100.Final-osx-x86_64.jar;D:\Maven Rep\io\netty\netty-transport-native-kqueue\4.1.100.Final\netty-transport-native-kqueue-4.1.100.Final-osx-aarch_64.jar;D:\Maven Rep\io\netty\netty-resolver-dns-native-macos\4.1.100.Final\netty-resolver-dns-native-macos-4.1.100.Final-osx-x86_64.jar;D:\Maven Rep\io\netty\netty-resolver-dns-native-macos\4.1.100.Final\netty-resolver-dns-native-macos-4.1.100.Final-osx-aarch_64.jar;D:\Maven Rep\com\zaxxer\HikariCP\5.1.0\HikariCP-5.1.0.jar;D:\Maven Rep\com\mysql\mysql-connector-j\8.0.33\mysql-connector-j-8.0.33.jar;D:\Maven Rep\com\google\protobuf\protobuf-java\3.21.9\protobuf-java-3.21.9.jar;D:\Maven Rep\redis\clients\jedis\5.1.0\jedis-5.1.0.jar;D:\Maven Rep\org\apache\commons\commons-pool2\2.12.0\commons-pool2-2.12.0.jar;D:\Maven Rep\org\json\json\20231013\json-20231013.jar;D:\Maven Rep\org\yaml\snakeyaml\2.2\snakeyaml-2.2.jar;D:\Maven Rep\com\google\code\gson\gson\2.10.1\gson-2.10.1.jar;D:\Maven Rep\org\slf4j\slf4j-api\2.0.9\slf4j-api-2.0.9.jar;D:\Maven Rep\ch\qos\logback\logback-classic\1.4.14\logback-classic-1.4.14.jar;D:\Maven Rep\ch\qos\logback\logback-core\1.4.14\logback-core-1.4.14.jar;D:\Maven Rep\org\projectlombok\lombok\1.18.30\lombok-1.18.30.jar;D:\Maven Rep\com\google\guava\guava\32.1.3-jre\guava-32.1.3-jre.jar;D:\Maven Rep\com\google\guava\failureaccess\1.0.1\failureaccess-1.0.1.jar;D:\Maven Rep\com\google\guava\listenablefuture\9999.0-empty-to-avoid-conflict-with-guava\listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar;D:\Maven Rep\com\google\code\findbugs\jsr305\3.0.2\jsr305-3.0.2.jar;D:\Maven Rep\org\checkerframework\checker-qual\3.37.0\checker-qual-3.37.0.jar;D:\Maven Rep\com\google\errorprone\error_prone_annotations\2.21.1\error_prone_annotations-2.21.1.jar;D:\Maven Rep\com\google\j2objc\j2objc-annotations\2.8\j2objc-annotations-2.8.jar;D:\Maven Rep\io\jsonwebtoken\jjwt-api\0.12.3\jjwt-api-0.12.3.jar;D:\Maven Rep\io\jsonwebtoken\jjwt-impl\0.12.3\jjwt-impl-0.12.3.jar;D:\Maven Rep\io\jsonwebtoken\jjwt-jackson\0.12.3\jjwt-jackson-0.12.3.jar;D:\Maven Rep\com\fasterxml\jackson\core\jackson-databind\2.12.7.1\jackson-databind-2.12.7.1.jar;D:\Maven Rep\com\fasterxml\jackson\core\jackson-annotations\2.12.7\jackson-annotations-2.12.7.jar;D:\Maven Rep\com\fasterxml\jackson\core\jackson-core\2.12.7\jackson-core-2.12.7.jar;D:\Maven Rep\org\junit\jupiter\junit-jupiter\5.10.1\junit-jupiter-5.10.1.jar;D:\Maven Rep\org\junit\jupiter\junit-jupiter-api\5.10.1\junit-jupiter-api-5.10.1.jar;D:\Maven Rep\org\opentest4j\opentest4j\1.3.0\opentest4j-1.3.0.jar;D:\Maven Rep\org\junit\platform\junit-platform-commons\1.10.1\junit-platform-commons-1.10.1.jar;D:\Maven Rep\org\junit\jupiter\junit-jupiter-params\5.10.1\junit-jupiter-params-5.10.1.jar;D:\Maven Rep\org\junit\jupiter\junit-jupiter-engine\5.10.1\junit-jupiter-engine-5.10.1.jar;D:\Maven Rep\org\junit\platform\junit-platform-engine\1.10.1\junit-platform-engine-1.10.1.jar;D:\Maven Rep\net\jqwik\jqwik\1.8.2\jqwik-1.8.2.jar;D:\Maven Rep\org\apiguardian\apiguardian-api\1.1.2\apiguardian-api-1.1.2.jar;D:\Maven Rep\net\jqwik\jqwik-api\1.8.2\jqwik-api-1.8.2.jar;D:\Maven Rep\net\jqwik\jqwik-web\1.8.2\jqwik-web-1.8.2.jar;D:\Maven Rep\net\jqwik\jqwik-time\1.8.2\jqwik-time-1.8.2.jar;D:\Maven Rep\net\jqwik\jqwik-engine\1.8.2\jqwik-engine-1.8.2.jar;D:\Maven Rep\org\assertj\assertj-core\3.24.2\assertj-core-3.24.2.jar;D:\Maven Rep\net\bytebuddy\byte-buddy\1.12.21\byte-buddy-1.12.21.jar;D:\Maven Rep\org\mockito\mockito-core\5.8.0\mockito-core-5.8.0.jar;D:\Maven Rep\net\bytebuddy\byte-buddy-agent\1.14.10\byte-buddy-agent-1.14.10.jar;D:\Maven Rep\org\objenesis\objenesis\3.3\objenesis-3.3.jar;D:\Maven Rep\org\mockito\mockito-junit-jupiter\5.8.0\mockito-junit-jupiter-5.8.0.jar;"/>
+    <property name="java.vm.vendor" value="Oracle Corporation"/>
+    <property name="sun.arch.data.model" value="64"/>
+    <property name="user.variant" value=""/>
+    <property name="java.vendor.url" value="https://java.oracle.com/"/>
+    <property name="user.timezone" value="Asia/Shanghai"/>
+    <property name="os.name" value="Windows Server 2022"/>
+    <property name="java.vm.specification.version" value="21"/>
+    <property name="sun.java.launcher" value="SUN_STANDARD"/>
+    <property name="user.country" value="CN"/>
+    <property name="sun.boot.library.path" value="D:\APP\Java\bin"/>
+    <property name="sun.java.command" value="C:\Users\Administrator\AppData\Local\Temp\2\surefire2889062586494781116\surefirebooter-20251207122953102_13.jar C:\Users\Administrator\AppData\Local\Temp\2\surefire2889062586494781116 2025-12-07T12-29-50_948-jvmRun1 surefire-20251207122953102_11tmp surefire_1-20251207122953102_12tmp"/>
+    <property name="jdk.debug" value="release"/>
+    <property name="surefire.test.class.path" value="D:\project\NovaLink\novalink-core\target\test-classes;D:\project\NovaLink\novalink-core\target\classes;D:\project\NovaLink\novachat-common\target\classes;D:\Maven Rep\io\netty\netty-all\4.1.100.Final\netty-all-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-buffer\4.1.100.Final\netty-buffer-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec\4.1.100.Final\netty-codec-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-dns\4.1.100.Final\netty-codec-dns-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-haproxy\4.1.100.Final\netty-codec-haproxy-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-http\4.1.100.Final\netty-codec-http-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-http2\4.1.100.Final\netty-codec-http2-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-memcache\4.1.100.Final\netty-codec-memcache-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-mqtt\4.1.100.Final\netty-codec-mqtt-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-redis\4.1.100.Final\netty-codec-redis-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-smtp\4.1.100.Final\netty-codec-smtp-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-socks\4.1.100.Final\netty-codec-socks-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-stomp\4.1.100.Final\netty-codec-stomp-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-codec-xml\4.1.100.Final\netty-codec-xml-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-common\4.1.100.Final\netty-common-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-handler\4.1.100.Final\netty-handler-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-native-unix-common\4.1.100.Final\netty-transport-native-unix-common-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-handler-proxy\4.1.100.Final\netty-handler-proxy-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-handler-ssl-ocsp\4.1.100.Final\netty-handler-ssl-ocsp-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-resolver\4.1.100.Final\netty-resolver-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-resolver-dns\4.1.100.Final\netty-resolver-dns-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport\4.1.100.Final\netty-transport-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-rxtx\4.1.100.Final\netty-transport-rxtx-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-sctp\4.1.100.Final\netty-transport-sctp-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-udt\4.1.100.Final\netty-transport-udt-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-classes-epoll\4.1.100.Final\netty-transport-classes-epoll-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-classes-kqueue\4.1.100.Final\netty-transport-classes-kqueue-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-resolver-dns-classes-macos\4.1.100.Final\netty-resolver-dns-classes-macos-4.1.100.Final.jar;D:\Maven Rep\io\netty\netty-transport-native-epoll\4.1.100.Final\netty-transport-native-epoll-4.1.100.Final-linux-x86_64.jar;D:\Maven Rep\io\netty\netty-transport-native-epoll\4.1.100.Final\netty-transport-native-epoll-4.1.100.Final-linux-aarch_64.jar;D:\Maven Rep\io\netty\netty-transport-native-kqueue\4.1.100.Final\netty-transport-native-kqueue-4.1.100.Final-osx-x86_64.jar;D:\Maven Rep\io\netty\netty-transport-native-kqueue\4.1.100.Final\netty-transport-native-kqueue-4.1.100.Final-osx-aarch_64.jar;D:\Maven Rep\io\netty\netty-resolver-dns-native-macos\4.1.100.Final\netty-resolver-dns-native-macos-4.1.100.Final-osx-x86_64.jar;D:\Maven Rep\io\netty\netty-resolver-dns-native-macos\4.1.100.Final\netty-resolver-dns-native-macos-4.1.100.Final-osx-aarch_64.jar;D:\Maven Rep\com\zaxxer\HikariCP\5.1.0\HikariCP-5.1.0.jar;D:\Maven Rep\com\mysql\mysql-connector-j\8.0.33\mysql-connector-j-8.0.33.jar;D:\Maven Rep\com\google\protobuf\protobuf-java\3.21.9\protobuf-java-3.21.9.jar;D:\Maven Rep\redis\clients\jedis\5.1.0\jedis-5.1.0.jar;D:\Maven Rep\org\apache\commons\commons-pool2\2.12.0\commons-pool2-2.12.0.jar;D:\Maven Rep\org\json\json\20231013\json-20231013.jar;D:\Maven Rep\org\yaml\snakeyaml\2.2\snakeyaml-2.2.jar;D:\Maven Rep\com\google\code\gson\gson\2.10.1\gson-2.10.1.jar;D:\Maven Rep\org\slf4j\slf4j-api\2.0.9\slf4j-api-2.0.9.jar;D:\Maven Rep\ch\qos\logback\logback-classic\1.4.14\logback-classic-1.4.14.jar;D:\Maven Rep\ch\qos\logback\logback-core\1.4.14\logback-core-1.4.14.jar;D:\Maven Rep\org\projectlombok\lombok\1.18.30\lombok-1.18.30.jar;D:\Maven Rep\com\google\guava\guava\32.1.3-jre\guava-32.1.3-jre.jar;D:\Maven Rep\com\google\guava\failureaccess\1.0.1\failureaccess-1.0.1.jar;D:\Maven Rep\com\google\guava\listenablefuture\9999.0-empty-to-avoid-conflict-with-guava\listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar;D:\Maven Rep\com\google\code\findbugs\jsr305\3.0.2\jsr305-3.0.2.jar;D:\Maven Rep\org\checkerframework\checker-qual\3.37.0\checker-qual-3.37.0.jar;D:\Maven Rep\com\google\errorprone\error_prone_annotations\2.21.1\error_prone_annotations-2.21.1.jar;D:\Maven Rep\com\google\j2objc\j2objc-annotations\2.8\j2objc-annotations-2.8.jar;D:\Maven Rep\io\jsonwebtoken\jjwt-api\0.12.3\jjwt-api-0.12.3.jar;D:\Maven Rep\io\jsonwebtoken\jjwt-impl\0.12.3\jjwt-impl-0.12.3.jar;D:\Maven Rep\io\jsonwebtoken\jjwt-jackson\0.12.3\jjwt-jackson-0.12.3.jar;D:\Maven Rep\com\fasterxml\jackson\core\jackson-databind\2.12.7.1\jackson-databind-2.12.7.1.jar;D:\Maven Rep\com\fasterxml\jackson\core\jackson-annotations\2.12.7\jackson-annotations-2.12.7.jar;D:\Maven Rep\com\fasterxml\jackson\core\jackson-core\2.12.7\jackson-core-2.12.7.jar;D:\Maven Rep\org\junit\jupiter\junit-jupiter\5.10.1\junit-jupiter-5.10.1.jar;D:\Maven Rep\org\junit\jupiter\junit-jupiter-api\5.10.1\junit-jupiter-api-5.10.1.jar;D:\Maven Rep\org\opentest4j\opentest4j\1.3.0\opentest4j-1.3.0.jar;D:\Maven Rep\org\junit\platform\junit-platform-commons\1.10.1\junit-platform-commons-1.10.1.jar;D:\Maven Rep\org\junit\jupiter\junit-jupiter-params\5.10.1\junit-jupiter-params-5.10.1.jar;D:\Maven Rep\org\junit\jupiter\junit-jupiter-engine\5.10.1\junit-jupiter-engine-5.10.1.jar;D:\Maven Rep\org\junit\platform\junit-platform-engine\1.10.1\junit-platform-engine-1.10.1.jar;D:\Maven Rep\net\jqwik\jqwik\1.8.2\jqwik-1.8.2.jar;D:\Maven Rep\org\apiguardian\apiguardian-api\1.1.2\apiguardian-api-1.1.2.jar;D:\Maven Rep\net\jqwik\jqwik-api\1.8.2\jqwik-api-1.8.2.jar;D:\Maven Rep\net\jqwik\jqwik-web\1.8.2\jqwik-web-1.8.2.jar;D:\Maven Rep\net\jqwik\jqwik-time\1.8.2\jqwik-time-1.8.2.jar;D:\Maven Rep\net\jqwik\jqwik-engine\1.8.2\jqwik-engine-1.8.2.jar;D:\Maven Rep\org\assertj\assertj-core\3.24.2\assertj-core-3.24.2.jar;D:\Maven Rep\net\bytebuddy\byte-buddy\1.12.21\byte-buddy-1.12.21.jar;D:\Maven Rep\org\mockito\mockito-core\5.8.0\mockito-core-5.8.0.jar;D:\Maven Rep\net\bytebuddy\byte-buddy-agent\1.14.10\byte-buddy-agent-1.14.10.jar;D:\Maven Rep\org\objenesis\objenesis\3.3\objenesis-3.3.jar;D:\Maven Rep\org\mockito\mockito-junit-jupiter\5.8.0\mockito-junit-jupiter-5.8.0.jar;"/>
+    <property name="sun.cpu.endian" value="little"/>
+    <property name="user.home" value="C:\Users\Administrator"/>
+    <property name="user.language" value="zh"/>
+    <property name="java.specification.vendor" value="Oracle Corporation"/>
+    <property name="java.version.date" value="2025-10-21"/>
+    <property name="java.home" value="D:\APP\Java"/>
+    <property name="file.separator" value="\"/>
+    <property name="basedir" value="D:\project\NovaLink\novalink-core"/>
+    <property name="java.vm.compressedOopsMode" value="Zero based"/>
+    <property name="line.separator" value="&#10;"/>
+    <property name="java.vm.specification.vendor" value="Oracle Corporation"/>
+    <property name="java.specification.name" value="Java Platform API Specification"/>
+    <property name="surefire.real.class.path" value="C:\Users\Administrator\AppData\Local\Temp\2\surefire2889062586494781116\surefirebooter-20251207122953102_13.jar"/>
+    <property name="user.script" value=""/>
+    <property name="sun.management.compiler" value="HotSpot 64-Bit Tiered Compilers"/>
+    <property name="java.runtime.version" value="21.0.9+7-LTS-338"/>
+    <property name="user.name" value="Administrator"/>
+    <property name="stdout.encoding" value="GBK"/>
+    <property name="path.separator" value=";"/>
+    <property name="os.version" value="10.0"/>
+    <property name="java.runtime.name" value="Java(TM) SE Runtime Environment"/>
+    <property name="file.encoding" value="UTF-8"/>
+    <property name="java.vm.name" value="Java HotSpot(TM) 64-Bit Server VM"/>
+    <property name="localRepository" value="D:\Maven Rep"/>
+    <property name="java.vendor.url.bug" value="https://bugreport.java.com/bugreport/"/>
+    <property name="java.io.tmpdir" value="C:\Users\ADMINI~1\AppData\Local\Temp\2\"/>
+    <property name="java.version" value="21.0.9"/>
+    <property name="user.dir" value="D:\project\NovaLink\novalink-core"/>
+    <property name="os.arch" value="amd64"/>
+    <property name="java.vm.specification.name" value="Java Virtual Machine Specification"/>
+    <property name="sun.os.patch.level" value=""/>
+    <property name="native.encoding" value="GBK"/>
+    <property name="java.library.path" value="D:\APP\Java\bin;C:\Windows\Sun\Java\bin;C:\Windows\system32;C:\Windows;C:\Program Files\Common Files\Oracle\Java\javapath;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\;C:\Windows\System32\OpenSSH\;D:\APP\cursor\resources\app\bin;D:\APP\nodejs\;D:\APP\Go\bin;D:\APP\Git\cmd;D:\APP\npm;D:\Windows Kits\10\Windows Performance Toolkit\;C:\Users\Administrator\.local\bin;C:\Program Files\Pandoc\;C:\Program Files\Cloudflare\Cloudflare WARP\;D:\APP\Git\bin;D:\APP\apache-maven-3.9.11\bin;D:\APP\gradle-9.2.1\bin;C:\Program Files\dotnet\;C:\Users\Administrator\AppData\Local\Programs\Python\Python312;C:\Users\Administrator\AppData\Local\Programs\Python\Python312\Scripts;C:\Users\Administrator\.local\bin;C:\Users\Administrator\AppData\Local\Programs\Python\Python312\Scripts\;C:\Users\Administrator\AppData\Local\Programs\Python\Python312\;C:\Users\Administrator\AppData\Local\Programs\Python\Launcher\;D:\APP\cargo\bin;d:\APP\Trae\bin;C:\Users\Administrator\AppData\Local\Microsoft\WindowsApps;C:\Users\Administrator\AppData\Roaming\npm;%USERPROFILE%\go\bin;D:\APP\Kiro\bin;D:\APP\Antigravity\bin;D:\APP\MSYS\mingw64\bin;;C:\Users\Administrator\AppData\Local\Antihub;."/>
+    <property name="java.vm.info" value="mixed mode, sharing"/>
+    <property name="stderr.encoding" value="GBK"/>
+    <property name="java.vendor" value="Oracle Corporation"/>
+    <property name="java.vm.version" value="21.0.9+7-LTS-338"/>
+    <property name="sun.io.unicode.encoding" value="UnicodeLittle"/>
+    <property name="java.class.version" value="65.0"/>
+  </properties>
+  <testcase name="regexPatternsFilterMatchingContent" classname="com.nova.link.filter.SensitiveWordFilterPropertyTest" time="0.076">
+    <system-out><![CDATA[12:30:06.307 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.309 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.314 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.324 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.327 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.329 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.331 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.332 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.332 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.333 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.333 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.334 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.334 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.335 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.335 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.335 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.336 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.337 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.337 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.338 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.339 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.339 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.340 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.340 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.341 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.342 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.342 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.344 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.344 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.345 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.358 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.364 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.365 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.365 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.366 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.366 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.367 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.367 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.368 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.368 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+12:30:06.368 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.368 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added regex pattern: test\d+
+]]></system-out>
+  </testcase>
+  <testcase name="caseInsensitiveMatchingWorks" classname="com.nova.link.filter.SensitiveWordFilterPropertyTest" time="0.094">
+    <system-out><![CDATA[12:30:06.376 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.377 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.385 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.386 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.388 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.388 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.389 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.389 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.390 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.391 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.391 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.392 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.392 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.393 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.394 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.394 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.395 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.395 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.396 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.396 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.397 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.397 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.397 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.398 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.398 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.399 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.399 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.399 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.400 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.400 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.401 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.401 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.401 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.402 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.402 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.402 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.403 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.403 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.404 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.406 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.406 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.406 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.407 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.407 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.408 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.410 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.411 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.411 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.412 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.413 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.414 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.414 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.415 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.416 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.417 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.417 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.418 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.418 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.419 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.419 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.423 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.423 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.425 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.426 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.426 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.427 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.428 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.428 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.428 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.428 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.429 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.429 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.429 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.430 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.430 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.430 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.431 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.431 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.431 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.432 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.432 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.433 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.433 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.433 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.434 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.434 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.434 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.435 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.435 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.435 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.436 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.437 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.445 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.445 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.447 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.448 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.449 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.450 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.451 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.452 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.453 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.453 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.454 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.455 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.456 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.456 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.457 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.457 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.458 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.459 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.459 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.459 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.460 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.460 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.460 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.460 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.461 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.461 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.462 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.462 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+]]></system-out>
+  </testcase>
+  <testcase name="cleanMessagesRemainUnchanged" classname="com.nova.link.filter.SensitiveWordFilterPropertyTest" time="0.012">
+    <system-out><![CDATA[12:30:06.464 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.465 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.465 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.465 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.465 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.465 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.466 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.466 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.466 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.467 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.467 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.467 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.469 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.469 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.469 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.469 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.469 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.469 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.469 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.469 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.469 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.474 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.474 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.474 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+]]></system-out>
+  </testcase>
+  <testcase name="wordBoundariesAreRespected" classname="com.nova.link.filter.SensitiveWordFilterPropertyTest" time="0.2">
+    <system-out><![CDATA[12:30:06.489 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.489 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.491 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.492 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.492 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.493 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.493 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.493 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.494 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.494 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.494 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.495 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.495 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.495 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.496 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.496 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.497 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.497 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.497 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.498 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.499 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.499 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.501 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.501 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.502 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.502 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.504 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.505 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.506 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.507 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.507 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.508 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.509 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.509 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.510 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.510 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.511 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.511 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.512 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.512 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.513 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.513 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.514 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.515 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.515 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.515 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.516 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.517 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.517 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.517 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.518 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.518 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.519 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.519 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.519 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.520 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.520 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.520 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.521 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.521 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.521 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.521 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.522 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.522 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.522 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.523 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.523 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.523 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.524 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.524 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.524 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.525 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.525 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.525 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.525 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.525 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.526 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.526 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.527 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.527 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.528 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.529 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.553 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.553 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.554 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.554 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.555 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.556 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.558 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.559 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.562 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.562 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.566 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.568 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.591 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.591 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.594 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.594 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.595 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.595 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.596 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.596 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.613 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.615 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.616 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.616 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.616 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.617 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.617 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.617 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.617 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.618 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.618 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.618 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.619 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.619 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.619 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.619 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.620 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.620 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.620 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.620 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.621 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.621 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.622 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.622 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.622 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.623 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.624 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.624 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.625 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.625 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.625 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.625 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.626 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.626 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.626 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.627 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.627 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.632 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.646 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.646 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.647 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.647 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.648 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.648 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.649 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.649 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.649 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.650 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.650 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.650 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.651 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.651 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.651 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.651 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.652 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.653 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.653 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.653 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.654 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.654 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.654 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.654 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.655 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.655 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.656 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.658 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.658 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.658 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.659 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.659 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.659 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.660 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.660 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.660 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.661 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.661 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.662 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.662 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.663 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.663 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.665 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.665 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.666 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.666 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.666 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.667 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.668 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.668 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.668 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.669 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.669 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.672 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.673 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.673 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.673 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.673 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.674 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.676 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+]]></system-out>
+  </testcase>
+  <testcase name="emptyAndNullMessagesHandledGracefully" classname="com.nova.link.filter.SensitiveWordFilterPropertyTest" time="0.047">
+    <system-out><![CDATA[12:30:06.679 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.680 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.682 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.683 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.683 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.684 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.684 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.685 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.686 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.687 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.688 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.695 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.698 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.700 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.701 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.701 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.702 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.703 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.703 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.704 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.705 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.707 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.707 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.708 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.708 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.709 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.709 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.710 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.710 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.711 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.711 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.711 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.712 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.712 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.713 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.713 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.715 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.715 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.716 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.716 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.717 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.717 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.718 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.719 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.719 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.720 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.721 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.721 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.722 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.722 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+]]></system-out>
+    <system-err><![CDATA[12月 07, 2025 12:30:06 下午 net.jqwik.engine.execution.CheckedProperty maybeWarnOnMultipleTriesWithoutForallParameters
+警告: Running Property [SensitiveWordFilterPropertyTest:emptyAndNullMessagesHandledGracefully] in container [com.nova.link.filter.SensitiveWordFilterPropertyTest] without any @ForAll parameters for 50 tries.
+    Maybe you want to change it into an @Example?
+]]></system-err>
+  </testcase>
+  <testcase name="sensitiveWordsAreReplacedWithAsterisks" classname="com.nova.link.filter.SensitiveWordFilterPropertyTest" time="0.089">
+    <system-out><![CDATA[12:30:06.731 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.731 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.740 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.740 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.741 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.741 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.741 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.742 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.742 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.742 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.743 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.743 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.743 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.744 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.744 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.744 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.744 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.745 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.745 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.745 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.745 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.746 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.746 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.746 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.746 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.746 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.746 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.747 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.747 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.747 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.749 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.749 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.750 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.750 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.751 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.751 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.751 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.752 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.752 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.752 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.752 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.753 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.753 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.753 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.754 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.754 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.754 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.754 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.755 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.755 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.755 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.755 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.756 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.756 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.756 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.756 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.757 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.757 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.758 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.759 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.759 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.759 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.760 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.760 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.761 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.761 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.762 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.762 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.762 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.763 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.763 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.763 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.764 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.765 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.765 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.766 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.767 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.767 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.768 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.768 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.772 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.773 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.773 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.774 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.774 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.775 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.776 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.777 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.778 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.778 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.778 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.779 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.780 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.781 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.781 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.782 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.782 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.782 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.783 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.783 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.784 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.785 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.785 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.785 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.786 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.786 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.786 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.787 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.787 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.787 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.787 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.787 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.788 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.788 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.788 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.788 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.790 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.790 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.790 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.791 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.791 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.791 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.791 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.792 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.792 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.792 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.793 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.793 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.793 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.793 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.794 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.794 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.794 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.794 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.795 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.795 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.795 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.796 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.796 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.796 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.796 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.797 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.797 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.797 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.797 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.798 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.798 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.798 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.798 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.798 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.798 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.799 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.799 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.799 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.799 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.800 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.800 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.800 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.801 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.801 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.801 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.802 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.802 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.802 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.803 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.803 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.803 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.803 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.804 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.804 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.804 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.804 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.805 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.805 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.805 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.806 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.806 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.806 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.807 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.807 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.807 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.808 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.808 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.808 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.808 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.809 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.809 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.809 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.810 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.810 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.810 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.810 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.811 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.811 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.812 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.812 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.813 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.813 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.813 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.813 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+]]></system-out>
+  </testcase>
+  <testcase name="multipleOccurrencesAreAllReplaced" classname="com.nova.link.filter.SensitiveWordFilterPropertyTest" time="0.064">
+    <system-out><![CDATA[12:30:06.818 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.818 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.819 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.819 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.819 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.819 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.821 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.822 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.822 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.823 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.823 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.824 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.825 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.825 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.825 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.825 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.826 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.826 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.827 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.827 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.827 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.828 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.828 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.828 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.830 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.831 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.832 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.832 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.833 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.834 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.835 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.835 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.838 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.838 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.839 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.839 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.839 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.839 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.840 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.840 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.840 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.841 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.841 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.841 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.841 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.842 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.842 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.843 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.843 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.843 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.844 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.844 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.844 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.845 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.845 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.845 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.846 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.846 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.846 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.846 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.846 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.846 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.846 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.846 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.847 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.847 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.847 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.848 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.848 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.848 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.848 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.849 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.849 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.850 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.850 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.850 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.850 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.851 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.851 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.851 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.853 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.853 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.854 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.854 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.855 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.856 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.856 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.858 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.860 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.860 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.860 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.861 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.861 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.861 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.862 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.862 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.863 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.863 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.864 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.865 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.866 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.866 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.867 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.868 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.869 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.870 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.871 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.871 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.872 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.872 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.873 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.873 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.874 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.876 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.876 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.876 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.877 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.877 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.877 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.877 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+]]></system-out>
+  </testcase>
+  <testcase name="addingAndRemovingWordsWorks" classname="com.nova.link.filter.SensitiveWordFilterPropertyTest" time="0.01">
+    <system-out><![CDATA[12:30:06.881 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.881 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: spam
+12:30:06.881 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: spam
+12:30:06.882 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.882 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: scam
+12:30:06.882 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: scam
+12:30:06.882 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.883 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hack
+12:30:06.883 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: hack
+12:30:06.883 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.883 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: cheat
+12:30:06.883 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: cheat
+12:30:06.884 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.884 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: exploit
+12:30:06.884 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: exploit
+12:30:06.884 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.884 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: abuse
+12:30:06.884 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: abuse
+12:30:06.885 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.885 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: toxic
+12:30:06.885 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: toxic
+12:30:06.885 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.885 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: racist
+12:30:06.885 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: racist
+12:30:06.886 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.886 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: hate
+12:30:06.886 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: hate
+12:30:06.886 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.886 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: phishing
+12:30:06.886 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: phishing
+12:30:06.886 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.887 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: malware
+12:30:06.887 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: malware
+12:30:06.887 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.887 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: virus
+12:30:06.887 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: virus
+12:30:06.887 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.888 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: trojan
+12:30:06.888 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: trojan
+12:30:06.888 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.888 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: badword
+12:30:06.888 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: badword
+12:30:06.888 [main] INFO  c.n.link.filter.SensitiveWordFilter - Loaded 552 built-in sensitive words
+12:30:06.888 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Added sensitive word: forbidden
+12:30:06.888 [main] DEBUG c.n.link.filter.SensitiveWordFilter - Removed sensitive word: forbidden
+]]></system-out>
+  </testcase>
+</testsuite>

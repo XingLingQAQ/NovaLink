@@ -1,0 +1,37 @@
+# NovaChat Endstone Plugin Metadata
+# Compatible with Endstone plugin system
+#
+# Version Compatibility:
+#   Supported Endstone API: 0.5+
+#   Supported Minecraft Bedrock: 1.20+ through 26.30
+#   NovaProtocol version: 1
+#   Minimum Python version: 3.10
+
+[plugin]
+name = "NovaChat"
+version = "1.0.0"
+description = "Cross-server chat integration for Minecraft Bedrock Edition"
+main = "novachat_endstone.plugin:NovaChatPlugin"
+api = "0.5"
+load = "POSTWORLD"
+
+[plugin.authors]
+authors = ["NovaChat Team"]
+
+[plugin.permissions]
+"novachat.use" = { description = "Allows using NovaChat commands", default = "true" }
+"novachat.admin" = { description = "Allows using NovaChat admin commands", default = "op" }
+"novachat.channel.join" = { description = "Allows joining channels", default = "true" }
+"novachat.channel.leave" = { description = "Allows leaving channels", default = "true" }
+"novachat.channel.create" = { description = "Allows creating private channels", default = "op" }
+"novachat.mute" = { description = "Allows muting players", default = "op" }
+"novachat.kick" = { description = "Allows kicking players from channels", default = "op" }
+"novachat.announce" = { description = "Allows sending announcements", default = "op" }
+"novachat.reload" = { description = "Allows reloading configuration", default = "op" }
+
+[plugin.commands]
+[plugin.commands.novachat]
+description = "NovaChat main command"
+usage = "/novachat <subcommand> [args]"
+aliases = ["nc"]
+permission = "novachat.use"

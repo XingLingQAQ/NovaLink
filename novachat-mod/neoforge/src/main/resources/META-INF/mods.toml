@@ -1,0 +1,47 @@
+# NovaChat NeoForge Mod Metadata
+# Requirements: 3.5 - Declares dependencies and version in mods.toml
+#
+# Version Compatibility:
+#   Supported Minecraft: 1.20.2 - 1.21.11 / 26.x
+#   NovaProtocol version: 1
+#   Minimum Java version: 17 (1.20.2-1.20.4) / 21 (1.20.5+)
+
+modLoader="javafml"
+loaderVersion="[2,)"
+license="MIT"
+issueTrackerURL="https://github.com/novachat/novachat-mod/issues"
+
+[[mods]]
+modId="novachat"
+version="${file.jarVersion}"
+displayName="NovaChat"
+displayURL="https://github.com/novachat/novachat-mod"
+logoFile="novachat_logo.png"
+credits="NovaChat Team"
+authors="NovaChat Team"
+description='''
+NovaChat - Cross-server chat system for Minecraft
+
+Features:
+- Cross-server chat channels
+- Private messaging
+- Channel management
+- Rich text formatting
+- Backend integration with NovaLink
+'''
+
+# NeoForge dependency
+[[dependencies.novachat]]
+    modId="neoforge"
+    type="required"
+    versionRange="[20.2,)"
+    ordering="NONE"
+    side="SERVER"
+
+# Minecraft dependency
+[[dependencies.novachat]]
+    modId="minecraft"
+    type="required"
+    versionRange="[1.20.2,26.3)"
+    ordering="NONE"
+    side="BOTH"

@@ -1,0 +1,51 @@
+plugins {
+    id 'fabric-loom' version '1.17.17'
+    id 'maven-publish'
+}
+
+java {
+    // MC 1.21+ requires Java 21
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+    maven { url 'https://maven.fabricmc.net/' }
+    maven { url 'https://maven.architectury.dev/' }
+}
+
+dependencies {
+    // Minecraft (default target: 1.21.11 as of 2026-07)
+    minecraft "com.mojang:minecraft:${project(':novachat-mod').ext.minecraftVersion}"
+    mappings loom.officialMojangMappings()
+
+    // Fabric
+    modImplementation "net.fabricmc:fabric-loader:${project(':novachat-mod').ext.fabricLoaderVersion}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project(':novachat-mod').ext.fabricApiVersion}"
+
+    // Architectury (shared abstractions)
+    modImplementation "dev.architectury:architectury-fabric:${project(':novachat-mod').ext.architecturyVersion}"
+
+    // Common mod logic
+    implementation project(':novachat-mod:common')
+}
+
+processResources {
+    inputs.property "version", project.version
+    inputs.property "minecraft_version", project(':novachat-mod').ext.minecraftVersion
+    inputs.property "loader_version", project(':novachat-mod').ext.fabricLoaderVersion
+
+    filesMatching("fabric.mod.json") {
+        expand(
+            "version": project.version,
+            "minecraft_version": project(':novachat-mod').ext.minecraftVersion,
+            "loader_version": project(':novachat-mod').ext.fabricLoaderVersion
+        )
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+    options.release = 21
+}

@@ -1,0 +1,152 @@
+name: NovaChat-MultiPaper
+version: ${version}
+main: com.nova.chat.multipaper.NovaChatMultiPaper
+api-version: "1.21"
+description: Cross-server chat channel system for MultiPaper
+authors: [Nova Team]
+website: https://github.com/nova/novachat
+
+# ==========================================
+# Version Compatibility
+# ==========================================
+# Supported MultiPaper versions: 2.x
+# Supported Minecraft versions: 1.19 - 1.21.11 / 26.2
+# Compile target API: Paper 1.21.11-R0.1-SNAPSHOT
+# NovaProtocol version: 1
+# Minimum Java version: 17
+# ==========================================
+
+# ==========================================
+# Commands
+# ==========================================
+commands:
+  novachat:
+    description: NovaChat main command
+    usage: |
+      /<command> help - Show available commands
+      /<command> join <channel> - Join a channel
+      /<command> leave [channel] - Leave current or specified channel
+      /<command> create <name> [password] - Create a private channel
+      /<command> invite <player> [channel] - Invite a player to a channel
+      /<command> accept <code> - Accept an invitation
+      /<command> toggle - Toggle chat mode
+      /<command> mute <player> <time> [channel] - Mute a player
+      /<command> kick <player> [channel] - Kick a player from channel
+      /<command> announce <channel> <message> - Send announcement
+      /<command> title <channel> <title> [subtitle] - Send title to channel
+      /<command> reload - Reload configuration
+      /<command> debug [on|off] - Toggle debug mode
+    aliases: [nc]
+
+# ==========================================
+# Permissions Hierarchy
+# ==========================================
+# Level 4: Super Admin (configured in backend + /nc auth)
+# Level 3: Client Admin (novachat.admin)
+# Level 2: Channel Admin (channel owner or granted)
+# Level 1: Player (default permissions)
+# ==========================================
+permissions:
+  # ==========================================
+  # Admin Permissions
+  # ==========================================
+  novachat.admin:
+    description: Client administrator permission - can manage all channels on this server
+    default: op
+    children:
+      novachat.bypass.world: true
+      novachat.mute: true
+      novachat.kick: true
+      novachat.announce: true
+      novachat.title: true
+      novachat.reload: true
+      novachat.debug: true
+      novachat.channel.*: true
+      novachat.create: true
+      novachat.invite: true
+
+  novachat.bypass.world:
+    description: Bypass world restrictions for channels
+    default: op
+
+  # ==========================================
+  # Management Permissions
+  # ==========================================
+  novachat.mute:
+    description: Mute players in channels
+    default: op
+
+  novachat.kick:
+    description: Kick players from channels
+    default: op
+
+  novachat.announce:
+    description: Send announcements to channels
+    default: op
+
+  novachat.title:
+    description: Send title messages to channels
+    default: op
+
+  novachat.reload:
+    description: Reload plugin configuration
+    default: op
+
+  novachat.debug:
+    description: Toggle debug mode
+    default: op
+
+  # ==========================================
+  # Channel Access Permissions
+  # ==========================================
+  novachat.channel.*:
+    description: Access to all channels
+    default: false
+    children:
+      novachat.channel.global: true
+
+  novachat.channel.global:
+    description: Access to global channel
+    default: true
+
+  # ==========================================
+  # Player Permissions
+  # ==========================================
+  novachat.create:
+    description: Create private channels
+    default: true
+
+  novachat.invite:
+    description: Invite players to channels
+    default: true
+
+  novachat.join:
+    description: Join channels
+    default: true
+
+  novachat.leave:
+    description: Leave channels
+    default: true
+
+  novachat.toggle:
+    description: Toggle chat mode between vanilla and channel
+    default: true
+
+  novachat.help:
+    description: View help information
+    default: true
+
+  novachat.accept:
+    description: Accept channel invitations
+    default: true
+
+  # ==========================================
+  # Hidden Permissions (not shown in help)
+  # ==========================================
+  novachat.auth:
+    description: Super admin authentication (hidden command)
+    default: false
+
+softdepend:
+  - PlaceholderAPI
+  - MultiPaper

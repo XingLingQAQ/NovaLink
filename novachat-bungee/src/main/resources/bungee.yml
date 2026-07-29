@@ -1,0 +1,17 @@
+name: NovaChat
+version: ${project.version}
+main: com.nova.chat.bungee.NovaChatBungee
+description: Cross-server chat channel system for BungeeCord
+author: Nova Team
+
+# ==========================================
+# Version Compatibility
+# ==========================================
+# Supported BungeeCord versions: 1.16+
+# Compile target API: bungeecord-api 1.21-R0.4
+# NovaProtocol version: 1
+# Minimum Java version: 8
+# ==========================================
+
+# Commands are registered programmatically in the plugin
+# /novachat and /nc are the main commands

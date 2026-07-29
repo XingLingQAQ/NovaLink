@@ -1,0 +1,16 @@
+{
+    "name": "novachat-levilamina",
+    "entry": "novachat-levilamina.dll",
+    "type": "native",
+    "version": "1.0.0",
+    "description": "NovaChat plugin for LeviLamina (BDS) - Cross-platform Minecraft chat infrastructure. Supports Bedrock 1.20+ through 26.30.",
+    "author": "Nova Team",
+    "dependencies": [
+        {
+            "name": "LeviLamina"
+        }
+    ],
+    "optional_dependencies": [],
+    "load_before": [],
+    "load_after": []
+}

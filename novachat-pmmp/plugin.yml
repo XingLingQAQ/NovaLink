@@ -1,0 +1,76 @@
+# ==========================================
+# NovaChat PocketMine-MP Plugin
+# Cross-server chat system for Bedrock Edition
+# ==========================================
+# Version Compatibility:
+#   Supported PocketMine-MP API: 5.0.0+
+#   Supported Minecraft Bedrock: 1.20+ through 26.30 (protocol 1001)
+#   NovaProtocol version: 1
+#   Minimum PHP version: 8.1
+# ==========================================
+
+name: NovaChat
+version: 1.0.0
+api: 5.0.0
+main: NovaChat\NovaChatPlugin
+
+author: NovaChat Team
+description: Cross-server chat system for PocketMine-MP servers
+website: https://github.com/nova/novachat
+
+# Supported PocketMine-MP API / Bedrock protocol versions
+# Source: pmmp/BedrockProtocol ProtocolInfo (CURRENT_PROTOCOL=1001, MINECRAFT_VERSION=v26.30)
+# Keep a range of recent protocols so older PMMP 5.x builds still load the plugin.
+mcpe-protocol: [662, 671, 685, 686, 712, 729, 748, 766, 776, 786, 800, 818, 827, 844, 859, 898, 914, 940, 954, 968, 982, 1001]
+
+# Plugin load order
+load: POSTWORLD
+
+# Required extensions
+# Requirements: 8.5 - THE NovaChat-PMMP SHALL 使用 libasyncsocket 或 pmmpthread 实现异步网络通信
+extensions:
+  - sockets
+
+# Plugin permissions
+permissions:
+  novachat.use:
+    description: "Allows basic NovaChat usage"
+    default: true
+  novachat.join:
+    description: "Allows joining channels"
+    default: true
+  novachat.leave:
+    description: "Allows leaving channels"
+    default: true
+  novachat.create:
+    description: "Allows creating private channels"
+    default: op
+  novachat.invite:
+    description: "Allows inviting players to private channels"
+    default: op
+  novachat.admin:
+    description: "Allows administrative commands"
+    default: op
+  novachat.admin.mute:
+    description: "Allows muting players"
+    default: op
+  novachat.admin.kick:
+    description: "Allows kicking players from channels"
+    default: op
+  novachat.admin.announce:
+    description: "Allows sending announcements"
+    default: op
+  novachat.admin.reload:
+    description: "Allows reloading plugin configuration"
+    default: op
+  novachat.debug:
+    description: "Allows toggling debug mode"
+    default: op
+
+# Plugin commands
+commands:
+  novachat:
+    description: "NovaChat main command"
+    usage: "/novachat <subcommand> [args]"
+    aliases: ["nc"]
+    permission: novachat.use

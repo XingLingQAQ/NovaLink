@@ -1,0 +1,182 @@
+plugins {
+    id 'net.minecraftforge.gradle' version '6.0.+'
+    id 'maven-publish'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+// Multi-version build configuration
+// Forge supports Minecraft 1.7.10 through 1.21.x / 26.x
+// Each major version range requires different Forge versions and APIs
+// Version pins as of 2026-07 (Maven: maven.minecraftforge.net)
+ext {
+    // Version configurations for multi-version builds
+    forgeVersions = [
+        // Calendar-line versions (2026+)
+        '26.2': [
+            forgeVersion: '26.2-65.1.0',
+            javaVersion: 21,
+            mappingsChannel: 'official'
+        ],
+        '26.1.2': [
+            forgeVersion: '26.1.2-64.1.0',
+            javaVersion: 21,
+            mappingsChannel: 'official'
+        ],
+        // Modern versions (1.20-1.21) - default build target is 1.21.11
+        '1.21.11': [
+            forgeVersion: '1.21.11-61.1.14',
+            javaVersion: 21,
+            mappingsChannel: 'official'
+        ],
+        '1.21.10': [
+            forgeVersion: '1.21.10-60.1.13',
+            javaVersion: 21,
+            mappingsChannel: 'official'
+        ],
+        '1.21.8': [
+            forgeVersion: '1.21.8-58.1.20',
+            javaVersion: 21,
+            mappingsChannel: 'official'
+        ],
+        '1.21': [
+            forgeVersion: '1.21-51.0.33',
+            javaVersion: 21,
+            mappingsChannel: 'official'
+        ],
+        '1.20.6': [
+            forgeVersion: '1.20.6-50.1.0',
+            javaVersion: 21,
+            mappingsChannel: 'official'
+        ],
+        '1.20.4': [
+            forgeVersion: '1.20.4-49.0.50',
+            javaVersion: 17,
+            mappingsChannel: 'official'
+        ],
+        // Post-flattening versions (1.13-1.19)
+        '1.19.4': [
+            forgeVersion: '1.19.4-45.3.0',
+            javaVersion: 17,
+            mappingsChannel: 'official'
+        ],
+        '1.18.2': [
+            forgeVersion: '1.18.2-40.2.21',
+            javaVersion: 17,
+            mappingsChannel: 'official'
+        ],
+        '1.16.5': [
+            forgeVersion: '1.16.5-36.2.42',
+            javaVersion: 8,
+            mappingsChannel: 'official'
+        ],
+        // Legacy versions (1.7-1.12) - require separate build configuration
+        '1.12.2': [
+            forgeVersion: '1.12.2-14.23.5.2860',
+            javaVersion: 8,
+            mappingsChannel: 'stable',
+            mappingsVersion: '39-1.12'
+        ]
+    ]
+
+    // Current build target (can be overridden via -PmcVersion=1.21.11)
+    targetMcVersion = project.hasProperty('mcVersion') ? project.mcVersion : project(':novachat-mod').ext.minecraftVersion
+    targetConfig = forgeVersions[targetMcVersion] ?: forgeVersions['1.21.11']
+}
+
+repositories {
+    mavenCentral()
+    maven { url 'https://files.minecraftforge.net/maven' }
+    maven { url 'https://maven.architectury.dev/' }
+}
+
+minecraft {
+    if (targetConfig.mappingsChannel == 'stable') {
+        mappings channel: targetConfig.mappingsChannel, version: targetConfig.mappingsVersion
+    } else {
+        mappings channel: targetConfig.mappingsChannel, version: targetMcVersion
+    }
+    
+    runs {
+        server {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                novachat {
+                    source sourceSets.main
+                }
+            }
+        }
+    }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${targetConfig.forgeVersion}"
+    
+    // Common module
+    implementation project(':novachat-mod:common')
+    
+    // Netty (provided by Minecraft)
+    compileOnly "io.netty:netty-all:${project(':novachat-mod').ext.nettyVersion}"
+    
+    // YAML configuration
+    implementation "org.yaml:snakeyaml:${project(':novachat-mod').ext.snakeYamlVersion}"
+    
+    // JSON
+    implementation "com.google.code.gson:gson:${project(':novachat-mod').ext.gsonVersion}"
+    
+    // Logging
+    implementation "org.slf4j:slf4j-api:${project(':novachat-mod').ext.slf4jVersion}"
+    
+    // NovaChat common protocol
+    implementation project(':novachat-common')
+}
+
+jar {
+    archiveClassifier = targetMcVersion
+    
+    manifest {
+        attributes([
+            'Specification-Title': 'NovaChat',
+            'Specification-Vendor': 'NovaChat Team',
+            'Specification-Version': '1',
+            'Implementation-Title': project.name,
+            'Implementation-Version': project.version,
+            'Implementation-Vendor': 'NovaChat Team',
+            'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
+            'Minecraft-Version': targetMcVersion,
+            'Forge-Version': targetConfig.forgeVersion
+        ])
+    }
+}
+
+// Task to build all supported versions
+task buildAllVersions {
+    description = 'Builds NovaChat Forge for all supported Minecraft versions'
+    group = 'build'
+    
+    doLast {
+        println "To build for a specific version, use: ./gradlew :novachat-mod:forge:build -PmcVersion=<version>"
+        println "Supported versions: ${forgeVersions.keySet().join(', ')}"
+    }
+}
+
+// Task to list supported versions
+task listVersions {
+    description = 'Lists all supported Minecraft versions for Forge builds'
+    group = 'help'
+    
+    doLast {
+        println "Supported Minecraft versions for Forge:"
+        forgeVersions.each { mcVer, config ->
+            println "  ${mcVer}: Forge ${config.forgeVersion} (Java ${config.javaVersion})"
+        }
+        println ""
+        println "Current build target: ${targetMcVersion}"
+        println "To change: ./gradlew :novachat-mod:forge:build -PmcVersion=<version>"
+    }
+}

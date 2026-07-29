@@ -1,0 +1,33 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven { url 'https://maven.fabricmc.net/' }
+        maven { url 'https://maven.neoforged.net/releases' }
+        maven { url 'https://maven.quiltmc.org/repository/release' }
+        maven { url 'https://files.minecraftforge.net/maven' }
+    }
+}
+
+rootProject.name = 'nova-parent'
+
+include 'novachat-common'
+include 'novachat-client-core'
+include 'novalink-core'
+include 'novachat-bukkit'
+include 'novachat-velocity'
+include 'novachat-bungee'
+include 'novachat-nukkit'
+// Shared mod sources (version detection, common networking).
+include 'novachat-mod'
+include 'novachat-mod:common'
+// Loader subprojects require fabric-loom 1.17.x which needs Gradle 9.5+
+// (plugin api-version 9.5.0). Root wrapper is still Gradle 8.8 so they are
+// excluded until the wrapper is upgraded; uncomment after upgrading Gradle.
+// include 'novachat-mod:fabric'
+// include 'novachat-mod:neoforge'
+// include 'novachat-mod:quilt'
+// include 'novachat-mod:forge'
+include 'novachat-pnx'
+include 'novachat-multipaper'
+include 'novachat-folia'
+include 'novachat-sponge'

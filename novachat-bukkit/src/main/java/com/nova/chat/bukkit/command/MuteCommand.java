@@ -1,0 +1,134 @@
+package com.nova.chat.bukkit.command;
+
+import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.packets.ChannelActionPacket;
+import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
+
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * Mute command - allows admins to mute players in channels.
+ * 
+ * Requirements: 13
+ */
+public class MuteCommand extends AbstractSubCommand {
+
+    public MuteCommand(NovaChatBukkit plugin) {
+        super(plugin);
+    }
+
+    @Override
+    public String getName() {
+        return "mute";
+    }
+
+    @Override
+    public String getDescription() {
+        return "禁言玩家";
+    }
+
+    @Override
+    public String getUsage() {
+        return "/nc mute <玩家> <时间> [频道ID]";
+    }
+
+    @Override
+    public String getPermission() {
+        return "novachat.mute";
+    }
+
+    @Override
+    public boolean isPlayerOnly() {
+        return false;
+    }
+
+    @Override
+    public boolean execute(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            messageHelper.sendUsage(sender, getUsage());
+            messageHelper.sendSuggestion(sender, "时间格式: 30s(秒), 10m(分钟), 1h(小时), 1d(天)");
+            return true;
+        }
+
+        if (!checkConnection(sender)) {
+            return true;
+        }
+
+        String targetName = args[0];
+        String durationStr = args[1];
+        String channelId = null;
+
+        if (args.length > 2) {
+            channelId = args[2];
+        } else if (sender instanceof Player) {
+            // Use current channel
+            PlayerChannelState state = getPlayerState((Player) sender);
+            if (state != null && state.getActiveChannel() != null) {
+                channelId = state.getActiveChannel();
+            }
+        }
+
+        if (channelId == null) {
+            errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.BAD_REQUEST, 
+                "请指定频道ID");
+            return true;
+        }
+
+        // Parse duration
+        long durationSeconds = parseDuration(durationStr);
+        if (durationSeconds <= 0) {
+            errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.INVALID_DURATION, 
+                "无效的时间格式: " + durationStr, 
+                "时间格式: 30s(秒), 10m(分钟), 1h(小时), 1d(天)");
+            return true;
+        }
+
+        // Check if target player exists
+        Player target = parsePlayer(targetName);
+        if (target == null) {
+            errorHandler.sendPlayerNotFound(sender, targetName);
+            return true;
+        }
+
+        // Create and send mute packet
+        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.MUTE, channelId);
+        if (sender instanceof Player) {
+            packet.addExtra("operatorId", ((Player) sender).getUniqueId().toString());
+        }
+        packet.addExtra("operatorName", sender.getName());
+        packet.addExtra("targetId", target.getUniqueId().toString());
+        packet.addExtra("targetName", target.getName());
+        packet.addExtra("duration", String.valueOf(durationSeconds));
+
+        if (sendPacket(packet)) {
+            messageHelper.sendMessage(sender, "正在禁言 &e" + targetName + " &7在频道 &e" + channelId + " &7持续 &e" + formatDuration(durationSeconds) + "&7...");
+        } else {
+            errorHandler.sendRequestFailed(sender);
+        }
+
+        return true;
+    }
+
+    @Override
+    public List<String> tabComplete(CommandSender sender, String[] args) {
+        if (args.length == 1) {
+            return getOnlinePlayerNames(args[0]);
+        }
+        if (args.length == 2) {
+            return Arrays.asList("30s", "10m", "1h", "1d");
+        }
+        if (args.length == 3) {
+            List<String> known = getKnownChannelIds(args[2]);
+            if (!known.isEmpty()) {
+                return known;
+            }
+            return Arrays.asList("global", "local");
+        }
+        return Collections.emptyList();
+    }
+}

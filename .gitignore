@@ -1,0 +1,35 @@
+# Root gitignore (repo-wide). Keep it minimal and safe.
+
+# Gradle / Java
+.gradle/
+**/build/
+**/out/
+**/.classpath
+**/.project
+**/.settings/
+**/*.iml
+**/*.ipr
+**/*.iws
+
+# IntelliJ / VSCode
+.idea/
+.vscode/
+
+# Node / Vite
+**/node_modules/
+**/dist/
+**/.vite/
+
+# Go
+**/*.exe
+**/*.test
+**/*.out
+
+# Python
+**/__pycache__/
+**/*.pyc
+
+# xmake
+**/.xmake/
+
+

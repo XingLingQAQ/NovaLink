@@ -1,0 +1,635 @@
+# NovaLink Sensitive Word List
+# This file contains common sensitive words for chat filtering
+# Lines starting with # are comments
+# One word per line, case-insensitive matching
+
+# Spam and Scam Related
+spam
+scam
+scammer
+phishing
+fraud
+fraudster
+ponzi
+pyramid
+mlm
+clickbait
+freebie
+giveaway
+winner
+lottery
+prize
+jackpot
+casino
+gambling
+bet
+betting
+wager
+
+# Hacking and Exploits
+hack
+hacker
+hacking
+exploit
+exploiter
+cheat
+cheater
+cheating
+aimbot
+wallhack
+speedhack
+godmode
+duping
+dupe
+glitch
+bug abuse
+injection
+xss
+sql injection
+ddos
+dos attack
+botnet
+malware
+virus
+trojan
+keylogger
+ransomware
+spyware
+rootkit
+backdoor
+cracker
+cracking
+bypass
+crack
+keygen
+warez
+pirate
+piracy
+torrent
+
+# Abuse and Harassment
+abuse
+abuser
+harass
+harassment
+bully
+bullying
+toxic
+toxicity
+troll
+trolling
+grief
+griefer
+griefing
+flame
+flaming
+hate
+hater
+hating
+racist
+racism
+sexist
+sexism
+homophobic
+homophobia
+bigot
+bigotry
+discriminate
+discrimination
+slur
+insult
+offensive
+derogatory
+
+# Profanity (Common)
+damn
+dammit
+hell
+crap
+bastard
+jerk
+idiot
+stupid
+dumb
+moron
+loser
+noob
+newb
+scrub
+trash
+garbage
+worthless
+pathetic
+lame
+suck
+sucks
+sucking
+
+# Violence Related
+kill
+killer
+killing
+murder
+murderer
+death
+die
+dying
+dead
+suicide
+suicidal
+bomb
+bombing
+terrorist
+terrorism
+attack
+assault
+violence
+violent
+threat
+threaten
+threatening
+weapon
+gun
+shoot
+shooting
+stab
+stabbing
+
+# Adult Content Indicators
+adult
+xxx
+porn
+pornography
+nsfw
+explicit
+nude
+naked
+sexual
+sex
+erotic
+fetish
+kinky
+lewd
+obscene
+vulgar
+inappropriate
+
+# Account Security
+password
+passwd
+login
+credential
+account
+steal
+stealing
+stolen
+phish
+social engineering
+impersonate
+impersonation
+fake
+counterfeit
+forgery
+identity theft
+
+# Trading Scams
+trade scam
+item scam
+money scam
+free items
+free money
+doubling
+trimming
+trust trade
+drop trade
+lure
+luring
+bait
+
+# Real Money Trading
+rmt
+real money
+buy gold
+sell gold
+buy account
+sell account
+buy items
+sell items
+cheap gold
+gold seller
+account seller
+boosting
+boost service
+power leveling
+leveling service
+
+# Advertising
+advertisement
+advertise
+advertising
+promo
+promotion
+discount
+sale
+buy now
+click here
+visit
+website
+link
+url
+http
+https
+www
+dot com
+dotcom
+
+# Drugs and Substances
+drug
+drugs
+cocaine
+heroin
+meth
+marijuana
+weed
+cannabis
+lsd
+ecstasy
+mdma
+pill
+pills
+dealer
+dealing
+substance
+narcotic
+overdose
+
+# Alcohol and Tobacco
+alcohol
+drunk
+drinking
+beer
+wine
+vodka
+whiskey
+cigarette
+smoking
+tobacco
+vape
+vaping
+nicotine
+
+# Personal Information
+address
+phone number
+social security
+ssn
+credit card
+bank account
+paypal
+venmo
+cashapp
+bitcoin
+crypto
+wallet
+
+# Inappropriate Behavior
+afk farming
+botting
+macro
+automation
+multiboxing
+account sharing
+ban evasion
+mute evasion
+alt account
+smurf
+smurfing
+
+# Server Disruption
+lag
+lagging
+crash
+crashing
+server crash
+ddos
+denial of service
+flood
+flooding
+spam bot
+chat bot
+
+# Deception
+lie
+lying
+liar
+deceive
+deception
+mislead
+misleading
+false
+fake news
+misinformation
+disinformation
+hoax
+conspiracy
+
+# Negative Behavior
+rage
+raging
+angry
+anger
+mad
+furious
+tantrum
+whine
+whining
+complain
+complaining
+cry
+crying
+quit
+quitting
+ragequit
+
+# Competitive Toxicity
+gg ez
+easy
+noob team
+bad team
+report
+reported
+reporting
+ban
+banned
+banning
+kick
+kicked
+kicking
+mute
+muted
+muting
+
+# Inappropriate Requests
+send pics
+send photo
+send money
+give money
+give items
+free stuff
+handout
+begging
+beg
+beggar
+
+# Miscellaneous Sensitive
+controversial
+political
+religion
+religious
+cult
+extremist
+radical
+fanatic
+propaganda
+brainwash
+indoctrinate
+
+# Gaming Specific
+stream snipe
+stream sniping
+ghosting
+teaming
+collusion
+wintrading
+match fixing
+throwing
+intentional feeding
+inting
+afk
+leaving
+leaver
+disconnect
+dc
+
+# Social Engineering
+pretend
+pretending
+imposter
+impostor
+fake admin
+fake mod
+fake staff
+fake owner
+claim
+claiming
+verify
+verification
+confirm
+confirmation
+
+# Urgency Scams
+urgent
+emergency
+immediately
+right now
+limited time
+act fast
+hurry
+quick
+asap
+deadline
+
+# Financial Scams
+investment
+invest
+profit
+return
+guarantee
+guaranteed
+risk free
+no risk
+double
+triple
+multiply
+compound
+
+# Emotional Manipulation
+please help
+desperate
+need help
+dying
+sick
+hospital
+family
+emergency
+crisis
+disaster
+
+# Technical Exploits
+buffer overflow
+memory leak
+null pointer
+segfault
+stack overflow
+heap overflow
+race condition
+deadlock
+infinite loop
+recursion
+
+# Network Attacks
+man in the middle
+mitm
+packet sniffing
+arp spoofing
+dns spoofing
+ip spoofing
+session hijacking
+cookie stealing
+ssl stripping
+
+# Malicious Software
+adware
+bloatware
+cryptominer
+miner
+mining
+cryptojacking
+browser hijacker
+toolbar
+pup
+potentially unwanted
+
+# Data Theft
+data breach
+leak
+leaked
+dump
+dumped
+database
+credentials
+username
+email
+personal data
+private data
+
+# Bypass Attempts
+filter bypass
+chat filter
+word filter
+ban bypass
+mute bypass
+restriction bypass
+circumvent
+workaround
+evade
+evasion
+
+# Inappropriate Content
+gore
+gory
+graphic
+disturbing
+shocking
+traumatic
+trigger
+triggering
+sensitive content
+mature content
+
+# Harassment Tactics
+doxxing
+dox
+swatting
+swat
+stalking
+stalker
+cyberbullying
+cyberstalking
+revenge
+blackmail
+extortion
+coercion
+
+# Hate Speech Indicators
+supremacy
+supremacist
+inferior
+superior
+master race
+ethnic
+ethnicity
+minority
+majority
+oppression
+oppressor
+
+# Self Harm
+self harm
+cutting
+hurting
+pain
+suffering
+depression
+depressed
+anxiety
+mental health
+suicide hotline
+help line
+
+# Predatory Behavior
+grooming
+predator
+predatory
+minor
+underage
+child
+children
+kid
+kids
+young
+youth
+
+# Conspiracy Terms
+illuminati
+new world order
+nwo
+deep state
+shadow government
+cover up
+coverup
+hidden truth
+wake up
+sheeple
+
+# Extremism
+radicalize
+radicalization
+extremism
+fundamentalist
+militant
+insurgent
+rebel
+rebellion
+revolution
+uprising
+overthrow
+coup
+
+# Additional Gaming Terms
+wallbang
+triggerbot
+spinbot
+rage hack
+silent aim
+no recoil
+no spread
+esp
+radar hack
+skin changer
+inventory hack
+vac ban
+game ban
+trade ban
+community ban
+overwatch ban

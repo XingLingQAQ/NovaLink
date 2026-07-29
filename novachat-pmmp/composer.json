@@ -1,0 +1,41 @@
+{
+    "name": "nova/novachat-pmmp",
+    "description": "NovaChat plugin for PocketMine-MP - Cross-server chat system (Bedrock 1.20+ through 26.30, protocol ≤1001)",
+    "type": "pocketmine-plugin",
+    "license": "MIT",
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "require": {
+        "php": "^8.1",
+        "pocketmine/pocketmine-mp": "^5.0",
+        "ext-sockets": "*"
+    },
+    "require-dev": {
+        "phpstan/phpstan": "^1.10",
+        "phpunit/phpunit": "^10.0",
+        "giorgiosironi/eris": "^1.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "NovaChat\\": "src/NovaChat/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "NovaChat\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "vendor/bin/phpunit",
+        "analyze": "phpstan analyse src --level=8"
+    },
+    "config": {
+        "sort-packages": true,
+        "platform-check": false
+    },
+    "extra": {
+        "pocketmine": {
+            "main": "NovaChat\\NovaChatPlugin"
+        }
+    }
+}

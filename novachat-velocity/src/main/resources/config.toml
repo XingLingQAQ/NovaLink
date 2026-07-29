@@ -1,0 +1,46 @@
+# ==========================================
+# NovaChat Velocity 配置文件
+# ==========================================
+# Version Compatibility:
+#   Supported Velocity versions: 3.0+ (compile target: velocity-api 3.4.0-SNAPSHOT)
+#   NovaProtocol version: 1
+#   Minimum Java version: 17
+# ==========================================
+
+# 后端连接设置
+[backend]
+host = "127.0.0.1"
+port = 8888
+username = ""
+password = ""
+reconnect-delay = 5  # 重连延迟（秒）
+
+# 聊天设置
+[chat]
+replace_vanilla = false  # 是否替换原版聊天
+default_channel = "local"  # 默认频道
+
+# ==========================================
+# 消息格式 (在插件端配置，服主可自定义)
+# ==========================================
+# 可用变量:
+#   {player} - 玩家名称
+#   {display_name} - 玩家显示名称
+#   {channel} - 频道ID
+#   {channel_name} - 频道显示名称
+#   {message} - 消息内容
+#   {server} - 服务器名称
+# ==========================================
+[format]
+prefix = "&8[&bNovaChat&8]&r "
+error = "&c错误: {message}"
+success = "&a成功: {message}"
+default = "&7[{channel_name}] {player}&f: {message}"
+
+# 频道消息格式 (按频道ID配置)
+[format.channels]
+global = "&c[全服] &7{player}&f: {message}"
+local = "&e[本地] &7{player}&f: {message}"
+
+# 调试模式
+debug = false
