@@ -64,7 +64,8 @@ public final class ChannelCommandService {
 
         if (!packetSender.send(packet)) {
             return CommandResult.failure(CommandIntent.JOIN,
-                    "Failed to send JOIN for channel '" + channelId + "'");
+                    "Failed to send JOIN for channel '" + channelId + "'",
+                    "NC-503");
         }
 
         // Optimistic local update after accepted send (mirrors Bukkit JoinCommand).
@@ -99,7 +100,7 @@ public final class ChannelCommandService {
             target = state.getActiveChannel();
         }
         if (target == null || target.isBlank()) {
-            return CommandResult.failure(CommandIntent.LEAVE, "Not in a channel");
+            return CommandResult.failure(CommandIntent.LEAVE, "Not in a channel", "NC-433");
         }
 
         ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.LEAVE, target);
@@ -107,7 +108,8 @@ public final class ChannelCommandService {
 
         if (!packetSender.send(packet)) {
             return CommandResult.failure(CommandIntent.LEAVE,
-                    "Failed to send LEAVE for channel '" + target + "'");
+                    "Failed to send LEAVE for channel '" + target + "'",
+                    "NC-503");
         }
 
         // Optimistic local membership update after accepted send.
