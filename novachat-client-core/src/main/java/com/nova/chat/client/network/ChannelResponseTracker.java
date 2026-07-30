@@ -6,6 +6,7 @@ import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Tracks in-flight {@link ChannelActionPacket}s so the asynchronous
@@ -20,8 +21,9 @@ import java.util.concurrent.ConcurrentMap;
  * response's {@code errorCode} once it arrives.
  *
  * <p>Thread-safe. Entries are best-effort cleaned up on
- * {@link #consume(UUID)}; platforms may periodically call
- * {@link #cleanupExpired(long)} to evict stale entries whose response never
+ * {@link #consume(UUID)} and self-cleaned on {@link #track(ChannelActionPacket)}
+ * every {@link #CLEANUP_INTERVAL} invocations; platforms may also periodically
+ * call {@link #cleanupExpired(long)} to evict stale entries whose response never
  * came. This class is intentionally tiny and holds no futures — it only carries
  * the correlation context, not a wait handle.
  *
@@ -33,6 +35,15 @@ public final class ChannelResponseTracker {
 
     /** Default TTL; matches the Bukkit pending-request window. */
     private static final long DEFAULT_TIMEOUT_MS = 30_000L;
+
+    /**
+     * Every {@code CLEANUP_INTERVAL} {@link #track(ChannelActionPacket)} calls,
+     * {@link #cleanupExpired()} runs to bound map growth without an external
+     * scheduler.
+     */
+    private static final int CLEANUP_INTERVAL = 64;
+
+    private final AtomicInteger trackCount = new AtomicInteger();
 
     /**
      * Records an outgoing channel action for later response correlation.
@@ -66,6 +77,9 @@ public final class ChannelResponseTracker {
         pending.put(requestId, new PendingChannelAction(
                 playerId, channelId, action, previousChannel,
                 operatorName, durationSeconds, System.currentTimeMillis()));
+        if (trackCount.incrementAndGet() % CLEANUP_INTERVAL == 0) {
+            cleanupExpired();
+        }
     }
 
     /**
@@ -91,9 +105,9 @@ public final class ChannelResponseTracker {
      */
     public int cleanupExpired(long timeoutMs) {
         long now = System.currentTimeMillis();
-        int[] removed = {0};
-        pending.entrySet().removeIf(e -> now - e.getValue().createdAtMs > timeoutMs && ++removed[0] > Integer.MIN_VALUE);
-        return removed[0];
+        int before = pending.size();
+        pending.entrySet().removeIf(e -> now - e.getValue().createdAtMs > timeoutMs);
+        return before - pending.size();
     }
 
     /** Convenience overload using the default TTL. */

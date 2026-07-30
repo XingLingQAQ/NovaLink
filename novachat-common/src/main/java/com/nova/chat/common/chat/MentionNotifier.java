@@ -94,7 +94,13 @@ public class MentionNotifier {
         String preview = truncatePreview(message, 100);
         
         return mentionedNames.stream()
-            .map(playerResolver::resolvePlayerUUID)
+            .map(name -> {
+                try {
+                    return playerResolver.resolvePlayerUUID(name);
+                } catch (RuntimeException e) {
+                    return null;
+                }
+            })
             .filter(Objects::nonNull)
             .filter(uuid -> !uuid.equals(mentionerId)) // Don't notify self
             .distinct()
@@ -301,7 +307,8 @@ public class MentionNotifier {
         if (message == null || message.length() <= maxLength) {
             return message;
         }
-        return message.substring(0, maxLength - 3) + "...";
+        int cut = Math.max(0, maxLength - 3);
+        return message.substring(0, cut) + "...";
     }
 
     /**

@@ -74,9 +74,14 @@ public class NetworkClient {
         private final UUID targetId;
         private final String operatorName;
         private final String durationSeconds;
+        // True when the outgoing LEAVE targets the player's current active channel.
+        // Only such a leave optimistically resets the active channel to the default,
+        // so the rollback must key off this flag rather than guessing from the
+        // post-leave active channel value (BUG-H5/M7).
+        private final boolean leavingCurrent;
 
         private PendingRequest(UUID playerId, String kind, String action, String channelId, String previousChannel,
-                               UUID targetId, String operatorName, String durationSeconds) {
+                               UUID targetId, String operatorName, String durationSeconds, boolean leavingCurrent) {
             this.playerId = playerId;
             this.kind = kind;
             this.action = action;
@@ -86,6 +91,11 @@ public class NetworkClient {
             this.targetId = targetId;
             this.operatorName = operatorName;
             this.durationSeconds = durationSeconds;
+            this.leavingCurrent = leavingCurrent;
+        }
+
+        private boolean isLeavingCurrent() {
+            return leavingCurrent;
         }
     }
 
@@ -283,9 +293,19 @@ public class NetworkClient {
             return;
         }
 
-        // Parse on Netty thread, then apply on main thread
-        java.util.Map<String, java.util.List<String>> worldRestricted = extractWorldRestrictedChannels(json);
-        replaceKnownChannels(extractKnownChannelIds(json));
+        // Parse once and feed the parsed root to both extractors. Repeated
+        // JsonParser.parseString for the same payload (BUG-M5) is wasteful on
+        // every ConfigSync, so we parse a single JsonObject here and reuse it.
+        JsonObject root;
+        try {
+            root = JsonParser.parseString(json).getAsJsonObject();
+        } catch (Exception e) {
+            plugin.debug("Failed to parse ConfigSyncPacket JSON: " + e.getMessage());
+            return;
+        }
+
+        java.util.Map<String, java.util.List<String>> worldRestricted = extractWorldRestrictedChannels(root);
+        replaceKnownChannels(extractKnownChannelIds(root));
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             plugin.getWorldMonitor().clearMappings();
             for (var entry : worldRestricted.entrySet()) {
@@ -295,12 +315,10 @@ public class NetworkClient {
         });
     }
 
-    private java.util.Map<String, java.util.List<String>> extractWorldRestrictedChannels(String configJson) {
+    private java.util.Map<String, java.util.List<String>> extractWorldRestrictedChannels(JsonObject root) {
         java.util.Map<String, java.util.List<String>> result = new java.util.HashMap<>();
 
         try {
-            JsonObject root = JsonParser.parseString(configJson).getAsJsonObject();
-
             // Collect template world restrictions (templateId -> allowedWorlds)
             java.util.Map<String, java.util.List<String>> templateAllowedWorlds = new java.util.HashMap<>();
             if (root.has("templates") && root.get("templates").isJsonObject()) {
@@ -410,9 +428,39 @@ public class NetworkClient {
         knownChannelRegistry.replaceAll(channels);
     }
 
-    private java.util.Set<String> extractKnownChannelIds(String configJson) {
+    private java.util.Set<String> extractKnownChannelIds(JsonObject root) {
         String thisClient = plugin.getNovaChatConfig().getUsername();
-        return com.nova.chat.client.channel.ConfigSyncChannels.extract(configJson, thisClient);
+        java.util.Set<String> result = new java.util.HashSet<>();
+
+        // Global channels
+        JsonObject gc = root.getAsJsonObject("global_channels");
+        if (gc != null) {
+            result.addAll(gc.keySet());
+        }
+
+        if (thisClient == null || thisClient.isBlank()) {
+            return result;
+        }
+        if (!root.has("clients") || !root.get("clients").isJsonArray()) {
+            return result;
+        }
+
+        JsonArray clients = root.getAsJsonArray("clients");
+        for (JsonElement element : clients) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject client = element.getAsJsonObject();
+            String username = client.has("username") ? safeString(client.get("username")) : null;
+            if (username == null || !username.equals(thisClient)) {
+                continue;
+            }
+            if (client.has("channels") && client.get("channels").isJsonObject()) {
+                result.addAll(client.getAsJsonObject("channels").keySet());
+            }
+            break;
+        }
+        return result;
     }
 
     private void handleChannelActionResponse(ChannelActionResponsePacket response) {
@@ -695,9 +743,12 @@ public class NetworkClient {
                 }
                 break;
             case LEAVE:
-                // Our optimistic leave changes active channel to default channel.
-                String defaultChannel = plugin.getNovaChatConfig().getDefaultChannel();
-                if (current != null && defaultChannel != null && current.equals(defaultChannel)) {
+                // Only a leave of the current channel optimistically resets the
+                // active channel to default, so only such a pending request can
+                // roll back. Key off the explicit flag (set by LeaveCommand) rather
+                // than guessing from current.equals(defaultChannel), which would
+                // spuriously trigger when a non-current leave fails (BUG-H5/M7).
+                if (pending.isLeavingCurrent()) {
                     plugin.getChatInterceptor().setPlayerChannel(player, pending.previousChannel);
                 }
                 break;
@@ -736,6 +787,17 @@ public class NetworkClient {
             String operatorName = channelActionPacket.getExtra("operatorName");
             String durationSeconds = channelActionPacket.getExtra("duration");
 
+            // BUG-H5/M7: a LEAVE only optimistically resets the active channel to
+            // the default when it targets the player's current channel. LeaveCommand
+            // calls the shared service with channelId == active channel in that case,
+            // and the service sends before clearing membership, so at track time the
+            // state's active channel still equals the leave target. Derive the flag
+            // from that equality rather than a separate extra so we don't have to
+            // thread a new field through the shared client-core service.
+            boolean leavingCurrent = ChannelAction.LEAVE.equals(channelActionPacket.getAction())
+                    && previousChannel != null
+                    && previousChannel.equals(channelActionPacket.getChannelId());
+
             pendingRequests.put(packet.getRequestId(), new PendingRequest(
                     playerId,
                     "channel",
@@ -744,7 +806,8 @@ public class NetworkClient {
                     previousChannel,
                     targetId,
                     operatorName,
-                    durationSeconds
+                    durationSeconds,
+                    leavingCurrent
             ));
             return;
         }
@@ -758,7 +821,8 @@ public class NetworkClient {
                     null,
                     null,
                     null,
-                    null
+                    null,
+                    false
             ));
         }
     }

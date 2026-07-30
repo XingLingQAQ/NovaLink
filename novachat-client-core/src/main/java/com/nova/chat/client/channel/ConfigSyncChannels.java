@@ -44,8 +44,9 @@ public final class ConfigSyncChannels {
             JsonObject root = JsonParser.parseString(configJson).getAsJsonObject();
 
             // Global channels
-            if (root.has("global_channels") && root.get("global_channels").isJsonObject()) {
-                result.addAll(root.getAsJsonObject("global_channels").keySet());
+            JsonObject gc = root.getAsJsonObject("global_channels");
+            if (gc != null) {
+                result.addAll(gc.keySet());
             }
 
             // Per-client channels for this client only

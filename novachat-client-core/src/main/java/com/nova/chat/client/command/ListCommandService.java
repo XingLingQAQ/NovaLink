@@ -55,8 +55,10 @@ public final class ListCommandService {
 
         // Append joined-but-unknown channels so the player's own membership is
         // always reflected even when the backend roster has not caught up.
+        // `known` is a List, so build a Set for O(1) membership here.
+        java.util.Set<String> knownSet = new java.util.HashSet<>(known);
         for (String channelId : joined) {
-            if (!known.contains(channelId)) {
+            if (!knownSet.contains(channelId)) {
                 lines.add(formatLine(channelId, true));
             }
         }
