@@ -3,6 +3,7 @@ package com.nova.chat.velocity.chat;
 import com.nova.chat.client.error.ErrorCode;
 import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.network.ChannelResponseTracker;
+import com.nova.chat.client.format.DurationFormatter;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
@@ -98,16 +99,20 @@ public class ChatListener {
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         plugin.debug("Received channel action response: " + packet);
 
-        // UX-DESIGN §5: KICK/MUTE target-side notification. These responses may
-        // arrive as backend pushes with no local pending request, so resolve the
-        // target from the response's extras rather than the tracker.
-        if (packet.isSuccess() && (packet.getAction() == com.nova.chat.common.protocol.ChannelAction.KICK
-                || packet.getAction() == com.nova.chat.common.protocol.ChannelAction.MUTE)) {
-            notifyKickMuteTarget(packet);
-        }
-
         ChannelResponseTracker tracker = plugin.getNetworkClient().getChannelResponseTracker();
         ChannelResponseTracker.PendingChannelAction pending = tracker.consume(packet.getRequestId());
+
+        // UX-DESIGN §5: KICK/MUTE target-side notification. BUG-H1: the operator
+        // name and mute duration are never echoed on the response, so prefer the
+        // values captured at send time on the pending context. For backend pushes
+        // with no local pending (operator on another server), pending is null and
+        // we fall back to the response extras (which the backend does not write
+        // either, so the "管理员"/"一段时间" fallbacks apply).
+        if (packet.isSuccess() && (packet.getAction() == com.nova.chat.common.protocol.ChannelAction.KICK
+                || packet.getAction() == com.nova.chat.common.protocol.ChannelAction.MUTE)) {
+            notifyKickMuteTarget(packet, pending);
+        }
+
         if (pending == null || pending.getPlayerId() == null) {
             // No correlation context (e.g. console-issued or already expired) — nothing to render.
             return;
@@ -186,8 +191,15 @@ public class ChatListener {
      * (UX-DESIGN §5). Proxy has no reliable action bar, so the notice is a
      * title plus a chat-message reinforcement. Falls back silently when the
      * target is offline or the response lacks the {@code targetId} extra.
+     *
+     * <p>BUG-H1: the operator name and mute duration are read from the pending
+     * context captured at send time (the backend never echoes them); the
+     * response extras are only consulted as a fallback for backend pushes with
+     * no local pending (operator on another server), in which case the
+     * "管理员"/"一段时间" fallbacks intentionally apply.
      */
-    private void notifyKickMuteTarget(ChannelActionResponsePacket packet) {
+    private void notifyKickMuteTarget(ChannelActionResponsePacket packet,
+                                      ChannelResponseTracker.PendingChannelAction pending) {
         String targetIdRaw = packet.getExtra("targetId");
         if (targetIdRaw == null || targetIdRaw.isEmpty()) {
             plugin.debug("KICK/MUTE response without targetId extra — cannot notify target: " + packet);
@@ -202,7 +214,10 @@ public class ChatListener {
         }
         plugin.getServer().getPlayer(targetId).ifPresent(target -> {
             String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
-            String operator = packet.getExtra("operatorName");
+            String operator = pending != null ? pending.getOperatorName() : null;
+            if (operator == null || operator.isEmpty()) {
+                operator = packet.getExtra("operatorName");
+            }
             if (operator == null || operator.isEmpty()) {
                 operator = "管理员";
             }
@@ -225,7 +240,7 @@ public class ChatListener {
                 return;
             }
             // MUTE
-            String durationText = formatDurationExtra(packet.getExtra("duration"));
+            String durationText = resolveDurationText(packet, pending);
             Component title = Component.text("你已被禁言", NamedTextColor.RED);
             Component subtitle = Component.text()
                     .append(Component.text("在频道 ", NamedTextColor.GRAY))
@@ -243,25 +258,19 @@ public class ChatListener {
         });
     }
 
-    /** Formats a duration given as a seconds string, or "一段时间" if unknown. */
-    private String formatDurationExtra(String durationSeconds) {
-        if (durationSeconds == null || durationSeconds.isEmpty()) {
-            return "一段时间";
+    /**
+     * Resolves the mute duration text for the target notice (BUG-H1). Prefers
+     * the seconds value captured at send time on the pending context; falls back
+     * to the response {@code duration} extra (seconds) for backend pushes with
+     * no local pending; finally falls back to {@code "一段时间"}.
+     */
+    private String resolveDurationText(ChannelActionResponsePacket packet,
+                                       ChannelResponseTracker.PendingChannelAction pending) {
+        String seconds = pending != null ? pending.getDurationSeconds() : null;
+        if (seconds == null || seconds.isEmpty()) {
+            seconds = packet.getExtra("duration");
         }
-        try {
-            long seconds = Long.parseLong(durationSeconds);
-            if (seconds < 60) {
-                return seconds + "秒";
-            } else if (seconds < 3600) {
-                return (seconds / 60) + "分钟";
-            } else if (seconds < 86400) {
-                return (seconds / 3600) + "小时";
-            } else {
-                return (seconds / 86400) + "天";
-            }
-        } catch (NumberFormatException e) {
-            return "一段时间";
-        }
+        return DurationFormatter.formatSeconds(seconds);
     }
     
     /**

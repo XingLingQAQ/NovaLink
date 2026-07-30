@@ -3,6 +3,7 @@ package com.nova.chat.nukkit.chat;
 import com.nova.chat.client.error.ErrorCode;
 import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.network.ChannelResponseTracker;
+import com.nova.chat.client.format.DurationFormatter;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 
@@ -93,16 +94,20 @@ public class ChatInterceptor implements Listener {
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         plugin.debug("Received channel action response: " + packet);
 
-        // UX-DESIGN §5: KICK/MUTE target-side notification. These responses may
-        // arrive as backend pushes with no local pending request, so resolve the
-        // target from the response's extras rather than the tracker.
-        if (packet.isSuccess() && (packet.getAction() == ChannelAction.KICK
-                || packet.getAction() == ChannelAction.MUTE)) {
-            notifyKickMuteTarget(packet);
-        }
-
         ChannelResponseTracker tracker = plugin.getNetworkClient().getChannelResponseTracker();
         ChannelResponseTracker.PendingChannelAction pending = tracker.consume(packet.getRequestId());
+
+        // UX-DESIGN §5: KICK/MUTE target-side notification. BUG-H1: the operator
+        // name and mute duration are never echoed on the response, so prefer the
+        // values captured at send time on the pending context. For backend pushes
+        // with no local pending (operator on another server), pending is null and
+        // we fall back to the response extras (which the backend does not write
+        // either, so the "管理员"/"一段时间" fallbacks apply).
+        if (packet.isSuccess() && (packet.getAction() == ChannelAction.KICK
+                || packet.getAction() == ChannelAction.MUTE)) {
+            notifyKickMuteTarget(packet, pending);
+        }
+
         if (pending == null || pending.getPlayerId() == null) {
             return;
         }
@@ -178,8 +183,16 @@ public class ChatInterceptor implements Listener {
      * (UX-DESIGN §5). Runs on the Nukkit main thread for safe player lookup.
      * Falls back to a chat message when the target cannot be resolved or the
      * response lacks the {@code targetId} extra (TODO logged).
+     *
+     * <p>BUG-H1: the operator name and mute duration are read from the pending
+     * context captured at send time (the backend never echoes them); the
+     * response extras are only consulted as a fallback for backend pushes with
+     * no local pending (operator on another server), in which case the
+     * "管理员"/"一段时间" fallbacks intentionally apply. Resolved before the
+     * scheduler hop so the lambda captures plain strings.
      */
-    private void notifyKickMuteTarget(ChannelActionResponsePacket packet) {
+    private void notifyKickMuteTarget(ChannelActionResponsePacket packet,
+                                      ChannelResponseTracker.PendingChannelAction pending) {
         String targetIdRaw = packet.getExtra("targetId");
         if (targetIdRaw == null || targetIdRaw.isEmpty()) {
             plugin.debug("KICK/MUTE response without targetId extra — cannot notify target: " + packet);
@@ -192,6 +205,19 @@ public class ChatInterceptor implements Listener {
             plugin.debug("KICK/MUTE response has invalid targetId: " + targetIdRaw);
             return;
         }
+        String operator = pending != null ? pending.getOperatorName() : null;
+        if (operator == null || operator.isEmpty()) {
+            operator = packet.getExtra("operatorName");
+        }
+        if (operator == null || operator.isEmpty()) {
+            operator = "管理员";
+        }
+        String durationSeconds = pending != null ? pending.getDurationSeconds() : null;
+        if (durationSeconds == null || durationSeconds.isEmpty()) {
+            durationSeconds = packet.getExtra("duration");
+        }
+        final String operatorResolved = operator;
+        final String durationText = DurationFormatter.formatSeconds(durationSeconds);
 
         plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
             Player target = plugin.getServer().getPlayer(targetId).orElse(null);
@@ -199,22 +225,17 @@ public class ChatInterceptor implements Listener {
                 return; // not on this server
             }
             String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
-            String operator = packet.getExtra("operatorName");
-            if (operator == null || operator.isEmpty()) {
-                operator = "管理员";
-            }
             if (packet.getAction() == ChannelAction.KICK) {
                 String title = messageFormatter.translateColorCodes("&c你已被踢出频道");
                 String subtitle = messageFormatter.translateColorCodes(
-                        "&7被 &e" + operator + " &7踢出频道 &b" + channelId);
+                        "&7被 &e" + operatorResolved + " &7踢出频道 &b" + channelId);
                 target.sendTitle(title, subtitle,
                         MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
                 target.sendActionBar(messageFormatter.translateColorCodes(
-                        "&c你已被 " + operator + " 踢出频道 " + channelId));
+                        "&c你已被 " + operatorResolved + " 踢出频道 " + channelId));
                 return;
             }
             // MUTE
-            String durationText = formatDurationExtra(packet.getExtra("duration"));
             String title = messageFormatter.translateColorCodes("&c你已被禁言");
             String subtitle = messageFormatter.translateColorCodes(
                     "&7在频道 &b" + channelId + " &7持续 &e" + durationText);
@@ -223,27 +244,6 @@ public class ChatInterceptor implements Listener {
             target.sendActionBar(messageFormatter.translateColorCodes(
                     "&c你已被禁言 " + durationText + "（频道 " + channelId + "）"));
         });
-    }
-
-    /** Formats a duration given as a seconds string, or "一段时间" if unknown. */
-    private String formatDurationExtra(String durationSeconds) {
-        if (durationSeconds == null || durationSeconds.isEmpty()) {
-            return "一段时间";
-        }
-        try {
-            long seconds = Long.parseLong(durationSeconds);
-            if (seconds < 60) {
-                return seconds + "秒";
-            } else if (seconds < 3600) {
-                return (seconds / 60) + "分钟";
-            } else if (seconds < 86400) {
-                return (seconds / 3600) + "小时";
-            } else {
-                return (seconds / 86400) + "天";
-            }
-        } catch (NumberFormatException e) {
-            return "一段时间";
-        }
     }
 
     /**

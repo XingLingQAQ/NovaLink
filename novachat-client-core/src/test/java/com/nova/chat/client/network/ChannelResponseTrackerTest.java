@@ -32,6 +32,36 @@ class ChannelResponseTrackerTest {
         assertThat(tracker.consume(packet.getRequestId())).isNull();
     }
 
+    @DisplayName("captures operatorName and duration extras for KICK/MUTE (BUG-H1)")
+    @Test
+    void capturesOperatorAndDurationExtras() {
+        ChannelResponseTracker tracker = new ChannelResponseTracker();
+        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.MUTE, "global");
+        packet.addExtra("operatorName", "Alice");
+        packet.addExtra("duration", "120");
+
+        tracker.track(packet);
+
+        ChannelResponseTracker.PendingChannelAction pending = tracker.consume(packet.getRequestId());
+        assertThat(pending).isNotNull();
+        assertThat(pending.getOperatorName()).isEqualTo("Alice");
+        assertThat(pending.getDurationSeconds()).isEqualTo("120");
+    }
+
+    @DisplayName("leaves operatorName and duration null when not stamped")
+    @Test
+    void leavesOperatorAndDurationNullWhenAbsent() {
+        ChannelResponseTracker tracker = new ChannelResponseTracker();
+        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.KICK, "global");
+
+        tracker.track(packet);
+
+        ChannelResponseTracker.PendingChannelAction pending = tracker.consume(packet.getRequestId());
+        assertThat(pending).isNotNull();
+        assertThat(pending.getOperatorName()).isNull();
+        assertThat(pending.getDurationSeconds()).isNull();
+    }
+
     @DisplayName("returns null when no playerId extra was attached")
     @Test
     void returnsNullPlayerIdWhenNoExtra() {

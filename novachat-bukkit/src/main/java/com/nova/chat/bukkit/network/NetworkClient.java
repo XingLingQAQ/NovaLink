@@ -9,6 +9,7 @@ import com.nova.chat.bukkit.config.NovaChatConfig;
 import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.client.network.ClientLogger;
 import com.nova.chat.client.network.CoreNetworkClient;
+import com.nova.chat.client.format.DurationFormatter;
 import com.nova.chat.client.network.SchedulerBridge;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
@@ -576,23 +577,7 @@ public class NetworkClient {
 
     /** Formats a duration given as a seconds string, or "一段时间" if unknown. */
     private String formatTrackedDuration(String durationSeconds) {
-        if (durationSeconds == null || durationSeconds.isEmpty()) {
-            return "一段时间";
-        }
-        try {
-            long seconds = Long.parseLong(durationSeconds);
-            if (seconds < 60) {
-                return seconds + "秒";
-            } else if (seconds < 3600) {
-                return (seconds / 60) + "分钟";
-            } else if (seconds < 86400) {
-                return (seconds / 3600) + "小时";
-            } else {
-                return (seconds / 86400) + "天";
-            }
-        } catch (NumberFormatException e) {
-            return "一段时间";
-        }
+        return DurationFormatter.formatSeconds(durationSeconds);
     }
 
     /**

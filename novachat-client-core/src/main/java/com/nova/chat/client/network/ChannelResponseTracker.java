@@ -55,8 +55,17 @@ public final class ChannelResponseTracker {
         // ChannelCommandService.join so the response handler can roll back the
         // optimistic active-channel switch when the backend rejects the JOIN.
         String previousChannel = packet.getExtra("previousChannel");
+        // BUG-H1: KICK/MUTE target-side notification needs the operator display
+        // name and the mute duration. The backend never echoes these on the
+        // response, so capture them here from the request packet extras (set by
+        // the platform KickCommand/MuteCommand) and hand them back via the
+        // pending context when the response arrives. The duration extra is
+        // seconds (matches bukkit MuteCommand's "duration" key).
+        String operatorName = packet.getExtra("operatorName");
+        String durationSeconds = packet.getExtra("duration");
         pending.put(requestId, new PendingChannelAction(
-                playerId, channelId, action, previousChannel, System.currentTimeMillis()));
+                playerId, channelId, action, previousChannel,
+                operatorName, durationSeconds, System.currentTimeMillis()));
     }
 
     /**
@@ -115,14 +124,19 @@ public final class ChannelResponseTracker {
         private final String channelId;
         private final ChannelAction action;
         private final String previousChannel;
+        private final String operatorName;
+        private final String durationSeconds;
         private final long createdAtMs;
 
         private PendingChannelAction(UUID playerId, String channelId, ChannelAction action,
-                                     String previousChannel, long createdAtMs) {
+                                     String previousChannel, String operatorName,
+                                     String durationSeconds, long createdAtMs) {
             this.playerId = playerId;
             this.channelId = channelId;
             this.action = action;
             this.previousChannel = previousChannel;
+            this.operatorName = operatorName;
+            this.durationSeconds = durationSeconds;
             this.createdAtMs = createdAtMs;
         }
 
@@ -150,6 +164,28 @@ public final class ChannelResponseTracker {
          */
         public String getPreviousChannel() {
             return previousChannel;
+        }
+
+        /**
+         * @return the display name of the operator who issued the action (set by
+         *         the platform KickCommand/MuteCommand on the request packet), or
+         *         {@code null} if the originating command did not stamp one. Used
+         *         by KICK/MUTE target-side notifications because the backend never
+         *         echoes {@code operatorName} on the response.
+         */
+        public String getOperatorName() {
+            return operatorName;
+        }
+
+        /**
+         * @return the mute duration as a seconds string (matches the bukkit
+         *         MuteCommand {@code "duration"} extra key), or {@code null} if
+         *         the originating command did not stamp one. Used by MUTE
+         *         target-side notifications because the backend only writes
+         *         {@code durationMs} (and never seconds) on the response.
+         */
+        public String getDurationSeconds() {
+            return durationSeconds;
         }
 
         /** @return wall-clock creation time in ms */
