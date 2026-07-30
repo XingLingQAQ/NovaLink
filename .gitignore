@@ -2,6 +2,7 @@
 
 # Gradle / Java
 .gradle/
+.gradle-agent-*/
 **/build/
 **/out/
 **/.classpath
