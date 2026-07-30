@@ -10,6 +10,9 @@ import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.client.network.ClientLogger;
 import com.nova.chat.client.network.CoreNetworkClient;
 import com.nova.chat.client.network.SchedulerBridge;
+import com.nova.chat.client.state.ChatMode;
+import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketRegistry;
 import com.nova.chat.common.protocol.PlatformType;
@@ -18,7 +21,11 @@ import com.nova.chat.common.protocol.packets.AdminActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ConfigSyncPacket;
+import com.nova.chat.common.protocol.packets.MentionPacket;
 import com.nova.chat.common.protocol.packets.TitlePacket;
+
+import net.md_5.bungee.api.ChatMessageType;
+import net.md_5.bungee.api.chat.TextComponent;
 
 import java.util.Map;
 import java.util.UUID;
@@ -49,8 +56,8 @@ public class NetworkClient {
     private final Map<UUID, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
     private static final long REQUEST_TIMEOUT_MS = 30_000;
 
-    /** Known channel IDs from backend ConfigSync (used for tab completion UX). */
-    private final java.util.Set<String> knownChannelIds = ConcurrentHashMap.newKeySet();
+    /** Shared known-channel registry (populated from ConfigSync, UX-DESIGN §2.1). */
+    private final com.nova.chat.client.channel.KnownChannelRegistry knownChannelRegistry;
 
     private static final class PendingRequest {
         private final UUID playerId;
@@ -59,14 +66,25 @@ public class NetworkClient {
         private final String channelId;
         private final String previousChannel;
         private final long createdAt;
+        // UX-DESIGN §5: target-side notification correlation for KICK/MUTE.
+        // The backend's ChannelActionResponsePacket does not echo these, so we
+        // stash them from the outgoing request to render a personalized notice to
+        // the kicked/muted player once the response comes back.
+        private final UUID targetId;
+        private final String operatorName;
+        private final String durationSeconds;
 
-        private PendingRequest(UUID playerId, String kind, String action, String channelId, String previousChannel) {
+        private PendingRequest(UUID playerId, String kind, String action, String channelId, String previousChannel,
+                               UUID targetId, String operatorName, String durationSeconds) {
             this.playerId = playerId;
             this.kind = kind;
             this.action = action;
             this.channelId = channelId;
             this.previousChannel = previousChannel;
             this.createdAt = System.currentTimeMillis();
+            this.targetId = targetId;
+            this.operatorName = operatorName;
+            this.durationSeconds = durationSeconds;
         }
     }
 
@@ -76,8 +94,10 @@ public class NetworkClient {
      * @param plugin the plugin instance
      * @param config the plugin configuration
      */
-    public NetworkClient(NovaChatBukkit plugin, NovaChatConfig config) {
+    public NetworkClient(NovaChatBukkit plugin, NovaChatConfig config,
+                         com.nova.chat.client.channel.KnownChannelRegistry knownChannelRegistry) {
         this.plugin = plugin;
+        this.knownChannelRegistry = java.util.Objects.requireNonNull(knownChannelRegistry, "knownChannelRegistry");
         ClientConnectionConfig connectionConfig = config.toClientConnectionConfig();
         SchedulerBridge scheduler = new BukkitSchedulerBridge(plugin);
         ClientLogger logger = new BukkitClientLogger(plugin);
@@ -96,6 +116,7 @@ public class NetworkClient {
         core.registerHandler(ConfigSyncPacket.class, this::handleConfigSync);
         core.registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
         core.registerHandler(AdminActionResponsePacket.class, this::handleAdminActionResponse);
+        core.registerHandler(MentionPacket.class, this::handleMention);
     }
 
     /**
@@ -171,7 +192,7 @@ public class NetworkClient {
      * @return an unmodifiable view of the known channel IDs
      */
     public java.util.Set<String> getKnownChannelIds() {
-        return java.util.Collections.unmodifiableSet(knownChannelIds);
+        return knownChannelRegistry.getAll();
     }
 
     // --- Bukkit-specific handlers ---
@@ -203,6 +224,56 @@ public class NetworkClient {
                 plugin.debug("Failed to handle TitlePacket: " + e.getMessage(), e);
             }
         });
+    }
+
+    /**
+     * Handles a mention notification packet by playing a sound and showing a
+     * title to the mentioned player (UX-DESIGN §4.1, Requirements 11.2).
+     *
+     * <p>The mentioned player must be online on this server; packets for
+     * players on other servers are expected to be routed there by the backend.
+     */
+    private void handleMention(MentionPacket packet) {
+        // Must run on main thread for Bukkit API
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            try {
+                UUID mentionedId = packet.getMentionedId();
+                if (mentionedId == null) {
+                    return;
+                }
+                org.bukkit.entity.Player player = plugin.getServer().getPlayer(mentionedId);
+                if (player == null) {
+                    return; // not on this server
+                }
+
+                var formatter = plugin.getChatInterceptor().getMessageFormatter();
+                String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
+                String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+                String title = formatter.translateColorCodes("&e" + mentioner);
+                String subtitle = formatter.translateColorCodes(
+                        "&7在频道 &b" + channelId + " &7提到了你");
+
+                player.sendTitle(title, subtitle,
+                        com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN,
+                        com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY,
+                        com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT);
+
+                playMentionSound(player);
+            } catch (Exception e) {
+                plugin.debug("Failed to handle MentionPacket: " + e.getMessage(), e);
+            }
+        });
+    }
+
+    /**
+     * Plays the default mention notification sound to a player.
+     */
+    private void playMentionSound(org.bukkit.entity.Player player) {
+        // The common DEFAULT_SOUND constant names the ENTITY_EXPERIENCE_ORB_PICKUP
+        // enum, which we resolve directly here to avoid the deprecated
+        // Sound.valueOf(String) removal API.
+        player.playSound(player.getLocation(),
+                org.bukkit.Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
     }
 
     private void handleConfigSync(ConfigSyncPacket packet) {
@@ -335,57 +406,12 @@ public class NetworkClient {
     }
 
     private void replaceKnownChannels(java.util.Set<String> channels) {
-        knownChannelIds.clear();
-        if (channels != null) {
-            knownChannelIds.addAll(channels);
-        }
+        knownChannelRegistry.replaceAll(channels);
     }
 
     private java.util.Set<String> extractKnownChannelIds(String configJson) {
-        java.util.Set<String> result = new java.util.HashSet<>();
-
-        try {
-            JsonObject root = JsonParser.parseString(configJson).getAsJsonObject();
-
-            // Global channels
-            if (root.has("global_channels") && root.get("global_channels").isJsonObject()) {
-                JsonObject globals = root.getAsJsonObject("global_channels");
-                result.addAll(globals.keySet());
-            }
-
-            // Client channels (only for this server instance)
-            String thisClient = plugin.getNovaChatConfig().getUsername();
-            if (thisClient == null || thisClient.isBlank()) {
-                return result;
-            }
-
-            if (!root.has("clients") || !root.get("clients").isJsonArray()) {
-                return result;
-            }
-
-            JsonArray clients = root.getAsJsonArray("clients");
-            for (JsonElement element : clients) {
-                if (!element.isJsonObject()) {
-                    continue;
-                }
-                JsonObject client = element.getAsJsonObject();
-                String username = client.has("username") ? safeString(client.get("username")) : null;
-                if (username == null || !username.equals(thisClient)) {
-                    continue;
-                }
-
-                if (client.has("channels") && client.get("channels").isJsonObject()) {
-                    JsonObject channels = client.getAsJsonObject("channels");
-                    result.addAll(channels.keySet());
-                }
-                break;
-            }
-
-        } catch (Exception e) {
-            // ignore, best-effort cache
-        }
-
-        return result;
+        String thisClient = plugin.getNovaChatConfig().getUsername();
+        return com.nova.chat.client.channel.ConfigSyncChannels.extract(configJson, thisClient);
     }
 
     private void handleChannelActionResponse(ChannelActionResponsePacket response) {
@@ -414,6 +440,11 @@ public class NetworkClient {
 
                 // Apply local side-effects for actions that should change active channel or display extra info
                 applyChannelActionSuccessSideEffects(player, response);
+
+                // UX-DESIGN §5: KICK/MUTE target-side notification. The operator's
+                // "踢出/禁言请求已处理" confirmation stays untouched above; this only
+                // adds a personalized notice to the kicked/muted player themselves.
+                notifyKickMuteTarget(response, pending);
                 return;
             }
 
@@ -438,6 +469,17 @@ public class NetworkClient {
         }
 
         switch (response.getAction()) {
+            case JOIN: {
+                // §7: flash the active channel + current mode on the action bar.
+                sendChannelActionBar(player);
+                break;
+            }
+            case LEAVE: {
+                // §7: after a successful leave the active channel is the default;
+                // flash the action bar so the player sees where they landed.
+                sendChannelActionBar(player);
+                break;
+            }
             case CREATE: {
                 String channelId = response.getChannelId();
                 if (channelId != null && !channelId.isEmpty()) {
@@ -471,6 +513,104 @@ public class NetworkClient {
             default:
                 break;
         }
+    }
+
+    /**
+     * Notifies the kicked/muted player directly (UX-DESIGN §5).
+     *
+     * <p>Must run on the main thread (the caller already hops there). If the target
+     * is offline or on another server there is nothing to do here; the backend is
+     * expected to route the notice to the server hosting the target. Falls back to
+     * the request's tracked {@code operatorName}/{@code duration} since the response
+     * packet does not echo them.
+     */
+    private void notifyKickMuteTarget(ChannelActionResponsePacket response, PendingRequest pending) {
+        if (response.getAction() == null) {
+            return;
+        }
+        if (response.getAction() != ChannelAction.KICK && response.getAction() != ChannelAction.MUTE) {
+            return;
+        }
+        if (pending.targetId == null) {
+            return;
+        }
+        org.bukkit.entity.Player target = plugin.getServer().getPlayer(pending.targetId);
+        if (target == null) {
+            return; // not on this server
+        }
+
+        String channelId = response.getChannelId() != null && !response.getChannelId().isEmpty()
+                ? response.getChannelId()
+                : pending.channelId;
+        String operator = pending.operatorName != null && !pending.operatorName.isEmpty()
+                ? pending.operatorName
+                : "管理员";
+
+        if (response.getAction() == ChannelAction.KICK) {
+            String title = com.nova.chat.bukkit.command.MessageHelper.colorize("&c你已被踢出频道");
+            String subtitle = com.nova.chat.bukkit.command.MessageHelper.colorize(
+                    "&7被 &e" + operator + " &7踢出频道 &b" + channelId);
+            target.sendTitle(title, subtitle,
+                    com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN,
+                    com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY,
+                    com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT);
+            target.spigot().sendMessage(ChatMessageType.ACTION_BAR,
+                    new TextComponent(com.nova.chat.bukkit.command.MessageHelper.colorize(
+                            "&c你已被 " + operator + " 踢出频道 " + channelId)));
+            return;
+        }
+
+        // MUTE
+        String durationText = formatTrackedDuration(pending.durationSeconds);
+        String title = com.nova.chat.bukkit.command.MessageHelper.colorize("&c你已被禁言");
+        String subtitle = com.nova.chat.bukkit.command.MessageHelper.colorize(
+                "&7在频道 &b" + channelId + " &7持续 &e" + durationText);
+        target.sendTitle(title, subtitle,
+                com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN,
+                com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY,
+                com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT);
+        target.spigot().sendMessage(ChatMessageType.ACTION_BAR,
+                new TextComponent(com.nova.chat.bukkit.command.MessageHelper.colorize(
+                        "&c你已被禁言 " + durationText + "（频道 " + channelId + "）")));
+    }
+
+    /** Formats a duration given as a seconds string, or "一段时间" if unknown. */
+    private String formatTrackedDuration(String durationSeconds) {
+        if (durationSeconds == null || durationSeconds.isEmpty()) {
+            return "一段时间";
+        }
+        try {
+            long seconds = Long.parseLong(durationSeconds);
+            if (seconds < 60) {
+                return seconds + "秒";
+            } else if (seconds < 3600) {
+                return (seconds / 60) + "分钟";
+            } else if (seconds < 86400) {
+                return (seconds / 3600) + "小时";
+            } else {
+                return (seconds / 86400) + "天";
+            }
+        } catch (NumberFormatException e) {
+            return "一段时间";
+        }
+    }
+
+    /**
+     * Flashes a one-shot action bar with the player's current channel and chat
+     * mode after a successful join/leave (UX-DESIGN §7). Vanilla action-bar
+     * fade handles the ~3s dismissal; no polling.
+     */
+    private void sendChannelActionBar(org.bukkit.entity.Player player) {
+        PlayerChannelState state = plugin.getChatInterceptor().getState(player.getUniqueId());
+        String channelId = (state != null) ? state.getActiveChannel() : null;
+        if (channelId == null || channelId.isEmpty()) {
+            return;
+        }
+        ChatMode mode = (state != null) ? state.getChatMode() : null;
+        String modeName = (mode == ChatMode.REPLACE) ? "频道模式" : "混合模式";
+        String text = com.nova.chat.bukkit.command.MessageHelper.colorize(
+                "&7当前频道：&b" + channelId + " &7（" + modeName + "）");
+        player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(text));
     }
 
     private void handleAdminActionResponse(AdminActionResponsePacket response) {
@@ -604,12 +744,22 @@ public class NetworkClient {
                 }
             }
 
+            // UX-DESIGN §5: KICK/MUTE target-side notification needs target id +
+            // operator display name + mute duration. These travel on the request
+            // packet's extras (set by KickCommand/MuteCommand), not on the response.
+            UUID targetId = extractUuid(channelActionPacket.getExtra("targetId"));
+            String operatorName = channelActionPacket.getExtra("operatorName");
+            String durationSeconds = channelActionPacket.getExtra("duration");
+
             pendingRequests.put(packet.getRequestId(), new PendingRequest(
                     playerId,
                     "channel",
                     channelActionPacket.getAction() != null ? channelActionPacket.getAction().name() : "UNKNOWN",
                     channelActionPacket.getChannelId(),
-                    previousChannel
+                    previousChannel,
+                    targetId,
+                    operatorName,
+                    durationSeconds
             ));
             return;
         }
@@ -620,6 +770,9 @@ public class NetworkClient {
                     "admin",
                     adminActionPacket.getAction() != null ? adminActionPacket.getAction().name() : "UNKNOWN",
                     adminActionPacket.getTarget(),
+                    null,
+                    null,
+                    null,
                     null
             ));
         }

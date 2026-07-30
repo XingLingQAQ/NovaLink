@@ -91,7 +91,13 @@ public class JoinCommand extends AbstractSubCommand {
 
     @Override
     public List<String> tabComplete(CommandSender sender, String[] args) {
+        // UX-DESIGN §2.3: join <Tab> completes from the shared KnownChannelRegistry,
+        // falling back to global/local when the backend has not pushed a roster yet.
         if (args.length == 1) {
+            List<String> known = getKnownChannelIds(args[0]);
+            if (!known.isEmpty()) {
+                return known;
+            }
             return Arrays.asList("global", "local");
         }
         return Collections.emptyList();

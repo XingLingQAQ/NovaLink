@@ -69,8 +69,10 @@ public class JoinCommand extends AbstractSubCommand {
         CommandResult result = channelCommands.join(state, channelId, null, player.getName());
 
         if (result.isSuccess()) {
-            // Match previous PNX UX ("已加入频道") rather than service English text.
-            sendSuccess(sender, "已加入频道: " + channelId);
+            // §7: optimistic "joining…" receipt; the async ChannelActionResponsePacket
+            // handler confirms with "已加入频道 X" once the backend accepts, or
+            // surfaces an actionable error if it rejects.
+            sendSuccess(sender, "正在加入频道 " + channelId + "...");
             plugin.debug("Player " + player.getName() + " joined channel: " + channelId);
         } else {
             // Actionable error via shared ErrorCode system (NC-503 network failure here).
@@ -85,9 +87,14 @@ public class JoinCommand extends AbstractSubCommand {
 
     @Override
     public List<String> tabComplete(CommandSender sender, String[] args) {
+        // UX-DESIGN §2.3: join <Tab> completes from the shared KnownChannelRegistry,
+        // falling back to global/local when the backend has not pushed a roster yet.
         if (args.length == 1) {
-            // Return common channel names
-            return List.of("global", "local", "pvp", "resource");
+            List<String> known = getKnownChannelIds(args[0]);
+            if (!known.isEmpty()) {
+                return known;
+            }
+            return java.util.Arrays.asList("global", "local");
         }
         return List.of();
     }

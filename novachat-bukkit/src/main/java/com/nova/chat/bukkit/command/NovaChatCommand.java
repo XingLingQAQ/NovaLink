@@ -36,6 +36,7 @@ public class NovaChatCommand implements CommandExecutor, TabCompleter {
         subCommands.put("help", new HelpCommand(plugin, this));
         subCommands.put("join", new JoinCommand(plugin));
         subCommands.put("leave", new LeaveCommand(plugin));
+        subCommands.put("list", new ListCommand(plugin));
         subCommands.put("create", new CreateCommand(plugin));
         subCommands.put("invite", new InviteCommand(plugin));
         subCommands.put("accept", new AcceptCommand(plugin));

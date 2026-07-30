@@ -2,35 +2,54 @@ package com.nova.chat.common.chat;
 
 import com.nova.chat.common.protocol.packets.MentionPacket;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
  * Handles mention notification logic for the NovaChat system.
- * 
+ *
  * This class provides the core logic for processing mentions and creating
  * notification packets. Platform-specific implementations should use this
  * class and implement the actual notification delivery (sound, title, etc.).
- * 
+ *
  * Requirements: 11.2 - When a player is mentioned, the system SHALL send
  * sound/title notifications to the mentioned player.
  */
 public class MentionNotifier {
 
     private final MentionParser parser;
-    
+
+    /**
+     * Minimum interval (milliseconds) between duplicate notifications to the
+     * same mentioned player from the same mentioner. Within this window, only
+     * the first notification is emitted; subsequent ones are suppressed to avoid
+     * spamming the recipient (UX-DESIGN §4.2).
+     */
+    public static final long DEDUP_INTERVAL_MS = 3_000L;
+
     /** Default sound for mention notifications */
     public static final String DEFAULT_SOUND = "ENTITY_EXPERIENCE_ORB_PICKUP";
-    
+
     /** Default title fade-in time in ticks */
     public static final int DEFAULT_FADE_IN = 10;
-    
+
     /** Default title stay time in ticks */
     public static final int DEFAULT_STAY = 40;
-    
+
     /** Default title fade-out time in ticks */
     public static final int DEFAULT_FADE_OUT = 10;
+
+    /**
+     * Per-recipient dedup state. Maps the dedup key
+     * {@code mentionedId + "|" + mentionerId} to the timestamp of the last
+     * notification that was actually emitted. Guarded by this instance's
+     * monitor; {@link MentionNotifier} is not expected to be shared across
+     * unrelated threads, but the map is concurrent-safe anyway.
+     */
+    private final Map<String, Long> lastNotifiedAt = new HashMap<>();
 
     /**
      * Creates a new MentionNotifier with a default MentionParser.
@@ -131,6 +150,115 @@ public class MentionNotifier {
                 timestamp
             ))
             .toList();
+    }
+
+    /**
+     * Checks if a notification for the given (mentioned, mentioner) pair should
+     * be emitted now, suppressing duplicates within {@link #DEDUP_INTERVAL_MS}.
+     *
+     * <p>This is a side-effecting filter: if the call returns {@code true} the
+     * caller is expected to actually deliver the notification, and the last
+     * emitted timestamp for this pair is recorded. If it returns {@code false}
+     * the pair was notified too recently and should be skipped silently.
+     *
+     * <p>Dedup is keyed on (mentioned player, mentioner) so that a single burst
+     * of repeated mentions from one author to one recipient collapses to one
+     * notification, while a different author mentioning the same recipient in
+     * the same window still gets through.
+     *
+     * @param mentionedId the player who would be notified
+     * @param mentionerId the player who sent the mention
+     * @param now the current time in Unix milliseconds
+     * @return true if this notification should be emitted (and has been recorded);
+     *         false if it was suppressed as a duplicate
+     */
+    public boolean shouldNotify(UUID mentionedId, UUID mentionerId, long now) {
+        Objects.requireNonNull(mentionedId, "mentionedId cannot be null");
+        Objects.requireNonNull(mentionerId, "mentionerId cannot be null");
+        String key = dedupKey(mentionedId, mentionerId);
+        synchronized (lastNotifiedAt) {
+            Long last = lastNotifiedAt.get(key);
+            if (last != null && (now - last) < DEDUP_INTERVAL_MS) {
+                return false;
+            }
+            lastNotifiedAt.put(key, now);
+            return true;
+        }
+    }
+
+    /**
+     * Convenience overload using {@link System#currentTimeMillis()}.
+     *
+     * @param mentionedId the player who would be notified
+     * @param mentionerId the player who sent the mention
+     * @return true if this notification should be emitted; false if suppressed
+     */
+    public boolean shouldNotify(UUID mentionedId, UUID mentionerId) {
+        return shouldNotify(mentionedId, mentionerId, System.currentTimeMillis());
+    }
+
+    /**
+     * Clears all dedup state. Useful for tests.
+     */
+    public void clearDedup() {
+        synchronized (lastNotifiedAt) {
+            lastNotifiedAt.clear();
+        }
+    }
+
+    private static String dedupKey(UUID mentionedId, UUID mentionerId) {
+        return mentionedId + "|" + mentionerId;
+    }
+
+    /**
+     * Wraps each {@code @name} mention in the message with the given highlight
+     * color prefix, so platforms can render mentioned names in a distinct color.
+     *
+     * <p>The highlight color is a Minecraft color-code prefix in the platform's
+     * native form (e.g. {@code "&e"} for legacy section-sign coloring, or an
+     * empty string to leave mentions un-highlighted). After wrapping, the
+     * returned string still needs the platform's normal color-code translation
+     * pass, so the prefix must be in the platform's raw {@code &}-prefixed form
+     * (or {@code §}-prefixed form, whichever the platform translates from).
+     *
+     * <p>Only valid player-name mentions are wrapped; {@code @all} is left as-is
+     * (it is not a name to highlight, and {@link MentionParser#getMentionPositions}
+     * already excludes it). The original {@code @} sigil is preserved so readers
+     * still see it is a mention.
+     *
+     * <p>Self-mentions: callers may pass {@code mentionerName} as {@code null}
+     * to wrap every mention regardless of author. When a recipient's own name
+     * matches an mentioned name, the wrapping still applies — this is the
+     * intended per-recipient highlight behavior.
+     *
+     * @param message the raw message (before color translation)
+     * @param highlightColor the color prefix to prepend to each mention,
+     *                        e.g. {@code "&e"}; may be {@code null} or empty
+     *                        to return the message unchanged
+     * @return the message with each mention wrapped in the highlight color
+     */
+    public static String highlightMentions(String message, String highlightColor) {
+        if (message == null || message.isEmpty() || highlightColor == null || highlightColor.isEmpty()) {
+            return message;
+        }
+        MentionParser parser = new MentionParser();
+        List<MentionParser.MentionPosition> positions = parser.getMentionPositions(message);
+        if (positions.isEmpty()) {
+            return message;
+        }
+        // Build right-to-left so indices stay valid as we insert prefixes.
+        StringBuilder sb = new StringBuilder(message);
+        for (int i = positions.size() - 1; i >= 0; i--) {
+            MentionParser.MentionPosition pos = positions.get(i);
+            String name = pos.getName();
+            if (name == null
+                    || MentionParser.ALL_MENTION.equalsIgnoreCase(name)
+                    || !MentionParser.isValidPlayerName(name)) {
+                continue; // skip @all and invalid names
+            }
+            sb.insert(pos.getStart(), highlightColor);
+        }
+        return sb.toString();
     }
 
     /**

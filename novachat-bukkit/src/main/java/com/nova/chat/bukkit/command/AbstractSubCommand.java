@@ -118,17 +118,11 @@ public abstract class AbstractSubCommand implements SubCommand {
      * @return list of matching channel IDs
      */
     protected List<String> getKnownChannelIds(String prefix) {
-        NetworkClient client = plugin.getNetworkClient();
-        if (client == null) {
+        com.nova.chat.client.channel.KnownChannelRegistry registry = plugin.getKnownChannelRegistry();
+        if (registry == null) {
             return Collections.emptyList();
         }
-
-        Stream<String> stream = client.getKnownChannelIds().stream();
-        if (prefix != null && !prefix.isEmpty()) {
-            String lower = prefix.toLowerCase();
-            stream = stream.filter(id -> id != null && id.toLowerCase().startsWith(lower));
-        }
-        return stream.sorted(String.CASE_INSENSITIVE_ORDER).collect(Collectors.toList());
+        return registry.getKnownChannelIds(prefix);
     }
 
     /**

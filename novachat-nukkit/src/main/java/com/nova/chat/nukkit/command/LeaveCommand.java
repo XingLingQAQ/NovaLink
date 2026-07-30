@@ -8,6 +8,10 @@ import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.nukkit.NovaChatNukkit;
 
+import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
+
 /**
  * Leave command - leaves the current channel.
  *
@@ -86,5 +90,23 @@ public class LeaveCommand extends AbstractSubCommand {
         }
 
         return true;
+    }
+
+    @Override
+    public List<String> tabComplete(CommandSender sender, String[] args) {
+        // UX-DESIGN §2.3: leave <Tab> completes channels the player has joined.
+        if (args.length != 1 || !(sender instanceof Player)) {
+            return Collections.emptyList();
+        }
+        Player player = (Player) sender;
+        PlayerChannelState state = plugin.getChatInterceptor().getState(player.getUniqueId());
+        if (state == null) {
+            return Collections.emptyList();
+        }
+        String prefix = args[0] == null ? "" : args[0].toLowerCase();
+        return state.getJoinedChannels().stream()
+                .filter(id -> id != null && id.toLowerCase().startsWith(prefix))
+                .sorted(String.CASE_INSENSITIVE_ORDER)
+                .collect(Collectors.toList());
     }
 }

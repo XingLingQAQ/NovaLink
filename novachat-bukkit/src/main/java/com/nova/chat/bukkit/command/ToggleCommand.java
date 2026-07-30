@@ -4,6 +4,7 @@ import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
 import com.nova.chat.client.state.ChatMode;
+import com.nova.chat.client.state.ChatModeDescriptions;
 import com.nova.chat.client.state.PlayerChannelState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -79,11 +80,10 @@ public class ToggleCommand extends AbstractSubCommand {
 
         if (newMode == ChatMode.REPLACE) {
             messageHelper.sendSuccess(sender, "聊天模式已切换为 &e频道模式");
-            messageHelper.sendMessage(sender, "所有聊天消息将发送到当前频道");
         } else {
             messageHelper.sendSuccess(sender, "聊天模式已切换为 &e混合模式");
-            messageHelper.sendMessage(sender, "原版聊天保留，使用命令发送频道消息");
         }
+        messageHelper.sendMessage(sender, ChatModeDescriptions.describe(newMode));
 
         return true;
     }

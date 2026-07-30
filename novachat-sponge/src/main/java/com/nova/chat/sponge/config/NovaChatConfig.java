@@ -53,7 +53,7 @@ public class NovaChatConfig {
             this.prefix = "&8[&bNovaChat&8]&r ";
             this.errorFormat = "&c错误: {message}";
             this.successFormat = "&a成功: {message}";
-            this.defaultFormat = "&7[{channel_name}] {player}&f: {message}";
+            this.defaultFormat = "&7[{channel_color}{channel_name}] {player}&f: {message}";
             this.channelFormats = new HashMap<>();
             this.debug = false;
             return;
@@ -77,7 +77,7 @@ public class NovaChatConfig {
         this.prefix = formatNode.node("prefix").getString("&8[&bNovaChat&8]&r ");
         this.errorFormat = formatNode.node("error").getString("&c错误: {message}");
         this.successFormat = formatNode.node("success").getString("&a成功: {message}");
-        this.defaultFormat = formatNode.node("default").getString("&7[{channel_name}] {player}&f: {message}");
+        this.defaultFormat = formatNode.node("default").getString("&7[{channel_color}{channel_name}] {player}&f: {message}");
 
         // Channel formats
         this.channelFormats = new HashMap<>();

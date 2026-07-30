@@ -18,6 +18,8 @@ import com.nova.chat.nukkit.config.NovaChatConfig;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.MentionPacket;
+import com.nova.chat.common.chat.MentionNotifier;
 
 import java.util.Map;
 import java.util.UUID;
@@ -66,7 +68,11 @@ public class ChatInterceptor implements Listener {
     private void registerIncomingMessageHandler() {
         plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
         plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
+        plugin.getNetworkClient().registerHandler(MentionPacket.class, this::handleMention);
     }
+
+    /** Legacy color prefix applied to @name mentions when rendering chat (UX-DESIGN §4.2). */
+    static final String MENTION_HIGHLIGHT_COLOR = "&e";
 
     /**
      * Handles channel action responses from the backend.
@@ -80,6 +86,14 @@ public class ChatInterceptor implements Listener {
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         plugin.debug("Received channel action response: " + packet);
 
+        // UX-DESIGN §5: KICK/MUTE target-side notification. These responses may
+        // arrive as backend pushes with no local pending request, so resolve the
+        // target from the response's extras rather than the tracker.
+        if (packet.isSuccess() && (packet.getAction() == ChannelAction.KICK
+                || packet.getAction() == ChannelAction.MUTE)) {
+            notifyKickMuteTarget(packet);
+        }
+
         ChannelResponseTracker tracker = plugin.getNetworkClient().getChannelResponseTracker();
         ChannelResponseTracker.PendingChannelAction pending = tracker.consume(packet.getRequestId());
         if (pending == null || pending.getPlayerId() == null) {
@@ -92,12 +106,27 @@ public class ChatInterceptor implements Listener {
                 return;
             }
             if (packet.isSuccess()) {
-                if (packet.getAction() == ChannelAction.JOIN
-                        && packet.getChannelId() != null && !packet.getChannelId().isEmpty()) {
-                    PlayerChannelState state = getState(pending.getPlayerId());
-                    if (state != null) {
-                        state.setActiveChannel(packet.getChannelId());
+                // §7: the immediate join receipt is the optimistic "正在加入频道 X…";
+                // confirm here once the backend accepts, then flash a short action
+                // bar so the player sees the active channel + current mode.
+                if (packet.getAction() == ChannelAction.JOIN) {
+                    String confirmedChannel = (packet.getChannelId() != null && !packet.getChannelId().isEmpty())
+                            ? packet.getChannelId()
+                            : pending.getChannelId();
+                    if (confirmedChannel != null && !confirmedChannel.isEmpty()) {
+                        plugin.getMessageHelper().sendSuccess(player, "已加入频道 " + confirmedChannel);
                     }
+                    if (packet.getChannelId() != null && !packet.getChannelId().isEmpty()) {
+                        PlayerChannelState state = getState(pending.getPlayerId());
+                        if (state != null) {
+                            state.setActiveChannel(packet.getChannelId());
+                        }
+                    }
+                    sendChannelStatusBar(player, confirmedChannel);
+                } else if (packet.getAction() == ChannelAction.LEAVE) {
+                    // §7: after a successful leave the active channel is the default.
+                    PlayerChannelState state = getState(pending.getPlayerId());
+                    sendChannelStatusBar(player, state != null ? state.getActiveChannel() : null);
                 }
                 return;
             }
@@ -108,7 +137,99 @@ public class ChatInterceptor implements Listener {
             plugin.getMessageHelper().sendError(player, ErrorMessageFormatter.format(code));
         });
     }
-    
+
+    /**
+     * Sends a personalized kick/mute notice to the affected player
+     * (UX-DESIGN §5). Runs on the Nukkit main thread for safe player lookup.
+     * Falls back to a chat message when the target cannot be resolved or the
+     * response lacks the {@code targetId} extra (TODO logged).
+     */
+    private void notifyKickMuteTarget(ChannelActionResponsePacket packet) {
+        String targetIdRaw = packet.getExtra("targetId");
+        if (targetIdRaw == null || targetIdRaw.isEmpty()) {
+            plugin.debug("KICK/MUTE response without targetId extra — cannot notify target: " + packet);
+            return;
+        }
+        UUID targetId;
+        try {
+            targetId = UUID.fromString(targetIdRaw);
+        } catch (IllegalArgumentException e) {
+            plugin.debug("KICK/MUTE response has invalid targetId: " + targetIdRaw);
+            return;
+        }
+
+        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+            Player target = plugin.getServer().getPlayer(targetId).orElse(null);
+            if (target == null) {
+                return; // not on this server
+            }
+            String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+            String operator = packet.getExtra("operatorName");
+            if (operator == null || operator.isEmpty()) {
+                operator = "管理员";
+            }
+            if (packet.getAction() == ChannelAction.KICK) {
+                String title = messageFormatter.translateColorCodes("&c你已被踢出频道");
+                String subtitle = messageFormatter.translateColorCodes(
+                        "&7被 &e" + operator + " &7踢出频道 &b" + channelId);
+                target.sendTitle(title, subtitle,
+                        MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
+                target.sendActionBar(messageFormatter.translateColorCodes(
+                        "&c你已被 " + operator + " 踢出频道 " + channelId));
+                return;
+            }
+            // MUTE
+            String durationText = formatDurationExtra(packet.getExtra("duration"));
+            String title = messageFormatter.translateColorCodes("&c你已被禁言");
+            String subtitle = messageFormatter.translateColorCodes(
+                    "&7在频道 &b" + channelId + " &7持续 &e" + durationText);
+            target.sendTitle(title, subtitle,
+                    MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
+            target.sendActionBar(messageFormatter.translateColorCodes(
+                    "&c你已被禁言 " + durationText + "（频道 " + channelId + "）"));
+        });
+    }
+
+    /** Formats a duration given as a seconds string, or "一段时间" if unknown. */
+    private String formatDurationExtra(String durationSeconds) {
+        if (durationSeconds == null || durationSeconds.isEmpty()) {
+            return "一段时间";
+        }
+        try {
+            long seconds = Long.parseLong(durationSeconds);
+            if (seconds < 60) {
+                return seconds + "秒";
+            } else if (seconds < 3600) {
+                return (seconds / 60) + "分钟";
+            } else if (seconds < 86400) {
+                return (seconds / 3600) + "小时";
+            } else {
+                return (seconds / 86400) + "天";
+            }
+        } catch (NumberFormatException e) {
+            return "一段时间";
+        }
+    }
+
+    /**
+     * Flashes a one-shot action bar with the player's current channel and chat
+     * mode after a successful join/leave (UX-DESIGN §7). Vanilla action-bar
+     * fade handles the ~3s dismissal; no polling.
+     *
+     * @param player the recipient
+     * @param channelId the channel to display; if null/blank, nothing is sent
+     */
+    private void sendChannelStatusBar(Player player, String channelId) {
+        if (channelId == null || channelId.isEmpty()) {
+            return;
+        }
+        PlayerChannelState state = getState(player.getUniqueId());
+        ChatMode mode = (state != null) ? state.getChatMode() : null;
+        String modeName = (mode == ChatMode.REPLACE) ? "频道模式" : "混合模式";
+        String text = "&7当前频道：&b" + channelId + " &7（" + modeName + "）";
+        player.sendActionBar(messageFormatter.translateColorCodes(text));
+    }
+
     /**
      * Handles incoming chat messages from the backend.
      *
@@ -133,14 +254,50 @@ public class ChatInterceptor implements Listener {
                 PlayerChannelState state = getState(player.getUniqueId());
                 if (state != null && channelId.equals(state.getActiveChannel())) {
                     String formattedMessage = messageFormatter.formatChatMessage(
-                        player, channelId, channelName, senderName, content, placeholders
+                        player, channelId, channelName, senderName,
+                        MentionNotifier.highlightMentions(content, MENTION_HIGHLIGHT_COLOR),
+                        placeholders
                     );
                     player.sendMessage(formattedMessage);
                 }
             }
         });
     }
-    
+
+    /**
+     * Handles a mention notification packet by showing a title (and action-bar
+     * fallback) to the mentioned player on the Nukkit main thread
+     * (UX-DESIGN §4.1, Requirements 11.2).
+     *
+     * <p>Sound is intentionally omitted here: the Nukkit compile API surface used
+     * by this module has no stable {@code playSound} entry point and there is no
+     * existing in-repo precedent. The title + action-bar pair provides a clear,
+     * non-spammy notification.
+     */
+    private void handleMention(MentionPacket packet) {
+        UUID mentionedId = packet.getMentionedId();
+        if (mentionedId == null) {
+            return;
+        }
+        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+            Player player = plugin.getServer().getPlayer(mentionedId).orElse(null);
+            if (player == null) {
+                return;
+            }
+            String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
+            String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+            String title = messageFormatter.translateColorCodes("&e" + mentioner);
+            String subtitle = messageFormatter.translateColorCodes(
+                    "&7在频道 &b" + channelId + " &7提到了你");
+            player.sendTitle(title, subtitle,
+                    MentionNotifier.DEFAULT_FADE_IN,
+                    MentionNotifier.DEFAULT_STAY,
+                    MentionNotifier.DEFAULT_FADE_OUT);
+            player.sendActionBar(messageFormatter.translateColorCodes(
+                    "&e" + mentioner + " &7在频道 &b" + channelId + " &7提到了你"));
+        });
+    }
+
     /**
      * Handles player chat events.
      * In REPLACE mode, cancels the event and forwards to the channel.

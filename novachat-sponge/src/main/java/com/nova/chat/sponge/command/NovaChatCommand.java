@@ -4,6 +4,7 @@ import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
 import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.state.ChatMode;
+import com.nova.chat.client.state.ChatModeDescriptions;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.sponge.NovaChatSponge;
 import net.kyori.adventure.text.Component;
@@ -38,8 +39,19 @@ public class NovaChatCommand {
      * @return the built command
      */
     public Command.Parameterized buildCommand() {
-        // Parameters
-        Parameter.Value<String> channelParam = Parameter.string().key("channel").build();
+        // Parameters — the join channel parameter completes from the shared
+        // KnownChannelRegistry (UX-DESIGN §2.3). When the registry is empty (backend
+        // has not pushed a roster), completion falls back to global/local.
+        Parameter.Value<String> channelParam = Parameter.choices(String.class,
+                java.util.function.Function.identity(),
+                () -> {
+                    com.nova.chat.client.channel.KnownChannelRegistry registry = plugin.getKnownChannelRegistry();
+                    java.util.List<String> ids = registry != null ? registry.getKnownChannelIds(null) : java.util.Collections.emptyList();
+                    if (ids.isEmpty()) {
+                        return java.util.Arrays.asList("global", "local");
+                    }
+                    return ids;
+                }).key("channel").build();
         Parameter.Value<String> passwordParam = Parameter.string().key("password").optional().build();
 
         return Command.builder()
@@ -47,6 +59,7 @@ public class NovaChatCommand {
             .addChild(buildHelpCommand(), "help", "?")
             .addChild(buildJoinCommand(channelParam, passwordParam), "join", "j")
             .addChild(buildLeaveCommand(), "leave", "l")
+            .addChild(buildListCommand(), "list")
             .addChild(buildToggleCommand(), "toggle", "t")
             .addChild(buildReloadCommand(), "reload")
             .addChild(buildDebugCommand(), "debug")
@@ -87,6 +100,17 @@ public class NovaChatCommand {
             .permission("novachat.leave")
             .shortDescription(Component.text("离开当前频道"))
             .executor(this::executeLeave)
+            .build();
+    }
+
+    /**
+     * Builds the list subcommand (UX-DESIGN §2.2). No permission required.
+     */
+    private Command.Parameterized buildListCommand() {
+        return Command.builder()
+            .permission("novachat.use")
+            .shortDescription(Component.text("列出可用频道"))
+            .executor(this::executeList)
             .build();
     }
 
@@ -139,6 +163,9 @@ public class NovaChatCommand {
         }
         if (hasPermission(subject, "novachat.leave")) {
             sendCommandHelp(subject, "/nc leave", "离开当前频道");
+        }
+        if (hasPermission(subject, "novachat.use")) {
+            sendCommandHelp(subject, "/nc list", "列出可用频道");
         }
         if (hasPermission(subject, "novachat.toggle")) {
             sendCommandHelp(subject, "/nc toggle", "切换聊天模式");
@@ -241,6 +268,31 @@ public class NovaChatCommand {
     }
 
     /**
+     * Executes the list command - shows channels the backend advertised via
+     * ConfigSync, marking those the player has joined (UX-DESIGN §2.2).
+     * Local-only; no backend packet.
+     */
+    private org.spongepowered.api.command.CommandResult executeList(CommandContext ctx) throws org.spongepowered.api.command.exception.CommandException {
+        if (!(ctx.cause().root() instanceof ServerPlayer player)) {
+            sendError(ctx.subject(), "此命令只能由玩家执行");
+            return org.spongepowered.api.command.CommandResult.error(Component.text("此命令只能由玩家执行"));
+        }
+
+        PlayerChannelState state = plugin.getChatListener().getState(player.uniqueId());
+        java.util.Set<String> joined = state != null ? state.getJoinedChannels() : java.util.Set.of();
+
+        java.util.List<String> lines = com.nova.chat.client.command.ListCommandService
+                .formatChannelList(plugin.getKnownChannelRegistry(), joined);
+
+        sendHeader(ctx.subject(), "NovaChat 频道列表");
+        for (String line : lines) {
+            sendMessage(ctx.subject(), line);
+        }
+        sendFooter(ctx.subject());
+        return org.spongepowered.api.command.CommandResult.success();
+    }
+
+    /**
      * Executes the toggle command via {@link ChannelCommandService#toggle}.
      * Local-only; no network packet. Keeps Sponge follow-up explanatory lines.
      */
@@ -264,12 +316,7 @@ public class NovaChatCommand {
 
         String modeText = newMode == ChatMode.REPLACE ? "&c替换模式" : "&a混合模式";
         sendSuccess(ctx.subject(), "聊天模式已切换为 " + modeText);
-
-        if (newMode == ChatMode.REPLACE) {
-            sendMessage(ctx.subject(), "所有聊天消息将发送到当前频道");
-        } else {
-            sendMessage(ctx.subject(), "原版聊天已启用，使用 /nc 命令发送频道消息");
-        }
+        sendMessage(ctx.subject(), ChatModeDescriptions.describe(newMode));
 
         plugin.debug("Player " + player.name() + " toggled chat mode to: " + newMode);
         return org.spongepowered.api.command.CommandResult.success();

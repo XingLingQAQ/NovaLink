@@ -56,7 +56,7 @@ public class NovaChatConfig {
         this.prefix = config.getString("format.prefix", "§8[§bNovaChat§8]§r ");
         this.errorFormat = config.getString("format.error", "§c错误: {message}");
         this.successFormat = config.getString("format.success", "§a成功: {message}");
-        this.defaultFormat = config.getString("format.default", "§7[{channel_name}] {player}§f: {message}");
+        this.defaultFormat = config.getString("format.default", "§7[{channel_color}{channel_name}] {player}§f: {message}");
 
         // Channel formats
         this.channelFormats = new HashMap<>();

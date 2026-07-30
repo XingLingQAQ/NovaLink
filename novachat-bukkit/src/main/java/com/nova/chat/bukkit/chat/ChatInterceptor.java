@@ -5,6 +5,7 @@ import com.nova.chat.bukkit.api.event.ChannelMessageEvent;
 import com.nova.chat.bukkit.config.NovaChatConfig;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
@@ -101,14 +102,19 @@ public class ChatInterceptor implements Listener {
                 // Check if player is in this channel
                 PlayerChannelState state = getState(player.getUniqueId());
                 if (state != null && channelId.equals(state.getActiveChannel())) {
+                    // Highlight @name mentions for this recipient (UX-DESIGN §4.2).
+                    String displayContent = MentionNotifier.highlightMentions(finalContent, MENTION_HIGHLIGHT_COLOR);
                     String formattedMessage = messageFormatter.formatChatMessage(
-                        player, channelId, channelName, senderName, finalContent, placeholders
+                        player, channelId, channelName, senderName, displayContent, placeholders
                     );
                     player.sendMessage(formattedMessage);
                 }
             }
         });
     }
+
+    /** Legacy color prefix applied to @name mentions when rendering chat (UX-DESIGN §4.2). */
+    static final String MENTION_HIGHLIGHT_COLOR = "&e";
     
     /**
      * Handles player chat events.

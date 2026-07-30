@@ -65,6 +65,13 @@ public class NovaChatPNX extends PluginBase implements Listener {
     private ChannelFormManager channelFormManager;
 
     /**
+     * Shared known-channel registry populated from backend ConfigSync pushes
+     * (UX-DESIGN §2.1). Consumed by {@code /nc list} and {@code /nc join <Tab>}.
+     */
+    @Getter
+    private com.nova.chat.client.channel.KnownChannelRegistry knownChannelRegistry;
+
+    /**
      * Shared channel command intents (join/leave/reload).
      * PacketSender resolves {@link #networkClient} on each send so reload/reconnect
      * does not leave a stale client reference.
@@ -191,7 +198,24 @@ public class NovaChatPNX extends PluginBase implements Listener {
             return;
         }
         
+        knownChannelRegistry = new com.nova.chat.client.channel.KnownChannelRegistry();
         networkClient = new NetworkClient(this, novaChatConfig);
+
+        // UX-DESIGN §2.1: register a minimal ConfigSync handler that fills the
+        // shared registry so /nc list and join <Tab> have data when the backend
+        // pushes a roster. If the backend never pushes, the registry stays empty
+        // and consumers degrade gracefully (no crash).
+        networkClient.registerHandler(
+                com.nova.chat.common.protocol.packets.ConfigSyncPacket.class,
+                packet -> {
+                    String json = packet.getConfigJson();
+                    if (json == null || json.isBlank()) {
+                        return;
+                    }
+                    String username = novaChatConfig != null ? novaChatConfig.getBackendUsername() : null;
+                    knownChannelRegistry.replaceAll(
+                            com.nova.chat.client.channel.ConfigSyncChannels.extract(json, username));
+                });
         
         // Connect asynchronously to avoid blocking the main thread
         getServer().getScheduler().scheduleAsyncTask(this, new AsyncTask() {

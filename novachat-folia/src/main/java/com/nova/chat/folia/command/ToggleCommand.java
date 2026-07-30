@@ -3,6 +3,7 @@ package com.nova.chat.folia.command;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
 import com.nova.chat.client.state.ChatMode;
+import com.nova.chat.client.state.ChatModeDescriptions;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.folia.NovaChatFolia;
 import com.nova.chat.folia.chat.PlayerChatState;
@@ -71,12 +72,7 @@ public class ToggleCommand extends AbstractSubCommand {
 
         String modeDesc = newMode == ChatMode.REPLACE ? "频道模式" : "混合模式";
         messageHelper.sendSuccess(sender, "聊天模式已切换为: &e" + modeDesc);
-
-        if (newMode == ChatMode.REPLACE) {
-            messageHelper.sendRaw(sender, "&7所有聊天消息将发送到当前频道");
-        } else {
-            messageHelper.sendRaw(sender, "&7原版聊天已启用，使用命令发送频道消息");
-        }
+        messageHelper.sendRaw(sender, "&7" + ChatModeDescriptions.describe(newMode));
 
         plugin.debug("Player " + player.getName() + " toggled chat mode to: " + newMode);
 

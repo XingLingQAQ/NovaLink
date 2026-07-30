@@ -82,6 +82,19 @@ public class LeaveCommand extends AbstractSubCommand {
 
     @Override
     public List<String> tabComplete(CommandSender sender, String[] args) {
-        return List.of();
+        // UX-DESIGN §2.3: leave <Tab> completes channels the player has joined.
+        if (args.length != 1 || !(sender instanceof Player)) {
+            return List.of();
+        }
+        Player player = (Player) sender;
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
+        if (state == null) {
+            return List.of();
+        }
+        String prefix = args[0] == null ? "" : args[0].toLowerCase();
+        return state.getJoinedChannels().stream()
+                .filter(id -> id != null && id.toLowerCase().startsWith(prefix))
+                .sorted(String.CASE_INSENSITIVE_ORDER)
+                .collect(java.util.stream.Collectors.toList());
     }
 }

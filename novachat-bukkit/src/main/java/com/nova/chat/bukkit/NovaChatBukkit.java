@@ -55,6 +55,13 @@ public class NovaChatBukkit extends JavaPlugin {
     private NovaChatAPI api;
 
     /**
+     * Shared known-channel registry populated from backend ConfigSync pushes
+     * (UX-DESIGN §2.1). Filled by {@link NetworkClient#handleConfigSync} and
+     * consumed by {@code /nc list} and {@code /nc join <Tab>}.
+     */
+    private com.nova.chat.client.channel.KnownChannelRegistry knownChannelRegistry;
+
+    /**
      * Shared channel command intents (join/leave/toggle/reload).
      * PacketSender resolves {@link #networkClient} on each send so reload/reconnect
      * does not leave a stale client reference.
@@ -151,8 +158,9 @@ public class NovaChatBukkit extends JavaPlugin {
             getLogger().severe("Cannot initialize network client: configuration not loaded");
             return;
         }
-        
-        networkClient = new NetworkClient(this, novaChatConfig);
+
+        knownChannelRegistry = new com.nova.chat.client.channel.KnownChannelRegistry();
+        networkClient = new NetworkClient(this, novaChatConfig, knownChannelRegistry);
         
         // Connect asynchronously
         getServer().getScheduler().runTaskAsynchronously(this, () -> {
@@ -307,6 +315,15 @@ public class NovaChatBukkit extends JavaPlugin {
      */
     public NetworkClient getNetworkClient() {
         return networkClient;
+    }
+
+    /**
+     * Gets the shared known-channel registry (populated from ConfigSync).
+     *
+     * @return the known-channel registry, never null after initialization
+     */
+    public com.nova.chat.client.channel.KnownChannelRegistry getKnownChannelRegistry() {
+        return knownChannelRegistry;
     }
 
     /**

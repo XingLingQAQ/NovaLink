@@ -2,8 +2,10 @@ package com.nova.chat.pnx.chat;
 
 import cn.nukkit.Player;
 import cn.nukkit.utils.TextFormat;
+import com.nova.chat.client.format.FormatTemplateEngine;
 import com.nova.chat.pnx.NovaChatPNX;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -38,22 +40,23 @@ public class MessageFormatter {
      * @param message the message content
      * @return the formatted message
      */
-    public String formatMessage(String format, Player player, String channelId, 
+    public String formatMessage(String format, Player player, String channelId,
                                 String channelName, String message) {
-        String result = format;
-        
-        // Replace placeholders
+        // Build placeholder map (auto-resolves {channel_color} via shared engine).
+        Map<String, String> values = new LinkedHashMap<>(8);
         if (player != null) {
-            result = result.replace("{player}", player.getName());
-            result = result.replace("{display_name}", player.getDisplayName());
-            result = result.replace("{world}", player.getLevel().getName());
+            values.put("player", player.getName());
+            values.put("display_name", player.getDisplayName());
+            values.put("world", player.getLevel().getName());
         }
-        
-        result = result.replace("{channel}", channelId);
-        result = result.replace("{channel_name}", channelName != null ? channelName : channelId);
-        result = result.replace("{message}", message);
-        result = result.replace("{server}", plugin.getNovaChatConfig().getBackendUsername());
-        
+        values.put(FormatTemplateEngine.KEY_CHANNEL, channelId);
+        values.put(FormatTemplateEngine.KEY_CHANNEL_NAME,
+                channelName != null ? channelName : channelId);
+        values.put(FormatTemplateEngine.KEY_MESSAGE, message);
+        values.put("server", plugin.getNovaChatConfig().getBackendUsername());
+
+        String result = FormatTemplateEngine.apply(format, values);
+
         // Convert color codes
         return colorize(result);
     }
@@ -68,15 +71,17 @@ public class MessageFormatter {
      */
     public String formatIncomingMessage(String senderName, String channelId, String content) {
         String format = plugin.getNovaChatConfig().getChannelFormat(channelId);
-        
-        String result = format;
-        result = result.replace("{player}", senderName);
-        result = result.replace("{display_name}", senderName);
-        result = result.replace("{channel}", channelId);
-        result = result.replace("{channel_name}", channelId);
-        result = result.replace("{message}", content);
-        result = result.replace("{server}", plugin.getNovaChatConfig().getBackendUsername());
-        
+
+        Map<String, String> values = new LinkedHashMap<>(8);
+        values.put(FormatTemplateEngine.KEY_PLAYER, senderName);
+        values.put("display_name", senderName);
+        values.put(FormatTemplateEngine.KEY_CHANNEL, channelId);
+        values.put(FormatTemplateEngine.KEY_CHANNEL_NAME, channelId);
+        values.put(FormatTemplateEngine.KEY_MESSAGE, content);
+        values.put("server", plugin.getNovaChatConfig().getBackendUsername());
+
+        String result = FormatTemplateEngine.apply(format, values);
+
         return colorize(result);
     }
 

@@ -73,6 +73,21 @@ public abstract class AbstractSubCommand implements SubCommand {
     }
 
     /**
+     * Gets known channel IDs from the shared {@code KnownChannelRegistry} for
+     * tab completion (UX-DESIGN §2.3).
+     *
+     * @param prefix the prefix to filter by (null / empty = all)
+     * @return sorted list of matching channel IDs
+     */
+    protected List<String> getKnownChannelIds(String prefix) {
+        com.nova.chat.client.channel.KnownChannelRegistry registry = plugin.getKnownChannelRegistry();
+        if (registry == null) {
+            return java.util.Collections.emptyList();
+        }
+        return registry.getKnownChannelIds(prefix);
+    }
+
+    /**
      * Gets a list of online player names for tab completion.
      *
      * @param prefix the prefix to filter by

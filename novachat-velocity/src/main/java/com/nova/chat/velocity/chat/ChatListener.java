@@ -7,6 +7,8 @@ import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.MentionPacket;
+import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.velocity.NovaChatVelocity;
 import com.nova.chat.velocity.config.NovaChatConfig;
 import com.velocitypowered.api.event.PostOrder;
@@ -15,8 +17,12 @@ import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.player.PlayerChatEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.proxy.Player;
+import net.kyori.adventure.sound.Sound;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.title.Title;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -65,8 +71,12 @@ public class ChatListener {
         if (plugin.getNetworkClient() != null) {
             plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
             plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
+            plugin.getNetworkClient().registerHandler(MentionPacket.class, this::handleMention);
         }
     }
+
+    /** Legacy color prefix applied to @name mentions when rendering chat (UX-DESIGN §4.2). */
+    static final String MENTION_HIGHLIGHT_COLOR = "&e";
     
     /**
      * Handles channel action responses from the backend.
@@ -80,6 +90,14 @@ public class ChatListener {
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         plugin.debug("Received channel action response: " + packet);
 
+        // UX-DESIGN §5: KICK/MUTE target-side notification. These responses may
+        // arrive as backend pushes with no local pending request, so resolve the
+        // target from the response's extras rather than the tracker.
+        if (packet.isSuccess() && (packet.getAction() == com.nova.chat.common.protocol.ChannelAction.KICK
+                || packet.getAction() == com.nova.chat.common.protocol.ChannelAction.MUTE)) {
+            notifyKickMuteTarget(packet);
+        }
+
         ChannelResponseTracker tracker = plugin.getNetworkClient().getChannelResponseTracker();
         ChannelResponseTracker.PendingChannelAction pending = tracker.consume(packet.getRequestId());
         if (pending == null || pending.getPlayerId() == null) {
@@ -89,15 +107,26 @@ public class ChatListener {
 
         plugin.getServer().getPlayer(pending.getPlayerId()).ifPresent(player -> {
             if (packet.isSuccess()) {
-                // Success messaging stays owned by the command's immediate feedback;
-                // the proxy only needs to mirror the authoritative active channel.
-                if (packet.getAction() == com.nova.chat.common.protocol.ChannelAction.JOIN
-                        && packet.getChannelId() != null && !packet.getChannelId().isEmpty()) {
-                    PlayerChannelState state = getState(pending.getPlayerId());
-                    if (state != null) {
-                        state.setActiveChannel(packet.getChannelId());
+                // §7: the immediate join receipt is the optimistic "正在加入频道 X…";
+                // confirm here once the backend accepts so the player sees the join land.
+                if (packet.getAction() == com.nova.chat.common.protocol.ChannelAction.JOIN) {
+                    String confirmedChannel = (packet.getChannelId() != null && !packet.getChannelId().isEmpty())
+                            ? packet.getChannelId()
+                            : pending.getChannelId();
+                    if (confirmedChannel != null && !confirmedChannel.isEmpty()) {
+                        player.sendMessage(messageFormatter.formatSuccess("已加入频道 " + confirmedChannel));
+                    }
+                    if (packet.getChannelId() != null && !packet.getChannelId().isEmpty()) {
+                        PlayerChannelState state = getState(pending.getPlayerId());
+                        if (state != null) {
+                            state.setActiveChannel(packet.getChannelId());
+                        }
                     }
                 }
+                // §7 action bar ("当前频道：X（模式）") is intentionally not sent here:
+                // Velocity is a proxy and has no stable action-bar API that reliably
+                // reaches the downstream client. TODO: revisit if a reliable proxy
+                // action-bar path becomes available.
                 return;
             }
 
@@ -108,6 +137,89 @@ public class ChatListener {
             }
             player.sendMessage(messageFormatter.formatError(ErrorMessageFormatter.format(code)));
         });
+    }
+
+    /**
+     * Sends a personalized kick/mute notice to the affected player
+     * (UX-DESIGN §5). Proxy has no reliable action bar, so the notice is a
+     * title plus a chat-message reinforcement. Falls back silently when the
+     * target is offline or the response lacks the {@code targetId} extra.
+     */
+    private void notifyKickMuteTarget(ChannelActionResponsePacket packet) {
+        String targetIdRaw = packet.getExtra("targetId");
+        if (targetIdRaw == null || targetIdRaw.isEmpty()) {
+            plugin.debug("KICK/MUTE response without targetId extra — cannot notify target: " + packet);
+            return;
+        }
+        UUID targetId;
+        try {
+            targetId = UUID.fromString(targetIdRaw);
+        } catch (IllegalArgumentException e) {
+            plugin.debug("KICK/MUTE response has invalid targetId: " + targetIdRaw);
+            return;
+        }
+        plugin.getServer().getPlayer(targetId).ifPresent(target -> {
+            String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+            String operator = packet.getExtra("operatorName");
+            if (operator == null || operator.isEmpty()) {
+                operator = "管理员";
+            }
+            com.nova.chat.common.protocol.ChannelAction action = packet.getAction();
+            if (action == com.nova.chat.common.protocol.ChannelAction.KICK) {
+                Component title = Component.text("你已被踢出频道", NamedTextColor.RED);
+                Component subtitle = Component.text()
+                        .append(Component.text("被 ", NamedTextColor.GRAY))
+                        .append(Component.text(operator, NamedTextColor.YELLOW))
+                        .append(Component.text(" 踢出频道 ", NamedTextColor.GRAY))
+                        .append(Component.text(channelId, NamedTextColor.AQUA))
+                        .build();
+                Title.Times times = Title.Times.times(
+                        Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
+                        Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
+                        Duration.ofMillis(MentionNotifier.DEFAULT_FADE_OUT * 50L));
+                target.showTitle(Title.title(title, subtitle, times));
+                target.sendMessage(messageFormatter.formatError(
+                        "你已被 " + operator + " 踢出频道 " + channelId));
+                return;
+            }
+            // MUTE
+            String durationText = formatDurationExtra(packet.getExtra("duration"));
+            Component title = Component.text("你已被禁言", NamedTextColor.RED);
+            Component subtitle = Component.text()
+                    .append(Component.text("在频道 ", NamedTextColor.GRAY))
+                    .append(Component.text(channelId, NamedTextColor.AQUA))
+                    .append(Component.text(" 持续 ", NamedTextColor.GRAY))
+                    .append(Component.text(durationText, NamedTextColor.YELLOW))
+                    .build();
+            Title.Times times = Title.Times.times(
+                    Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
+                    Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
+                    Duration.ofMillis(MentionNotifier.DEFAULT_FADE_OUT * 50L));
+            target.showTitle(Title.title(title, subtitle, times));
+            target.sendMessage(messageFormatter.formatError(
+                    "你已被禁言 " + durationText + "（频道 " + channelId + "）"));
+        });
+    }
+
+    /** Formats a duration given as a seconds string, or "一段时间" if unknown. */
+    private String formatDurationExtra(String durationSeconds) {
+        if (durationSeconds == null || durationSeconds.isEmpty()) {
+            return "一段时间";
+        }
+        try {
+            long seconds = Long.parseLong(durationSeconds);
+            if (seconds < 60) {
+                return seconds + "秒";
+            } else if (seconds < 3600) {
+                return (seconds / 60) + "分钟";
+            } else if (seconds < 86400) {
+                return (seconds / 3600) + "小时";
+            } else {
+                return (seconds / 86400) + "天";
+            }
+        } catch (NumberFormatException e) {
+            return "一段时间";
+        }
     }
     
     /**
@@ -132,11 +244,49 @@ public class ChatListener {
             PlayerChannelState state = getState(player.getUniqueId());
             if (state != null && channelId.equals(state.getActiveChannel())) {
                 Component formattedMessage = messageFormatter.formatChatMessage(
-                    player, channelId, channelName, senderName, content, placeholders
+                    player, channelId, channelName, senderName,
+                    MentionNotifier.highlightMentions(content, MENTION_HIGHLIGHT_COLOR),
+                    placeholders
                 );
                 player.sendMessage(formattedMessage);
             }
         }
+    }
+
+    /**
+     * Handles a mention notification packet by playing a sound and showing a
+     * title to the mentioned player (UX-DESIGN §4.1, Requirements 11.2).
+     *
+     * <p>Velocity's {@link Player} is an Adventure {@code Audience}, so title and
+     * sound play directly to the proxied client without a backend round-trip.
+     */
+    private void handleMention(MentionPacket packet) {
+        UUID mentionedId = packet.getMentionedId();
+        if (mentionedId == null) {
+            return;
+        }
+        plugin.getServer().getPlayer(mentionedId).ifPresent(player -> {
+            String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
+            String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+            Component title = Component.text(mentioner, NamedTextColor.YELLOW);
+            Component subtitle = Component.text()
+                    .append(Component.text("在频道 ", NamedTextColor.GRAY))
+                    .append(Component.text(channelId, NamedTextColor.AQUA))
+                    .append(Component.text(" 提到了你", NamedTextColor.GRAY))
+                    .build();
+            Title.Times times = Title.Times.times(
+                    Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
+                    Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
+                    Duration.ofMillis(MentionNotifier.DEFAULT_FADE_OUT * 50L));
+            player.showTitle(Title.title(title, subtitle, times));
+            try {
+                net.kyori.adventure.key.Key key = net.kyori.adventure.key.Key.key("minecraft",
+                        MentionNotifier.DEFAULT_SOUND.toLowerCase(java.util.Locale.ROOT));
+                player.playSound(Sound.sound(key, Sound.Source.PLAYER, 1.0f, 1.0f));
+            } catch (Exception e) {
+                plugin.debug("Failed to play mention sound: " + e.getMessage());
+            }
+        });
     }
     
     /**

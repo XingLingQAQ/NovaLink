@@ -5,6 +5,7 @@ import com.nova.chat.client.command.CommandResult;
 import com.nova.chat.client.error.ErrorCode;
 import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.state.ChatMode;
+import com.nova.chat.client.state.ChatModeDescriptions;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.velocity.NovaChatVelocity;
 import com.nova.chat.velocity.chat.ChatListener;
@@ -37,7 +38,7 @@ public class NovaChatCommand implements SimpleCommand {
 
     /** Available subcommands */
     private static final List<String> SUBCOMMANDS = Arrays.asList(
-        "help", "join", "leave", "toggle", "reload"
+        "help", "join", "leave", "list", "toggle", "reload"
     );
 
     /**
@@ -73,6 +74,9 @@ public class NovaChatCommand implements SimpleCommand {
             case "leave":
                 handleLeave(invocation, subArgs);
                 break;
+            case "list":
+                handleList(invocation);
+                break;
             case "toggle":
                 handleToggle(invocation);
                 break;
@@ -94,6 +98,7 @@ public class NovaChatCommand implements SimpleCommand {
         invocation.source().sendMessage(Component.text("/nc help - 显示帮助信息", NamedTextColor.YELLOW));
         invocation.source().sendMessage(Component.text("/nc join <频道> [密码] - 加入频道", NamedTextColor.YELLOW));
         invocation.source().sendMessage(Component.text("/nc leave [频道] - 离开频道", NamedTextColor.YELLOW));
+        invocation.source().sendMessage(Component.text("/nc list - 列出可用频道", NamedTextColor.YELLOW));
         invocation.source().sendMessage(Component.text("/nc toggle - 切换聊天模式", NamedTextColor.YELLOW));
         invocation.source().sendMessage(Component.text("/nc <频道> <消息> - 发送消息到指定频道", NamedTextColor.YELLOW));
 
@@ -127,8 +132,10 @@ public class NovaChatCommand implements SimpleCommand {
 
         CommandResult result = channelCommands.join(state, channelId, password, player.getUsername());
         if (result.isSuccess()) {
-            // Match previous Velocity UX (immediate "joined" rather than service English text).
-            player.sendMessage(messageFormatter.formatSuccess("已加入频道: " + channelId));
+            // §7: optimistic "joining…" receipt; the async ChannelActionResponsePacket
+            // handler in ChatListener confirms with "已加入频道 X" once the backend
+            // accepts, or surfaces an actionable error if it rejects.
+            player.sendMessage(messageFormatter.formatSuccess("正在加入频道 " + channelId + "..."));
             plugin.debug("Player " + player.getUsername() + " joined channel: " + channelId);
         } else {
             // Actionable error via shared ErrorCode system (NC-503 network failure here).
@@ -184,6 +191,30 @@ public class NovaChatCommand implements SimpleCommand {
     }
 
     /**
+     * Handles the list subcommand - shows channels the backend advertised via
+     * ConfigSync, marking those the player has joined (UX-DESIGN §2.2).
+     */
+    private void handleList(Invocation invocation) {
+        if (!(invocation.source() instanceof Player player)) {
+            invocation.source().sendMessage(messageFormatter.formatError("此命令只能由玩家执行"));
+            return;
+        }
+
+        ChatListener chatListener = plugin.getChatListener();
+        PlayerChannelState state = chatListener.getState(player.getUniqueId());
+        java.util.Set<String> joined = state != null ? state.getJoinedChannels() : java.util.Set.of();
+
+        java.util.List<String> lines = com.nova.chat.client.command.ListCommandService
+                .formatChannelList(plugin.getKnownChannelRegistry(), joined);
+
+        player.sendMessage(Component.text("=== NovaChat 频道列表 ===", NamedTextColor.GOLD));
+        for (String line : lines) {
+            player.sendMessage(messageFormatter.formatSystemMessage(line));
+        }
+        player.sendMessage(Component.text("===========================", NamedTextColor.GOLD));
+    }
+
+    /**
      * Handles the toggle subcommand via {@link ChannelCommandService#toggle}.
      * Local-only; no network packet.
      */
@@ -205,6 +236,7 @@ public class NovaChatCommand implements SimpleCommand {
         ChatMode newMode = state.getChatMode();
         String modeText = newMode == ChatMode.REPLACE ? "频道模式" : "混合模式";
         player.sendMessage(messageFormatter.formatSuccess("聊天模式已切换为: " + modeText));
+        player.sendMessage(messageFormatter.formatSystemMessage(ChatModeDescriptions.describe(newMode)));
         plugin.debug("Player " + player.getUsername() + " toggled chat mode to: " + newMode);
     }
 
@@ -257,6 +289,24 @@ public class NovaChatCommand implements SimpleCommand {
             return SUBCOMMANDS.stream()
                 .filter(cmd -> cmd.startsWith(prefix))
                 .collect(Collectors.toList());
+        }
+
+        // UX-DESIGN §2.3: complete channel names for join / leave.
+        String sub = args[0].toLowerCase();
+        String prefix = args[1] == null ? "" : args[1].toLowerCase();
+        if (sub.equals("join")) {
+            List<String> known = plugin.getKnownChannelRegistry().getKnownChannelIds(prefix);
+            return known.isEmpty() ? new ArrayList<>(Arrays.asList("global", "local")) : known;
+        }
+        if (sub.equals("leave") && invocation.source() instanceof Player player) {
+            PlayerChannelState state = plugin.getChatListener().getState(player.getUniqueId());
+            if (state == null) {
+                return new ArrayList<>();
+            }
+            return state.getJoinedChannels().stream()
+                    .filter(id -> id != null && id.toLowerCase().startsWith(prefix))
+                    .sorted(String.CASE_INSENSITIVE_ORDER)
+                    .collect(Collectors.toList());
         }
 
         return new ArrayList<>();

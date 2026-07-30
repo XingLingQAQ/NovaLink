@@ -116,7 +116,7 @@ public class NovaChatConfig {
             this.prefix = format.getString("prefix", "&8[&bNovaChat&8]&r ");
             this.errorFormat = format.getString("error", "&c错误: {message}");
             this.successFormat = format.getString("success", "&a成功: {message}");
-            this.defaultFormat = format.getString("default", "&7[{channel_name}] {player}&f: {message}");
+            this.defaultFormat = format.getString("default", "&7[{channel_color}{channel_name}] {player}&f: {message}");
             
             Toml channels = format.getTable("channels");
             if (channels != null) {
@@ -130,7 +130,7 @@ public class NovaChatConfig {
             this.prefix = "&8[&bNovaChat&8]&r ";
             this.errorFormat = "&c错误: {message}";
             this.successFormat = "&a成功: {message}";
-            this.defaultFormat = "&7[{channel_name}] {player}&f: {message}";
+            this.defaultFormat = "&7[{channel_color}{channel_name}] {player}&f: {message}";
         }
 
         // Debug mode
@@ -151,7 +151,7 @@ public class NovaChatConfig {
         this.prefix = "&8[&bNovaChat&8]&r ";
         this.errorFormat = "&c错误: {message}";
         this.successFormat = "&a成功: {message}";
-        this.defaultFormat = "&7[{channel_name}] {player}&f: {message}";
+        this.defaultFormat = "&7[{channel_color}{channel_name}] {player}&f: {message}";
         this.debug = false;
     }
 
@@ -177,7 +177,7 @@ public class NovaChatConfig {
             prefix = "&8[&bNovaChat&8]&r "
             error = "&c错误: {message}"
             success = "&a成功: {message}"
-            default = "&7[{channel_name}] {player}&f: {message}"
+            default = "&7[{channel_color}{channel_name}] {player}&f: {message}"
             
             [format.channels]
             global = "&c[全服] &7{player}&f: {message}"

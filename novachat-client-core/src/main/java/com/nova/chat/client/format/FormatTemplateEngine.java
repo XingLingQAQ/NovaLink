@@ -51,6 +51,16 @@ public final class FormatTemplateEngine {
     /** Well-known placeholder key: message body. */
     public static final String KEY_MESSAGE = "message";
 
+    /**
+     * Well-known placeholder key: channel color.
+     *
+     * <p>Resolved deterministically from the {@code {channel}} value via
+     * {@link ChannelColorResolver#resolveColor(String)} when the template contains
+     * {@code {channel_color}} and no explicit override is supplied. See
+     * {@link #apply(String, Map)} for the auto-resolution rule.
+     */
+    public static final String KEY_CHANNEL_COLOR = "channel_color";
+
     private FormatTemplateEngine() {
     }
 
@@ -66,11 +76,25 @@ public final class FormatTemplateEngine {
         if (template == null) {
             return "";
         }
-        if (placeholders == null || placeholders.isEmpty()) {
+        boolean needsChannelColor = template.contains("{channel_color}");
+        if (!needsChannelColor && (placeholders == null || placeholders.isEmpty())) {
+            return template;
+        }
+        Map<String, String> values = placeholders != null ? placeholders : new LinkedHashMap<>();
+        // Auto-resolve {channel_color} from the {channel} value when the template
+        // references it and the caller didn't supply an explicit channel_color.
+        if (needsChannelColor && !values.containsKey(KEY_CHANNEL_COLOR)) {
+            String channel = values.get(KEY_CHANNEL);
+            String color = ChannelColorResolver.resolveColor(channel);
+            Map<String, String> copy = new LinkedHashMap<>(values);
+            copy.put(KEY_CHANNEL_COLOR, color);
+            values = copy;
+        }
+        if (values.isEmpty()) {
             return template;
         }
         String result = template;
-        for (Map.Entry<String, String> entry : placeholders.entrySet()) {
+        for (Map.Entry<String, String> entry : values.entrySet()) {
             String key = entry.getKey();
             if (key == null || key.isEmpty()) {
                 continue;

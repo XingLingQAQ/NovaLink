@@ -45,6 +45,12 @@ public class NovaChatFolia extends JavaPlugin {
     private MessageHelper messageHelper;
 
     /**
+     * Shared known-channel registry populated from backend ConfigSync pushes
+     * (UX-DESIGN §2.1). Consumed by {@code /nc list} and {@code /nc join <Tab>}.
+     */
+    private com.nova.chat.client.channel.KnownChannelRegistry knownChannelRegistry;
+
+    /**
      * Shared channel command intents (join/leave/toggle/reload).
      * PacketSender resolves {@link #networkClient} on each send so reload/reconnect
      * does not leave a stale client reference.
@@ -127,7 +133,25 @@ public class NovaChatFolia extends JavaPlugin {
             return;
         }
         
+        knownChannelRegistry = new com.nova.chat.client.channel.KnownChannelRegistry();
         networkClient = new AsyncNetworkClient(this, novaChatConfig, scheduler);
+
+        // UX-DESIGN §2.1: register a minimal ConfigSync handler that fills the
+        // shared registry so /nc list and join <Tab> have data when the backend
+        // pushes a roster. If the backend never pushes, the registry stays empty
+        // and consumers degrade gracefully (no crash). AsyncNetworkClient wraps
+        // the handler to hop to an async scheduler thread.
+        networkClient.registerHandler(
+                com.nova.chat.common.protocol.packets.ConfigSyncPacket.class,
+                packet -> {
+                    String json = packet.getConfigJson();
+                    if (json == null || json.isBlank()) {
+                        return;
+                    }
+                    String username = novaChatConfig != null ? novaChatConfig.getUsername() : null;
+                    knownChannelRegistry.replaceAll(
+                            com.nova.chat.client.channel.ConfigSyncChannels.extract(json, username));
+                });
         
         // Connect asynchronously using Folia scheduler
         scheduler.runAsync(() -> {
@@ -290,6 +314,15 @@ public class NovaChatFolia extends JavaPlugin {
      */
     public AsyncNetworkClient getNetworkClient() {
         return networkClient;
+    }
+
+    /**
+     * Gets the shared known-channel registry (populated from ConfigSync).
+     *
+     * @return the known-channel registry, never null after initialization
+     */
+    public com.nova.chat.client.channel.KnownChannelRegistry getKnownChannelRegistry() {
+        return knownChannelRegistry;
     }
 
     /**

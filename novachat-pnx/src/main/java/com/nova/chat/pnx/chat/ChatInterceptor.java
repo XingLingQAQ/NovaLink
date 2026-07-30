@@ -7,6 +7,7 @@ import cn.nukkit.event.Listener;
 import cn.nukkit.event.player.PlayerChatEvent;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.pnx.NovaChatPNX;
 import lombok.Getter;
@@ -25,7 +26,10 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ChatInterceptor implements Listener {
 
     private final NovaChatPNX plugin;
-    
+
+    /** Legacy color prefix applied to @name mentions when rendering chat (UX-DESIGN §4.2). */
+    static final String MENTION_HIGHLIGHT_COLOR = "&e";
+
     // Player chat states (current channel, etc.)
     private final Map<UUID, PlayerChatState> playerStates = new ConcurrentHashMap<>();
 
@@ -109,8 +113,10 @@ public class ChatInterceptor implements Listener {
      * @param content the message content
      */
     public void displayIncomingMessage(String senderName, String channelId, String content) {
-        String formatted = plugin.getMessageFormatter().formatIncomingMessage(senderName, channelId, content);
-        
+        // Highlight @name mentions before color translation (UX-DESIGN §4.2).
+        String highlighted = MentionNotifier.highlightMentions(content, MENTION_HIGHLIGHT_COLOR);
+        String formatted = plugin.getMessageFormatter().formatIncomingMessage(senderName, channelId, highlighted);
+
         // Broadcast to all online players
         plugin.getServer().broadcastMessage(formatted);
     }
@@ -123,15 +129,17 @@ public class ChatInterceptor implements Listener {
      * @param content the message content
      * @param placeholders additional placeholders
      */
-    public void displayIncomingMessage(String senderName, String channelId, String content, 
+    public void displayIncomingMessage(String senderName, String channelId, String content,
                                        Map<String, String> placeholders) {
+        // Highlight @name mentions before color translation (UX-DESIGN §4.2).
+        String highlighted = MentionNotifier.highlightMentions(content, MENTION_HIGHLIGHT_COLOR);
         String format = plugin.getNovaChatConfig().getChannelFormat(channelId);
-        
+
         String formatted = format
             .replace("{player}", senderName)
             .replace("{channel}", channelId)
             .replace("{channel_name}", channelId)
-            .replace("{message}", content);
+            .replace("{message}", highlighted);
         
         // Apply additional placeholders
         if (placeholders != null) {

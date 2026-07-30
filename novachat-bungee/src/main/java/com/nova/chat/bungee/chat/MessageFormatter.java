@@ -2,11 +2,13 @@ package com.nova.chat.bungee.chat;
 
 import com.nova.chat.bungee.NovaChatBungee;
 import com.nova.chat.bungee.config.NovaChatConfig;
+import com.nova.chat.client.format.FormatTemplateEngine;
 import net.md_5.bungee.api.ChatColor;
 import net.md_5.bungee.api.chat.BaseComponent;
 import net.md_5.bungee.api.chat.TextComponent;
 import net.md_5.bungee.api.connection.ProxiedPlayer;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -50,20 +52,24 @@ public class MessageFormatter {
                                               String senderName, String content, Map<String, String> placeholders) {
         // Get format template for this channel
         String format = config.getChannelFormat(channelId);
-        
-        // Replace placeholders
-        String formatted = format
-            .replace("{player}", senderName)
-            .replace("{channel}", channelId)
-            .replace("{channel_name}", channelName)
-            .replace("{message}", content);
-        
-        // Replace additional placeholders
+
+        // Build placeholder map: standard keys first, then caller extras (extras win on clash).
+        Map<String, String> values = new LinkedHashMap<>(8);
+        values.put(FormatTemplateEngine.KEY_PLAYER, senderName);
+        values.put(FormatTemplateEngine.KEY_CHANNEL, channelId);
+        values.put(FormatTemplateEngine.KEY_CHANNEL_NAME, channelName);
+        values.put(FormatTemplateEngine.KEY_MESSAGE, content);
         if (placeholders != null) {
             for (Map.Entry<String, String> entry : placeholders.entrySet()) {
-                formatted = formatted.replace("{" + entry.getKey() + "}", entry.getValue());
+                if (entry.getKey() == null || entry.getKey().isEmpty()) {
+                    continue;
+                }
+                values.put(entry.getKey(), entry.getValue());
             }
         }
+
+        // Replace placeholders via shared engine (auto-resolves {channel_color}).
+        String formatted = FormatTemplateEngine.apply(format, values);
         
         // Convert hex colors and legacy codes to BaseComponent
         return parseColors(formatted);

@@ -11,6 +11,8 @@ import com.nova.chat.bungee.config.NovaChatConfig;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.MentionPacket;
+import com.nova.chat.common.chat.MentionNotifier;
 import net.md_5.bungee.api.chat.BaseComponent;
 import net.md_5.bungee.api.connection.ProxiedPlayer;
 import net.md_5.bungee.api.event.ChatEvent;
@@ -67,8 +69,12 @@ public class ChatListener implements Listener {
         if (plugin.getNetworkClient() != null) {
             plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
             plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
+            plugin.getNetworkClient().registerHandler(MentionPacket.class, this::handleMention);
         }
     }
+
+    /** Legacy color prefix applied to @name mentions when rendering chat (UX-DESIGN §4.2). */
+    static final String MENTION_HIGHLIGHT_COLOR = "&e";
     
     /**
      * Handles channel action responses from the backend.
@@ -82,6 +88,14 @@ public class ChatListener implements Listener {
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         plugin.debug("Received channel action response: " + packet);
 
+        // UX-DESIGN §5: KICK/MUTE target-side notification. These responses may
+        // arrive as backend pushes with no local pending request, so resolve the
+        // target from the response's extras rather than the tracker.
+        if (packet.isSuccess() && (packet.getAction() == ChannelAction.KICK
+                || packet.getAction() == ChannelAction.MUTE)) {
+            notifyKickMuteTarget(packet);
+        }
+
         ChannelResponseTracker tracker = plugin.getNetworkClient().getChannelResponseTracker();
         ChannelResponseTracker.PendingChannelAction pending = tracker.consume(packet.getRequestId());
         if (pending == null || pending.getPlayerId() == null) {
@@ -94,15 +108,26 @@ public class ChatListener implements Listener {
         }
 
         if (packet.isSuccess()) {
-            // Success messaging stays owned by the command's immediate feedback;
-            // the proxy only mirrors the authoritative active channel.
-            if (packet.getAction() == ChannelAction.JOIN
-                    && packet.getChannelId() != null && !packet.getChannelId().isEmpty()) {
-                PlayerChannelState state = getState(pending.getPlayerId());
-                if (state != null) {
-                    state.setActiveChannel(packet.getChannelId());
+            // §7: the immediate join receipt is the optimistic "正在加入频道 X…";
+            // confirm here once the backend accepts so the player sees the join land.
+            if (packet.getAction() == ChannelAction.JOIN) {
+                String confirmedChannel = (packet.getChannelId() != null && !packet.getChannelId().isEmpty())
+                        ? packet.getChannelId()
+                        : pending.getChannelId();
+                if (confirmedChannel != null && !confirmedChannel.isEmpty()) {
+                    player.sendMessage(messageFormatter.formatSuccess("已加入频道 " + confirmedChannel));
+                }
+                if (packet.getChannelId() != null && !packet.getChannelId().isEmpty()) {
+                    PlayerChannelState state = getState(pending.getPlayerId());
+                    if (state != null) {
+                        state.setActiveChannel(packet.getChannelId());
+                    }
                 }
             }
+            // §7 action bar ("当前频道：X（模式）") is intentionally not sent here:
+            // Bungee is a proxy and has no stable action-bar API that reliably
+            // reaches the downstream client. TODO: revisit if a reliable proxy
+            // action-bar path becomes available.
             return;
         }
 
@@ -112,6 +137,66 @@ public class ChatListener implements Listener {
             return;
         }
         player.sendMessage(messageFormatter.formatError(ErrorMessageFormatter.format(code)));
+    }
+
+    /**
+     * Sends a personalized kick/mute notice to the affected player
+     * (UX-DESIGN §5). Bungee has no reliable proxy title/action-bar API, so the
+     * notice is a chat message only. Falls back silently when the target is
+     * offline or the response lacks the {@code targetId} extra.
+     */
+    private void notifyKickMuteTarget(ChannelActionResponsePacket packet) {
+        String targetIdRaw = packet.getExtra("targetId");
+        if (targetIdRaw == null || targetIdRaw.isEmpty()) {
+            plugin.debug("KICK/MUTE response without targetId extra — cannot notify target: " + packet);
+            return;
+        }
+        UUID targetId;
+        try {
+            targetId = UUID.fromString(targetIdRaw);
+        } catch (IllegalArgumentException e) {
+            plugin.debug("KICK/MUTE response has invalid targetId: " + targetIdRaw);
+            return;
+        }
+        ProxiedPlayer target = plugin.getProxy().getPlayer(targetId);
+        if (target == null) {
+            return; // not on this proxy
+        }
+        String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+        String operator = packet.getExtra("operatorName");
+        if (operator == null || operator.isEmpty()) {
+            operator = "管理员";
+        }
+        if (packet.getAction() == ChannelAction.KICK) {
+            target.sendMessage(messageFormatter.parseColors(
+                    "&c你已被 " + operator + " 踢出频道 " + channelId));
+            return;
+        }
+        // MUTE
+        String durationText = formatDurationExtra(packet.getExtra("duration"));
+        target.sendMessage(messageFormatter.parseColors(
+                "&c你已被禁言 " + durationText + "（频道 " + channelId + "）"));
+    }
+
+    /** Formats a duration given as a seconds string, or "一段时间" if unknown. */
+    private String formatDurationExtra(String durationSeconds) {
+        if (durationSeconds == null || durationSeconds.isEmpty()) {
+            return "一段时间";
+        }
+        try {
+            long seconds = Long.parseLong(durationSeconds);
+            if (seconds < 60) {
+                return seconds + "秒";
+            } else if (seconds < 3600) {
+                return (seconds / 60) + "分钟";
+            } else if (seconds < 86400) {
+                return (seconds / 3600) + "小时";
+            } else {
+                return (seconds / 86400) + "天";
+            }
+        } catch (NumberFormatException e) {
+            return "一段时间";
+        }
     }
     
     /**
@@ -136,11 +221,40 @@ public class ChatListener implements Listener {
             PlayerChannelState state = getState(player.getUniqueId());
             if (state != null && channelId.equals(state.getActiveChannel())) {
                 BaseComponent[] formattedMessage = messageFormatter.formatChatMessage(
-                    player, channelId, channelName, senderName, content, placeholders
+                    player, channelId, channelName, senderName,
+                    MentionNotifier.highlightMentions(content, MENTION_HIGHLIGHT_COLOR),
+                    placeholders
                 );
                 player.sendMessage(formattedMessage);
             }
         }
+    }
+
+    /**
+     * Handles a mention notification packet (UX-DESIGN §4.1, Requirements 11.2).
+     *
+     * <p><b>Proxy degradation:</b> BungeeCord's {@link ProxiedPlayer} has no native
+     * title or sound API (no Adventure {@code Audience}). Sending a raw
+     * {@code net.md_5.bungee.protocol.packet.Title} / sound packet would couple us
+     * to unstable internal protocol classes, so we degrade to an in-chat
+     * highlighted notification. The {@link MentionPacket} itself still transits
+     * the proxy transparently (it is registered and handled here, not swallowed),
+     * so backends that want to render the title themselves via a client plugin
+     * can still do so.
+     */
+    private void handleMention(MentionPacket packet) {
+        UUID mentionedId = packet.getMentionedId();
+        if (mentionedId == null) {
+            return;
+        }
+        ProxiedPlayer player = plugin.getProxy().getPlayer(mentionedId);
+        if (player == null) {
+            return;
+        }
+        String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
+        String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+        String text = "&e" + mentioner + " &7在频道 &b" + channelId + " &7提到了你";
+        player.sendMessage(messageFormatter.parseColors(text));
     }
 
     

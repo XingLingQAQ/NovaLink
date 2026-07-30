@@ -62,6 +62,12 @@ public class NovaChatNukkit extends PluginBase implements Listener {
     private ExtensionManager extensionManager;
 
     /**
+     * Shared known-channel registry populated from backend ConfigSync pushes
+     * (UX-DESIGN §2.1). Consumed by {@code /nc list} and {@code /nc join <Tab>}.
+     */
+    private com.nova.chat.client.channel.KnownChannelRegistry knownChannelRegistry;
+
+    /**
      * Shared channel command intents (join/leave/toggle/reload).
      * PacketSender resolves {@link #networkClient} on each send so reload/reconnect
      * does not leave a stale client reference.
@@ -157,8 +163,15 @@ public class NovaChatNukkit extends PluginBase implements Listener {
             getLogger().error("Cannot initialize network client: configuration not loaded");
             return;
         }
-        
+
+        knownChannelRegistry = new com.nova.chat.client.channel.KnownChannelRegistry();
         networkClient = new NetworkClient(this, novaChatConfig);
+
+        // UX-DESIGN §2.1: register a minimal ConfigSync handler that fills the
+        // shared registry so /nc list and join <Tab> have data when the backend
+        // pushes a roster. If the backend never pushes, the registry stays empty
+        // and consumers degrade gracefully (no crash).
+        registerConfigSyncHandler();
         
         // Connect asynchronously
         getServer().getScheduler().scheduleAsyncTask(this, new AsyncTask() {
@@ -178,7 +191,30 @@ public class NovaChatNukkit extends PluginBase implements Listener {
             }
         });
     }
-    
+
+    /**
+     * Registers a minimal {@code ConfigSyncPacket} handler that fills the shared
+     * {@link com.nova.chat.client.channel.KnownChannelRegistry} (UX-DESIGN §2.1).
+     * Safe even if the backend never pushes to this platform — the registry stays
+     * empty and {@code /nc list} shows the empty prompt.
+     */
+    private void registerConfigSyncHandler() {
+        if (networkClient == null || knownChannelRegistry == null) {
+            return;
+        }
+        networkClient.registerHandler(
+                com.nova.chat.common.protocol.packets.ConfigSyncPacket.class,
+                packet -> {
+                    String json = packet.getConfigJson();
+                    if (json == null || json.isBlank()) {
+                        return;
+                    }
+                    String username = novaChatConfig != null ? novaChatConfig.getUsername() : null;
+                    knownChannelRegistry.replaceAll(
+                            com.nova.chat.client.channel.ConfigSyncChannels.extract(json, username));
+                });
+    }
+
     /**
      * Builds {@link ChannelCommandService} with a PacketSender that delegates to
      * the live {@link NetworkClient}. Send is accepted only when authenticated.
@@ -347,6 +383,15 @@ public class NovaChatNukkit extends PluginBase implements Listener {
      */
     public NetworkClient getNetworkClient() {
         return networkClient;
+    }
+
+    /**
+     * Gets the shared known-channel registry (populated from ConfigSync).
+     *
+     * @return the known-channel registry, never null after initialization
+     */
+    public com.nova.chat.client.channel.KnownChannelRegistry getKnownChannelRegistry() {
+        return knownChannelRegistry;
     }
 
     /**
