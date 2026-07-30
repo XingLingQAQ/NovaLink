@@ -145,11 +145,39 @@ public class ChatListener {
             }
 
             String code = packet.getErrorCode();
+            // BUG-H2: backend rejected the JOIN — roll back the optimistic
+            // active-channel switch ChannelCommandService.join made at send time.
+            rollbackJoinIfNeeded(packet, pending);
             if (code == null || code.isEmpty() || ErrorCode.SERVICE_UNAVAILABLE.getCode().equals(code)) {
                 return;
             }
             player.sendMessage(plugin.getMessageFormatter().formatError(ErrorMessageFormatter.format(code)));
         });
+    }
+
+    /**
+     * Restores the player's pre-join active channel when the backend rejects a
+     * JOIN (BUG-H2). Only rolls back for JOIN responses whose pending context
+     * carries a non-blank {@code previousChannel} and whose optimistic channel
+     * is still set on the state.
+     */
+    private void rollbackJoinIfNeeded(ChannelActionResponsePacket packet,
+                                      ChannelResponseTracker.PendingChannelAction pending) {
+        if (packet.getAction() != ChannelAction.JOIN) {
+            return;
+        }
+        String previousChannel = pending.getPreviousChannel();
+        if (previousChannel == null || previousChannel.isEmpty()) {
+            return;
+        }
+        PlayerChannelState state = getState(pending.getPlayerId());
+        if (state == null) {
+            return;
+        }
+        String current = state.getActiveChannel();
+        if (current != null && current.equals(pending.getChannelId())) {
+            state.setActiveChannel(previousChannel);
+        }
     }
 
     /**

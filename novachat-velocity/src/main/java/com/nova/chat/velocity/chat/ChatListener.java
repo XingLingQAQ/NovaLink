@@ -139,12 +139,46 @@ public class ChatListener {
             }
 
             String code = packet.getErrorCode();
+            // BUG-H2: backend rejected the JOIN — roll back the optimistic
+            // active-channel switch ChannelCommandService.join made at send time,
+            // restoring the previous channel so subsequent chat is not routed to
+            // a channel the player was never admitted to. Runs before the
+            // network-down early-return so a true rejection with an empty/SERVICE
+            // code still restores the active channel.
+            rollbackJoinIfNeeded(packet, pending);
             if (code == null || code.isEmpty() || ErrorCode.SERVICE_UNAVAILABLE.getCode().equals(code)) {
                 // Network-down is already reported at command send time; skip double prompt.
                 return;
             }
             player.sendMessage(messageFormatter.formatError(ErrorMessageFormatter.format(code)));
         });
+    }
+
+    /**
+     * Restores the player's pre-join active channel when the backend rejects a
+     * JOIN (BUG-H2). Only rolls back when the response action is JOIN and the
+     * pending context carries a non-blank {@code previousChannel} that differs
+     * from the optimistic one still set on the state.
+     */
+    private void rollbackJoinIfNeeded(ChannelActionResponsePacket packet,
+                                      ChannelResponseTracker.PendingChannelAction pending) {
+        if (packet.getAction() != com.nova.chat.common.protocol.ChannelAction.JOIN) {
+            return;
+        }
+        String previousChannel = pending.getPreviousChannel();
+        if (previousChannel == null || previousChannel.isEmpty()) {
+            return;
+        }
+        PlayerChannelState state = getState(pending.getPlayerId());
+        if (state == null) {
+            return;
+        }
+        // Only roll back if the optimistic channel is still in place; if the
+        // player has since switched channels manually, leave their choice alone.
+        String current = state.getActiveChannel();
+        if (current != null && current.equals(pending.getChannelId())) {
+            state.setActiveChannel(previousChannel);
+        }
     }
 
     /**

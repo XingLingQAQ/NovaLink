@@ -62,6 +62,15 @@ public final class ChannelCommandService {
                 ChannelAction.JOIN, channelId, password != null ? password : "");
         addPlayerExtras(packet, state.getPlayerId(), playerName);
 
+        // BUG-H2: stamp the current active channel so the async response handler
+        // can roll back the optimistic setActiveChannel below if the backend
+        // rejects the JOIN (wrong password, full, NC-403/404/434...). Read before
+        // the optimistic switch so the pre-join value is captured exactly.
+        String previousChannel = state.getActiveChannel();
+        if (previousChannel != null && !previousChannel.isEmpty()) {
+            packet.addExtra("previousChannel", previousChannel);
+        }
+
         if (!packetSender.send(packet)) {
             return CommandResult.failure(CommandIntent.JOIN,
                     "Failed to send JOIN for channel '" + channelId + "'",

@@ -17,42 +17,70 @@ import java.util.concurrent.ConcurrentHashMap;
  * (list shows the "no known channels" prompt, tab completion falls back).
  *
  * <p>UX-DESIGN §2.1.
+ *
+ * <p>Atomicity: the backing set is published via a {@code volatile} reference.
+ * Mutations ({@link #replaceAll}, {@link #addAll}, {@link #clear}) build a
+ * fresh set and then publish it with a single reference assignment, so readers
+ * always observe a consistent snapshot — never the empty / half-rebuilt
+ * intermediate state a {@code clear + addAll} sequence would expose during a
+ * ConfigSync re-push (BUG-H3). Read methods read the reference once and iterate
+ * that snapshot.
  */
 public final class KnownChannelRegistry {
 
-    private final Set<String> channelIds = ConcurrentHashMap.newKeySet();
+    // Volatile so reference swaps are visible across threads; readers snapshot
+    // the reference once and iterate it. The set itself is a concurrent key set
+    // so addAll's copy-then-publish is safe even if a stale reader still holds
+    // the previous reference.
+    private volatile Set<String> channelIds = Set.of();
+
+    private static Set<String> newSet() {
+        return ConcurrentHashMap.newKeySet();
+    }
+
+    private static Set<String> copyInto(Set<String> source) {
+        Set<String> dest = newSet();
+        if (source != null) {
+            for (String id : source) {
+                if (id != null && !id.isBlank()) {
+                    dest.add(id);
+                }
+            }
+        }
+        return dest;
+    }
 
     /**
      * Replaces the entire known-channel set. Safe to call from a Netty thread
-     * (the platform facade parses the packet there); storage is concurrent.
+     * (the platform facade parses the packet there). Builds the new set fully,
+     * then publishes it with a single atomic reference assignment so concurrent
+     * readers never observe an empty or half-rebuilt set.
      *
      * @param channels the new channel IDs (may be null / empty to clear)
      */
     public void replaceAll(Set<String> channels) {
-        channelIds.clear();
-        if (channels != null) {
-            for (String id : channels) {
-                if (id != null && !id.isBlank()) {
-                    channelIds.add(id);
-                }
-            }
-        }
+        channelIds = copyInto(channels);
     }
 
     /**
      * Adds channel IDs to the registry without clearing existing entries.
      *
+     * <p>Copy-on-write: reads a consistent snapshot of the current set, adds
+     * the new IDs into the copy, then publishes it atomically.
+     *
      * @param channels the channel IDs to add (may be null / empty)
      */
     public void addAll(Set<String> channels) {
-        if (channels == null) {
+        if (channels == null || channels.isEmpty()) {
             return;
         }
+        Set<String> base = copyInto(channelIds);
         for (String id : channels) {
             if (id != null && !id.isBlank()) {
-                channelIds.add(id);
+                base.add(id);
             }
         }
+        channelIds = base;
     }
 
     /**
@@ -63,16 +91,17 @@ public final class KnownChannelRegistry {
      * @return a new sorted list of matching channel IDs
      */
     public List<String> getKnownChannelIds(String prefix) {
-        if (channelIds.isEmpty()) {
+        Set<String> snapshot = channelIds;
+        if (snapshot.isEmpty()) {
             return Collections.emptyList();
         }
         List<String> filtered;
         if (prefix == null || prefix.isEmpty()) {
-            filtered = new ArrayList<>(channelIds);
+            filtered = new ArrayList<>(snapshot);
         } else {
             String lower = prefix.toLowerCase();
             filtered = new ArrayList<>();
-            for (String id : channelIds) {
+            for (String id : snapshot) {
                 if (id != null && id.toLowerCase().startsWith(lower)) {
                     filtered.add(id);
                 }
@@ -84,6 +113,9 @@ public final class KnownChannelRegistry {
 
     /**
      * Returns an unmodifiable view of all known channel IDs.
+     *
+     * <p>The view is backed by the snapshot at call time; later mutations to
+     * the registry are not reflected in a previously returned view.
      *
      * @return unmodifiable view of all known channel IDs
      */
@@ -114,6 +146,6 @@ public final class KnownChannelRegistry {
      * Clears all known channel IDs.
      */
     public void clear() {
-        channelIds.clear();
+        channelIds = Set.of();
     }
 }

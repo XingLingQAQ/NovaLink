@@ -51,8 +51,12 @@ public final class ChannelResponseTracker {
         UUID playerId = extractUuid(packet.getExtra("playerId"));
         String channelId = packet.getChannelId();
         ChannelAction action = packet.getAction();
+        // BUG-H2: the previous active channel is stamped on the packet by
+        // ChannelCommandService.join so the response handler can roll back the
+        // optimistic active-channel switch when the backend rejects the JOIN.
+        String previousChannel = packet.getExtra("previousChannel");
         pending.put(requestId, new PendingChannelAction(
-                playerId, channelId, action, System.currentTimeMillis()));
+                playerId, channelId, action, previousChannel, System.currentTimeMillis()));
     }
 
     /**
@@ -110,12 +114,15 @@ public final class ChannelResponseTracker {
         private final UUID playerId;
         private final String channelId;
         private final ChannelAction action;
+        private final String previousChannel;
         private final long createdAtMs;
 
-        private PendingChannelAction(UUID playerId, String channelId, ChannelAction action, long createdAtMs) {
+        private PendingChannelAction(UUID playerId, String channelId, ChannelAction action,
+                                     String previousChannel, long createdAtMs) {
             this.playerId = playerId;
             this.channelId = channelId;
             this.action = action;
+            this.previousChannel = previousChannel;
             this.createdAtMs = createdAtMs;
         }
 
@@ -132,6 +139,17 @@ public final class ChannelResponseTracker {
         /** @return the action, or {@code null} */
         public ChannelAction getAction() {
             return action;
+        }
+
+        /**
+         * @return the active channel the player had before the optimistic
+         *         change (set for JOIN/ACCEPT by {@code ChannelCommandService}),
+         *         or {@code null} if the originating command did not stamp one.
+         *         Used by response handlers to roll back the optimistic
+         *         active-channel switch when the backend rejects the action.
+         */
+        public String getPreviousChannel() {
+            return previousChannel;
         }
 
         /** @return wall-clock creation time in ms */

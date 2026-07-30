@@ -158,6 +158,18 @@ public class AsyncChatInterceptor implements Listener {
                 return;
             }
             String code = packet.getErrorCode();
+            // BUG-H2: backend rejected the JOIN — roll back the optimistic
+            // active-channel switch ChannelCommandService.join made at send time.
+            if (packet.getAction() == ChannelAction.JOIN) {
+                String previousChannel = pending.getPreviousChannel();
+                if (previousChannel != null && !previousChannel.isEmpty()) {
+                    PlayerChatState foliaState = plugin.getChatInterceptor().getOrCreateState(player);
+                    String current = foliaState.getActiveChannel();
+                    if (current != null && current.equals(pending.getChannelId())) {
+                        foliaState.setActiveChannel(previousChannel);
+                    }
+                }
+            }
             if (code == null || code.isEmpty() || ErrorCode.SERVICE_UNAVAILABLE.getCode().equals(code)) {
                 return;
             }
