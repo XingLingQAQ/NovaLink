@@ -5,7 +5,6 @@ import com.nova.chat.client.command.CommandResult;
 import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.folia.NovaChatFolia;
-import com.nova.chat.folia.chat.PlayerChatState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
@@ -68,14 +67,11 @@ public class JoinCommand extends AbstractSubCommand {
         String channelId = args[0];
         String password = args.length > 1 ? args[1] : "";
 
-        PlayerChatState foliaState = plugin.getChatInterceptor().getOrCreateState(player);
-        PlayerChannelState state = foliaState.getChannelState();
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         ChannelCommandService channelCommands = plugin.getChannelCommandService();
 
         CommandResult result = channelCommands.join(state, channelId, password, player.getName(), player.getWorld().getName());
         if (result.isSuccess()) {
-            // Keep the Folia active-channel mirror in sync with the shared state.
-            foliaState.setActiveChannel(state.getActiveChannel());
             messageHelper.sendMessage(sender, "正在加入频道 &e" + channelId + "&7...");
             plugin.debug("Player " + player.getName() + " joined channel: " + channelId);
         } else {

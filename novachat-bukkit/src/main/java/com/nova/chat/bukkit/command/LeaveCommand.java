@@ -72,7 +72,7 @@ public class LeaveCommand extends AbstractSubCommand {
         } else {
             // Leave current channel
             if (state.getActiveChannel() == null) {
-                errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.NOT_IN_CHANNEL);
+                errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.NOT_IN_CHANNEL);
                 return true;
             }
             channelId = state.getActiveChannel();
@@ -94,7 +94,7 @@ public class LeaveCommand extends AbstractSubCommand {
             // Distinguish "not in a channel" (service short-circuit) from a send failure.
             String message = result.getMessage();
             if (message != null && message.contains("Not in a channel")) {
-                errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.NOT_IN_CHANNEL);
+                errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.NOT_IN_CHANNEL);
             } else {
                 errorHandler.sendRequestFailed(sender);
             }

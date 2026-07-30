@@ -3,7 +3,6 @@ package com.nova.chat.folia.command;
 import com.nova.chat.client.command.ListCommandService;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.folia.NovaChatFolia;
-import com.nova.chat.folia.chat.PlayerChatState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
@@ -58,8 +57,7 @@ public class ListCommand extends AbstractSubCommand {
         }
         Player player = (Player) sender;
 
-        PlayerChatState foliaState = plugin.getChatInterceptor().getOrCreateState(player);
-        PlayerChannelState state = foliaState != null ? foliaState.getChannelState() : null;
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         java.util.Set<String> joined = state != null ? state.getJoinedChannels() : java.util.Set.of();
 
         List<String> lines = ListCommandService.formatChannelList(

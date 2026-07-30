@@ -1,7 +1,7 @@
 package com.nova.chat.folia;
 
 import com.nova.chat.client.state.ChatMode;
-import com.nova.chat.folia.chat.PlayerChatState;
+import com.nova.chat.client.state.PlayerChannelState;
 import net.jqwik.api.*;
 import net.jqwik.api.constraints.*;
 
@@ -26,28 +26,28 @@ import static org.assertj.core.api.Assertions.assertThat;
 class FoliaThreadSafetyPropertyTest {
 
     /**
-     * Property 17: Folia Thread Safety - PlayerChatState Concurrent Access
+     * Property 17: Folia Thread Safety - PlayerChannelState Concurrent Access
      * 
      * *For any* player operation in Folia, the operation should execute safely
      * when accessed from multiple threads concurrently.
      * 
-     * This test verifies that PlayerChatState can be safely accessed and modified
+     * This test verifies that PlayerChannelState can be safely accessed and modified
      * from multiple threads without data corruption.
      * 
      * **Validates: Requirements 2.3**
      */
     @Property(tries = 100)
-    void playerChatStateConcurrentAccessIsSafe(
+    void PlayerChannelStateConcurrentAccessIsSafe(
             @ForAll("validUUIDs") UUID playerId,
             @ForAll("validChannelIds") String initialChannel,
             @ForAll @IntRange(min = 2, max = 10) int numThreads,
             @ForAll @IntRange(min = 10, max = 50) int operationsPerThread
     ) throws InterruptedException, ExecutionException {
         // Create a shared state
-        PlayerChatState state = new PlayerChatState(playerId, initialChannel, ChatMode.HYBRID);
+        PlayerChannelState state = new PlayerChannelState(playerId, initialChannel, ChatMode.HYBRID);
         
         // Use ConcurrentHashMap to simulate the playerStates map in AsyncChatInterceptor
-        Map<UUID, PlayerChatState> playerStates = new ConcurrentHashMap<>();
+        Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
         playerStates.put(playerId, state);
         
         ExecutorService executor = Executors.newFixedThreadPool(numThreads);
@@ -65,7 +65,7 @@ class FoliaThreadSafetyPropertyTest {
                     
                     for (int i = 0; i < operationsPerThread; i++) {
                         // Simulate various operations that would happen in Folia
-                        PlayerChatState currentState = playerStates.get(playerId);
+                        PlayerChannelState currentState = playerStates.get(playerId);
                         if (currentState != null) {
                             // Read operations
                             String channel = currentState.getActiveChannel();
@@ -103,7 +103,7 @@ class FoliaThreadSafetyPropertyTest {
         assertThat(successfulOperations.get()).isEqualTo(numThreads * operationsPerThread);
         
         // Verify state is still valid (not corrupted)
-        PlayerChatState finalState = playerStates.get(playerId);
+        PlayerChannelState finalState = playerStates.get(playerId);
         assertThat(finalState).isNotNull();
         assertThat(finalState.getPlayerId()).isEqualTo(playerId);
         assertThat(finalState.getActiveChannel()).isNotNull();
@@ -124,14 +124,14 @@ class FoliaThreadSafetyPropertyTest {
             @ForAll("validChannelIds") String defaultChannel,
             @ForAll @IntRange(min = 2, max = 10) int numThreads
     ) throws InterruptedException, ExecutionException {
-        Map<UUID, PlayerChatState> playerStates = new ConcurrentHashMap<>();
+        Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
         
         ExecutorService executor = Executors.newFixedThreadPool(numThreads);
         CountDownLatch startLatch = new CountDownLatch(1);
         CountDownLatch doneLatch = new CountDownLatch(numThreads);
         
         AtomicInteger statesCreated = new AtomicInteger(0);
-        List<Future<PlayerChatState>> futures = new ArrayList<>();
+        List<Future<PlayerChannelState>> futures = new ArrayList<>();
         
         for (int t = 0; t < numThreads; t++) {
             futures.add(executor.submit(() -> {
@@ -141,7 +141,7 @@ class FoliaThreadSafetyPropertyTest {
                     // This simulates getOrCreateState in AsyncChatInterceptor
                     return playerStates.computeIfAbsent(playerId, uuid -> {
                         statesCreated.incrementAndGet();
-                        return new PlayerChatState(uuid, defaultChannel, ChatMode.HYBRID);
+                        return new PlayerChannelState(uuid, defaultChannel, ChatMode.HYBRID);
                     });
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -157,8 +157,8 @@ class FoliaThreadSafetyPropertyTest {
         executor.shutdown();
         
         // All threads should get the same state instance
-        PlayerChatState firstState = futures.get(0).get();
-        for (Future<PlayerChatState> future : futures) {
+        PlayerChannelState firstState = futures.get(0).get();
+        for (Future<PlayerChannelState> future : futures) {
             assertThat(future.get()).isSameAs(firstState);
         }
         
@@ -184,7 +184,7 @@ class FoliaThreadSafetyPropertyTest {
             @ForAll ChatMode initialMode,
             @ForAll @IntRange(min = 1, max = 20) int numToggles
     ) throws InterruptedException {
-        PlayerChatState state = new PlayerChatState(playerId, channel, initialMode);
+        PlayerChannelState state = new PlayerChannelState(playerId, channel, initialMode);
         
         ExecutorService executor = Executors.newFixedThreadPool(numToggles);
         CountDownLatch startLatch = new CountDownLatch(1);
@@ -220,7 +220,7 @@ class FoliaThreadSafetyPropertyTest {
     /**
      * Property: State copy is independent
      * 
-     * *For any* PlayerChatState, modifications to a copy should not affect the original.
+     * *For any* PlayerChannelState, modifications to a copy should not affect the original.
      * This is important for thread safety when passing state between threads.
      * 
      * **Validates: Requirements 2.3**
@@ -235,8 +235,8 @@ class FoliaThreadSafetyPropertyTest {
         // Ensure channels are different for meaningful test
         Assume.that(!originalChannel.equals(newChannel));
         
-        PlayerChatState original = new PlayerChatState(playerId, originalChannel, originalMode);
-        PlayerChatState copy = original.copy();
+        PlayerChannelState original = new PlayerChannelState(playerId, originalChannel, originalMode);
+        PlayerChannelState copy = original.copy();
         
         // Modify the copy
         copy.setActiveChannel(newChannel);
@@ -269,7 +269,7 @@ class FoliaThreadSafetyPropertyTest {
     ) throws InterruptedException, ExecutionException {
         Assume.that(!initialChannel.equals(updatedChannel));
         
-        PlayerChatState state = new PlayerChatState(playerId, initialChannel, ChatMode.HYBRID);
+        PlayerChannelState state = new PlayerChannelState(playerId, initialChannel, ChatMode.HYBRID);
         
         ExecutorService executor = Executors.newFixedThreadPool(2);
         CountDownLatch writeDone = new CountDownLatch(1);

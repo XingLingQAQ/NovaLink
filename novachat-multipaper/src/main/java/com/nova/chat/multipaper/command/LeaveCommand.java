@@ -1,7 +1,7 @@
 package com.nova.chat.multipaper.command;
 
+import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.multipaper.NovaChatMultiPaper;
-import com.nova.chat.multipaper.chat.PlayerChatState;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import org.bukkit.command.CommandSender;
@@ -51,7 +51,7 @@ public class LeaveCommand extends AbstractSubCommand {
         }
 
         Player player = (Player) sender;
-        PlayerChatState state = getPlayerState(player);
+        PlayerChannelState state = getPlayerState(player);
         
         String channelId;
         if (args.length > 0) {

@@ -1,5 +1,7 @@
 package com.nova.chat.folia.command;
 
+import com.nova.chat.client.command.MessagePrefixes;
+import com.nova.chat.client.format.MessageFormatService;
 import com.nova.chat.folia.NovaChatFolia;
 import org.bukkit.ChatColor;
 import org.bukkit.command.CommandSender;
@@ -7,21 +9,16 @@ import org.bukkit.command.CommandSender;
 /**
  * Helper class for formatting and sending messages to players.
  * Supports color codes and provides consistent message formatting.
- * 
+ *
+ * <p>Color translation delegates hex expansion to the shared
+ * {@link MessageFormatService}; only the final {@code &}-code to
+ * {@code §}-code pass uses the Bukkit {@link ChatColor} API.
+ *
  * Requirements: 2.1
  */
 public class MessageHelper {
 
     private final NovaChatFolia plugin;
-    
-    /** Message prefix */
-    private static final String PREFIX = "&8[&bNovaChat&8]&r ";
-    
-    /** Error prefix */
-    private static final String ERROR_PREFIX = "&8[&cNovaChat&8]&r ";
-    
-    /** Success prefix */
-    private static final String SUCCESS_PREFIX = "&8[&aNovaChat&8]&r ";
 
     public MessageHelper(NovaChatFolia plugin) {
         this.plugin = plugin;
@@ -34,7 +31,7 @@ public class MessageHelper {
      * @param message the message (supports color codes)
      */
     public void sendMessage(CommandSender sender, String message) {
-        sender.sendMessage(colorize(PREFIX + message));
+        sender.sendMessage(colorize(MessagePrefixes.PREFIX + message));
     }
 
     /**
@@ -44,7 +41,7 @@ public class MessageHelper {
      * @param message the message
      */
     public void sendSuccess(CommandSender sender, String message) {
-        sender.sendMessage(colorize(SUCCESS_PREFIX + "&a" + message));
+        sender.sendMessage(colorize(MessagePrefixes.SUCCESS_PREFIX + "&a" + message));
     }
 
     /**
@@ -54,9 +51,8 @@ public class MessageHelper {
      * @param message the error message
      */
     public void sendError(CommandSender sender, String message) {
-        sender.sendMessage(colorize(ERROR_PREFIX + "&c" + message));
+        sender.sendMessage(colorize(MessagePrefixes.ERROR_PREFIX + "&c" + message));
     }
-
 
     /**
      * Sends a raw message without prefix.
@@ -109,8 +105,9 @@ public class MessageHelper {
     }
 
     /**
-     * Colorizes a string by replacing & color codes with ChatColor.
-     * Also supports hex colors in the format &#RRGGBB.
+     * Colorizes a string by expanding {@code &#RRGGBB} hex sequences via the shared
+     * {@link MessageFormatService} and then translating remaining {@code &} color
+     * codes with Bukkit's {@link ChatColor}.
      *
      * @param message the message to colorize
      * @return the colorized message
@@ -119,43 +116,8 @@ public class MessageHelper {
         if (message == null) {
             return "";
         }
-        
-        // Handle hex colors (&#RRGGBB format)
-        message = translateHexColors(message);
-        
-        // Handle standard color codes
-        return ChatColor.translateAlternateColorCodes('&', message);
-    }
-
-    /**
-     * Translates hex color codes in the format &#RRGGBB to Bukkit format.
-     *
-     * @param message the message
-     * @return the message with translated hex colors
-     */
-    private static String translateHexColors(String message) {
-        StringBuilder result = new StringBuilder();
-        int i = 0;
-        
-        while (i < message.length()) {
-            if (i + 8 <= message.length() && message.charAt(i) == '&' && message.charAt(i + 1) == '#') {
-                // Check if next 6 characters are valid hex
-                String hex = message.substring(i + 2, i + 8);
-                if (hex.matches("[0-9A-Fa-f]{6}")) {
-                    // Convert to Bukkit hex format: §x§R§R§G§G§B§B
-                    result.append("§x");
-                    for (char c : hex.toCharArray()) {
-                        result.append("§").append(Character.toLowerCase(c));
-                    }
-                    i += 8;
-                    continue;
-                }
-            }
-            result.append(message.charAt(i));
-            i++;
-        }
-        
-        return result.toString();
+        String expanded = MessageFormatService.convertHexToSection(message);
+        return ChatColor.translateAlternateColorCodes('&', expanded);
     }
 
     /**

@@ -11,19 +11,23 @@ import java.util.UUID;
  *
  * <p>Tracks the active channel, the set of joined channels, chat mode
  * (including personal override), and an optional current-server hint used by
- * proxies. Thread-safety is not provided; callers should confine instances to
- * a single player lifecycle or synchronize externally.
+ * proxies. Cross-thread visibility is provided by {@code volatile} on the
+ * scalar fields so platforms that read state from region/async threads
+ * (notably Folia) see consistent values; {@link #toggleMode()} is
+ * {@code synchronized} so concurrent toggles remain deterministic. The
+ * {@code joinedChannels} set is confined to a single owning thread / held
+ * under the same lock and exposed only as an unmodifiable view.
  *
  * <p>Requirements: 11.3
  */
 public final class PlayerChannelState {
 
     private final UUID playerId;
-    private String activeChannel;
+    private volatile String activeChannel;
     private final Set<String> joinedChannels;
-    private ChatMode chatMode;
-    private boolean modeOverridden;
-    private String currentServer;
+    private volatile ChatMode chatMode;
+    private volatile boolean modeOverridden;
+    private volatile String currentServer;
 
     /**
      * Creates state for a player, joining the default channel as active.
@@ -145,9 +149,11 @@ public final class PlayerChannelState {
      * @return the new chat mode
      */
     public ChatMode toggleMode() {
-        this.modeOverridden = true;
-        this.chatMode = this.chatMode.toggled();
-        return this.chatMode;
+        synchronized (this) {
+            this.modeOverridden = true;
+            this.chatMode = this.chatMode.toggled();
+            return this.chatMode;
+        }
     }
 
     /**
@@ -156,6 +162,21 @@ public final class PlayerChannelState {
     public void resetMode(ChatMode defaultMode) {
         this.chatMode = Objects.requireNonNull(defaultMode, "defaultMode");
         this.modeOverridden = false;
+    }
+
+    /**
+     * Creates an independent copy of this state. The joined-channels set is
+     * duplicated so mutations to the copy do not affect the original.
+     *
+     * @return a new {@code PlayerChannelState} with the same field values
+     */
+    public PlayerChannelState copy() {
+        PlayerChannelState copy = new PlayerChannelState(playerId, activeChannel, chatMode);
+        copy.joinedChannels.clear();
+        copy.joinedChannels.addAll(this.joinedChannels);
+        copy.modeOverridden = this.modeOverridden;
+        copy.currentServer = this.currentServer;
+        return copy;
     }
 
     @Override

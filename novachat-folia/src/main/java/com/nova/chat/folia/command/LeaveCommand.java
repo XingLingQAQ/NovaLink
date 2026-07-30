@@ -5,7 +5,6 @@ import com.nova.chat.client.command.CommandResult;
 import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.folia.NovaChatFolia;
-import com.nova.chat.folia.chat.PlayerChatState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
@@ -59,8 +58,7 @@ public class LeaveCommand extends AbstractSubCommand {
         }
 
         Player player = (Player) sender;
-        PlayerChatState foliaState = plugin.getChatInterceptor().getOrCreateState(player);
-        PlayerChannelState state = foliaState.getChannelState();
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
 
         String channelId;
         if (args.length > 0) {
@@ -75,10 +73,10 @@ public class LeaveCommand extends AbstractSubCommand {
         ChannelCommandService channelCommands = plugin.getChannelCommandService();
         CommandResult result = channelCommands.leave(state, channelId, player.getName());
         if (result.isSuccess()) {
-            // The shared service updates joined membership; the Folia active-channel
-            // mirror is intentionally left untouched to match the historical Folia
-            // leave behaviour (chat kept routing to the prior channel until a new
-            // join). Tab completion and permissions are unchanged.
+            // The shared service optimistically updates local joined membership and,
+            // when the left channel was the active one, falls the active channel back
+            // to the next joined channel (or null). This matches the shared behavior
+            // used by the other platforms; Folia region threads read it via volatile.
             messageHelper.sendMessage(sender, "正在离开频道 &e" + channelId + "&7...");
             plugin.debug("Player " + player.getName() + " left channel: " + channelId);
         } else {
@@ -99,11 +97,10 @@ public class LeaveCommand extends AbstractSubCommand {
             return Collections.emptyList();
         }
         Player player = (Player) sender;
-        PlayerChatState foliaState = getPlayerState(player);
-        if (foliaState == null) {
+        PlayerChannelState state = getPlayerState(player);
+        if (state == null) {
             return Collections.emptyList();
         }
-        com.nova.chat.client.state.PlayerChannelState state = foliaState.getChannelState();
         String prefix = args[0] == null ? "" : args[0].toLowerCase();
         return state.getJoinedChannels().stream()
                 .filter(id -> id != null && id.toLowerCase().startsWith(prefix))

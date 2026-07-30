@@ -63,13 +63,13 @@ public class CreateCommand extends AbstractSubCommand {
 
         // Validate channel name
         if (channelName.length() < 2 || channelName.length() > 16) {
-            errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.INVALID_FORMAT, 
+            errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.INVALID_FORMAT,
                 "频道名称长度必须在2-16个字符之间");
             return true;
         }
 
         if (!channelName.matches("^[a-zA-Z0-9_\\u4e00-\\u9fa5]+$")) {
-            errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.INVALID_FORMAT, 
+            errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.INVALID_FORMAT,
                 "频道名称只能包含字母、数字、下划线和中文");
             return true;
         }

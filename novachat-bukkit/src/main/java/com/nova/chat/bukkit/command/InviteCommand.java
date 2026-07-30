@@ -68,7 +68,7 @@ public class InviteCommand extends AbstractSubCommand {
             // Use current channel
             PlayerChannelState state = getPlayerState(player);
             if (state == null || state.getActiveChannel() == null) {
-                errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.NOT_IN_CHANNEL, 
+                errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.NOT_IN_CHANNEL,
                     "请指定频道ID或先加入一个频道");
                 return true;
             }

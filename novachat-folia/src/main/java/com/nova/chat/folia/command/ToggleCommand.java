@@ -6,7 +6,6 @@ import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.ChatModeDescriptions;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.folia.NovaChatFolia;
-import com.nova.chat.folia.chat.PlayerChatState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
@@ -53,8 +52,7 @@ public class ToggleCommand extends AbstractSubCommand {
     @Override
     public boolean execute(CommandSender sender, String[] args) {
         Player player = (Player) sender;
-        PlayerChatState foliaState = plugin.getChatInterceptor().getOrCreateState(player);
-        PlayerChannelState state = foliaState.getChannelState();
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         ChannelCommandService channelCommands = plugin.getChannelCommandService();
 
         CommandResult result = channelCommands.toggle(state);
@@ -63,12 +61,7 @@ public class ToggleCommand extends AbstractSubCommand {
             return true;
         }
 
-        // The shared service mutated the underlying PlayerChannelState; refresh the
-        // Folia-side volatile mirrors so chat handling on region threads sees the
-        // new mode immediately.
-        foliaState.setChatMode(state.getChatMode());
-        foliaState.setModeOverridden(state.isModeOverridden());
-        ChatMode newMode = foliaState.getChatMode();
+        ChatMode newMode = state.getChatMode();
 
         String modeDesc = newMode == ChatMode.REPLACE ? "频道模式" : "混合模式";
         messageHelper.sendSuccess(sender, "聊天模式已切换为: &e" + modeDesc);

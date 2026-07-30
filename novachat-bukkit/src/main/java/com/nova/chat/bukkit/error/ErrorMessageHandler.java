@@ -2,6 +2,7 @@ package com.nova.chat.bukkit.error;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.bukkit.command.MessageHelper;
+import com.nova.chat.client.error.ErrorCode;
 import org.bukkit.command.CommandSender;
 
 import java.util.logging.Level;
@@ -94,18 +95,24 @@ public class ErrorMessageHandler {
     /**
      * Sends an error from a backend response code.
      *
+     * <p>Uses the shared {@link ErrorCode#fromCode(String)} semantics: unknown
+     * or null codes resolve to {@link ErrorCode#INTERNAL_ERROR}, so callers
+     * always get a renderable error. When the backend supplies an unrecognized
+     * code, we surface the raw code in the message so operators can still
+     * diagnose it.
+     *
      * @param sender the command sender
      * @param code   the error code string (e.g., "NC-401")
      */
     public void sendErrorFromCode(CommandSender sender, String code) {
         ErrorCode errorCode = ErrorCode.fromCode(code);
-        if (errorCode != null) {
-            sendError(sender, errorCode);
-        } else {
-            // Unknown error code, create a generic error
-            sendError(sender, new NovaError(ErrorCode.INTERNAL_ERROR, 
-                "未知错误: " + code, 
+        if (code != null && !code.equals(errorCode.getCode())) {
+            // Unknown backend code — preserve it in the message for diagnosis.
+            sendError(sender, new NovaError(errorCode,
+                "未知错误: " + code,
                 "请联系管理员并提供此错误代码"));
+        } else {
+            sendError(sender, errorCode);
         }
     }
 
@@ -118,12 +125,13 @@ public class ErrorMessageHandler {
      */
     public void sendErrorFromCode(CommandSender sender, String code, String message) {
         ErrorCode errorCode = ErrorCode.fromCode(code);
-        if (errorCode != null) {
-            sendError(sender, new NovaError(errorCode, message));
-        } else {
-            sendError(sender, new NovaError(ErrorCode.INTERNAL_ERROR, 
-                code + ": " + message, 
+        if (code != null && !code.equals(errorCode.getCode())) {
+            // Unknown backend code — preserve it in the message for diagnosis.
+            sendError(sender, new NovaError(errorCode,
+                code + ": " + message,
                 "请联系管理员并提供此错误代码"));
+        } else {
+            sendError(sender, new NovaError(errorCode, message));
         }
     }
 

@@ -1,7 +1,7 @@
 package com.nova.chat.multipaper;
 
 import com.nova.chat.client.state.ChatMode;
-import com.nova.chat.multipaper.chat.PlayerChatState;
+import com.nova.chat.client.state.PlayerChannelState;
 import net.jqwik.api.*;
 import net.jqwik.api.constraints.*;
 
@@ -26,27 +26,27 @@ class MultiPaperStateSyncPropertyTest {
      * *For any* player moving between MultiPaper instances, their chat state 
      * should be consistent across all instances.
      * 
-     * This is tested by verifying that serializing and deserializing a PlayerChatState
+     * This is tested by verifying that serializing and deserializing a PlayerChannelState
      * produces an equivalent state (round-trip property).
      * 
      * **Validates: Requirements 1.3**
      */
     @Property(tries = 100)
-    void playerChatStateRoundTrip(
+    void PlayerChannelStateRoundTrip(
             @ForAll("validUUIDs") UUID playerId,
             @ForAll("validChannelIds") String channelId,
             @ForAll ChatMode chatMode,
             @ForAll boolean modeOverridden
     ) {
         // Create original state
-        PlayerChatState originalState = new PlayerChatState(playerId, channelId, chatMode);
+        PlayerChannelState originalState = new PlayerChannelState(playerId, channelId, chatMode);
         originalState.setModeOverridden(modeOverridden);
         
         // Serialize to string (same format as MultiPaperAdapter)
         String serialized = serializeState(originalState);
         
         // Deserialize back
-        PlayerChatState deserializedState = deserializeState(playerId, serialized);
+        PlayerChannelState deserializedState = deserializeState(playerId, serialized);
         
         // Verify all fields are preserved
         assertThat(deserializedState).isNotNull();
@@ -59,7 +59,7 @@ class MultiPaperStateSyncPropertyTest {
     /**
      * Property: State copy preserves all fields
      * 
-     * *For any* PlayerChatState, creating a copy should preserve all fields.
+     * *For any* PlayerChannelState, creating a copy should preserve all fields.
      */
     @Property(tries = 100)
     void stateCopyPreservesAllFields(
@@ -68,10 +68,10 @@ class MultiPaperStateSyncPropertyTest {
             @ForAll ChatMode chatMode,
             @ForAll boolean modeOverridden
     ) {
-        PlayerChatState original = new PlayerChatState(playerId, channelId, chatMode);
+        PlayerChannelState original = new PlayerChannelState(playerId, channelId, chatMode);
         original.setModeOverridden(modeOverridden);
         
-        PlayerChatState copy = original.copy();
+        PlayerChannelState copy = original.copy();
         
         assertThat(copy.getPlayerId()).isEqualTo(original.getPlayerId());
         assertThat(copy.getActiveChannel()).isEqualTo(original.getActiveChannel());
@@ -82,7 +82,7 @@ class MultiPaperStateSyncPropertyTest {
     /**
      * Property: Toggle mode alternates between HYBRID and REPLACE
      * 
-     * *For any* PlayerChatState, toggling mode twice should return to original mode.
+     * *For any* PlayerChannelState, toggling mode twice should return to original mode.
      */
     @Property(tries = 100)
     void toggleModeIsIdempotentAfterTwoToggles(
@@ -90,7 +90,7 @@ class MultiPaperStateSyncPropertyTest {
             @ForAll("validChannelIds") String channelId,
             @ForAll ChatMode initialMode
     ) {
-        PlayerChatState state = new PlayerChatState(playerId, channelId, initialMode);
+        PlayerChannelState state = new PlayerChannelState(playerId, channelId, initialMode);
         
         // Toggle twice
         state.toggleMode();
@@ -103,7 +103,7 @@ class MultiPaperStateSyncPropertyTest {
     /**
      * Property: Toggle mode sets modeOverridden to true
      * 
-     * *For any* PlayerChatState, toggling mode should set modeOverridden to true.
+     * *For any* PlayerChannelState, toggling mode should set modeOverridden to true.
      */
     @Property(tries = 100)
     void toggleModeSetsOverriddenFlag(
@@ -111,7 +111,7 @@ class MultiPaperStateSyncPropertyTest {
             @ForAll("validChannelIds") String channelId,
             @ForAll ChatMode initialMode
     ) {
-        PlayerChatState state = new PlayerChatState(playerId, channelId, initialMode);
+        PlayerChannelState state = new PlayerChannelState(playerId, channelId, initialMode);
         assertThat(state.isModeOverridden()).isFalse();
         
         state.toggleMode();
@@ -122,7 +122,7 @@ class MultiPaperStateSyncPropertyTest {
     /**
      * Property: Serialization format is consistent
      * 
-     * *For any* PlayerChatState, the serialized format should contain all required parts.
+     * *For any* PlayerChannelState, the serialized format should contain all required parts.
      */
     @Property(tries = 100)
     void serializationFormatIsConsistent(
@@ -131,7 +131,7 @@ class MultiPaperStateSyncPropertyTest {
             @ForAll ChatMode chatMode,
             @ForAll boolean modeOverridden
     ) {
-        PlayerChatState state = new PlayerChatState(playerId, channelId, chatMode);
+        PlayerChannelState state = new PlayerChannelState(playerId, channelId, chatMode);
         state.setModeOverridden(modeOverridden);
         
         String serialized = serializeState(state);
@@ -171,7 +171,7 @@ class MultiPaperStateSyncPropertyTest {
      * Serializes a player chat state to a string.
      * Format: channel|mode|modeOverridden
      */
-    private String serializeState(PlayerChatState state) {
+    private String serializeState(PlayerChannelState state) {
         return state.getActiveChannel() + "|" + 
                state.getChatMode().name() + "|" + 
                state.isModeOverridden();
@@ -180,14 +180,14 @@ class MultiPaperStateSyncPropertyTest {
     /**
      * Deserializes a player chat state from a string.
      */
-    private PlayerChatState deserializeState(UUID playerId, String data) {
+    private PlayerChannelState deserializeState(UUID playerId, String data) {
         String[] parts = data.split("\\|");
         if (parts.length >= 3) {
             String channel = parts[0];
             ChatMode mode = ChatMode.valueOf(parts[1]);
             boolean modeOverridden = Boolean.parseBoolean(parts[2]);
             
-            PlayerChatState state = new PlayerChatState(playerId, channel, mode);
+            PlayerChannelState state = new PlayerChannelState(playerId, channel, mode);
             state.setModeOverridden(modeOverridden);
             return state;
         }

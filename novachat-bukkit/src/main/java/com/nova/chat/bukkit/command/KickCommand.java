@@ -72,7 +72,7 @@ public class KickCommand extends AbstractSubCommand {
         }
 
         if (channelId == null) {
-            errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.BAD_REQUEST, 
+            errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.BAD_REQUEST,
                 "请指定频道ID");
             return true;
         }

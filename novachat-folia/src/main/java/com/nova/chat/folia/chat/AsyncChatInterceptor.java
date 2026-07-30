@@ -5,6 +5,7 @@ import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.format.DurationFormatter;
 import com.nova.chat.client.state.ChatMode;
+import com.nova.chat.client.state.PlayerChannelState;
 
 import com.nova.chat.folia.NovaChatFolia;
 import com.nova.chat.folia.command.MessageHelper;
@@ -67,7 +68,7 @@ public class AsyncChatInterceptor implements Listener {
      * Uses ConcurrentHashMap for thread-safe access from multiple region threads.
      * All operations on this map are atomic and thread-safe.
      */
-    private final Map<UUID, PlayerChatState> playerStates = new ConcurrentHashMap<>();
+    private final Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
     
     /** 
      * Global chat mode from configuration.
@@ -168,10 +169,10 @@ public class AsyncChatInterceptor implements Listener {
             if (packet.getAction() == ChannelAction.JOIN) {
                 String previousChannel = pending.getPreviousChannel();
                 if (previousChannel != null && !previousChannel.isEmpty()) {
-                    PlayerChatState foliaState = plugin.getChatInterceptor().getOrCreateState(player);
-                    String current = foliaState.getActiveChannel();
+                    PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
+                    String current = state.getActiveChannel();
                     if (current != null && current.equals(pending.getChannelId())) {
-                        foliaState.setActiveChannel(previousChannel);
+                        state.setActiveChannel(previousChannel);
                     }
                 }
             }
@@ -270,7 +271,7 @@ public class AsyncChatInterceptor implements Listener {
         if (channelId == null || channelId.isEmpty() || !player.isOnline()) {
             return;
         }
-        PlayerChatState state = plugin.getChatInterceptor().getOrCreateState(player);
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         ChatMode mode = state.getChatMode();
         String modeName = (mode == ChatMode.REPLACE) ? "频道模式" : "混合模式";
         String text = "&7当前频道：&b" + channelId + " &7（" + modeName + "）";
@@ -369,7 +370,7 @@ public class AsyncChatInterceptor implements Listener {
             }
             
             // Get player state (thread-safe read from ConcurrentHashMap)
-            PlayerChatState state = getState(player.getUniqueId());
+            PlayerChannelState state = getState(player.getUniqueId());
             if (state != null && channelId.equals(state.getActiveChannel())) {
                 // Capture variables for lambda (effectively final)
                 final String finalChannelName = channelName;
@@ -417,7 +418,7 @@ public class AsyncChatInterceptor implements Listener {
         UUID playerId = player.getUniqueId();
         
         // Get or create player state (thread-safe operation via ConcurrentHashMap)
-        PlayerChatState state = getOrCreateState(player);
+        PlayerChannelState state = getOrCreateState(player);
         
         // Read volatile field once for consistency within this method
         ChatMode currentGlobalMode = globalMode;
@@ -492,7 +493,7 @@ public class AsyncChatInterceptor implements Listener {
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID playerId = event.getPlayer().getUniqueId();
         // Atomic removal from ConcurrentHashMap
-        PlayerChatState removedState = playerStates.remove(playerId);
+        PlayerChannelState removedState = playerStates.remove(playerId);
         if (removedState != null) {
             plugin.debug("Removed chat state for " + event.getPlayer().getName());
         }
@@ -559,46 +560,46 @@ public class AsyncChatInterceptor implements Listener {
      * @param player the player
      * @return the player's chat state (never null)
      */
-    public PlayerChatState getOrCreateState(Player player) {
+    public PlayerChannelState getOrCreateState(Player player) {
         // Read volatile field once for consistency
         ChatMode currentGlobalMode = globalMode;
-        return playerStates.computeIfAbsent(player.getUniqueId(), 
-            uuid -> new PlayerChatState(uuid, config.getDefaultChannel(), currentGlobalMode));
+        return playerStates.computeIfAbsent(player.getUniqueId(),
+            uuid -> new PlayerChannelState(uuid, config.getDefaultChannel(), currentGlobalMode));
     }
-    
+
     /**
      * Gets a player's chat state if it exists.
-     * 
+     *
      * <p>Thread Safety: This is a simple read from ConcurrentHashMap, which is thread-safe.</p>
      *
      * @param playerId the player's UUID
      * @return the player's chat state, or null if not found
      */
-    public PlayerChatState getState(UUID playerId) {
+    public PlayerChannelState getState(UUID playerId) {
         return playerStates.get(playerId);
     }
-    
+
     /**
      * Gets a player's chat state if it exists.
-     * 
+     *
      * <p>Thread Safety: This is a simple read from ConcurrentHashMap, which is thread-safe.</p>
      *
      * @param playerId the player's UUID
      * @return the player's chat state, or null if not found
      */
-    public PlayerChatState getPlayerState(UUID playerId) {
+    public PlayerChannelState getPlayerState(UUID playerId) {
         return playerStates.get(playerId);
     }
-    
+
     /**
      * Sets a player's chat state.
-     * 
+     *
      * <p>Thread Safety: This is a simple write to ConcurrentHashMap, which is thread-safe.</p>
      *
      * @param playerId the player's UUID
      * @param state the chat state to set
      */
-    public void setPlayerState(UUID playerId, PlayerChatState state) {
+    public void setPlayerState(UUID playerId, PlayerChannelState state) {
         if (state != null) {
             playerStates.put(playerId, state);
         }
@@ -633,14 +634,14 @@ public class AsyncChatInterceptor implements Listener {
     /**
      * Toggles a player's chat mode.
      * 
-     * <p>Thread Safety: The toggle operation on PlayerChatState is synchronized,
+     * <p>Thread Safety: The toggle operation on PlayerChannelState is synchronized,
      * and the state retrieval is thread-safe via ConcurrentHashMap.</p>
      *
      * @param player the player
      * @return the new chat mode
      */
     public ChatMode togglePlayerMode(Player player) {
-        PlayerChatState state = getOrCreateState(player);
+        PlayerChannelState state = getOrCreateState(player);
         ChatMode newMode = state.toggleMode();
         plugin.debug("Player " + player.getName() + " chat mode toggled to: " + newMode);
         return newMode;
@@ -649,14 +650,14 @@ public class AsyncChatInterceptor implements Listener {
     /**
      * Sets a player's active channel.
      * 
-     * <p>Thread Safety: The channel field in PlayerChatState is volatile,
+     * <p>Thread Safety: The channel field in PlayerChannelState is volatile,
      * and the state retrieval is thread-safe via ConcurrentHashMap.</p>
      *
      * @param player the player
      * @param channelId the channel ID
      */
     public void setPlayerChannel(Player player, String channelId) {
-        PlayerChatState state = getOrCreateState(player);
+        PlayerChannelState state = getOrCreateState(player);
         state.setActiveChannel(channelId);
         plugin.debug("Player " + player.getName() + " channel set to: " + channelId);
     }
@@ -664,14 +665,14 @@ public class AsyncChatInterceptor implements Listener {
     /**
      * Gets a player's active channel.
      * 
-     * <p>Thread Safety: The channel field in PlayerChatState is volatile,
+     * <p>Thread Safety: The channel field in PlayerChannelState is volatile,
      * and the state retrieval is thread-safe via ConcurrentHashMap.</p>
      *
      * @param player the player
      * @return the active channel ID
      */
     public String getPlayerChannel(Player player) {
-        PlayerChatState state = getOrCreateState(player);
+        PlayerChannelState state = getOrCreateState(player);
         return state.getActiveChannel();
     }
     

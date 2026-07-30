@@ -61,7 +61,7 @@ public class AcceptCommand extends AbstractSubCommand {
 
         // Validate invite code format (6 alphanumeric characters)
         if (!inviteCode.matches("^[A-Z0-9]{6}$")) {
-            errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.INVALID_FORMAT, 
+            errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.INVALID_FORMAT,
                 "无效的邀请码格式", "邀请码应为6位字母数字组合");
             return true;
         }

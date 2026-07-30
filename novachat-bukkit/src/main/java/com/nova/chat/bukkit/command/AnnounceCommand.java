@@ -62,7 +62,7 @@ public class AnnounceCommand extends AbstractSubCommand {
         String content = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
 
         if (content.isEmpty()) {
-            errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.BAD_REQUEST, 
+            errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.BAD_REQUEST,
                 "公告内容不能为空");
             return true;
         }

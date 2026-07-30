@@ -36,6 +36,12 @@ public final class NovaConstants {
     public static final byte PACKET_IMAGE_DISPLAY = 0x13;
 
     // Error Codes
+    // These are the protocol-layer wire constants (NC-XXX strings). The
+    // authoritative, renderable client-facing definition lives in the shared
+    // enum com.nova.chat.client.error.ErrorCode (novachat-client-core); treat
+    // that enum as the single source of truth for message/suggestion text.
+    // These constants are retained here only because novalink-core cannot
+    // depend on novachat-client-core (Architecture B boundary).
     public static final String ERROR_BAD_REQUEST = "NC-400";
     public static final String ERROR_UNAUTHORIZED = "NC-401";
     public static final String ERROR_FORBIDDEN = "NC-403";

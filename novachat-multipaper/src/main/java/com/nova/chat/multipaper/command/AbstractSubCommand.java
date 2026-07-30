@@ -1,7 +1,7 @@
 package com.nova.chat.multipaper.command;
 
+import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.multipaper.NovaChatMultiPaper;
-import com.nova.chat.multipaper.chat.PlayerChatState;
 import com.nova.chat.multipaper.network.NetworkClient;
 import com.nova.chat.common.protocol.Packet;
 import org.bukkit.Bukkit;
@@ -66,7 +66,7 @@ public abstract class AbstractSubCommand implements SubCommand {
      * @param player the player
      * @return the chat state, or null if not found
      */
-    protected PlayerChatState getPlayerState(Player player) {
+    protected PlayerChannelState getPlayerState(Player player) {
         return plugin.getChatInterceptor().getPlayerState(player.getUniqueId());
     }
 

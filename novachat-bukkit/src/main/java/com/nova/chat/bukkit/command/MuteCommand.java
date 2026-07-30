@@ -74,7 +74,7 @@ public class MuteCommand extends AbstractSubCommand {
         }
 
         if (channelId == null) {
-            errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.BAD_REQUEST, 
+            errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.BAD_REQUEST,
                 "请指定频道ID");
             return true;
         }
@@ -82,8 +82,8 @@ public class MuteCommand extends AbstractSubCommand {
         // Parse duration
         long durationSeconds = parseDuration(durationStr);
         if (durationSeconds <= 0) {
-            errorHandler.sendError(sender, com.nova.chat.bukkit.error.ErrorCode.INVALID_DURATION, 
-                "无效的时间格式: " + durationStr, 
+            errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.INVALID_DURATION,
+                "无效的时间格式: " + durationStr,
                 "时间格式: 30s(秒), 10m(分钟), 1h(小时), 1d(天)");
             return true;
         }

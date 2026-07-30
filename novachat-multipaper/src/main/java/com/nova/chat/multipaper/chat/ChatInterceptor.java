@@ -1,6 +1,7 @@
 package com.nova.chat.multipaper.chat;
 
 import com.nova.chat.client.state.ChatMode;
+import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.multipaper.NovaChatMultiPaper;
 import com.nova.chat.multipaper.config.NovaChatConfig;
@@ -35,7 +36,7 @@ public class ChatInterceptor implements Listener {
     private final MessageFormatter messageFormatter;
     
     /** Player chat states indexed by UUID */
-    private final Map<UUID, PlayerChatState> playerStates = new ConcurrentHashMap<>();
+    private final Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
     
     /** Global chat mode from configuration */
     private ChatMode globalMode;
@@ -85,7 +86,7 @@ public class ChatInterceptor implements Listener {
         Bukkit.getScheduler().runTask(plugin, () -> {
             for (Player player : Bukkit.getOnlinePlayers()) {
                 // Check if player is in this channel
-                PlayerChatState state = getState(player.getUniqueId());
+                PlayerChannelState state = getState(player.getUniqueId());
                 if (state != null && channelId.equals(state.getActiveChannel())) {
                     String formattedMessage = messageFormatter.formatChatMessage(
                         player, channelId, channelName, senderName, content, placeholders
@@ -161,7 +162,7 @@ public class ChatInterceptor implements Listener {
         UUID playerId = player.getUniqueId();
         
         // Get or create player state
-        PlayerChatState state = getOrCreateState(player);
+        PlayerChannelState state = getOrCreateState(player);
         ChatMode effectiveMode = state.isModeOverridden() ? state.getChatMode() : globalMode;
         
         plugin.debug("Player " + player.getName() + " chat event, mode: " + effectiveMode + 
@@ -200,7 +201,7 @@ public class ChatInterceptor implements Listener {
         UUID playerId = player.getUniqueId();
         
         // Try to get state from MultiPaper shared data first
-        PlayerChatState sharedState = plugin.getMultiPaperAdapter().getSharedPlayerState(playerId);
+        PlayerChannelState sharedState = plugin.getMultiPaperAdapter().getSharedPlayerState(playerId);
         if (sharedState != null) {
             playerStates.put(playerId, sharedState);
             plugin.debug("Restored chat state for " + player.getName() + " from MultiPaper shared data");
@@ -221,7 +222,7 @@ public class ChatInterceptor implements Listener {
         UUID playerId = event.getPlayer().getUniqueId();
         
         // Sync state to MultiPaper before removing
-        PlayerChatState state = playerStates.get(playerId);
+        PlayerChannelState state = playerStates.get(playerId);
         if (state != null) {
             plugin.getMultiPaperAdapter().syncPlayerState(playerId, state);
         }
@@ -271,38 +272,38 @@ public class ChatInterceptor implements Listener {
      * @param player the player
      * @return the player's chat state
      */
-    public PlayerChatState getOrCreateState(Player player) {
-        return playerStates.computeIfAbsent(player.getUniqueId(), 
-            uuid -> new PlayerChatState(uuid, config.getDefaultChannel(), globalMode));
+    public PlayerChannelState getOrCreateState(Player player) {
+        return playerStates.computeIfAbsent(player.getUniqueId(),
+            uuid -> new PlayerChannelState(uuid, config.getDefaultChannel(), globalMode));
     }
-    
+
     /**
      * Gets a player's chat state if it exists.
      *
      * @param playerId the player's UUID
      * @return the player's chat state, or null if not found
      */
-    public PlayerChatState getState(UUID playerId) {
+    public PlayerChannelState getState(UUID playerId) {
         return playerStates.get(playerId);
     }
-    
+
     /**
      * Gets a player's chat state if it exists.
      *
      * @param playerId the player's UUID
      * @return the player's chat state, or null if not found
      */
-    public PlayerChatState getPlayerState(UUID playerId) {
+    public PlayerChannelState getPlayerState(UUID playerId) {
         return playerStates.get(playerId);
     }
-    
+
     /**
      * Sets a player's chat state and syncs to MultiPaper.
      *
      * @param playerId the player's UUID
      * @param state the chat state to set
      */
-    public void setPlayerState(UUID playerId, PlayerChatState state) {
+    public void setPlayerState(UUID playerId, PlayerChannelState state) {
         playerStates.put(playerId, state);
         // Sync to MultiPaper
         plugin.getMultiPaperAdapter().syncPlayerState(playerId, state);
@@ -333,7 +334,7 @@ public class ChatInterceptor implements Listener {
      * @return the new chat mode
      */
     public ChatMode togglePlayerMode(Player player) {
-        PlayerChatState state = getOrCreateState(player);
+        PlayerChannelState state = getOrCreateState(player);
         ChatMode newMode = state.toggleMode();
         // Sync to MultiPaper
         plugin.getMultiPaperAdapter().syncPlayerState(player.getUniqueId(), state);
@@ -347,7 +348,7 @@ public class ChatInterceptor implements Listener {
      * @param channelId the channel ID
      */
     public void setPlayerChannel(Player player, String channelId) {
-        PlayerChatState state = getOrCreateState(player);
+        PlayerChannelState state = getOrCreateState(player);
         state.setActiveChannel(channelId);
         // Sync to MultiPaper
         plugin.getMultiPaperAdapter().syncPlayerState(player.getUniqueId(), state);
@@ -360,7 +361,7 @@ public class ChatInterceptor implements Listener {
      * @return the active channel ID
      */
     public String getPlayerChannel(Player player) {
-        PlayerChatState state = getOrCreateState(player);
+        PlayerChannelState state = getOrCreateState(player);
         return state.getActiveChannel();
     }
     

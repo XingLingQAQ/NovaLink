@@ -1,8 +1,8 @@
 package com.nova.chat.folia.command;
 
 import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.folia.NovaChatFolia;
-import com.nova.chat.folia.chat.PlayerChatState;
 import com.nova.chat.folia.network.AsyncNetworkClient;
 import com.nova.chat.common.protocol.Packet;
 import org.bukkit.Bukkit;
@@ -68,7 +68,7 @@ public abstract class AbstractSubCommand implements SubCommand {
      * @param player the player
      * @return the chat state, or null if not found
      */
-    protected PlayerChatState getPlayerState(Player player) {
+    protected PlayerChannelState getPlayerState(Player player) {
         return plugin.getChatInterceptor().getPlayerState(player.getUniqueId());
     }
 

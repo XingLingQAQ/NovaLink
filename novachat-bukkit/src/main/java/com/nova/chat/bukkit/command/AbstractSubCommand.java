@@ -2,9 +2,8 @@ package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.client.state.PlayerChannelState;
-import com.nova.chat.bukkit.error.ErrorCode;
+import com.nova.chat.client.error.ErrorCode;
 import com.nova.chat.bukkit.error.ErrorMessageHandler;
-import com.nova.chat.bukkit.error.NovaError;
 import com.nova.chat.bukkit.network.NetworkClient;
 import com.nova.chat.common.protocol.Packet;
 import org.bukkit.Bukkit;

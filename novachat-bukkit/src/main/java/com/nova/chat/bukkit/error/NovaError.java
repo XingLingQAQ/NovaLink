@@ -1,5 +1,7 @@
 package com.nova.chat.bukkit.error;
 
+import com.nova.chat.client.error.ErrorCode;
+
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;

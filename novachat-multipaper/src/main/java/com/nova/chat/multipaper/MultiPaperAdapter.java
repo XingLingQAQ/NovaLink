@@ -1,6 +1,7 @@
 package com.nova.chat.multipaper;
 
-import com.nova.chat.multipaper.chat.PlayerChatState;
+import com.nova.chat.client.state.ChatMode;
+import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.multipaper.config.NovaChatConfig;
 
 import java.util.UUID;
@@ -157,7 +158,7 @@ public class MultiPaperAdapter {
      * @param playerId the player's UUID
      * @param state the player's chat state
      */
-    public void syncPlayerState(UUID playerId, PlayerChatState state) {
+    public void syncPlayerState(UUID playerId, PlayerChannelState state) {
         if (!isSyncEnabled()) {
             return;
         }
@@ -189,7 +190,7 @@ public class MultiPaperAdapter {
      * @param playerId the player's UUID
      * @return the player's chat state, or null if not found
      */
-    public PlayerChatState getSharedPlayerState(UUID playerId) {
+    public PlayerChannelState getSharedPlayerState(UUID playerId) {
         if (!isSyncEnabled()) {
             return null;
         }
@@ -219,7 +220,7 @@ public class MultiPaperAdapter {
      * @param state the state to serialize
      * @return the serialized state
      */
-    private String serializeState(PlayerChatState state) {
+    private String serializeState(PlayerChannelState state) {
         // Simple format: channel|mode|modeOverridden
         return state.getActiveChannel() + "|" + 
                state.getChatMode().name() + "|" + 
@@ -233,16 +234,15 @@ public class MultiPaperAdapter {
      * @param data the serialized state
      * @return the deserialized state
      */
-    private PlayerChatState deserializeState(UUID playerId, String data) {
+    private PlayerChannelState deserializeState(UUID playerId, String data) {
         try {
             String[] parts = data.split("\\|");
             if (parts.length >= 3) {
                 String channel = parts[0];
-                com.nova.chat.client.state.ChatMode mode =
-                    com.nova.chat.client.state.ChatMode.valueOf(parts[1]);
+                ChatMode mode = ChatMode.valueOf(parts[1]);
                 boolean modeOverridden = Boolean.parseBoolean(parts[2]);
-                
-                PlayerChatState state = new PlayerChatState(playerId, channel, mode);
+
+                PlayerChannelState state = new PlayerChannelState(playerId, channel, mode);
                 state.setModeOverridden(modeOverridden);
                 return state;
             }
