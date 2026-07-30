@@ -53,6 +53,23 @@ public final class ChannelCommandService {
      */
     public CommandResult join(PlayerChannelState state, String channelId,
                               String password, String playerName) {
+        return join(state, channelId, password, playerName, null);
+    }
+
+    /**
+     * Joins {@code channelId} for the given player state, carrying the player's
+     * current world so the backend can enforce world-restricted channels (NC-435)
+     * and stamp {@code currentWorld} on the player state.
+     *
+     * @param state      player channel state (updated on successful send)
+     * @param channelId  target channel (non-blank)
+     * @param password   optional channel password; null treated as empty
+     * @param playerName optional display name put in packet extras; null/blank omitted
+     * @param world      optional player world put in packet extras; null/blank omitted
+     * @return success when the packet was accepted for send; failure otherwise
+     */
+    public CommandResult join(PlayerChannelState state, String channelId,
+                              String password, String playerName, String world) {
         Objects.requireNonNull(state, "state");
         if (channelId == null || channelId.isBlank()) {
             return CommandResult.failure(CommandIntent.JOIN, "channelId must not be blank");
@@ -60,7 +77,7 @@ public final class ChannelCommandService {
 
         ChannelActionPacket packet = new ChannelActionPacket(
                 ChannelAction.JOIN, channelId, password != null ? password : "");
-        addPlayerExtras(packet, state.getPlayerId(), playerName);
+        addPlayerExtras(packet, state.getPlayerId(), playerName, world);
 
         // BUG-H2: stamp the current active channel so the async response handler
         // can roll back the optimistic setActiveChannel below if the backend
@@ -113,7 +130,7 @@ public final class ChannelCommandService {
         }
 
         ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.LEAVE, target);
-        addPlayerExtras(packet, state.getPlayerId(), playerName);
+        addPlayerExtras(packet, state.getPlayerId(), playerName, null);
 
         if (!packetSender.send(packet)) {
             return CommandResult.failure(CommandIntent.LEAVE,
@@ -162,12 +179,16 @@ public final class ChannelCommandService {
                 "Reload requested; platform must handle config/reconnect");
     }
 
-    private static void addPlayerExtras(ChannelActionPacket packet, UUID playerId, String playerName) {
+    private static void addPlayerExtras(ChannelActionPacket packet, UUID playerId,
+                                         String playerName, String world) {
         if (playerId != null) {
             packet.addExtra("playerId", playerId.toString());
         }
         if (playerName != null && !playerName.isBlank()) {
             packet.addExtra("playerName", playerName);
+        }
+        if (world != null && !world.isBlank()) {
+            packet.addExtra("world", world);
         }
     }
 }

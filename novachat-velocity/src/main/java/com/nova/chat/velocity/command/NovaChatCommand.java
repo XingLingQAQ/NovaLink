@@ -135,7 +135,11 @@ public class NovaChatCommand implements SimpleCommand {
         ChatListener chatListener = plugin.getChatListener();
         PlayerChannelState state = chatListener.getOrCreateState(player);
 
-        CommandResult result = channelCommands.join(state, channelId, password, player.getUsername());
+        // Proxy platforms have no game-world concept; world-restricted channels (NC-435)
+        // are not applicable to a forwarding proxy, so world is passed as null.
+        // TODO: if world-scoped filtering is needed for proxy clients, consider the
+        // connected downstream server name as the "world" value.
+        CommandResult result = channelCommands.join(state, channelId, password, player.getUsername(), null);
         if (result.isSuccess()) {
             // §7: optimistic "joining…" receipt; the async ChannelActionResponsePacket
             // handler in ChatListener confirms with "已加入频道 X" once the backend

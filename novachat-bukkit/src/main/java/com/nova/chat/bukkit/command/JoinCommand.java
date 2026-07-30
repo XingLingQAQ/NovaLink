@@ -72,7 +72,7 @@ public class JoinCommand extends AbstractSubCommand {
         PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         ChannelCommandService channelCommands = plugin.getChannelCommandService();
 
-        CommandResult result = channelCommands.join(state, channelId, password, player.getName());
+        CommandResult result = channelCommands.join(state, channelId, password, player.getName(), player.getWorld().getName());
         if (result.isSuccess()) {
             messageHelper.sendMessage(sender, "正在加入频道 &e" + channelId + "&7...");
 

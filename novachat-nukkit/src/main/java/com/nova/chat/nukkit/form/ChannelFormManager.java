@@ -455,7 +455,7 @@ public class ChannelFormManager {
     private void joinChannel(Player player, String channelId, String password) {
         PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         ChannelCommandService channelCommands = plugin.getChannelCommandService();
-        CommandResult result = channelCommands.join(state, channelId, password, player.getName());
+        CommandResult result = channelCommands.join(state, channelId, password, player.getName(), player.getLevel().getName());
 
         if (result.isSuccess()) {
             plugin.getMessageHelper().sendSuccess(player, "正在加入频道 " + channelId + "...");

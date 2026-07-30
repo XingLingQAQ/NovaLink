@@ -233,7 +233,7 @@ public class NovaChatCommand {
 
         PlayerChannelState state = plugin.getChatListener().getOrCreateState(player);
         ChannelCommandService channelCommands = plugin.getChannelCommandService();
-        CommandResult result = channelCommands.join(state, channelId, password, player.name());
+        CommandResult result = channelCommands.join(state, channelId, password, player.name(), player.world().key().value());
 
         if (result.isSuccess()) {
             // Sponge-specific extra the shared service does not own.

@@ -64,7 +64,7 @@ public class JoinCommand extends AbstractSubCommand {
 
         PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         ChannelCommandService channelCommands = plugin.getChannelCommandService();
-        CommandResult result = channelCommands.join(state, channelId, password, player.getName());
+        CommandResult result = channelCommands.join(state, channelId, password, player.getName(), player.getLevel().getName());
 
         if (result.isSuccess()) {
             // Match previous Nukkit UX (in-progress join rather than service English text).

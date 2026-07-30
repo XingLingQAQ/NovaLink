@@ -66,7 +66,7 @@ public class JoinCommand extends AbstractSubCommand {
 
         PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
         ChannelCommandService channelCommands = plugin.getChannelCommandService();
-        CommandResult result = channelCommands.join(state, channelId, null, player.getName());
+        CommandResult result = channelCommands.join(state, channelId, null, player.getName(), player.getLevel().getName());
 
         if (result.isSuccess()) {
             // §7: optimistic "joining…" receipt; the async ChannelActionResponsePacket

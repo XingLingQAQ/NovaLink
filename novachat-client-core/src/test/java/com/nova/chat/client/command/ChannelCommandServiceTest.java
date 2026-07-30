@@ -116,6 +116,33 @@ class ChannelCommandServiceTest {
         }
 
         @Test
+        @DisplayName("carries world extra when provided")
+        void carriesWorld() {
+            when(packetSender.send(any(ChannelActionPacket.class))).thenReturn(true);
+
+            CommandResult result = service.join(state, "trade", null, "Steve", "world_nether");
+
+            assertThat(result.isSuccess()).isTrue();
+            ArgumentCaptor<ChannelActionPacket> captor =
+                    ArgumentCaptor.forClass(ChannelActionPacket.class);
+            verify(packetSender).send(captor.capture());
+            assertThat(captor.getValue().getExtra("world")).isEqualTo("world_nether");
+        }
+
+        @Test
+        @DisplayName("omits world extra when null/blank (backward compatible)")
+        void omitsWorldWhenNull() {
+            when(packetSender.send(any(ChannelActionPacket.class))).thenReturn(true);
+
+            service.join(state, "trade", null, "Steve");
+
+            ArgumentCaptor<ChannelActionPacket> captor =
+                    ArgumentCaptor.forClass(ChannelActionPacket.class);
+            verify(packetSender).send(captor.capture());
+            assertThat(captor.getValue().getExtra()).doesNotContainKey("world");
+        }
+
+        @Test
         @DisplayName("convenience overload joins without password/name")
         void convenienceOverload() {
             when(packetSender.send(any(ChannelActionPacket.class))).thenReturn(true);

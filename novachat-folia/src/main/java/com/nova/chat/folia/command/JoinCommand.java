@@ -72,7 +72,7 @@ public class JoinCommand extends AbstractSubCommand {
         PlayerChannelState state = foliaState.getChannelState();
         ChannelCommandService channelCommands = plugin.getChannelCommandService();
 
-        CommandResult result = channelCommands.join(state, channelId, password, player.getName());
+        CommandResult result = channelCommands.join(state, channelId, password, player.getName(), player.getWorld().getName());
         if (result.isSuccess()) {
             // Keep the Folia active-channel mirror in sync with the shared state.
             foliaState.setActiveChannel(state.getActiveChannel());
