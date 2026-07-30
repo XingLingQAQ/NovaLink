@@ -40,7 +40,6 @@ class KnownChannelRegistryTest {
             KnownChannelRegistry registry = new KnownChannelRegistry();
             registry.addAll(Set.of("global"));
             registry.replaceAll(null);
-            assertThat(registry.isEmpty()).isTrue();
             assertThat(registry.getAll()).isEmpty();
         }
 
@@ -49,7 +48,7 @@ class KnownChannelRegistryTest {
         void addAllNullIsNoOp() {
             KnownChannelRegistry registry = new KnownChannelRegistry();
             registry.addAll(null);
-            assertThat(registry.isEmpty()).isTrue();
+            assertThat(registry.getAll()).isEmpty();
         }
 
         @Test
@@ -59,16 +58,6 @@ class KnownChannelRegistryTest {
             registry.addAll(Set.of("global"));
             registry.addAll(Set.of("global", "pvp"));
             assertThat(registry.getAll()).containsExactlyInAnyOrder("global", "pvp");
-        }
-
-        @Test
-        @DisplayName("clear empties the registry")
-        void clearEmpties() {
-            KnownChannelRegistry registry = new KnownChannelRegistry();
-            registry.addAll(Set.of("a", "b"));
-            registry.clear();
-            assertThat(registry.isEmpty()).isTrue();
-            assertThat(registry.getAll()).isEmpty();
         }
     }
 
@@ -136,28 +125,8 @@ class KnownChannelRegistryTest {
     }
 
     @Nested
-    @DisplayName("contains / isEmpty")
+    @DisplayName("getAll")
     class Membership {
-        @Test
-        @DisplayName("contains reflects current membership and is null-safe")
-        void containsReflectsMembership() {
-            KnownChannelRegistry registry = new KnownChannelRegistry();
-            registry.addAll(Set.of("global"));
-
-            assertThat(registry.contains("global")).isTrue();
-            assertThat(registry.contains("pvp")).isFalse();
-            assertThat(registry.contains(null)).isFalse();
-        }
-
-        @Test
-        @DisplayName("isEmpty reflects current state")
-        void isEmptyReflectsState() {
-            KnownChannelRegistry registry = new KnownChannelRegistry();
-            assertThat(registry.isEmpty()).isTrue();
-            registry.addAll(Set.of("global"));
-            assertThat(registry.isEmpty()).isFalse();
-        }
-
         @Test
         @DisplayName("getAll returns an unmodifiable view")
         void getAllIsUnmodifiable() {
@@ -221,7 +190,7 @@ class KnownChannelRegistryTest {
             done.await();
 
             assertThat(errors.get()).isZero();
-            assertThat(registry.isEmpty()).isFalse();
+            assertThat(registry.getAll()).isNotEmpty();
         }
     }
 }

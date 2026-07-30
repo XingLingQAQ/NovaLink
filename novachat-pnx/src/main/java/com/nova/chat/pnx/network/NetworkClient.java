@@ -14,7 +14,6 @@ import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketRegistry;
 import com.nova.chat.common.protocol.PlatformType;
-import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
@@ -41,7 +40,6 @@ public class NetworkClient {
 
     private final NovaChatPNX plugin;
     private final CoreNetworkClient core;
-    private final ChannelResponseTracker channelResponseTracker = new ChannelResponseTracker();
 
     /**
      * Creates a new NetworkClient.
@@ -87,16 +85,12 @@ public class NetworkClient {
     }
 
     /**
-     * Sends a packet to the backend, first recording channel-action context for
-     * asynchronous response correlation.
+     * Sends a packet to the backend. Channel-action correlation tracking is
+     * handled inside {@link CoreNetworkClient#sendPacket} (single-entry contract).
      *
      * @param packet the packet to send
      */
     public void sendPacket(Packet packet) {
-        if (packet instanceof ChannelActionPacket) {
-            channelResponseTracker.cleanupExpired();
-            channelResponseTracker.track((ChannelActionPacket) packet);
-        }
         core.sendPacket(packet);
     }
 
@@ -105,7 +99,7 @@ public class NetworkClient {
      *         used by the platform's {@code ChannelActionResponsePacket} handler
      */
     public ChannelResponseTracker getChannelResponseTracker() {
-        return channelResponseTracker;
+        return core.getChannelResponseTracker();
     }
 
     /**
@@ -244,7 +238,7 @@ public class NetworkClient {
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         ChannelResponseTracker.PendingChannelAction pending =
-                channelResponseTracker.consume(packet.getRequestId());
+                core.getChannelResponseTracker().consume(packet.getRequestId());
 
         // UX-DESIGN §5: KICK/MUTE target-side notification. BUG-H1: the operator
         // name and mute duration are never echoed on the response, so prefer the

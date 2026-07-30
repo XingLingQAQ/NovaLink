@@ -1,6 +1,8 @@
 package com.nova.chat.sponge.chat;
 
 import com.nova.chat.client.format.FormatTemplateEngine;
+import com.nova.chat.client.format.LegacyColorCodes;
+import com.nova.chat.client.format.MessageFormatService;
 import com.nova.chat.sponge.NovaChatSponge;
 import com.nova.chat.sponge.config.NovaChatConfig;
 import net.kyori.adventure.text.Component;
@@ -124,22 +126,8 @@ public class MessageFormatter {
      * @return the formatted message as a Component
      */
     public Component formatSystemMessage(String type, String message) {
-        String format;
-        switch (type.toLowerCase()) {
-            case "error":
-                format = config.getErrorFormat();
-                break;
-            case "success":
-                format = config.getSuccessFormat();
-                break;
-            default:
-                format = "{message}";
-        }
-
-        String result = config.getPrefix()
-                + FormatTemplateEngine.apply(
-                        format,
-                        Map.of(FormatTemplateEngine.KEY_MESSAGE, message != null ? message : ""));
+        String result = MessageFormatService.buildTypedSystem(
+                config.getPrefix(), config.getErrorFormat(), config.getSuccessFormat(), type, message);
         result = convertHexToMiniMessage(result);
         result = convertLegacyColors(result);
 
@@ -246,20 +234,7 @@ public class MessageFormatter {
      * @return the text without color codes
      */
     public String stripColors(String text) {
-        if (text == null) {
-            return null;
-        }
-
-        // Remove hex colors first
-        text = HEX_PATTERN.matcher(text).replaceAll("");
-
-        // Remove legacy colors (both & and §)
-        text = text.replaceAll("[&§][0-9a-fk-orA-FK-OR]", "");
-
-        // Remove hex format §x§R§R§G§G§B§B
-        text = text.replaceAll("§x(§[0-9a-fA-F]){6}", "");
-
-        return text;
+        return LegacyColorCodes.strip(text);
     }
 
     /**

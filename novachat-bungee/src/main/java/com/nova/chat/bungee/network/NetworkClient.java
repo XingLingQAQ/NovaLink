@@ -10,7 +10,6 @@ import com.nova.chat.client.network.SchedulerBridge;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketRegistry;
 import com.nova.chat.common.protocol.PlatformType;
-import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -26,7 +25,6 @@ import java.util.function.Consumer;
 public class NetworkClient {
 
     private final CoreNetworkClient core;
-    private final ChannelResponseTracker channelResponseTracker = new ChannelResponseTracker();
 
     /**
      * Creates a new NetworkClient.
@@ -67,16 +65,12 @@ public class NetworkClient {
     }
 
     /**
-     * Sends a packet to the backend, first recording channel-action context for
-     * asynchronous response correlation.
+     * Sends a packet to the backend. Channel-action correlation tracking is
+     * handled inside {@link CoreNetworkClient#sendPacket} (single-entry contract).
      *
      * @param packet the packet to send
      */
     public void sendPacket(Packet packet) {
-        if (packet instanceof ChannelActionPacket) {
-            channelResponseTracker.cleanupExpired();
-            channelResponseTracker.track((ChannelActionPacket) packet);
-        }
         core.sendPacket(packet);
     }
 
@@ -85,7 +79,7 @@ public class NetworkClient {
      *         used by the platform's {@code ChannelActionResponsePacket} handler
      */
     public ChannelResponseTracker getChannelResponseTracker() {
-        return channelResponseTracker;
+        return core.getChannelResponseTracker();
     }
 
     /**

@@ -19,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>UX-DESIGN §2.1.
  *
  * <p>Atomicity: the backing set is published via a {@code volatile} reference.
- * Mutations ({@link #replaceAll}, {@link #addAll}, {@link #clear}) build a
+ * Mutations ({@link #replaceAll}, {@link #addAll}) build a
  * fresh set and then publish it with a single reference assignment, so readers
  * always observe a consistent snapshot — never the empty / half-rebuilt
  * intermediate state a {@code clear + addAll} sequence would expose during a
@@ -121,31 +121,5 @@ public final class KnownChannelRegistry {
      */
     public Set<String> getAll() {
         return Collections.unmodifiableSet(channelIds);
-    }
-
-    /**
-     * Whether the registry currently knows about the given channel.
-     *
-     * @param channelId the channel ID (null-safe)
-     * @return true if the registry contains the channel
-     */
-    public boolean contains(String channelId) {
-        return channelId != null && channelIds.contains(channelId);
-    }
-
-    /**
-     * Whether the registry currently holds any known channels.
-     *
-     * @return true if no channels are known
-     */
-    public boolean isEmpty() {
-        return channelIds.isEmpty();
-    }
-
-    /**
-     * Clears all known channel IDs.
-     */
-    public void clear() {
-        channelIds = Set.of();
     }
 }

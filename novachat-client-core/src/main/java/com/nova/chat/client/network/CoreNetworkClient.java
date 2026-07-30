@@ -8,6 +8,7 @@ import com.nova.chat.common.protocol.codec.PacketDecoder;
 import com.nova.chat.common.protocol.codec.PacketEncoder;
 import com.nova.chat.common.protocol.codec.Varint21FrameDecoder;
 import com.nova.chat.common.protocol.codec.Varint21LengthFieldPrepender;
+import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.HandshakePacket;
 import com.nova.chat.common.protocol.packets.HandshakeResponsePacket;
 import com.nova.chat.common.protocol.packets.KeepAlivePacket;
@@ -58,6 +59,15 @@ public final class CoreNetworkClient {
 
     private final PacketRegistry packetRegistry;
     private final ReconnectPolicy reconnectPolicy;
+
+    /**
+     * Correlates in-flight {@link ChannelActionPacket}s to their originating
+     * player so the asynchronous {@code ChannelActionResponsePacket} can be
+     * resolved later. Owned here so every {@code sendPacket} path — including
+     * the platform facades that delegate straight to {@link #sendPacket} —
+     * tracks channel-action context by construction (coupling #3 single entry).
+     */
+    private final ChannelResponseTracker channelResponseTracker = new ChannelResponseTracker();
 
     private EventLoopGroup workerGroup;
     private volatile Channel channel;
@@ -208,6 +218,13 @@ public final class CoreNetworkClient {
     }
 
     public void sendPacket(Packet packet) {
+        // Coupling #3 single-entry contract: every outgoing ChannelActionPacket
+        // is recorded for asynchronous response correlation before it hits the
+        // wire. Platform facades no longer replicate this if/track shell.
+        if (packet instanceof ChannelActionPacket) {
+            channelResponseTracker.cleanupExpired();
+            channelResponseTracker.track((ChannelActionPacket) packet);
+        }
         Channel ch = channel;
         if (ch != null && ch.isActive()) {
             ch.writeAndFlush(packet);
@@ -215,6 +232,15 @@ public final class CoreNetworkClient {
         } else {
             logger.debug("Cannot send packet: not connected");
         }
+    }
+
+    /**
+     * @return the shared {@link ChannelResponseTracker} that correlates
+     *         in-flight channel-action requests to players; platform
+     *         {@code ChannelActionResponsePacket} handlers consume from it.
+     */
+    public ChannelResponseTracker getChannelResponseTracker() {
+        return channelResponseTracker;
     }
 
     @SuppressWarnings("unchecked")

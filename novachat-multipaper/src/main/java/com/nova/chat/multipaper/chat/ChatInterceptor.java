@@ -1,9 +1,11 @@
 package com.nova.chat.multipaper.chat;
 
 import com.nova.chat.client.state.ChatMode;
+import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.multipaper.NovaChatMultiPaper;
 import com.nova.chat.multipaper.config.NovaChatConfig;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.MentionPacket;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -51,6 +53,8 @@ public class ChatInterceptor implements Listener {
         
         // Register handler for incoming chat messages from backend
         registerIncomingMessageHandler();
+        // Register handler for mention notifications from backend (UX-DESIGN §4.1, Requirements 11.2)
+        plugin.getNetworkClient().registerHandler(MentionPacket.class, this::handleMention);
     }
     
     /**
@@ -90,6 +94,56 @@ public class ChatInterceptor implements Listener {
                 }
             }
         });
+    }
+
+    /**
+     * Handles a mention notification packet by playing a sound and showing a
+     * title to the mentioned player (UX-DESIGN §4.1, Requirements 11.2).
+     *
+     * <p>The mentioned player must be online on this server; packets for
+     * players on other MultiPaper instances are expected to be routed there
+     * by the backend.
+     */
+    private void handleMention(MentionPacket packet) {
+        UUID mentionedId = packet.getMentionedId();
+        if (mentionedId == null) {
+            return;
+        }
+        Player player = Bukkit.getPlayer(mentionedId);
+        if (player == null) {
+            return; // not on this instance
+        }
+        // Must run on main thread for Bukkit API
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (!player.isOnline()) {
+                return;
+            }
+            try {
+                String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
+                String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+                String title = messageFormatter.translateColorCodes("&e" + mentioner);
+                String subtitle = messageFormatter.translateColorCodes(
+                        "&7在频道 &b" + channelId + " &7提到了你");
+                player.sendTitle(title, subtitle,
+                        MentionNotifier.DEFAULT_FADE_IN,
+                        MentionNotifier.DEFAULT_STAY,
+                        MentionNotifier.DEFAULT_FADE_OUT);
+                playMentionSound(player);
+            } catch (Exception e) {
+                plugin.debug("Failed to handle MentionPacket: " + e.getMessage(), e);
+            }
+        });
+    }
+
+    /**
+     * Plays the default mention notification sound to a player.
+     */
+    private void playMentionSound(Player player) {
+        // The common DEFAULT_SOUND constant names the ENTITY_EXPERIENCE_ORB_PICKUP
+        // enum, which we resolve directly here to avoid the deprecated
+        // Sound.valueOf(String) removal API.
+        player.playSound(player.getLocation(),
+                org.bukkit.Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
     }
     
     /**

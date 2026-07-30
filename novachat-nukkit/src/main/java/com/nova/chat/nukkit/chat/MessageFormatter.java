@@ -3,6 +3,8 @@ package com.nova.chat.nukkit.chat;
 import cn.nukkit.Player;
 import cn.nukkit.utils.TextFormat;
 import com.nova.chat.client.format.FormatTemplateEngine;
+import com.nova.chat.client.format.LegacyColorCodes;
+import com.nova.chat.client.format.MessageFormatService;
 import com.nova.chat.nukkit.NovaChatNukkit;
 import com.nova.chat.nukkit.config.NovaChatConfig;
 
@@ -127,21 +129,8 @@ public class MessageFormatter {
      * @return the formatted message
      */
     public String formatSystemMessage(String type, String message) {
-        String format;
-        switch (type.toLowerCase()) {
-            case "error":
-                format = config.getErrorFormat();
-                break;
-            case "success":
-                format = config.getSuccessFormat();
-                break;
-            default:
-                format = "{message}";
-        }
-
-        String result = config.getPrefix()
-                + FormatTemplateEngine.apply(format,
-                        Map.of(FormatTemplateEngine.KEY_MESSAGE, message != null ? message : ""));
+        String result = MessageFormatService.buildTypedSystem(
+                config.getPrefix(), config.getErrorFormat(), config.getSuccessFormat(), type, message);
         return translateColorCodes(result);
     }
 
@@ -271,17 +260,9 @@ public class MessageFormatter {
         if (text == null) {
             return null;
         }
-
-        // Remove hex colors first
-        text = HEX_PATTERN.matcher(text).replaceAll("");
-
-        // Remove legacy colors using Nukkit's TextFormat
-        text = TextFormat.clean(text);
-
-        // Remove any remaining & codes
-        text = LEGACY_PATTERN.matcher(text).replaceAll("");
-
-        return text;
+        // Shared pure strip removes hash-hex, ampersand-x, section-x, and simple legacy codes;
+        // then TextFormat.clean removes any remaining Bedrock-format codes.
+        return TextFormat.clean(LegacyColorCodes.strip(text));
     }
 
     /**

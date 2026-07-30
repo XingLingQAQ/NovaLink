@@ -3,6 +3,8 @@ package com.nova.chat.pnx.chat;
 import cn.nukkit.Player;
 import cn.nukkit.utils.TextFormat;
 import com.nova.chat.client.format.FormatTemplateEngine;
+import com.nova.chat.client.format.LegacyColorCodes;
+import com.nova.chat.client.format.MessageFormatService;
 import com.nova.chat.pnx.NovaChatPNX;
 
 import java.util.LinkedHashMap;
@@ -93,21 +95,12 @@ public class MessageFormatter {
      * @return the formatted message
      */
     public String formatSystemMessage(String type, String message) {
-        String prefix = plugin.getNovaChatConfig().getFormatPrefix();
-        String format;
-        
-        switch (type.toLowerCase()) {
-            case "error":
-                format = plugin.getNovaChatConfig().getFormatError();
-                break;
-            case "success":
-                format = plugin.getNovaChatConfig().getFormatSuccess();
-                break;
-            default:
-                format = "{message}";
-        }
-        
-        return colorize(prefix + format.replace("{message}", message));
+        String result = MessageFormatService.buildTypedSystem(
+                plugin.getNovaChatConfig().getFormatPrefix(),
+                plugin.getNovaChatConfig().getFormatError(),
+                plugin.getNovaChatConfig().getFormatSuccess(),
+                type, message);
+        return colorize(result);
     }
 
     /**
@@ -229,7 +222,9 @@ public class MessageFormatter {
         if (text == null) {
             return "";
         }
-        return TextFormat.clean(text);
+        // Shared pure strip removes hash-hex, ampersand-x, section-x, and simple legacy codes;
+        // then TextFormat.clean removes any remaining Bedrock-format codes.
+        return TextFormat.clean(LegacyColorCodes.strip(text));
     }
 
     /**
