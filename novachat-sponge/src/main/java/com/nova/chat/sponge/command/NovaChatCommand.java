@@ -60,6 +60,7 @@ public class NovaChatCommand {
             .addChild(buildJoinCommand(channelParam, passwordParam), "join", "j")
             .addChild(buildLeaveCommand(), "leave", "l")
             .addChild(buildListCommand(), "list")
+            .addChild(buildWhoCommand(), "who")
             .addChild(buildToggleCommand(), "toggle", "t")
             .addChild(buildReloadCommand(), "reload")
             .addChild(buildDebugCommand(), "debug")
@@ -115,6 +116,31 @@ public class NovaChatCommand {
     }
 
     /**
+     * Builds the who subcommand (UX-DESIGN §8.2). Degrades to the shared
+     * unavailable prompt until the backend delivers channel-member data.
+     * No permission required.
+     */
+    private Command.Parameterized buildWhoCommand() {
+        Parameter.Value<String> channelParam = Parameter.string().key("channel").optional().build();
+        return Command.builder()
+            .permission("novachat.use")
+            .shortDescription(Component.text("查看频道在线成员"))
+            .addParameter(channelParam)
+            .executor(this::executeWho)
+            .build();
+    }
+
+    /**
+     * Executes the who command - degrades to the shared unavailable prompt
+     * until the backend protocol delivers channel-member data (UX-DESIGN §8.2).
+     */
+    private org.spongepowered.api.command.CommandResult executeWho(CommandContext ctx) throws org.spongepowered.api.command.exception.CommandException {
+        sendMessage(ctx.subject(),
+                com.nova.chat.client.command.WhoCommandService.getUnavailablePrompt());
+        return org.spongepowered.api.command.CommandResult.success();
+    }
+
+    /**
      * Builds the toggle subcommand.
      */
     private Command.Parameterized buildToggleCommand() {
@@ -166,6 +192,7 @@ public class NovaChatCommand {
         }
         if (hasPermission(subject, "novachat.use")) {
             sendCommandHelp(subject, "/nc list", "列出可用频道");
+            sendCommandHelp(subject, "/nc who [频道]", "查看频道在线成员");
         }
         if (hasPermission(subject, "novachat.toggle")) {
             sendCommandHelp(subject, "/nc toggle", "切换聊天模式");

@@ -45,6 +45,14 @@ public class ChatListener {
     
     /** Player chat states indexed by UUID */
     private final Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
+
+    /**
+     * UUIDs of players already shown the first-join welcome line this session
+     * (UX-DESIGN §8.1). Sponge 8 does not expose a reliable hasPlayedBefore
+     * here, so the welcome is gated by this memory set and cleared on
+     * disconnect.
+     */
+    private final java.util.Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
     
     /** Global chat mode from configuration */
     private ChatMode globalMode;
@@ -389,8 +397,16 @@ public class ChatListener {
         ServerPlayer player = event.player();
         getOrCreateState(player);
         plugin.debug("Initialized chat state for " + player.name());
+
+        // UX-DESIGN §8.1: push the shared welcome line once per session to
+        // first-time players. Single non-intrusive chat line, no title.
+        if (welcomedPlayers.add(player.uniqueId())) {
+            player.sendMessage(plugin.getMessageFormatter().formatMessage(
+                    com.nova.chat.client.command.WelcomeMessageService.getWelcomeLine()));
+            plugin.debug("Sent first-join welcome to " + player.name());
+        }
     }
-    
+
     /**
      * Handles player disconnect events to clean up chat state.
      *
@@ -400,6 +416,7 @@ public class ChatListener {
     public void onPlayerDisconnect(ServerSideConnectionEvent.Disconnect event) {
         ServerPlayer player = event.player();
         playerStates.remove(player.uniqueId());
+        welcomedPlayers.remove(player.uniqueId());
         plugin.debug("Removed chat state for " + player.name());
     }
     

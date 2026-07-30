@@ -8,6 +8,7 @@ import com.nova.chat.bukkit.command.NovaChatCommand;
 import com.nova.chat.bukkit.config.NovaChatConfig;
 import com.nova.chat.bukkit.error.ErrorMessageHandler;
 import com.nova.chat.bukkit.network.NetworkClient;
+import com.nova.chat.bukkit.welcome.WelcomeListener;
 import com.nova.chat.bukkit.world.WorldMonitor;
 import com.nova.chat.client.command.ChannelCommandService;
 import org.bukkit.command.PluginCommand;
@@ -214,6 +215,9 @@ public class NovaChatBukkit extends JavaPlugin {
         // Register mention Tab completer (Requirements: 11.3)
         mentionTabCompleter = new MentionTabCompleter(this);
         getServer().getPluginManager().registerEvents(mentionTabCompleter, this);
+
+        // Register first-join welcome listener (UX-DESIGN §8.1)
+        getServer().getPluginManager().registerEvents(new WelcomeListener(this), this);
     }
     
     /**

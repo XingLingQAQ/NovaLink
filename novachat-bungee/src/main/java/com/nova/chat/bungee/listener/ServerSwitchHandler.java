@@ -87,6 +87,9 @@ public class ServerSwitchHandler implements Listener {
             // If this is the initial connection (no previous server), join default channel
             if (previousServer == null) {
                 joinDefaultChannel(player, state, serverName);
+                // UX-DESIGN §8.1: push the shared first-join welcome line once
+                // per proxy session (Bungee has no hasPlayedBefore).
+                chatListener.pushWelcomeIfFirst(player);
             }
         }
     }

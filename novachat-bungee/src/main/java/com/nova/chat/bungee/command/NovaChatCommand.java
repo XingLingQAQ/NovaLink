@@ -2,6 +2,7 @@ package com.nova.chat.bungee.command;
 
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.ChatModeDescriptions;
@@ -40,7 +41,7 @@ public class NovaChatCommand extends Command implements TabExecutor {
 
     /** Available subcommands */
     private static final List<String> SUBCOMMANDS = Arrays.asList(
-        "help", "join", "leave", "list", "toggle", "reload"
+        "help", "join", "leave", "list", "who", "toggle", "reload"
     );
 
     /**
@@ -78,6 +79,9 @@ public class NovaChatCommand extends Command implements TabExecutor {
             case "list":
                 handleList(sender);
                 break;
+            case "who":
+                handleWho(sender);
+                break;
             case "toggle":
                 handleToggle(sender);
                 break;
@@ -100,6 +104,7 @@ public class NovaChatCommand extends Command implements TabExecutor {
         sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc join <频道> [密码] - 加入频道"));
         sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc leave [频道] - 离开频道"));
         sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc list - 列出可用频道"));
+        sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc who [频道] - 查看频道在线成员"));
         sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc toggle - 切换聊天模式"));
         sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc <频道> <消息> - 发送消息到指定频道"));
 
@@ -213,6 +218,15 @@ public class NovaChatCommand extends Command implements TabExecutor {
             player.sendMessage(messageFormatter.formatSystemMessage(line));
         }
         sender.sendMessage(new TextComponent(ChatColor.GOLD + "==========================="));
+    }
+
+    /**
+     * Handles the who subcommand - degrades to the shared unavailable prompt
+     * until the backend protocol delivers channel-member data (UX-DESIGN §8.2).
+     * No permission requirement; any player may run it.
+     */
+    private void handleWho(CommandSender sender) {
+        sender.sendMessage(messageFormatter.formatSystemMessage(WhoCommandService.getUnavailablePrompt()));
     }
 
     /**

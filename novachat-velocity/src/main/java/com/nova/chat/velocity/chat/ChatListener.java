@@ -45,6 +45,14 @@ public class ChatListener {
     
     /** Player chat states indexed by UUID */
     private final Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
+
+    /**
+     * UUIDs of players already shown the first-join welcome line this proxy
+     * session (UX-DESIGN §8.1). Velocity has no hasPlayedBefore, so the welcome
+     * is gated by this memory set and cleared on disconnect. Fires on the first
+     * server a player connects to; server switches do not re-trigger it.
+     */
+    private final java.util.Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
     
     /** Global chat mode from configuration */
     private ChatMode globalMode;
@@ -345,12 +353,22 @@ public class ChatListener {
     public void onServerConnected(ServerConnectedEvent event) {
         Player player = event.getPlayer();
         PlayerChannelState state = getOrCreateState(player);
-        
+
         String serverName = event.getServer().getServerInfo().getName();
         state.setCurrentServer(serverName);
-        
+
         plugin.debug("Player " + player.getUsername() + " connected to server: " + serverName);
-        
+
+        // UX-DESIGN §8.1: push the shared welcome line once per proxy session
+        // to first-time players (no hasPlayedBefore on a proxy). Fires on the
+        // first server the player joins; subsequent server switches are
+        // ignored because the UUID is already in the set.
+        if (welcomedPlayers.add(player.getUniqueId())) {
+            player.sendMessage(messageFormatter.parseColors(
+                    com.nova.chat.client.command.WelcomeMessageService.getWelcomeLine()));
+            plugin.debug("Sent first-join welcome to " + player.getUsername());
+        }
+
         // Notify backend about server switch for cross-server routing
         // The backend can use this to update player state
     }
@@ -365,6 +383,7 @@ public class ChatListener {
     public void onPlayerDisconnect(DisconnectEvent event) {
         UUID playerId = event.getPlayer().getUniqueId();
         playerStates.remove(playerId);
+        welcomedPlayers.remove(playerId);
         plugin.debug("Removed chat state for " + event.getPlayer().getUsername());
     }
     

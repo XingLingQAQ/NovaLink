@@ -43,6 +43,13 @@ public class ChatInterceptor implements Listener {
     
     /** Player chat states indexed by UUID */
     private final Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
+
+    /**
+     * UUIDs of players already shown the first-join welcome line this session
+     * (UX-DESIGN §8.1). Nukkit exposes no reliable {@code hasPlayedBefore}, so
+     * we track "welcomed this session" in memory and clear it on quit.
+     */
+    private final java.util.Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
     
     /** Global chat mode from configuration */
     private ChatMode globalMode;
@@ -346,8 +353,17 @@ public class ChatInterceptor implements Listener {
         Player player = event.getPlayer();
         getOrCreateState(player);
         plugin.debug("Initialized chat state for " + player.getName());
+
+        // UX-DESIGN §8.1: push the shared welcome line once per session to
+        // first-time players. Nukkit has no hasPlayedBefore, so a session
+        // memory set gates the push; it is cleared on quit below.
+        if (welcomedPlayers.add(player.getUniqueId())) {
+            plugin.getMessageHelper().sendRawMessage(player,
+                    com.nova.chat.client.command.WelcomeMessageService.getWelcomeLine());
+            plugin.debug("Sent first-join welcome to " + player.getName());
+        }
     }
-    
+
     /**
      * Handles player quit events to clean up chat state.
      *
@@ -357,6 +373,7 @@ public class ChatInterceptor implements Listener {
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID playerId = event.getPlayer().getUniqueId();
         playerStates.remove(playerId);
+        welcomedPlayers.remove(playerId);
         plugin.debug("Removed chat state for " + event.getPlayer().getName());
     }
     

@@ -8,6 +8,7 @@ import com.nova.chat.folia.command.NovaChatCommand;
 import com.nova.chat.folia.config.NovaChatConfig;
 import com.nova.chat.folia.network.AsyncNetworkClient;
 import com.nova.chat.folia.scheduler.FoliaSchedulerAdapter;
+import com.nova.chat.folia.welcome.WelcomeListener;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -201,6 +202,9 @@ public class NovaChatFolia extends JavaPlugin {
         // Register mention Tab completer (Requirements: 11.3)
         mentionTabCompleter = new MentionTabCompleter(this);
         getServer().getPluginManager().registerEvents(mentionTabCompleter, this);
+
+        // Register first-join welcome listener (UX-DESIGN §8.1)
+        getServer().getPluginManager().registerEvents(new WelcomeListener(this), this);
     }
     
     /**

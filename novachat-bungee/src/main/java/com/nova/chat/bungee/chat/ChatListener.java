@@ -43,6 +43,13 @@ public class ChatListener implements Listener {
     
     /** Player chat states indexed by UUID */
     private final Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
+
+    /**
+     * UUIDs of players already shown the first-join welcome line this proxy
+     * session (UX-DESIGN §8.1). BungeeCord has no hasPlayedBefore, so the
+     * welcome is gated by this memory set and cleared on disconnect.
+     */
+    private final java.util.Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
     
     /** Global chat mode from configuration */
     private ChatMode globalMode;
@@ -337,7 +344,24 @@ public class ChatListener implements Listener {
     public void onPlayerDisconnect(PlayerDisconnectEvent event) {
         UUID playerId = event.getPlayer().getUniqueId();
         playerStates.remove(playerId);
+        welcomedPlayers.remove(playerId);
         plugin.debug("Removed chat state for " + event.getPlayer().getName());
+    }
+
+    /**
+     * Pushes the shared first-join welcome line once per proxy session to the
+     * given player (UX-DESIGN §8.1). No-op if already welcomed this session.
+     * Intended to be called from {@code ServerSwitchHandler} on the player's
+     * first server connection (previous server == null).
+     *
+     * @param player the freshly connected player
+     */
+    public void pushWelcomeIfFirst(ProxiedPlayer player) {
+        if (welcomedPlayers.add(player.getUniqueId())) {
+            player.sendMessage(plugin.getChatListener().getMessageFormatter().parseColors(
+                    com.nova.chat.client.command.WelcomeMessageService.getWelcomeLine()));
+            plugin.debug("Sent first-join welcome to " + player.getName());
+        }
     }
     
     /**

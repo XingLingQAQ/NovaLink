@@ -5,6 +5,7 @@ import cn.nukkit.event.EventHandler;
 import cn.nukkit.event.EventPriority;
 import cn.nukkit.event.Listener;
 import cn.nukkit.event.player.PlayerChatEvent;
+import cn.nukkit.event.player.PlayerJoinEvent;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.chat.MentionNotifier;
@@ -32,6 +33,13 @@ public class ChatInterceptor implements Listener {
 
     // Player chat states (current channel, etc.)
     private final Map<UUID, PlayerChatState> playerStates = new ConcurrentHashMap<>();
+
+    /**
+     * UUIDs of players already shown the first-join welcome line this session
+     * (UX-DESIGN §8.1). PowerNukkitX exposes no reliable {@code hasPlayedBefore},
+     * so we track "welcomed this session" in memory and clear it on quit.
+     */
+    private final java.util.Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
 
     public ChatInterceptor(NovaChatPNX plugin) {
         this.plugin = plugin;
@@ -68,6 +76,24 @@ public class ChatInterceptor implements Listener {
         sendChatMessage(player, channelId, message);
 
         plugin.debug("Chat intercepted: " + player.getName() + " -> " + channelId + ": " + message);
+    }
+
+    /**
+     * Pushes the shared first-join welcome line once per session to first-time
+     * players (UX-DESIGN §8.1). Single non-intrusive chat line, no title.
+     * Gated by a session memory set because PNX has no hasPlayedBefore.
+     *
+     * @param event the join event
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        Player player = event.getPlayer();
+        getOrCreateState(player);
+        if (welcomedPlayers.add(player.getUniqueId())) {
+            player.sendMessage(plugin.getMessageFormatter().colorize(
+                    com.nova.chat.client.command.WelcomeMessageService.getWelcomeLine()));
+            plugin.debug("Sent first-join welcome to " + player.getName());
+        }
     }
 
     /**
@@ -171,6 +197,7 @@ public class ChatInterceptor implements Listener {
      */
     public void removeState(Player player) {
         playerStates.remove(player.getUniqueId());
+        welcomedPlayers.remove(player.getUniqueId());
     }
 
     /**

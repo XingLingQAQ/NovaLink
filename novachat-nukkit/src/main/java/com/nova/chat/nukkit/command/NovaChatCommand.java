@@ -42,6 +42,7 @@ public class NovaChatCommand extends Command {
         subCommands.put("join", new JoinCommand(plugin));
         subCommands.put("leave", new LeaveCommand(plugin));
         subCommands.put("list", new ListCommand(plugin));
+        subCommands.put("who", new WhoCommand(plugin));
         subCommands.put("toggle", new ToggleCommand(plugin));
         subCommands.put("channel", new ChannelCommand(plugin)); // Opens Form GUI
         
