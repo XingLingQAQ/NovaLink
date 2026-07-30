@@ -67,6 +67,13 @@ public final class NovaConstants {
     public static final int HEARTBEAT_INTERVAL_MS = 30000;
     public static final int CONNECTION_TIMEOUT_MS = 10000;
     public static final int AUTH_TIMEOUT_MS = 5000;
+    /**
+     * TTL for in-flight channel/admin action requests awaiting an asynchronous
+     * response packet. Shared by the shared {@code ChannelResponseTracker} and
+     * the Bukkit pending-request map. Distinct from {@link #HEARTBEAT_INTERVAL_MS}
+     * (which paces keepalive), though both happen to be 30s.
+     */
+    public static final long PENDING_REQUEST_TIMEOUT_MS = 30_000L;
     
     // Limits
     public static final int MAX_MESSAGE_LENGTH = 256;

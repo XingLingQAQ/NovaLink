@@ -13,6 +13,7 @@ import com.nova.chat.client.format.DurationFormatter;
 import com.nova.chat.client.network.SchedulerBridge;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.common.NovaConstants;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketRegistry;
@@ -55,7 +56,7 @@ public class NetworkClient {
 
     /** Pending request contexts for mapping responses back to players (Bukkit UX). */
     private final Map<UUID, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
-    private static final long REQUEST_TIMEOUT_MS = 30_000;
+    private static final long REQUEST_TIMEOUT_MS = NovaConstants.PENDING_REQUEST_TIMEOUT_MS;
 
     /** Shared known-channel registry (populated from ConfigSync, UX-DESIGN §2.1). */
     private final com.nova.chat.client.channel.KnownChannelRegistry knownChannelRegistry;

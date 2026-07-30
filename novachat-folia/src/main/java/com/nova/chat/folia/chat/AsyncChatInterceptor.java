@@ -1,9 +1,7 @@
 package com.nova.chat.folia.chat;
 
-import com.nova.chat.client.error.ErrorCode;
-import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
-import com.nova.chat.client.format.DurationFormatter;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 
@@ -63,12 +61,15 @@ public class AsyncChatInterceptor implements Listener {
     /** Message formatter for color codes and placeholders - thread-safe */
     private final AsyncMessageFormatter messageFormatter;
     
-    /** 
+    /**
      * Player chat states indexed by UUID.
      * Uses ConcurrentHashMap for thread-safe access from multiple region threads.
      * All operations on this map are atomic and thread-safe.
      */
     private final Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
+
+    /** Shared response dispatcher (DUP-3); created in {@link #registerIncomingMessageHandler()}. */
+    private ChannelResponseDispatcher dispatcher;
     
     /** 
      * Global chat mode from configuration.
@@ -96,166 +97,145 @@ public class AsyncChatInterceptor implements Listener {
      * Registers the handler for incoming chat messages from the backend.
      */
     private void registerIncomingMessageHandler() {
+        this.dispatcher = new ChannelResponseDispatcher(
+                plugin.getNetworkClient().getChannelResponseTracker(),
+                new FoliaChannelResponseAdapter());
         plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
         plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
         plugin.getNetworkClient().registerHandler(MentionPacket.class, this::handleMention);
     }
 
     /** Legacy color prefix applied to @name mentions when rendering chat (UX-DESIGN §4.2). */
-    static final String MENTION_HIGHLIGHT_COLOR = "&e";
+    static final String MENTION_HIGHLIGHT_COLOR = MentionNotifier.DEFAULT_HIGHLIGHT_COLOR;
 
     /**
-     * Handles asynchronous channel-action responses from the backend.
-     *
-     * <p>Correlates the response back to the originating player via the shared
-     * {@link ChannelResponseTracker}, then hops onto the player's region thread via
-     * {@link FoliaSchedulerAdapter#runForPlayer(Player, Runnable)} to render an
-     * actionable error (shared {@link ErrorCode} system). NC-503 is already reported
-     * at send time and is suppressed here to avoid a double message. Success is owned
-     * by the command's immediate feedback; we only mirror the authoritative channel
-     * on JOIN.
+     * Handles asynchronous channel-action responses by delegating the shared
+     * "consume pending → route success/failure" skeleton to the shared
+     * {@link ChannelResponseDispatcher} (DUP-3). The platform adapter hops onto
+     * the player's region thread via {@link FoliaSchedulerAdapter#runForPlayer}
+     * before touching state, rendering, or flashing the §7 action bar.
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         plugin.debug("Received channel action response: " + packet);
-
-        ChannelResponseTracker tracker = plugin.getNetworkClient().getChannelResponseTracker();
-        ChannelResponseTracker.PendingChannelAction pending = tracker.consume(packet.getRequestId());
-
-        // UX-DESIGN §5: KICK/MUTE target-side notification. BUG-H1: the operator
-        // name and mute duration are never echoed on the response, so prefer the
-        // values captured at send time on the pending context. For backend pushes
-        // with no local pending (operator on another server), pending is null and
-        // we fall back to the response extras (which the backend does not write
-        // either, so the "管理员"/"一段时间" fallbacks apply).
-        if (packet.isSuccess() && (packet.getAction() == ChannelAction.KICK
-                || packet.getAction() == ChannelAction.MUTE)) {
-            notifyKickMuteTarget(packet, pending);
-        }
-
-        if (pending == null || pending.getPlayerId() == null) {
-            return;
-        }
-
-        Player player = plugin.getServer().getPlayer(pending.getPlayerId());
-        if (player == null) {
-            return;
-        }
-
-        // Hop to the player's region thread before touching the player or sending.
-        scheduler.runForPlayer(player, () -> {
-            if (packet.isSuccess()) {
-                // §7: the immediate join receipt is the optimistic "正在加入频道 X…";
-                // confirm here once the backend accepts, then flash a short action
-                // bar so the player sees the active channel + current mode.
-                if (packet.getAction() == ChannelAction.JOIN) {
-                    String confirmedChannel = (packet.getChannelId() != null && !packet.getChannelId().isEmpty())
-                            ? packet.getChannelId()
-                            : pending.getChannelId();
-                    if (packet.getChannelId() != null && !packet.getChannelId().isEmpty()) {
-                        plugin.getChatInterceptor().getOrCreateState(player).setActiveChannel(packet.getChannelId());
-                    }
-                    if (player.isOnline() && confirmedChannel != null && !confirmedChannel.isEmpty()) {
-                        plugin.getMessageHelper().sendSuccess(player, "已加入频道 " + confirmedChannel);
-                    }
-                    sendChannelStatusBar(player, confirmedChannel);
-                } else if (packet.getAction() == ChannelAction.LEAVE) {
-                    sendChannelStatusBar(player, plugin.getChatInterceptor().getOrCreateState(player).getActiveChannel());
-                }
-                return;
-            }
-            String code = packet.getErrorCode();
-            // BUG-H2: backend rejected the JOIN — roll back the optimistic
-            // active-channel switch ChannelCommandService.join made at send time.
-            if (packet.getAction() == ChannelAction.JOIN) {
-                String previousChannel = pending.getPreviousChannel();
-                if (previousChannel != null && !previousChannel.isEmpty()) {
-                    PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
-                    String current = state.getActiveChannel();
-                    if (current != null && current.equals(pending.getChannelId())) {
-                        state.setActiveChannel(previousChannel);
-                    }
-                }
-            }
-            if (code == null || code.isEmpty() || ErrorCode.SERVICE_UNAVAILABLE.getCode().equals(code)) {
-                return;
-            }
-            plugin.getMessageHelper().sendError(player, ErrorMessageFormatter.format(code));
-        });
+        dispatcher.handle(packet);
     }
 
     /**
-     * Sends a personalized kick/mute notice to the affected player on their
-     * region thread (UX-DESIGN §5). Falls back silently when the target is
-     * offline or the response lacks the {@code targetId} extra (TODO logged).
-     *
-     * <p>BUG-H1: the operator name and mute duration are read from the pending
-     * context captured at send time (the backend never echoes them); the
-     * response extras are only consulted as a fallback for backend pushes with
-     * no local pending (operator on another server), in which case the
-     * "管理员"/"一段时间" fallbacks intentionally apply. Resolved before the
-     * region-thread hop so the lambda captures plain strings.
+     * Folia-specific {@link ChannelResponseDispatcher.ChannelResponseAdapter}.
+     * Every callback resolves the player on the Netty thread (safe read) then
+     * hops to the player's region thread before mutating state or rendering;
+     * the KICK/MUTE notice uses a title plus an action-bar reinforcement.
      */
-    private void notifyKickMuteTarget(ChannelActionResponsePacket packet,
-                                      ChannelResponseTracker.PendingChannelAction pending) {
-        String targetIdRaw = packet.getExtra("targetId");
-        if (targetIdRaw == null || targetIdRaw.isEmpty()) {
-            plugin.debug("KICK/MUTE response without targetId extra — cannot notify target: " + packet);
-            return;
-        }
-        UUID targetId;
-        try {
-            targetId = UUID.fromString(targetIdRaw);
-        } catch (IllegalArgumentException e) {
-            plugin.debug("KICK/MUTE response has invalid targetId: " + targetIdRaw);
-            return;
-        }
-        String operator = pending != null ? pending.getOperatorName() : null;
-        if (operator == null || operator.isEmpty()) {
-            operator = packet.getExtra("operatorName");
-        }
-        if (operator == null || operator.isEmpty()) {
-            operator = "管理员";
-        }
-        String durationSeconds = pending != null ? pending.getDurationSeconds() : null;
-        if (durationSeconds == null || durationSeconds.isEmpty()) {
-            durationSeconds = packet.getExtra("duration");
-        }
-        final String operatorResolved = operator;
-        final String durationText = DurationFormatter.formatSeconds(durationSeconds);
-        Player target = plugin.getServer().getPlayer(targetId);
-        if (target == null) {
-            return; // not on this server
-        }
-        scheduler.runForPlayer(target, () -> {
-            if (!target.isOnline()) {
+    private final class FoliaChannelResponseAdapter implements ChannelResponseDispatcher.ChannelResponseAdapter {
+
+        @Override
+        public void setActiveChannel(UUID playerId, String channelId) {
+            Player player = plugin.getServer().getPlayer(playerId);
+            if (player == null) {
                 return;
             }
-            try {
-                String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
-                if (packet.getAction() == ChannelAction.KICK) {
-                    String title = MessageHelper.colorize("&c你已被踢出频道");
+            scheduler.runForPlayer(player, () ->
+                    plugin.getChatInterceptor().getOrCreateState(player).setActiveChannel(channelId));
+        }
+
+        @Override
+        public void rollbackJoin(UUID playerId, String attemptedChannel, String previousChannel) {
+            Player player = plugin.getServer().getPlayer(playerId);
+            if (player == null) {
+                return;
+            }
+            scheduler.runForPlayer(player, () -> {
+                PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
+                String current = state.getActiveChannel();
+                if (current != null && current.equals(attemptedChannel)) {
+                    state.setActiveChannel(previousChannel);
+                }
+            });
+        }
+
+        @Override
+        public void sendJoinSuccess(UUID playerId, String channelId) {
+            Player player = plugin.getServer().getPlayer(playerId);
+            if (player == null) {
+                return;
+            }
+            scheduler.runForPlayer(player, () -> {
+                if (player.isOnline()) {
+                    plugin.getMessageHelper().sendSuccess(player, "已加入频道 " + channelId);
+                }
+            });
+        }
+
+        @Override
+        public void sendJoinChannelStatusBar(UUID playerId, String channelId) {
+            if (channelId == null || channelId.isEmpty()) {
+                return;
+            }
+            Player player = plugin.getServer().getPlayer(playerId);
+            if (player == null) {
+                return;
+            }
+            scheduler.runForPlayer(player, () -> sendChannelStatusBar(player, channelId));
+        }
+
+        @Override
+        public void sendLeaveChannelStatusBar(UUID playerId) {
+            Player player = plugin.getServer().getPlayer(playerId);
+            if (player == null) {
+                return;
+            }
+            scheduler.runForPlayer(player, () ->
+                    sendChannelStatusBar(player, plugin.getChatInterceptor().getOrCreateState(player).getActiveChannel()));
+        }
+
+        @Override
+        public void sendErrorMessage(UUID playerId, String text) {
+            Player player = plugin.getServer().getPlayer(playerId);
+            if (player == null) {
+                return;
+            }
+            scheduler.runForPlayer(player, () -> plugin.getMessageHelper().sendError(player, text));
+        }
+
+        @Override
+        public void notifyKickMuteTarget(ChannelResponseDispatcher.KickMuteNotice notice) {
+            final String operator = notice.getOperator();
+            final String durationText = notice.getDurationText();
+            Player target = plugin.getServer().getPlayer(notice.getTargetId());
+            if (target == null) {
+                return; // not on this server
+            }
+            scheduler.runForPlayer(target, () -> {
+                if (!target.isOnline()) {
+                    return;
+                }
+                try {
+                    String channelId = notice.getChannelId();
+                    if (notice.getAction() == ChannelAction.KICK) {
+                        String title = MessageHelper.colorize("&c你已被踢出频道");
+                        String subtitle = MessageHelper.colorize(
+                                "&7被 &e" + operator + " &7踢出频道 &b" + channelId);
+                        target.sendTitle(title, subtitle,
+                                MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
+                        target.spigot().sendMessage(ChatMessageType.ACTION_BAR,
+                                new TextComponent(MessageHelper.colorize(
+                                        "&c你已被 " + operator + " 踢出频道 " + channelId)));
+                        return;
+                    }
+                    // MUTE
+                    String title = MessageHelper.colorize("&c你已被禁言");
                     String subtitle = MessageHelper.colorize(
-                            "&7被 &e" + operatorResolved + " &7踢出频道 &b" + channelId);
+                            "&7在频道 &b" + channelId + " &7持续 &e" + durationText);
                     target.sendTitle(title, subtitle,
                             MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
                     target.spigot().sendMessage(ChatMessageType.ACTION_BAR,
                             new TextComponent(MessageHelper.colorize(
-                                    "&c你已被 " + operatorResolved + " 踢出频道 " + channelId)));
-                    return;
+                                    "&c你已被禁言 " + durationText + "（频道 " + channelId + "）")));
+                } catch (Exception e) {
+                    plugin.debug("Failed to notify kick/mute target: " + e.getMessage(), e);
                 }
-                // MUTE
-                String title = MessageHelper.colorize("&c你已被禁言");
-                String subtitle = MessageHelper.colorize(
-                        "&7在频道 &b" + channelId + " &7持续 &e" + durationText);
-                target.sendTitle(title, subtitle,
-                        MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
-                target.spigot().sendMessage(ChatMessageType.ACTION_BAR,
-                        new TextComponent(MessageHelper.colorize(
-                                "&c你已被禁言 " + durationText + "（频道 " + channelId + "）")));
-            } catch (Exception e) {
-                plugin.debug("Failed to notify kick/mute target: " + e.getMessage(), e);
-            }
-        });
+            });
+        }
     }
 
     /**

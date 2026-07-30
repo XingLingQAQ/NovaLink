@@ -30,7 +30,7 @@ format:
   prefix: "&8[&bNovaChat&8]&r "
   error: "&c错误: {message}"
   success: "&a成功: {message}"
-  default: "&7[{channel_name}] {player}&f: {message}"
+  default: "&7[{channel_color}{channel_name}] {player}&f: {message}"
   channels:
     global: "&c[全服] &7{player}&f: {message}"
     local: "&e[本地] &7{player}&f: {message}"

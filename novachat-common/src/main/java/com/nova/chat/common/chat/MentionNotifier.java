@@ -42,6 +42,9 @@ public class MentionNotifier {
     /** Default title fade-out time in ticks */
     public static final int DEFAULT_FADE_OUT = 10;
 
+    /** Default highlight color prefix applied to mentioned names (e.g. {@code "&e"}). */
+    public static final String DEFAULT_HIGHLIGHT_COLOR = "&e";
+
     /**
      * Per-recipient dedup state. Maps the dedup key
      * {@code mentionedId + "|" + mentionerId} to the timestamp of the last
@@ -335,7 +338,7 @@ public class MentionNotifier {
         private int fadeIn = DEFAULT_FADE_IN;
         private int stay = DEFAULT_STAY;
         private int fadeOut = DEFAULT_FADE_OUT;
-        private String highlightColor = "&e";
+        private String highlightColor = DEFAULT_HIGHLIGHT_COLOR;
 
         public boolean isEnabled() {
             return enabled;

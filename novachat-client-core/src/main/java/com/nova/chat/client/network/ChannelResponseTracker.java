@@ -1,5 +1,6 @@
 package com.nova.chat.client.network;
 
+import com.nova.chat.common.NovaConstants;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 
@@ -34,7 +35,7 @@ public final class ChannelResponseTracker {
     private final ConcurrentMap<UUID, PendingChannelAction> pending = new ConcurrentHashMap<>();
 
     /** Default TTL; matches the Bukkit pending-request window. */
-    private static final long DEFAULT_TIMEOUT_MS = 30_000L;
+    private static final long DEFAULT_TIMEOUT_MS = NovaConstants.PENDING_REQUEST_TIMEOUT_MS;
 
     /**
      * Every {@code CLEANUP_INTERVAL} {@link #track(ChannelActionPacket)} calls,

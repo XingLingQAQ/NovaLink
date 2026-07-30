@@ -1,9 +1,7 @@
 package com.nova.chat.nukkit.chat;
 
-import com.nova.chat.client.error.ErrorCode;
-import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
-import com.nova.chat.client.format.DurationFormatter;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 
@@ -45,6 +43,9 @@ public class ChatInterceptor implements Listener {
     /** Player chat states indexed by UUID */
     private final Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
 
+    /** Shared response dispatcher (DUP-3); created in {@link #registerIncomingMessageHandler()}. */
+    private ChannelResponseDispatcher dispatcher;
+
     /**
      * UUIDs of players already shown the first-join welcome line this session
      * (UX-DESIGN §8.1). Nukkit exposes no reliable {@code hasPlayedBefore}, so
@@ -74,176 +75,137 @@ public class ChatInterceptor implements Listener {
      * Registers the handler for incoming chat messages from the backend.
      */
     private void registerIncomingMessageHandler() {
+        this.dispatcher = new ChannelResponseDispatcher(
+                plugin.getNetworkClient().getChannelResponseTracker(),
+                new NukkitChannelResponseAdapter());
         plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
         plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
         plugin.getNetworkClient().registerHandler(MentionPacket.class, this::handleMention);
     }
 
     /** Legacy color prefix applied to @name mentions when rendering chat (UX-DESIGN §4.2). */
-    static final String MENTION_HIGHLIGHT_COLOR = "&e";
+    static final String MENTION_HIGHLIGHT_COLOR = MentionNotifier.DEFAULT_HIGHLIGHT_COLOR;
 
     /**
-     * Handles channel action responses from the backend.
-     *
-     * <p>Correlates the response back to the originating player via the shared
-     * {@link ChannelResponseTracker}. On failure, surfaces an actionable, formatted
-     * error via the shared {@link ErrorCode} system; NC-503 (network down) is already
-     * reported at send time and is suppressed here to avoid a double message. Player
-     * lookup / message sending run on the Nukkit main thread.
+     * Handles channel action responses from the backend by delegating the
+     * shared "consume pending → route success/failure" skeleton to the shared
+     * {@link ChannelResponseDispatcher} (DUP-3). The platform adapter owns the
+     * Nukkit main-thread hops, rendering and the §7 action-bar flash.
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         plugin.debug("Received channel action response: " + packet);
+        dispatcher.handle(packet);
+    }
 
-        ChannelResponseTracker tracker = plugin.getNetworkClient().getChannelResponseTracker();
-        ChannelResponseTracker.PendingChannelAction pending = tracker.consume(packet.getRequestId());
+    /**
+     * Nukkit-specific {@link ChannelResponseDispatcher.ChannelResponseAdapter}.
+     * Player lookup / message / title sending hop to the main thread; the
+     * KICK/MUTE notice uses a title plus an action-bar reinforcement.
+     */
+    private final class NukkitChannelResponseAdapter implements ChannelResponseDispatcher.ChannelResponseAdapter {
 
-        // UX-DESIGN §5: KICK/MUTE target-side notification. BUG-H1: the operator
-        // name and mute duration are never echoed on the response, so prefer the
-        // values captured at send time on the pending context. For backend pushes
-        // with no local pending (operator on another server), pending is null and
-        // we fall back to the response extras (which the backend does not write
-        // either, so the "管理员"/"一段时间" fallbacks apply).
-        if (packet.isSuccess() && (packet.getAction() == ChannelAction.KICK
-                || packet.getAction() == ChannelAction.MUTE)) {
-            notifyKickMuteTarget(packet, pending);
-        }
-
-        if (pending == null || pending.getPlayerId() == null) {
-            return;
-        }
-
-        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-            Player player = plugin.getServer().getPlayer(pending.getPlayerId()).orElse(null);
-            if (player == null) {
-                return;
-            }
-            if (packet.isSuccess()) {
-                // §7: the immediate join receipt is the optimistic "正在加入频道 X…";
-                // confirm here once the backend accepts, then flash a short action
-                // bar so the player sees the active channel + current mode.
-                if (packet.getAction() == ChannelAction.JOIN) {
-                    String confirmedChannel = (packet.getChannelId() != null && !packet.getChannelId().isEmpty())
-                            ? packet.getChannelId()
-                            : pending.getChannelId();
-                    if (confirmedChannel != null && !confirmedChannel.isEmpty()) {
-                        plugin.getMessageHelper().sendSuccess(player, "已加入频道 " + confirmedChannel);
-                    }
-                    if (packet.getChannelId() != null && !packet.getChannelId().isEmpty()) {
-                        PlayerChannelState state = getState(pending.getPlayerId());
-                        if (state != null) {
-                            state.setActiveChannel(packet.getChannelId());
-                        }
-                    }
-                    sendChannelStatusBar(player, confirmedChannel);
-                } else if (packet.getAction() == ChannelAction.LEAVE) {
-                    // §7: after a successful leave the active channel is the default.
-                    PlayerChannelState state = getState(pending.getPlayerId());
-                    sendChannelStatusBar(player, state != null ? state.getActiveChannel() : null);
+        @Override
+        public void setActiveChannel(UUID playerId, String channelId) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                PlayerChannelState state = getState(playerId);
+                if (state != null) {
+                    state.setActiveChannel(channelId);
                 }
+            });
+        }
+
+        @Override
+        public void rollbackJoin(UUID playerId, String attemptedChannel, String previousChannel) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                PlayerChannelState state = getState(playerId);
+                if (state == null) {
+                    return;
+                }
+                String current = state.getActiveChannel();
+                if (current != null && current.equals(attemptedChannel)) {
+                    state.setActiveChannel(previousChannel);
+                }
+            });
+        }
+
+        @Override
+        public void sendJoinSuccess(UUID playerId, String channelId) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                if (player == null) {
+                    return;
+                }
+                plugin.getMessageHelper().sendSuccess(player, "已加入频道 " + channelId);
+            });
+        }
+
+        @Override
+        public void sendJoinChannelStatusBar(UUID playerId, String channelId) {
+            if (channelId == null || channelId.isEmpty()) {
                 return;
             }
-            String code = packet.getErrorCode();
-            // BUG-H2: backend rejected the JOIN — roll back the optimistic
-            // active-channel switch ChannelCommandService.join made at send time.
-            rollbackJoinIfNeeded(packet, pending);
-            if (code == null || code.isEmpty() || ErrorCode.SERVICE_UNAVAILABLE.getCode().equals(code)) {
-                return;
-            }
-            plugin.getMessageHelper().sendError(player, ErrorMessageFormatter.format(code));
-        });
-    }
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                if (player == null) {
+                    return;
+                }
+                sendChannelStatusBar(player, channelId);
+            });
+        }
 
-    /**
-     * Restores the player's pre-join active channel when the backend rejects a
-     * JOIN (BUG-H2). Only rolls back for JOIN responses whose pending context
-     * carries a non-blank {@code previousChannel} and whose optimistic channel
-     * is still set on the state.
-     */
-    private void rollbackJoinIfNeeded(ChannelActionResponsePacket packet,
-                                      ChannelResponseTracker.PendingChannelAction pending) {
-        if (packet.getAction() != ChannelAction.JOIN) {
-            return;
+        @Override
+        public void sendLeaveChannelStatusBar(UUID playerId) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                if (player == null) {
+                    return;
+                }
+                PlayerChannelState state = getState(playerId);
+                sendChannelStatusBar(player, state != null ? state.getActiveChannel() : null);
+            });
         }
-        String previousChannel = pending.getPreviousChannel();
-        if (previousChannel == null || previousChannel.isEmpty()) {
-            return;
-        }
-        PlayerChannelState state = getState(pending.getPlayerId());
-        if (state == null) {
-            return;
-        }
-        String current = state.getActiveChannel();
-        if (current != null && current.equals(pending.getChannelId())) {
-            state.setActiveChannel(previousChannel);
-        }
-    }
 
-    /**
-     * Sends a personalized kick/mute notice to the affected player
-     * (UX-DESIGN §5). Runs on the Nukkit main thread for safe player lookup.
-     * Falls back to a chat message when the target cannot be resolved or the
-     * response lacks the {@code targetId} extra (TODO logged).
-     *
-     * <p>BUG-H1: the operator name and mute duration are read from the pending
-     * context captured at send time (the backend never echoes them); the
-     * response extras are only consulted as a fallback for backend pushes with
-     * no local pending (operator on another server), in which case the
-     * "管理员"/"一段时间" fallbacks intentionally apply. Resolved before the
-     * scheduler hop so the lambda captures plain strings.
-     */
-    private void notifyKickMuteTarget(ChannelActionResponsePacket packet,
-                                      ChannelResponseTracker.PendingChannelAction pending) {
-        String targetIdRaw = packet.getExtra("targetId");
-        if (targetIdRaw == null || targetIdRaw.isEmpty()) {
-            plugin.debug("KICK/MUTE response without targetId extra — cannot notify target: " + packet);
-            return;
+        @Override
+        public void sendErrorMessage(UUID playerId, String text) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                if (player == null) {
+                    return;
+                }
+                plugin.getMessageHelper().sendError(player, text);
+            });
         }
-        UUID targetId;
-        try {
-            targetId = UUID.fromString(targetIdRaw);
-        } catch (IllegalArgumentException e) {
-            plugin.debug("KICK/MUTE response has invalid targetId: " + targetIdRaw);
-            return;
-        }
-        String operator = pending != null ? pending.getOperatorName() : null;
-        if (operator == null || operator.isEmpty()) {
-            operator = packet.getExtra("operatorName");
-        }
-        if (operator == null || operator.isEmpty()) {
-            operator = "管理员";
-        }
-        String durationSeconds = pending != null ? pending.getDurationSeconds() : null;
-        if (durationSeconds == null || durationSeconds.isEmpty()) {
-            durationSeconds = packet.getExtra("duration");
-        }
-        final String operatorResolved = operator;
-        final String durationText = DurationFormatter.formatSeconds(durationSeconds);
 
-        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-            Player target = plugin.getServer().getPlayer(targetId).orElse(null);
-            if (target == null) {
-                return; // not on this server
-            }
-            String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
-            if (packet.getAction() == ChannelAction.KICK) {
-                String title = messageFormatter.translateColorCodes("&c你已被踢出频道");
+        @Override
+        public void notifyKickMuteTarget(ChannelResponseDispatcher.KickMuteNotice notice) {
+            final String operator = notice.getOperator();
+            final String durationText = notice.getDurationText();
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                Player target = plugin.getServer().getPlayer(notice.getTargetId()).orElse(null);
+                if (target == null) {
+                    return; // not on this server
+                }
+                String channelId = notice.getChannelId();
+                if (notice.getAction() == ChannelAction.KICK) {
+                    String title = messageFormatter.translateColorCodes("&c你已被踢出频道");
+                    String subtitle = messageFormatter.translateColorCodes(
+                            "&7被 &e" + operator + " &7踢出频道 &b" + channelId);
+                    target.sendTitle(title, subtitle,
+                            MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
+                    target.sendActionBar(messageFormatter.translateColorCodes(
+                            "&c你已被 " + operator + " 踢出频道 " + channelId));
+                    return;
+                }
+                // MUTE
+                String title = messageFormatter.translateColorCodes("&c你已被禁言");
                 String subtitle = messageFormatter.translateColorCodes(
-                        "&7被 &e" + operatorResolved + " &7踢出频道 &b" + channelId);
+                        "&7在频道 &b" + channelId + " &7持续 &e" + durationText);
                 target.sendTitle(title, subtitle,
                         MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
                 target.sendActionBar(messageFormatter.translateColorCodes(
-                        "&c你已被 " + operatorResolved + " 踢出频道 " + channelId));
-                return;
-            }
-            // MUTE
-            String title = messageFormatter.translateColorCodes("&c你已被禁言");
-            String subtitle = messageFormatter.translateColorCodes(
-                    "&7在频道 &b" + channelId + " &7持续 &e" + durationText);
-            target.sendTitle(title, subtitle,
-                    MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
-            target.sendActionBar(messageFormatter.translateColorCodes(
-                    "&c你已被禁言 " + durationText + "（频道 " + channelId + "）"));
-        });
+                        "&c你已被禁言 " + durationText + "（频道 " + channelId + "）"));
+            });
+        }
     }
 
     /**

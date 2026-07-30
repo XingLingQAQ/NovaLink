@@ -1,9 +1,7 @@
 package com.nova.chat.pnx.network;
 
-import com.nova.chat.client.error.ErrorCode;
-import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
-import com.nova.chat.client.format.DurationFormatter;
 import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.client.network.ClientLogger;
 import com.nova.chat.client.network.CoreNetworkClient;
@@ -41,6 +39,9 @@ public class NetworkClient {
     private final NovaChatPNX plugin;
     private final CoreNetworkClient core;
 
+    /** Shared response dispatcher (DUP-3); created in the constructor. */
+    private final ChannelResponseDispatcher dispatcher;
+
     /**
      * Creates a new NetworkClient.
      *
@@ -63,6 +64,9 @@ public class NetworkClient {
 
         // Preserve PNX chat/title handling that previously lived hard-coded in
         // ClientChannelHandler. CoreNetworkClient owns HandshakeResponse/KeepAlive.
+        this.dispatcher = new ChannelResponseDispatcher(
+                core.getChannelResponseTracker(),
+                new PNXChannelResponseAdapter());
         registerPnxHandlers();
     }
 
@@ -230,149 +234,129 @@ public class NetworkClient {
     }
 
     /**
-     * Correlates an asynchronous channel-action response back to its originating
-     * player via the shared {@link ChannelResponseTracker} and, on failure, renders
-     * an actionable error via the shared {@link ErrorCode} system. NC-503 is
-     * suppressed (already reported at send time). Runs on the PNX main thread for
-     * safe player lookup / messaging.
+     * Correlates an asynchronous channel-action response by delegating the shared
+     * "consume pending → route success/failure" skeleton to the shared
+     * {@link ChannelResponseDispatcher} (DUP-3). The platform adapter owns the
+     * PNX main-thread hops, rendering and the §7 action-bar flash.
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
-        ChannelResponseTracker.PendingChannelAction pending =
-                core.getChannelResponseTracker().consume(packet.getRequestId());
-
-        // UX-DESIGN §5: KICK/MUTE target-side notification. BUG-H1: the operator
-        // name and mute duration are never echoed on the response, so prefer the
-        // values captured at send time on the pending context. For backend pushes
-        // with no local pending (operator on another server), pending is null and
-        // we fall back to the response extras (which the backend does not write
-        // either, so the "管理员"/"一段时间" fallbacks apply).
-        if (packet.isSuccess() && (packet.getAction() == ChannelAction.KICK
-                || packet.getAction() == ChannelAction.MUTE)) {
-            notifyKickMuteTarget(packet, pending);
-        }
-
-        if (pending == null || pending.getPlayerId() == null) {
-            return;
-        }
-
-        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-            cn.nukkit.Player player = plugin.getServer().getPlayer(pending.getPlayerId()).orElse(null);
-            if (player == null) {
-                return;
-            }
-            if (packet.isSuccess()) {
-                // §7: the immediate join receipt is the optimistic "正在加入频道 X…";
-                // confirm here once the backend accepts, then flash a short action
-                // bar so the player sees the active channel + current mode.
-                if (packet.getAction() == ChannelAction.JOIN) {
-                    String confirmedChannel = (packet.getChannelId() != null && !packet.getChannelId().isEmpty())
-                            ? packet.getChannelId()
-                            : pending.getChannelId();
-                    PlayerChannelState pnxState = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
-                    if (packet.getChannelId() != null && !packet.getChannelId().isEmpty()) {
-                        pnxState.setActiveChannel(packet.getChannelId());
-                    }
-                    if (confirmedChannel != null && !confirmedChannel.isEmpty()) {
-                        player.sendMessage(plugin.getMessageFormatter().formatSuccess("已加入频道 " + confirmedChannel));
-                    }
-                    sendChannelStatusBar(player, confirmedChannel);
-                } else if (packet.getAction() == ChannelAction.LEAVE) {
-                    PlayerChannelState pnxState = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
-                    sendChannelStatusBar(player, pnxState.getActiveChannel());
-                }
-                return;
-            }
-            String code = packet.getErrorCode();
-            // BUG-H2: backend rejected the JOIN — roll back the optimistic
-            // active-channel switch ChannelCommandService.join made at send time.
-            if (packet.getAction() == ChannelAction.JOIN) {
-                String previousChannel = pending.getPreviousChannel();
-                if (previousChannel != null && !previousChannel.isEmpty()) {
-                    PlayerChannelState pnxState = plugin.getChatInterceptor()
-                            .getOrCreateState(player).getChannelState();
-                    String current = pnxState.getActiveChannel();
-                    if (current != null && current.equals(pending.getChannelId())) {
-                        pnxState.setActiveChannel(previousChannel);
-                    }
-                }
-            }
-            if (code == null || code.isEmpty() || ErrorCode.SERVICE_UNAVAILABLE.getCode().equals(code)) {
-                return;
-            }
-            NovaChatConfig cfg = plugin.getNovaChatConfig();
-            String prefix = cfg.getFormatPrefix();
-            String format = cfg.getFormatError();
-            String text = prefix + format.replace("{message}", ErrorMessageFormatter.format(code));
-            player.sendMessage(cn.nukkit.utils.TextFormat.colorize('&', text));
-        });
+        dispatcher.handle(packet);
     }
 
     /**
-     * Sends a personalized kick/mute notice to the affected player
-     * (UX-DESIGN §5). Runs on the PNX main thread for safe player lookup.
-     * Falls back silently when the target is offline or the response lacks the
-     * {@code targetId} extra (TODO logged).
-     *
-     * <p>BUG-H1: the operator name and mute duration are read from the pending
-     * context captured at send time (the backend never echoes them); the
-     * response extras are only consulted as a fallback for backend pushes with
-     * no local pending (operator on another server), in which case the
-     * "管理员"/"一段时间" fallbacks intentionally apply. Resolved before the
-     * scheduler hop so the lambda captures plain strings.
+     * PNX-specific {@link ChannelResponseDispatcher.ChannelResponseAdapter}.
+     * Player lookup / message / title sending hop to the main thread; the
+     * KICK/MUTE notice uses a title plus an action-bar reinforcement. Uses the
+     * PNX {@code ChatInterceptor}'s lazily-created state.
      */
-    private void notifyKickMuteTarget(ChannelActionResponsePacket packet,
-                                      ChannelResponseTracker.PendingChannelAction pending) {
-        String targetIdRaw = packet.getExtra("targetId");
-        if (targetIdRaw == null || targetIdRaw.isEmpty()) {
-            plugin.debug("KICK/MUTE response without targetId extra — cannot notify target: " + packet);
-            return;
-        }
-        java.util.UUID targetId;
-        try {
-            targetId = java.util.UUID.fromString(targetIdRaw);
-        } catch (IllegalArgumentException e) {
-            plugin.debug("KICK/MUTE response has invalid targetId: " + targetIdRaw);
-            return;
-        }
-        String operator = pending != null ? pending.getOperatorName() : null;
-        if (operator == null || operator.isEmpty()) {
-            operator = packet.getExtra("operatorName");
-        }
-        if (operator == null || operator.isEmpty()) {
-            operator = "管理员";
-        }
-        String durationSeconds = pending != null ? pending.getDurationSeconds() : null;
-        if (durationSeconds == null || durationSeconds.isEmpty()) {
-            durationSeconds = packet.getExtra("duration");
-        }
-        final String operatorResolved = operator;
-        final String durationText = DurationFormatter.formatSeconds(durationSeconds);
+    private final class PNXChannelResponseAdapter implements ChannelResponseDispatcher.ChannelResponseAdapter {
 
-        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-            cn.nukkit.Player target = plugin.getServer().getOnlinePlayers().get(targetId);
-            if (target == null) {
-                return; // not on this server
+        @Override
+        public void setActiveChannel(java.util.UUID playerId, String channelId) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                if (player == null) {
+                    return;
+                }
+                plugin.getChatInterceptor().getOrCreateState(player).getChannelState().setActiveChannel(channelId);
+            });
+        }
+
+        @Override
+        public void rollbackJoin(java.util.UUID playerId, String attemptedChannel, String previousChannel) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                if (player == null) {
+                    return;
+                }
+                PlayerChannelState pnxState = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
+                String current = pnxState.getActiveChannel();
+                if (current != null && current.equals(attemptedChannel)) {
+                    pnxState.setActiveChannel(previousChannel);
+                }
+            });
+        }
+
+        @Override
+        public void sendJoinSuccess(java.util.UUID playerId, String channelId) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                if (player == null) {
+                    return;
+                }
+                player.sendMessage(plugin.getMessageFormatter().formatSuccess("已加入频道 " + channelId));
+            });
+        }
+
+        @Override
+        public void sendJoinChannelStatusBar(java.util.UUID playerId, String channelId) {
+            if (channelId == null || channelId.isEmpty()) {
+                return;
             }
-            String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
-            if (packet.getAction() == ChannelAction.KICK) {
-                String title = plugin.getMessageFormatter().colorize("&c你已被踢出频道");
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                if (player == null) {
+                    return;
+                }
+                sendChannelStatusBar(player, channelId);
+            });
+        }
+
+        @Override
+        public void sendLeaveChannelStatusBar(java.util.UUID playerId) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                if (player == null) {
+                    return;
+                }
+                PlayerChannelState pnxState = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
+                sendChannelStatusBar(player, pnxState.getActiveChannel());
+            });
+        }
+
+        @Override
+        public void sendErrorMessage(java.util.UUID playerId, String text) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                if (player == null) {
+                    return;
+                }
+                NovaChatConfig cfg = plugin.getNovaChatConfig();
+                String full = cfg.getFormatPrefix() + cfg.getFormatError().replace("{message}", text);
+                player.sendMessage(cn.nukkit.utils.TextFormat.colorize('&', full));
+            });
+        }
+
+        @Override
+        public void notifyKickMuteTarget(ChannelResponseDispatcher.KickMuteNotice notice) {
+            final String operator = notice.getOperator();
+            final String durationText = notice.getDurationText();
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                cn.nukkit.Player target = plugin.getServer().getOnlinePlayers().get(notice.getTargetId());
+                if (target == null) {
+                    return; // not on this server
+                }
+                String channelId = notice.getChannelId();
+                if (notice.getAction() == ChannelAction.KICK) {
+                    String title = plugin.getMessageFormatter().colorize("&c你已被踢出频道");
+                    String subtitle = plugin.getMessageFormatter().colorize(
+                            "&7被 &e" + operator + " &7踢出频道 &b" + channelId);
+                    target.sendTitle(title, subtitle,
+                            MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
+                    target.sendActionBar(plugin.getMessageFormatter().colorize(
+                            "&c你已被 " + operator + " 踢出频道 " + channelId));
+                    return;
+                }
+                // MUTE
+                String title = plugin.getMessageFormatter().colorize("&c你已被禁言");
                 String subtitle = plugin.getMessageFormatter().colorize(
-                        "&7被 &e" + operatorResolved + " &7踢出频道 &b" + channelId);
+                        "&7在频道 &b" + channelId + " &7持续 &e" + durationText);
                 target.sendTitle(title, subtitle,
                         MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
                 target.sendActionBar(plugin.getMessageFormatter().colorize(
-                        "&c你已被 " + operatorResolved + " 踢出频道 " + channelId));
-                return;
-            }
-            // MUTE
-            String title = plugin.getMessageFormatter().colorize("&c你已被禁言");
-            String subtitle = plugin.getMessageFormatter().colorize(
-                    "&7在频道 &b" + channelId + " &7持续 &e" + durationText);
-            target.sendTitle(title, subtitle,
-                    MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
-            target.sendActionBar(plugin.getMessageFormatter().colorize(
-                    "&c你已被禁言 " + durationText + "（频道 " + channelId + "）"));
-        });
+                        "&c你已被禁言 " + durationText + "（频道 " + channelId + "）"));
+            });
+        }
     }
 
     /**

@@ -16,7 +16,13 @@ import java.util.UUID;
  * 
  * This packet is used when a player uses [item] or [i] tags in chat to display
  * their held item to other players across the network.
- * 
+ *
+ * TODO: not yet wired — the backend has no [item]/[i] tag parser and no
+ * platform client registers a handler for this packet. Part of the spec
+ * §4 display-family ([item]/[inv]/[ec]/[img]); only the protocol shell
+ * exists. To be wired together with InventorySnapshotPacket/ImageDisplayPacket
+ * (which currently lack even a class) in a future feature round.
+ *
  * **Feature: novachat-platform-extensions, Property 13: Display Packet Serialization Round-Trip**
  * **Validates: Requirements 19.1**
  */

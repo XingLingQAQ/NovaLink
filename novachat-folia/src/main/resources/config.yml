@@ -59,7 +59,7 @@ format:
     private_default: "&d[私聊] &7{player}&f: {message}"
   
   # 默认格式 (未配置的频道使用此格式)
-  default: "&7[{channel_name}] {player}&f: {message}"
+  default: "&7[{channel_color}{channel_name}] {player}&f: {message}"
 
 # 调试模式
 debug: false

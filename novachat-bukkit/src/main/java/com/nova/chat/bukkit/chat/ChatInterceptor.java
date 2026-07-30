@@ -114,7 +114,7 @@ public class ChatInterceptor implements Listener {
     }
 
     /** Legacy color prefix applied to @name mentions when rendering chat (UX-DESIGN §4.2). */
-    static final String MENTION_HIGHLIGHT_COLOR = "&e";
+    static final String MENTION_HIGHLIGHT_COLOR = MentionNotifier.DEFAULT_HIGHLIGHT_COLOR;
     
     /**
      * Handles player chat events.
