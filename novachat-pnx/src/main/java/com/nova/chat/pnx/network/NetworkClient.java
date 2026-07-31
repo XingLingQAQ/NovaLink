@@ -1,5 +1,6 @@
 package com.nova.chat.pnx.network;
 
+import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.network.ClientConnectionConfig;
@@ -287,6 +288,18 @@ public class NetworkClient {
                     return;
                 }
                 player.sendMessage(plugin.getMessageFormatter().formatSuccess("已加入频道 " + channelId));
+            });
+        }
+
+        @Override
+        public void sendLeaveSuccess(java.util.UUID playerId, String channelId) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                if (player == null) {
+                    return;
+                }
+                player.sendMessage(plugin.getMessageFormatter().formatSuccess(
+                        PlayerMessages.left(channelId, plugin.getNovaChatConfig().getDefaultChannel())));
             });
         }
 

@@ -1,5 +1,6 @@
 package com.nova.chat.velocity.chat;
 
+import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -136,6 +137,13 @@ public class ChatListener {
         public void sendJoinSuccess(UUID playerId, String channelId) {
             plugin.getServer().getPlayer(playerId).ifPresent(player ->
                     player.sendMessage(messageFormatter.formatSuccess("已加入频道 " + channelId)));
+        }
+
+        @Override
+        public void sendLeaveSuccess(UUID playerId, String channelId) {
+            plugin.getServer().getPlayer(playerId).ifPresent(player ->
+                    player.sendMessage(messageFormatter.formatSuccess(
+                            PlayerMessages.left(channelId, config.getDefaultChannel()))));
         }
 
         @Override

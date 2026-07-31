@@ -1,5 +1,6 @@
 package com.nova.chat.sponge.chat;
 
+import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -139,6 +140,18 @@ public class ChatListener {
                     return;
                 }
                 opt.get().sendMessage(plugin.getMessageFormatter().formatSuccess("已加入频道 " + channelId));
+            });
+        }
+
+        @Override
+        public void sendLeaveSuccess(UUID playerId, String channelId) {
+            Sponge.server().scheduler().executor(plugin.getContainer()).execute(() -> {
+                Optional<ServerPlayer> opt = Sponge.server().player(playerId);
+                if (opt.isEmpty()) {
+                    return;
+                }
+                opt.get().sendMessage(plugin.getMessageFormatter().formatSuccess(
+                        PlayerMessages.left(channelId, config.getDefaultChannel())));
             });
         }
 

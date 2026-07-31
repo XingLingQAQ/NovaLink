@@ -1,5 +1,6 @@
 package com.nova.chat.folia.chat;
 
+import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -163,6 +164,20 @@ public class AsyncChatInterceptor implements Listener {
             scheduler.runForPlayer(player, () -> {
                 if (player.isOnline()) {
                     plugin.getMessageHelper().sendSuccess(player, "已加入频道 " + channelId);
+                }
+            });
+        }
+
+        @Override
+        public void sendLeaveSuccess(UUID playerId, String channelId) {
+            Player player = plugin.getServer().getPlayer(playerId);
+            if (player == null) {
+                return;
+            }
+            scheduler.runForPlayer(player, () -> {
+                if (player.isOnline()) {
+                    plugin.getMessageHelper().sendSuccess(player,
+                            PlayerMessages.left(channelId, config.getDefaultChannel()));
                 }
             });
         }

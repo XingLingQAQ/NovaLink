@@ -89,6 +89,12 @@ public final class ChannelResponseDispatcher {
                 }
                 adapter.sendJoinChannelStatusBar(playerId, confirmedChannel);
             } else if (packet.getAction() == ChannelAction.LEAVE) {
+                String leftChannel = (packet.getChannelId() != null && !packet.getChannelId().isEmpty())
+                        ? packet.getChannelId()
+                        : pending.getChannelId();
+                if (leftChannel != null && !leftChannel.isEmpty()) {
+                    adapter.sendLeaveSuccess(playerId, leftChannel);
+                }
                 // §7: after a successful leave the active channel is the default;
                 // the adapter resolves the current channel on its own thread (the
                 // active-channel read is state-sensitive on region/main-thread
@@ -199,6 +205,14 @@ public final class ChannelResponseDispatcher {
          * hops to the correct thread before sending.
          */
         void sendJoinSuccess(UUID playerId, String channelId);
+
+        /**
+         * Sends the successful LEAVE confirmation. Called with the non-blank
+         * channel that was left. The platform resolves its configured default
+         * channel and renders {@code PlayerMessages.left(channel, default)} via
+         * its normal formatter on the correct thread.
+         */
+        void sendLeaveSuccess(UUID playerId, String channelId);
 
         /**
          * Flashes the §7 channel status action bar after a successful JOIN.

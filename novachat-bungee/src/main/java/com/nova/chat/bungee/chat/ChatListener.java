@@ -1,5 +1,6 @@
 package com.nova.chat.bungee.chat;
 
+import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -134,6 +135,16 @@ public class ChatListener implements Listener {
                 return;
             }
             player.sendMessage(messageFormatter.formatSuccess("已加入频道 " + channelId));
+        }
+
+        @Override
+        public void sendLeaveSuccess(UUID playerId, String channelId) {
+            ProxiedPlayer player = plugin.getProxy().getPlayer(playerId);
+            if (player == null) {
+                return;
+            }
+            player.sendMessage(messageFormatter.formatSuccess(
+                    PlayerMessages.left(channelId, config.getDefaultChannel())));
         }
 
         @Override

@@ -1,5 +1,6 @@
 package com.nova.chat.nukkit.chat;
 
+import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -137,6 +138,18 @@ public class ChatInterceptor implements Listener {
                     return;
                 }
                 plugin.getMessageHelper().sendSuccess(player, "已加入频道 " + channelId);
+            });
+        }
+
+        @Override
+        public void sendLeaveSuccess(UUID playerId, String channelId) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                if (player == null) {
+                    return;
+                }
+                plugin.getMessageHelper().sendSuccess(player,
+                        PlayerMessages.left(channelId, config.getDefaultChannel()));
             });
         }
 
