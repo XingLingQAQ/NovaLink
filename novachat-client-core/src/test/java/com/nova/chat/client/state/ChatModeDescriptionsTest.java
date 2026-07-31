@@ -47,6 +47,31 @@ class ChatModeDescriptionsTest {
     void coversAllModes() {
         for (ChatMode mode : ChatMode.values()) {
             assertThat(ChatModeDescriptions.describe(mode)).isNotBlank();
+            assertThat(ChatModeDescriptions.modeName(mode)).isNotBlank();
         }
+    }
+
+    @Test
+    @DisplayName("HYBRID modeName is 混合模式")
+    void hybridModeName() {
+        assertThat(ChatModeDescriptions.modeName(ChatMode.HYBRID))
+                .isEqualTo(ChatModeDescriptions.HYBRID_MODE_NAME)
+                .isEqualTo("混合模式");
+    }
+
+    @Test
+    @DisplayName("REPLACE modeName is 频道模式")
+    void replaceModeName() {
+        assertThat(ChatModeDescriptions.modeName(ChatMode.REPLACE))
+                .isEqualTo(ChatModeDescriptions.REPLACE_MODE_NAME)
+                .isEqualTo("频道模式");
+    }
+
+    @Test
+    @DisplayName("modeName(null) throws")
+    void modeNameNullThrows() {
+        assertThatThrownBy(() -> ChatModeDescriptions.modeName(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("mode");
     }
 }

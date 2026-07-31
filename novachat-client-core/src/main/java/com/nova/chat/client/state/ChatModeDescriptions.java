@@ -29,6 +29,19 @@ public final class ChatModeDescriptions {
     public static final String REPLACE_DESCRIPTION =
             "所有聊天消息将发送到当前频道";
 
+    /**
+     * Short display name for {@link ChatMode#HYBRID} (action bar / toggle labels).
+     */
+    public static final String HYBRID_MODE_NAME = "混合模式";
+
+    /**
+     * Short display name for {@link ChatMode#REPLACE} (action bar / toggle labels).
+     *
+     * <p>Aligned wording: historically some platforms called this "替换模式";
+     * shared copy uses "频道模式" (UX-DESIGN-2 §12).
+     */
+    public static final String REPLACE_MODE_NAME = "频道模式";
+
     private ChatModeDescriptions() {
         // Utility class — no instances.
     }
@@ -47,6 +60,24 @@ public final class ChatModeDescriptions {
         return switch (mode) {
             case HYBRID -> HYBRID_DESCRIPTION;
             case REPLACE -> REPLACE_DESCRIPTION;
+        };
+    }
+
+    /**
+     * Returns the short display name for the given mode
+     * (e.g. action-bar labels via {@code PlayerMessages.currentChannelBar}).
+     *
+     * @param mode the chat mode; never null
+     * @return {@link #HYBRID_MODE_NAME} or {@link #REPLACE_MODE_NAME}
+     * @throws IllegalArgumentException if {@code mode} is null
+     */
+    public static String modeName(ChatMode mode) {
+        if (mode == null) {
+            throw new IllegalArgumentException("mode must not be null");
+        }
+        return switch (mode) {
+            case HYBRID -> HYBRID_MODE_NAME;
+            case REPLACE -> REPLACE_MODE_NAME;
         };
     }
 }
