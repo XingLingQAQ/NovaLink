@@ -27,6 +27,7 @@ public final class PlayerChannelState {
     private final Set<String> joinedChannels;
     private volatile ChatMode chatMode;
     private volatile boolean modeOverridden;
+    private volatile boolean forwardingEnabled = true;
     private volatile String currentServer;
 
     /**
@@ -134,6 +135,14 @@ public final class PlayerChannelState {
         this.modeOverridden = modeOverridden;
     }
 
+    public boolean isForwardingEnabled() {
+        return forwardingEnabled;
+    }
+
+    public void setForwardingEnabled(boolean forwardingEnabled) {
+        this.forwardingEnabled = forwardingEnabled;
+    }
+
     public String getCurrentServer() {
         return currentServer;
     }
@@ -175,6 +184,7 @@ public final class PlayerChannelState {
         copy.joinedChannels.clear();
         copy.joinedChannels.addAll(this.joinedChannels);
         copy.modeOverridden = this.modeOverridden;
+        copy.forwardingEnabled = this.forwardingEnabled;
         copy.currentServer = this.currentServer;
         return copy;
     }
@@ -187,6 +197,7 @@ public final class PlayerChannelState {
                 + ", joinedChannels=" + joinedChannels
                 + ", chatMode=" + chatMode
                 + ", modeOverridden=" + modeOverridden
+                + ", forwardingEnabled=" + forwardingEnabled
                 + ", currentServer='" + currentServer + '\''
                 + '}';
     }

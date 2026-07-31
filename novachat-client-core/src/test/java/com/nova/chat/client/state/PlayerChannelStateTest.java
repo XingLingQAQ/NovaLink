@@ -35,6 +35,7 @@ class PlayerChannelStateTest {
             assertThat(state.isJoined("global")).isTrue();
             assertThat(state.getChatMode()).isEqualTo(ChatMode.HYBRID);
             assertThat(state.isModeOverridden()).isFalse();
+            assertThat(state.isForwardingEnabled()).isTrue();
             assertThat(state.getCurrentServer()).isNull();
         }
 
@@ -213,6 +214,31 @@ class PlayerChannelStateTest {
             state.resetMode(ChatMode.HYBRID);
             assertThat(state.getChatMode()).isEqualTo(ChatMode.HYBRID);
             assertThat(state.isModeOverridden()).isFalse();
+        }
+
+        @Test
+        @DisplayName("forwarding enabled is settable")
+        void forwardingEnabled() {
+            PlayerChannelState state = new PlayerChannelState(PLAYER, "global", ChatMode.HYBRID);
+
+            state.setForwardingEnabled(false);
+
+            assertThat(state.isForwardingEnabled()).isFalse();
+        }
+
+        @Test
+        @DisplayName("copy preserves forwarding enabled with independent state")
+        void copyPreservesIndependentForwardingEnabled() {
+            PlayerChannelState original = new PlayerChannelState(PLAYER, "global", ChatMode.HYBRID);
+            original.setForwardingEnabled(false);
+
+            PlayerChannelState copy = original.copy();
+
+            assertThat(copy).isNotSameAs(original);
+            assertThat(copy.isForwardingEnabled()).isFalse();
+            copy.setForwardingEnabled(true);
+            assertThat(copy.isForwardingEnabled()).isTrue();
+            assertThat(original.isForwardingEnabled()).isFalse();
         }
 
         @Test

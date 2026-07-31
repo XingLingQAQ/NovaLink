@@ -12,7 +12,6 @@ import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.pnx.NovaChatPNX;
 import lombok.Getter;
-import lombok.Setter;
 
 import java.util.Map;
 import java.util.UUID;
@@ -33,6 +32,9 @@ public class ChatInterceptor implements Listener {
 
     // Player chat states (current channel, etc.)
     private final Map<UUID, PlayerChatState> playerStates = new ConcurrentHashMap<>();
+
+    /** Single dedup state shared by all inbound mention notifications on this client. */
+    private final MentionNotifier mentionNotifier = new MentionNotifier();
 
     /**
      * UUIDs of players already shown the first-join welcome line this session
@@ -220,6 +222,10 @@ public class ChatInterceptor implements Listener {
         return getOrCreateState(player).getCurrentChannel();
     }
 
+    public boolean shouldNotifyMention(UUID mentionedId, UUID mentionerId) {
+        return mentionNotifier.shouldNotify(mentionedId, mentionerId);
+    }
+
     /**
      * Reload the chat interceptor settings.
      * Called when the plugin configuration is reloaded.
@@ -236,24 +242,31 @@ public class ChatInterceptor implements Listener {
      *
      * <p>Hosts a shared {@link PlayerChannelState} (active channel + joined-channel
      * set) so {@link com.nova.chat.client.command.ChannelCommandService} join/leave
-     * can mutate membership in place. The single PNX-local {@code chatEnabled}
-     * on/off toggle is <strong>not</strong> represented by the shared
-     * {@link ChatMode} HYBRID/REPLACE model — it controls whether chat is forwarded
-     * at all, not vanilla-cancel semantics — so it stays a separate boolean here
-     * and {@code /nc toggle} flips it locally rather than via the shared service.
+     * can mutate membership in place. The PNX-compatible {@code chatEnabled}
+     * API delegates to {@link PlayerChannelState#isForwardingEnabled()} rather
+     * than storing a second boolean. This remains distinct from the shared
+     * {@link ChatMode} HYBRID/REPLACE model: it controls whether chat is forwarded
+     * at all, not vanilla-cancel semantics, and {@code /nc toggle} still flips this
+     * forwarding flag locally rather than invoking the shared mode toggle.
      *
      * <p>{@code currentChannel} getters/setters delegate to the shared state's
      * active channel so legacy readers ({@link com.nova.chat.pnx.world.WorldMonitor},
      * {@link com.nova.chat.pnx.form.ChannelFormManager}) observe service mutations.
      */
     @Getter
-    @Setter
     public static class PlayerChatState {
         private final PlayerChannelState channelState;
-        private boolean chatEnabled = true;
 
         public PlayerChatState(PlayerChannelState channelState) {
             this.channelState = channelState;
+        }
+
+        public boolean isChatEnabled() {
+            return channelState.isForwardingEnabled();
+        }
+
+        public void setChatEnabled(boolean chatEnabled) {
+            channelState.setForwardingEnabled(chatEnabled);
         }
 
         public String getCurrentChannel() {

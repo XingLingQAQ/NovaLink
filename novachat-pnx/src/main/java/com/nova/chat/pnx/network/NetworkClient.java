@@ -210,12 +210,14 @@ public class NetworkClient {
      */
     private void handleMentionMessage(MentionPacket packet) {
         java.util.UUID mentionedId = packet.getMentionedId();
-        if (mentionedId == null) {
+        java.util.UUID mentionerId = packet.getMentionerId();
+        if (mentionedId == null || mentionerId == null) {
             return;
         }
         plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
             cn.nukkit.Player player = plugin.getServer().getOnlinePlayers().get(mentionedId);
-            if (player == null) {
+            if (player == null
+                    || !plugin.getChatInterceptor().shouldNotifyMention(mentionedId, mentionerId)) {
                 return;
             }
             String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
