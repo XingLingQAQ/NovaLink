@@ -2,7 +2,9 @@ package com.nova.chat.bungee.command;
 
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.command.WhoCommandService;
+import com.nova.chat.client.error.ErrorCode;
 import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.ChatModeDescriptions;
@@ -145,7 +147,7 @@ public class NovaChatCommand extends Command implements TabExecutor {
             // §7: optimistic "joining…" receipt; the async ChannelActionResponsePacket
             // handler in ChatListener confirms with "已加入频道 X" once the backend
             // accepts, or surfaces an actionable error if it rejects.
-            player.sendMessage(messageFormatter.formatSuccess("正在加入频道 " + channelId + "..."));
+            player.sendMessage(messageFormatter.formatSuccess(PlayerMessages.joining(channelId)));
             plugin.debug("Player " + player.getName() + " joined channel: " + channelId);
         } else {
             // Actionable error via shared ErrorCode system (NC-503 network failure here).
@@ -177,7 +179,8 @@ public class NovaChatCommand extends Command implements TabExecutor {
                 ? requested
                 : state.getActiveChannel();
         if (leavingChannel == null || leavingChannel.isBlank()) {
-            player.sendMessage(messageFormatter.formatError("你当前不在任何频道中"));
+            player.sendMessage(messageFormatter.formatError(
+                    ErrorMessageFormatter.format(ErrorCode.NOT_IN_CHANNEL)));
             return;
         }
 
@@ -189,7 +192,7 @@ public class NovaChatCommand extends Command implements TabExecutor {
                 state.setActiveChannel(defaultChannel);
             }
             player.sendMessage(messageFormatter.formatSuccess(
-                    "已离开频道: " + leavingChannel + "，已切换到默认频道: " + defaultChannel));
+                    PlayerMessages.left(leavingChannel, defaultChannel)));
             plugin.debug("Player " + player.getName() + " left channel: " + leavingChannel);
         } else {
             // Actionable error: NC-433 not-in-channel vs NC-503 network failure (via ErrorCode).
@@ -253,7 +256,7 @@ public class NovaChatCommand extends Command implements TabExecutor {
         }
 
         ChatMode newMode = state.getChatMode();
-        String modeText = newMode == ChatMode.REPLACE ? "频道模式" : "混合模式";
+        String modeText = ChatModeDescriptions.modeName(newMode);
         player.sendMessage(messageFormatter.formatSuccess("聊天模式已切换为: " + modeText));
         player.sendMessage(messageFormatter.formatSystemMessage(ChatModeDescriptions.describe(newMode)));
         plugin.debug("Player " + player.getName() + " toggled chat mode to: " + newMode);
@@ -267,7 +270,8 @@ public class NovaChatCommand extends Command implements TabExecutor {
      */
     private void handleReload(CommandSender sender) {
         if (!sender.hasPermission("novachat.admin")) {
-            sender.sendMessage(messageFormatter.formatError("你没有权限执行此命令"));
+            sender.sendMessage(messageFormatter.formatError(
+                    ErrorMessageFormatter.format(ErrorCode.FORBIDDEN)));
             return;
         }
 

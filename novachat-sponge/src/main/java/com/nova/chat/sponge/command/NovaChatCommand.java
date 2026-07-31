@@ -2,6 +2,8 @@ package com.nova.chat.sponge.command;
 
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.command.PlayerMessages;
+import com.nova.chat.client.error.ErrorCode;
 import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.ChatModeDescriptions;
@@ -238,7 +240,7 @@ public class NovaChatCommand {
         if (result.isSuccess()) {
             // Sponge-specific extra the shared service does not own.
             addWorldExtra(player);
-            sendMessage(ctx.subject(), "正在加入频道 &e" + channelId + "&7...");
+            sendMessage(ctx.subject(), PlayerMessages.joining(channelId));
             plugin.debug("Player " + player.name() + " joined channel: " + channelId);
         } else {
             // Actionable error via shared ErrorCode system (NC-503 network failure here).
@@ -272,7 +274,7 @@ public class NovaChatCommand {
 
         PlayerChannelState state = plugin.getChatListener().getState(player.uniqueId());
         if (state == null || state.getActiveChannel() == null) {
-            sendError(ctx.subject(), "你当前没有加入任何频道");
+            sendError(ctx.subject(), ErrorMessageFormatter.format(ErrorCode.NOT_IN_CHANNEL));
             return org.spongepowered.api.command.CommandResult.success();
         }
 
@@ -281,7 +283,7 @@ public class NovaChatCommand {
         CommandResult result = channelCommands.leave(state, channelId, player.name());
 
         if (result.isSuccess()) {
-            sendMessage(ctx.subject(), "正在离开频道 &e" + channelId + "&7...");
+            sendMessage(ctx.subject(), PlayerMessages.leaving(channelId));
             plugin.debug("Player " + player.name() + " left channel: " + channelId);
         } else {
             // Actionable error: NC-433 not-in-channel vs NC-503 network failure (via ErrorCode).
@@ -341,7 +343,7 @@ public class NovaChatCommand {
 
         ChatMode newMode = state.getChatMode();
 
-        String modeText = newMode == ChatMode.REPLACE ? "&c替换模式" : "&a混合模式";
+        String modeText = ChatModeDescriptions.modeName(newMode);
         sendSuccess(ctx.subject(), "聊天模式已切换为 " + modeText);
         sendMessage(ctx.subject(), ChatModeDescriptions.describe(newMode));
 
