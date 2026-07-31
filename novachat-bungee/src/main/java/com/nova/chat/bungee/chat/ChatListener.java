@@ -39,6 +39,7 @@ public class ChatListener implements Listener {
     private final NovaChatBungee plugin;
     private final NovaChatConfig config;
     private final MessageFormatter messageFormatter;
+    private final MentionNotifier mentionNotifier = new MentionNotifier();
     
     /** Player chat states indexed by UUID */
     private final Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
@@ -219,17 +220,20 @@ public class ChatListener implements Listener {
      */
     private void handleMention(MentionPacket packet) {
         UUID mentionedId = packet.getMentionedId();
-        if (mentionedId == null) {
+        UUID mentionerId = packet.getMentionerId();
+        if (mentionedId == null || mentionerId == null) {
             return;
         }
         ProxiedPlayer player = plugin.getProxy().getPlayer(mentionedId);
         if (player == null) {
             return;
         }
-        String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
-        String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
-        String text = "&e" + mentioner + " &7在频道 &b" + channelId + " &7提到了你";
-        player.sendMessage(messageFormatter.parseColors(text));
+        mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
+            String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
+            String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+            String text = "&e" + mentioner + " &7在频道 &b" + channelId + " &7提到了你";
+            player.sendMessage(messageFormatter.parseColors(text));
+        });
     }
 
     

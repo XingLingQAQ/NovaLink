@@ -14,6 +14,7 @@ import com.nova.chat.client.network.SchedulerBridge;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.NovaConstants;
+import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketRegistry;
@@ -53,6 +54,7 @@ public class NetworkClient {
 
     private final NovaChatBukkit plugin;
     private final CoreNetworkClient core;
+    private final MentionNotifier mentionNotifier = new MentionNotifier();
 
     /** Pending request contexts for mapping responses back to players (Bukkit UX). */
     private final Map<UUID, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
@@ -250,7 +252,8 @@ public class NetworkClient {
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             try {
                 UUID mentionedId = packet.getMentionedId();
-                if (mentionedId == null) {
+                UUID mentionerId = packet.getMentionerId();
+                if (mentionedId == null || mentionerId == null) {
                     return;
                 }
                 org.bukkit.entity.Player player = plugin.getServer().getPlayer(mentionedId);
@@ -258,19 +261,20 @@ public class NetworkClient {
                     return; // not on this server
                 }
 
-                var formatter = plugin.getChatInterceptor().getMessageFormatter();
-                String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
-                String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
-                String title = formatter.translateColorCodes("&e" + mentioner);
-                String subtitle = formatter.translateColorCodes(
-                        "&7在频道 &b" + channelId + " &7提到了你");
+                mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
+                    var formatter = plugin.getChatInterceptor().getMessageFormatter();
+                    String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
+                    String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+                    String title = formatter.translateColorCodes("&e" + mentioner);
+                    String subtitle = formatter.translateColorCodes(
+                            "&7在频道 &b" + channelId + " &7提到了你");
 
-                player.sendTitle(title, subtitle,
-                        com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN,
-                        com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY,
-                        com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT);
-
-                playMentionSound(player);
+                    player.sendTitle(title, subtitle,
+                            MentionNotifier.DEFAULT_FADE_IN,
+                            MentionNotifier.DEFAULT_STAY,
+                            MentionNotifier.DEFAULT_FADE_OUT);
+                    playMentionSound(player);
+                });
             } catch (Exception e) {
                 plugin.debug("Failed to handle MentionPacket: " + e.getMessage(), e);
             }

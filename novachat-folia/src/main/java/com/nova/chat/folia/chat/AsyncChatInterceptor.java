@@ -57,6 +57,7 @@ public class AsyncChatInterceptor implements Listener {
     private final NovaChatFolia plugin;
     private final NovaChatConfig config;
     private final FoliaSchedulerAdapter scheduler;
+    private final MentionNotifier mentionNotifier = new MentionNotifier();
     
     /** Message formatter for color codes and placeholders - thread-safe */
     private final AsyncMessageFormatter messageFormatter;
@@ -269,7 +270,8 @@ public class AsyncChatInterceptor implements Listener {
      */
     private void handleMention(MentionPacket packet) {
         UUID mentionedId = packet.getMentionedId();
-        if (mentionedId == null) {
+        UUID mentionerId = packet.getMentionerId();
+        if (mentionedId == null || mentionerId == null) {
             return;
         }
         Player player = plugin.getServer().getPlayer(mentionedId);
@@ -281,16 +283,18 @@ public class AsyncChatInterceptor implements Listener {
                 return;
             }
             try {
-                String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
-                String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
-                String title = messageFormatter.translateColorCodes("&e" + mentioner);
-                String subtitle = messageFormatter.translateColorCodes(
-                        "&7在频道 &b" + channelId + " &7提到了你");
-                player.sendTitle(title, subtitle,
-                        MentionNotifier.DEFAULT_FADE_IN,
-                        MentionNotifier.DEFAULT_STAY,
-                        MentionNotifier.DEFAULT_FADE_OUT);
-                playMentionSound(player);
+                mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
+                    String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
+                    String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+                    String title = messageFormatter.translateColorCodes("&e" + mentioner);
+                    String subtitle = messageFormatter.translateColorCodes(
+                            "&7在频道 &b" + channelId + " &7提到了你");
+                    player.sendTitle(title, subtitle,
+                            MentionNotifier.DEFAULT_FADE_IN,
+                            MentionNotifier.DEFAULT_STAY,
+                            MentionNotifier.DEFAULT_FADE_OUT);
+                    playMentionSound(player);
+                });
             } catch (Exception e) {
                 plugin.debug("Failed to handle MentionPacket: " + e.getMessage(), e);
             }

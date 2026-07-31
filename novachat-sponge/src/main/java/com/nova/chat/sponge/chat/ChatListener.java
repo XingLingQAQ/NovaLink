@@ -41,6 +41,7 @@ public class ChatListener {
     
     private final NovaChatSponge plugin;
     private final NovaChatConfig config;
+    private final MentionNotifier mentionNotifier = new MentionNotifier();
     
     /** Player chat states indexed by UUID */
     private final Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
@@ -290,7 +291,8 @@ public class ChatListener {
      */
     private void handleMention(MentionPacket packet) {
         UUID mentionedId = packet.getMentionedId();
-        if (mentionedId == null) {
+        UUID mentionerId = packet.getMentionerId();
+        if (mentionedId == null || mentionerId == null) {
             return;
         }
         Sponge.server().scheduler().executor(plugin.getContainer()).execute(() -> {
@@ -299,20 +301,22 @@ public class ChatListener {
                 return;
             }
             ServerPlayer player = opt.get();
-            String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
-            String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
-            Component title = Component.text(mentioner, NamedTextColor.YELLOW);
-            Component subtitle = Component.text()
-                    .append(Component.text("在频道 ", NamedTextColor.GRAY))
-                    .append(Component.text(channelId, NamedTextColor.AQUA))
-                    .append(Component.text(" 提到了你", NamedTextColor.GRAY))
-                    .build();
-            Title.Times times = Title.Times.times(
-                    Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
-                    Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
-                    Duration.ofMillis(MentionNotifier.DEFAULT_FADE_OUT * 50L));
-            player.showTitle(Title.title(title, subtitle, times));
-            playMentionSound(player);
+            mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
+                String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
+                String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+                Component title = Component.text(mentioner, NamedTextColor.YELLOW);
+                Component subtitle = Component.text()
+                        .append(Component.text("在频道 ", NamedTextColor.GRAY))
+                        .append(Component.text(channelId, NamedTextColor.AQUA))
+                        .append(Component.text(" 提到了你", NamedTextColor.GRAY))
+                        .build();
+                Title.Times times = Title.Times.times(
+                        Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
+                        Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
+                        Duration.ofMillis(MentionNotifier.DEFAULT_FADE_OUT * 50L));
+                player.showTitle(Title.title(title, subtitle, times));
+                playMentionSound(player);
+            });
         });
     }
 

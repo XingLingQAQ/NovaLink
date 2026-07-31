@@ -48,9 +48,7 @@ public class MentionNotifier {
     /**
      * Per-recipient dedup state. Maps the dedup key
      * {@code mentionedId + "|" + mentionerId} to the timestamp of the last
-     * notification that was actually emitted. Guarded by this instance's
-     * monitor; {@link MentionNotifier} is not expected to be shared across
-     * unrelated threads, but the map is concurrent-safe anyway.
+     * notification that was actually emitted. Access is synchronized on the map.
      */
     private final Map<String, Long> lastNotifiedAt = new HashMap<>();
 
@@ -186,12 +184,36 @@ public class MentionNotifier {
         Objects.requireNonNull(mentionerId, "mentionerId cannot be null");
         String key = dedupKey(mentionedId, mentionerId);
         synchronized (lastNotifiedAt) {
+            lastNotifiedAt.entrySet().removeIf(
+                    entry -> (now - entry.getValue()) >= DEDUP_INTERVAL_MS);
             Long last = lastNotifiedAt.get(key);
             if (last != null && (now - last) < DEDUP_INTERVAL_MS) {
                 return false;
             }
             lastNotifiedAt.put(key, now);
             return true;
+        }
+    }
+
+    /**
+     * Runs a mention notification callback unless this player pair was notified
+     * within the deduplication window.
+     *
+     * @param mentionedId the player who would be notified
+     * @param mentionerId the player who sent the mention
+     * @param onNotify the platform-specific sound/title delivery
+     */
+    public void notifyOrSkip(UUID mentionedId, UUID mentionerId, Runnable onNotify) {
+        notifyOrSkip(mentionedId, mentionerId, System.currentTimeMillis(), onNotify);
+    }
+
+    /** Package-private overload for deterministic tests. */
+    void notifyOrSkip(UUID mentionedId, UUID mentionerId, long now, Runnable onNotify) {
+        Objects.requireNonNull(mentionedId, "mentionedId cannot be null");
+        Objects.requireNonNull(mentionerId, "mentionerId cannot be null");
+        Objects.requireNonNull(onNotify, "onNotify cannot be null");
+        if (shouldNotify(mentionedId, mentionerId, now)) {
+            onNotify.run();
         }
     }
 

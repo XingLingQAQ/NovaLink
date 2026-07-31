@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -90,6 +91,75 @@ class MentionNotifierDedupTest {
     }
 
     @Nested
+    @DisplayName("notifyOrSkip")
+    class NotifyOrSkip {
+
+        @Test
+        @DisplayName("runs only once for repeated mentions within three seconds")
+        void runsOnlyOnceWithinWindow() {
+            AtomicInteger notifications = new AtomicInteger();
+
+            notifier.notifyOrSkip(mentioned, mentionerA, 1_000L, notifications::incrementAndGet);
+            notifier.notifyOrSkip(mentioned, mentionerA, 1_500L, notifications::incrementAndGet);
+            notifier.notifyOrSkip(mentioned, mentionerA,
+                    1_000L + MentionNotifier.DEDUP_INTERVAL_MS - 1L,
+                    notifications::incrementAndGet);
+
+            assertThat(notifications).hasValue(1);
+        }
+
+        @Test
+        @DisplayName("runs again after the dedup window")
+        void runsAgainAfterWindow() {
+            AtomicInteger notifications = new AtomicInteger();
+
+            notifier.notifyOrSkip(mentioned, mentionerA, 1_000L, notifications::incrementAndGet);
+            notifier.notifyOrSkip(mentioned, mentionerA,
+                    1_000L + MentionNotifier.DEDUP_INTERVAL_MS,
+                    notifications::incrementAndGet);
+
+            assertThat(notifications).hasValue(2);
+        }
+
+        @Test
+        @DisplayName("different mentioners are notified independently")
+        void differentMentionersIndependent() {
+            AtomicInteger notifications = new AtomicInteger();
+
+            notifier.notifyOrSkip(mentioned, mentionerA, 1_000L, notifications::incrementAndGet);
+            notifier.notifyOrSkip(mentioned, mentionerB, 1_000L, notifications::incrementAndGet);
+            notifier.notifyOrSkip(mentioned, mentionerA, 1_001L, notifications::incrementAndGet);
+
+            assertThat(notifications).hasValue(2);
+        }
+
+        @Test
+        @DisplayName("expired pairs are discarded without affecting active pairs")
+        void expiredPairsDiscardedBehaviorally() {
+            UUID expiredMentioner = UUID.randomUUID();
+            AtomicInteger notifications = new AtomicInteger();
+            long initial = 1_000L;
+
+            notifier.notifyOrSkip(mentioned, expiredMentioner, initial, notifications::incrementAndGet);
+            notifier.notifyOrSkip(mentioned, mentionerA,
+                    initial + MentionNotifier.DEDUP_INTERVAL_MS - 1L,
+                    notifications::incrementAndGet);
+            notifier.notifyOrSkip(mentioned, mentionerB,
+                    initial + MentionNotifier.DEDUP_INTERVAL_MS,
+                    notifications::incrementAndGet);
+
+            notifier.notifyOrSkip(mentioned, expiredMentioner,
+                    initial + MentionNotifier.DEDUP_INTERVAL_MS,
+                    notifications::incrementAndGet);
+            notifier.notifyOrSkip(mentioned, mentionerA,
+                    initial + MentionNotifier.DEDUP_INTERVAL_MS,
+                    notifications::incrementAndGet);
+
+            assertThat(notifications).hasValue(4);
+        }
+    }
+
+    @Nested
     @DisplayName("clearDedup")
     class ClearDedup {
 
@@ -113,6 +183,13 @@ class MentionNotifierDedupTest {
         @DisplayName("null mentionedId is rejected")
         void nullMentioned() {
             assertThatThrownBy(() -> notifier.shouldNotify(null, mentionerA, 1L))
+                    .isInstanceOf(NullPointerException.class);
+        }
+
+        @Test
+        @DisplayName("null notification callback is rejected")
+        void nullCallback() {
+            assertThatThrownBy(() -> notifier.notifyOrSkip(mentioned, mentionerA, null))
                     .isInstanceOf(NullPointerException.class);
         }
 
