@@ -190,7 +190,7 @@ public class NovaChatCommand implements SimpleCommand {
                 state.setActiveChannel(defaultChannel);
             }
             player.sendMessage(messageFormatter.formatSuccess(
-                    PlayerMessages.left(leavingChannel, defaultChannel)));
+                    PlayerMessages.leaving(leavingChannel)));
             plugin.debug("Player " + player.getUsername() + " left channel: " + leavingChannel);
         } else {
             // Actionable error: NC-433 not-in-channel vs NC-503 network failure (via ErrorCode).
