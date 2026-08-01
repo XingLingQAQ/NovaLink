@@ -33,4 +33,7 @@
 # xmake
 **/.xmake/
 
+# Real-server E2E harness workspace (downloaded server jars, worlds, runtime logs/configs)
+.e2e/
+logs/
 
