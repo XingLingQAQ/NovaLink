@@ -4,6 +4,7 @@ import cn.nukkit.Player;
 import cn.nukkit.command.CommandSender;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.nukkit.NovaChatNukkit;
@@ -79,7 +80,7 @@ public class LeaveCommand extends AbstractSubCommand {
             if (!defaultChannel.equals(state.getActiveChannel())) {
                 state.setActiveChannel(defaultChannel);
             }
-            sendSuccess(sender, "已离开频道 " + currentChannel + "，已切换到默认频道");
+            sendSuccess(sender, PlayerMessages.leaving(currentChannel));
             plugin.debug("Player " + player.getName() + " left channel: " + currentChannel);
         } else {
             // Actionable error: NC-433 not-in-channel vs NC-503 network failure (via ErrorCode).
