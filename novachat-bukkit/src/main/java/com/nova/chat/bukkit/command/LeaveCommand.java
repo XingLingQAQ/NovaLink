@@ -17,10 +17,10 @@ import java.util.List;
  * client-core). The pending-request correlation is preserved automatically
  * because the shared service sends through {@code NetworkClient#sendPacket},
  * which hooks the tracker for every {@code ChannelActionPacket}. After a
- * successful leave of the active channel, the Bukkit default-channel reset is
- * re-applied on top of the service's membership update to keep the original
- * "leave current → default" UX. Keeps the Bukkit command shape, permission
- * check, tab completion, and Chinese UX copy.
+ * successful leave of the active channel, the configured default is preferred
+ * only if it remains in local membership. Selecting a fallback must not create
+ * membership without a matching backend JOIN. Keeps the Bukkit command shape,
+ * permission check, tab completion, and Chinese UX copy.
  *
  * Requirements: 3
  */
@@ -84,11 +84,11 @@ public class LeaveCommand extends AbstractSubCommand {
         if (result.isSuccess()) {
             messageHelper.sendMessage(sender, "正在离开频道 &e" + channelId + "&7...");
 
-            // Optimistically adjust local active channel if leaving the current one.
-            // The service's leaveChannel() falls back to the next joined channel (or null);
-            // Bukkit UX lands on the configured default instead, so override after success.
+            // Prefer the configured default only when it remains joined. This is
+            // deliberately membership-preserving: leaving the default may leave no
+            // active channel, and must not silently create a backend-less JOIN.
             if (leavingCurrent) {
-                plugin.getChatInterceptor().setPlayerChannel(player, plugin.getNovaChatConfig().getDefaultChannel());
+                state.setActiveChannelIfJoined(plugin.getNovaChatConfig().getDefaultChannel());
             }
         } else {
             // Distinguish "not in a channel" (service short-circuit) from a send failure.

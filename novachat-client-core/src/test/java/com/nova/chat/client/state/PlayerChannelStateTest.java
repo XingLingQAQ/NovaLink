@@ -85,6 +85,33 @@ class PlayerChannelStateTest {
         }
 
         @Test
+        @DisplayName("setActiveChannelIfJoined changes active without creating membership")
+        void setActiveOnlyIfJoined() {
+            PlayerChannelState state = new PlayerChannelState(PLAYER, "global", ChatMode.HYBRID);
+            state.joinChannel("trade");
+            state.setActiveChannel("trade");
+            state.leaveChannel("global");
+
+            assertThat(state.setActiveChannelIfJoined("global")).isFalse();
+            assertThat(state.getActiveChannel()).isEqualTo("trade");
+            assertThat(state.isJoined("global")).isFalse();
+
+            assertThat(state.setActiveChannelIfJoined("trade")).isTrue();
+            assertThat(state.getActiveChannel()).isEqualTo("trade");
+            assertThat(state.getJoinedChannels()).containsExactly("trade");
+        }
+
+        @Test
+        @DisplayName("setActiveChannelIfJoined rejects blank")
+        void setActiveIfJoinedRejectsBlank() {
+            PlayerChannelState state = new PlayerChannelState(PLAYER, "global", ChatMode.HYBRID);
+            assertThatThrownBy(() -> state.setActiveChannelIfJoined(" "))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> state.setActiveChannelIfJoined(null))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
         @DisplayName("joinChannel is idempotent and does not change active")
         void joinIdempotent() {
             PlayerChannelState state = new PlayerChannelState(PLAYER, "global", ChatMode.HYBRID);
@@ -144,6 +171,19 @@ class PlayerChannelStateTest {
             PlayerChannelState state = new PlayerChannelState(PLAYER, "global", ChatMode.HYBRID);
             assertThat(state.leaveChannel("nope")).isFalse();
             assertThat(state.getActiveChannel()).isEqualTo("global");
+        }
+
+        @Test
+        @DisplayName("copy preserves an empty membership with null active channel")
+        void copyAfterLeavingLastChannel() {
+            PlayerChannelState original = new PlayerChannelState(PLAYER, "global", ChatMode.HYBRID);
+            original.leaveChannel("global");
+
+            PlayerChannelState copy = original.copy();
+
+            assertThat(copy.getActiveChannel()).isNull();
+            assertThat(copy.getJoinedChannels()).isEmpty();
+            assertThat(copy.getPlayerId()).isEqualTo(PLAYER);
         }
 
         @Test

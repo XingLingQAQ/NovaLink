@@ -111,10 +111,13 @@ public final class ChannelCommandService {
      * Leaves {@code channelId} for the given player state.
      *
      * <p>If {@code channelId} is null or blank, the player's current active channel
-     * is used. When there is no active channel, returns failure without sending.
+     * is used. When the target is absent from local membership, returns NC-433
+     * without sending; this keeps repeated LEAVE requests from creating further
+     * optimistic state changes after a successful local removal.
      *
      * @param state      player channel state (updated on successful send)
-     * @param channelId  channel to leave, or null/blank to leave the active channel
+     * @param channelId  channel to leave, or null/blank to leave the active channel;
+     *                   the resolved channel must be in local membership
      * @param playerName optional display name put in packet extras; null/blank omitted
      * @return success when the packet was accepted for send; failure otherwise
      */
@@ -125,7 +128,7 @@ public final class ChannelCommandService {
         if (target == null || target.isBlank()) {
             target = state.getActiveChannel();
         }
-        if (target == null || target.isBlank()) {
+        if (target == null || target.isBlank() || !state.isJoined(target)) {
             return CommandResult.failure(CommandIntent.LEAVE, "Not in a channel", "NC-433");
         }
 

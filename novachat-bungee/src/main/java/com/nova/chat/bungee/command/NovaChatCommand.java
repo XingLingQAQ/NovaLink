@@ -162,8 +162,9 @@ public class NovaChatCommand extends Command implements TabExecutor {
      * Handles the leave subcommand.
      *
      * <p>Uses {@link ChannelCommandService#leave} for the LEAVE packet and
-     * membership update. After a successful leave, restores the configured
-     * default channel so Bungee leave UX stays "leave → default" (not bare leave).
+     * membership update. After a successful leave, prefers the configured
+     * default channel only when it remains in local membership; selecting a
+     * channel must never manufacture a JOIN the backend did not receive.
      */
     private void handleLeave(CommandSender sender, String[] args) {
         if (!(sender instanceof ProxiedPlayer player)) {
@@ -186,11 +187,11 @@ public class NovaChatCommand extends Command implements TabExecutor {
 
         CommandResult result = channelCommands.leave(state, leavingChannel, player.getName());
         if (result.isSuccess()) {
-            // Preserve prior Bungee leave UX: always land on the configured default.
+            // Prefer the configured default only when it is still a confirmed local
+            // membership. setActiveChannel() would silently re-add a default that
+            // this very LEAVE just removed without sending a matching JOIN.
             String defaultChannel = plugin.getPluginConfig().getDefaultChannel();
-            if (!defaultChannel.equals(state.getActiveChannel())) {
-                state.setActiveChannel(defaultChannel);
-            }
+            state.setActiveChannelIfJoined(defaultChannel);
             player.sendMessage(messageFormatter.formatSuccess(
                     PlayerMessages.leaving(leavingChannel)));
             plugin.debug("Player " + player.getName() + " left channel: " + leavingChannel);

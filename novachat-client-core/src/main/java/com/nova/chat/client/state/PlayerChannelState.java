@@ -38,14 +38,18 @@ public final class PlayerChannelState {
      * @param defaultMode    initial chat mode
      */
     public PlayerChannelState(UUID playerId, String defaultChannel, ChatMode defaultMode) {
-        this.playerId = Objects.requireNonNull(playerId, "playerId");
-        Objects.requireNonNull(defaultMode, "defaultMode");
+        this(playerId, defaultMode);
         if (defaultChannel == null || defaultChannel.isBlank()) {
             throw new IllegalArgumentException("defaultChannel must not be blank");
         }
         this.activeChannel = defaultChannel;
-        this.joinedChannels = new LinkedHashSet<>();
         this.joinedChannels.add(defaultChannel);
+    }
+
+    private PlayerChannelState(UUID playerId, ChatMode defaultMode) {
+        this.playerId = Objects.requireNonNull(playerId, "playerId");
+        Objects.requireNonNull(defaultMode, "defaultMode");
+        this.joinedChannels = new LinkedHashSet<>();
         this.chatMode = defaultMode;
         this.modeOverridden = false;
         this.currentServer = null;
@@ -70,6 +74,25 @@ public final class PlayerChannelState {
         }
         this.activeChannel = activeChannel;
         this.joinedChannels.add(activeChannel);
+    }
+
+    /**
+     * Sets the active channel only when it is already present in the joined set.
+     * Unlike {@link #setActiveChannel(String)}, this method never creates local
+     * membership and is therefore suitable for post-LEAVE fallback selection.
+     *
+     * @param channelId non-blank channel id
+     * @return {@code true} if the channel was joined and became active
+     */
+    public boolean setActiveChannelIfJoined(String channelId) {
+        if (channelId == null || channelId.isBlank()) {
+            throw new IllegalArgumentException("channelId must not be blank");
+        }
+        if (!joinedChannels.contains(channelId)) {
+            return false;
+        }
+        this.activeChannel = channelId;
+        return true;
     }
 
     /**
@@ -180,8 +203,8 @@ public final class PlayerChannelState {
      * @return a new {@code PlayerChannelState} with the same field values
      */
     public PlayerChannelState copy() {
-        PlayerChannelState copy = new PlayerChannelState(playerId, activeChannel, chatMode);
-        copy.joinedChannels.clear();
+        PlayerChannelState copy = new PlayerChannelState(playerId, chatMode);
+        copy.activeChannel = this.activeChannel;
         copy.joinedChannels.addAll(this.joinedChannels);
         copy.modeOverridden = this.modeOverridden;
         copy.forwardingEnabled = this.forwardingEnabled;

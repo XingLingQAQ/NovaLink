@@ -160,8 +160,9 @@ public class NovaChatCommand implements SimpleCommand {
      * Handles the leave subcommand.
      *
      * <p>Uses {@link ChannelCommandService#leave} for the LEAVE packet and
-     * membership update. After a successful leave, restores the configured
-     * default channel so Velocity leave UX stays "leave → default".
+     * membership update. After a successful leave, prefers the configured
+     * default channel only when it remains in local membership; selecting a
+     * channel must never manufacture a JOIN the backend did not receive.
      */
     private void handleLeave(Invocation invocation, String[] args) {
         if (!(invocation.source() instanceof Player player)) {
@@ -184,11 +185,11 @@ public class NovaChatCommand implements SimpleCommand {
 
         CommandResult result = channelCommands.leave(state, leavingChannel, player.getUsername());
         if (result.isSuccess()) {
-            // Preserve prior Velocity leave UX: always land on the configured default.
+            // Prefer the configured default only when it is still a confirmed local
+            // membership. setActiveChannel() would silently re-add a default that
+            // this very LEAVE just removed without sending a matching JOIN.
             String defaultChannel = plugin.getConfig().getDefaultChannel();
-            if (!defaultChannel.equals(state.getActiveChannel())) {
-                state.setActiveChannel(defaultChannel);
-            }
+            state.setActiveChannelIfJoined(defaultChannel);
             player.sendMessage(messageFormatter.formatSuccess(
                     PlayerMessages.leaving(leavingChannel)));
             plugin.debug("Player " + player.getUsername() + " left channel: " + leavingChannel);

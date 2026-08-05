@@ -293,6 +293,69 @@ class ChannelCommandServiceTest {
         }
 
         @Test
+        @DisplayName("leaving the default removes membership and list renders it unjoined")
+        void leaveDefaultKeepsListConsistentWithBackend() {
+            when(packetSender.send(any(ChannelActionPacket.class))).thenReturn(true);
+
+            CommandResult result = service.leave(state, "global", "Alex");
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(state.getJoinedChannels()).isEmpty();
+            assertThat(state.getActiveChannel()).isNull();
+
+            com.nova.chat.client.channel.KnownChannelRegistry registry =
+                    new com.nova.chat.client.channel.KnownChannelRegistry();
+            registry.addAll(java.util.Set.of("global"));
+            List<String> lines = ListCommandService.formatChannelList(
+                    registry, state.getJoinedChannels());
+            assertThat(lines).singleElement()
+                    .satisfies(line -> assertThat(line).contains("○").contains("global").doesNotContain("✓"));
+        }
+
+        @Test
+        @DisplayName("second leave is rejected locally without sending another packet")
+        void secondLeaveShortCircuitsLocally() {
+            when(packetSender.send(any(ChannelActionPacket.class))).thenReturn(true);
+
+            CommandResult first = service.leave(state, "global", "Alex");
+            CommandResult second = service.leave(state, "global", "Alex");
+
+            assertThat(first.isSuccess()).isTrue();
+            assertThat(second.isFailure()).isTrue();
+            assertThat(second.getErrorCode()).isEqualTo("NC-433");
+            assertThat(state.getJoinedChannels()).isEmpty();
+            assertThat(state.getActiveChannel()).isNull();
+            verify(packetSender, times(1)).send(any(ChannelActionPacket.class));
+        }
+
+        @Test
+        @DisplayName("specified unjoined channel is rejected without changing optimistic state")
+        void unjoinedTargetShortCircuitsLocally() {
+            CommandResult result = service.leave(state, "trade", "Alex");
+
+            assertThat(result.isFailure()).isTrue();
+            assertThat(result.getErrorCode()).isEqualTo("NC-433");
+            assertThat(state.getJoinedChannels()).containsExactly("global");
+            assertThat(state.getActiveChannel()).isEqualTo("global");
+            verify(packetSender, never()).send(any());
+        }
+
+        @Test
+        @DisplayName("leaving active non-default prefers default only when it is still joined")
+        void activeNonDefaultCanPreferJoinedDefaultWithoutCreatingMembership() {
+            state.setActiveChannel("trade");
+            when(packetSender.send(any(ChannelActionPacket.class))).thenReturn(true);
+
+            CommandResult result = service.leave(state, "trade", "Alex");
+            boolean selectedDefault = state.setActiveChannelIfJoined("global");
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(selectedDefault).isTrue();
+            assertThat(state.getActiveChannel()).isEqualTo("global");
+            assertThat(state.getJoinedChannels()).containsExactly("global");
+        }
+
+        @Test
         @DisplayName("leaving a non-active channel keeps active unchanged")
         void leaveNonActive() {
             state.joinChannel("trade");
