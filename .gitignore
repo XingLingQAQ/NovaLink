@@ -37,3 +37,7 @@
 .e2e/
 logs/
 
+
+# Prevent runtime logs from being committed
+*.log
+novalink-core/logs/
