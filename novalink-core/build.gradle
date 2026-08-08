@@ -37,6 +37,9 @@ dependencies {
     runtimeOnly "io.jsonwebtoken:jjwt-impl:${jjwtVersion}"
     runtimeOnly "io.jsonwebtoken:jjwt-jackson:${jjwtVersion}"
 
+    // Console readline + TAB completion (no transitive terminal dep; reader-only)
+    implementation 'org.jline:jline-reader:3.26.1'
+
     // Testing
     testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
     testImplementation "net.jqwik:jqwik:${jqwikVersion}"

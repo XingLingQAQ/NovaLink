@@ -6,27 +6,28 @@
  */
 
 import React, { useState } from 'react';
-import { 
-  Plus, 
-  Edit, 
-  Trash2, 
-  Globe, 
-  Hash, 
-  Lock, 
+import {
+  Plus,
+  Edit,
+  Trash2,
+  Globe,
+  Hash,
+  Lock,
   Shield,
   Users,
   Settings,
-  Search
+  Search,
+  Info
 } from 'lucide-react';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import Modal from '../ui/Modal';
 
-function ChannelManagement({ 
-  theme, 
-  mode, 
-  txtMain, 
-  txtSec, 
+function ChannelManagement({
+  theme,
+  mode,
+  txtMain,
+  txtSec,
   channels = [],
   onCreateChannel,
   onEditChannel,
@@ -44,6 +45,12 @@ function ChannelManagement({
     permission: '',
     format: '&7[{channel}] {player}: {message}'
   });
+
+  // Channel CRUD is not exposed to the panel via REST or WS.
+  // The create/edit/delete handlers in App.jsx show a toast explaining this.
+  // We still render the buttons so the user can discover the limitation,
+  // but clicking them triggers the honest-disable toast instead of a fake local mutation.
+  const channelCrudDisabled = true;
 
   // Filter channels
   const filteredChannels = channels.filter(c => {
@@ -75,8 +82,12 @@ function ChannelManagement({
     }
   };
 
-  // Handle create channel
+  // Handle create channel — delegates to App (honest-disable toast, no fake mutation).
   const handleCreate = () => {
+    if (channelCrudDisabled) {
+      onCreateChannel && onCreateChannel(null);
+      return;
+    }
     if (onCreateChannel && newChannel.id && newChannel.name) {
       onCreateChannel(newChannel);
       setShowCreateModal(false);
@@ -90,8 +101,12 @@ function ChannelManagement({
     }
   };
 
-  // Handle edit channel
+  // Handle edit channel — delegates to App (honest-disable toast).
   const handleEdit = (channel) => {
+    if (channelCrudDisabled) {
+      onEditChannel && onEditChannel(channel);
+      return;
+    }
     setEditingChannel({ ...channel });
     setShowEditModal(true);
   };
@@ -105,8 +120,12 @@ function ChannelManagement({
     }
   };
 
-  // Handle delete channel
+  // Handle delete channel — delegates to App (honest-disable toast).
   const handleDelete = (channelId) => {
+    if (channelCrudDisabled) {
+      onDeleteChannel && onDeleteChannel(channelId);
+      return;
+    }
     if (window.confirm('确定要删除此频道吗？此操作不可撤销。')) {
       onDeleteChannel && onDeleteChannel(channelId);
     }
@@ -127,10 +146,26 @@ function ChannelManagement({
           <h2 className={`text-2xl font-bold ${txtMain}`}>频道管理</h2>
           <p className={`text-sm ${txtSec} mt-1`}>配置聊天频道 · {channels.length} 个频道</p>
         </div>
-        <Button theme={theme} mode={mode} variant="primary" onClick={() => setShowCreateModal(true)}>
+        <Button
+          theme={theme}
+          mode={mode}
+          variant="primary"
+          onClick={() => (channelCrudDisabled ? handleCreate() : setShowCreateModal(true))}
+          title={channelCrudDisabled ? '频道增删改需在服务端配置文件中修改，面板暂不支持' : '新建频道'}
+        >
           <Plus size={16} /> 新建频道
         </Button>
       </div>
+
+      {/* Honest-disable info banner */}
+      {channelCrudDisabled && (
+        <Card theme={theme} mode={mode} className="p-3 flex items-start gap-2 border border-amber-500/20">
+          <Info size={16} className="text-amber-400 shrink-0 mt-0.5" />
+          <p className={`text-xs ${txtSec}`}>
+            频道的创建、编辑、删除需在服务端 NovaLink 配置文件中修改后重载。面板当前仅提供只读查看，点击上方按钮可查看说明。
+          </p>
+        </Card>
+      )}
 
       {/* Filters */}
       <Card theme={theme} mode={mode} className="p-4">
@@ -197,40 +232,58 @@ function ChannelManagement({
               {/* Channel Details */}
               <div className="space-y-2 mb-4">
                 <div className={`p-2 rounded-lg text-xs ${
-                  theme === 'clean' 
-                    ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50') 
+                  theme === 'clean'
+                    ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50')
                     : 'bg-white/5'
                 }`}>
                   <span className={txtSec}>权限: </span>
                   <span className={txtMain}>{channel.permission || '无'}</span>
                 </div>
-                <div className={`p-2 rounded-lg text-xs font-mono overflow-hidden ${
-                  theme === 'clean' 
-                    ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50') 
+                {channel.format && (
+                  <div className={`p-2 rounded-lg text-xs font-mono overflow-hidden ${
+                    theme === 'clean'
+                      ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50')
+                      : 'bg-white/5'
+                  }`}>
+                    <span className={txtSec}>格式: </span>
+                    <span className={`${txtMain} truncate block`}>{channel.format}</span>
+                  </div>
+                )}
+                <div className={`flex items-center gap-3 p-2 rounded-lg text-xs ${
+                  theme === 'clean'
+                    ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50')
                     : 'bg-white/5'
                 }`}>
-                  <span className={txtSec}>格式: </span>
-                  <span className={`${txtMain} truncate block`}>{channel.format}</span>
+                  <span className={txtSec}>成员: </span>
+                  <span className={txtMain}>{channel.memberCount || 0}/{channel.maxCapacity || 0}</span>
+                  {channel.clientId && (
+                    <>
+                      <span className={txtSec}>· 服务器: </span>
+                      <span className={txtMain}>{channel.clientId}</span>
+                    </>
+                  )}
                 </div>
               </div>
 
               {/* Actions */}
               <div className="flex gap-2">
-                <Button 
-                  theme={theme} 
-                  mode={mode} 
-                  variant="ghost" 
+                <Button
+                  theme={theme}
+                  mode={mode}
+                  variant="ghost"
                   className="flex-1 text-sm"
                   onClick={() => handleEdit(channel)}
+                  title={channelCrudDisabled ? '频道编辑需在服务端配置文件中修改' : '编辑'}
                 >
                   <Edit size={14} /> 编辑
                 </Button>
-                <Button 
-                  theme={theme} 
-                  mode={mode} 
-                  variant="danger" 
+                <Button
+                  theme={theme}
+                  mode={mode}
+                  variant="danger"
                   className="text-sm"
                   onClick={() => handleDelete(channel.id)}
+                  title={channelCrudDisabled ? '频道删除需在服务端配置文件中修改' : '删除'}
                 >
                   <Trash2 size={14} />
                 </Button>
@@ -260,7 +313,6 @@ function ChannelManagement({
         <ChannelForm
           theme={theme}
           mode={mode}
-          txtMain={txtMain}
           txtSec={txtSec}
           channel={newChannel}
           onChange={setNewChannel}
@@ -289,7 +341,6 @@ function ChannelManagement({
             <ChannelForm
               theme={theme}
               mode={mode}
-              txtMain={txtMain}
               txtSec={txtSec}
               channel={editingChannel}
               onChange={setEditingChannel}
@@ -312,7 +363,7 @@ function ChannelManagement({
 }
 
 // Channel Form Component
-function ChannelForm({ theme, mode, txtMain, txtSec, channel, onChange, channelTypes, isEdit = false }) {
+function ChannelForm({ theme, mode, txtSec, channel, onChange, channelTypes, isEdit = false }) {
   const inputClass = `w-full px-4 py-2.5 rounded-xl border outline-none focus:ring-2 transition-all ${
     theme === 'clean' 
       ? (mode === 'dark' ? 'bg-slate-700 border-slate-600 focus:ring-sky-500 text-white' : 'bg-white border-slate-200 focus:ring-sky-500 text-slate-900') 

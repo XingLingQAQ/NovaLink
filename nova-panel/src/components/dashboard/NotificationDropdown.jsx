@@ -1,6 +1,7 @@
 import React from 'react';
+import { Info, AlertTriangle, CheckCircle, UserX } from 'lucide-react';
 
-const NotificationDropdown = ({ isOpen, onClose, theme, mode, notifications, onMarkAllRead, onClearAll }) => {
+const NotificationDropdown = ({ isOpen, theme, mode, notifications, onMarkAllRead, onClearAll }) => {
     let containerStyles = "absolute top-full right-0 mt-3 w-80 sm:w-96 rounded-2xl shadow-2xl z-50 overflow-hidden origin-top-right transition-all duration-300 border ";
 
     if (theme === 'clean') {
@@ -40,7 +41,11 @@ const NotificationDropdown = ({ isOpen, onClose, theme, mode, notifications, onM
                 {notifications.length === 0 ? (
                     <div className={`p-8 text-center ${txtSec} text-sm`}>暂无通知</div>
                 ) : (
-                    notifications.map((notif) => (
+                    notifications.map((notif) => {
+                        const Icon = notif.icon
+                          ? (typeof notif.icon === 'function' ? notif.icon : null)
+                          : (notif.type === 'warning' ? AlertTriangle : notif.type === 'success' ? CheckCircle : notif.type === 'mute' ? UserX : Info);
+                        return (
                         <div key={notif.id} className={`px-4 py-3 flex gap-3 transition-colors cursor-pointer relative ${hoverBg} ${!notif.read ? 'bg-sky-500/5' : ''}`}>
                             {!notif.read && (
                                 <div className="absolute left-1.5 top-1/2 -translate-y-1/2 w-1.5 h-1.5 bg-sky-500 rounded-full"></div>
@@ -50,7 +55,7 @@ const NotificationDropdown = ({ isOpen, onClose, theme, mode, notifications, onM
                                 notif.type === 'success' ? 'bg-emerald-500/20 text-emerald-400' :
                                 theme === 'clean' ? (mode === 'dark' ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-600') : 'bg-white/10 text-white'
                             }`}>
-                                <notif.icon size={18} />
+                                {Icon && <Icon size={18} />}
                             </div>
                             <div className="flex-1 min-w-0">
                                 <p className={`text-sm font-medium truncate ${txtMain} ${!notif.read ? 'font-semibold' : ''}`}>{notif.title}</p>
@@ -58,7 +63,8 @@ const NotificationDropdown = ({ isOpen, onClose, theme, mode, notifications, onM
                                 <p className={`text-[10px] ${txtSec} opacity-70 mt-1`}>{notif.time}</p>
                             </div>
                         </div>
-                    ))
+                        );
+                    })
                 )}
             </div>
             <div className={`p-3 border-t ${divider} text-center`}>

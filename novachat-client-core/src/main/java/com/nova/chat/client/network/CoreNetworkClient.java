@@ -54,7 +54,7 @@ public final class CoreNetworkClient {
     private final ClientLogger logger;
     /** Shown in NC-401 hints (e.g. {@code config.yml}, {@code config.toml}). */
     private final String credentialsConfigFile;
-    /** Optional MultiPaper-style username rewrite; identity by default. */
+    /** Optional username rewrite (e.g. instance suffix); identity by default. */
     private final Function<String, String> usernameTransformer;
 
     private final PacketRegistry packetRegistry;
@@ -105,7 +105,7 @@ public final class CoreNetworkClient {
      * @param scheduler              platform scheduler (seconds-based)
      * @param logger                 platform logger
      * @param credentialsConfigFile  file name mentioned in NC-401 errors
-     * @param usernameTransformer    rewrite handshake username (MultiPaper {@code user@node})
+     * @param usernameTransformer    rewrite handshake username (e.g. {@code user@node})
      */
     public CoreNetworkClient(
             ClientConnectionConfig connectionConfig,

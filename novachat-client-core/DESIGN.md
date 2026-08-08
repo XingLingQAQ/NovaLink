@@ -1,6 +1,6 @@
 # novachat-client-core — Design
 
-**Status:** Architecture B confirmed. Helper adoption FULL/partial as before. **`CoreNetworkClient`:** extracted + **ALL 8 platform facades wired** (velocity, bungee, nukkit, sponge, multipaper, folia, pnx, bukkit). **`ChannelCommandService`:** wired on bungee, nukkit, velocity, sponge, pnx, folia, bukkit (multipaper FROZEN). **Not:** mod (own `ChatMode`). See §5.1.  
+**Status:** Architecture B confirmed. Helper adoption FULL/partial as before. **`CoreNetworkClient`:** extracted + **ALL 7 platform facades wired** (velocity, bungee, nukkit, sponge, folia, pnx, bukkit). **`ChannelCommandService`:** wired on bungee, nukkit, velocity, sponge, pnx, folia, bukkit. **Not:** mod (own `ChatMode`). See §5.1.
 **Date:** 2026-07-30  
 **Scope:** Plugin-side shared runtime (connection lifecycle helpers, reconnect policy, client state, optional Netty engine). **Not** used by `novalink-core`.
 
@@ -75,7 +75,6 @@ Under `com.nova.chat.client`:
 | `novachat-bungee` | `NetworkClient` | ~380 | `BUNGEECORD` | pure core skeleton |
 | `novachat-nukkit` | `NetworkClient` | ~386 | `NUKKIT` | core + Nukkit scheduler |
 | `novachat-pnx` | `NetworkClient` | ~379 | `POWERNUKKITX` | core + extra handler-side chat/title |
-| `novachat-multipaper` | `NetworkClient` | ~382 | `MULTIPAPER` | core + username `@instanceId` |
 | `novachat-sponge` | `NetworkClient` | ~386 | `SPONGE` | core + Sponge async sleep reconnect |
 | `novachat-folia` | `AsyncNetworkClient` | ~350+ | `FOLIA` | core + FoliaSchedulerAdapter; async connect + async packet dispatch |
 | `novachat-mod/common` | `NetworkClient` (iface) + `NettyNetworkClient` | different API | FABRIC/NEOFORGE/… | **divergent** pipeline/API; second-wave migration |
@@ -126,7 +125,7 @@ return authFuture  // completes on HandshakeResponse, not TCP alone
 passwordHash = SHA-256 hex(UTF-8 password)
 send HandshakePacket(
   NovaProtocol.PROTOCOL_VERSION,
-  username,          // MultiPaper may rewrite to username@instanceId
+  username,          // some platforms rewrite to username@instanceId
   passwordHash,
   PlatformType.*
 )
@@ -198,9 +197,9 @@ SHA-256 → lowercase hex lives in client-core as `PasswordHasher`. Major plugin
 | **Pipeline codecs** | Varint21 + PacketDecoder/Encoder from `novachat-common` | **mod** uses custom inner encoder/decoder; often missing `Varint21LengthFieldPrepender`; connect timeout 10s |
 | **EventLoopGroup lifetime** | new group per `connect()`; shutdown on reconnect/disconnect | **mod** keeps one long-lived group; reconnect via `eventLoopGroup.schedule` |
 | **Connect entry thread** | caller thread starts Netty connect | **Folia** wraps entire bootstrap in `scheduler.runAsync` |
-| **Reconnect delay unit** | exponential seconds | Bukkit/MultiPaper/Nukkit/PNX/Folia: `delay * 20` **ticks**; Velocity/Bungee: `TimeUnit.SECONDS`; Sponge: `Thread.sleep` on async executor; mod: ELG schedule with `reconnectDelay * 2^n` (base 5s, cap 2^5) |
+| **Reconnect delay unit** | exponential seconds | Bukkit/Nukkit/PNX/Folia: `delay * 20` **ticks**; Velocity/Bungee: `TimeUnit.SECONDS`; Sponge: `Thread.sleep` on async executor; mod: ELG schedule with `reconnectDelay * 2^n` (base 5s, cap 2^5) |
 | **Reconnect after max** | stop + tell user `/nc reload` | mod sets `ConnectionStatus.ERROR` |
-| **PlatformType** | per module enum constant | MultiPaper appends `@instanceId` to username when adapter detects MultiPaper |
+| **PlatformType** | per module enum constant | some platforms append `@instanceId` to username via an adapter |
 | **Auth credentials API** | `config.getUsername()` / `getPassword()` | PNX: `getBackendUsername()` / `getBackendPassword()` |
 | **Config file in error text** | `config.yml` | Velocity: `config.toml` |
 | **Logger API** | JUL-like `info/warning/severe` | Velocity/Sponge/Nukkit/PNX: SLF-style `info/warn/error` |
@@ -217,7 +216,7 @@ SHA-256 → lowercase hex lives in client-core as `PasswordHasher`. Major plugin
 
 ### What must stay platform-local
 
-- Player messaging, titles, chat interceptors, world monitors, MultiPaper adapter.
+- Player messaging, titles, chat interceptors, world monitors, platform adapters.
 - Bukkit pending-request UX / optimistic channel rollback (tracker can be shared; UX stays local).
 - Any main-thread / region-thread player API.
 - Config file formats and plugin lifecycle.
@@ -248,16 +247,16 @@ Shared slice inventory: `PasswordHasher`, config → `ReconnectPolicy` (`ClientC
 |--------|---------|-------|
 | **FULL** | `bukkit`, `velocity`, `bungee`, `nukkit` | `PasswordHasher` + config→`ReconnectPolicy` + `ChatMode` + `PlayerChannelState` where applicable. |
 | **FULL network** (nested state kept) | `pnx` | Network helpers adopted (`PasswordHasher`, reconnect policy); nested local player state kept (not swapped to shared `PlayerChannelState`). |
-| **FULL network + `ChatMode`** | `folia`, `multipaper`, `sponge` | Network helpers + `ChatMode`; local `PlayerChatState` wrappers OK (not full `PlayerChannelState` adoption). |
+| **FULL network + `ChatMode`** | `folia`, `sponge` | Network helpers + `ChatMode`; local `PlayerChatState` wrappers OK (not full `PlayerChannelState` adoption). |
 | **Not** | `mod` | Own `ChatMode` model; divergent API/pipeline (second wave). |
-| **FULL** | `CoreNetworkClient` | Engine + ports in client-core; **ALL 8 platform facades delegate fully** (velocity, bungee, nukkit, sponge, multipaper, folia, pnx, bukkit). Local `ClientChannelHandler.java` deleted on every platform. |
-| **FULL** | `ChannelCommandService` | Wired on bungee, nukkit, velocity, sponge, pnx, folia, bukkit. **multipaper FROZEN** (not pursuing). PNX delegates join/leave/reload only — toggle kept local (PNX `chatEnabled` ≠ `ChatMode`). |
+| **FULL** | `CoreNetworkClient` | Engine + ports in client-core; **ALL 7 platform facades delegate fully** (velocity, bungee, nukkit, sponge, folia, pnx, bukkit). Local `ClientChannelHandler.java` deleted on every platform. |
+| **FULL** | `ChannelCommandService` | Wired on bungee, nukkit, velocity, sponge, pnx, folia, bukkit. PNX delegates join/leave/reload only — toggle kept local (PNX `chatEnabled` ≠ `ChatMode`). |
 
 #### Next slices
 
 1. ~~`CoreNetworkClient` + `SchedulerBridge` (Velocity-first)~~ **done — all 8 platforms**
-2. ~~Format template engine platform migration~~ **done — bukkit/nukkit/velocity/sponge/multipaper/folia**
-3. ~~Wire platforms to `ChannelCommandService`~~ **done — 7/8 (multipaper frozen)**
+2. ~~Format template engine platform migration~~ **done — bukkit/nukkit/velocity/sponge/folia**
+3. ~~Wire platforms to `ChannelCommandService`~~ **done — 7/7**
 
 ### Recommendation: **Velocity first**, then Bungee, then Bukkit
 
@@ -267,7 +266,7 @@ When consolidating duplicated client transport into `novachat-client-core`, keep
 |-------|--------|-----|
 | 1 | **Velocity** | Smallest pure skeleton (~380 LOC), second-based scheduler (maps 1:1 to a seconds-based `PlatformScheduler`), SLF logger, no pending-request/ConfigSync/Title entanglement. Proves reconnect + handshake end-to-end with minimal platform code. |
 | 2 | Bungee | Nearly identical to Velocity; only scheduler/logger/PlatformType differ. Cheap second validation. |
-| 3 | Nukkit / PNX / Sponge / MultiPaper | Same core; tick vs sleep schedulers exercise adapter. MultiPaper validates `usernameTransformer`. PNX: move chat/title out of `ClientChannelHandler` into registry handlers while swapping engine. |
+| 3 | Nukkit / PNX / Sponge | Same core; tick vs sleep schedulers exercise adapter. PNX: move chat/title out of `ClientChannelHandler` into registry handlers while swapping engine. |
 | 4 | **Bukkit** | Largest delta: pending requests, ConfigSync JSON, Title, channel/admin UX. Migrate by **composition** — thin facade delegates transport to shared runtime, keeps UX helpers local. Highest regression risk; benefits from already-stable helpers. |
 | 5 | Folia | Same as Bukkit conceptually but already has `FoliaSchedulerAdapter`; keep async handler dispatch as registry decorator. |
 | 6 | mod (`NettyNetworkClient`) | Divergent API/pipeline; either adapt or leave as consumer of shared codecs only. Do **not** block plugin work on mod. |
@@ -331,7 +330,7 @@ ClientNetworkEngine engine = NettyClientNetworkEngine.builder()
     .connectTimeoutMillis(5000)
     .maxReconnectAttempts(10)
     .maxReconnectDelaySeconds(30)
-    .usernameTransformer(u -> u) // MultiPaper: u + "@" + instanceId
+    .usernameTransformer(u -> u) // e.g. u + "@" + instanceId
     .build();
 ```
 
@@ -365,7 +364,7 @@ Pending-request tracking stays in a **Bukkit** (or shared “command UX”) help
 
 ### 6.4 `AuthCredentialsSource` / `ClientLogger`
 
-Platform adapters map config (standard vs PNX names, MultiPaper username transform). Logging abstracts JUL vs SLF.
+Platform adapters map config (standard vs PNX names, username transform). Logging abstracts JUL vs SLF.
 
 ---
 
@@ -388,7 +387,7 @@ All tests live in `novachat-client-core/src/test` with JUnit 5 + AssertJ + Mocki
 - Player titles, adventure components, world restriction application.
 - Config YAML/TOML parsing.
 - Backend routing, auth managers, DB (those are `novalink-core` tests).
-- MultiPaper instance detection (test transformer function only: `u -> u+"@node1"`).
+- Instance detection (test transformer function only: `u -> u+"@node1"`).
 
 ---
 
@@ -471,7 +470,6 @@ Other clones:
 - `D:\Project\NovaLink\novachat-bungee\src\main\java\com\nova\chat\bungee\network\NetworkClient.java`
 - `D:\Project\NovaLink\novachat-nukkit\src\main\java\com\nova\chat\nukkit\network\NetworkClient.java`
 - `D:\Project\NovaLink\novachat-pnx\src\main\java\com\nova\chat\pnx\network\NetworkClient.java`
-- `D:\Project\NovaLink\novachat-multipaper\src\main\java\com\nova\chat\multipaper\network\NetworkClient.java`
 - `D:\Project\NovaLink\novachat-sponge\src\main\java\com\nova\chat\sponge\network\NetworkClient.java`
 - `D:\Project\NovaLink\novachat-folia\src\main\java\com\nova\chat\folia\network\AsyncNetworkClient.java`
 - `D:\Project\NovaLink\novachat-mod\common\src\main\java\com\nova\chat\mod\network\NettyNetworkClient.java`

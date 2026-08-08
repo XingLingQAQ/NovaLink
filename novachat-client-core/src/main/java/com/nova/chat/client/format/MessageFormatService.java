@@ -18,7 +18,7 @@ import java.util.Map;
  * on the introducer character:
  * <ul>
  *   <li>{@link #convertHexToSection(String)} — {@code &#RRGGBB} → {@code §x§r…}
- *       for Bungee / Sponge / Bukkit / Folia / MultiPaper (section-sign input)</li>
+ *       for Bungee / Sponge / Bukkit / Folia (section-sign input)</li>
  *   <li>{@link #convertHexToAmpersand(String)} — {@code &#RRGGBB} → {@code &x&r…}
  *       for Velocity (Adventure serializer configured with {@code &})</li>
  * </ul>
@@ -110,7 +110,7 @@ public final class MessageFormatService {
      * <p>{@code type} is matched case-insensitively: {@code "error"} →
      * {@code errorFormat}, {@code "success"} → {@code successFormat}, anything
      * else → literal {@code "{message}"}. This mirrors the existing
-     * {@code formatSystemMessage(type, message)} behavior on bukkit/nukkit/sponge/folia/multipaper.
+     * {@code formatSystemMessage(type, message)} behavior on bukkit/nukkit/sponge/folia.
      *
      * @param prefix        the configured prefix; null → ""
      * @param errorFormat   the error format template; null → ""

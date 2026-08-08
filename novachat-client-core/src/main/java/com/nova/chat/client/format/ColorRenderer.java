@@ -9,7 +9,7 @@ package com.nova.chat.client.format;
  * <ul>
  *   <li>Velocity / Sponge (Adventure) — {@code LegacyComponentSerializer.deserialize}</li>
  *   <li>Bungee — {@code ChatColor.translateAlternateColorCodes} + {@code TextComponent.fromLegacyText}</li>
- *   <li>Bukkit / Folia / MultiPaper — {@code ChatColor.translateAlternateColorCodes} (returns String)</li>
+ *   <li>Bukkit / Folia — {@code ChatColor.translateAlternateColorCodes} (returns String)</li>
  *   <li>Nukkit / PNX — {@code TextFormat.colorize} (returns String)</li>
  * </ul>
  *

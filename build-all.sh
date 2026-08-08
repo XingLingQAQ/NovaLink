@@ -3,10 +3,9 @@
 # NovaChat/NovaLink - One-Click Build Script for Linux/macOS
 # ============================================================
 # This script builds all platform modules:
-# - Java projects (Gradle): novalink-core, novachat-common, 
-#   novachat-bukkit, novachat-velocity, novachat-bungee, 
+# - Java projects (Gradle): novalink-core, novachat-common,
+#   novachat-bukkit, novachat-velocity, novachat-bungee,
 #   novachat-nukkit, novachat-mod, novachat-pnx
-# - Go project: novalink-go
 # - PHP project (Composer): novachat-pmmp
 # - Python project: novachat-endstone
 # ============================================================
@@ -29,7 +28,7 @@ mkdir -p "${BUILD_DIR}"
 # ============================================================
 # 1. Build Java Projects (Gradle)
 # ============================================================
-echo "[1/4] Building Java projects with Gradle..."
+echo "[1/3] Building Java projects with Gradle..."
 echo ""
 
 if ./gradlew clean build -x test --no-daemon; then
@@ -54,7 +53,6 @@ cp -f novachat-velocity/build/libs/*.jar "${BUILD_DIR}/" 2>/dev/null || true
 cp -f novachat-bungee/build/libs/*.jar "${BUILD_DIR}/" 2>/dev/null || true
 cp -f novachat-nukkit/build/libs/*.jar "${BUILD_DIR}/" 2>/dev/null || true
 cp -f novachat-pnx/build/libs/*.jar "${BUILD_DIR}/" 2>/dev/null || true
-cp -f novachat-multipaper/build/libs/*.jar "${BUILD_DIR}/" 2>/dev/null || true
 cp -f novachat-folia/build/libs/*.jar "${BUILD_DIR}/" 2>/dev/null || true
 cp -f novachat-mod/fabric/build/libs/*-remapped.jar "${BUILD_DIR}/" 2>/dev/null || true
 cp -f novachat-mod/quilt/build/libs/*-remapped.jar "${BUILD_DIR}/" 2>/dev/null || true
@@ -62,39 +60,9 @@ cp -f novachat-mod/quilt/build/libs/*-remapped.jar "${BUILD_DIR}/" 2>/dev/null |
 echo ""
 
 # ============================================================
-# 2. Build Go Project (novalink-go)
+# 2. Build PHP Project (novachat-pmmp)
 # ============================================================
-echo "[2/4] Building Go project (novalink-go)..."
-echo ""
-
-if command -v go &> /dev/null; then
-    pushd novalink-go > /dev/null
-    
-    # Detect OS for binary name
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        BINARY_NAME="novalink-go-darwin"
-    else
-        BINARY_NAME="novalink-go-linux"
-    fi
-    
-    if go build -o "${BUILD_DIR}/${BINARY_NAME}" ./cmd/novalink; then
-        echo "[OK] novalink-go built successfully."
-    else
-        echo "[ERROR] Go build failed!"
-        BUILD_FAILED=1
-    fi
-    
-    popd > /dev/null
-else
-    echo "[WARNING] Go is not installed. Skipping novalink-go build."
-fi
-
-echo ""
-
-# ============================================================
-# 3. Build PHP Project (novachat-pmmp)
-# ============================================================
-echo "[3/4] Building PHP project (novachat-pmmp)..."
+echo "[2/3] Building PHP project (novachat-pmmp)..."
 echo ""
 
 if command -v composer &> /dev/null; then
@@ -119,9 +87,9 @@ fi
 echo ""
 
 # ============================================================
-# 4. Build Python Project (novachat-endstone)
+# 3. Build Python Project (novachat-endstone)
 # ============================================================
-echo "[4/4] Building Python project (novachat-endstone)..."
+echo "[3/3] Building Python project (novachat-endstone)..."
 echo ""
 
 if command -v python3 &> /dev/null || command -v python &> /dev/null; then
@@ -159,11 +127,9 @@ echo ""
 [ -f "${BUILD_DIR}"/novachat-bungee*.jar ] && echo "[OK] novachat-bungee"
 [ -f "${BUILD_DIR}"/novachat-nukkit*.jar ] && echo "[OK] novachat-nukkit"
 [ -f "${BUILD_DIR}"/NovaChat-PNX*.jar ] && echo "[OK] novachat-pnx"
-[ -f "${BUILD_DIR}"/NovaChat-MultiPaper*.jar ] && echo "[OK] novachat-multipaper"
 [ -f "${BUILD_DIR}"/NovaChat-Folia*.jar ] && echo "[OK] novachat-folia"
 [ -f "${BUILD_DIR}"/*fabric*-remapped.jar ] && echo "[OK] novachat-mod-fabric"
 [ -f "${BUILD_DIR}"/*quilt*-remapped.jar ] && echo "[OK] novachat-mod-quilt"
-[ -f "${BUILD_DIR}"/novalink-go-* ] && echo "[OK] novalink-go"
 [ -f "${BUILD_DIR}"/novachat-pmmp/plugin.yml ] && echo "[OK] novachat-pmmp"
 [ -f "${BUILD_DIR}"/novachat-endstone/plugin.toml ] && echo "[OK] novachat-endstone"
 

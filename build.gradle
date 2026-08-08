@@ -84,3 +84,118 @@ subprojects {
         options.encoding = "UTF-8"
     }
 }
+
+// ============================================================================
+// Real-server E2E harness integration (OPTIONAL -- never runs by default).
+//
+// The E2E harness lives under .e2e/ (gitignored -- NOT committed). It requires
+// real Minecraft server jars, real bot processes (mineflayer/bedrock-protocol),
+// a running NovaLink backend, JDK 17/21, and Node.js. None of these are
+// available in a clean CI environment, so this task is strictly opt-in.
+//
+// Entry points:
+//   1. Dedicated task:  ./gradlew realE2E
+//   2. Gate into check: ./gradlew check -PenableRealE2E=true
+//
+// Platform subset:
+//   ./gradlew realE2E -Pe2ePlatforms=bukkit,velocity
+//   (default: bukkit,bungee,velocity,nukkit,folia,pnx,sponge)
+//
+// When .e2e/ is absent (fresh clone / CI without harness), the task logs a
+// helpful message and succeeds as a no-op -- it NEVER fails the build due to
+// harness absence.
+// ============================================================================
+
+def e2eDir = file('.e2e')
+def e2eOrchestrator = file('.e2e/bin/run-e2e-orchestrator.ps1')
+def e2eSummaryFile = file('.e2e/artifacts/runs/e2e-summary.json')
+def defaultE2ePlatforms = 'bukkit,bungee,velocity,nukkit,folia,pnx,sponge'
+
+tasks.register('realE2E', Exec) {
+    group = 'verification'
+    description = 'Runs the real-server E2E harness (opt-in; requires .e2e/ + real server jars + Node.js). Use -Pe2ePlatforms=bukkit,velocity to subset. No-op if .e2e/ absent.'
+
+    // This task is NEVER included in build/check/test by default.
+    // It is only pulled into check when -PenableRealE2E=true is passed.
+
+    // Resolve platform subset property (default = all 7 platforms).
+    def platforms = providers.gradleProperty('e2ePlatforms').orElse(defaultE2ePlatforms).get()
+
+    // Timeout: E2E runs take minutes per platform (server boot + bot sequence).
+    // Default 30 min total; override with -Pe2eTimeoutSec=600.
+    def timeoutSec = providers.gradleProperty('e2eTimeoutSec').orElse('1800').get().toInteger()
+
+    // Gradle's Exec runs the command; we use a guard doFirst so the task body
+    // is a no-op (succeeds) when the harness is absent.
+    def shouldRun = e2eDir.exists() && e2eOrchestrator.exists()
+
+    if (shouldRun) {
+        workingDir = rootProject.projectDir
+        commandLine 'powershell.exe',
+            '-ExecutionPolicy', 'Bypass',
+            '-NoProfile',
+            '-File', e2eOrchestrator.absolutePath,
+            '-Platforms', platforms,
+            '-TimeoutSec', '420',
+            '-BotWaitSec', '150'
+        timeout = java.time.Duration.ofSeconds(timeoutSec)
+        // ignoreExitValue = false: a platform failure (exit 1) fails the task.
+        // exit 2 (prereq failure) also fails the task with a clear message.
+    } else {
+        // No-op: the command is a harmless echo. doFirst logs the reason.
+        commandLine 'powershell.exe', '-NoProfile', '-Command',
+            "Write-Output '[realE2E] E2E harness not present (.e2e/ is gitignored) -- skipping.'"
+    }
+
+    doFirst {
+        if (!e2eDir.exists()) {
+            logger.lifecycle('[realE2E] .e2e/ directory not found (gitignored -- not committed).')
+            logger.lifecycle('[realE2E] The E2E harness is NOT included in the repository.')
+            logger.lifecycle('[realE2E] To run E2E: clone with the harness, or run scripts directly under .e2e/bin/.')
+            logger.lifecycle('[realE2E] Skipping (no-op). Build will NOT fail because of E2E absence.')
+        } else if (!e2eOrchestrator.exists()) {
+            logger.lifecycle('[realE2E] .e2e/ exists but orchestrator script missing: ' + e2eOrchestrator)
+            logger.lifecycle('[realE2E] Expected .e2e/bin/run-e2e-orchestrator.ps1 (gitignored, not committed).')
+            logger.lifecycle('[realE2E] Skipping (no-op).')
+        } else {
+            logger.lifecycle('[realE2E] Starting real-server E2E for platforms: ' + platforms)
+            logger.lifecycle('[realE2E] Timeout: ' + timeoutSec + 's. This will spawn real server + bot processes.')
+            logger.lifecycle('[realE2E] Results summary will be written to: ' + e2eSummaryFile)
+        }
+    }
+
+    doLast {
+        // If we actually ran the orchestrator, read + print the summary JSON.
+        if (e2eDir.exists() && e2eOrchestrator.exists() && e2eSummaryFile.exists()) {
+            logger.lifecycle('[realE2E] --- Results Summary ---')
+            def summaryJson = e2eSummaryFile.text
+            try {
+                def parsed = groovy.json.JsonSlurper.newInstance().parseText(summaryJson)
+                if (parsed instanceof List) {
+                    parsed.each { row ->
+                        def l1 = row.l1Pass ? 'PASS' : 'FAIL'
+                        def chat = row.chatRoundTrip ? 'MATCH' : 'NO-MATCH'
+                        def line = String.format('  %-10s | L1: %-4s | chat: %-9s | %s',
+                            row.platform, l1, chat, row.status)
+                        logger.lifecycle(line)
+                        if (row.notes) {
+                            logger.lifecycle('             | notes: ' + row.notes)
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                logger.lifecycle('[realE2E] Could not parse summary JSON: ' + e.message)
+                logger.lifecycle(summaryJson)
+            }
+        }
+    }
+}
+
+// Gate: only include realE2E in check when -PenableRealE2E=true is passed.
+// Plain `gradlew check` does NOT run E2E.
+tasks.named('check') {
+    def enableE2E = providers.gradleProperty('enableRealE2E').map { it == 'true' }.orElse(false).get()
+    if (enableE2E) {
+        dependsOn('realE2E')
+    }
+}

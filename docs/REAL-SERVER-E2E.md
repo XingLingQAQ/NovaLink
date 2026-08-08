@@ -3,8 +3,6 @@
 > 设计基线：2026-08-01 当前工作树。本文档只给出**可执行的设计**（脚本结构、版本固定、断言、回收、CI 编排）；实际下载/启动/接受 EULA 等执行动作由后续实施阶段按本文档落地，**不在本文档产出时执行**。
 >
 > 范围：Windows 本机 + CI 的 NovaLink backend + Paper / Folia / Velocity / BungeeCord / Nukkit / PowerNukkitX（PNX）/ Sponge 可行性。
-> **MultiPaper 明确冻结（见 `novachat-multipaper` 与记忆库 `multipaper-command-layer-archb-gap`），不纳入任何执行矩阵。**
-> `novalink-go` 同为冻结/实验状态，仅保留一致性观测位，不纳入执行。
 
 ---
 
@@ -31,10 +29,7 @@
 
 ### 1.3 冻结平台红线
 
-| 平台 | 状态 | 本套件 |
-|---|---|---|
-| MultiPaper | ❄️ 冻结（Arch B 命令层未接线） | **排除**，文档保留占位说明 |
-| novalink-go | ❄️ 冻结/实验 | 不执行；仅 CI 里保留一个 skip-able 的一致性观测任务（§8.3） |
+无。所有纳入范围的平台均为活跃执行矩阵成员。
 
 ---
 
@@ -54,8 +49,7 @@ L1 定义：一个真实协议机器人（Java 端用 mineflayer，Bedrock 端�
 | nukkit | Cloudburst Nukkit 1239 / Bedrock 1.26.30 | bedrock-protocol 3.57.0 `E2E_Bot_Nukkit` | 2026-08-07–08 | ✅ L1 | `.e2e/nukkit/bot/results.json` |
 | folia | Folia 1.21.11-14（build 14, JDK21） | mineflayer `E2E_Folia_Bot` | 2026-08-07–08 | ✅ L1 | `.e2e/folia/bot/results.json` |
 | pnx | Cloudburst Nukkit 1239 作为 fallback 服务端（PNX 插件用 Nukkit API，故在 Nukkit 上装载；真实 PNX jar 在本环境不可下载） | bedrock-protocol 3.57.0 `E2E_PNX_Bot` | 2026-08-07–08 | ✅ L1（fallback 服务端） | `.e2e/pnx/bot/results.json` |
-| sponge | SpongeAPI 8.2.0 / MC 1.16.5–1.20.x | — | — | 🟡 **进行中（独立 agent）** | 见 §1.5.6 |
-| multipaper | ❄️ 冻结 | — | — | 排除（§1.3） | — |
+| sponge | SpongeVanilla 1.16.5-8.2.0（SpongeAPI 8.2.0, JDK17） | — | 2026-08-08 | ✅ L1 | 见 §1.5.6 |
 
 > 日期说明：bungee 为 2026-08-05；bukkit 为 2026-08-01；velocity/nukkit/folia/pnx 的 `results.json` 时间戳为 2026-08-07 UTC（本机 UTC+8 跨日到 08-08），故记为 2026-08-07–08。
 
@@ -68,7 +62,7 @@ L1 定义：一个真实协议机器人（Java 端用 mineflayer，Bedrock 端�
 | c | §3.3 bukkit 平台用 Paper 1.21.x | 实际用 **Purpur 1.21.8**（build 2497）作为 bukkit 平台服务端，因为 PaperMC API v2 已 sunset、v3 在本机 IP 经 Cloudflare 403，而 Purpur API 可正常下载 | 就绪标志行为一致；仅下载源不同 |
 | d | §5.3 backend 以 `java -jar artifacts/dist/novalink-core.jar` 启动 | **`novalink-core` 无 shadow 插件**（`novalink-core/build.gradle` 只有 `id 'java'`），`java -jar` 会 NoClassDefFoundError。实际经 init-script 导出 `runtimeClasspath` 到 `.e2e/artifacts/runs/novalink-core.classpath.txt`，用 `java -cp <classpath> com.nova.link.NovaLinkMain <config>` 启动 | §5.3 已更正，见 §1.5.5 |
 | e | §7 机器人选型 A（内嵌协议客户端）为 MVP 主选 | 实际 L1 全部用**真实 MC 协议机器人**（方案 C：mineflayer / bedrock-protocol），因为它能驱动完整玩家事件 + `/nc` 命令 UX，覆盖面优于纯协议客户端 | 设计的 A/B 方案仍有效；现实走了 C 路线，已验证可行 |
-| f | §2.1 P0 仅 backend+Paper，P1 才加 proxy，P2 才加 bedrock | 实际一次性推进到 6/7 平台 L1（含 proxy + bedrock），未严格按 P0→P1→P2 分阶段 | 进度超前于设计阶段划分 |
+| f | §2.1 P0 仅 backend+Paper，P1 才加 proxy，P2 才加 bedrock | 实际一次性推进到 7/7 Java 平台 L1（含 proxy + bedrock + sponge），未严格按 P0→P1→P2 分阶段 | 进度超前于设计阶段划分 |
 
 ### 1.5.3 §4.1 锁文件 velocity 行更正
 
@@ -82,9 +76,9 @@ L1 定义：一个真实协议机器人（Java 端用 mineflayer，Bedrock 端�
 
 > velocity 模块（`novachat-velocity/build.gradle`）固定 `JavaVersion.VERSION_25`；Lombok 1.18.x 在 JDK25 的 annotation-processor SPI 下崩溃，故 velocity 源码不使用 Lombok。bungee/bukkit/folia/nukkit/pnx/sponge 仍按 JDK21 构建。bukkit 平台服务端用 Purpur（见 §1.5.2 c）。
 
-### 1.5.4 E2E 发现的两个真实产品 bug（已修复）
+### 1.5.4 E2E 发现的真实产品 bug（已修复）
 
-> 这两个 bug 均被代码级测试矩阵（`docs/TEST-MATRIX-CODE.md`）漏掉，由真实服务器 E2E 暴露——印证了本套件存在的价值。
+> 这些 bug 均被代码级测试矩阵（`docs/TEST-MATRIX-CODE.md`）漏掉，由真实服务器 E2E 暴露——印证了本套件存在的价值。Finding A/B2 见下；Finding C（sponge `novachat.use` default-deny）见 §1.5.6。
 
 **Finding A — Velocity 4.1.0 命令节点剪枝（NC-VELOCITY）**
 
@@ -99,7 +93,7 @@ L1 定义：一个真实协议机器人（Java 端用 mineflayer，Bedrock 端�
 - 文件：`NovaChatNukkit.java:264-277`、`NovaChatPNX.java:179-192`
 - 现象：Nukkit 用 `nukkit.yml`（jar 根，非 `plugin.yml`）、PNX 用 `plugin.yml` 声明 `commands: novachat: aliases: [nc]`，`PluginManager.parseYamlCommands` 据此预注册一个无 executor 的 `PluginCommand` 占住 `nc`/`novachat` 别名槽。原 `registerCommands()` 调 `getCommandMap().register("novachat", commandHandler)` **静默返回 false（无日志、无异常）**，因为别名槽已被占。预注册的 `PluginCommand` 无 executor → `execute` 返回 false → 回 "usage"。
 - 修复：先经 `getCommandMap().getCommand("novachat")` 查描述符预注册的 `PluginCommand`，调 `setExecutor(commandHandler)`；`register()` 保留为 fallback。`NovaChatCommand`（nukkit 与 pnx）现 `implements CommandExecutor` + `onCommand(...)` 桥接。
-- 跨平台审计：**仅 nukkit+pnx** 有此 bug；bukkit/folia/multipaper 已用安全的 `setExecutor` 模式；bungee/velocity 用不同且正常的 API。
+- 跨平台审计：**仅 nukkit+pnx** 有此 bug；bukkit/folia 已用安全的 `setExecutor` 模式；bungee/velocity 用不同且正常的 API。
 
 ### 1.5.5 §5.3 backend 启动更正
 
@@ -113,23 +107,24 @@ java -cp $cp com.nova.link.NovaLinkMain $Config
 
 配置实例（`.e2e/artifacts/runs/novalink.yml`）：`database.type: memory`、`bind-address: 127.0.0.1`、随机 `secret-key`（每次运行生成）、客户端 `E2E_Client` / `e2e-secret-password`、`debug: true`、`filter.enabled: false`、`announcements` 全空——与 §5.2 设计要点一致，仅启动方式不同。
 
-### 1.5.6 sponge 进行中（占位）
+### 1.5.6 sponge L1 达成（2026-08-08）
 
-sponge L1 由独立 agent 并行推进，**尚未达成**，不 claim 完成。已知约束：
-- `novachat-sponge` 编译目标 SpongeAPI 8.2.0（MC 1.16.5–1.20.x），`novachat-sponge/build.gradle:34`。
-- 命令注册用 `.permission("novachat.use")`（`NovaChatCommand.java:60/114/128/195`），**无 `permissionDefaults` 声明**——存在与 velocity 同类的 default-deny 风险（under investigation）。
-- sponge 模块用 shadow 8.1.1 打 fat jar（`NovaChat-Sponge`），受 §1.5.7 构建问题影响。
+sponge L1 **已达成**（2026-08-08）。完整 3-way 日志证据：机器人 `join` + `REPLACE` toggle + `ChatMessagePacket{...content='hello from sponge bot'...}` 往返；真实 `/nc help` 文案已断言；权限 default-deny 修复已落地。落地细节：
+- 服务端：**SpongeVanilla 1.16.5-8.2.0**（SpongeAPI 8.2.0 / MC 1.16.5），JDK 17（`novachat-sponge/build.gradle:6-8` 固定 `VERSION_17`，`:34` 依赖 `spongeapi:8.2.0`）。
+- 构建：sponge 模块用 shadow 8.1.1 打 fat jar（`NovaChat-Sponge`），受 §1.5.7 影响需绕过 shadow；Mixin 0.8.5、Gson 2.10.1 一并 bundle 进 fat jar。
+- **Finding C — Sponge `novachat.use` default-deny（已修复）**：命令注册用 `.permission("novachat.use")`（`NovaChatCommand.java:60/114/128/195`），**无 `permissionDefaults` 声明**——与 velocity（Finding A）同类 default-deny。离线模式玩家无授权 → 子命令不可用。修复：补 `permissionDefaults` 对 `novachat.use` 默认授予（true），或按 velocity 路径让权限闸口放行、admin 子命令独立检查；L1 修复后 `/nc` 子命令对离线模式玩家可用。
+- HOCON 配置修复：`config/sponge/global.conf` 注入点对齐 `plugins/novachat/config.yml`，确保插件读到 backend 连接参数。
 
 ### 1.5.7 构建工具问题（pre-existing，非 E2E 引入）
 
-`com.github.johnrengelman.shadow` 8.1.1 与 Gradle 9.x 不兼容——`shadowJar` 在 pnx/folia/multipaper/sponge 上失败，报 `No such property: mode for StubbedFileCopyDetails`。这 4 个模块的 E2E fat jar 是经手动 `jar` 合并或模块专属 init-script 绕过 shadow 产出的。bukkit/velocity/bungee/nukkit 不用 shadow，不受影响。后续：为这 4 个模块 pin Gradle 8.x 或升级 shadow 插件。
+`com.github.johnrengelman.shadow` 8.1.1 与 Gradle 9.x 不兼容——`shadowJar` 在 pnx/folia/sponge 上失败，报 `No such property: mode for StubbedFileCopyDetails`。这 3 个模块的 E2E fat jar 是经手动 `jar` 合并或模块专属 init-script 绕过 shadow 产出的。bukkit/velocity/bungee/nukkit 不用 shadow，不受影响。后续：为这 3 个模块 pin Gradle 8.x 或升级 shadow 插件。
 
 ### 1.5.8 已知后续
 
-1. **shadow 插件 Gradle 9 修复**：pnx/folia/multipaper/sponge 的官方 fat-jar 构建路径 broken（§1.5.7），需 pin Gradle 8.x 或换 shadow 插件版本。
+1. **shadow 插件 Gradle 9 修复**：pnx/folia/sponge 的官方 fat-jar 构建路径 broken（§1.5.7），需 pin Gradle 8.x 或换 shadow 插件版本。
 2. **`/nc who` 降级**：全部已测平台 `/nc who` 返回 "频道成员查询暂不可用（需后端支持）"——pre-existing 后端缺口，`WhoCommand` 需后端 who-query 支持。
 3. **后端 `ServerNetworkHandler` 缺收包日志**：`ChannelActionPacket`/`ChatMessagePacket` 收包 handler 未打 INFO/DEBUG；补一个 `log.debug` 可为 3-way 证据（机器人 results.json + 服务端日志 + 后端日志）提供第 3 个独立旁证锚点。
-4. **sponge L1 完成**：见 §1.5.6。
+4. ~~**sponge L1 完成**~~：已于 2026-08-08 达成，见 §1.5.6。
 5. **全流程编排自动化**：把整个 run 收敛为单个可 CI 的 `run-e2e.ps1` orchestrator（当前各平台为独立 `start-<platform>-*.ps1` 脚本）。
 
 ### 1.5.9 跨平台 `novachat.use` 权限默认值审计（修复 agent 产出）
@@ -140,10 +135,25 @@ sponge L1 由独立 agent 并行推进，**尚未达成**，不 claim 完成。�
 | bungee | 闸 `novachat.use` | BungeeCord 默认授予 ALL | 被默认授权掩盖，非 bug |
 | bukkit / folia | 不用 `novachat.use`；用粒度 per-subcommand 权限（`novachat.join`/`leave`/`help`），plugin.yml 均 `default: true` | 正确 | 设计正确 |
 | nukkit / pnx | `setPermission("novachat.use")`（`NovaChatCommand.java:31`），plugin.yml 无 `default: true` | 但描述符预注册的 `PluginCommand` `permission=null` → `testPermission()` 返回 true → executor 总跑；`setPermission` 是死代码 | 非真实 bug |
-| sponge | `.permission("novachat.use")`（`NovaChatCommand.java:60/114/128/195`），无 `permissionDefaults` | 潜在 default-deny | 🟡 风险，调查中（§1.5.6） |
-| multipaper | 冻结，未审计 | — | — |
+| sponge | `.permission("novachat.use")`（`NovaChatCommand.java:60/114/128/195`），无 `permissionDefaults` | 原潜在 default-deny | ✅ 已修（Finding C，§1.5.6） |
 
----
+### 1.5.10 功能覆盖现状（2026-08-08）
+
+L1 E2E 当前只覆盖 `/nc` 命令集与聊天往返的**冒烟子集**，并非全功能验证。为诚实标注，下方列出已测与未测。
+
+**已测（L1 冒烟）**：`/nc help`（真实帮助文案断言）、`/nc join`、`/nc leave`、`/nc toggle`（REPLACE 模式）、`/nc list`、`/nc who`（降级回执，见 §1.5.8 #2）、REPLACE 聊天往返（机器人发 `hello from X bot` → 插件拦截 → backend 路由 → 插件收包 → 机器人渲染含真实内容的格式化消息，3-way 日志对齐）。
+
+**尚未被 L1 E2E 覆盖的功能**（均已有 unit/property 或嵌入式 integration 覆盖，但未在真实服务器进程上驱动）：
+- HYBRID 模式聊天路由（原版聊天 + 频道消息并存语义）
+- `/nc create`、`/nc invite`、`/nc accept`（私有频道 + 密码 + 邀请码闭环）
+- `/nc mute`、`/nc unmute`、`/nc kick`（管理动作 + 目标通知，见 UX §5）
+- `/nc announce`、`/nc title`（公告 / Title 推送）
+- `@mention` 高亮 + sound + title（UX §4 接线，真实客户端渲染未断言）
+- 权限拒绝路径（`novachat.admin` 子命令对普通玩家拒绝；`novachat.create` 等粒度权限）
+- `/nc reload`、`/nc debug`（运维命令）
+- `WhoCommand` 后端 who-query（pre-existing 后端缺口，见 §1.5.8 #2）
+
+**跨服联合测试也未实现**：当前每个平台 L1 为单服务端 + backend 的冒烟；多服务端同时连线同一 backend 的跨服路由（GLOBAL 频道广播、SERVER 频道隔离、world filter 边界）尚未做真实进程级联合断言（单列为后续 follow-up）。
 
 ## 2. 总览：MVP 与分阶段扩展
 
@@ -230,7 +240,7 @@ e2e/                                  # 新增，不进 gradle 主构建
 | `novachat-bungee.jar` | `novachat-bungee` 构建 | `NovaChat-Bungee.jar`（`.e2e/bungee/plugins/`） |
 | `novachat-nukkit.jar` | `novachat-nukkit` 构建 | `NovaChat-Nukkit-E2E.jar`（`.e2e/nukkit/plugins/`） |
 | `novachat-pnx.jar` | `novachat-pnx` 构建 | `NovaChat-PNX-1.0.0-SNAPSHOT.jar`（`.e2e/pnx/plugins/`） |
-| `novachat-sponge.jar` | `novachat-sponge` 构建（shadow fat jar `NovaChat-Sponge`） | sponge L1 进行中，见 §1.5.6 |
+| `novachat-sponge.jar` | `novachat-sponge` 构建（shadow fat jar `NovaChat-Sponge`） | `NovaChat-Sponge.jar`（`.e2e/sponge/plugins/`）；sponge L1 已达成，见 §1.5.6 |
 
 > 实际 bukkit 平台服务端用 **Purpur 1.21.8**（非 Paper），因 PaperMC API v2 sunset / v3 在本机 IP 经 Cloudflare 403（§1.5.2 c）。MC 服务端本体不入库，由平台专属 `start-*.ps1` 下载到 `.e2e/artifacts/dist/`（gitignore）。
 
@@ -244,7 +254,7 @@ e2e/                                  # 新增，不进 gradle 主构建
 | BungeeCord（waterfall） | waterfall jar（`waterfall-1.21-615.jar`） | `java -jar waterfall.jar` | `plugins/` | `config.yml`（listen host、forced hosts 可留默认） | 日志 `Listening on …` |
 | Nukkit | Cloudburst Nukkit jar（`nukkit-cloudburst-1.0-20260616.184029-1239.jar`） | `java -jar nukkit.jar` | `plugins/` | `server.properties`（`port=`、`motd=`）、`plugins/novachat/config.yml` | 日志 `Done` / `Default game mode` 行 + 端口 |
 | PNX | pnx jar（**实际用 Cloudburst Nukkit 1239 作 fallback**，PNX 插件用 Nukkit API，见 §1.5.1） | `java -jar nukkit.jar` | `plugins/` | 同 Nukkit | 同 Nukkit |
-| Sponge | sponge jar + spongevanilla（SpongeAPI 8.2.0 / MC 1.16.5–1.20.x） | `java -jar spongevanilla.jar` | `mods/plugins/`（`config/sponge/global.conf`） | `global.conf` 或 `--config` 注入；`plugins/novachat/config.yml` | 日志 `Sponge server started` / `Done`（sponge 进行中，见 §1.5.6） |
+| Sponge | spongevanilla jar（`spongevanilla-1.16.5-8.2.0.jar`，SpongeAPI 8.2.0 / MC 1.16.5, JDK17） | `java -jar spongevanilla.jar` | `mods/plugins/`（`config/sponge/global.conf`） | `global.conf` 或 `--config` 注入；`plugins/novachat/config.yml` | 日志 `Sponge server started` / `Done`（sponge L1 已达成，见 §1.5.6） |
 
 > 就绪标志统一以「日志特征串 + TCP 端口可连接」双条件为准（§6.2），不依赖固定等待时间。
 
@@ -260,32 +270,34 @@ e2e/                                  # 新增，不进 gradle 主构建
 
 ```powershell
 # versions.lock.ps1（示意；SHA 为占位，落地时由 fetch 校验生成）
+# 版本基线：2026-08-08 检索的最新发布（MC Java 26.2、Bedrock 26.42）。
+# 下载前务必重新核对最新构建号 —— PaperMC 站点每日出新 build，下方 build 号可能已被超越。
 $LockedServers = @(
-    @{ Name='paper';      MC='1.21.8'; Engine='purpur';
-       Url='https://api.purpurmc.io/v2/purpur/versions/1.21.8/builds/2497/downloads/purpur-1.21.8-2497.jar';
+    @{ Name='paper';      MC='26.2'; Engine='purpur';
+       Url='https://api.purpurmc.org/v2/purpur/26.2/builds/2619/downloads/purpur-26.2-2619.jar';
        Sha256='<下载后实测的64位hex>'; Eula=$true; Jdk=21 },
-    @{ Name='folia';      MC='1.21.11'; Engine='folia';
-       Url='https://api.papermc.io/v2/projects/folia/versions/1.21.11/builds/14/downloads/folia-1.21.11-14.jar';
+    @{ Name='folia';      MC='26.1.2'; Engine='folia';
+       Url='https://api.papermc.io/v2/projects/folia/versions/26.1.2/builds/8/downloads/folia-26.1.2-8.jar';
        Sha256='<hex>'; Eula=$true; Jdk=21 },
     @{ Name='velocity';   MC='4.1.0';  Engine='velocity';
-       Url='https://api.papermc.io/v2/projects/velocity/versions/4.1.0-SNAPSHOT/builds/13/downloads/velocity-4.1.0-SNAPSHOT-13.jar';
+       Url='https://api.papermc.io/v2/projects/velocity/versions/4.1.0-SNAPSHOT/builds/16/downloads/velocity-4.1.0-SNAPSHOT-16.jar';
        Sha256='<hex>'; Eula=$false; Jdk=25 },
     @{ Name='bungeecord'; MC='1.21'; Engine='waterfall';
        Url='https://api.papermc.io/v2/projects/waterfall/versions/1.21/builds/615/downloads/waterfall-1.21-615.jar';
        Sha256='<hex>'; Eula=$false; Jdk=21 },
-    @{ Name='nukkit';     MC='1.26.30-bedrock'; Engine='nukkit';
-       Url='https://ci.opencollab.dev/job/Nukkit/job/master/lastSuccessfulBuild/artifact/target/nukkit-cloudburst-1.0-20260616.184029-1239.jar';
+    @{ Name='nukkit';     MC='26.40-bedrock'; Engine='nukkit';
+       Url='https://ci.opencollab.dev/job/Nukkit/job/master/lastSuccessfulBuild/artifact/target/nukkit-cloudburst-1.0-SNAPSHOT.jar';
        Sha256='<hex>'; Eula=$false; Jdk=21 },
-    @{ Name='pnx';        MC='1.26.30-bedrock'; Engine='pnx';
-       Url='<PNX jar 在本环境不可下载，实际用 Nukkit 1239 作 fallback 服务端，见 §1.5.1>';
+    @{ Name='pnx';        MC='26.40-bedrock'; Engine='pnx';
+       Url='<PNX jar 在本环境不可下载，实际用 Nukkit 作 fallback 服务端，见 §1.5.1>';
        Sha256='<hex>'; Eula=$false; Jdk=21 },
-    @{ Name='sponge';     MC='1.16.5-1.20.x'; Engine='spongevanilla';
+    @{ Name='sponge';     MC='1.21.10-26.2'; Engine='spongevanilla';
        Url='https://repo.spongepowered.org/content/groups/maven/org/spongepowered/spongevanilla/<ver>/spongevanilla-<ver>.jar';
        Sha256='<hex>'; Eula=$false; Jdk=21 }
 )
 ```
 
-> 上表已按 §1.5 实际落地更新（Purpur 替 Paper、velocity 4.1.0、waterfall 替 bungeecord 直链、Nukkit/PNX 实际版本）。原设计的 3.4.0 velocity 行已废弃——见 §1.5.3。`Sha256` 一律在首次下载后用 `Get-FileHash -Algorithm SHA256` 实测并回填，**禁止留空运行**。velocity 模块需 **JDK25**（`novachat-velocity/build.gradle` 固定 `VERSION_25`，Lombok 1.18.x 在 JDK25 下崩溃故 velocity 源码不用 Lombok）；其余平台 JDK21。
+> 上表为 2026-08-08 检索的最新版本基线（Purpur 26.2 build 2619、Folia 26.1.2 build 8、Velocity 4.1.0-SNAPSHOT build 16、Waterfall 1.21 build 615、Nukkit/PNX 对应 Bedrock 26.40、Sponge API 17.x 稳定 / API 20.x 实验支持 MC 26.2）。**下载前必须重新核对最新构建号** —— PaperMC/Purpur 站点每日出新 build，上方 build 号可能已被超越；按 §4.2 流程在首次下载后用 `Get-FileHash -Algorithm SHA256` 实测回填，**禁止留空运行**。velocity 模块需 **JDK25**（`novachat-velocity/build.gradle` 固定 `VERSION_25`，Lombok 1.18.x 在 JDK25 下崩溃故 velocity 源码不用 Lombok）；其余平台 JDK21。Waterfall 已于 2026-06 EOL（仅存档构建），新部署建议迁移到 Velocity。
 
 ### 4.2 校验流程（`fetch-server.ps1`）
 
@@ -298,7 +310,7 @@ $LockedServers = @(
 
 - Paper/Folia 首次启动要求 `eula.txt` 含 `eula=true`。**本套件不生成、不注入该文件**——那是用户对 Mojang EULA 的声明，自动化**不得代为同意**。
 - 设计：`run-minecraft.ps1` 启动前检查：
-  - `artifacts/eula/paper-1.21.4-eula.txt` 存在且内容为 `eula=true` → 复制进运行目录；
+  - `artifacts/eula/paper-eula.txt` 存在且内容为 `eula=true` → 复制进运行目录；
   - 不存在 → **打印醒目提示**（下载 URL、EULA 地址 https://aka.ms/MinecraftEULA、验证命令 `Get-FileHash`），并**中止该平台场景**（exit 3，标记 `EULA_NOT_ACCEPTED`）。
 - 仓库内**不提交任何 `eula.txt`**；CI 里该人工产物放在 CI 机密/受保护变量或 artifacts 持久区（§8.4 安全边界），CI 任务无该文件时**跳过 Paper/Folia 场景**并在报告中标黄，而不是伪造同意。
 - BungeeCord/Velocity/Nukkit/PNX/Sponge 无 EULA 门，不受影响。
@@ -436,7 +448,7 @@ java -Xmx512m -cp $cp com.nova.link.NovaLinkMain <runs>/novalink/novalink.yml
 ### 8.2 CI（GitHub Actions 设计）与缓存、并行
 
 - **runner**：`windows-2025`（与本机 Windows Server 2025 对齐）+ `ubuntu-24.04` 各一份（脚本用 PowerShell Core 保证跨平台；`process-tree.ps1` 在 Linux 用 `kill -- -pgid` 兜底）。
-- **JDK**：`actions/setup-java@v4`，`temurin` 21（记忆库：`novachat-build-jdk-setup` 记录 JDK21 才满足 folia/multipaper 全量构建）。
+- **JDK**：`actions/setup-java@v4`，`temurin` 21（记忆库：`novachat-build-jdk-setup` 记录 JDK21 才满足 folia 全量构建）。
 - **缓存**：
   - 服务端下载：`actions/cache@v4` key `e2e-dist-<versions.lock.ps1 哈希>`，path `e2e/artifacts/dist`；锁文件变更 → 缓存失效。
   - Gradle：`~/.gradle/caches` + `~/.gradle/wrapper/dists`（现有构建已开 `org.gradle.caching=true`）。
@@ -445,11 +457,7 @@ java -Xmx512m -cp $cp com.nova.link.NovaLinkMain <runs>/novalink/novalink.yml
 - **超时**：workflow 级 `timeout-minutes: 45`；每 job 再设更严上限（§7.4）。
 - **测试报告**：JUnit XML 风格汇总（`report/e2e-results.xml`）或 Markdown 表格，随 PR 评论/artifact 上传；`EULA_NOT_ACCEPTED` 场景标 **SKIPPED-YELLOW** 而非失败。
 
-### 8.3 Go 一致性观测位
-
-- CI 中一个独立、可手动触发的 job：在 `novalink-go` 冻结声明不变的前提下，用同一 `versions.lock` 启动 Go backend，跑同一批 A 机器人断言，输出差异报告（**不参与 PR 门禁**）。Go 端现状（`novalink-go/FROZEN.md`）与 Java 未完全对齐，此 job 仅用于跟踪漂移。
-
-### 8.4 安全边界
+### 8.3 安全边界
 
 - 所有服务绑定 `127.0.0.1`，端口随机；CI 无公网暴露面。
 - 配置注入的 `secret-key`、客户端密码由 `gen-config.ps1` 随机生成，**写入 gitignore 的运行目录**，不入库、不进日志（日志里只出现 hash）。
@@ -468,18 +476,16 @@ java -Xmx512m -cp $cp com.nova.link.NovaLinkMain <runs>/novalink/novalink.yml
 | 2 | Folia 多线程调度正确性断言 | 线程交错不可重复，断言不可靠 | **不建议自动化**（仅冒烟） |
 | 3 | LeviLamina / PocketMine-MP / Endstone | C++/PHP/Python 独立工具链 + 依赖下载面过大 | **P2 外、不在执行矩阵** |
 | 4 | Fabric / NeoForge / Quilt / Forge | 需要 Gradle 9.5+（当前 wrapper 8.8，loader 子模块未纳入构建），且为 mod 加载器（需额外 bootstrap） | **不可执行**（构建前置未满足） |
-| 5 | MultiPaper | 明确冻结（命令层未接 ChannelCommandService/KnownChannelRegistry/ListCommandService） | **排除** |
-| 6 | novalink-go | 冻结/实验，功能未对齐 | 不执行；仅观测位 |
-| 7 | MySQL/Redis 持久化路径 | 已有 Testcontainers 覆盖；引入 DB 依赖会放大外部服务抖动 | 不在本套件（归现有测试） |
-| 8 | 真实基岩客户端登录 Nukkit/PNX | 基岩登录协议 + 设备模拟复杂 | **不可自动化**（仅服务端进程 + NovaProtocol 连线） |
-| 9 | BungeeCord 与高版本下游完整兼容 | Bungee 维护周期慢、下游协议组合爆炸 | 仅 login/server 级冒烟 |
-| 10 | 公网网络环境下的下载与防火墙行为 | 本套件全回环；真实部署网络策略超出自动化范围 | 不覆盖 |
+| 5 | MySQL/Redis 持久化路径 | 已有 Testcontainers 覆盖；引入 DB 依赖会放大外部服务抖动 | 不在本套件（归现有测试） |
+| 6 | 真实基岩客户端登录 Nukkit/PNX | 基岩登录协议 + 设备模拟复杂 | **不可自动化**（仅服务端进程 + NovaProtocol 连线） |
+| 7 | BungeeCord 与高版本下游完整兼容 | Bungee 维护周期慢、下游协议组合爆炸 | 仅 login/server 级冒烟 |
+| 8 | 公网网络环境下的下载与防火墙行为 | 本套件全回环；真实部署网络策略超出自动化范围 | 不覆盖 |
 
 ---
 
 ## 10. 落地检查清单（实施阶段按此执行）
 
-> 实际落地进度见 §1.5 对账：6/7 Java 平台已达 L1（bukkit/bungee/velocity/nukkit/folia/pnx），sponge 进行中。下方原设计清单保留不动作为完整度参照；实际工作区布局为 `.e2e/`（非 `e2e/`），机器人走真实 MC 协议（非内嵌协议客户端 A），backend 走 `java -cp`（非 `java -jar`）——见 §1.5.2 分叉表。
+> 实际落地进度见 §1.5 对账：7/7 Java 平台已达 L1（bukkit/bungee/velocity/nukkit/folia/pnx/sponge）。下方原设计清单保留不动作为完整度参照；实际工作区布局为 `.e2e/`（非 `e2e/`），机器人走真实 MC 协议（非内嵌协议客户端 A），backend 走 `java -cp`（非 `java -jar`）——见 §1.5.2 分叉表。
 
 - [ ] `e2e/` 目录与 §3.1 结构落地，`artifacts/`、`report/` 入 `.gitignore`
 - [ ] `versions.lock.ps1` 填实（URL + 实测 SHA-256），`fetch-server.ps1` 校验闭环

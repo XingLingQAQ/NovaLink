@@ -39,10 +39,7 @@ public enum PlatformType {
     
     /** PowerNukkitX (Bedrock) server */
     POWERNUKKITX(11),
-    
-    /** MultiPaper server */
-    MULTIPAPER(12),
-    
+
     /** Folia server */
     FOLIA(13),
     

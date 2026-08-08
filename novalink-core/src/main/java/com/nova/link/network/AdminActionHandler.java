@@ -321,14 +321,14 @@ public class AdminActionHandler {
             return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-400", "Player ID is required");
         }
 
-        // Check if player has super admin session
-        if (!permissionManager.hasSuperAdminSession(playerId)) {
-            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-403", 
-                "Super admin authentication required for status");
-        }
-
-        // Backward-compatible extension point:
-        // Bukkit side currently reuses STATUS with extra.type = ANNOUNCE / TITLE.
+        // ANNOUNCE/TITLE subtypes are admin-tier broadcasts gated by the originating
+        // platform's novachat.announce / novachat.title permission (or bukkit op).
+        // They reuse the STATUS action for transport but must NOT require a separate
+        // super-admin auth session — that made them unreachable in default deployments
+        // (novalink.yml ships with no super-admin credentials). Dispatch these
+        // subtypes BEFORE the super-admin session check so op-level players can use
+        // announce/title out-of-box. The plain STATUS path below still requires a
+        // super-admin session (preserved for spy/reload/status-introspection parity).
         String type = packet.getExtra("type");
         if (type != null && !type.isEmpty()) {
             String normalized = type.trim().toUpperCase(Locale.ROOT);
@@ -338,9 +338,15 @@ public class AdminActionHandler {
                 case "TITLE":
                     return handleTitle(packet);
                 default:
-                    // Unknown subtype -> fall through to normal status
+                    // Unknown subtype -> fall through to the super-admin-gated status path
                     break;
             }
+        }
+
+        // Plain status path — requires super admin session (unchanged).
+        if (!permissionManager.hasSuperAdminSession(playerId)) {
+            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-403",
+                "Super admin authentication required for status");
         }
 
         // Basic status response (can be extended later)

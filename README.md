@@ -70,32 +70,30 @@ Dependency direction: `novalink-core` → `novachat-common` only; platform plugi
 | Backend | Language | Protocol Version | Status |
 |---------|----------|------------------|--------|
 | NovaLink-Java | Java 17+ | v1 | ✅ **Production (canonical)** |
-| NovaLink-Go | Go 1.21+ | v1 | ❄️ **Frozen / experimental** (not feature-complete; do not use in production) |
 
 ### Java Edition Clients
 
 | Platform | Language | Minecraft Version | Protocol | Status |
 |----------|----------|-------------------|----------|--------|
 | Bukkit/Spigot/Paper | Java 17+ | 1.8 – 1.21.11 / 26.2 | v1 | ✅ Stable |
-| Folia | Java 17+ | 1.19 – 1.21.11 / 26.2 | v1 | ✅ Stable |
-| MultiPaper | Java 17+ | 1.19 – 1.21.11 / 26.2 | v1 | ✅ Stable |
-| Velocity | Java 17+ | Proxy (API 3.4+) | v1 | ✅ Stable |
-| BungeeCord | Java 8+ | Proxy (API 1.21-R0.4) | v1 | ✅ Stable |
-| Fabric | Java 21+ | 1.21.x / 26.x (default 1.21.11) | v1 | ✅ Stable |
-| NeoForge | Java 17+/21+ | 1.20.2 – 1.21.11 / 26.x | v1 | ✅ Stable |
-| Quilt | Java 21+ | 1.21.x / 26.x (default 1.21.11) | v1 | ✅ Stable |
-| Forge | Java 8+/17+/21+ | 1.12.2 – 1.21.11 / 26.x | v1 | ✅ Stable |
-| Sponge | Java 17+ | 1.16.5+ (API 8.x) | v1 | ✅ Stable |
+| Folia | Java 17+ | 1.19 – 1.21.11 / 26.2 (stable 26.1.2; 26.2 experimental) | v1 | ✅ Stable |
+| Velocity | Java 25+ | Proxy (API 4.1.0+) | v1 | ✅ Stable |
+| BungeeCord | Java 8+ | Proxy (API 1.21-R0.4; Waterfall EOL) | v1 | ✅ Stable |
+| Fabric | Java 21+ | 1.21.x / 26.x (default 1.21.11; loader 0.19.3) | v1 | ⛔ Not built (needs Gradle 9.5+) |
+| NeoForge | Java 25+ | 1.20.2 – 26.1 (NeoForge 26.1.0.x; MC 26.2 pending) | v1 | ⛔ Not built (needs Gradle 9.5+) |
+| Quilt | Java 21+ | 1.21.x / 26.x (default 1.21.11; loader 0.30.0) | v1 | ⛔ Not built (needs Gradle 9.5+) |
+| Forge | Java 8+/17+/21+ | 1.12.2 – 26.2 (Forge 65.1.0) | v1 | ⛔ Not built (needs Gradle 9.5+) |
+| Sponge | Java 17+ | 1.16.5 (SpongeAPI 8.2.0) — upstream has SpongeAPI 17.x (MC 1.21.10) / 20.x RC (MC 26.2); project not yet upgraded | v1 | ✅ Stable |
 
 ### Bedrock Edition Clients
 
 | Platform | Language | Minecraft Version | Protocol | Status |
 |----------|----------|-------------------|----------|--------|
-| Nukkit | Java 8+ | Bedrock 1.20+ – 26.30 | v1 | ✅ Stable |
-| PowerNukkitX | Java 17+ | Bedrock 1.20+ – 26.30 | v1 | ✅ Stable |
-| LeviLamina (BDS) | C++ | Bedrock 1.20+ – 26.30 | v1 | ✅ Stable |
-| PocketMine-MP | PHP 8.1+ | Bedrock 1.20+ – 26.30 (protocol ≤1001) | v1 | ✅ Stable |
-| Endstone | Python 3.10+ | Bedrock 1.20+ – 26.30 | v1 | ✅ Stable |
+| Nukkit | Java 8+ | Bedrock 1.20+ – 26.40 (Cloudburst Nukkit snapshot) | v1 | ✅ Stable |
+| PowerNukkitX | Java 17+ | Bedrock 1.20+ – 26.40 (PNX 3.0.2, protocol 2168) | v1 | ✅ Stable |
+| LeviLamina (BDS) | C++ | Bedrock 1.20+ – 26.40 (LeviLamina 26.20.x) | v1 | ✅ Stable |
+| PocketMine-MP | PHP 8.1+ | Bedrock 1.20+ – 26.30 (protocol ≤1001; PMMP 5.44.3 archived Jul 2026) | v1 | ✅ Stable |
+| Endstone | Python 3.10+ | Bedrock 1.20+ – 26.40 (Endstone 0.11.8, BDS 1.26.40) | v1 | ✅ Stable |
 
 ### Protocol Version Compatibility
 
@@ -103,20 +101,22 @@ All clients and backends must use the same protocol version to communicate. The 
 
 | Protocol Version | Supported Backends | Supported Clients |
 |------------------|-------------------|-------------------|
-| v1 | NovaLink-Java, NovaLink-Go | All platforms listed above |
+| v1 | NovaLink-Java | All platforms listed above |
 
 ## Installation
 
 ### Requirements
 
 - Java 17+ (for **production** NovaLink backend and modern plugins)
-- Java 21+ (for Fabric/Quilt/Forge/NeoForge targeting 1.20.5+)
+- Java 21+ (for Fabric/Quilt/Forge/NeoForge targeting 1.20.5+; also the floor for Paper/Folia server builds on MC 1.21.x)
+- Java 25+ (for the **Velocity** proxy module — `novachat-velocity` pins `VERSION_25` and Lombok is disabled under JDK 25; also the floor for Minecraft 26.1+ server platforms)
 - Java 8+ (for legacy Minecraft plugins / BungeeCord)
-- Go 1.21+ (optional; only for experimental `novalink-go` — **frozen**, not for production)
 - PHP 8.1+ (for PocketMine-MP plugin)
 - Python 3.10+ (for Endstone plugin)
 - MySQL 5.7+ (optional)
 - Redis 6+ (optional)
+
+> Platform versions above reflect the latest releases as of 2026-08-08 (Minecraft Java 26.2, Bedrock 26.42). Mod-loader platforms (Fabric/NeoForge/Quilt/Forge) are **not currently built** — their `novachat-mod:<loader>` subprojects are commented out in `settings.gradle` pending a Gradle wrapper upgrade to 9.5+. See the per-row status in the matrices.
 
 ### NovaLink Backend Setup
 
@@ -390,32 +390,30 @@ NovaChat & NovaLink 是一个分布式跨平台 Minecraft 聊天基础设施系�
 | 后端 | 语言 | 协议版本 | 状态 |
 |------|------|----------|------|
 | NovaLink-Java | Java 17+ | v1 | ✅ **生产（规范实现）** |
-| NovaLink-Go | Go 1.21+ | v1 | ❄️ **冻结 / 实验性**（功能未与 Java 对齐；请勿用于生产） |
 
 ### Java 版客户端
 
 | 平台 | 语言 | Minecraft 版本 | 协议 | 状态 |
 |------|------|----------------|------|------|
 | Bukkit/Spigot/Paper | Java 17+ | 1.8 – 1.21.11 / 26.2 | v1 | ✅ 稳定 |
-| Folia | Java 17+ | 1.19 – 1.21.11 / 26.2 | v1 | ✅ 稳定 |
-| MultiPaper | Java 17+ | 1.19 – 1.21.11 / 26.2 | v1 | ✅ 稳定 |
-| Velocity | Java 17+ | 代理端 (API 3.4+) | v1 | ✅ 稳定 |
-| BungeeCord | Java 8+ | 代理端 (API 1.21-R0.4) | v1 | ✅ 稳定 |
-| Fabric | Java 21+ | 1.21.x / 26.x（默认 1.21.11） | v1 | ✅ 稳定 |
-| NeoForge | Java 17+/21+ | 1.20.2 – 1.21.11 / 26.x | v1 | ✅ 稳定 |
-| Quilt | Java 21+ | 1.21.x / 26.x（默认 1.21.11） | v1 | ✅ 稳定 |
-| Forge | Java 8+/17+/21+ | 1.12.2 – 1.21.11 / 26.x | v1 | ✅ 稳定 |
-| Sponge | Java 17+ | 1.16.5+（API 8.x） | v1 | ✅ 稳定 |
+| Folia | Java 17+ | 1.19 – 1.21.11 / 26.2（稳定版 26.1.2；26.2 实验中） | v1 | ✅ 稳定 |
+| Velocity | Java 25+ | 代理端 (API 4.1.0+) | v1 | ✅ 稳定 |
+| BungeeCord | Java 8+ | 代理端 (API 1.21-R0.4；Waterfall 已 EOL) | v1 | ✅ 稳定 |
+| Fabric | Java 21+ | 1.21.x / 26.x（默认 1.21.11；loader 0.19.3） | v1 | ⛔ 未构建（需 Gradle 9.5+） |
+| NeoForge | Java 25+ | 1.20.2 – 26.1（NeoForge 26.1.0.x；MC 26.2 待发布） | v1 | ⛔ 未构建（需 Gradle 9.5+） |
+| Quilt | Java 21+ | 1.21.x / 26.x（默认 1.21.11；loader 0.30.0） | v1 | ⛔ 未构建（需 Gradle 9.5+） |
+| Forge | Java 8+/17+/21+ | 1.12.2 – 26.2（Forge 65.1.0） | v1 | ⛔ 未构建（需 Gradle 9.5+） |
+| Sponge | Java 17+ | 1.16.5（SpongeAPI 8.2.0）— 上游已有 SpongeAPI 17.x（MC 1.21.10）/ 20.x RC（MC 26.2），本项目尚未升级 | v1 | ✅ 稳定 |
 
 ### 基岩版客户端
 
 | 平台 | 语言 | Minecraft 版本 | 协议 | 状态 |
 |------|------|----------------|------|------|
-| Nukkit | Java 8+ | 基岩版 1.20+ – 26.30 | v1 | ✅ 稳定 |
-| PowerNukkitX | Java 17+ | 基岩版 1.20+ – 26.30 | v1 | ✅ 稳定 |
-| LeviLamina (BDS) | C++ | 基岩版 1.20+ – 26.30 | v1 | ✅ 稳定 |
-| PocketMine-MP | PHP 8.1+ | 基岩版 1.20+ – 26.30（协议 ≤1001） | v1 | ✅ 稳定 |
-| Endstone | Python 3.10+ | 基岩版 1.20+ – 26.30 | v1 | ✅ 稳定 |
+| Nukkit | Java 8+ | 基岩版 1.20+ – 26.40（Cloudburst Nukkit snapshot） | v1 | ✅ 稳定 |
+| PowerNukkitX | Java 17+ | 基岩版 1.20+ – 26.40（PNX 3.0.2，协议 2168） | v1 | ✅ 稳定 |
+| LeviLamina (BDS) | C++ | 基岩版 1.20+ – 26.40（LeviLamina 26.20.x） | v1 | ✅ 稳定 |
+| PocketMine-MP | PHP 8.1+ | 基岩版 1.20+ – 26.30（协议 ≤1001；PMMP 5.44.3 于 2026-07 归档） | v1 | ✅ 稳定 |
+| Endstone | Python 3.10+ | 基岩版 1.20+ – 26.40（Endstone 0.11.8，BDS 1.26.40） | v1 | ✅ 稳定 |
 
 ### 协议版本兼容性
 
@@ -423,19 +421,22 @@ NovaChat & NovaLink 是一个分布式跨平台 Minecraft 聊天基础设施系�
 
 | 协议版本 | 支持的后端 | 支持的客户端 |
 |----------|-----------|-------------|
-| v1 | NovaLink-Java, NovaLink-Go | 上述所有平台 |
+| v1 | NovaLink-Java | 上述所有平台 |
 
 ## 安装
 
 ### 环境要求
 
 - Java 17+（**生产** NovaLink 后端和现代插件）
+- Java 21+（Fabric/Quilt/Forge/NeoForge 针对 1.20.5+；也是 MC 1.21.x 下 Paper/Folia 服务端构建的下限）
+- Java 25+（**Velocity** 代理模块 —— `novachat-velocity` 固定 `VERSION_25`，JDK25 下禁用 Lombok；也是 MC 26.1+ 服务端平台的下限）
 - Java 8+（旧版 Minecraft 插件）
-- Go 1.21+（可选；仅实验性 `novalink-go` — **已冻结**，勿用于生产）
 - PHP 8.1+（PocketMine-MP 插件）
 - Python 3.10+（Endstone 插件）
 - MySQL 5.7+（可选）
 - Redis 6+（可选）
+
+> 上述平台版本反映 2026-08-08 的最新发布（Minecraft Java 26.2、Bedrock 26.42）。模组加载器平台（Fabric/NeoForge/Quilt/Forge）**当前未构建** —— 其 `novachat-mod:<loader>` 子工程在 `settings.gradle` 中被注释，待 Gradle wrapper 升级到 9.5+ 后启用。见矩阵中各行状态。
 
 ### NovaLink 后端安装
 

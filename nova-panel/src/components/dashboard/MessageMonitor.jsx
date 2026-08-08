@@ -6,34 +6,48 @@
  */
 
 import React, { useRef, useEffect, useState } from 'react';
-import { Volume2, VolumeX, Filter, Send, Trash2 } from 'lucide-react';
+import { Volume2, VolumeX, Filter, Send, Trash2, Loader2 } from 'lucide-react';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import CustomSelect from '../ui/CustomSelect';
 
-function MessageMonitor({ 
-  theme, 
-  mode, 
-  txtMain, 
-  txtSec, 
-  messages = [], 
+function MessageMonitor({
+  theme,
+  mode,
+  txtMain,
+  txtSec,
+  messages = [],
   channels = [],
   onClearMessages,
-  onSendMessage
+  onSendMessage,
+  chatContainerRef: externalChatContainerRef,
+  consoleAutoScroll: externalAutoScroll,
+  setConsoleAutoScroll: externalSetAutoScroll
 }) {
   const [chatFilter, setChatFilter] = useState('all');
   const [serverFilter, setServerFilter] = useState('all');
-  const [autoScroll, setAutoScroll] = useState(true);
+  const [internalAutoScroll, setInternalAutoScroll] = useState(true);
+  const autoScroll = externalAutoScroll !== undefined ? externalAutoScroll : internalAutoScroll;
+  const setAutoScroll = externalSetAutoScroll || setInternalAutoScroll;
   const [messageInput, setMessageInput] = useState('');
   const [targetChannel, setTargetChannel] = useState('global');
-  const chatContainerRef = useRef(null);
+  const [sending, setSending] = useState(false);
+  const internalChatContainerRef = useRef(null);
+  const chatContainerRef = externalChatContainerRef || internalChatContainerRef;
+
+  // Default target channel to the first available channel id.
+  useEffect(() => {
+    if (channels.length > 0 && !channels.find((c) => c.id === targetChannel)) {
+      setTargetChannel(channels[0].id);
+    }
+  }, [channels, targetChannel]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     if (autoScroll && chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
-  }, [messages, autoScroll]);
+  }, [messages, autoScroll, chatContainerRef]);
 
   // Filter messages
   const filteredMessages = messages.filter(m => {
@@ -48,8 +62,10 @@ function MessageMonitor({
   // Handle send message
   const handleSendMessage = () => {
     if (messageInput.trim() && onSendMessage) {
-      onSendMessage(targetChannel, messageInput.trim());
-      setMessageInput('');
+      setSending(true);
+      Promise.resolve(onSendMessage(targetChannel, messageInput.trim()))
+        .then(() => setMessageInput(''))
+        .finally(() => setSending(false));
     }
   };
 
@@ -129,13 +145,11 @@ function MessageMonitor({
             </div>
           ) : (
             filteredMessages.map((msg, idx) => (
-              <MessageLine 
-                key={msg.id || idx} 
-                message={msg} 
-                theme={theme} 
-                mode={mode} 
-                txtMain={txtMain} 
-                txtSec={txtSec} 
+              <MessageLine
+                key={msg.id || idx}
+                message={msg}
+                txtMain={txtMain}
+                txtSec={txtSec}
               />
             ))
           )}
@@ -164,14 +178,15 @@ function MessageMonitor({
                     : 'bg-white/10 border-white/20 focus:ring-white/50 text-white placeholder:text-white/30'
                 }`}
               />
-              <Button 
-                theme={theme} 
-                mode={mode} 
-                variant="primary" 
+              <Button
+                theme={theme}
+                mode={mode}
+                variant="primary"
                 onClick={handleSendMessage}
+                disabled={sending || !messageInput.trim()}
                 className="px-3"
               >
-                <Send size={18} />
+                {sending ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
               </Button>
             </div>
           </div>
@@ -221,7 +236,7 @@ function MessageMonitor({
 }
 
 // Individual Message Line
-function MessageLine({ message, theme, mode, txtMain, txtSec }) {
+function MessageLine({ message, txtMain, txtSec }) {
   const platformColor = message.platform === 'Bedrock' ? 'text-amber-400' : 'text-emerald-400';
   
   return (

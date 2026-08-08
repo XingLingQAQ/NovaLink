@@ -1,7 +1,10 @@
 import React from 'react';
 
-const Button = ({ children, variant = 'primary', theme, mode, onClick, className = "" }) => {
+const Button = ({ children, variant = 'primary', theme, mode, onClick, className = "", disabled = false }) => {
     let base = "px-4 py-2 rounded-xl font-medium transition-all duration-300 active:scale-95 flex items-center justify-center gap-2 ";
+    if (disabled) {
+        base += "opacity-50 cursor-not-allowed ";
+    }
     if (variant === 'primary') {
         if (theme === 'clean') {
             base += "bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-600/20 ";
@@ -22,7 +25,7 @@ const Button = ({ children, variant = 'primary', theme, mode, onClick, className
         base += "bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white ";
     }
 
-    return <button onClick={onClick} className={`${base} ${className}`}>{children}</button>;
+    return <button onClick={disabled ? undefined : onClick} disabled={disabled} className={`${base} ${className}`}>{children}</button>;
 };
 
 export default Button;

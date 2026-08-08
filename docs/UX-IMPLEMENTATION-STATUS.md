@@ -2,6 +2,8 @@
 
 > 对照 `docs/UX-DESIGN-2.md` §9-§15 设计，记录 2026-07-30 ~ 2026-08-01 实际落地情况。
 > 生成日期：2026-08-01。测试基线：JDK21 全量矩阵 1465/1465 通过（213 份 Java 测试报告，0 failures / 0 errors / 0 skipped）。
+>
+> **2026-08-08 更新**：`novachat-multipaper` 与 `novalink-go` 已从仓库删除（产品决策，不再需要）。下文保留的 multipaper 对账行/§14 是**历史记录**（删除前的冻结状态），不再代表当前支持平台。当前活平台为 7 个 Java 端：bukkit/folia/nukkit/pnx/sponge/velocity/bungee。`com.nova.chat.multipaper` 相关代码引用已同步清除（含 `NovaLinkMain`/`NovaProtocol`/`client-core` 共享层）。
 
 ## 逐项状态
 
@@ -159,4 +161,4 @@
 - **multipaper 解冻后的对齐工作清单（§14）**：接 `ChannelResponseDispatcher`（注入 sendMessage/renderActionBar）获得 join/leave 确认 + 错误码反馈；新增 `/nc list`（复用 `ListCommandService`）；`ToggleCommand` 改引用 `ChatModeDescriptions`；命令路径迁共享 `PlayerChannelState`（DUP-7）；action bar 降级。前置依赖见 memory `multipaper-command-layer-archb-gap`。
 - **UX-COPY-SERVER.md P1 接缝收口**：bukkit/folia/nukkit toggle 模式名引用 `ChatModeDescriptions.modeName`；bukkit/folia join/leave 即时回执引用 `PlayerMessages.joining/leaving`；`joined`/`currentChannelBar`/`chatOn`/`chatOff` 生产调用点接线。
 - **UX-COPY-PROXY.md P2 接缝收口**：proxy 侧 join/leave/joined 文案引用 `PlayerMessages`。
-- **REAL-SERVER-E2E.md 的实施**：`854bd8e` 设计的执行化 E2E 自动化**已落地**——截至 2026-08-08，6/7 Java 平台达成 L1（bukkit/bungee/velocity/nukkit/folia/pnx；sponge 进行中），并对账记录于 `docs/REAL-SERVER-E2E.md` §1.5。E2E 另发现 2 个产品 bug（velocity 4.1.0 命令节点剪枝、nukkit/pnx `registerCommands` 静默失败）并已修复。
+- **REAL-SERVER-E2E.md 的实施**：`854bd8e` 设计的执行化 E2E 自动化**已落地**——截至 2026-08-08，7/7 Java 平台达成 L1（bukkit/bungee/velocity/nukkit/folia/pnx/sponge），并对账记录于 `docs/REAL-SERVER-E2E.md` §1.5。E2E 另发现 3 个产品 bug（velocity 4.1.0 命令节点剪枝、nukkit/pnx `registerCommands` 静默失败、sponge `novachat.use` default-deny）并已修复。

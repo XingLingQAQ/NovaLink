@@ -6,14 +6,15 @@
  */
 
 import React, { useState } from 'react';
-import { 
-  Search, 
-  Users, 
-  UserX, 
+import {
+  Search,
+  Users,
+  UserX,
   MessageSquare,
   Shield,
   Clock,
-  Filter
+  Filter,
+  Info
 } from 'lucide-react';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
@@ -28,7 +29,6 @@ function PlayerManagement({
   txtSec, 
   players = [],
   mutedPlayers = [],
-  servers = [],
   onMutePlayer,
   onUnmutePlayer,
   onKickPlayer
@@ -38,12 +38,16 @@ function PlayerManagement({
   const [serverFilter, setServerFilter] = useState('all');
   const [platformFilter, setPlatformFilter] = useState('all');
   const [showMuteModal, setShowMuteModal] = useState(false);
-  const [muteTarget, setMuteTarget] = useState({ 
-    name: '', 
-    reason: '', 
+  const [muteTarget, setMuteTarget] = useState({
+    name: '',
+    reason: '',
     duration: '1h',
     channel: 'all'
   });
+
+  // Mute/unmute is not exposed to the panel via REST or WS.
+  // The App-level handlers show an honest-disable toast.
+  const muteActionDisabled = true;
 
   // Filter players
   const filteredPlayers = players.filter(p => {
@@ -56,8 +60,12 @@ function PlayerManagement({
   // Get unique servers
   const uniqueServers = [...new Set(players.map(p => p.server))];
 
-  // Handle mute
+  // Handle mute — delegates to App (honest-disable toast, no fake mutation).
   const handleMute = (playerName) => {
+    if (muteActionDisabled) {
+      onMutePlayer && onMutePlayer({ name: playerName });
+      return;
+    }
     setMuteTarget({ ...muteTarget, name: playerName });
     setShowMuteModal(true);
   };
@@ -90,18 +98,18 @@ function PlayerManagement({
             管理在线玩家和禁言 · {players.length} 在线 · {mutedPlayers.length} 禁言
           </p>
         </div>
-        
+
         {/* Tab Switcher */}
         <div className={`flex p-1 rounded-xl ${
-          theme === 'clean' 
-            ? (mode === 'dark' ? 'bg-slate-800' : 'bg-slate-100') 
+          theme === 'clean'
+            ? (mode === 'dark' ? 'bg-slate-800' : 'bg-slate-100')
             : 'bg-white/10'
         }`}>
-          <button 
-            onClick={() => setTab('online')} 
+          <button
+            onClick={() => setTab('online')}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
-              tab === 'online' 
-                ? (theme === 'clean' ? 'bg-white shadow text-sky-600' : 'bg-white/20 text-white') 
+              tab === 'online'
+                ? (theme === 'clean' ? 'bg-white shadow text-sky-600' : 'bg-white/20 text-white')
                 : txtSec
             }`}
           >
@@ -126,6 +134,16 @@ function PlayerManagement({
           </button>
         </div>
       </div>
+
+      {/* Honest-disable info banner */}
+      {muteActionDisabled && (
+        <Card theme={theme} mode={mode} className="p-3 flex items-start gap-2 border border-amber-500/20">
+          <Info size={16} className="text-amber-400 shrink-0 mt-0.5" />
+          <p className={`text-xs ${txtSec}`}>
+            禁言与解除禁言操作需通过游戏内 /nc mute 或 /nc unmute 命令执行，面板暂不支持远程禁言。点击禁言按钮可查看说明。
+          </p>
+        </Card>
+      )}
 
       {/* Online Players Tab */}
       {tab === 'online' && (
@@ -223,21 +241,22 @@ function PlayerManagement({
                     <td className="p-4 text-right">
                       <div className="flex items-center justify-end gap-2">
                         {!player.muted && (
-                          <Button 
-                            theme={theme} 
-                            mode={mode} 
-                            variant="danger" 
+                          <Button
+                            theme={theme}
+                            mode={mode}
+                            variant="danger"
                             className="text-xs"
                             onClick={() => handleMute(player.name)}
+                            title={muteActionDisabled ? '需通过游戏内 /nc mute 操作，面板暂不支持' : '禁言'}
                           >
                             禁言
                           </Button>
                         )}
                         {onKickPlayer && (
-                          <Button 
-                            theme={theme} 
-                            mode={mode} 
-                            variant="ghost" 
+                          <Button
+                            theme={theme}
+                            mode={mode}
+                            variant="ghost"
                             className="text-xs text-amber-400"
                             onClick={() => onKickPlayer(player.uuid)}
                           >
@@ -304,12 +323,13 @@ function PlayerManagement({
                       </div>
                     </td>
                     <td className="p-4 text-right">
-                      <Button 
-                        theme={theme} 
-                        mode={mode} 
-                        variant="ghost" 
+                      <Button
+                        theme={theme}
+                        mode={mode}
+                        variant="ghost"
                         className="text-xs text-emerald-400"
                         onClick={() => onUnmutePlayer && onUnmutePlayer(mute.uuid)}
+                        title={muteActionDisabled ? '需通过游戏内 /nc unmute 操作，面板暂不支持' : '解除禁言'}
                       >
                         解除禁言
                       </Button>

@@ -36,16 +36,23 @@ class PlatformTypeTest {
         }
 
         @Test
-        @DisplayName("ids form a contiguous range starting at 0")
+        @DisplayName("ids are unique and cover 0..max with optional retired gaps")
         void idsAreContiguousFromZero() {
+            Set<Integer> ids = new HashSet<>();
+            for (PlatformType type : PlatformType.values()) {
+                assertThat(ids.add(type.getId()))
+                        .as("Duplicate platform id for %s: %d", type, type.getId())
+                        .isTrue();
+            }
             int max = 0;
             for (PlatformType type : PlatformType.values()) {
                 max = Math.max(max, type.getId());
             }
-            assertThat(PlatformType.values()).hasSize(max + 1);
-            for (int i = 0; i <= max; i++) {
-                assertThat(PlatformType.isKnown(i)).as("missing id %d", i).isTrue();
+            // Every defined id must round-trip; retired gaps (e.g. id 12) are allowed.
+            for (PlatformType type : PlatformType.values()) {
+                assertThat(PlatformType.isKnown(type.getId())).as("missing id %d", type.getId()).isTrue();
             }
+            assertThat(PlatformType.values().length).isLessThanOrEqualTo(max + 1);
         }
 
         @ParameterizedTest
@@ -70,7 +77,6 @@ class PlatformTypeTest {
             assertThat(PlatformType.NEOFORGE.getId()).isEqualTo(6);
             assertThat(PlatformType.QUILT.getId()).isEqualTo(7);
             assertThat(PlatformType.FORGE.getId()).isEqualTo(8);
-            assertThat(PlatformType.MULTIPAPER.getId()).isEqualTo(12);
             assertThat(PlatformType.FOLIA.getId()).isEqualTo(13);
             assertThat(PlatformType.SPONGE.getId()).isEqualTo(14);
         }

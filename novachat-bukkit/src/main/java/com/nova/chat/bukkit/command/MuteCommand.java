@@ -88,21 +88,26 @@ public class MuteCommand extends AbstractSubCommand {
             return true;
         }
 
-        // Check if target player exists
+        // Check if target player exists locally; if not, still send the packet
+        // with the target name so the backend can resolve across all servers.
         Player target = parsePlayer(targetName);
-        if (target == null) {
-            errorHandler.sendPlayerNotFound(sender, targetName);
-            return true;
-        }
+        String targetId = (target != null) ? target.getUniqueId().toString() : null;
 
         // Create and send mute packet
         ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.MUTE, channelId);
         if (sender instanceof Player) {
             packet.addExtra("operatorId", ((Player) sender).getUniqueId().toString());
+        } else {
+            // Console/RCON: use a well-known console UUID so the backend can
+            // grant SUPER_ADMIN permission for console-originated moderation.
+            packet.addExtra("operatorId", "00000000-0000-0000-0000-000000000000");
+            packet.addExtra("console", "true");
         }
         packet.addExtra("operatorName", sender.getName());
-        packet.addExtra("targetId", target.getUniqueId().toString());
-        packet.addExtra("targetName", target.getName());
+        if (targetId != null) {
+            packet.addExtra("targetId", targetId);
+        }
+        packet.addExtra("targetName", targetName);
         packet.addExtra("duration", String.valueOf(durationSeconds));
 
         if (sendPacket(packet)) {

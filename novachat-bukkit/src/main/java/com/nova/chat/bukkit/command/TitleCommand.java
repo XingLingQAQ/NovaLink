@@ -43,8 +43,10 @@ public class TitleCommand extends AbstractSubCommand {
 
     @Override
     public boolean isPlayerOnly() {
-        // Backend requires a player UUID (super admin session is UUID-based).
-        return true;
+        // Console/RCON can also send titles (uses the all-zeros sentinel UUID so
+        // the backend can route the broadcast). The super-admin auth session is no
+        // longer required for TITLE (see AdminActionHandler.handleStatus).
+        return false;
     }
 
     @Override
@@ -66,7 +68,13 @@ public class TitleCommand extends AbstractSubCommand {
         // Create admin action packet for title
         AdminActionPacket packet = new AdminActionPacket();
         packet.setAction(AdminAction.STATUS); // Reuse STATUS for now, backend will handle
-        packet.setPlayerId(((Player) sender).getUniqueId());
+        if (sender instanceof Player) {
+            packet.setPlayerId(((Player) sender).getUniqueId());
+        } else {
+            // Console/RCON: use the well-known console sentinel UUID.
+            packet.setPlayerId(java.util.UUID.fromString("00000000-0000-0000-0000-000000000000"));
+            packet.addExtra("console", "true");
+        }
         packet.setTarget(channelId);
         packet.addExtra("type", "TITLE");
         packet.addExtra("operatorName", sender.getName());

@@ -118,8 +118,17 @@ public class MuteManager {
             return MuteResult.badRequest("Target player ID is required");
         }
 
-        // Get operator's permission level
-        PermissionLevel operatorLevel = permissionManager.getPermissionLevel(operatorId, channelId);
+        // Console-originated actions (UUID 00000000-0000-0000-0000-000000000000)
+        // bypass permission validation — console always has full authority. This
+        // mirrors the bypass in ChannelActionHandler.requireModerationPermission;
+        // without it, mutePlayer would reject console mutes as PLAYER-level even
+        // though the handler already authorized the console sentinel.
+        PermissionLevel operatorLevel;
+        if (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L) {
+            operatorLevel = PermissionLevel.SUPER_ADMIN;
+        } else {
+            operatorLevel = permissionManager.getPermissionLevel(operatorId, channelId);
+        }
 
         // Validate permission and scope
         MuteResult validationResult = validateMutePermission(
@@ -227,8 +236,15 @@ public class MuteManager {
             return MuteResult.badRequest("Target player ID is required");
         }
 
-        // Get operator's permission level
-        PermissionLevel operatorLevel = permissionManager.getPermissionLevel(operatorId, channelId);
+        // Console-originated actions (UUID 00000000-0000-0000-0000-000000000000)
+        // bypass permission validation — console always has full authority. Mirrors
+        // the bypass in mutePlayer and ChannelActionHandler.requireModerationPermission.
+        PermissionLevel operatorLevel;
+        if (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L) {
+            operatorLevel = PermissionLevel.SUPER_ADMIN;
+        } else {
+            operatorLevel = permissionManager.getPermissionLevel(operatorId, channelId);
+        }
 
         // Validate permission (same rules as mute, but no duration check)
         MuteResult validationResult = validateMutePermission(

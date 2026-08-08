@@ -43,8 +43,10 @@ public class AnnounceCommand extends AbstractSubCommand {
 
     @Override
     public boolean isPlayerOnly() {
-        // Backend requires a player UUID (super admin session is UUID-based).
-        return true;
+        // Console/RCON can also announce (uses the all-zeros sentinel UUID so the
+        // backend can route the broadcast). The super-admin auth session is no
+        // longer required for ANNOUNCE (see AdminActionHandler.handleStatus).
+        return false;
     }
 
     @Override
@@ -70,7 +72,13 @@ public class AnnounceCommand extends AbstractSubCommand {
         // Create admin action packet for announcement
         AdminActionPacket packet = new AdminActionPacket();
         packet.setAction(AdminAction.STATUS); // Reuse STATUS for now, backend will handle
-        packet.setPlayerId(((Player) sender).getUniqueId());
+        if (sender instanceof Player) {
+            packet.setPlayerId(((Player) sender).getUniqueId());
+        } else {
+            // Console/RCON: use the well-known console sentinel UUID.
+            packet.setPlayerId(java.util.UUID.fromString("00000000-0000-0000-0000-000000000000"));
+            packet.addExtra("console", "true");
+        }
         packet.setTarget(channelId);
         packet.addExtra("type", "ANNOUNCE");
         packet.addExtra("operatorName", sender.getName());

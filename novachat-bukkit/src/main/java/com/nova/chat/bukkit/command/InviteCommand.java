@@ -75,19 +75,20 @@ public class InviteCommand extends AbstractSubCommand {
             channelId = state.getActiveChannel();
         }
 
-        // Check if target player exists
+        // Check if target player exists locally; if not, still send the packet
+        // with the target name so the backend can resolve across all servers.
+        // This mirrors the cross-server fix already applied to MuteCommand/KickCommand.
         Player target = parsePlayer(targetName);
-        if (target == null) {
-            errorHandler.sendPlayerNotFound(sender, targetName);
-            return true;
-        }
+        String targetId = (target != null) ? target.getUniqueId().toString() : null;
 
         // Create and send invite packet
         ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.INVITE, channelId);
         packet.addExtra("playerId", player.getUniqueId().toString());
         packet.addExtra("playerName", player.getName());
-        packet.addExtra("targetId", target.getUniqueId().toString());
-        packet.addExtra("targetName", target.getName());
+        if (targetId != null) {
+            packet.addExtra("targetId", targetId);
+        }
+        packet.addExtra("targetName", targetName);
 
         if (sendPacket(packet)) {
             messageHelper.sendMessage(sender, "正在邀请 &e" + targetName + " &7加入频道 &e" + channelId + "&7...");

@@ -1,6 +1,7 @@
 package com.nova.link;
 
 import com.nova.chat.common.protocol.NovaProtocol;
+import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.*;
 import com.nova.link.auth.*;
 import com.nova.link.auth.ClientPermissionRegistry;
@@ -12,12 +13,16 @@ import com.nova.link.channel.ChannelScope;
 import com.nova.link.channel.MessageRouter;
 import com.nova.link.channel.PrivateChannelManager;
 import com.nova.link.channel.InvitationManager;
+import com.nova.link.console.BackendConsole;
+import com.nova.link.console.BackendContext;
+import com.nova.link.console.ConsoleCommandHandler;
 import com.nova.link.config.*;
 import com.nova.link.database.*;
 import com.nova.link.filter.SensitiveWordFilter;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.network.NettyServer;
 import com.nova.link.network.ServerNetworkHandler;
+import com.nova.link.network.ClientConnection;
 import com.nova.link.network.AdminActionHandler;
 import com.nova.link.network.ChannelActionHandler;
 import com.nova.link.spy.SpyManager;
@@ -34,6 +39,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 
@@ -44,10 +50,53 @@ import java.util.concurrent.CountDownLatch;
  * It handles message routing, authentication, permission management, and data persistence.
  */
 public class NovaLinkMain {
-    
+
     private static final Logger logger = LoggerFactory.getLogger(NovaLinkMain.class);
-    
+
+    /**
+     * Runtime holder for all managers/handlers. Built once during startup and
+     * referenced by both the console command layer and the JVM shutdown hook.
+     * Volatile so the shutdown hook (which may run on a different thread) sees
+     * the fully-published context.
+     */
+    private volatile BackendContext context;
+
+    /**
+     * Latch used by the JVM shutdown hook to signal the main (console) thread
+     * that it should stop the readline loop and exit.
+     */
+    private volatile CountDownLatch shutdownLatch;
+
     public static void main(String[] args) {
+        // --help / -h: print the command list and exit 0 without starting a server.
+        // Lets the console wiring be smoke-tested without a full backend.
+        if (args != null) {
+            for (String a : args) {
+                if ("--help".equals(a) || "-h".equals(a)) {
+                    BackendConsole.printHelpAndExit();
+                    return;
+                }
+            }
+        }
+
+        NovaLinkMain app = new NovaLinkMain();
+        try {
+            app.start(args);
+        } catch (Exception e) {
+            logger.error("Fatal error during startup: {}", e.getMessage(), e);
+            // Best-effort cleanup if anything was partially initialized.
+            app.safeShutdown();
+            return;
+        }
+        app.runConsoleLoop();
+    }
+
+    /**
+     * Builds all managers/handlers, starts the TCP + WebSocket servers, and
+     * registers the JVM shutdown hook. On success, {@link #context} is set and
+     * the caller may invoke {@link #runConsoleLoop()}.
+     */
+    private void start(String[] args) {
         logger.info("Starting NovaLink Backend Server...");
         logger.info("NovaLink v1.0.0-SNAPSHOT (protocol v{})", NovaProtocol.PROTOCOL_VERSION);
 
@@ -92,7 +141,7 @@ public class NovaLinkMain {
                 }
 
                 // Also expose super-admins as web-panel login accounts (username = UUID string).
-                // This keeps Java/Go backends aligned and enables SUPER_ADMIN role in the web panel.
+                // This enables SUPER_ADMIN role in the web panel.
                 try {
                     if (admin != null && admin.getUuid() != null && admin.getPasswordHash() != null) {
                         authManager.registerSuperAdmin(admin.getUuid().toString(), admin.getPasswordHash());
@@ -201,7 +250,8 @@ public class NovaLinkMain {
                 adminActionHandler,
                 channelActionHandler,
                 clientPermissionRegistry,
-                clientPermissionBootstrap
+                clientPermissionBootstrap,
+                playerStateManager
         );
 
         CompletableFuture<Void> startFuture = CompletableFuture.allOf(
@@ -213,7 +263,13 @@ public class NovaLinkMain {
             startFuture.join();
         } catch (Exception e) {
             logger.error("Failed to start NovaLink services: {}", e.getMessage(), e);
-            safeShutdown(webSocketGateway, tcpServer, networkHandler, databaseProvider, configManager, playerStateManager, webhookManager, muteManager);
+            // Build a partial context so safeShutdown can clean up what exists.
+            this.context = new BackendContext(
+                    configManager, authManager, permissionManager, clientPermissionRegistry,
+                    databaseProvider, channelManager, playerStateManager, webhookManager,
+                    privateChannelManager, invitationManager, muteManager, sensitiveWordFilter,
+                    networkHandler, messageRouter, spyManager, tcpServer, webSocketGateway);
+            safeShutdown();
             return;
         }
 
@@ -221,20 +277,55 @@ public class NovaLinkMain {
                 config.getServer().getBindAddress(), config.getServer().getPort(),
                 config.getServer().getBindAddress(), config.getServer().getWebsocketPort());
 
-        CountDownLatch shutdownLatch = new CountDownLatch(1);
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            logger.info("Shutdown requested. Stopping services...");
-            safeShutdown(webSocketGateway, tcpServer, networkHandler, databaseProvider, configManager, playerStateManager, webhookManager, muteManager);
-            shutdownLatch.countDown();
-        }, "NovaLink-Shutdown"));
+        // Publish the fully-initialized context for the console + shutdown hook.
+        this.context = new BackendContext(
+                configManager, authManager, permissionManager, clientPermissionRegistry,
+                databaseProvider, channelManager, playerStateManager, webhookManager,
+                privateChannelManager, invitationManager, muteManager, sensitiveWordFilter,
+                networkHandler, messageRouter, spyManager, tcpServer, webSocketGateway);
 
-        // Keep main thread alive until shutdown signal.
+        // JVM shutdown hook: Ctrl+C / SIGTERM -> same safeShutdown the 'stop'
+        // console command uses. Signals the main thread via the latch.
+        this.shutdownLatch = new CountDownLatch(1);
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            logger.info("Shutdown requested (JVM hook). Stopping services...");
+            appSafeShutdown();
+            if (shutdownLatch != null) {
+                shutdownLatch.countDown();
+            }
+        }, "NovaLink-Shutdown"));
+    }
+
+    /**
+     * Runs the interactive console on the main thread (replaces the old
+     * {@code shutdownLatch.await()}). The {@code stop}/{@code shutdown} command
+     * and EOF/Ctrl+C invoke {@link #safeShutdown()} via the console's shutdown
+     * callback, then the loop returns. The JVM shutdown hook remains active for
+     * SIGTERM.
+     */
+    private void runConsoleLoop() {
+        if (context == null) {
+            logger.error("Backend context not initialized; console loop skipped.");
+            return;
+        }
+        ConsoleCommandHandler cmdHandler = new ConsoleCommandHandler(context);
+        Runnable consoleShutdown = this::appSafeShutdown;
+        BackendConsole console = new BackendConsole(cmdHandler, consoleShutdown);
+
+        // Run on the main thread. The loop blocks on readline until stop/EOF.
+        console.run();
+        logger.info("Console loop exited; NovaLink main thread returning.");
+    }
+
+    /**
+     * Instance shutdown used by the console loop and JVM hook — calls the
+     * shared {@link #safeShutdown()} against the published context.
+     */
+    private void appSafeShutdown() {
         try {
-            shutdownLatch.await();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            logger.info("Main thread interrupted. Stopping services...");
-            safeShutdown(webSocketGateway, tcpServer, networkHandler, databaseProvider, configManager, playerStateManager, webhookManager, muteManager);
+            safeShutdown();
+        } catch (Exception e) {
+            logger.debug("Error during appSafeShutdown: {}", e.getMessage());
         }
     }
 
@@ -615,7 +706,8 @@ public class NovaLinkMain {
                                                AdminActionHandler adminActionHandler,
                                                ChannelActionHandler channelActionHandler,
                                                ClientPermissionRegistry clientPermissionRegistry,
-                                               Map<String, List<String>> clientPermissionBootstrap) {
+                                               Map<String, List<String>> clientPermissionBootstrap,
+                                               PlayerStateManager playerStateManager) {
         // Handshake handler (auth + version check)
         networkHandler.registerHandler(HandshakePacket.class, (connection, packet) -> {
             int clientProtocolVersion = packet.getProtocolVersion();
@@ -688,6 +780,18 @@ public class NovaLinkMain {
             ChannelActionResponsePacket response = channelActionHandler.handle(connection, packet);
             response.setRequestId(packet.getRequestId());
             connection.sendPacket(response);
+
+            // Cross-server KICK/MUTE target notification (UX-DESIGN §5): the
+            // response above goes to the OPERATOR's connection. The TARGET player
+            // may be on a different connected server, so forward a copy to the
+            // target's connection so its plugin can render the kick/mute notice.
+            // The client-side ChannelResponseDispatcher renders the notice when it
+            // receives a successful KICK/MUTE response carrying a targetId extra.
+            if (response.isSuccess()
+                    && (response.getAction() == ChannelAction.KICK
+                        || response.getAction() == ChannelAction.MUTE)) {
+                forwardKickMuteToTarget(response, networkHandler, playerStateManager);
+            }
         });
 
         // Keep-alive handler
@@ -712,6 +816,60 @@ public class NovaLinkMain {
             response.setRequestId(packet.getRequestId());
             connection.sendPacket(response);
         });
+    }
+
+    /**
+     * Forwards a successful KICK/MUTE response to the TARGET player's connection
+     * so the target's platform plugin can render the kick/mute notice
+     * (UX-DESIGN §5). The operator already received the response directly; this
+     * ensures a cross-server target (on a different connected game server) is
+     * notified. No-op when the target is on the same server as the operator, not
+     * connected, or when no targetId is available.
+     */
+    private static void forwardKickMuteToTarget(ChannelActionResponsePacket response,
+                                                ServerNetworkHandler networkHandler,
+                                                PlayerStateManager playerStateManager) {
+        String targetIdRaw = response.getExtra("targetId");
+        if (targetIdRaw == null || targetIdRaw.isEmpty()) {
+            return;
+        }
+        UUID targetId;
+        try {
+            targetId = UUID.fromString(targetIdRaw);
+        } catch (IllegalArgumentException e) {
+            return;
+        }
+        PlayerState targetState = playerStateManager.getPlayerState(targetId);
+        if (targetState == null) {
+            return;
+        }
+        String targetClientId = targetState.getClientId();
+        if (targetClientId == null || targetClientId.isEmpty()) {
+            return;
+        }
+        ClientConnection targetConnection = networkHandler.findByClientId(targetClientId);
+        if (targetConnection == null || !targetConnection.isActive() || !targetConnection.isAuthenticated()) {
+            return;
+        }
+        // Forward a copy so the target plugin's ChannelResponseDispatcher renders
+        // the notice. The dispatcher only needs the targetId extra + action +
+        // channelId to render the notice (it no-ops when the pending context is
+        // absent, which is the cross-server-push case).
+        ChannelActionResponsePacket forward = new ChannelActionResponsePacket(
+                response.isSuccess(), response.getAction(), response.getChannelId(),
+                response.getErrorCode(), response.getMessage());
+        forward.addExtra("targetId", targetIdRaw);
+        String operatorName = response.getExtra("operatorName");
+        if (operatorName != null && !operatorName.isEmpty()) {
+            forward.addExtra("operatorName", operatorName);
+        }
+        String duration = response.getExtra("duration");
+        if (duration != null && !duration.isEmpty()) {
+            forward.addExtra("duration", duration);
+        }
+        targetConnection.sendPacket(forward);
+        logger.debug("Forwarded {} response to target {} on client {}",
+                response.getAction(), targetId, targetClientId);
     }
 
     private static ChannelScope parseScope(String raw, ChannelScope fallback) {
@@ -764,86 +922,89 @@ public class NovaLinkMain {
         }
     }
 
-    private static void safeShutdown(WebSocketGateway webSocketGateway,
-                                     NettyServer tcpServer,
-                                     ServerNetworkHandler networkHandler,
-                                     DatabaseProvider databaseProvider,
-                                     ConfigManager configManager,
-                                     PlayerStateManager playerStateManager,
-                                     WebhookManager webhookManager) {
-        safeShutdown(webSocketGateway, tcpServer, networkHandler, databaseProvider,
-                configManager, playerStateManager, webhookManager, null);
+    /**
+     * Graceful shutdown driven by the published {@link #context}. Called by
+     * both the {@code stop}/{@code shutdown} console command (via
+     * {@link #appSafeShutdown()}) and the JVM shutdown hook. Each step is
+     * best-effort so one failing component does not prevent later cleanup.
+     */
+    private void safeShutdown() {
+        BackendContext ctx = this.context;
+        if (ctx == null) {
+            // Nothing was initialized (e.g. config load failed) — nothing to shut down.
+            return;
+        }
+        safeShutdownComponents(ctx);
     }
 
-    private static void safeShutdown(WebSocketGateway webSocketGateway,
-                                     NettyServer tcpServer,
-                                     ServerNetworkHandler networkHandler,
-                                     DatabaseProvider databaseProvider,
-                                     ConfigManager configManager,
-                                     PlayerStateManager playerStateManager,
-                                     WebhookManager webhookManager,
-                                     MuteManager muteManager) {
+    /**
+     * Shared component shutdown used by both the instance path and the legacy
+     * static callers. Keeps the exact same ordering + try/catch isolation as
+     * the original so behavior is unchanged for the 40 existing tests + the
+     * real server.
+     */
+    private static void safeShutdownComponents(BackendContext ctx) {
         // Best-effort: each step should not prevent subsequent shutdown steps.
         try {
-            if (muteManager != null) {
-                muteManager.shutdown();
+            if (ctx.getMuteManager() != null) {
+                ctx.getMuteManager().shutdown();
             }
         } catch (Exception e) {
             logger.debug("Error shutting down MuteManager: {}", e.getMessage());
         }
 
         try {
-            if (webSocketGateway != null) {
-                webSocketGateway.shutdown().join();
+            if (ctx.getWebSocketGateway() != null) {
+                ctx.getWebSocketGateway().shutdown().join();
             }
         } catch (Exception e) {
             logger.debug("Error shutting down WebSocket gateway: {}", e.getMessage());
         }
 
         try {
-            if (tcpServer != null) {
-                tcpServer.shutdown().join();
+            if (ctx.getTcpServer() != null) {
+                ctx.getTcpServer().shutdown().join();
             }
         } catch (Exception e) {
             logger.debug("Error shutting down TCP server: {}", e.getMessage());
         }
 
         try {
-            if (networkHandler != null) {
-                networkHandler.shutdown();
+            if (ctx.getNetworkHandler() != null) {
+                ctx.getNetworkHandler().shutdown();
             }
         } catch (Exception e) {
             logger.debug("Error shutting down network handler: {}", e.getMessage());
         }
 
         try {
-            if (playerStateManager != null) {
-                playerStateManager.saveAllDirty();
-                playerStateManager.clearCache(false);
+            if (ctx.getPlayerStateManager() != null) {
+                ctx.getPlayerStateManager().saveAllDirty();
+                ctx.getPlayerStateManager().clearCache(false);
             }
         } catch (Exception e) {
             logger.debug("Error flushing player state: {}", e.getMessage());
         }
 
         try {
-            if (databaseProvider != null) {
-                databaseProvider.shutdown();
+            if (ctx.getDatabaseProvider() != null) {
+                ctx.getDatabaseProvider().shutdown();
             }
         } catch (Exception e) {
             logger.debug("Error shutting down database provider: {}", e.getMessage());
         }
 
         try {
-            if (configManager != null) {
-                configManager.shutdown();
+            if (ctx.getConfigManager() != null) {
+                ctx.getConfigManager().shutdown();
             }
         } catch (Exception e) {
             logger.debug("Error shutting down config manager: {}", e.getMessage());
         }
 
         try {
-            if (webhookManager != null) {
-                webhookManager.shutdown();
+            if (ctx.getWebhookManager() != null) {
+                ctx.getWebhookManager().shutdown();
             }
         } catch (Exception e) {
             logger.debug("Error shutting down webhook manager: {}", e.getMessage());

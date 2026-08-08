@@ -20,6 +20,8 @@ import com.nova.chat.nukkit.network.NetworkClient;
 import com.nova.chat.nukkit.world.WorldMonitor;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
 import java.nio.file.Path;
 
 /**
@@ -144,15 +146,54 @@ public class NovaChatNukkit extends PluginBase implements Listener {
     
     /**
      * Loads or reloads the plugin configuration.
+     *
+     * <p>Reads the config file with explicit UTF-8 charset and strips any
+     * UTF-8 BOM (U+FEFF) that PowerShell {@code Set-Content -Encoding utf8}
+     * or other Windows editors may prepend. Without BOM stripping, the first
+     * YAML key becomes {@code ﻿backend} and is silently ignored, causing
+     * the format section (or any section) to fall back to jar-bundled defaults.
+     * The Nukkit {@link Config} class already reads via UTF-8 internally, but
+     * its SnakeYAML reader does not strip a leading BOM, so we handle it here.
      */
     public void loadConfiguration() {
-        Config config = new Config(new File(getDataFolder(), "config.yml"), Config.YAML);
+        Config config = new Config(Config.YAML);
+        File configFile = new File(getDataFolder(), "config.yml");
+        try (InputStream raw = new FileInputStream(configFile);
+             InputStream bomStripped = stripBom(raw)) {
+            config.loadFromStream(bomStripped);
+        } catch (Exception e) {
+            getLogger().error("Failed to load config.yml with UTF-8: " + e.getMessage(), e);
+            // Fallback: let Config handle the file directly
+            config = new Config(configFile, Config.YAML);
+        }
         novaChatConfig = new NovaChatConfig(config);
         debugMode = novaChatConfig.isDebug();
-        
+
         if (debugMode) {
             getLogger().info("[Debug] Configuration loaded successfully");
         }
+    }
+
+    /**
+     * Wraps the given stream to skip a leading UTF-8 BOM (EF BB BF) if present.
+     *
+     * @param in the raw input stream (not yet read)
+     * @return a stream positioned after the BOM, or the original stream if no BOM
+     * @throws java.io.IOException if reading the first bytes fails
+     */
+    private static InputStream stripBom(InputStream in) throws java.io.IOException {
+        java.io.PushbackInputStream pb = new java.io.PushbackInputStream(in, 3);
+        byte[] head = new byte[3];
+        int read = pb.read(head);
+        if (read == 3 && (head[0] & 0xFF) == 0xEF && (head[1] & 0xFF) == 0xBB && (head[2] & 0xFF) == 0xBF) {
+            // BOM consumed — return the pushback stream (remaining bytes follow)
+            return pb;
+        }
+        // No BOM — push back the bytes we read
+        if (read > 0) {
+            pb.unread(head, 0, read);
+        }
+        return pb;
     }
     
     /**

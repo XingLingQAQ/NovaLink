@@ -9,7 +9,7 @@ import com.nova.chat.client.state.ChatModeDescriptions;
  *
  * <p>Architecture B: pure static helpers in {@code novachat-client-core}. Platforms
  * replace hard-coded literals with these methods so wording stays aligned across
- * bukkit / folia / multipaper / velocity / bungee / sponge / nukkit / pnx.
+ * bukkit / folia / velocity / bungee / sponge / nukkit / pnx.
  *
  * <p>Color codes use the shared {@code &} form; platforms colorize / convert to
  * {@code §} via their own helper (or {@code LegacyColorCodes.ampersandToSection})

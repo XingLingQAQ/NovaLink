@@ -382,7 +382,15 @@ public class ChannelActionHandler {
             logger.debug("Failed to update player state after kick for {}: {}", targetId, e.getMessage());
         }
 
-        return new ChannelActionResponsePacket(true, ChannelAction.KICK, channelId, "", "Player kicked");
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(true, ChannelAction.KICK, channelId, "", "Player kicked");
+        // Stamp targetId + operatorName so the originating client + any forwarded
+        // connection can render the target-side kick notification (UX-DESIGN §5).
+        response.addExtra("targetId", targetId.toString());
+        String kickOperatorName = firstNonBlank(packet.getExtra("operatorName"), packet.getExtra("operator_name"));
+        if (kickOperatorName != null && !kickOperatorName.isEmpty()) {
+            response.addExtra("operatorName", kickOperatorName);
+        }
+        return response;
     }
 
     private ChannelActionResponsePacket handleMute(ClientConnection connection, ChannelActionPacket packet) {
@@ -436,6 +444,17 @@ public class ChannelActionHandler {
         ChannelActionResponsePacket response = new ChannelActionResponsePacket(true, ChannelAction.MUTE, channelId, "", "Player muted");
         response.addExtra("targetId", targetId.toString());
         response.addExtra("durationMs", String.valueOf(durationMs));
+        // Echo operatorName + duration (seconds) so a cross-server target
+        // connection receiving the forwarded response can render the mute notice
+        // (UX-DESIGN §5). The target plugin has no pending context for this push.
+        String operatorName = firstNonBlank(packet.getExtra("operatorName"), packet.getExtra("operator_name"));
+        if (operatorName != null && !operatorName.isEmpty()) {
+            response.addExtra("operatorName", operatorName);
+        }
+        String durationSeconds = firstNonBlank(packet.getExtra("duration"), packet.getExtra("durationSeconds"));
+        if (durationSeconds != null && !durationSeconds.isEmpty()) {
+            response.addExtra("duration", durationSeconds);
+        }
         return response;
     }
 
@@ -542,6 +561,11 @@ public class ChannelActionHandler {
                                                                     UUID operatorId,
                                                                     Channel channel,
                                                                     String operatorClientId) {
+        // Console-originated actions (UUID 00000000-0000-0000-0000-000000000000)
+        // bypass permission checks — console always has full authority.
+        if (operatorId != null && operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L) {
+            return null;
+        }
         PermissionLevel level = permissionManager.getPermissionLevel(operatorId, channel.getId());
         switch (level) {
             case SUPER_ADMIN:
@@ -585,7 +609,22 @@ public class ChannelActionHandler {
         if (id != null) {
             return id;
         }
-        return getUuid(packet.getExtra("targetUuid"), packet.getExtra("target_uuid"));
+        id = getUuid(packet.getExtra("targetUuid"), packet.getExtra("target_uuid"));
+        if (id != null) {
+            return id;
+        }
+        // Cross-server fallback: resolve by player name across all connected clients.
+        // This allows moderation commands (mute/kick/unmute) to target players on
+        // other servers when the originating plugin cannot resolve a local UUID.
+        String targetName = firstNonBlank(packet.getExtra("targetName"), packet.getExtra("target_name"));
+        if (targetName != null && !targetName.isBlank()) {
+            for (PlayerState state : playerStateManager.getAllPlayerStates()) {
+                if (targetName.equalsIgnoreCase(state.getPlayerName())) {
+                    return state.getPlayerId();
+                }
+            }
+        }
+        return null;
     }
 
     /**

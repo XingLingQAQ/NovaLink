@@ -6,10 +6,10 @@
  */
 
 import React, { useState } from 'react';
-import { 
-  Server, 
-  RefreshCw, 
-  Power, 
+import {
+  Server,
+  RefreshCw,
+  Power,
   Settings,
   Activity,
   Users,
@@ -18,22 +18,27 @@ import {
   WifiOff,
   MoreVertical,
   Eye,
-  Trash2
+  Trash2,
+  Info
 } from 'lucide-react';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 
-function ClientStatus({ 
-  theme, 
-  mode, 
-  txtMain, 
-  txtSec, 
+function ClientStatus({
+  theme,
+  mode,
+  txtMain,
+  txtSec,
   servers = [],
   onReloadConfig,
   onDisconnectServer,
   onViewServerDetails
 }) {
   const [viewMode, setViewMode] = useState('grid'); // 'grid' or 'list'
+
+  // Config reload is not exposed to the panel via REST or WS.
+  // The App-level handler shows an honest-disable toast.
+  const reloadConfigDisabled = true;
 
   // Calculate statistics
   const onlineCount = servers.filter(s => s.status === 'online').length;
@@ -99,38 +104,60 @@ function ClientStatus({
           </div>
 
           {/* Reload Config */}
-          <Button theme={theme} mode={mode} variant="primary" onClick={onReloadConfig}>
+          <Button
+            theme={theme}
+            mode={mode}
+            variant="primary"
+            onClick={onReloadConfig}
+            title={reloadConfigDisabled ? '配置重载需在服务端执行，面板暂不支持' : '重载配置'}
+          >
             <RefreshCw size={16} /> 重载配置
           </Button>
         </div>
       </div>
 
+      {/* Honest-disable info banner */}
+      {reloadConfigDisabled && (
+        <Card theme={theme} mode={mode} className="p-3 flex items-start gap-2 border border-amber-500/20">
+          <Info size={16} className="text-amber-400 shrink-0 mt-0.5" />
+          <p className={`text-xs ${txtSec}`}>
+            配置重载需在服务端执行 nova reload 命令或重启后生效，面板暂不支持远程触发。服务器列表由 WebSocket 实时推送。
+          </p>
+        </Card>
+      )}
+
       {/* Statistics Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard 
+        <StatCard
           theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec}
           icon={Server} label="在线服务器" value={`${onlineCount}/${servers.length}`}
-          color={onlineCount === servers.length ? 'text-emerald-400' : 'text-amber-400'}
+          color={servers.length > 0 && onlineCount === servers.length ? 'text-emerald-400' : 'text-amber-400'}
         />
-        <StatCard 
+        <StatCard
           theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec}
           icon={Users} label="总玩家数" value={totalPlayers}
           color="text-sky-400"
         />
-        <StatCard 
+        <StatCard
           theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec}
-          icon={Activity} label="平均延迟" value={`${avgPing}ms`}
+          icon={Activity} label="平均延迟" value={onlineCount > 0 ? `${avgPing}ms` : '-'}
           color={avgPing < 50 ? 'text-emerald-400' : avgPing < 100 ? 'text-amber-400' : 'text-rose-400'}
         />
-        <StatCard 
+        <StatCard
           theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec}
-          icon={Clock} label="运行时间" value="24h 32m"
+          icon={Clock} label="最早连接" value={servers.length > 0 && servers[0]?.connectedAt ? formatUptime(servers[0].connectedAt) : '-'}
           color="text-purple-400"
         />
       </div>
 
       {/* Server Display */}
-      {viewMode === 'grid' ? (
+      {servers.length === 0 ? (
+        <Card theme={theme} mode={mode} className="p-12 text-center">
+          <Server size={48} className={`mx-auto mb-4 opacity-50 ${txtSec}`} />
+          <p className={txtMain}>暂无已连接服务器</p>
+          <p className={`text-sm ${txtSec} mt-1`}>服务器列表由 WebSocket 实时推送，连接后自动显示</p>
+        </Card>
+      ) : viewMode === 'grid' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {servers.map((server) => (
             <ServerCard 
@@ -307,8 +334,6 @@ function StatCard({ theme, mode, txtMain, txtSec, icon: Icon, label, value, colo
 
 // Server Card Component
 function ServerCard({ server, theme, mode, txtMain, txtSec, onViewDetails, onDisconnect }) {
-  const [showMenu, setShowMenu] = useState(false);
-
   return (
     <Card theme={theme} mode={mode} className="p-5 relative">
       {/* Header */}
@@ -396,6 +421,19 @@ function ServerCard({ server, theme, mode, txtMain, txtSec, onViewDetails, onDis
       </div>
     </Card>
   );
+}
+
+// Format connection uptime from a connectedAt timestamp (ms).
+function formatUptime(connectedAt) {
+  if (!connectedAt) return '-';
+  const diff = Date.now() - connectedAt;
+  if (diff < 0) return '-';
+  const seconds = Math.floor(diff / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  if (hours > 0) return `${hours}h ${minutes % 60}m`;
+  if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+  return `${seconds}s`;
 }
 
 export default ClientStatus;

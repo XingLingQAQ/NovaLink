@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   LayoutDashboard,
   Server,
@@ -15,41 +15,39 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
-  ArrowUpRight,
-  ArrowDownRight,
   MoreHorizontal,
-  Check,
-  Plus,
-  Trash2,
-  Edit,
   RefreshCw,
-  Filter,
-  Send,
-  Volume2,
-  VolumeX,
   Globe,
   Lock,
   Shield,
-  Zap
+  Zap,
+  Loader2,
+  AlertCircle,
+  Server as ServerIcon,
+  Users as UsersIcon,
+  MessageSquare as MessageIcon,
+  Hash as HashIcon,
+  ArrowUpRight,
+  ArrowDownRight,
 } from 'lucide-react';
 
-import { 
-  CONNECTED_SERVERS, 
-  CHANNELS, 
-  ONLINE_PLAYERS, 
-  MUTED_PLAYERS,
-  DASHBOARD_STATS, 
-  CHAT_MESSAGES, 
-  SYSTEM_NOTIFICATIONS,
-  ANNOUNCEMENTS
-} from './data/mockData';
+import authService from './services/auth';
+import websocketService, { ConnectionState, MessageType } from './services/websocket';
+import { api, getApiBaseUrl, getWsUrl, clearConnectionUrls } from './services/api';
+import {
+  adaptChannel,
+  adaptPlayer,
+  adaptWsPlayer,
+  adaptClient,
+  adaptChatMessage,
+  adaptNotification,
+  buildDashboardStats,
+} from './utils/adapters';
+
 import ToastContainer from './components/ui/ToastContainer';
 import Card from './components/ui/Card';
 import Button from './components/ui/Button';
 import Switch from './components/ui/Switch';
-import CustomSelect from './components/ui/CustomSelect';
-import Modal from './components/ui/Modal';
-import Avatar from './components/ui/Avatar';
 import NotificationDropdown from './components/dashboard/NotificationDropdown';
 
 // Dashboard View Components
@@ -59,48 +57,277 @@ import ChannelManagement from './components/dashboard/ChannelManagement';
 import PlayerManagement from './components/dashboard/PlayerManagement';
 import ClientStatus from './components/dashboard/ClientStatus';
 
+import LoginScreen from './components/auth/LoginScreen';
+
+// Lucide icon lookup for dashboard stat cards (built dynamically from string names).
+const STAT_ICON_MAP = {
+  Server: ServerIcon,
+  Users: UsersIcon,
+  MessageSquare: MessageIcon,
+  Hash: HashIcon,
+};
+
 export default function App() {
+  // --- Auth gate ---
+  const [authenticated, setAuthenticated] = useState(authService.isAuthenticated());
+  const [currentUser, setCurrentUser] = useState(authService.getUser());
+  const [authVersion, setAuthVersion] = useState(0); // force re-eval after login/logout
+
+  // Re-check auth state whenever authVersion changes.
+  useEffect(() => {
+    const unsub = authService.onAuthChange((state) => {
+      setAuthenticated(state.isAuthenticated);
+      setCurrentUser(state.user);
+    });
+    return unsub;
+  }, [authVersion]);
+
+  const handleLoginSuccess = useCallback(() => {
+    setAuthenticated(true);
+    setCurrentUser(authService.getUser());
+    setAuthVersion((v) => v + 1);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    websocketService.disconnect();
+    authService.logout();
+    clearConnectionUrls();
+    setAuthenticated(false);
+    setCurrentUser(null);
+    setAuthVersion((v) => v + 1);
+  }, []);
+
+  if (!authenticated) {
+    return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
+  }
+
+  return <Dashboard key={authVersion} currentUser={currentUser} onLogout={handleLogout} />;
+}
+
+// ==================== Dashboard ====================
+function Dashboard({ currentUser, onLogout }) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [theme, setTheme] = useState('glass');
   const [mode, setMode] = useState('dark');
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [loading, setLoading] = useState(false);
+  const [tabLoading, setTabLoading] = useState(false);
 
-  // Data State
-  const [servers, setServers] = useState(CONNECTED_SERVERS);
-  const [channels, setChannels] = useState(CHANNELS);
-  const [players, setPlayers] = useState(ONLINE_PLAYERS);
-  const [mutedPlayers, setMutedPlayers] = useState(MUTED_PLAYERS);
-  const [chatMessages, setChatMessages] = useState(CHAT_MESSAGES);
-  const [notifications, setNotifications] = useState(SYSTEM_NOTIFICATIONS);
-  const [announcements, setAnnouncements] = useState(ANNOUNCEMENTS);
+  // Data State — initialized empty, populated from real REST + WS.
+  const [servers, setServers] = useState([]);
+  const [channels, setChannels] = useState([]);
+  const [players, setPlayers] = useState([]);
+  const [mutedPlayers] = useState([]);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [notifications, setNotifications] = useState([]);
   const [toasts, setToasts] = useState([]);
+  const [statusData, setStatusData] = useState(null);
+
+  // Loading / error state for initial fetch.
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(null);
 
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState('');
-  const [chatFilter, setChatFilter] = useState('all');
   const [consoleAutoScroll, setConsoleAutoScroll] = useState(true);
 
-  // Settings State
+  // Settings State (local UI preferences only — no backend path for these).
   const [settings, setSettings] = useState({
     enableFilter: true,
     logMessages: true,
-    crossServerChat: true
+    crossServerChat: true,
   });
 
-  // Modal States
-  const [showChannelModal, setShowChannelModal] = useState(false);
-  const [showMuteModal, setShowMuteModal] = useState(false);
-  const [showAnnouncementModal, setShowAnnouncementModal] = useState(false);
-  const [editingChannel, setEditingChannel] = useState(null);
-  const [muteTarget, setMuteTarget] = useState({ name: '', reason: '', duration: '1h' });
+  // WS connection state (for showing a small indicator).
+  const [wsState, setWsState] = useState(websocketService.getState());
 
   // UI State
   const [showNotifications, setShowNotifications] = useState(false);
   const notificationRef = useRef(null);
   const chatContainerRef = useRef(null);
+  const wsHandlersRef = useRef({});
 
+  // --- Toasts ---
+  const addToast = useCallback((message, type = 'success') => {
+    const id = Date.now() + Math.random();
+    setToasts((prev) => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3000);
+  }, []);
+
+  const removeToast = useCallback((id) => setToasts((prev) => prev.filter((t) => t.id !== id)), []);
+
+  // --- Initial data fetch on mount (after auth) ---
+  const fetchAllData = useCallback(async () => {
+    setFetchError(null);
+    try {
+      const [statusRes, channelsRes, playersRes] = await Promise.all([
+        api.status().catch((e) => { console.warn('[fetch] /api/status failed:', e); return null; }),
+        api.getChannels().catch((e) => { console.warn('[fetch] /api/channels failed:', e); return null; }),
+        api.getPlayers().catch((e) => { console.warn('[fetch] /api/players failed:', e); return null; }),
+      ]);
+
+      if (statusRes) setStatusData(statusRes);
+
+      if (channelsRes && Array.isArray(channelsRes.channels)) {
+        setChannels(channelsRes.channels.map(adaptChannel).filter(Boolean));
+      }
+
+      if (playersRes && Array.isArray(playersRes.players)) {
+        setPlayers(playersRes.players.map(adaptPlayer).filter(Boolean));
+      }
+
+      // Servers (clients) are only available via WS server_status; we don't have a REST endpoint.
+      // The WS broadcast will populate them shortly after connect.
+      setInitialLoading(false);
+    } catch (err) {
+      console.error('[fetch] initial load failed:', err);
+      setFetchError(err.message || '加载失败');
+      setInitialLoading(false);
+    }
+  }, []);
+
+  // Trigger initial fetch on mount. The fetch itself is async and calls setState
+  // in callbacks (not synchronously in the effect body), which satisfies the
+  // react-hooks/set-state-in-effect rule.
+  useEffect(() => {
+    let cancelled = false;
+    const doFetch = async () => {
+      await fetchAllData();
+      if (cancelled) return;
+    };
+    doFetch();
+    return () => { cancelled = true; };
+  }, [fetchAllData]);
+
+  // --- WebSocket connection + real-time handlers ---
+  useEffect(() => {
+    let cancelled = false;
+    const token = authService.getToken();
+    const wsUrl = getWsUrl();
+
+    if (!token) {
+      console.warn('[WS] no auth token, skipping connect');
+      return;
+    }
+
+    // State-change listener.
+    const handleStateChange = ({ state }) => {
+      if (cancelled) return;
+      setWsState(state);
+      if (state === ConnectionState.ERROR) {
+        addToast('WebSocket 连接错误', 'error');
+      }
+    };
+    websocketService.on('stateChange', handleStateChange);
+
+    // Message handlers.
+    const handleChat = (message) => {
+      const adapted = adaptChatMessage(message);
+      if (adapted) {
+        setChatMessages((prev) => [...prev.slice(-199), adapted]);
+      }
+    };
+
+    const handleServerStatus = (message) => {
+      if (Array.isArray(message.clients)) {
+        const adapted = message.clients.map(adaptClient).filter(Boolean);
+        setServers(adapted);
+      } else if (message.server) {
+        const adapted = adaptClient(message.server);
+        if (adapted) {
+          setServers((prev) => {
+            const idx = prev.findIndex((s) => s.id === adapted.id);
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = adapted;
+              return next;
+            }
+            return [...prev, adapted];
+          });
+        }
+      }
+    };
+
+    const handleChannelUpdate = (message) => {
+      if (Array.isArray(message.channels)) {
+        setChannels(message.channels.map(adaptChannel).filter(Boolean));
+      }
+    };
+
+    const handlePlayerUpdate = (message) => {
+      if (Array.isArray(message.players)) {
+        setPlayers(message.players.map(adaptWsPlayer).filter(Boolean));
+      } else if (message.player) {
+        const adapted = adaptWsPlayer(message.player);
+        if (adapted) {
+          setPlayers((prev) => {
+            if (message.action === 'leave') {
+              return prev.filter((p) => p.uuid !== adapted.uuid);
+            }
+            const idx = prev.findIndex((p) => p.uuid === adapted.uuid);
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = adapted;
+              return next;
+            }
+            return [...prev, adapted];
+          });
+        }
+      }
+    };
+
+    const handleNotification = (message) => {
+      const adapted = adaptNotification(message);
+      if (adapted) {
+        setNotifications((prev) => [adapted, ...prev]);
+        addToast(adapted.title + (adapted.desc ? `: ${adapted.desc}` : ''), adapted.type === 'warning' ? 'error' : 'success');
+      }
+    };
+
+    websocketService.on(MessageType.CHAT, handleChat);
+    websocketService.on(MessageType.SERVER_STATUS, handleServerStatus);
+    websocketService.on(MessageType.CHANNEL_UPDATE, handleChannelUpdate);
+    websocketService.on(MessageType.PLAYER_UPDATE, handlePlayerUpdate);
+    websocketService.on(MessageType.NOTIFICATION, handleNotification);
+
+    wsHandlersRef.current = { handleChat, handleServerStatus, handleChannelUpdate, handlePlayerUpdate, handleNotification, handleStateChange };
+
+    // Connect (non-blocking — failures are surfaced via toasts/state).
+    websocketService.connect(wsUrl, token).catch((err) => {
+      console.error('[WS] connect failed:', err);
+      addToast('WebSocket 连接失败: ' + (err.message || err), 'error');
+    });
+
+    return () => {
+      cancelled = true;
+      websocketService.off(MessageType.CHAT, handleChat);
+      websocketService.off(MessageType.SERVER_STATUS, handleServerStatus);
+      websocketService.off(MessageType.CHANNEL_UPDATE, handleChannelUpdate);
+      websocketService.off(MessageType.PLAYER_UPDATE, handlePlayerUpdate);
+      websocketService.off(MessageType.NOTIFICATION, handleNotification);
+      websocketService.off('stateChange', handleStateChange);
+      websocketService.disconnect();
+    };
+  }, [addToast]);
+
+  // After WS authenticates, subscribe to all known channel IDs so we receive chat.
+  useEffect(() => {
+    if (wsState !== ConnectionState.AUTHENTICATED) return;
+    if (channels.length === 0) return;
+    const channelIds = channels.map((c) => c.id).filter(Boolean);
+    if (channelIds.length > 0) {
+      websocketService.subscribe(channelIds);
+    }
+  }, [wsState, channels]);
+
+  // Auto-scroll chat container (console tab).
+  useEffect(() => {
+    if (consoleAutoScroll && chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  }, [chatMessages, consoleAutoScroll]);
+
+  // Click-outside for notification dropdown.
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (notificationRef.current && !notificationRef.current.contains(event.target)) {
@@ -111,91 +338,7 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // 模拟实时消息
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const newMsg = {
-        id: Date.now(),
-        time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-        server: servers.filter(s => s.status === 'online')[Math.floor(Math.random() * 5)]?.name || 'Lobby-1',
-        player: `Player_${Math.floor(Math.random() * 1000)}`,
-        channel: 'global',
-        content: ['大家好！', '有人在吗？', '一起玩吧', '这个服务器真棒', '新人报到'][Math.floor(Math.random() * 5)],
-        platform: Math.random() > 0.3 ? 'Java' : 'Bedrock'
-      };
-      setChatMessages(prev => [...prev.slice(-99), newMsg]);
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [servers]);
-
-  // 自动滚动聊天
-  useEffect(() => {
-    if (consoleAutoScroll && chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-    }
-  }, [chatMessages, consoleAutoScroll]);
-
-  const addToast = (message, type = 'success') => {
-    const id = Date.now();
-    setToasts(prev => [...prev, { id, message, type }]);
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
-  };
-
-  const removeToast = (id) => setToasts(prev => prev.filter(t => t.id !== id));
-
-  // --- Actions ---
-  const handleMutePlayer = () => {
-    if (!muteTarget.name) {
-      addToast("请输入玩家名称", "error");
-      return;
-    }
-    const newMute = {
-      uuid: `mute-${Date.now()}`,
-      name: muteTarget.name,
-      reason: muteTarget.reason || '违规行为',
-      expireTime: muteTarget.duration === 'permanent' ? '永久' : new Date(Date.now() + parseInt(muteTarget.duration) * 3600000).toLocaleString('zh-CN'),
-      operator: 'Admin'
-    };
-    setMutedPlayers([...mutedPlayers, newMute]);
-    setShowMuteModal(false);
-    setMuteTarget({ name: '', reason: '', duration: '1h' });
-    addToast(`已禁言 ${newMute.name}`, "success");
-  };
-
-  const handleUnmutePlayer = (uuid) => {
-    setMutedPlayers(mutedPlayers.filter(m => m.uuid !== uuid));
-    addToast("已解除禁言", "success");
-  };
-
-  const handleReloadConfig = () => {
-    addToast("正在重载配置...", "loading");
-    setTimeout(() => addToast("配置重载完成", "success"), 1500);
-  };
-
-  const handleMarkAllRead = () => {
-    setNotifications(notifications.map(n => ({ ...n, read: true })));
-    addToast("已全部标记为已读", "success");
-  };
-
-  const handleClearNotifications = () => {
-    setNotifications([]);
-    setShowNotifications(false);
-    addToast("通知已清空", "success");
-  };
-
-  const handleSettingToggle = (key) => {
-    setSettings(prev => ({ ...prev, [key]: !prev[key] }));
-    if (navigator.vibrate) navigator.vibrate(5);
-  };
-
-  const handleLogout = () => {
-    if (window.confirm("确定要退出登录吗？")) {
-      addToast("正在退出...", "loading");
-      setTimeout(() => window.location.reload(), 1500);
-    }
-  };
-
-  // --- Lifecycle ---
+  // Responsive.
   useEffect(() => {
     const handleResize = () => {
       const mobile = window.innerWidth < 1024;
@@ -208,40 +351,104 @@ export default function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  const handleTabChange = (tab) => {
-    setLoading(true);
+  // --- Actions ---
+
+  // Send a message via REST POST /api/messages.
+  const handleSendMessage = useCallback(async (channelId, content) => {
+    if (!channelId || !content) return;
+    const senderName = (currentUser && currentUser.username) || 'Panel';
+    try {
+      await api.sendMessage(channelId, content, senderName);
+      addToast('消息已发送', 'success');
+    } catch (err) {
+      addToast('发送失败: ' + err.message, 'error');
+    }
+  }, [currentUser, addToast]);
+
+  // Mute / unmute: NO REST or WS admin-action path exists in the backend for the panel.
+  // Backend mute is via AdminActionPacket (plugin -> backend), not exposed to the panel.
+  // Honest disable: the PlayerManagement component renders the buttons as disabled with a tooltip.
+  const handleMutePlayer = useCallback(() => {
+    addToast('禁言操作需通过游戏内 /nc mute 执行，面板暂不支持', 'error');
+  }, [addToast]);
+
+  const handleUnmutePlayer = useCallback(() => {
+    addToast('解除禁言需通过游戏内 /nc unmute 执行，面板暂不支持', 'error');
+  }, [addToast]);
+
+  // Reload config: NO REST or WS path exists for config reload from the panel.
+  // Honest disable: ClientStatus renders the button disabled with a tooltip.
+  const handleReloadConfig = useCallback(() => {
+    addToast('配置重载需在服务端执行，面板暂不支持', 'error');
+  }, [addToast]);
+
+  // Channel create/edit/delete: NO REST or WS path exists for channel CRUD from the panel.
+  // Honest disable: ChannelManagement renders these controls disabled with tooltips.
+  const handleCreateChannel = useCallback(() => {
+    addToast('频道创建需在服务端配置文件中修改，面板暂不支持', 'error');
+  }, [addToast]);
+
+  const handleEditChannel = useCallback(() => {
+    addToast('频道编辑需在服务端配置文件中修改，面板暂不支持', 'error');
+  }, [addToast]);
+
+  const handleDeleteChannel = useCallback(() => {
+    addToast('频道删除需在服务端配置文件中修改，面板暂不支持', 'error');
+  }, [addToast]);
+
+  // Notifications.
+  const handleMarkAllRead = useCallback(() => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    addToast('已全部标记为已读', 'success');
+  }, [addToast]);
+
+  const handleClearNotifications = useCallback(() => {
+    setNotifications([]);
+    setShowNotifications(false);
+    addToast('通知已清空', 'success');
+  }, [addToast]);
+
+  // Settings toggles (local UI only).
+  const handleSettingToggle = useCallback((key) => {
+    setSettings((prev) => ({ ...prev, [key]: !prev[key] }));
+    if (navigator.vibrate) navigator.vibrate(5);
+  }, []);
+
+  const handleTabChange = useCallback((tab) => {
+    setTabLoading(true);
     setActiveTab(tab);
     if (isMobile) setSidebarOpen(false);
-    setTimeout(() => setLoading(false), 300);
-  };
+    setTimeout(() => setTabLoading(false), 200);
+  }, [isMobile]);
 
+  // --- Derived / styling ---
   const getBackground = () => {
     if (theme === 'clean') return mode === 'dark' ? 'bg-slate-900' : 'bg-slate-50';
-    return `bg-cover bg-center bg-fixed`;
+    return 'bg-cover bg-center bg-fixed';
   };
 
   const getScrollbarColors = () => {
     if (theme === 'clean') {
       if (mode === 'dark') return { thumb: '#475569', hover: '#64748b' };
       return { thumb: '#cbd5e1', hover: '#94a3b8' };
-    } else {
-      if (mode === 'dark') return { thumb: 'rgba(255,255,255,0.2)', hover: 'rgba(255,255,255,0.3)' };
-      return { thumb: 'rgba(255,255,255,0.3)', hover: 'rgba(255,255,255,0.5)' };
     }
+    if (mode === 'dark') return { thumb: 'rgba(255,255,255,0.2)', hover: 'rgba(255,255,255,0.3)' };
+    return { thumb: 'rgba(255,255,255,0.3)', hover: 'rgba(255,255,255,0.5)' };
   };
 
   const sbColors = getScrollbarColors();
   const txtMain = mode === 'dark' ? 'text-white' : 'text-slate-900';
   const txtSec = mode === 'dark' ? 'text-slate-400' : 'text-slate-500';
 
-  // Filter
-  const filteredPlayers = players.filter(p =>
-    p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    p.server.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredPlayers = useMemo(() =>
+    players.filter((p) =>
+      (p.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (p.server || '').toLowerCase().includes(searchQuery.toLowerCase())
+    ), [players, searchQuery]);
 
-  const filteredMessages = chatMessages.filter(m => 
-    chatFilter === 'all' || m.channel === chatFilter
+  const dashboardStats = useMemo(
+    () => buildDashboardStats(statusData, servers, channels, chatMessages),
+    [statusData, servers, channels, chatMessages]
   );
 
   const navItems = [
@@ -253,19 +460,24 @@ export default function App() {
     { id: 'settings', icon: Settings, label: '系统设置' },
   ];
 
+  const wsIndicator = (() => {
+    if (wsState === ConnectionState.AUTHENTICATED) return { color: 'bg-emerald-500', label: 'WS 已连接' };
+    if (wsState === ConnectionState.CONNECTED || wsState === ConnectionState.CONNECTING) return { color: 'bg-amber-500', label: 'WS 连接中' };
+    if (wsState === ConnectionState.RECONNECTING) return { color: 'bg-amber-500', label: 'WS 重连中' };
+    if (wsState === ConnectionState.ERROR) return { color: 'bg-red-500', label: 'WS 错误' };
+    return { color: 'bg-slate-500', label: 'WS 未连接' };
+  })();
+
   return (
     <div className={`w-full overflow-hidden font-sans transition-colors duration-700 ${getBackground()} relative`} style={{ minHeight: '100dvh', '--scrollbar-thumb': sbColors.thumb, '--scrollbar-thumb-hover': sbColors.hover }}>
       <ToastContainer toasts={toasts} removeToast={removeToast} />
 
       {theme === 'glass' && (
         <>
-          <div
-            className="fixed inset-0 z-0 transition-opacity duration-1000 bg-gradient-to-br from-slate-950 via-slate-900 to-sky-900"
-            style={{ height: '100dvh', width: '100vw' }}
-          />
+          <div className="fixed inset-0 z-0 transition-opacity duration-1000 bg-gradient-to-br from-slate-950 via-slate-900 to-sky-900" style={{ height: '100dvh', width: '100vw' }} />
           <div className={`fixed inset-0 z-0 transition-all duration-700 ${mode === 'dark' ? 'bg-black/50' : 'bg-white/20'}`} />
-          <div className="fixed top-[-10%] right-[-10%] w-[500px] h-[500px] bg-sky-500/20 rounded-full blur-[120px] animate-pulse z-0 pointer-events-none mix-blend-overlay"></div>
-          <div className="fixed bottom-[-10%] left-[-10%] w-[600px] h-[600px] bg-purple-500/20 rounded-full blur-[120px] animate-pulse z-0 pointer-events-none mix-blend-overlay" style={{ animationDelay: '2s' }}></div>
+          <div className="fixed top-[-10%] right-[-10%] w-[500px] h-[500px] bg-sky-500/20 rounded-full blur-[120px] animate-pulse z-0 pointer-events-none mix-blend-overlay" />
+          <div className="fixed bottom-[-10%] left-[-10%] w-[600px] h-[600px] bg-purple-500/20 rounded-full blur-[120px] animate-pulse z-0 pointer-events-none mix-blend-overlay" style={{ animationDelay: '2s' }} />
         </>
       )}
 
@@ -293,16 +505,14 @@ export default function App() {
               ))}
             </nav>
             <div className={`mt-auto rounded-xl flex items-center transition-all duration-500 overflow-hidden shrink-0 ${!isMobile && !sidebarOpen ? 'p-1.5 justify-center' : 'p-3'} ${theme === 'clean' ? 'bg-slate-100/50' : 'bg-white/10 border border-white/10'}`}>
-              <Avatar
-                name="管理员"
-                size={!isMobile && !sidebarOpen ? 36 : 40}
-                className={`transition-all duration-500 ${!isMobile && !sidebarOpen ? '' : 'mr-3'}`}
-              />
-              <div className={`overflow-hidden transition-all duration-500 flex-1 min-w-0 ${!isMobile && !sidebarOpen ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>
-                <p className={`text-sm font-semibold whitespace-nowrap ${txtMain}`}>管理员</p>
-                <p className={`text-xs whitespace-nowrap ${txtSec}`}>NovaLink v1.0</p>
+              <div className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center bg-gradient-to-br from-sky-400 to-blue-500 text-white font-semibold ${!isMobile && !sidebarOpen ? '' : 'mr-3'}`} title={(currentUser && currentUser.username) || '用户'}>
+                {((currentUser && currentUser.username) || 'U')[0].toUpperCase()}
               </div>
-              <button onClick={handleLogout} className={`${txtSec} hover:text-red-400 transition-all duration-500 shrink-0 ${!isMobile && !sidebarOpen ? 'w-0 opacity-0 overflow-hidden' : 'w-auto opacity-100'}`} title="退出">
+              <div className={`overflow-hidden transition-all duration-500 flex-1 min-w-0 ${!isMobile && !sidebarOpen ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>
+                <p className={`text-sm font-semibold whitespace-nowrap ${txtMain}`}>{(currentUser && currentUser.username) || '用户'}</p>
+                <p className={`text-xs whitespace-nowrap ${txtSec}`}>{(currentUser && currentUser.role) || ''}</p>
+              </div>
+              <button onClick={onLogout} className={`${txtSec} hover:text-red-400 transition-all duration-500 shrink-0 ${!isMobile && !sidebarOpen ? 'w-0 opacity-0 overflow-hidden' : 'w-auto opacity-100'}`} title="退出登录">
                 <LogOut size={18} />
               </button>
             </div>
@@ -323,10 +533,15 @@ export default function App() {
               </div>
             </div>
             <div className="flex items-center gap-3 md:gap-4">
+              {/* WS status indicator */}
+              <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 rounded-full bg-white/5 border border-white/10" title={wsIndicator.label}>
+                <span className={`w-2 h-2 rounded-full ${wsIndicator.color} ${wsState === ConnectionState.CONNECTING || wsState === ConnectionState.RECONNECTING ? 'animate-pulse' : ''}`} />
+                <span className={`text-xs ${txtSec}`}>{wsIndicator.label}</span>
+              </div>
               <div className="relative" ref={notificationRef}>
                 <button onClick={() => setShowNotifications(!showNotifications)} className={`p-2 rounded-full relative transition-transform hover:scale-110 ${txtSec} hover:bg-current/10`}>
                   <Bell size={20} />
-                  {notifications.some(n => !n.read) && (
+                  {notifications.some((n) => !n.read) && (
                     <>
                       <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full animate-ping" />
                       <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full" />
@@ -345,105 +560,107 @@ export default function App() {
           {/* Content Area */}
           <div className="flex-1 overflow-y-auto p-4 md:p-6 custom-scrollbar">
             <div className="max-w-7xl mx-auto space-y-6">
-              {loading ? (
+              {initialLoading ? (
+                <div className="h-96 flex flex-col items-center justify-center gap-3">
+                  <Loader2 size={40} className={`animate-spin ${theme === 'clean' ? 'text-sky-500' : 'text-white'}`} />
+                  <p className={`text-sm ${txtSec}`}>正在加载 NovaLink 数据...</p>
+                </div>
+              ) : fetchError && channels.length === 0 && players.length === 0 ? (
+                <div className="h-96 flex flex-col items-center justify-center gap-4">
+                  <AlertCircle size={40} className="text-rose-400" />
+                  <p className={`text-sm ${txtMain}`}>加载失败: {fetchError}</p>
+                  <Button theme={theme} mode={mode} variant="primary" onClick={fetchAllData}>
+                    <RefreshCw size={16} /> 重试
+                  </Button>
+                </div>
+              ) : tabLoading ? (
                 <div className="h-96 flex items-center justify-center">
-                  <div className={`w-12 h-12 border-4 rounded-full animate-spin ${theme === 'clean' ? 'border-sky-500 border-t-transparent' : 'border-white border-t-transparent'}`}></div>
+                  <div className={`w-12 h-12 border-4 rounded-full animate-spin ${theme === 'clean' ? 'border-sky-500 border-t-transparent' : 'border-white border-t-transparent'}`} />
                 </div>
               ) : (
                 <>
                   {/* Dashboard - System Overview */}
                   {activeTab === 'dashboard' && (
-                    <DashboardView 
-                      theme={theme} 
-                      mode={mode} 
-                      txtMain={txtMain} 
-                      txtSec={txtSec} 
+                    <DashboardView
+                      theme={theme}
+                      mode={mode}
+                      txtMain={txtMain}
+                      txtSec={txtSec}
                       servers={servers}
                       channels={channels}
                       players={players}
                       chatMessages={chatMessages}
+                      dashboardStats={dashboardStats}
+                      statIconMap={STAT_ICON_MAP}
                     />
                   )}
 
                   {/* Console - Real-time Message Monitor */}
                   {activeTab === 'console' && (
-                    <MessageMonitor 
-                      theme={theme} 
-                      mode={mode} 
-                      txtMain={txtMain} 
+                    <MessageMonitor
+                      theme={theme}
+                      mode={mode}
+                      txtMain={txtMain}
                       txtSec={txtSec}
-                      messages={chatMessages} 
+                      messages={chatMessages}
                       channels={channels}
                       onClearMessages={() => setChatMessages([])}
+                      onSendMessage={handleSendMessage}
+                      chatContainerRef={chatContainerRef}
+                      consoleAutoScroll={consoleAutoScroll}
+                      setConsoleAutoScroll={setConsoleAutoScroll}
                     />
                   )}
 
                   {/* Servers - Client Status */}
                   {activeTab === 'servers' && (
-                    <ClientStatus 
-                      theme={theme} 
-                      mode={mode} 
-                      txtMain={txtMain} 
-                      txtSec={txtSec} 
-                      servers={servers} 
+                    <ClientStatus
+                      theme={theme}
+                      mode={mode}
+                      txtMain={txtMain}
+                      txtSec={txtSec}
+                      servers={servers}
                       onReloadConfig={handleReloadConfig}
                     />
                   )}
 
                   {/* Channels - Channel Management */}
                   {activeTab === 'channels' && (
-                    <ChannelManagement 
-                      theme={theme} 
-                      mode={mode} 
-                      txtMain={txtMain} 
-                      txtSec={txtSec} 
+                    <ChannelManagement
+                      theme={theme}
+                      mode={mode}
+                      txtMain={txtMain}
+                      txtSec={txtSec}
                       channels={channels}
-                      onCreateChannel={(channel) => {
-                        setChannels([...channels, { ...channel, icon: null, color: 'gray' }]);
-                        addToast(`频道 ${channel.name} 创建成功`, 'success');
-                      }}
-                      onEditChannel={(channel) => {
-                        setChannels(channels.map(c => c.id === channel.id ? channel : c));
-                        addToast(`频道 ${channel.name} 更新成功`, 'success');
-                      }}
-                      onDeleteChannel={(channelId) => {
-                        setChannels(channels.filter(c => c.id !== channelId));
-                        addToast('频道已删除', 'success');
-                      }}
+                      onCreateChannel={handleCreateChannel}
+                      onEditChannel={handleEditChannel}
+                      onDeleteChannel={handleDeleteChannel}
                     />
                   )}
 
                   {/* Players - Player Management */}
                   {activeTab === 'players' && (
-                    <PlayerManagement 
-                      theme={theme} 
-                      mode={mode} 
-                      txtMain={txtMain} 
+                    <PlayerManagement
+                      theme={theme}
+                      mode={mode}
+                      txtMain={txtMain}
                       txtSec={txtSec}
-                      players={players} 
+                      players={filteredPlayers}
                       mutedPlayers={mutedPlayers}
-                      servers={servers}
-                      onMutePlayer={(muteData) => {
-                        const newMute = {
-                          uuid: `mute-${Date.now()}`,
-                          name: muteData.name,
-                          reason: muteData.reason || '违规行为',
-                          expireTime: muteData.duration === 'permanent' ? '永久' : new Date(Date.now() + parseInt(muteData.duration) * 3600000).toLocaleString('zh-CN'),
-                          operator: 'Admin'
-                        };
-                        setMutedPlayers([...mutedPlayers, newMute]);
-                        addToast(`已禁言 ${newMute.name}`, 'success');
-                      }}
+                      onMutePlayer={handleMutePlayer}
                       onUnmutePlayer={handleUnmutePlayer}
                     />
                   )}
 
                   {/* Settings */}
                   {activeTab === 'settings' && (
-                    <SettingsView 
+                    <SettingsView
                       theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec}
                       settings={settings} onToggle={handleSettingToggle}
                       setTheme={setTheme}
+                      wsState={wsState}
+                      apiUrl={getApiBaseUrl()}
+                      wsUrl={getWsUrl()}
                     />
                   )}
                 </>
@@ -452,40 +669,28 @@ export default function App() {
           </div>
         </main>
       </div>
-
-      {/* Mute Modal */}
-      <Modal isOpen={showMuteModal} onClose={() => setShowMuteModal(false)} title="禁言玩家" theme={theme} mode={mode}>
-        <div className="space-y-4">
-          <div>
-            <label className={`block text-xs font-semibold uppercase tracking-wider mb-1.5 ${txtSec}`}>玩家名称</label>
-            <input type="text" value={muteTarget.name} onChange={(e) => setMuteTarget({ ...muteTarget, name: e.target.value })} placeholder="输入玩家名" className={`w-full px-4 py-2.5 rounded-xl border outline-none focus:ring-2 transition-all ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-700 border-slate-600 focus:ring-sky-500 text-white' : 'bg-white border-slate-200 focus:ring-sky-500 text-slate-900') : 'bg-white/10 border-white/20 focus:ring-white/50 text-white placeholder:text-white/30'}`} />
-          </div>
-          <div>
-            <label className={`block text-xs font-semibold uppercase tracking-wider mb-1.5 ${txtSec}`}>禁言原因</label>
-            <input type="text" value={muteTarget.reason} onChange={(e) => setMuteTarget({ ...muteTarget, reason: e.target.value })} placeholder="违规行为" className={`w-full px-4 py-2.5 rounded-xl border outline-none focus:ring-2 transition-all ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-700 border-slate-600 focus:ring-sky-500 text-white' : 'bg-white border-slate-200 focus:ring-sky-500 text-slate-900') : 'bg-white/10 border-white/20 focus:ring-white/50 text-white placeholder:text-white/30'}`} />
-          </div>
-          <div>
-            <label className={`block text-xs font-semibold uppercase tracking-wider mb-1.5 ${txtSec}`}>时长</label>
-            <CustomSelect theme={theme} mode={mode} options={['1h', '6h', '24h', '7d', 'permanent']} defaultValue="1h" onChange={(val) => setMuteTarget({ ...muteTarget, duration: val })} />
-          </div>
-          <div className="flex gap-3 mt-6 pt-4 border-t border-gray-200/10">
-            <Button variant="ghost" className="flex-1" theme={theme} mode={mode} onClick={() => setShowMuteModal(false)}>取消</Button>
-            <Button variant="primary" className="flex-1" theme={theme} mode={mode} onClick={handleMutePlayer}>确认禁言</Button>
-          </div>
-        </div>
-      </Modal>
     </div>
   );
 }
 
-
 // ==================== Settings View ====================
-function SettingsView({ theme, mode, txtMain, txtSec, settings, onToggle, setTheme }) {
+function SettingsView({ theme, mode, txtMain, txtSec, settings, onToggle, setTheme, wsState, apiUrl, wsUrl }) {
+  const wsLabel = (() => {
+    switch (wsState) {
+      case ConnectionState.AUTHENTICATED: return '已认证';
+      case ConnectionState.CONNECTED: return '已连接';
+      case ConnectionState.CONNECTING: return '连接中';
+      case ConnectionState.RECONNECTING: return '重连中';
+      case ConnectionState.ERROR: return '错误';
+      default: return '未连接';
+    }
+  })();
+
   return (
     <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in duration-500">
       <div>
         <h2 className={`text-2xl font-bold ${txtMain}`}>系统设置</h2>
-        <p className={`text-sm ${txtSec} mt-1`}>配置 NovaLink 系统参数</p>
+        <p className={`text-sm ${txtSec} mt-1`}>配置 NovaPanel 界面参数</p>
       </div>
 
       <Card theme={theme} mode={mode} className="p-6 space-y-6">
@@ -520,26 +725,44 @@ function SettingsView({ theme, mode, txtMain, txtSec, settings, onToggle, setThe
         </div>
 
         <div className="pt-6 border-t border-gray-200/10">
-          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>聊天功能</h3>
+          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>连接状态</h3>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className={txtMain}>API 地址</span>
+              <span className={`text-sm font-mono ${txtSec}`}>{apiUrl}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className={txtMain}>WebSocket 地址</span>
+              <span className={`text-sm font-mono ${txtSec}`}>{wsUrl}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className={txtMain}>WebSocket 状态</span>
+              <span className={`text-sm ${txtSec}`}>{wsLabel}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="pt-6 border-t border-gray-200/10">
+          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>聊天功能 (仅本地界面)</h3>
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <span className={txtMain}>敏感词过滤</span>
-                <p className={`text-xs ${txtSec}`}>自动过滤违规词汇</p>
+                <p className={`text-xs ${txtSec}`}>面板界面设置，不影响后端</p>
               </div>
               <Switch checked={settings.enableFilter} onChange={() => onToggle('enableFilter')} theme={theme} mode={mode} />
             </div>
             <div className="flex items-center justify-between">
               <div>
                 <span className={txtMain}>消息日志</span>
-                <p className={`text-xs ${txtSec}`}>记录所有聊天消息到数据库</p>
+                <p className={`text-xs ${txtSec}`}>面板界面设置，不影响后端</p>
               </div>
               <Switch checked={settings.logMessages} onChange={() => onToggle('logMessages')} theme={theme} mode={mode} />
             </div>
             <div className="flex items-center justify-between">
               <div>
                 <span className={txtMain}>跨服聊天</span>
-                <p className={`text-xs ${txtSec}`}>允许不同服务器间通信</p>
+                <p className={`text-xs ${txtSec}`}>面板界面设置，不影响后端</p>
               </div>
               <Switch checked={settings.crossServerChat} onChange={() => onToggle('crossServerChat')} theme={theme} mode={mode} />
             </div>

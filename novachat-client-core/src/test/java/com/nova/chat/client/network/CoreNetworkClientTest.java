@@ -107,7 +107,7 @@ class CoreNetworkClientTest {
         void usernameTransformerApplied() {
             CoreNetworkClient client = newClient(
                     basicConfig(),
-                    PlatformType.MULTIPAPER,
+                    PlatformType.BUKKIT,
                     "config.yml",
                     u -> u + "@node1"
             );

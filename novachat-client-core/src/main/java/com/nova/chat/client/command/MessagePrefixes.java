@@ -2,8 +2,8 @@ package com.nova.chat.client.command;
 
 /**
  * Shared message prefix literals used by the platform {@code MessageHelper}
- * implementations (bukkit / folia / nukkit / multipaper). Centralizing these
- * keeps the four platform copies in sync without a cross-module reference.
+ * implementations (bukkit / folia / nukkit). Centralizing these
+ * keeps the platform copies in sync without a cross-module reference.
  */
 public final class MessagePrefixes {
 

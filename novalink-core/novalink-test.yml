@@ -1,0 +1,43 @@
+# ==========================================
+# NovaLink 后端配置文件
+# ==========================================
+
+server:
+  bind-address: 0.0.0.0
+  port: 8888
+  websocket-port: 8889
+  secret-key: change-me-in-production
+  worker-threads: 4
+database:
+  type: memory
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    database: novalink
+    username: root
+    password: ''
+    pool-size: 10
+  redis:
+    enabled: false
+    host: 127.0.0.1
+    port: 6379
+    password: ''
+security:
+  allowed-ips:
+  - 127.0.0.1
+  ip-ban-duration: 300
+super-admins: [
+  ]
+debug: false
+global_channels:
+  global:
+    display_name: 全服
+    permission: novachat.channel.global
+    max_capacity: 1000
+templates:
+  standard_local:
+    display_name: 本地
+    scope: SERVER
+    max_capacity: 100
+clients: [
+  ]

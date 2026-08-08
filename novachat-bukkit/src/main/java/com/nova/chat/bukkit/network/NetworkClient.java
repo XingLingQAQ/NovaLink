@@ -56,6 +56,15 @@ public class NetworkClient {
     private final CoreNetworkClient core;
     private final MentionNotifier mentionNotifier = new MentionNotifier();
 
+    /**
+     * Sentinel UUID used by console/RCON-originated moderation commands (see
+     * MuteCommand/KickCommand). When a response's pending player id is this
+     * value, there is no online Bukkit Player to render the outcome to, so the
+     * result is logged to the server console instead of being silently dropped.
+     */
+    private static final UUID CONSOLE_SENTINEL_UUID =
+            java.util.UUID.fromString("00000000-0000-0000-0000-000000000000");
+
     /** Pending request contexts for mapping responses back to players (Bukkit UX). */
     private final Map<UUID, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
     private static final long REQUEST_TIMEOUT_MS = NovaConstants.PENDING_REQUEST_TIMEOUT_MS;
@@ -484,6 +493,27 @@ public class NetworkClient {
 
             org.bukkit.entity.Player player = plugin.getServer().getPlayer(pending.playerId);
             if (player == null) {
+                // Console/RCON-originated action: the operator is the all-zeros
+                // sentinel UUID and is not an online Player. Log the backend's
+                // outcome to the server console so the RCON/console operator sees
+                // success or the mapped error, instead of silently dropping it.
+                // Still attempt the target-side kick/mute notice (no-ops when the
+                // target is on another server).
+                if (CONSOLE_SENTINEL_UUID.equals(pending.playerId)) {
+                    if (response.isSuccess()) {
+                        String msg = formatChannelActionSuccess(response, pending);
+                        plugin.getLogger().info("[NovaChat console] " + msg);
+                    } else {
+                        String errorCode = response.getErrorCode();
+                        String errorMessage = response.getMessage();
+                        String text = (errorCode != null && !errorCode.isEmpty())
+                                ? errorCode + " | " + (errorMessage != null ? errorMessage : "操作失败")
+                                : (errorMessage != null ? errorMessage : "操作失败");
+                        plugin.getLogger().warning("[NovaChat console] " + text);
+                    }
+                    notifyKickMuteTarget(response, pending);
+                    return;
+                }
                 plugin.debug("ChannelActionResponsePacket target player not online: " + pending.playerId);
                 return;
             }
@@ -666,6 +696,23 @@ public class NetworkClient {
 
             org.bukkit.entity.Player player = plugin.getServer().getPlayer(pending.playerId);
             if (player == null) {
+                // Console/RCON-originated admin action: log the outcome to the
+                // server console so the operator sees it, instead of dropping it.
+                if (CONSOLE_SENTINEL_UUID.equals(pending.playerId)) {
+                    if (response.isSuccess()) {
+                        plugin.getLogger().info("[NovaChat console] " +
+                                (response.getMessage() != null && !response.getMessage().isEmpty()
+                                        ? response.getMessage() : "操作成功"));
+                    } else {
+                        String code = response.getErrorCode();
+                        String msg = response.getMessage();
+                        String text = (code != null && !code.isEmpty())
+                                ? code + " | " + (msg != null ? msg : "操作失败")
+                                : (msg != null ? msg : "操作失败");
+                        plugin.getLogger().warning("[NovaChat console] " + text);
+                    }
+                    return;
+                }
                 plugin.debug("AdminActionResponsePacket target player not online: " + pending.playerId);
                 return;
             }
