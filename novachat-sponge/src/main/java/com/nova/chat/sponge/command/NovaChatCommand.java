@@ -56,8 +56,25 @@ public class NovaChatCommand {
                 }).key("channel").build();
         Parameter.Value<String> passwordParam = Parameter.string().key("password").optional().build();
 
+        // `novachat.use` and the basic-user subcommand permissions
+        // (`novachat.help`, `novachat.join`, `novachat.leave`, `novachat.toggle`)
+        // are intentionally NOT set on the command builders. SpongeAPI 8 has
+        // default-deny behavior for undeclared permissions: an offline-mode
+        // player has no granted permissions, so `.permission("novachat.join")`
+        // would cause the Brigadier command tree to prune that child node —
+        // the player would get an "incorrect argument" error instead of
+        // dispatch, mirroring the Velocity 4.1.0 bug.
+        //
+        // The admin permissions (`novachat.admin.reload`, `novachat.admin.debug`)
+        // ARE preserved on their respective children — only server operators
+        // should be able to reload/debug.
+        //
+        // The help text visibility checks for basic-user commands are
+        // unconditionally shown (see executeHelp) since there is no reliable
+        // way to grant `novachat.use` etc. to offline players without
+        // registering permissionDefaults (SpongeAPI 8 does not expose a
+        // simple API for this).
         return Command.builder()
-            .permission("novachat.use")
             .addChild(buildHelpCommand(), "help", "?")
             .addChild(buildJoinCommand(channelParam, passwordParam), "join", "j")
             .addChild(buildLeaveCommand(), "leave", "l")
@@ -71,23 +88,23 @@ public class NovaChatCommand {
     }
 
     /**
-     * Builds the help subcommand.
+     * Builds the help subcommand. No permission gate — see buildCommand()
+     * comment about SpongeAPI 8 default-deny for undeclared permissions.
      */
     private Command.Parameterized buildHelpCommand() {
         return Command.builder()
-            .permission("novachat.help")
             .shortDescription(Component.text("显示可用命令列表"))
             .executor(this::executeHelp)
             .build();
     }
 
     /**
-     * Builds the join subcommand.
+     * Builds the join subcommand. No permission gate — see buildCommand()
+     * comment about SpongeAPI 8 default-deny for undeclared permissions.
      */
     private Command.Parameterized buildJoinCommand(Parameter.Value<String> channelParam,
                                                     Parameter.Value<String> passwordParam) {
         return Command.builder()
-            .permission("novachat.join")
             .shortDescription(Component.text("加入一个频道"))
             .addParameter(channelParam)
             .addParameter(passwordParam)
@@ -96,22 +113,24 @@ public class NovaChatCommand {
     }
 
     /**
-     * Builds the leave subcommand.
+     * Builds the leave subcommand. No permission gate — see buildCommand()
+     * comment about SpongeAPI 8 default-deny for undeclared permissions.
      */
     private Command.Parameterized buildLeaveCommand() {
         return Command.builder()
-            .permission("novachat.leave")
             .shortDescription(Component.text("离开当前频道"))
             .executor(this::executeLeave)
             .build();
     }
 
     /**
-     * Builds the list subcommand (UX-DESIGN §2.2). No permission required.
+     * Builds the list subcommand (UX-DESIGN §2.2). No permission gate —
+     * `novachat.use` is default-denied on Sponge for undeclared permissions
+     * (see buildCommand() comment), so we omit it here to keep /nc list
+     * accessible to all players.
      */
     private Command.Parameterized buildListCommand() {
         return Command.builder()
-            .permission("novachat.use")
             .shortDescription(Component.text("列出可用频道"))
             .executor(this::executeList)
             .build();
@@ -120,12 +139,13 @@ public class NovaChatCommand {
     /**
      * Builds the who subcommand (UX-DESIGN §8.2). Degrades to the shared
      * unavailable prompt until the backend delivers channel-member data.
-     * No permission required.
+     * No permission gate — `novachat.use` is default-denied on Sponge for
+     * undeclared permissions (see buildCommand() comment), so we omit it
+     * here to keep /nc who accessible to all players.
      */
     private Command.Parameterized buildWhoCommand() {
         Parameter.Value<String> channelParam = Parameter.string().key("channel").optional().build();
         return Command.builder()
-            .permission("novachat.use")
             .shortDescription(Component.text("查看频道在线成员"))
             .addParameter(channelParam)
             .executor(this::executeWho)
@@ -143,11 +163,11 @@ public class NovaChatCommand {
     }
 
     /**
-     * Builds the toggle subcommand.
+     * Builds the toggle subcommand. No permission gate — see buildCommand()
+     * comment about SpongeAPI 8 default-deny for undeclared permissions.
      */
     private Command.Parameterized buildToggleCommand() {
         return Command.builder()
-            .permission("novachat.toggle")
             .shortDescription(Component.text("切换聊天模式"))
             .executor(this::executeToggle)
             .build();
@@ -183,22 +203,17 @@ public class NovaChatCommand {
 
         sendHeader(subject, "NovaChat 帮助");
 
-        if (hasPermission(subject, "novachat.help")) {
-            sendCommandHelp(subject, "/nc help", "显示可用命令列表");
-        }
-        if (hasPermission(subject, "novachat.join")) {
-            sendCommandHelp(subject, "/nc join <频道ID> [密码]", "加入一个频道");
-        }
-        if (hasPermission(subject, "novachat.leave")) {
-            sendCommandHelp(subject, "/nc leave", "离开当前频道");
-        }
-        if (hasPermission(subject, "novachat.use")) {
-            sendCommandHelp(subject, "/nc list", "列出可用频道");
-            sendCommandHelp(subject, "/nc who [频道]", "查看频道在线成员");
-        }
-        if (hasPermission(subject, "novachat.toggle")) {
-            sendCommandHelp(subject, "/nc toggle", "切换聊天模式");
-        }
+        // Basic-user commands are always shown — the basic-user permission
+        // nodes are not set on the command builders (see buildCommand()
+        // comment about SpongeAPI 8 default-deny), so there is no meaningful
+        // permission to gate the help text on.
+        sendCommandHelp(subject, "/nc help", "显示可用命令列表");
+        sendCommandHelp(subject, "/nc join <频道ID> [密码]", "加入一个频道");
+        sendCommandHelp(subject, "/nc leave", "离开当前频道");
+        sendCommandHelp(subject, "/nc list", "列出可用频道");
+        sendCommandHelp(subject, "/nc who [频道]", "查看频道在线成员");
+        sendCommandHelp(subject, "/nc toggle", "切换聊天模式");
+        // Admin commands are still gated by their permissions.
         if (hasPermission(subject, "novachat.admin.reload")) {
             sendCommandHelp(subject, "/nc reload", "重新加载配置");
         }

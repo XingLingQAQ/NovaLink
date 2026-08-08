@@ -337,6 +337,21 @@ public class NovaChatCommand implements SimpleCommand {
 
     @Override
     public boolean hasPermission(Invocation invocation) {
-        return invocation.source().hasPermission("novachat.use");
+        // `novachat.use` is a basic-user permission that must default to TRUE for
+        // all players (mirrors BungeeCord's default-grant-all permission provider).
+        //
+        // Velocity 4.1.0 changed Brigadier dispatch: when a SimpleCommand's
+        // hasPermission returns false for a sender, Velocity prunes the command
+        // node's children from that sender's dispatch tree (3.4.0 did not). An
+        // offline-mode player has NO granted permissions, so the previous
+        // `hasPermission("novachat.use")` check returned false, which pruned the
+        // `nc` node's subcommand children (help/join/leave/...) and made every
+        // `/nc <sub>` report "Incorrect argument at position 3: nc <--[HERE]" —
+        // a permission denial masquerading as a syntax error.
+        //
+        // The admin subcommand `/nc reload` independently gates on
+        // `novachat.admin` inside handleReload (line 272), so the admin gate is
+        // preserved. Default-allowing here only restores basic-user dispatch.
+        return true;
     }
 }

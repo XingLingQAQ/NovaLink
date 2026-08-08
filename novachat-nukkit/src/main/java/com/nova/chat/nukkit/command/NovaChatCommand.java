@@ -2,6 +2,7 @@ package com.nova.chat.nukkit.command;
 
 import cn.nukkit.Player;
 import cn.nukkit.command.Command;
+import cn.nukkit.command.CommandExecutor;
 import cn.nukkit.command.CommandSender;
 import com.nova.chat.nukkit.NovaChatNukkit;
 
@@ -11,12 +12,23 @@ import java.util.stream.Collectors;
 /**
  * Main command handler for NovaChat Nukkit plugin.
  * Implements command execution with permission filtering.
- * 
+ *
+ * <p>Nukkit's {@code PluginManager.parseYamlCommands} reads the plugin
+ * descriptor (this branch uses {@code nukkit.yml} at the jar root) and
+ * pre-registers a {@code PluginCommand} for every entry under {@code commands:},
+ * including our {@code novachat}/{@code nc} alias. That pre-registered
+ * {@code PluginCommand} wins the {@code knownCommands} slot, so a separate
+ * {@code getCommandMap().register(...)} call is silently rejected (returns
+ * false) and never dispatches. To actually receive command execution this
+ * class also implements {@link CommandExecutor} and is attached as the
+ * executor of the existing {@code PluginCommand} from the descriptor
+ * (see {@link NovaChatNukkit#registerCommands()}).
+ *
  * Adapted from Bukkit version for Nukkit API.
- * 
+ *
  * Requirements: 26.1-26.4, 23.4
  */
-public class NovaChatCommand extends Command {
+public class NovaChatCommand extends Command implements CommandExecutor {
 
     private final NovaChatNukkit plugin;
     private final Map<String, SubCommand> subCommands = new LinkedHashMap<>();
@@ -26,7 +38,7 @@ public class NovaChatCommand extends Command {
         super("novachat", "NovaChat main command", "/novachat [subcommand] [args]", new String[]{"nc"});
         this.plugin = plugin;
         this.messageHelper = plugin.getMessageHelper();
-        
+
         // Set permission
         this.setPermission("novachat.use");
         
@@ -53,6 +65,7 @@ public class NovaChatCommand extends Command {
 
     @Override
     public boolean execute(CommandSender sender, String label, String[] args) {
+        plugin.debug("NovaChatCommand.execute invoked: label=" + label + " args=" + java.util.Arrays.toString(args) + " sender=" + (sender == null ? "null" : sender.getName()));
         if (args.length == 0) {
             // Show help by default
             return subCommands.get("help").execute(sender, args);
@@ -82,6 +95,23 @@ public class NovaChatCommand extends Command {
         // Execute with remaining args
         String[] subArgs = Arrays.copyOfRange(args, 1, args.length);
         return subCommand.execute(sender, subArgs);
+    }
+
+    /**
+     * {@link CommandExecutor} bridge used when this handler is attached as the
+     * executor of the {@code PluginCommand} that Nukkit pre-registered from the
+     * plugin descriptor (see class javadoc). {@code PluginCommand.execute}
+     * performs the permission test against the descriptor's permission node and
+     * then calls {@code executor.onCommand(...)}; we delegate to
+     * {@link #execute(CommandSender, String, String[])} which owns the
+     * per-subcommand routing.
+     *
+     * <p>Returns {@code true} on success so {@code PluginCommand} does not emit
+     * the generic {@code commands.generic.usage} fallback.
+     */
+    @Override
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        return execute(sender, label, args);
     }
 
     /**

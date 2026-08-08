@@ -83,6 +83,10 @@ public class NovaChatPNX extends PluginBase implements Listener {
     @Getter
     private ExtensionManager extensionManager;
 
+    /** Command handler (attached as executor of the descriptor's PluginCommand) */
+    @Getter
+    private NovaChatCommand commandHandler;
+
     /** Debug mode flag */
     private boolean debugMode = false;
 
@@ -128,7 +132,7 @@ public class NovaChatPNX extends PluginBase implements Listener {
         channelFormManager = new ChannelFormManager(this);
         
         // Register commands (Requirements: 29.1, 29.2)
-        getServer().getCommandMap().register("novachat", new NovaChatCommand(this));
+        registerCommands();
         
         // Register this class for form responses and player quit events
         getServer().getPluginManager().registerEvents(this, this);
@@ -158,6 +162,33 @@ public class NovaChatPNX extends PluginBase implements Listener {
         
         instance = null;
         getLogger().info("NovaChat-PNX disabled.");
+    }
+
+    /**
+     * Registers plugin commands.
+     *
+     * <p>PowerNukkitX's {@code PluginManager.parseYamlCommands} already
+     * pre-registered a {@code PluginCommand} for the {@code novachat}/{@code nc}
+     * command declared in the plugin descriptor ({@code plugin.yml}). A fresh
+     * {@code getCommandMap().register(...)} call is silently rejected because
+     * that alias slot is already occupied. So instead of registering a duplicate,
+     * we attach {@link NovaChatCommand} (which implements {@code CommandExecutor})
+     * as the executor of the existing {@code PluginCommand}, which is the dispatch
+     * path PowerNukkitX actually uses.
+     */
+    private void registerCommands() {
+        commandHandler = new NovaChatCommand(this);
+        cn.nukkit.command.Command existing = getServer().getCommandMap().getCommand("novachat");
+        boolean wired = false;
+        if (existing instanceof cn.nukkit.command.PluginCommand) {
+            ((cn.nukkit.command.PluginCommand<?>) existing).setExecutor(commandHandler);
+            wired = true;
+        }
+        if (!wired) {
+            // Fallback: no descriptor command (e.g. running outside the fat jar),
+            // register directly so dispatch still works.
+            getServer().getCommandMap().register("novachat", commandHandler);
+        }
     }
 
     /**

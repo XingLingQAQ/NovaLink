@@ -8,6 +8,7 @@ import com.nova.chat.velocity.command.NovaChatCommand;
 import com.nova.chat.velocity.config.NovaChatConfig;
 import com.nova.chat.velocity.listener.ServerSwitchHandler;
 import com.nova.chat.velocity.network.NetworkClient;
+import com.velocitypowered.api.command.CommandManager;
 import com.velocitypowered.api.command.CommandMeta;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;

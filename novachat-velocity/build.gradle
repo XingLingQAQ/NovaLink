@@ -16,9 +16,8 @@ dependencies {
     // Netty
     implementation "io.netty:netty-all:${nettyVersion}"
 
-    // Utilities
-    compileOnly "org.projectlombok:lombok:${lombokVersion}"
-    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+    // Utilities (Lombok omitted — velocity source uses no Lombok annotations,
+    // and Lombok 1.18.x crashes under JDK 25's annotation-processor SPI)
     implementation "com.google.code.gson:gson:${gsonVersion}"
 
     // Logging

@@ -251,10 +251,29 @@ public class NovaChatNukkit extends PluginBase implements Listener {
     
     /**
      * Registers plugin commands.
+     *
+     * <p>Nukkit's {@code PluginManager.parseYamlCommands} already pre-registered
+     * a {@code PluginCommand} for the {@code novachat}/{@code nc} command
+     * declared in the plugin descriptor ({@code nukkit.yml} at the jar root).
+     * A fresh {@code getCommandMap().register(...)} call is silently rejected
+     * because that alias slot is already occupied. So instead of registering a
+     * duplicate, we attach {@link NovaChatCommand} (which implements
+     * {@code CommandExecutor}) as the executor of the existing
+     * {@code PluginCommand}, which is the dispatch path Nukkit actually uses.
      */
     private void registerCommands() {
         commandHandler = new NovaChatCommand(this);
-        getServer().getCommandMap().register("novachat", commandHandler);
+        cn.nukkit.command.Command existing = getServer().getCommandMap().getCommand("novachat");
+        boolean wired = false;
+        if (existing instanceof cn.nukkit.command.PluginCommand) {
+            ((cn.nukkit.command.PluginCommand<?>) existing).setExecutor(commandHandler);
+            wired = true;
+        }
+        if (!wired) {
+            // Fallback: no descriptor command (e.g. running outside the fat jar),
+            // register directly so dispatch still works.
+            getServer().getCommandMap().register("novachat", commandHandler);
+        }
     }
     
     /**

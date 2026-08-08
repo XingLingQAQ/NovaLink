@@ -146,15 +146,25 @@ public class NovaChatSponge {
 
     /**
      * Saves the default configuration file if it doesn't exist.
+     *
+     * <p>The injected {@code @DefaultConfig(sharedRoot=false)} loader reads HOCON
+     * from {@code <configDir>/novachat.conf} (Sponge resolves it to
+     * {@code config/novachat/novachat.conf} for plugin id "novachat"). The old
+     * implementation wrote a YAML {@code config.yml} into {@code configDir}, which
+     * the HOCON loader never reads — silently leaving the user's config ignored.
+     * This writes the bundled HOCON default resource to the exact path the loader
+     * reads, and only when the file is absent (so user/E2E-provided configs win).
      */
     private void saveDefaultConfig() {
-        Path configFile = configDir.resolve("config.yml");
-        
+        // @DefaultConfig(sharedRoot=false) targets <configDir>/<plugin-id>.conf
+        Path configFile = configDir.resolve("novachat.conf");
+
         if (!Files.exists(configFile)) {
             try {
                 Files.createDirectories(configDir);
-                
-                try (InputStream in = getClass().getResourceAsStream("/config.yml")) {
+
+                // HOCON resource — must match the format the injected loader parses.
+                try (InputStream in = getClass().getResourceAsStream("/default-novachat.conf")) {
                     if (in != null) {
                         Files.copy(in, configFile);
                         logger.info("Created default configuration file");
