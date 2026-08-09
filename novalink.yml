@@ -1,0 +1,53 @@
+# ==========================================
+# NovaLink 后端配置文件（本地运行演示）
+# ==========================================
+
+server:
+  bind-address: 0.0.0.0
+  port: 8888
+  websocket-port: 8889
+  secret-key: change-me-in-production
+  worker-threads: 4
+  locale: zh_CN
+database:
+  type: memory
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    database: novalink
+    username: root
+    password: ''
+    pool-size: 10
+  redis:
+    enabled: false
+    host: 127.0.0.1
+    port: 6379
+    password: ''
+security:
+  allowed-ips:
+  - 127.0.0.1
+  ip-ban-duration: 300
+# 默认管理员账号（演示用，生产请改密码）
+#   username: admin
+#   password: admin123
+#   (后端启动时会对明文 password 做 SHA-256，无需预计算 password-hash)
+super-admins:
+  - uuid: "00000000-0000-0000-0000-000000000001"
+    username: admin
+    password: admin123
+debug: true
+global_channels:
+  global:
+    display_name: 全服
+    permission: novachat.channel.global
+    max_capacity: 1000
+templates:
+  standard_local:
+    display_name: 本地
+    scope: SERVER
+    max_capacity: 100
+clients:
+  - username: panel-client
+    password: panel-secret
+    display-name: NovaPanel
+    permissions: []
