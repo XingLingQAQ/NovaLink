@@ -71,7 +71,7 @@ public class WebSocketGateway {
 
         // Initialize message handler
         this.messageHandler = new WebSocketMessageHandler(
-                jwtService, authManager, channelManager, networkHandler);
+                jwtService, authManager, channelManager, networkHandler, playerStateManager);
 
         // Initialize HTTP auth handler
         this.httpAuthHandler = new HttpAuthHandler(jwtService, authManager);

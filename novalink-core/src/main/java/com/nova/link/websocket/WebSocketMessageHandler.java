@@ -7,6 +7,8 @@ import com.nova.link.auth.AuthManager;
 import com.nova.link.auth.AuthResult;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelManager;
+import com.nova.link.database.PlayerState;
+import com.nova.link.database.PlayerStateManager;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.ServerNetworkHandler;
 import io.jsonwebtoken.Claims;
@@ -31,17 +33,20 @@ public class WebSocketMessageHandler {
     private final AuthManager authManager;
     private final ChannelManager channelManager;
     private final ServerNetworkHandler networkHandler;
+    private final PlayerStateManager playerStateManager;
     private final Gson gson;
-    
+
     // Session management
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
 
     public WebSocketMessageHandler(JwtService jwtService, AuthManager authManager,
-                                   ChannelManager channelManager, ServerNetworkHandler networkHandler) {
+                                   ChannelManager channelManager, ServerNetworkHandler networkHandler,
+                                   PlayerStateManager playerStateManager) {
         this.jwtService = jwtService;
         this.authManager = authManager;
         this.channelManager = channelManager;
         this.networkHandler = networkHandler;
+        this.playerStateManager = playerStateManager;
         this.gson = new Gson();
     }
 
@@ -277,16 +282,38 @@ public class WebSocketMessageHandler {
                 clientData.put("remoteAddress", connection.getRemoteAddress());
                 clientData.put("connectedAt", connection.getConnectedAt());
                 clientData.put("active", connection.isActive());
+                clientData.put("platform", connection.getPlatform() != null
+                        ? connection.getPlatform().name() : "Unknown");
+                clientData.put("ping", connection.getPing());
+                clientData.put("players", countPlayersByClient(connection.getClientId()));
                 clientList.add(clientData);
             }
         }
-        
+
         JsonObject response = new JsonObject();
         response.addProperty("type", "server_status");
         response.add("clients", gson.toJsonTree(clientList));
         response.addProperty("totalConnections", networkHandler.getConnectionCount());
         response.addProperty("timestamp", System.currentTimeMillis());
         session.send(gson.toJson(response));
+    }
+
+    /**
+     * Counts the cached player states whose originating client id matches the
+     * given game-server client. Used to populate the per-server online-player
+     * count in the server-status broadcast.
+     */
+    private int countPlayersByClient(String clientId) {
+        if (clientId == null || playerStateManager == null) {
+            return 0;
+        }
+        int count = 0;
+        for (PlayerState state : playerStateManager.getAllPlayerStates()) {
+            if (clientId.equals(state.getClientId())) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**
@@ -302,7 +329,7 @@ public class WebSocketMessageHandler {
         // Collect all players from all channels
         Set<UUID> allPlayers = new HashSet<>();
         Map<UUID, Set<String>> playerChannels = new HashMap<>();
-        
+
         for (Channel channel : channelManager.getAllChannels()) {
             for (UUID playerId : channel.getMembers()) {
                 allPlayers.add(playerId);
@@ -310,12 +337,26 @@ public class WebSocketMessageHandler {
                         .add(channel.getId());
             }
         }
-        
+
         List<Map<String, Object>> playerList = new ArrayList<>();
         for (UUID playerId : allPlayers) {
             Map<String, Object> playerData = new HashMap<>();
             playerData.put("uuid", playerId.toString());
             playerData.put("channels", playerChannels.get(playerId));
+            // Enrich with real state from the cache so the panel can show
+            // name / originating server / mute status instead of placeholders.
+            PlayerState state = playerStateManager != null
+                    ? playerStateManager.getPlayerState(playerId) : null;
+            if (state != null) {
+                playerData.put("name", state.getPlayerName() != null
+                        ? state.getPlayerName() : playerId.toString());
+                playerData.put("server", state.getClientId());
+                playerData.put("muted", state.getMutes() != null && !state.getMutes().isEmpty());
+            } else {
+                playerData.put("name", playerId.toString());
+                playerData.put("server", null);
+                playerData.put("muted", false);
+            }
             playerList.add(playerData);
         }
         
@@ -374,6 +415,21 @@ public class WebSocketMessageHandler {
         message.addProperty("senderName", senderName);
         message.addProperty("content", content);
         message.addProperty("timestamp", System.currentTimeMillis());
+        // Attach the originating server (client id) so the panel can show
+        // which game server the message came from.
+        String senderClient = null;
+        if (senderId != null && playerStateManager != null) {
+            try {
+                UUID senderUuid = UUID.fromString(senderId);
+                PlayerState state = playerStateManager.getPlayerState(senderUuid);
+                if (state != null) {
+                    senderClient = state.getClientId();
+                }
+            } catch (IllegalArgumentException ignored) {
+                // senderId not a UUID — leave server null
+            }
+        }
+        message.addProperty("server", senderClient != null ? senderClient : "");
         
         String json = gson.toJson(message);
         
@@ -398,6 +454,10 @@ public class WebSocketMessageHandler {
                 clientData.put("remoteAddress", connection.getRemoteAddress());
                 clientData.put("connectedAt", connection.getConnectedAt());
                 clientData.put("active", connection.isActive());
+                clientData.put("platform", connection.getPlatform() != null
+                        ? connection.getPlatform().name() : "Unknown");
+                clientData.put("ping", connection.getPing());
+                clientData.put("players", countPlayersByClient(connection.getClientId()));
                 clientList.add(clientData);
             }
         }

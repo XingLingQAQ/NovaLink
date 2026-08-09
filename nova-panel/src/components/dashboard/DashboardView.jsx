@@ -133,30 +133,52 @@ function ServerStatusCard({ servers }) {
 }
 
 // Platform Distribution Card
+// Backend sends platform as the PlatformType enum name (BUKKIT, VELOCITY,
+// BUNGEECORD, NUKKIT, LEVILAMINA, FABRIC, NEOFORGE, QUILT, FORGE, POCKETMINE,
+// ENDSTONE, POWERNUKKITX, FOLIA, SPONGE) or "Unknown". We group them into
+// friendly display buckets and collapse the rest (including a real "Unknown")
+// into an "Other" row so the card reflects the real platform distribution
+// instead of always showing all-zero bars.
+const PLATFORM_BUCKETS = [
+  { labelKey: 'dashboard.platform_bukkit', match: ['BUKKIT', 'FOLIA', 'SPONGE'], color: 'bg-primary' },
+  { labelKey: 'dashboard.platform_proxy', match: ['VELOCITY', 'BUNGEECORD'], color: 'bg-sky-500' },
+  { labelKey: 'dashboard.platform_nukkit', match: ['NUKKIT', 'POWERNUKKITX', 'POCKETMINE', 'ENDSTONE'], color: 'bg-amber-500' },
+  { labelKey: 'dashboard.platform_levilamina', match: ['LEVILAMINA'], color: 'bg-emerald-500' },
+  { labelKey: 'dashboard.platform_mod', match: ['FABRIC', 'NEOFORGE', 'QUILT', 'FORGE'], color: 'bg-purple-500' },
+];
+
 function PlatformDistributionCard({ servers }) {
   const { t } = useTranslation();
-  const platforms = ['Bukkit/Paper', 'Velocity/Bungee', 'Nukkit', 'LeviLamina'];
-  const colors = ['bg-primary', 'bg-sky-500', 'bg-amber-500', 'bg-emerald-500'];
+
+  // Count servers per bucket. Anything not matching a known bucket (including
+  // a real backend "Unknown") rolls up into the "Other" row.
+  const counts = PLATFORM_BUCKETS.map((b) => ({
+    ...b,
+    count: (servers || []).filter((s) => b.match.includes(s.platform)).length,
+  }));
+  const otherCount = (servers || []).filter(
+    (s) => !PLATFORM_BUCKETS.some((b) => b.match.includes(s.platform))
+  ).length;
+  const rows = [
+    ...counts,
+    { labelKey: 'dashboard.platform_other', count: otherCount, color: 'bg-muted-foreground/40' },
+  ];
+  const total = servers && servers.length > 0 ? servers.length : 0;
 
   return (
     <Card className="p-5">
       <h3 className="text-sm font-medium mb-4 text-foreground">{t('dashboard.platform_distribution')}</h3>
       <div className="space-y-3">
-        {platforms.map((platform, i) => {
-          const count = (servers || []).filter((s) =>
-            platform === 'Bukkit/Paper' ? ['Bukkit', 'Paper'].includes(s.platform) :
-            platform === 'Velocity/Bungee' ? ['Velocity', 'BungeeCord'].includes(s.platform) :
-            s.platform === platform
-          ).length;
-          const percent = servers && servers.length > 0 ? (count / servers.length) * 100 : 0;
+        {rows.map((row, i) => {
+          const percent = total > 0 ? (row.count / total) * 100 : 0;
           return (
-            <div key={platform}>
+            <div key={row.labelKey}>
               <div className="flex justify-between mb-1">
-                <span className="text-xs text-foreground">{platform}</span>
-                <span className="text-xs text-muted-foreground">{t('dashboard.servers_count', { count })}</span>
+                <span className="text-xs text-foreground">{t(row.labelKey)}</span>
+                <span className="text-xs text-muted-foreground">{t('dashboard.servers_count', { count: row.count })}</span>
               </div>
               <div className="h-1.5 rounded-full bg-muted">
-                <div className={`h-full rounded-full transition-all duration-700 ${colors[i]}`} style={{ width: `${percent}%` }} />
+                <div className={`h-full rounded-full transition-all duration-700 ${row.color}`} style={{ width: `${percent}%` }} />
               </div>
             </div>
           );

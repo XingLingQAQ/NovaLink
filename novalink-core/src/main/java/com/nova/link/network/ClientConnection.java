@@ -1,6 +1,7 @@
 package com.nova.link.network;
 
 import com.nova.chat.common.protocol.Packet;
+import com.nova.chat.common.protocol.PlatformType;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 
@@ -17,11 +18,16 @@ public class ClientConnection {
     private final Channel channel;
     private final String connectionId;
     private final long connectedAt;
-    
+
     // Authentication state
     private volatile boolean authenticated = false;
     private volatile String clientId;
     private volatile UUID superAdminUuid;
+
+    // Runtime metadata reported by the client (for panel display)
+    private volatile PlatformType platform;
+    private volatile long ping;
+    private volatile long lastPingAt;
 
     public ClientConnection(Channel channel) {
         this.channel = channel;
@@ -188,6 +194,60 @@ public class ClientConnection {
         return channel;
     }
 
+    /**
+     * Gets the platform reported by this client during handshake.
+     *
+     * @return the platform, or null if not reported
+     */
+    public PlatformType getPlatform() {
+        return platform;
+    }
+
+    /**
+     * Sets the platform reported by this client.
+     *
+     * @param platform the platform
+     */
+    public void setPlatform(PlatformType platform) {
+        this.platform = platform;
+    }
+
+    /**
+     * Gets the last computed round-trip latency (ping) in milliseconds.
+     *
+     * @return the ping in ms, or 0 if no keepalive has been received yet
+     */
+    public long getPing() {
+        return ping;
+    }
+
+    /**
+     * Sets the last computed round-trip latency (ping) in milliseconds.
+     *
+     * @param ping the ping in ms
+     */
+    public void setPing(long ping) {
+        this.ping = ping;
+    }
+
+    /**
+     * Gets the timestamp of the last keepalive received from this client.
+     *
+     * @return the timestamp in ms, or 0 if none received
+     */
+    public long getLastPingAt() {
+        return lastPingAt;
+    }
+
+    /**
+     * Sets the timestamp of the last keepalive received from this client.
+     *
+     * @param lastPingAt the timestamp in ms
+     */
+    public void setLastPingAt(long lastPingAt) {
+        this.lastPingAt = lastPingAt;
+    }
+
     @Override
     public String toString() {
         return "ClientConnection{" +
@@ -195,6 +255,8 @@ public class ClientConnection {
                 ", remoteAddress='" + getRemoteAddress() + '\'' +
                 ", authenticated=" + authenticated +
                 ", clientId='" + clientId + '\'' +
+                ", platform=" + platform +
+                ", ping=" + ping +
                 '}';
     }
 }

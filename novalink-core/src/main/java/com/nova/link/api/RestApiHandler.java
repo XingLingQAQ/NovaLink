@@ -1087,7 +1087,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         JsonArray channels = new JsonArray();
         state.getJoinedChannels().forEach(channels::add);
         json.add("joinedChannels", channels);
-        
+
+        json.addProperty("muted", state.getMutes() != null && !state.getMutes().isEmpty());
+
         return json;
     }
 

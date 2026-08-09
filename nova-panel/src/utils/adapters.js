@@ -125,9 +125,12 @@ export function adaptPlayer(playerJson) {
 }
 
 /**
- * Adapt a WS player_update entry ({uuid, channels}) to the component player shape.
- * The WS player_update payload is minimal (uuid + joined channels), so several
- * component fields fall back to placeholders.
+ * Adapt a WS player_update entry to the component player shape.
+ * Backend now enriches each entry with real name / server (clientId) / muted
+ * alongside the original uuid + channels. name falls back to uuid when the
+ * backend could not resolve it; server is null when unknown (shown as
+ * 'unknown'); muted is a boolean. platform is not yet provided per-player by
+ * the backend, so it stays as a 'Java' placeholder.
  */
 export function adaptWsPlayer(wsPlayer) {
   if (!wsPlayer) return null;
@@ -135,18 +138,21 @@ export function adaptWsPlayer(wsPlayer) {
   return {
     uuid: wsPlayer.uuid,
     name: wsPlayer.name || wsPlayer.uuid,
-    server: wsPlayer.clientId || 'unknown',
+    server: wsPlayer.server || 'unknown',
     channel: wsPlayer.activeChannel || channels[0] || 'global',
     platform: wsPlayer.platform || 'Java',
-    muted: !!wsPlayer.muted,
+    muted: typeof wsPlayer.muted === 'boolean' ? wsPlayer.muted : !!wsPlayer.muted,
   };
 }
 
 /**
  * Adapt a WS server_status client JSON object to the component server shape.
- * Backend client has { id, connectionId, remoteAddress, connectedAt, active } —
- * no platform/players/ping/version. We derive name from id, status from active,
- * and leave the rest as placeholders.
+ * Backend client now provides real platform/ping/players (in addition to
+ * id, connectionId, remoteAddress, connectedAt, active). platform is the
+ * PlatformType enum name (e.g. "BUKKIT", "VELOCITY") or "Unknown" when the
+ * backend could not determine it. ping is in ms; players is the online player
+ * count on that server. version is not yet provided by the backend, so it
+ * stays as a placeholder.
  */
 export function adaptClient(clientJson) {
   if (!clientJson) return null;
@@ -154,9 +160,9 @@ export function adaptClient(clientJson) {
     id: clientJson.id || clientJson.connectionId,
     name: clientJson.id || clientJson.connectionId || 'unknown',
     platform: clientJson.platform || 'Unknown',
-    players: clientJson.players || 0,
+    players: typeof clientJson.players === 'number' ? clientJson.players : 0,
     status: clientJson.active === false ? 'offline' : 'online',
-    ping: clientJson.ping || 0,
+    ping: typeof clientJson.ping === 'number' ? clientJson.ping : 0,
     version: clientJson.version || '-',
     remoteAddress: clientJson.remoteAddress || '',
     connectedAt: clientJson.connectedAt || 0,
@@ -165,15 +171,17 @@ export function adaptClient(clientJson) {
 
 /**
  * Adapt a WS chat message to the component chatMessage shape.
- * Backend chat payload: { channelId, senderId, senderName, content, timestamp }
- * No server/platform in the payload — we use channelId as the server proxy and default platform.
+ * Backend chat payload: { channelId, senderId, senderName, content, timestamp,
+ * server }. server is the originating client id, or an empty string when the
+ * sender is not a known game-server client (shown as 'unknown'). platform is
+ * not yet provided per-message by the backend, so it stays as a 'Java' placeholder.
  */
 export function adaptChatMessage(msgJson) {
   if (!msgJson) return null;
   return {
     id: msgJson.id || `${msgJson.senderId}-${msgJson.timestamp}`,
     time: msToTime(msgJson.timestamp),
-    server: msgJson.server || msgJson.clientId || msgJson.channelId,
+    server: msgJson.server || 'unknown',
     player: msgJson.senderName || msgJson.sender || 'unknown',
     channel: msgJson.channelId || msgJson.channel || 'global',
     content: msgJson.content || '',

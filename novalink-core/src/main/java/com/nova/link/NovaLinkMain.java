@@ -767,6 +767,9 @@ public class NovaLinkMain {
             if (authResult.isSuccess()) {
                 connection.setAuthenticated(true);
                 connection.setClientId(packet.getClientId());
+                // Record the platform reported by the client so the panel can
+                // display it in the server-status broadcast.
+                connection.setPlatform(packet.getPlatform());
                 // Bootstrap GLOBAL channel permission grants for this game-server client.
                 grantBootstrapPermissions(clientPermissionRegistry, clientPermissionBootstrap, packet.getClientId());
                 response = HandshakeResponsePacket.success("Authentication successful");
@@ -826,6 +829,13 @@ public class NovaLinkMain {
 
         // Keep-alive handler
         networkHandler.registerHandler(KeepAlivePacket.class, (connection, packet) -> {
+            // Compute round-trip latency from the client-supplied timestamp and
+            // store it on the connection so the panel can display real ping.
+            long latency = packet.getLatency();
+            if (latency >= 0) {
+                connection.setPing(latency);
+                connection.setLastPingAt(System.currentTimeMillis());
+            }
             KeepAlivePacket response = new KeepAlivePacket(packet.getTimestamp());
             response.setRequestId(packet.getRequestId());
             connection.sendPacket(response);
