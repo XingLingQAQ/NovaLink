@@ -1,5 +1,7 @@
 {
+  "appName": "NovaPanel",
   "login": {
+    "title": "登录",
     "subtitle": "NovaLink 管理控制台",
     "username": "用户名",
     "username_placeholder": "输入用户名",

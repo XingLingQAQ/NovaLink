@@ -1,8 +1,10 @@
 /**
  * Dashboard View Component
- * Main dashboard with system overview and statistics
+ * Main dashboard with system overview and statistics.
  *
- * Requirements: 24.2, 24.3
+ * Restyled to the shadcn/ui reference idiom: Card-based stat grid
+ * (text-2xl font-medium values, text-xs text-muted-foreground labels),
+ * token-driven colors, pill badges, rounded-lg cards.
  */
 
 import React from 'react';
@@ -13,13 +15,15 @@ import {
   Hash,
   ArrowUpRight,
   ArrowDownRight,
-  MoreHorizontal
+  MoreHorizontal,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import Card from '../ui/Card';
+import Badge from '../ui/Badge';
 import Avatar from '../ui/Avatar';
 
-function DashboardView({ theme, mode, txtMain, txtSec, servers, channels, players, chatMessages, dashboardStats, statIconMap }) {
+function DashboardView({ theme: _theme, mode: _mode, txtMain: _txtMain, txtSec: _txtSec, servers, channels, players, chatMessages, dashboardStats, statIconMap }) {
+  void _theme; void _mode; void _txtMain; void _txtSec;
   const { t } = useTranslation();
   // Use the pre-built stats from real backend data if provided; otherwise fall back to computed.
   const stats = dashboardStats && dashboardStats.length > 0
@@ -38,44 +42,44 @@ function DashboardView({ theme, mode, txtMain, txtSec, servers, channels, player
         };
       })
     : (() => {
-        const onlineServers = servers.filter(s => s.status === 'online').length;
+        const onlineServers = servers.filter((s) => s.status === 'online').length;
         const totalPlayers = players.length;
         const todayMessages = chatMessages?.length || 0;
         const activeChannels = channels?.length || 0;
         return [
-          { title: t('dashboard.online_servers'), value: `${onlineServers}/${servers.length}`, change: servers.some(s => s.status === 'offline') ? t('dashboard.change_has_offline') : t('dashboard.change_all_online'), trend: servers.some(s => s.status === 'offline') ? "down" : "up", icon: Server },
-          { title: t('dashboard.online_players'), value: totalPlayers.toString(), change: t('dashboard.change_realtime'), trend: totalPlayers > 0 ? "up" : "normal", icon: Users },
-          { title: t('dashboard.session_messages'), value: todayMessages > 1000 ? `${(todayMessages / 1000).toFixed(1)}k` : todayMessages.toString(), change: todayMessages > 0 ? t('dashboard.change_this_session') : t('dashboard.change_none'), trend: todayMessages > 0 ? "up" : "normal", icon: MessageSquare },
-          { title: t('dashboard.total_channels'), value: activeChannels.toString(), change: t('dashboard.change_registered'), trend: "normal", icon: Hash },
+          { title: t('dashboard.online_servers'), value: `${onlineServers}/${servers.length}`, change: servers.some((s) => s.status === 'offline') ? t('dashboard.change_has_offline') : t('dashboard.change_all_online'), trend: servers.some((s) => s.status === 'offline') ? 'down' : 'up', icon: Server },
+          { title: t('dashboard.online_players'), value: totalPlayers.toString(), change: t('dashboard.change_realtime'), trend: totalPlayers > 0 ? 'up' : 'normal', icon: Users },
+          { title: t('dashboard.session_messages'), value: todayMessages > 1000 ? `${(todayMessages / 1000).toFixed(1)}k` : todayMessages.toString(), change: todayMessages > 0 ? t('dashboard.change_this_session') : t('dashboard.change_none'), trend: todayMessages > 0 ? 'up' : 'normal', icon: MessageSquare },
+          { title: t('dashboard.total_channels'), value: activeChannels.toString(), change: t('dashboard.change_registered'), trend: 'normal', icon: Hash },
         ];
       })();
 
   return (
-    <div className="space-y-6 animate-in fade-in zoom-in-95 duration-500">
+    <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className={`text-2xl font-bold ${txtMain}`}>{t('dashboard.title')}</h2>
-          <p className={`text-sm ${txtSec} mt-1`}>{t('dashboard.subtitle')}</p>
+          <h2 className="text-xl font-medium text-foreground">{t('dashboard.title')}</h2>
+          <p className="text-xs text-muted-foreground mt-1">{t('dashboard.subtitle')}</p>
         </div>
       </div>
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {stats.map((stat, idx) => (
-          <Card key={idx} theme={theme} mode={mode} className="p-5 relative overflow-hidden group hover:-translate-y-1 transition-transform">
+          <Card key={idx} className="p-5">
             <div className="flex justify-between items-start">
               <div>
-                <p className={`text-sm font-medium ${txtSec}`}>{stat.title}</p>
-                <h3 className={`text-2xl font-bold mt-1 ${txtMain}`}>{stat.value}</h3>
+                <p className="text-xs text-muted-foreground">{stat.title}</p>
+                <h3 className="text-2xl font-medium mt-1 text-foreground">{stat.value}</h3>
               </div>
-              <div className={`p-2 rounded-lg ${theme === 'clean' ? 'bg-sky-50 text-sky-600' : 'bg-white/20 text-white'}`}>
-                <stat.icon size={20} />
+              <div className="flex size-8 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                <stat.icon size={16} />
               </div>
             </div>
-            <div className="mt-3 flex items-center text-sm">
-              <span className={`flex items-center ${stat.trend === 'up' ? 'text-emerald-500' : stat.trend === 'down' ? 'text-rose-500' : 'text-sky-500'}`}>
-                {stat.trend === 'up' ? <ArrowUpRight size={16} /> : stat.trend === 'down' ? <ArrowDownRight size={16} /> : <MoreHorizontal size={16} />}
-                <span className="ml-1 font-semibold">{stat.change}</span>
+            <div className="mt-3 flex items-center text-xs">
+              <span className={`flex items-center ${stat.trend === 'up' ? 'text-emerald-600 dark:text-emerald-400' : stat.trend === 'down' ? 'text-destructive' : 'text-muted-foreground'}`}>
+                {stat.trend === 'up' ? <ArrowUpRight size={14} /> : stat.trend === 'down' ? <ArrowDownRight size={14} /> : <MoreHorizontal size={14} />}
+                <span className="ml-1 font-medium">{stat.change}</span>
               </span>
             </div>
           </Card>
@@ -83,67 +87,63 @@ function DashboardView({ theme, mode, txtMain, txtSec, servers, channels, player
       </div>
 
       {/* Server Status and Platform Distribution */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ServerStatusCard theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec} servers={servers} />
-        <PlatformDistributionCard theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec} servers={servers} />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <ServerStatusCard servers={servers} />
+        <PlatformDistributionCard servers={servers} />
       </div>
 
       {/* Recent Activity */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <RecentMessagesCard theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec} messages={chatMessages} />
-        <OnlinePlayersCard theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec} players={players} />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <RecentMessagesCard messages={chatMessages} />
+        <OnlinePlayersCard players={players} />
       </div>
     </div>
   );
 }
 
 // Server Status Card
-function ServerStatusCard({ theme, mode, txtMain, txtSec, servers }) {
+function ServerStatusCard({ servers }) {
   const { t } = useTranslation();
-  if (!servers || servers.length === 0) {
-    return (
-      <Card theme={theme} mode={mode} className="p-5">
-        <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('dashboard.server_status')}</h3>
-        <p className={`text-sm ${txtSec} text-center py-8`}>{t('dashboard.no_servers_ws')}</p>
-      </Card>
-    );
-  }
   return (
-    <Card theme={theme} mode={mode} className="p-5">
-      <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('dashboard.server_status')}</h3>
-      <div className="space-y-3 max-h-[300px] overflow-y-auto custom-scrollbar">
-        {servers.map((server) => (
-          <div key={server.id} className={`flex items-center justify-between p-3 rounded-xl ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50') : 'bg-white/5'}`}>
-            <div className="flex items-center gap-3">
-              <div className={`w-2 h-2 rounded-full ${server.status === 'online' ? 'bg-emerald-500' : 'bg-red-500'}`} />
-              <div>
-                <p className={`font-medium ${txtMain}`}>{server.name}</p>
-                <p className={`text-xs ${txtSec}`}>{server.platform} · {server.version}</p>
+    <Card className="p-5">
+      <h3 className="text-sm font-medium mb-4 text-foreground">{t('dashboard.server_status')}</h3>
+      {(!servers || servers.length === 0) ? (
+        <p className="text-xs text-muted-foreground text-center py-8">{t('dashboard.no_servers_ws')}</p>
+      ) : (
+        <div className="space-y-2 max-h-[300px] overflow-y-auto">
+          {servers.map((server) => (
+            <div key={server.id} className="flex items-center justify-between p-2.5 rounded-md bg-muted/40">
+              <div className="flex items-center gap-3">
+                <div className={`w-1.5 h-1.5 rounded-full ${server.status === 'online' ? 'bg-emerald-500' : 'bg-destructive'}`} />
+                <div>
+                  <p className="text-sm font-medium text-foreground">{server.name}</p>
+                  <p className="text-xs text-muted-foreground">{server.platform} · {server.version}</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-sm font-medium text-foreground">{server.players} {t('dashboard.players')}</p>
+                <p className="text-xs text-muted-foreground">{server.status === 'online' ? `${server.ping}ms` : t('dashboard.offline')}</p>
               </div>
             </div>
-            <div className="text-right">
-              <p className={`font-semibold ${txtMain}`}>{server.players} {t('dashboard.players')}</p>
-              <p className={`text-xs ${txtSec}`}>{server.status === 'online' ? `${server.ping}ms` : t('dashboard.offline')}</p>
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </Card>
   );
 }
 
 // Platform Distribution Card
-function PlatformDistributionCard({ theme, mode, txtMain, txtSec, servers }) {
+function PlatformDistributionCard({ servers }) {
   const { t } = useTranslation();
   const platforms = ['Bukkit/Paper', 'Velocity/Bungee', 'Nukkit', 'LeviLamina'];
-  const colors = ['bg-sky-500', 'bg-purple-500', 'bg-amber-500', 'bg-emerald-500'];
+  const colors = ['bg-primary', 'bg-sky-500', 'bg-amber-500', 'bg-emerald-500'];
 
   return (
-    <Card theme={theme} mode={mode} className="p-5">
-      <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('dashboard.platform_distribution')}</h3>
-      <div className="space-y-4">
+    <Card className="p-5">
+      <h3 className="text-sm font-medium mb-4 text-foreground">{t('dashboard.platform_distribution')}</h3>
+      <div className="space-y-3">
         {platforms.map((platform, i) => {
-          const count = (servers || []).filter(s =>
+          const count = (servers || []).filter((s) =>
             platform === 'Bukkit/Paper' ? ['Bukkit', 'Paper'].includes(s.platform) :
             platform === 'Velocity/Bungee' ? ['Velocity', 'BungeeCord'].includes(s.platform) :
             s.platform === platform
@@ -152,17 +152,17 @@ function PlatformDistributionCard({ theme, mode, txtMain, txtSec, servers }) {
           return (
             <div key={platform}>
               <div className="flex justify-between mb-1">
-                <span className={`text-sm ${txtMain}`}>{platform}</span>
-                <span className={`text-sm ${txtSec}`}>{t('dashboard.servers_count', { count })}</span>
+                <span className="text-xs text-foreground">{platform}</span>
+                <span className="text-xs text-muted-foreground">{t('dashboard.servers_count', { count })}</span>
               </div>
-              <div className={`h-2 rounded-full ${theme === 'clean' ? 'bg-slate-200' : 'bg-white/10'}`}>
-                <div className={`h-full rounded-full transition-all duration-1000 ${colors[i]}`} style={{ width: `${percent}%` }} />
+              <div className="h-1.5 rounded-full bg-muted">
+                <div className={`h-full rounded-full transition-all duration-700 ${colors[i]}`} style={{ width: `${percent}%` }} />
               </div>
             </div>
           );
         })}
         {(!servers || servers.length === 0) && (
-          <p className={`text-sm ${txtSec} text-center py-4`}>{t('dashboard.waiting_server_data')}</p>
+          <p className="text-xs text-muted-foreground text-center py-4">{t('dashboard.waiting_server_data')}</p>
         )}
       </div>
     </Card>
@@ -170,27 +170,25 @@ function PlatformDistributionCard({ theme, mode, txtMain, txtSec, servers }) {
 }
 
 // Recent Messages Card
-function RecentMessagesCard({ theme, mode, txtMain, txtSec, messages = [] }) {
+function RecentMessagesCard({ messages = [] }) {
   const { t } = useTranslation();
   const recentMessages = (messages || []).slice(-5).reverse();
 
   return (
-    <Card theme={theme} mode={mode} className="p-5">
-      <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('dashboard.recent_messages')}</h3>
+    <Card className="p-5">
+      <h3 className="text-sm font-medium mb-4 text-foreground">{t('dashboard.recent_messages')}</h3>
       <div className="space-y-2">
         {recentMessages.length === 0 ? (
-          <p className={`text-sm ${txtSec} text-center py-4`}>{t('dashboard.no_messages_ws')}</p>
+          <p className="text-xs text-muted-foreground text-center py-4">{t('dashboard.no_messages_ws')}</p>
         ) : (
           recentMessages.map((msg, idx) => (
-            <div key={msg.id || idx} className={`p-2 rounded-lg text-sm ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50') : 'bg-white/5'}`}>
+            <div key={msg.id || idx} className="p-2.5 rounded-md bg-muted/40">
               <div className="flex items-center gap-2 mb-1">
-                <span className={`text-xs ${txtSec}`}>[{msg.time}]</span>
-                <span className="text-sky-400 text-xs">[{msg.server}]</span>
-                <span className={`text-xs ${msg.platform === 'Bedrock' ? 'text-amber-400' : 'text-emerald-400'}`}>
-                  {msg.player}
-                </span>
+                <span className="text-xs text-muted-foreground">[{msg.time}]</span>
+                <span className="text-xs text-muted-foreground">[{msg.server}]</span>
+                <span className="text-xs text-foreground font-medium">{msg.player}</span>
               </div>
-              <p className={`${txtMain} truncate`}>{msg.content}</p>
+              <p className="text-xs text-foreground truncate">{msg.content}</p>
             </div>
           ))
         )}
@@ -200,29 +198,29 @@ function RecentMessagesCard({ theme, mode, txtMain, txtSec, messages = [] }) {
 }
 
 // Online Players Card
-function OnlinePlayersCard({ theme, mode, txtMain, txtSec, players = [] }) {
+function OnlinePlayersCard({ players = [] }) {
   const { t } = useTranslation();
   const displayPlayers = (players || []).slice(0, 5);
 
   return (
-    <Card theme={theme} mode={mode} className="p-5">
-      <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('dashboard.online_players')}</h3>
+    <Card className="p-5">
+      <h3 className="text-sm font-medium mb-4 text-foreground">{t('dashboard.online_players')}</h3>
       <div className="space-y-2">
         {displayPlayers.length === 0 ? (
-          <p className={`text-sm ${txtSec} text-center py-4`}>{t('dashboard.no_online_players')}</p>
+          <p className="text-xs text-muted-foreground text-center py-4">{t('dashboard.no_online_players')}</p>
         ) : (
           displayPlayers.map((player) => (
-            <div key={player.uuid} className={`flex items-center justify-between p-2 rounded-lg ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50') : 'bg-white/5'}`}>
+            <div key={player.uuid} className="flex items-center justify-between p-2.5 rounded-md bg-muted/40">
               <div className="flex items-center gap-3">
-                <Avatar name={player.name} size={24} rounded="rounded" />
+                <Avatar name={player.name} size={28} rounded="rounded-full" />
                 <div>
-                  <p className={`text-sm font-medium ${txtMain}`}>{player.name}</p>
-                  <p className={`text-xs ${txtSec}`}>{player.server}</p>
+                  <p className="text-sm font-medium text-foreground">{player.name}</p>
+                  <p className="text-xs text-muted-foreground">{player.server}</p>
                 </div>
               </div>
-              <span className={`px-2 py-0.5 rounded text-xs ${player.platform === 'Java' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}>
+              <Badge variant={player.platform === 'Java' ? 'success' : 'warning'}>
                 {player.platform}
-              </span>
+              </Badge>
             </div>
           ))
         )}

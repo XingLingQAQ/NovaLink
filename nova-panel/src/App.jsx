@@ -10,17 +10,12 @@ import {
   Bell,
   Search,
   Menu,
-  X,
   Moon,
   Sun,
   LogOut,
   ChevronLeft,
   ChevronRight,
-  MoreHorizontal,
   RefreshCw,
-  Globe,
-  Lock,
-  Shield,
   Zap,
   Loader2,
   AlertCircle,
@@ -28,8 +23,6 @@ import {
   Users as UsersIcon,
   MessageSquare as MessageIcon,
   Hash as HashIcon,
-  ArrowUpRight,
-  ArrowDownRight,
 } from 'lucide-react';
 
 import authService from './services/auth';
@@ -59,6 +52,8 @@ import PlayerManagement from './components/dashboard/PlayerManagement';
 import ClientStatus from './components/dashboard/ClientStatus';
 
 import LoginScreen from './components/auth/LoginScreen';
+
+const THEME_STORAGE_KEY = 'nova-panel-theme';
 
 // Lucide icon lookup for dashboard stat cards (built dynamically from string names).
 const STAT_ICON_MAP = {
@@ -110,10 +105,30 @@ function Dashboard({ currentUser, onLogout }) {
   const { t, i18n } = useTranslation();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
-  const [theme, setTheme] = useState('glass');
-  const [mode, setMode] = useState('dark');
+  // DEFAULT THEME = LIGHT. The app loads with no .dark class on <html>.
+  // Persist + restore the user's choice (light/dark) in localStorage.
+  const [mode, setMode] = useState(() => {
+    try {
+      return localStorage.getItem(THEME_STORAGE_KEY) || 'light';
+    } catch {
+      return 'light';
+    }
+  });
   const [activeTab, setActiveTab] = useState('dashboard');
   const [tabLoading, setTabLoading] = useState(false);
+
+  // Sync the `.dark` class on <html> with the mode state so the oklch CSS
+  // variables (card/border/primary/muted-foreground/...) switch automatically.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (mode === 'dark') root.classList.add('dark');
+    else root.classList.remove('dark');
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, mode);
+    } catch {
+      // ignore storage errors
+    }
+  }, [mode]);
 
   // Data State — initialized empty, populated from real REST + WS.
   const [servers, setServers] = useState([]);
@@ -148,6 +163,11 @@ function Dashboard({ currentUser, onLogout }) {
   const notificationRef = useRef(null);
   const chatContainerRef = useRef(null);
   const wsHandlersRef = useRef({});
+  // Defers WS disconnect on effect cleanup so React StrictMode's dev-only
+  // mount→unmount→remount cycle doesn't tear down a connection that's about to
+  // be reused. A real unmount (logout / leave page) still disconnects, just
+  // delayed by a tick; a remount cancels the timer and keeps the socket alive.
+  const wsDisconnectTimerRef = useRef(null);
   // Keep a live ref to the translation function so long-lived WS handlers
   // (registered once on mount) emit locale-aware toast text without re-running
   // the WS effect on every language change.
@@ -158,10 +178,10 @@ function Dashboard({ currentUser, onLogout }) {
   const addToast = useCallback((message, type = 'success') => {
     const id = Date.now() + Math.random();
     setToasts((prev) => [...prev, { id, message, type }]);
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3000);
+    setTimeout(() => setToasts((prev) => prev.filter((tt) => tt.id !== id)), 3000);
   }, []);
 
-  const removeToast = useCallback((id) => setToasts((prev) => prev.filter((t) => t.id !== id)), []);
+  const removeToast = useCallback((id) => setToasts((prev) => prev.filter((tt) => tt.id !== id)), []);
 
   // --- Initial data fetch on mount (after auth) ---
   const fetchAllData = useCallback(async () => {
@@ -208,6 +228,11 @@ function Dashboard({ currentUser, onLogout }) {
 
   // --- WebSocket connection + real-time handlers ---
   useEffect(() => {
+    // Cancel any pending disconnect from a prior cleanup (StrictMode remount).
+    if (wsDisconnectTimerRef.current) {
+      clearTimeout(wsDisconnectTimerRef.current);
+      wsDisconnectTimerRef.current = null;
+    }
     let cancelled = false;
     const token = authService.getToken();
     const wsUrl = getWsUrl();
@@ -313,7 +338,14 @@ function Dashboard({ currentUser, onLogout }) {
       websocketService.off(MessageType.PLAYER_UPDATE, handlePlayerUpdate);
       websocketService.off(MessageType.NOTIFICATION, handleNotification);
       websocketService.off('stateChange', handleStateChange);
-      websocketService.disconnect();
+      // Defer disconnect: StrictMode remounts the effect immediately after
+      // cleanup in dev. If a remount follows, its setup clears this timer and
+      // reuses the live socket. If no remount comes (real unmount), the socket
+      // is closed after 150ms.
+      wsDisconnectTimerRef.current = setTimeout(() => {
+        websocketService.disconnect();
+        wsDisconnectTimerRef.current = null;
+      }, 150);
     };
   }, [addToast]);
 
@@ -429,29 +461,18 @@ function Dashboard({ currentUser, onLogout }) {
   }, [isMobile]);
 
   // --- Derived / styling ---
-  const getBackground = () => {
-    if (theme === 'clean') return mode === 'dark' ? 'bg-slate-900' : 'bg-slate-50';
-    return 'bg-cover bg-center bg-fixed';
-  };
+  // Token-based text/background classes so the whole panel re-themes via the
+  // .dark class + the oklch CSS variables in index.css.
+  const txtMain = 'text-foreground';
+  const txtSec = 'text-muted-foreground';
 
-  const getScrollbarColors = () => {
-    if (theme === 'clean') {
-      if (mode === 'dark') return { thumb: '#475569', hover: '#64748b' };
-      return { thumb: '#cbd5e1', hover: '#94a3b8' };
-    }
-    if (mode === 'dark') return { thumb: 'rgba(255,255,255,0.2)', hover: 'rgba(255,255,255,0.3)' };
-    return { thumb: 'rgba(255,255,255,0.3)', hover: 'rgba(255,255,255,0.5)' };
-  };
-
-  const sbColors = getScrollbarColors();
-  const txtMain = mode === 'dark' ? 'text-white' : 'text-slate-900';
-  const txtSec = mode === 'dark' ? 'text-slate-400' : 'text-slate-500';
-
-  const filteredPlayers = useMemo(() =>
-    players.filter((p) =>
-      (p.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (p.server || '').toLowerCase().includes(searchQuery.toLowerCase())
-    ), [players, searchQuery]);
+  const filteredPlayers = useMemo(() => {
+    const q = (searchQuery || '').toLowerCase();
+    return players.filter((p) =>
+      ((p && p.name) || '').toLowerCase().includes(q) ||
+      ((p && p.server) || '').toLowerCase().includes(q)
+    );
+  }, [players, searchQuery]);
 
   const dashboardStats = useMemo(
     () => buildDashboardStats(statusData, servers, channels, chatMessages),
@@ -476,135 +497,135 @@ function Dashboard({ currentUser, onLogout }) {
   })();
 
   return (
-    <div className={`w-full overflow-hidden font-sans transition-colors duration-700 ${getBackground()} relative`} style={{ minHeight: '100dvh', '--scrollbar-thumb': sbColors.thumb, '--scrollbar-thumb-hover': sbColors.hover }}>
+    <div className="w-full overflow-hidden font-sans bg-background text-foreground relative" style={{ minHeight: '100dvh' }}>
       <ToastContainer toasts={toasts} removeToast={removeToast} />
 
-      {theme === 'glass' && (
-        <>
-          <div className="fixed inset-0 z-0 transition-opacity duration-1000 bg-gradient-to-br from-slate-950 via-slate-900 to-sky-900" style={{ height: '100dvh', width: '100vw' }} />
-          <div className={`fixed inset-0 z-0 transition-all duration-700 ${mode === 'dark' ? 'bg-black/50' : 'bg-white/20'}`} />
-          <div className="fixed top-[-10%] right-[-10%] w-[500px] h-[500px] bg-sky-500/20 rounded-full blur-[120px] animate-pulse z-0 pointer-events-none mix-blend-overlay" />
-          <div className="fixed bottom-[-10%] left-[-10%] w-[600px] h-[600px] bg-purple-500/20 rounded-full blur-[120px] animate-pulse z-0 pointer-events-none mix-blend-overlay" style={{ animationDelay: '2s' }} />
-        </>
-      )}
+      <div className="relative flex h-screen w-full" style={{ height: '100dvh' }}>
+        {isMobile && sidebarOpen && <div className="fixed inset-0 z-40 bg-black/50 transition-opacity duration-300" onClick={() => setSidebarOpen(false)} />}
 
-      <div className="relative z-10 flex h-screen w-full" style={{ height: '100dvh' }}>
-        {isMobile && sidebarOpen && <div className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm transition-opacity duration-300" onClick={() => setSidebarOpen(false)} />}
-
-        {/* Sidebar */}
-        <aside className={`fixed lg:relative z-50 h-full flex flex-col transition-all duration-500 ease-[cubic-bezier(0.25,0.8,0.25,1)] shadow-2xl lg:shadow-none ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-800 border-r border-slate-700' : 'bg-white border-r border-slate-200') : (mode === 'dark' ? 'bg-black/40 border-r border-white/10 backdrop-blur-2xl' : 'bg-white/40 border-r border-white/30 backdrop-blur-2xl')} ${isMobile ? (sidebarOpen ? 'translate-x-0 w-72' : '-translate-x-full w-72') : (sidebarOpen ? 'w-64 translate-x-0' : 'w-20 translate-x-0')}`}>
-          <div className="flex-1 flex flex-col p-4 overflow-hidden">
-            <div className={`flex items-center mb-10 h-10 shrink-0 transition-all duration-500 ${!isMobile && !sidebarOpen ? 'justify-center px-0' : 'gap-3 px-2'}`}>
-              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-lg transition-transform duration-300 ${theme === 'clean' ? 'bg-sky-500 text-white' : 'bg-gradient-to-br from-sky-400 to-blue-500 text-white'}`}>
-                <Zap size={20} />
+        {/* Sidebar — token-driven (bg-sidebar). Light mode = near-white, dark mode = near-black. */}
+        <aside className={`fixed lg:relative z-50 h-full flex flex-col transition-all duration-300 bg-sidebar text-sidebar-foreground border-r border-sidebar-border ${isMobile ? (sidebarOpen ? 'translate-x-0 w-60' : '-translate-x-full w-60') : (sidebarOpen ? 'w-60 translate-x-0' : 'w-16 translate-x-0')}`}>
+          <div className="flex-1 flex flex-col p-3 overflow-hidden">
+            <div className={`flex items-center mb-6 h-10 shrink-0 transition-all duration-300 ${!isMobile && !sidebarOpen ? 'justify-center px-0' : 'gap-2 px-2'}`}>
+              <div className="flex size-8 items-center justify-center shrink-0 rounded-md bg-primary text-primary-foreground">
+                <Zap size={16} />
               </div>
-              <div className={`overflow-hidden whitespace-nowrap transition-all duration-500 ${!isMobile && !sidebarOpen ? 'w-0 opacity-0' : 'w-40 opacity-100'}`}>
-                <h1 className={`font-bold text-xl ${txtMain}`}>Nova<span className="font-light">Panel</span></h1>
+              <div className={`overflow-hidden whitespace-nowrap transition-all duration-300 ${!isMobile && !sidebarOpen ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>
+                <h1 className="text-sm font-semibold text-foreground">NovaPanel</h1>
               </div>
             </div>
-            <nav className="flex-1 space-y-2 overflow-y-auto scrollbar-hide">
+            <nav className="flex-1 space-y-0.5 overflow-y-auto scrollbar-hide">
               {navItems.map((item) => (
-                <button key={item.id} onClick={() => handleTabChange(item.id)} className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl transition-all duration-300 group relative ${activeTab === item.id ? (theme === 'clean' ? 'bg-sky-50 text-sky-600' : (mode === 'dark' ? 'bg-white/10 text-white shadow-lg border border-white/10' : 'bg-white/40 text-slate-900 shadow-lg border border-white/40')) : (mode === 'dark' ? 'text-slate-400 hover:bg-white/5 hover:text-slate-200' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800')}`} title={!sidebarOpen && !isMobile ? item.label : ''}>
-                  <div className="shrink-0"><item.icon size={20} /></div>
-                  <span className={`whitespace-nowrap transition-all duration-500 ${!isMobile && !sidebarOpen ? 'opacity-0 w-0 overflow-hidden' : 'opacity-100 w-auto'}`}>{item.label}</span>
-                  {activeTab === item.id && <div className={`absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 rounded-r-full ${theme === 'clean' ? 'bg-sky-500' : 'bg-white'}`} />}
+                <button
+                  key={item.id}
+                  onClick={() => handleTabChange(item.id)}
+                  className={`w-full flex items-center gap-2.5 rounded-md px-3 py-1.5 transition-colors text-xs font-medium ${activeTab === item.id ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground'}`}
+                  title={!sidebarOpen && !isMobile ? item.label : ''}
+                >
+                  <div className="shrink-0"><item.icon size={16} /></div>
+                  <span className={`whitespace-nowrap transition-all duration-300 ${!isMobile && !sidebarOpen ? 'opacity-0 w-0 overflow-hidden' : 'opacity-100 w-auto'}`}>{item.label}</span>
                 </button>
               ))}
             </nav>
-            <div className={`mt-auto rounded-xl flex items-center transition-all duration-500 overflow-hidden shrink-0 ${!isMobile && !sidebarOpen ? 'p-1.5 justify-center' : 'p-3'} ${theme === 'clean' ? 'bg-slate-100/50' : 'bg-white/10 border border-white/10'}`}>
-              <div className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center bg-gradient-to-br from-sky-400 to-blue-500 text-white font-semibold ${!isMobile && !sidebarOpen ? '' : 'mr-3'}`} title={(currentUser && currentUser.username) || t('common.user')}>
+            <div className={`mt-3 rounded-md flex items-center transition-all duration-300 overflow-hidden shrink-0 border border-sidebar-border ${!isMobile && !sidebarOpen ? 'p-1.5 justify-center' : 'p-2'}`}>
+              <div className={`shrink-0 flex size-7 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-semibold ${!isMobile && !sidebarOpen ? '' : 'mr-2'}`} title={(currentUser && currentUser.username) || t('common.user')}>
                 {((currentUser && currentUser.username) || 'U')[0].toUpperCase()}
               </div>
-              <div className={`overflow-hidden transition-all duration-500 flex-1 min-w-0 ${!isMobile && !sidebarOpen ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>
-                <p className={`text-sm font-semibold whitespace-nowrap ${txtMain}`}>{(currentUser && currentUser.username) || t('common.user')}</p>
-                <p className={`text-xs whitespace-nowrap ${txtSec}`}>{(currentUser && currentUser.role) || ''}</p>
+              <div className={`overflow-hidden transition-all duration-300 flex-1 min-w-0 ${!isMobile && !sidebarOpen ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>
+                <p className="text-xs font-medium whitespace-nowrap text-foreground truncate">{(currentUser && currentUser.username) || t('common.user')}</p>
+                <p className="text-[11px] whitespace-nowrap text-muted-foreground truncate">{(currentUser && currentUser.role) || ''}</p>
               </div>
-              <button onClick={onLogout} className={`${txtSec} hover:text-red-400 transition-all duration-500 shrink-0 ${!isMobile && !sidebarOpen ? 'w-0 opacity-0 overflow-hidden' : 'w-auto opacity-100'}`} title={t('common.logout_title')}>
-                <LogOut size={18} />
+              <button onClick={onLogout} className="text-muted-foreground hover:text-destructive transition-colors shrink-0 rounded-md p-1 hover:bg-accent" title={t('common.logout_title')}>
+                <LogOut size={16} />
               </button>
             </div>
           </div>
         </aside>
 
         {/* Main Content */}
-        <main className="flex-1 flex flex-col h-full overflow-hidden relative transition-all duration-500">
+        <main className="flex-1 flex flex-col h-full overflow-hidden relative transition-all duration-300">
           {/* Header */}
-          <header className={`h-16 px-4 md:px-6 flex items-center justify-between shrink-0 z-30 ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-900/80 backdrop-blur-md' : 'bg-white/80 backdrop-blur-md') : 'bg-transparent'}`}>
-            <div className="flex items-center gap-4">
-              <button onClick={() => setSidebarOpen(!sidebarOpen)} className={`p-2 rounded-lg hover:bg-current/10 transition-transform active:scale-95 ${txtSec}`}>
-                {isMobile ? <Menu size={24} /> : (sidebarOpen ? <ChevronLeft size={24} /> : <ChevronRight size={24} />)}
+          <header className="h-14 px-4 md:px-6 flex items-center justify-between shrink-0 z-30 border-b border-border bg-background/95 backdrop-blur-sm">
+            <div className="flex items-center gap-3">
+              <button onClick={() => setSidebarOpen(!sidebarOpen)} className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title="Toggle sidebar">
+                {isMobile ? <Menu size={18} /> : (sidebarOpen ? <ChevronLeft size={18} /> : <ChevronRight size={18} />)}
               </button>
-              <div className={`hidden md:flex items-center gap-2 px-4 py-2 rounded-full transition-all ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-800' : 'bg-slate-100') : (mode === 'dark' ? 'bg-black/20 border border-white/10' : 'bg-white/20 border border-white/30')}`}>
-                <Search size={18} className={txtSec} />
-                <input type="text" placeholder={t('common.search')} className="bg-transparent border-none outline-none text-sm w-32 lg:w-48 placeholder:text-slate-400" style={{ color: mode === 'dark' ? 'white' : 'black' }} value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+              <div className="hidden md:flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1 transition-colors">
+                <Search size={14} className="text-muted-foreground" />
+                <input type="text" placeholder={t('common.search')} className="bg-transparent border-none outline-none text-xs w-32 lg:w-48 placeholder:text-muted-foreground text-foreground" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
               </div>
             </div>
-            <div className="flex items-center gap-3 md:gap-4">
+            <div className="flex items-center gap-2 md:gap-3">
               {/* WS status indicator */}
-              <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 rounded-full bg-white/5 border border-white/10" title={wsIndicator.label}>
-                <span className={`w-2 h-2 rounded-full ${wsIndicator.color} ${wsState === ConnectionState.CONNECTING || wsState === ConnectionState.RECONNECTING ? 'animate-pulse' : ''}`} />
-                <span className={`text-xs ${txtSec}`}>{wsIndicator.label}</span>
+              <div className="hidden sm:flex items-center gap-1.5 rounded-full bg-muted/60 border border-border px-2 py-0.5" title={wsIndicator.label}>
+                <span className={`w-1.5 h-1.5 rounded-full ${wsIndicator.color} ${wsState === ConnectionState.CONNECTING || wsState === ConnectionState.RECONNECTING ? 'animate-pulse' : ''}`} />
+                <span className="text-[11px] text-muted-foreground">{wsIndicator.label}</span>
               </div>
               <div className="relative" ref={notificationRef}>
-                <button onClick={() => setShowNotifications(!showNotifications)} className={`p-2 rounded-full relative transition-transform hover:scale-110 ${txtSec} hover:bg-current/10`}>
-                  <Bell size={20} />
+                <button onClick={() => setShowNotifications(!showNotifications)} className="relative rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title={t('notifications.title')}>
+                  <Bell size={18} />
                   {notifications.some((n) => !n.read) && (
-                    <>
-                      <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full animate-ping" />
-                      <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full" />
-                    </>
+                    <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-destructive rounded-full" />
                   )}
                 </button>
-                <NotificationDropdown isOpen={showNotifications} onClose={() => setShowNotifications(false)} theme={theme} mode={mode} notifications={notifications} onMarkAllRead={handleMarkAllRead} onClearAll={handleClearNotifications} />
+                <NotificationDropdown
+                  isOpen={showNotifications}
+                  onClose={() => setShowNotifications(false)}
+                  theme="clean"
+                  mode={mode}
+                  notifications={notifications}
+                  onMarkAllRead={handleMarkAllRead}
+                  onClearAll={handleClearNotifications}
+                />
               </div>
               {/* Language switcher */}
-              <div className={`flex items-center p-1 rounded-full gap-1 ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-800' : 'bg-slate-200') : 'bg-black/20 border border-white/10 backdrop-blur-md'}`} title={t('language.switch_title')}>
+              <div className="flex items-center p-0.5 rounded-full gap-0.5 border border-border bg-muted/60" title={t('language.switch_title')}>
                 <button
                   onClick={() => i18n.changeLanguage('zh_CN')}
-                  className={`px-2 py-1 rounded-full text-xs font-medium transition-all ${i18n.language === 'zh_CN' || i18n.language === 'zh' ? (mode === 'dark' ? 'bg-slate-700 text-sky-300 shadow-sm' : 'bg-white shadow-sm text-sky-600') : (txtSec + ' hover:text-slate-200')}`}
+                  className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-colors ${i18n.language === 'zh_CN' || i18n.language === 'zh' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
                 >
                   {t('language.zh')}
                 </button>
                 <button
                   onClick={() => i18n.changeLanguage('en_US')}
-                  className={`px-2 py-1 rounded-full text-xs font-medium transition-all ${i18n.language === 'en_US' || i18n.language === 'en' ? (mode === 'dark' ? 'bg-slate-700 text-sky-300 shadow-sm' : 'bg-white shadow-sm text-sky-600') : (txtSec + ' hover:text-slate-200')}`}
+                  className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-colors ${i18n.language === 'en_US' || i18n.language === 'en' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
                 >
                   {t('language.en')}
                 </button>
               </div>
-              <div className={`flex items-center p-1 rounded-full gap-1 ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-800' : 'bg-slate-200') : 'bg-black/20 border border-white/10 backdrop-blur-md'}`}>
-                <button onClick={() => setMode('light')} className={`p-1.5 rounded-full transition-all ${mode === 'light' ? 'bg-white shadow-sm text-yellow-500' : 'text-slate-400 hover:text-slate-200'}`}><Sun size={16} /></button>
-                <button onClick={() => setMode('dark')} className={`p-1.5 rounded-full transition-all ${mode === 'dark' ? 'bg-slate-700 text-sky-300 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><Moon size={16} /></button>
+              <div className="flex items-center p-0.5 rounded-full gap-0.5 border border-border bg-muted/60">
+                <button onClick={() => setMode('light')} className={`p-1 rounded-full transition-colors ${mode === 'light' ? 'bg-background shadow-sm text-amber-500' : 'text-muted-foreground hover:text-foreground'}`} title="Light"><Sun size={14} /></button>
+                <button onClick={() => setMode('dark')} className={`p-1 rounded-full transition-colors ${mode === 'dark' ? 'bg-background shadow-sm text-primary' : 'text-muted-foreground hover:text-foreground'}`} title="Dark"><Moon size={14} /></button>
               </div>
             </div>
           </header>
 
           {/* Content Area */}
-          <div className="flex-1 overflow-y-auto p-4 md:p-6 custom-scrollbar">
+          <div className="flex-1 overflow-y-auto p-4 md:p-6">
             <div className="max-w-7xl mx-auto space-y-6">
               {initialLoading ? (
                 <div className="h-96 flex flex-col items-center justify-center gap-3">
-                  <Loader2 size={40} className={`animate-spin ${theme === 'clean' ? 'text-sky-500' : 'text-white'}`} />
-                  <p className={`text-sm ${txtSec}`}>{t('common.loading_data')}</p>
+                  <Loader2 size={28} className="animate-spin text-muted-foreground" />
+                  <p className="text-xs text-muted-foreground">{t('common.loading_data')}</p>
                 </div>
               ) : fetchError && channels.length === 0 && players.length === 0 ? (
                 <div className="h-96 flex flex-col items-center justify-center gap-4">
-                  <AlertCircle size={40} className="text-rose-400" />
-                  <p className={`text-sm ${txtMain}`}>{t('common.load_failed_msg', { error: fetchError })}</p>
-                  <Button theme={theme} mode={mode} variant="primary" onClick={fetchAllData}>
-                    <RefreshCw size={16} /> {t('common.retry')}
+                  <AlertCircle size={28} className="text-destructive" />
+                  <p className="text-sm text-foreground">{t('common.load_failed_msg', { error: fetchError })}</p>
+                  <Button variant="outline" onClick={fetchAllData}>
+                    <RefreshCw size={14} /> {t('common.retry')}
                   </Button>
                 </div>
               ) : tabLoading ? (
                 <div className="h-96 flex items-center justify-center">
-                  <div className={`w-12 h-12 border-4 rounded-full animate-spin ${theme === 'clean' ? 'border-sky-500 border-t-transparent' : 'border-white border-t-transparent'}`} />
+                  <div className="size-8 border-4 rounded-full animate-spin border-primary border-t-transparent" />
                 </div>
               ) : (
                 <>
                   {/* Dashboard - System Overview */}
                   {activeTab === 'dashboard' && (
                     <DashboardView
-                      theme={theme}
+                      theme="clean"
                       mode={mode}
                       txtMain={txtMain}
                       txtSec={txtSec}
@@ -620,7 +641,7 @@ function Dashboard({ currentUser, onLogout }) {
                   {/* Console - Real-time Message Monitor */}
                   {activeTab === 'console' && (
                     <MessageMonitor
-                      theme={theme}
+                      theme="clean"
                       mode={mode}
                       txtMain={txtMain}
                       txtSec={txtSec}
@@ -637,7 +658,7 @@ function Dashboard({ currentUser, onLogout }) {
                   {/* Servers - Client Status */}
                   {activeTab === 'servers' && (
                     <ClientStatus
-                      theme={theme}
+                      theme="clean"
                       mode={mode}
                       txtMain={txtMain}
                       txtSec={txtSec}
@@ -649,7 +670,7 @@ function Dashboard({ currentUser, onLogout }) {
                   {/* Channels - Channel Management */}
                   {activeTab === 'channels' && (
                     <ChannelManagement
-                      theme={theme}
+                      theme="clean"
                       mode={mode}
                       txtMain={txtMain}
                       txtSec={txtSec}
@@ -663,7 +684,7 @@ function Dashboard({ currentUser, onLogout }) {
                   {/* Players - Player Management */}
                   {activeTab === 'players' && (
                     <PlayerManagement
-                      theme={theme}
+                      theme="clean"
                       mode={mode}
                       txtMain={txtMain}
                       txtSec={txtSec}
@@ -677,9 +698,10 @@ function Dashboard({ currentUser, onLogout }) {
                   {/* Settings */}
                   {activeTab === 'settings' && (
                     <SettingsView
-                      theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec}
+                      theme="clean" mode={mode} txtMain={txtMain} txtSec={txtSec}
                       settings={settings} onToggle={handleSettingToggle}
-                      setTheme={setTheme}
+                      setMode={setMode}
+                      modeState={mode}
                       wsState={wsState}
                       apiUrl={getApiBaseUrl()}
                       wsUrl={getWsUrl()}
@@ -696,7 +718,8 @@ function Dashboard({ currentUser, onLogout }) {
 }
 
 // ==================== Settings View ====================
-function SettingsView({ theme, mode, txtMain, txtSec, settings, onToggle, setTheme, wsState, apiUrl, wsUrl }) {
+function SettingsView({ theme, mode, txtMain: _txtMain, txtSec: _txtSec, settings, onToggle, setMode, modeState, wsState, apiUrl, wsUrl }) {
+  void _txtMain; void _txtSec;
   const { t } = useTranslation();
   const wsLabel = (() => {
     switch (wsState) {
@@ -710,82 +733,70 @@ function SettingsView({ theme, mode, txtMain, txtSec, settings, onToggle, setThe
   })();
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in duration-500">
+    <div className="max-w-2xl mx-auto space-y-6">
       <div>
-        <h2 className={`text-2xl font-bold ${txtMain}`}>{t('common.settings_title')}</h2>
-        <p className={`text-sm ${txtSec} mt-1`}>{t('common.settings_subtitle')}</p>
+        <h2 className="text-xl font-medium text-foreground">{t('common.settings_title')}</h2>
+        <p className="text-xs text-muted-foreground mt-1">{t('common.settings_subtitle')}</p>
       </div>
 
-      <Card theme={theme} mode={mode} className="p-6 space-y-6">
+      <Card className="p-6 space-y-6">
         <div>
-          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('common.settings_appearance')}</h3>
-          <div className="grid grid-cols-2 gap-4">
-            <div onClick={() => setTheme('clean')} className={`cursor-pointer rounded-xl border-2 overflow-hidden transition-all ${theme === 'clean' ? 'border-sky-500 scale-[1.02]' : 'border-transparent opacity-70 hover:opacity-100'}`}>
-              <div className="h-24 bg-slate-100 p-3">
-                <div className="w-full h-full bg-white shadow-sm rounded-lg flex">
-                  <div className="w-1/4 bg-slate-50 border-r h-full"></div>
-                  <div className="w-3/4 p-2">
-                    <div className="w-1/2 h-2 bg-sky-500 rounded mb-2"></div>
-                  </div>
-                </div>
-              </div>
-              <div className={`p-3 ${mode === 'dark' ? 'bg-slate-800' : 'bg-white'}`}>
-                <span className={`text-sm font-medium ${txtMain}`}>{t('common.settings_clean')}</span>
-              </div>
+          <h3 className="text-sm font-medium mb-3 text-foreground">{t('common.settings_appearance')}</h3>
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-sm text-foreground">{t('common.settings_theme') || 'Theme'}</span>
+              <p className="text-xs text-muted-foreground mt-0.5">{t('common.settings_local_only')}</p>
             </div>
-            <div onClick={() => setTheme('glass')} className={`cursor-pointer rounded-xl border-2 overflow-hidden transition-all ${theme === 'glass' ? 'border-sky-500 scale-[1.02]' : 'border-transparent opacity-70 hover:opacity-100'}`}>
-              <div className="h-24 relative p-3 bg-gradient-to-br from-slate-800 to-sky-800">
-                <div className="absolute inset-0 bg-black/30"></div>
-                <div className="relative w-full h-full bg-white/20 backdrop-blur-md border border-white/30 rounded-lg flex z-10">
-                  <div className="w-1/4 bg-white/10 border-r border-white/10 h-full"></div>
-                </div>
-              </div>
-              <div className={`p-3 ${mode === 'dark' ? 'bg-slate-800' : 'bg-white'}`}>
-                <span className={`text-sm font-medium ${txtMain}`}>{t('common.settings_glass')}</span>
-              </div>
+            <div className="flex items-center p-0.5 rounded-full gap-0.5 border border-border bg-muted/60">
+              <button onClick={() => setMode('light')} className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${modeState === 'light' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+                <Sun size={12} className="inline mr-1" />Light
+              </button>
+              <button onClick={() => setMode('dark')} className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${modeState === 'dark' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+                <Moon size={12} className="inline mr-1" />Dark
+              </button>
             </div>
           </div>
         </div>
 
-        <div className="pt-6 border-t border-gray-200/10">
-          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('common.settings_connection')}</h3>
+        <div className="pt-6 border-t border-border">
+          <h3 className="text-sm font-medium mb-3 text-foreground">{t('common.settings_connection')}</h3>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-foreground">{t('common.settings_api_address')}</span>
+              <span className="text-xs font-mono text-muted-foreground">{apiUrl}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-foreground">{t('common.settings_ws_address')}</span>
+              <span className="text-xs font-mono text-muted-foreground">{wsUrl}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-foreground">{t('common.settings_ws_state')}</span>
+              <span className="text-xs text-muted-foreground">{wsLabel}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="pt-6 border-t border-border">
+          <h3 className="text-sm font-medium mb-3 text-foreground">{t('common.settings_chat_features')}</h3>
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <span className={txtMain}>{t('common.settings_api_address')}</span>
-              <span className={`text-sm font-mono ${txtSec}`}>{apiUrl}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className={txtMain}>{t('common.settings_ws_address')}</span>
-              <span className={`text-sm font-mono ${txtSec}`}>{wsUrl}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className={txtMain}>{t('common.settings_ws_state')}</span>
-              <span className={`text-sm ${txtSec}`}>{wsLabel}</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="pt-6 border-t border-gray-200/10">
-          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('common.settings_chat_features')}</h3>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
               <div>
-                <span className={txtMain}>{t('common.settings_filter')}</span>
-                <p className={`text-xs ${txtSec}`}>{t('common.settings_local_only')}</p>
+                <span className="text-sm text-foreground">{t('common.settings_filter')}</span>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('common.settings_local_only')}</p>
               </div>
               <Switch checked={settings.enableFilter} onChange={() => onToggle('enableFilter')} theme={theme} mode={mode} />
             </div>
             <div className="flex items-center justify-between">
               <div>
-                <span className={txtMain}>{t('common.settings_log')}</span>
-                <p className={`text-xs ${txtSec}`}>{t('common.settings_local_only')}</p>
+                <span className="text-sm text-foreground">{t('common.settings_log')}</span>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('common.settings_local_only')}</p>
               </div>
               <Switch checked={settings.logMessages} onChange={() => onToggle('logMessages')} theme={theme} mode={mode} />
             </div>
             <div className="flex items-center justify-between">
               <div>
-                <span className={txtMain}>{t('common.settings_cross_server')}</span>
-                <p className={`text-xs ${txtSec}`}>{t('common.settings_local_only')}</p>
+                <span className="text-sm text-foreground">{t('common.settings_cross_server')}</span>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('common.settings_local_only')}</p>
               </div>
               <Switch checked={settings.crossServerChat} onChange={() => onToggle('crossServerChat')} theme={theme} mode={mode} />
             </div>

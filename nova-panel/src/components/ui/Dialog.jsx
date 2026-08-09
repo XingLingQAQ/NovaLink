@@ -3,12 +3,12 @@ import { X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 
 /**
- * Modal — legacy alias kept for call sites that import Modal.
- * Restyled to match the shadcn/ui reference Dialog look: bg-background,
- * rounded-lg border, text-base title, bg-black/20 backdrop.
- * Legacy `theme`/`mode` props are accepted but ignored (tokens auto-switch).
+ * shadcn/ui-style Dialog (lightweight, no radix). Mirrors
+ * logs/frontend/src/components/ui/dialog.tsx: max-w-[480px], bg-background,
+ * rounded-lg, bg-black/20 backdrop-blur-[1px] overlay, text-base title.
+ * Legacy `theme`/`mode` props are accepted but ignored.
  */
-const Modal = ({ isOpen, onClose, title, children, theme: _theme, mode: _mode }) => {
+function Dialog({ isOpen, onClose, title, children, theme: _theme, mode: _mode, className }) {
   void _theme; void _mode;
   const [visible, setVisible] = useState(false);
   useEffect(() => {
@@ -34,7 +34,8 @@ const Modal = ({ isOpen, onClose, title, children, theme: _theme, mode: _mode })
       <div
         className={cn(
           'relative w-[calc(100%-2rem)] max-w-[480px] rounded-lg border border-border bg-background p-5 shadow-xl transition-all duration-200',
-          isOpen ? 'scale-100 opacity-100' : 'scale-95 opacity-0'
+          isOpen ? 'scale-100 opacity-100' : 'scale-95 opacity-0',
+          className
         )}
         onClick={(e) => e.stopPropagation()}
       >
@@ -53,6 +54,6 @@ const Modal = ({ isOpen, onClose, title, children, theme: _theme, mode: _mode })
       </div>
     </div>
   );
-};
+}
 
-export default Modal;
+export { Dialog as default };

@@ -1,8 +1,9 @@
 /**
  * Real-time Message Monitor Component
- * Displays live chat messages from all connected servers
- * 
- * Requirements: 24.2 - Real-time message monitoring
+ * Displays live chat messages from all connected servers.
+ *
+ * Restyled to the shadcn/ui reference idiom: Card message list + pill send
+ * Button + CustomSelect filter. Subtle muted rows, token-driven colors.
  */
 
 import React, { useRef, useEffect, useState } from 'react';
@@ -15,16 +16,17 @@ import CustomSelect from '../ui/CustomSelect';
 function MessageMonitor({
   theme,
   mode,
-  txtMain,
-  txtSec,
+  txtMain: _txtMain,
+  txtSec: _txtSec,
   messages = [],
   channels = [],
   onClearMessages,
   onSendMessage,
   chatContainerRef: externalChatContainerRef,
   consoleAutoScroll: externalAutoScroll,
-  setConsoleAutoScroll: externalSetAutoScroll
+  setConsoleAutoScroll: externalSetAutoScroll,
 }) {
+  void _txtMain; void _txtSec;
   const { t } = useTranslation();
   const [chatFilter, setChatFilter] = useState('all');
   const [serverFilter, setServerFilter] = useState('all');
@@ -40,28 +42,29 @@ function MessageMonitor({
   // Default target channel to the first available channel id.
   useEffect(() => {
     if (channels.length > 0 && !channels.find((c) => c.id === targetChannel)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- sync default selection with available channels
       setTargetChannel(channels[0].id);
     }
   }, [channels, targetChannel]);
 
-  // Auto-scroll to bottom when new messages arrive
+  // Auto-scroll to bottom when new messages arrive.
   useEffect(() => {
     if (autoScroll && chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [messages, autoScroll, chatContainerRef]);
 
-  // Filter messages
-  const filteredMessages = messages.filter(m => {
+  // Filter messages.
+  const filteredMessages = messages.filter((m) => {
     const channelMatch = chatFilter === 'all' || m.channel === chatFilter;
     const serverMatch = serverFilter === 'all' || m.server === serverFilter;
     return channelMatch && serverMatch;
   });
 
-  // Get unique servers from messages
-  const servers = [...new Set(messages.map(m => m.server))];
+  // Get unique servers from messages.
+  const servers = [...new Set(messages.map((m) => m.server))];
 
-  // Handle send message
+  // Handle send message.
   const handleSendMessage = () => {
     if (messageInput.trim() && onSendMessage) {
       setSending(true);
@@ -71,7 +74,7 @@ function MessageMonitor({
     }
   };
 
-  // Handle key press
+  // Handle key press.
   const handleKeyPress = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -80,115 +83,111 @@ function MessageMonitor({
   };
 
   return (
-    <div className="space-y-4 animate-in fade-in duration-500">
+    <div className="space-y-4">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className={`text-2xl font-bold ${txtMain}`}>{t('messages.title')}</h2>
-          <p className={`text-sm ${txtSec} mt-1`}>{t('messages.subtitle', { count: filteredMessages.length })}</p>
+          <h2 className="text-xl font-medium text-foreground">{t('messages.title')}</h2>
+          <p className="text-xs text-muted-foreground mt-1">{t('messages.subtitle', { count: filteredMessages.length })}</p>
         </div>
-        <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
           {/* Channel Filter */}
-          <div className="flex items-center gap-2">
-            <Filter size={16} className={txtSec} />
-            <CustomSelect 
-              theme={theme} 
-              mode={mode} 
-              options={['all', ...channels.map(c => c.id)]} 
-              defaultValue={chatFilter}
-              onChange={setChatFilter}
-            />
+          <div className="flex items-center gap-1.5">
+            <Filter size={14} className="text-muted-foreground" />
+            <div className="w-28">
+              <CustomSelect
+                theme={theme}
+                mode={mode}
+                options={['all', ...channels.map((c) => c.id)]}
+                defaultValue={chatFilter}
+                onChange={setChatFilter}
+              />
+            </div>
           </div>
-          
+
           {/* Server Filter */}
           {servers.length > 0 && (
-            <CustomSelect 
-              theme={theme} 
-              mode={mode} 
-              options={['all', ...servers]} 
-              defaultValue={serverFilter}
-              onChange={setServerFilter}
-            />
+            <div className="w-28">
+              <CustomSelect
+                theme={theme}
+                mode={mode}
+                options={['all', ...servers]}
+                defaultValue={serverFilter}
+                onChange={setServerFilter}
+              />
+            </div>
           )}
 
           {/* Auto-scroll Toggle */}
-          <button 
+          <button
             onClick={() => setAutoScroll(!autoScroll)}
-            className={`p-2 rounded-lg transition-colors ${autoScroll ? 'bg-sky-500/20 text-sky-500' : (mode === 'dark' ? 'bg-white/10 text-white/50' : 'bg-slate-100 text-slate-400')}`}
+            className={`rounded-md p-1.5 transition-colors ${autoScroll ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground hover:text-foreground'}`}
             title={autoScroll ? t('messages.autoscroll_on') : t('messages.autoscroll_off')}
           >
-            {autoScroll ? <Volume2 size={20} /> : <VolumeX size={20} />}
+            {autoScroll ? <Volume2 size={16} /> : <VolumeX size={16} />}
           </button>
 
           {/* Clear Messages */}
           {onClearMessages && (
-            <Button 
-              theme={theme} 
-              mode={mode} 
-              variant="ghost" 
+            <Button
+              theme={theme}
+              mode={mode}
+              variant="ghost"
               onClick={onClearMessages}
-              className="text-rose-400 hover:text-rose-500"
+              className="text-destructive hover:text-destructive"
             >
-              <Trash2 size={16} />
+              <Trash2 size={14} />
             </Button>
           )}
         </div>
       </div>
 
       {/* Message Display */}
-      <Card theme={theme} mode={mode} className="p-0 overflow-hidden">
-        <div 
+      <Card className="p-0 overflow-hidden">
+        <div
           ref={chatContainerRef}
-          className="h-[500px] overflow-y-auto p-4 space-y-1 font-mono text-sm custom-scrollbar"
+          className="h-[500px] overflow-y-auto p-4 space-y-1 font-mono text-xs"
         >
           {filteredMessages.length === 0 ? (
-            <div className={`flex items-center justify-center h-full ${txtSec}`}>
+            <div className="flex items-center justify-center h-full text-muted-foreground">
               <p>{t('messages.empty')}</p>
             </div>
           ) : (
             filteredMessages.map((msg, idx) => (
-              <MessageLine
-                key={msg.id || idx}
-                message={msg}
-                txtMain={txtMain}
-                txtSec={txtSec}
-              />
+              <MessageLine key={msg.id || idx} message={msg} />
             ))
           )}
         </div>
 
         {/* Message Input */}
         {onSendMessage && (
-          <div className={`p-3 border-t ${mode === 'dark' ? 'border-white/10' : 'border-slate-200'}`}>
+          <div className="p-3 border-t border-border">
             <div className="flex items-center gap-2">
-              <CustomSelect 
-                theme={theme} 
-                mode={mode} 
-                options={channels.map(c => c.id)} 
-                defaultValue={targetChannel}
-                onChange={setTargetChannel}
-              />
+              <div className="w-32">
+                <CustomSelect
+                  theme={theme}
+                  mode={mode}
+                  options={channels.map((c) => c.id)}
+                  defaultValue={targetChannel}
+                  onChange={setTargetChannel}
+                />
+              </div>
               <input
                 type="text"
                 value={messageInput}
                 onChange={(e) => setMessageInput(e.target.value)}
                 onKeyPress={handleKeyPress}
                 placeholder={t('messages.input_placeholder')}
-                className={`flex-1 px-4 py-2 rounded-xl border outline-none focus:ring-2 transition-all ${
-                  theme === 'clean' 
-                    ? (mode === 'dark' ? 'bg-slate-700 border-slate-600 focus:ring-sky-500 text-white' : 'bg-white border-slate-200 focus:ring-sky-500 text-slate-900') 
-                    : 'bg-white/10 border-white/20 focus:ring-white/50 text-white placeholder:text-white/30'
-                }`}
+                className="flex-1 h-8 rounded-md border-0 bg-secondary/55 px-3 py-1 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring placeholder:text-muted-foreground text-foreground"
               />
               <Button
                 theme={theme}
                 mode={mode}
-                variant="primary"
+                size="icon"
                 onClick={handleSendMessage}
                 disabled={sending || !messageInput.trim()}
-                className="px-3"
               >
-                {sending ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+                {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
               </Button>
             </div>
           </div>
@@ -197,40 +196,21 @@ function MessageMonitor({
 
       {/* Statistics */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard 
-          theme={theme} 
-          mode={mode} 
-          txtMain={txtMain} 
-          txtSec={txtSec}
-          label={t('messages.stat_total')}
-          value={messages.length}
-        />
-        <StatCard 
-          theme={theme} 
-          mode={mode} 
-          txtMain={txtMain} 
-          txtSec={txtSec}
+        <StatCard label={t('messages.stat_total')} value={messages.length} />
+        <StatCard
           label={t('messages.stat_java')}
-          value={messages.filter(m => m.platform === 'Java').length}
-          color="text-emerald-400"
+          value={messages.filter((m) => m.platform === 'Java').length}
+          color="text-emerald-600 dark:text-emerald-400"
         />
-        <StatCard 
-          theme={theme} 
-          mode={mode} 
-          txtMain={txtMain} 
-          txtSec={txtSec}
+        <StatCard
           label={t('messages.stat_bedrock')}
-          value={messages.filter(m => m.platform === 'Bedrock').length}
-          color="text-amber-400"
+          value={messages.filter((m) => m.platform === 'Bedrock').length}
+          color="text-amber-600 dark:text-amber-400"
         />
-        <StatCard 
-          theme={theme} 
-          mode={mode} 
-          txtMain={txtMain} 
-          txtSec={txtSec}
+        <StatCard
           label={t('messages.stat_active_servers')}
           value={servers.length}
-          color="text-sky-400"
+          color="text-sky-600 dark:text-sky-400"
         />
       </div>
     </div>
@@ -238,31 +218,29 @@ function MessageMonitor({
 }
 
 // Individual Message Line
-function MessageLine({ message, txtMain, txtSec }) {
-  const platformColor = message.platform === 'Bedrock' ? 'text-amber-400' : 'text-emerald-400';
-  
+function MessageLine({ message }) {
+  const platformColor = message.platform === 'Bedrock' ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400';
+
   return (
-    <div className={`flex items-start gap-2 p-2 rounded-lg hover:bg-white/5 transition-colors group`}>
-      <span className={`${txtSec} shrink-0 text-xs`}>[{message.time}]</span>
-      <span className="text-sky-400 shrink-0 text-xs">[{message.server}]</span>
+    <div className="flex items-start gap-2 p-1.5 rounded-md hover:bg-muted/40 transition-colors">
+      <span className="text-muted-foreground shrink-0">[{message.time}]</span>
+      <span className="text-muted-foreground shrink-0">[{message.server}]</span>
       {message.channel && message.channel !== 'global' && (
-        <span className="text-purple-400 shrink-0 text-xs">#{message.channel}</span>
+        <span className="text-sky-600 dark:text-sky-400 shrink-0">#{message.channel}</span>
       )}
-      <span className={`${platformColor} shrink-0`}>
-        {message.player}
-      </span>
-      <span className={txtSec}>:</span>
-      <span className={`${txtMain} break-all`}>{message.content}</span>
+      <span className={`${platformColor} shrink-0 font-medium`}>{message.player}</span>
+      <span className="text-muted-foreground">:</span>
+      <span className="text-foreground break-all">{message.content}</span>
     </div>
   );
 }
 
 // Statistics Card
-function StatCard({ theme, mode, txtMain, txtSec, label, value, color }) {
+function StatCard({ label, value, color }) {
   return (
-    <Card theme={theme} mode={mode} className="p-4 text-center">
-      <p className={`text-2xl font-bold ${color || txtMain}`}>{value}</p>
-      <p className={`text-xs ${txtSec} mt-1`}>{label}</p>
+    <Card className="p-4 text-center">
+      <p className={`text-2xl font-medium ${color || 'text-foreground'}`}>{value}</p>
+      <p className="text-xs text-muted-foreground mt-1">{label}</p>
     </Card>
   );
 }

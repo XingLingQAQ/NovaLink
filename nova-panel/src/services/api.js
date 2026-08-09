@@ -28,15 +28,33 @@ export function getApiBaseUrl() {
  */
 export function getWsUrl() {
   const stored = typeof localStorage !== 'undefined' && localStorage.getItem('nova_panel_ws_url');
-  if (stored) return stored;
   const envWs = import.meta.env && import.meta.env.VITE_WS_URL;
-  if (envWs) return envWs;
-  // Derive from the current origin (same host, default ws port 8889).
+  // Connect directly to the NovaLink backend WS endpoint (port 8889, path /ws).
+  // The backend's WEBSOCKET_PATH is "/ws"; connecting to "/" is rejected (1006).
+  // Normalize any stored/env override to ensure it ends with "/ws".
+  const normalize = (raw) => {
+    if (!raw) return null;
+    try {
+      const u = new URL(raw);
+      if (u.pathname === '/' || u.pathname === '') u.pathname = '/ws';
+      return u.toString();
+    } catch {
+      return raw.endsWith('/ws') ? raw : raw.replace(/\/$/, '') + '/ws';
+    }
+  };
+  if (stored) {
+    const n = normalize(stored);
+    if (n) return n;
+  }
+  if (envWs) {
+    const n = normalize(envWs);
+    if (n) return n;
+  }
   if (typeof window !== 'undefined' && window.location) {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${window.location.hostname}:8889`;
+    return `${proto}//${window.location.hostname}:8889/ws`;
   }
-  return 'ws://localhost:8889';
+  return 'ws://localhost:8889/ws';
 }
 
 /**

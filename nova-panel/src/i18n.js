@@ -24,14 +24,20 @@ i18n
   .use(LanguageDetector)
   .use(initReactI18next)
   .init({
+    // NOTE: zh/en aliases point at the same JSON as zh_CN/en_US so a bare code
+    // emitted by the browser language detector (e.g. navigator.language === 'en')
+    // still resolves to the full translations. We intentionally do NOT set
+    // `supportedLngs` together with `nonExplicitSupportedLngs`: in i18next v23+,
+    // that combination causes t() to fall through and return the raw key (every
+    // string rendered as e.g. "dashboard.online_servers"). fallbackLng covers
+    // any unrecognized language instead.
     resources: {
       zh_CN: { translation: zh_CN },
       en_US: { translation: en_US },
+      zh: { translation: zh_CN },
+      en: { translation: en_US },
     },
     fallbackLng: DEFAULT_LANG,
-    supportedLngs: SUPPORTED_LANGS,
-    // NonExplicitFalse so a bare 'zh' or 'en' still resolves to our supported
-    // zh_CN / en_US entries via fallback.
     nonExplicitSupportedLngs: true,
     interpolation: {
       escapeValue: false, // React already escapes by default

@@ -1,5 +1,6 @@
 package com.nova.link.config;
 
+import com.nova.link.auth.AuthManager;
 import com.nova.link.auth.SuperAdminCredentials;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -285,20 +286,36 @@ public class ConfigLoader {
     private List<SuperAdminCredentials> parseSuperAdmins(List<Map<String, Object>> data) {
         List<SuperAdminCredentials> admins = new ArrayList<>();
         if (data == null) return admins;
-        
+
         for (Map<String, Object> adminData : data) {
             String uuidStr = (String) adminData.get("uuid");
             String passwordHash = (String) adminData.get("password-hash");
-            if (uuidStr != null && passwordHash != null) {
-                try {
-                    UUID uuid = UUID.fromString(uuidStr);
-                    admins.add(new SuperAdminCredentials(uuid, passwordHash));
-                } catch (IllegalArgumentException e) {
-                    logger.warn("Invalid UUID in super-admins: {}", uuidStr);
+            String plainPassword = (String) adminData.get("password");
+            String username = (String) adminData.get("username");
+            if (uuidStr == null) {
+                logger.warn("Skipping super-admin entry without uuid: {}", adminData);
+                continue;
+            }
+            // Resolve the effective password hash:
+            //  - password-hash present -> use as-is (precomputed SHA-256 hex).
+            //  - password-hash absent but password (plain) present -> SHA-256 it at load time.
+            //  - neither present -> skip (no credentials).
+            String effectiveHash = passwordHash;
+            if (effectiveHash == null) {
+                if (plainPassword == null) {
+                    logger.warn("Skipping super-admin entry without password-hash or password: {}", uuidStr);
+                    continue;
                 }
+                effectiveHash = AuthManager.hashPassword(plainPassword);
+            }
+            try {
+                UUID uuid = UUID.fromString(uuidStr);
+                admins.add(new SuperAdminCredentials(uuid, effectiveHash, username));
+            } catch (IllegalArgumentException e) {
+                logger.warn("Invalid UUID in super-admins: {}", uuidStr);
             }
         }
-        
+
         return admins;
     }
 
@@ -472,12 +489,15 @@ public class ConfigLoader {
         security.put("ip-ban-duration", config.getSecurity().getIpBanDuration());
         data.put("security", security);
         
-        // Super admins
+        // Super admins (always persist the resolved password-hash; never the plain password)
         List<Map<String, Object>> superAdmins = new ArrayList<>();
         for (SuperAdminCredentials admin : config.getSuperAdmins()) {
             Map<String, Object> adminData = new LinkedHashMap<>();
             adminData.put("uuid", admin.getUuid().toString());
             adminData.put("password-hash", admin.getPasswordHash());
+            if (admin.getUsername() != null && !admin.getUsername().isBlank()) {
+                adminData.put("username", admin.getUsername());
+            }
             superAdmins.add(adminData);
         }
         data.put("super-admins", superAdmins);

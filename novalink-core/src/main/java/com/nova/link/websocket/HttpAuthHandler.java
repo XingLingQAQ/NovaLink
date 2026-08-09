@@ -10,6 +10,7 @@ import io.jsonwebtoken.Claims;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.*;
@@ -23,9 +24,16 @@ import java.util.UUID;
 /**
  * HTTP handler for authentication endpoints.
  * Provides REST API for login and token refresh.
- * 
+ *
+ * <p>Marked {@link ChannelHandler.Sharable @Sharable} because a single instance is
+ * shared across every connection's pipeline (see {@code WebSocketServer.initChannel}).
+ * The handler holds no per-channel state — only immutable service dependencies — so
+ * sharing it is safe. Without {@code @Sharable}, Netty rejects the second connection
+ * with {@code ChannelPipelineException: ... is not a @Sharable handler}.
+ *
  * Requirements: 24.4 - JWT authentication
  */
+@ChannelHandler.Sharable
 public class HttpAuthHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
     private static final Logger logger = LoggerFactory.getLogger(HttpAuthHandler.class);

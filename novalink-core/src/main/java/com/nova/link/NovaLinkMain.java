@@ -148,11 +148,16 @@ public class NovaLinkMain {
                     logger.warn("Failed to register super admin: {}", admin, e);
                 }
 
-                // Also expose super-admins as web-panel login accounts (username = UUID string).
+                // Also expose super-admins as web-panel login accounts.
+                // The web-panel login username is the optional human-readable username,
+                // falling back to the UUID string when no username is configured (backward compatible).
                 // This enables SUPER_ADMIN role in the web panel.
                 try {
                     if (admin != null && admin.getUuid() != null && admin.getPasswordHash() != null) {
-                        authManager.registerSuperAdmin(admin.getUuid().toString(), admin.getPasswordHash());
+                        String webLoginUsername = (admin.getUsername() != null && !admin.getUsername().isBlank())
+                                ? admin.getUsername()
+                                : admin.getUuid().toString();
+                        authManager.registerSuperAdmin(webLoginUsername, admin.getPasswordHash());
                     }
                 } catch (Exception e) {
                     logger.warn("Failed to register super admin for web-panel auth: {}", admin, e);

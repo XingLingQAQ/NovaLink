@@ -2,15 +2,20 @@
  * Login Screen for NovaPanel.
  * Gates the dashboard until authService.isAuthenticated() is true.
  *
- * Allows the user to configure the API base URL + WebSocket URL on the same
- * screen (collapsed by default; expanded via the advanced-settings toggle).
+ * Layout mirrors the reference design (logs/frontend/src/features/auth/login-page.tsx):
+ * min-h-screen bg-background, a centered max-w-[960px] layout with a header,
+ * a two-column hero (hidden on small screens) + a max-w-[336px] form card.
+ * Light-first, Inter font, pill Button (size="sm" w-full), Input h-9 bg-card.
  */
 
 import React, { useState } from 'react';
-import { Zap, Lock, User, Loader2, Server, Wifi, ChevronDown, ChevronUp } from 'lucide-react';
+import { Loader2, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import authService from '../../services/auth';
 import { getApiBaseUrl, getWsUrl, setConnectionUrls } from '../../services/api';
+import Button from '../ui/Button';
+import Input from '../ui/Input';
+import Label from '../ui/Label';
 
 export default function LoginScreen({ onLoginSuccess }) {
   const { t } = useTranslation();
@@ -43,119 +48,120 @@ export default function LoginScreen({ onLoginSuccess }) {
   };
 
   return (
-    <div className="min-h-screen w-full flex items-center justify-center relative overflow-hidden font-sans">
-      {/* Background */}
-      <div className="fixed inset-0 z-0 bg-gradient-to-br from-slate-950 via-slate-900 to-sky-900" />
-      <div className="fixed inset-0 z-0 bg-black/40" />
-      <div className="fixed top-[-10%] right-[-10%] w-[500px] h-[500px] bg-sky-500/20 rounded-full blur-[120px] animate-pulse z-0 pointer-events-none" />
-      <div className="fixed bottom-[-10%] left-[-10%] w-[600px] h-[600px] bg-purple-500/20 rounded-full blur-[120px] animate-pulse z-0 pointer-events-none" style={{ animationDelay: '2s' }} />
+    <div className="flex min-h-screen flex-col bg-background">
+      {/* Header */}
+      <header className="mx-auto flex h-16 w-full max-w-[960px] items-center justify-between px-5 sm:px-8 lg:px-0">
+        <span className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
+            <Zap size={16} />
+          </span>
+          {t('appName')}
+        </span>
+      </header>
 
-      <div className="relative z-10 w-full max-w-md mx-4">
-        <div className="bg-black/40 border border-white/10 backdrop-blur-2xl rounded-3xl shadow-2xl p-8">
-          {/* Logo */}
-          <div className="flex flex-col items-center mb-8">
-            <div className="w-14 h-14 rounded-2xl flex items-center justify-center bg-gradient-to-br from-sky-400 to-blue-500 text-white shadow-lg mb-4">
-              <Zap size={28} />
-            </div>
-            <h1 className="text-2xl font-bold text-white">Nova<span className="font-light">Panel</span></h1>
-            <p className="text-sm text-slate-400 mt-1">{t('login.subtitle')}</p>
-          </div>
+      {/* Main */}
+      <main className="mx-auto flex w-full max-w-[960px] flex-1 items-center justify-center px-5 py-12 sm:px-8 lg:px-0">
+        <div className="grid w-full max-w-[840px] -translate-y-6 items-center lg:-translate-y-10 lg:grid-cols-[minmax(0,1fr)_1px_336px] lg:gap-14">
+          {/* Hero (hidden on small screens) */}
+          <section className="hidden min-h-72 flex-col justify-center lg:flex">
+            <p className="text-xs font-medium text-muted-foreground">{t('appName')}</p>
+            <h2 className="mt-3 max-w-sm text-3xl font-medium leading-tight text-foreground">
+              {t('login.subtitle')}
+            </h2>
+            <p className="mt-4 max-w-xs text-xs leading-6 text-muted-foreground">
+              {t('login.advanced_hint')}
+            </p>
+          </section>
 
-          {/* Error */}
-          {error && (
-            <div className="mb-4 px-4 py-3 rounded-xl bg-rose-500/20 border border-rose-500/30 text-rose-300 text-sm flex items-center gap-2">
-              <span className="font-medium">{error}</span>
-            </div>
-          )}
+          <div className="hidden h-64 bg-border lg:block" aria-hidden="true" />
 
           {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5 text-slate-400">{t('login.username')}</label>
-              <div className="relative">
-                <User size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-                <input
-                  type="text"
+          <section className="w-full max-w-[336px] justify-self-center lg:justify-self-auto">
+            <div className="mb-6">
+              <h1 className="text-xl font-medium text-foreground">{t('login.title')}</h1>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground lg:hidden">
+                {t('login.subtitle')}
+              </p>
+            </div>
+
+            {error && (
+              <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {error}
+              </div>
+            )}
+
+            <form className="space-y-4" onSubmit={handleSubmit}>
+              <div className="space-y-2">
+                <Label htmlFor="username">{t('login.username')}</Label>
+                <Input
+                  id="username"
+                  className="h-9 bg-card"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder={t('login.username_placeholder')}
                   autoFocus
                   disabled={loading}
-                  className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-white/10 border border-white/20 text-white placeholder:text-white/30 outline-none focus:ring-2 focus:ring-sky-500 transition-all"
                 />
               </div>
-            </div>
 
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5 text-slate-400">{t('login.password')}</label>
-              <div className="relative">
-                <Lock size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-                <input
+              <div className="space-y-2">
+                <Label htmlFor="password">{t('login.password')}</Label>
+                <Input
+                  id="password"
+                  className="h-9 bg-card"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder={t('login.password_placeholder')}
                   disabled={loading}
-                  className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-white/10 border border-white/20 text-white placeholder:text-white/30 outline-none focus:ring-2 focus:ring-sky-500 transition-all"
                 />
               </div>
-            </div>
 
-            {/* Advanced settings toggle */}
-            <button
-              type="button"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 transition-colors"
-            >
-              {showAdvanced ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-              {t('login.advanced')}
-            </button>
+              {/* Advanced settings toggle */}
+              <button
+                type="button"
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+              >
+                {t('login.advanced')}
+              </button>
 
-            {showAdvanced && (
-              <div className="space-y-3 p-3 rounded-xl bg-white/5 border border-white/10">
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5 text-slate-400">{t('login.api_address')}</label>
-                  <div className="relative">
-                    <Server size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-                    <input
-                      type="text"
+              {showAdvanced && (
+                <div className="space-y-3 rounded-md border border-border bg-muted/40 p-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="apiUrl">{t('login.api_address')}</Label>
+                    <Input
+                      id="apiUrl"
+                      className="h-9 bg-card"
                       value={apiUrl}
                       onChange={(e) => setApiUrl(e.target.value)}
                       placeholder="/api"
                       disabled={loading}
-                      className="w-full pl-9 pr-3 py-2 rounded-lg bg-white/10 border border-white/20 text-white text-sm placeholder:text-white/30 outline-none focus:ring-2 focus:ring-sky-500 transition-all"
                     />
                   </div>
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5 text-slate-400">{t('login.ws_address')}</label>
-                  <div className="relative">
-                    <Wifi size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-                    <input
-                      type="text"
+                  <div className="space-y-2">
+                    <Label htmlFor="wsUrl">{t('login.ws_address')}</Label>
+                    <Input
+                      id="wsUrl"
+                      className="h-9 bg-card"
                       value={wsUrl}
                       onChange={(e) => setWsUrl(e.target.value)}
                       placeholder="ws://localhost:8889"
                       disabled={loading}
-                      className="w-full pl-9 pr-3 py-2 rounded-lg bg-white/10 border border-white/20 text-white text-sm placeholder:text-white/30 outline-none focus:ring-2 focus:ring-sky-500 transition-all"
                     />
                   </div>
+                  <p className="text-[11px] text-muted-foreground">{t('login.advanced_hint')}</p>
                 </div>
-                <p className="text-[10px] text-slate-500">{t('login.advanced_hint')}</p>
-              </div>
-            )}
+              )}
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-2.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-semibold shadow-lg shadow-sky-500/20 transition-all active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {loading ? <Loader2 size={18} className="animate-spin" /> : <Lock size={18} />}
-              {loading ? t('login.logging_in') : t('login.login_button')}
-            </button>
-          </form>
+              <Button type="submit" size="sm" className="w-full" disabled={loading}>
+                {loading ? <Loader2 size={16} className="animate-spin" /> : null}
+                {loading ? t('login.logging_in') : t('login.login_button')}
+              </Button>
+            </form>
+          </section>
         </div>
-      </div>
+      </main>
     </div>
   );
 }

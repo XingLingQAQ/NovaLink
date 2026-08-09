@@ -59,7 +59,16 @@ class WebSocketService {
    */
   connect(url, token) {
     return new Promise((resolve, reject) => {
-      if (this.socket && this.state === ConnectionState.CONNECTED) {
+      // Already connected (or connecting to the same URL): reuse the in-flight
+      // connection instead of opening a second socket. Without this guard, React
+      // StrictMode's dev double-invoke of the WS effect opens a duplicate socket
+      // whose later close surfaces as a spurious "ws connection failed" error.
+      if (this.socket && (this.state === ConnectionState.CONNECTED || this.state === ConnectionState.AUTHENTICATED)) {
+        resolve(true);
+        return;
+      }
+      if (this.socket && this.state === ConnectionState.CONNECTING && this.url === url) {
+        // A connection to the same URL is already being established; don't open another.
         resolve(true);
         return;
       }

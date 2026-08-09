@@ -16,6 +16,7 @@ import io.jsonwebtoken.Claims;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.*;
@@ -28,10 +29,17 @@ import java.util.*;
 /**
  * REST API handler for NovaLink external integration.
  * Provides HTTP endpoints for external systems to interact with NovaLink.
- * 
+ *
+ * <p>Marked {@link ChannelHandler.Sharable @Sharable} because a single instance is
+ * shared across every connection's pipeline (see {@code WebSocketServer.initChannel}).
+ * The handler holds no per-channel state — only immutable service dependencies — so
+ * sharing it is safe. Without {@code @Sharable}, Netty rejects the second connection
+ * with {@code ChannelPipelineException: ... is not a @Sharable handler}.
+ *
  * Requirements: 25.4 - REST API for external integration
  * Requirements: 25.5 - Webhook support
  */
+@ChannelHandler.Sharable
 public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
     private static final Logger logger = LoggerFactory.getLogger(RestApiHandler.class);
