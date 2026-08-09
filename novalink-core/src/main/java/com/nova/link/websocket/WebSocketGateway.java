@@ -4,8 +4,12 @@ import com.nova.link.api.RestApiHandler;
 import com.nova.link.api.WebhookManager;
 import com.nova.link.auth.AuthManager;
 import com.nova.link.channel.ChannelManager;
+import com.nova.link.channel.InvitationManager;
 import com.nova.link.channel.MessageRouter;
+import com.nova.link.config.ConfigManager;
+import com.nova.link.console.ConsoleCommandHandler;
 import com.nova.link.database.PlayerStateManager;
+import com.nova.link.mute.MuteManager;
 import com.nova.link.network.ServerNetworkHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,18 +59,20 @@ public class WebSocketGateway {
                             AuthManager authManager, ChannelManager channelManager,
                             PlayerStateManager playerStateManager, MessageRouter messageRouter,
                             WebhookManager webhookManager,
-                            ServerNetworkHandler networkHandler) {
+                            ServerNetworkHandler networkHandler,
+                            MuteManager muteManager, InvitationManager invitationManager,
+                            ConfigManager configManager, ConsoleCommandHandler consoleCommandHandler) {
         this.bindAddress = bindAddress;
         this.port = port;
         this.secretKey = secretKey;
-        
+
         // Initialize JWT service
         this.jwtService = new JwtService(secretKey);
-        
+
         // Initialize message handler
         this.messageHandler = new WebSocketMessageHandler(
                 jwtService, authManager, channelManager, networkHandler);
-        
+
         // Initialize HTTP auth handler
         this.httpAuthHandler = new HttpAuthHandler(jwtService, authManager);
 
@@ -77,9 +83,14 @@ public class WebSocketGateway {
                 channelManager,
                 playerStateManager,
                 messageRouter,
-                webhookManager
+                webhookManager,
+                muteManager,
+                invitationManager,
+                configManager,
+                networkHandler,
+                consoleCommandHandler
         );
-        
+
         // Initialize WebSocket server
         this.webSocketServer = new WebSocketServer(
                 bindAddress, port, messageHandler, httpAuthHandler, restApiHandler);

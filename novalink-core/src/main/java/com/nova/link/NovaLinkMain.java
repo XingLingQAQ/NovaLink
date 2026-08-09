@@ -241,6 +241,19 @@ public class NovaLinkMain {
                 networkHandler
         );
 
+        // Build a ConsoleCommandHandler for the REST /api/console endpoint.
+        // BackendContext is normally published after the servers start, but the
+        // REST handler needs ConsoleCommandHandler at construction time. We
+        // build a context here with null tcpServer/webSocketGateway — those two
+        // fields are never accessed by ConsoleCommandHandler.dispatch (only by
+        // the shutdown path, which uses the full context published later).
+        BackendContext restConsoleContext = new BackendContext(
+                configManager, authManager, permissionManager, clientPermissionRegistry,
+                databaseProvider, channelManager, playerStateManager, webhookManager,
+                privateChannelManager, invitationManager, muteManager, sensitiveWordFilter,
+                networkHandler, messageRouter, spyManager, null, null);
+        ConsoleCommandHandler consoleCommandHandler = new ConsoleCommandHandler(restConsoleContext);
+
         WebSocketGateway webSocketGateway = new WebSocketGateway(
                 config.getServer().getBindAddress(),
                 config.getServer().getWebsocketPort(),
@@ -250,7 +263,11 @@ public class NovaLinkMain {
                 playerStateManager,
                 messageRouter,
                 webhookManager,
-                networkHandler
+                networkHandler,
+                muteManager,
+                invitationManager,
+                configManager,
+                consoleCommandHandler
         );
         messageRouter.setWebSocketBroadcaster(webSocketGateway.createBroadcaster());
 

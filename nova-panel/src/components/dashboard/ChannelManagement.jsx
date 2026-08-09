@@ -1,10 +1,13 @@
 /**
  * Channel Management Component
- * Manage chat channels - create, edit, delete channels.
+ * Manage chat channels - create, edit, delete channels + generate invite codes.
  *
  * Restyled to the shadcn/ui reference idiom: Card list of channels with pill
- * type/permission badges, pill action Buttons, Modal for create/edit.
- * The honest-disable info banner uses an amber-tinted Card.
+ * type/permission badges, pill action Buttons, Modal for create/edit/delete.
+ *
+ * Batch 2: channel CRUD is now wired to real REST endpoints via the api client.
+ * The create/edit/delete/invite handlers delegate to App.jsx which performs the
+ * REST call + toast + list refresh.
  */
 
 import React, { useState } from 'react';
@@ -16,13 +19,18 @@ import {
   Hash,
   Lock,
   Search,
-  Info,
+  Eye,
+  Loader2,
+  Gift,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
 import Modal from '../ui/Modal';
+import { api } from '../../services/api';
 
 function ChannelManagement({
   theme,
@@ -33,6 +41,7 @@ function ChannelManagement({
   onCreateChannel,
   onEditChannel,
   onDeleteChannel,
+  onInviteChannel,
 }) {
   void _txtMain; void _txtSec;
   const { t } = useTranslation();
@@ -41,19 +50,29 @@ function ChannelManagement({
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingChannel, setEditingChannel] = useState(null);
-  const [newChannel, setNewChannel] = useState({
+  const [detailChannel, setDetailChannel] = useState(null);
+  const [detailMembers, setDetailMembers] = useState([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [showDetailModal, setShowDetailModal] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  // Invite modal state.
+  const [inviteTarget, setInviteTarget] = useState(null);
+  const [inviteTtl, setInviteTtl] = useState('');
+  const [inviteResult, setInviteResult] = useState(null);
+  const [inviteCopied, setInviteCopied] = useState(false);
+
+  // New channel form — aligned with backend POST /api/channels body.
+  // { id?, displayName, scope, maxCapacity, permission }
+  const emptyChannel = {
     id: '',
     name: '',
-    type: 'SERVER',
+    scope: 'GLOBAL',
+    maxCapacity: 100,
     permission: '',
-    format: '&7[{channel}] {player}: {message}',
-  });
-
-  // Channel CRUD is not exposed to the panel via REST or WS.
-  // The create/edit/delete handlers in App.jsx show a toast explaining this.
-  // We still render the buttons so the user can discover the limitation,
-  // but clicking them triggers the honest-disable toast instead of a fake local mutation.
-  const channelCrudDisabled = true;
+  };
+  const [newChannel, setNewChannel] = useState(emptyChannel);
 
   // Filter channels.
   const filteredChannels = channels.filter((c) => {
@@ -86,61 +105,147 @@ function ChannelManagement({
     }
   };
 
-  // Handle create channel — delegates to App (honest-disable toast, no fake mutation).
-  const handleCreate = () => {
-    if (channelCrudDisabled) {
-      onCreateChannel && onCreateChannel(null);
-      return;
-    }
-    if (onCreateChannel && newChannel.id && newChannel.name) {
-      onCreateChannel(newChannel);
+  // Handle create channel — calls App handler with backend-shaped body.
+  const handleCreate = async () => {
+    if (!newChannel.name) return;
+    const body = {
+      displayName: newChannel.name,
+      scope: newChannel.scope,
+      maxCapacity: Number(newChannel.maxCapacity) || 100,
+    };
+    if (newChannel.id && newChannel.id.trim()) body.id = newChannel.id.trim();
+    if (newChannel.permission && newChannel.permission.trim()) body.permission = newChannel.permission.trim();
+    setSubmitting(true);
+    try {
+      await onCreateChannel(body);
       setShowCreateModal(false);
-      setNewChannel({
-        id: '',
-        name: '',
-        type: 'SERVER',
-        permission: '',
-        format: '&7[{channel}] {player}: {message}',
-      });
+      setNewChannel(emptyChannel);
+    } catch {
+      // toast shown by App handler
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  // Handle edit channel — delegates to App (honest-disable toast).
+  // Handle edit channel — opens the edit modal with the channel's current values.
   const handleEdit = (channel) => {
-    if (channelCrudDisabled) {
-      onEditChannel && onEditChannel(channel);
-      return;
-    }
-    setEditingChannel({ ...channel });
+    setEditingChannel({
+      id: channel.id,
+      name: channel.name,
+      scope: channel.type,
+      maxCapacity: channel.maxCapacity || 100,
+      permission: channel.permission || '',
+    });
     setShowEditModal(true);
   };
 
-  // Handle save edit.
-  const handleSaveEdit = () => {
-    if (onEditChannel && editingChannel) {
-      onEditChannel(editingChannel);
+  // Handle save edit — calls App handler with the updatable fields only.
+  const handleSaveEdit = async () => {
+    if (!editingChannel || !editingChannel.id) return;
+    const body = {};
+    if (editingChannel.name) body.displayName = editingChannel.name;
+    body.maxCapacity = Number(editingChannel.maxCapacity) || 100;
+    if (editingChannel.permission !== undefined) body.permission = editingChannel.permission || null;
+    setSubmitting(true);
+    try {
+      await onEditChannel(editingChannel.id, body);
       setShowEditModal(false);
       setEditingChannel(null);
+    } catch {
+      // toast shown by App handler
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  // Handle delete channel — delegates to App (honest-disable toast).
-  const handleDelete = (channelId) => {
-    if (channelCrudDisabled) {
-      onDeleteChannel && onDeleteChannel(channelId);
-      return;
-    }
-    if (window.confirm(t('channels.delete_confirm'))) {
-      onDeleteChannel && onDeleteChannel(channelId);
+  // Handle delete channel — opens a confirm modal (destructive action).
+  const handleDelete = (channel) => {
+    setDeleteTarget(channel);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setSubmitting(true);
+    try {
+      await onDeleteChannel(deleteTarget.id);
+      setDeleteTarget(null);
+    } catch {
+      // toast shown by App handler
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  // Channel type options.
-  const channelTypes = [
-    { value: 'GLOBAL', label: t('channels.type_global'), icon: Globe },
-    { value: 'SERVER', label: t('channels.type_server'), icon: Hash },
-    { value: 'PRIVATE', label: t('channels.type_private'), icon: Lock },
+  // Handle generate invite — opens the invite modal.
+  const handleInvite = (channel) => {
+    setInviteTarget(channel);
+    setInviteTtl('');
+    setInviteResult(null);
+    setInviteCopied(false);
+  };
+
+  const confirmInvite = async () => {
+    if (!inviteTarget) return;
+    const body = {};
+    const ttl = Number(inviteTtl);
+    if (inviteTtl && !Number.isNaN(ttl) && ttl > 0) body.ttlMillis = ttl;
+    setSubmitting(true);
+    try {
+      const res = await onInviteChannel(inviteTarget.id, body);
+      setInviteResult(res);
+      setInviteCopied(false);
+    } catch {
+      // toast shown by App handler
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const copyInviteCode = () => {
+    if (inviteResult && inviteResult.code) {
+      try {
+        navigator.clipboard.writeText(inviteResult.code);
+        setInviteCopied(true);
+        setTimeout(() => setInviteCopied(false), 2000);
+      } catch {
+        // clipboard may be unavailable; ignore
+      }
+    }
+  };
+
+  // Handle view channel details — fetches full channel + members via REST.
+  const handleViewDetails = async (channel) => {
+    setDetailChannel(null);
+    setDetailMembers([]);
+    setDetailLoading(true);
+    setShowDetailModal(true);
+    try {
+      const [detail, membersRes] = await Promise.all([
+        api.getChannel(channel.id).catch((e) => { console.warn('[channel detail] getChannel failed:', e); return null; }),
+        api.getChannelMembers(channel.id).catch((e) => { console.warn('[channel detail] getChannelMembers failed:', e); return null; }),
+      ]);
+      if (detail) setDetailChannel(detail);
+      else setDetailChannel(channel);
+      if (membersRes && Array.isArray(membersRes.members)) {
+        setDetailMembers(membersRes.members);
+      }
+    } catch (err) {
+      console.error('[channel detail] failed:', err);
+      setDetailChannel(channel);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  // Channel scope options (aligned with backend ChannelScope enum).
+  const channelScopes = [
+    { value: 'GLOBAL', label: t('channels.scope_global'), icon: Globe },
+    { value: 'SERVER', label: t('channels.scope_server'), icon: Hash },
+    { value: 'PRIVATE', label: t('channels.scope_private'), icon: Lock },
   ];
+
+  const inputClass =
+    'flex h-8 w-full rounded-md border-0 bg-secondary/55 px-3 py-1 text-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50';
 
   return (
     <div className="space-y-4">
@@ -154,20 +259,12 @@ function ChannelManagement({
           theme={theme}
           mode={mode}
           variant="default"
-          onClick={() => (channelCrudDisabled ? handleCreate() : setShowCreateModal(true))}
-          title={channelCrudDisabled ? t('channels.create_title') : t('channels.create')}
+          onClick={() => setShowCreateModal(true)}
+          title={t('channels.create')}
         >
           <Plus size={14} /> {t('channels.create')}
         </Button>
       </div>
-
-      {/* Honest-disable info banner */}
-      {channelCrudDisabled && (
-        <Card className="p-3 flex items-start gap-2 border-amber-500/30 bg-amber-500/5">
-          <Info size={14} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-          <p className="text-xs text-muted-foreground">{t('channels.disable_banner')}</p>
-        </Card>
-      )}
 
       {/* Filters */}
       <Card className="p-3">
@@ -228,12 +325,6 @@ function ChannelManagement({
                   <span className="text-muted-foreground">{t('channels.permission')}: </span>
                   <span className="text-foreground">{channel.permission || t('channels.permission_none')}</span>
                 </div>
-                {channel.format && (
-                  <div className="p-2 rounded-md bg-muted/40 text-xs font-mono overflow-hidden">
-                    <span className="text-muted-foreground">{t('channels.format')}: </span>
-                    <span className="text-foreground truncate block">{channel.format}</span>
-                  </div>
-                )}
                 <div className="flex items-center gap-2 p-2 rounded-md bg-muted/40 text-xs">
                   <span className="text-muted-foreground">{t('channels.members')}: </span>
                   <span className="text-foreground">{channel.memberCount || 0}/{channel.maxCapacity || 0}</span>
@@ -247,24 +338,44 @@ function ChannelManagement({
               </div>
 
               {/* Actions */}
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap">
                 <Button
                   theme={theme}
                   mode={mode}
                   variant="outline"
                   className="flex-1 text-xs"
+                  onClick={() => handleViewDetails(channel)}
+                  title={t('channels.details')}
+                >
+                  <Eye size={12} /> {t('channels.details')}
+                </Button>
+                <Button
+                  theme={theme}
+                  mode={mode}
+                  variant="outline"
+                  className="text-xs"
                   onClick={() => handleEdit(channel)}
-                  title={channelCrudDisabled ? t('channels.edit_title') : t('channels.edit')}
+                  title={t('channels.edit')}
                 >
                   <Edit size={12} /> {t('channels.edit')}
                 </Button>
                 <Button
                   theme={theme}
                   mode={mode}
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => handleInvite(channel)}
+                  title={t('channels.invite')}
+                >
+                  <Gift size={12} />
+                </Button>
+                <Button
+                  theme={theme}
+                  mode={mode}
                   variant="destructive"
                   size="icon"
-                  onClick={() => handleDelete(channel.id)}
-                  title={channelCrudDisabled ? t('channels.delete_title') : t('common.delete')}
+                  onClick={() => handleDelete(channel)}
+                  title={t('common.delete')}
                 >
                   <Trash2 size={12} />
                 </Button>
@@ -286,21 +397,113 @@ function ChannelManagement({
       {/* Create Channel Modal */}
       <Modal
         isOpen={showCreateModal}
-        onClose={() => setShowCreateModal(false)}
+        onClose={() => !submitting && setShowCreateModal(false)}
         title={t('channels.create_modal_title')}
         theme={theme}
         mode={mode}
       >
-        <ChannelForm
-          channel={newChannel}
-          onChange={setNewChannel}
-          channelTypes={channelTypes}
-        />
+        <div className="space-y-4">
+          {/* Channel ID (optional) */}
+          <div className="space-y-2">
+            <label className="text-xs font-normal leading-none text-muted-foreground">
+              {t('channels.field_id_optional')}
+            </label>
+            <input
+              type="text"
+              value={newChannel.id}
+              onChange={(e) => setNewChannel({ ...newChannel, id: e.target.value.toLowerCase().replace(/\s/g, '_') })}
+              placeholder="channel_id"
+              className={inputClass}
+            />
+            <p className="text-[11px] text-muted-foreground">{t('channels.field_id_hint')}</p>
+          </div>
+
+          {/* Display Name */}
+          <div className="space-y-2">
+            <label className="text-xs font-normal leading-none text-muted-foreground">
+              {t('channels.field_display_name')} <span className="text-destructive">*</span>
+            </label>
+            <input
+              type="text"
+              value={newChannel.name}
+              onChange={(e) => setNewChannel({ ...newChannel, name: e.target.value })}
+              placeholder={t('channels.field_display_name_placeholder')}
+              className={inputClass}
+            />
+          </div>
+
+          {/* Scope */}
+          <div className="space-y-2">
+            <label className="text-xs font-normal leading-none text-muted-foreground">
+              {t('channels.field_scope')}
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {channelScopes.map((scope) => (
+                <button
+                  key={scope.value}
+                  onClick={() => setNewChannel({ ...newChannel, scope: scope.value })}
+                  className={`flex flex-col items-center gap-1 rounded-md border p-3 text-center transition-colors ${
+                    newChannel.scope === scope.value
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground'
+                  }`}
+                >
+                  <scope.icon size={16} />
+                  <span className="text-xs">{scope.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Max Capacity */}
+          <div className="space-y-2">
+            <label className="text-xs font-normal leading-none text-muted-foreground">
+              {t('channels.field_max_capacity')}
+            </label>
+            <input
+              type="number"
+              min="1"
+              value={newChannel.maxCapacity}
+              onChange={(e) => setNewChannel({ ...newChannel, maxCapacity: e.target.value })}
+              placeholder={t('channels.field_max_capacity_placeholder')}
+              className={inputClass}
+            />
+          </div>
+
+          {/* Permission */}
+          <div className="space-y-2">
+            <label className="text-xs font-normal leading-none text-muted-foreground">
+              {t('channels.field_permission')}
+            </label>
+            <input
+              type="text"
+              value={newChannel.permission}
+              onChange={(e) => setNewChannel({ ...newChannel, permission: e.target.value })}
+              placeholder="novachat.channel.example"
+              className={inputClass}
+            />
+          </div>
+        </div>
         <div className="flex gap-2 mt-6 pt-4 border-t border-border">
-          <Button variant="ghost" className="flex-1" theme={theme} mode={mode} onClick={() => setShowCreateModal(false)}>
+          <Button
+            variant="ghost"
+            className="flex-1"
+            theme={theme}
+            mode={mode}
+            onClick={() => setShowCreateModal(false)}
+            disabled={submitting}
+          >
             {t('common.cancel')}
           </Button>
-          <Button variant="default" className="flex-1" theme={theme} mode={mode} onClick={handleCreate}>
+          <Button
+            variant="default"
+            className="flex-1"
+            theme={theme}
+            mode={mode}
+            onClick={handleCreate}
+            disabled={submitting || !newChannel.name}
+          >
+            {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
             {t('common.create')}
           </Button>
         </div>
@@ -309,121 +512,311 @@ function ChannelManagement({
       {/* Edit Channel Modal */}
       <Modal
         isOpen={showEditModal}
-        onClose={() => setShowEditModal(false)}
+        onClose={() => !submitting && setShowEditModal(false)}
         title={t('channels.edit_modal_title')}
         theme={theme}
         mode={mode}
       >
         {editingChannel && (
-          <>
-            <ChannelForm
-              channel={editingChannel}
-              onChange={setEditingChannel}
-              channelTypes={channelTypes}
-              isEdit
-            />
-            <div className="flex gap-2 mt-6 pt-4 border-t border-border">
-              <Button variant="ghost" className="flex-1" theme={theme} mode={mode} onClick={() => setShowEditModal(false)}>
-                {t('common.cancel')}
-              </Button>
-              <Button variant="default" className="flex-1" theme={theme} mode={mode} onClick={handleSaveEdit}>
-                {t('common.save')}
-              </Button>
+          <div className="space-y-4">
+            {/* Channel ID (read-only) */}
+            <div className="space-y-2">
+              <label className="text-xs font-normal leading-none text-muted-foreground">
+                {t('channels.field_channel_id')}
+              </label>
+              <input
+                type="text"
+                value={editingChannel.id}
+                disabled
+                className={`${inputClass} opacity-50 cursor-not-allowed`}
+              />
             </div>
-          </>
+
+            {/* Display Name */}
+            <div className="space-y-2">
+              <label className="text-xs font-normal leading-none text-muted-foreground">
+                {t('channels.field_display_name')}
+              </label>
+              <input
+                type="text"
+                value={editingChannel.name}
+                onChange={(e) => setEditingChannel({ ...editingChannel, name: e.target.value })}
+                placeholder={t('channels.field_display_name_placeholder')}
+                className={inputClass}
+              />
+            </div>
+
+            {/* Max Capacity */}
+            <div className="space-y-2">
+              <label className="text-xs font-normal leading-none text-muted-foreground">
+                {t('channels.field_max_capacity')}
+              </label>
+              <input
+                type="number"
+                min="1"
+                value={editingChannel.maxCapacity}
+                onChange={(e) => setEditingChannel({ ...editingChannel, maxCapacity: e.target.value })}
+                placeholder={t('channels.field_max_capacity_placeholder')}
+                className={inputClass}
+              />
+            </div>
+
+            {/* Permission */}
+            <div className="space-y-2">
+              <label className="text-xs font-normal leading-none text-muted-foreground">
+                {t('channels.field_permission')}
+              </label>
+              <input
+                type="text"
+                value={editingChannel.permission}
+                onChange={(e) => setEditingChannel({ ...editingChannel, permission: e.target.value })}
+                placeholder="novachat.channel.example"
+                className={inputClass}
+              />
+            </div>
+          </div>
         )}
+        <div className="flex gap-2 mt-6 pt-4 border-t border-border">
+          <Button
+            variant="ghost"
+            className="flex-1"
+            theme={theme}
+            mode={mode}
+            onClick={() => setShowEditModal(false)}
+            disabled={submitting}
+          >
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant="default"
+            className="flex-1"
+            theme={theme}
+            mode={mode}
+            onClick={handleSaveEdit}
+            disabled={submitting}
+          >
+            {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
+            {t('common.save')}
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Delete Channel Confirm Modal */}
+      <Modal
+        isOpen={!!deleteTarget}
+        onClose={() => !submitting && setDeleteTarget(null)}
+        title={t('channels.delete_modal_title')}
+        theme={theme}
+        mode={mode}
+      >
+        <p className="text-xs text-muted-foreground">
+          {t('channels.delete_confirm_name', { name: (deleteTarget && deleteTarget.name) || '' })}
+        </p>
+        <div className="flex gap-2 mt-6 pt-4 border-t border-border">
+          <Button
+            variant="ghost"
+            className="flex-1"
+            theme={theme}
+            mode={mode}
+            onClick={() => setDeleteTarget(null)}
+            disabled={submitting}
+          >
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant="destructive"
+            className="flex-1"
+            theme={theme}
+            mode={mode}
+            onClick={confirmDelete}
+            disabled={submitting}
+          >
+            {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
+            {t('common.delete')}
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Invite Channel Modal */}
+      <Modal
+        isOpen={!!inviteTarget}
+        onClose={() => !submitting && setInviteTarget(null)}
+        title={t('channels.invite_modal_title')}
+        theme={theme}
+        mode={mode}
+      >
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-xs font-normal leading-none text-muted-foreground">
+              {t('channels.invite_ttl')}
+            </label>
+            <input
+              type="number"
+              min="0"
+              value={inviteTtl}
+              onChange={(e) => setInviteTtl(e.target.value)}
+              placeholder={t('channels.invite_ttl_placeholder')}
+              className={inputClass}
+            />
+          </div>
+
+          {inviteResult && inviteResult.code && (
+            <div className="space-y-2">
+              <label className="text-xs font-normal leading-none text-muted-foreground">
+                {t('channels.invite_code')}
+              </label>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 rounded-md bg-secondary/55 px-3 py-1.5 text-xs font-mono text-foreground break-all">
+                  {inviteResult.code}
+                </div>
+                <Button
+                  theme={theme}
+                  mode={mode}
+                  variant="outline"
+                  size="icon"
+                  onClick={copyInviteCode}
+                  title={t('channels.invite_copy')}
+                >
+                  {inviteCopied ? <Check size={12} className="text-emerald-600 dark:text-emerald-400" /> : <Copy size={12} />}
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground">{t('channels.invite_code_hint')}</p>
+            </div>
+          )}
+        </div>
+        <div className="flex gap-2 mt-6 pt-4 border-t border-border">
+          <Button
+            variant="ghost"
+            className="flex-1"
+            theme={theme}
+            mode={mode}
+            onClick={() => setInviteTarget(null)}
+            disabled={submitting}
+          >
+            {inviteResult ? t('common.confirm') : t('common.cancel')}
+          </Button>
+          {!inviteResult && (
+            <Button
+              variant="default"
+              className="flex-1"
+              theme={theme}
+              mode={mode}
+              onClick={confirmInvite}
+              disabled={submitting}
+            >
+              {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
+              {t('common.confirm')}
+            </Button>
+          )}
+        </div>
+      </Modal>
+
+      {/* Channel Details Modal */}
+      <Modal
+        isOpen={showDetailModal}
+        onClose={() => setShowDetailModal(false)}
+        title={t('channels.details_modal_title')}
+        theme={theme}
+        mode={mode}
+      >
+        {detailLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 size={20} className="animate-spin text-muted-foreground" />
+          </div>
+        ) : detailChannel ? (
+          <ChannelDetails channel={detailChannel} members={detailMembers} />
+        ) : null}
+        <div className="flex gap-2 mt-6 pt-4 border-t border-border">
+          <Button variant="ghost" className="flex-1" theme={theme} mode={mode} onClick={() => setShowDetailModal(false)}>
+            {t('common.confirm')}
+          </Button>
+        </div>
       </Modal>
     </div>
   );
 }
 
-// Channel Form Component
-function ChannelForm({ channel, onChange, channelTypes, isEdit = false }) {
+// Channel Details Component
+function ChannelDetails({ channel, members }) {
   const { t } = useTranslation();
-  const inputClass =
-    'flex h-8 w-full rounded-md border-0 bg-secondary/55 px-3 py-1 text-xs transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50';
+  const detail = channel || {};
+  const displayId = detail.id || detail.channelId || '-';
+  const displayName = detail.displayName || detail.name || displayId;
+  const scope = detail.scope || detail.type || '-';
+  const memberCount = detail.memberCount != null ? detail.memberCount : (detail.member_count != null ? detail.member_count : (members.length || 0));
+  const maxCapacity = detail.maxCapacity || detail.max_capacity || 0;
+  const permission = detail.permission || '';
+  const clientId = detail.clientId || detail.client_id || '';
+  const memberList = Array.isArray(members) ? members : [];
+
+  const rowClass = 'flex items-center justify-between p-2 rounded-md bg-muted/40 text-xs';
 
   return (
-    <div className="space-y-4">
-      {/* Channel ID */}
-      <div className="space-y-2">
-        <label className="text-xs font-normal leading-none text-muted-foreground">
-          {t('channels.field_channel_id')}
-        </label>
-        <input
-          type="text"
-          value={channel.id}
-          onChange={(e) => onChange({ ...channel, id: e.target.value.toLowerCase().replace(/\s/g, '_') })}
-          placeholder="channel_id"
-          disabled={isEdit}
-          className={`${inputClass} ${isEdit ? 'opacity-50 cursor-not-allowed' : ''}`}
-        />
-      </div>
-
-      {/* Channel Name */}
-      <div className="space-y-2">
-        <label className="text-xs font-normal leading-none text-muted-foreground">
-          {t('channels.field_display_name')}
-        </label>
-        <input
-          type="text"
-          value={channel.name}
-          onChange={(e) => onChange({ ...channel, name: e.target.value })}
-          placeholder={t('channels.field_display_name_placeholder')}
-          className={inputClass}
-        />
-      </div>
-
-      {/* Channel Type */}
-      <div className="space-y-2">
-        <label className="text-xs font-normal leading-none text-muted-foreground">
-          {t('channels.field_channel_type')}
-        </label>
-        <div className="grid grid-cols-3 gap-2">
-          {channelTypes.map((type) => (
-            <button
-              key={type.value}
-              onClick={() => onChange({ ...channel, type: type.value })}
-              className={`flex flex-col items-center gap-1 rounded-md border p-3 text-center transition-colors ${
-                channel.type === type.value
-                  ? 'border-primary bg-primary/10 text-primary'
-                  : 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground'
-              }`}
-            >
-              <type.icon size={16} />
-              <span className="text-xs">{type.label}</span>
-            </button>
-          ))}
+    <div className="space-y-3">
+      {/* Basic Info */}
+      <div className="space-y-1.5">
+        <div className={rowClass}>
+          <span className="text-muted-foreground">{t('channels.field_channel_id')}</span>
+          <span className="text-foreground font-mono">{displayId}</span>
         </div>
+        <div className={rowClass}>
+          <span className="text-muted-foreground">{t('channels.field_display_name')}</span>
+          <span className="text-foreground">{displayName}</span>
+        </div>
+        <div className={rowClass}>
+          <span className="text-muted-foreground">{t('channels.field_channel_type')}</span>
+          <span className="text-foreground">{scope}</span>
+        </div>
+        <div className={rowClass}>
+          <span className="text-muted-foreground">{t('channels.member_count')}</span>
+          <span className="text-foreground">{memberCount}/{maxCapacity}</span>
+        </div>
+        {permission && (
+          <div className={rowClass}>
+            <span className="text-muted-foreground">{t('channels.permission')}</span>
+            <span className="text-foreground font-mono">{permission}</span>
+          </div>
+        )}
+        {clientId && (
+          <div className={rowClass}>
+            <span className="text-muted-foreground">{t('channels.server')}</span>
+            <span className="text-foreground">{clientId}</span>
+          </div>
+        )}
       </div>
 
-      {/* Permission */}
-      <div className="space-y-2">
-        <label className="text-xs font-normal leading-none text-muted-foreground">
-          {t('channels.field_permission')}
-        </label>
-        <input
-          type="text"
-          value={channel.permission}
-          onChange={(e) => onChange({ ...channel, permission: e.target.value })}
-          placeholder="novachat.channel.example"
-          className={inputClass}
-        />
-      </div>
-
-      {/* Format */}
-      <div className="space-y-2">
-        <label className="text-xs font-normal leading-none text-muted-foreground">
-          {t('channels.field_message_format')}
-        </label>
-        <input
-          type="text"
-          value={channel.format}
-          onChange={(e) => onChange({ ...channel, format: e.target.value })}
-          placeholder="&7[{channel}] {player}: {message}"
-          className={`${inputClass} font-mono`}
-        />
-        <p className="text-xs text-muted-foreground">{t('channels.field_format_vars')}</p>
+      {/* Members List */}
+      <div className="pt-3 border-t border-border">
+        <h4 className="text-xs font-medium text-foreground mb-2">
+          {t('channels.members')} ({memberList.length})
+        </h4>
+        {memberList.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-4 text-center">{t('channels.no_members')}</p>
+        ) : (
+          <div className="max-h-48 overflow-y-auto space-y-1">
+            {memberList.map((m, i) => {
+              const name = m.name || m.username || '';
+              const uuid = m.uuid || m.id || '';
+              const isOffline = !name;
+              return (
+                <div key={uuid || i} className="flex items-center gap-2 p-1.5 rounded-md bg-muted/30 text-xs">
+                  <div className="flex-1 min-w-0">
+                    {isOffline ? (
+                      <span className="text-muted-foreground font-mono" title={t('channels.offline')}>
+                        {uuid} <span className="text-muted-foreground/60">({t('channels.offline')})</span>
+                      </span>
+                    ) : (
+                      <span className="text-foreground">{name}</span>
+                    )}
+                  </div>
+                  {!isOffline && uuid && uuid !== name && (
+                    <span className="text-muted-foreground font-mono text-[10px] truncate">{uuid}</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

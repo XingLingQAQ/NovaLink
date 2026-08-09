@@ -18,7 +18,6 @@ import {
   Clock,
   Wifi,
   WifiOff,
-  Info,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import Card from '../ui/Card';
@@ -39,10 +38,6 @@ function ClientStatus({
   const { t } = useTranslation();
   const [viewMode, setViewMode] = useState('grid'); // 'grid' or 'list'
 
-  // Config reload is not exposed to the panel via REST or WS.
-  // The App-level handler shows an honest-disable toast.
-  const reloadConfigDisabled = true;
-
   // Calculate statistics.
   const onlineCount = servers.filter((s) => s.status === 'online').length;
   const totalPlayers = servers.reduce((sum, s) => sum + (s.players || 0), 0);
@@ -61,6 +56,12 @@ function ClientStatus({
     acc[platform].push(server);
     return acc;
   }, {});
+
+  // Pass the full server object to onDisconnectServer so the parent can show a
+  // confirm modal with the server name. Falls back to just the id if needed.
+  const handleDisconnect = (server) => {
+    onDisconnectServer && onDisconnectServer(server);
+  };
 
   return (
     <div className="space-y-4">
@@ -108,20 +109,12 @@ function ClientStatus({
             mode={mode}
             variant="default"
             onClick={onReloadConfig}
-            title={reloadConfigDisabled ? t('common.reload_title_disabled') : t('common.reload_title')}
+            title={t('common.reload_title')}
           >
             <RefreshCw size={14} /> {t('common.reload')}
           </Button>
         </div>
       </div>
-
-      {/* Honest-disable info banner */}
-      {reloadConfigDisabled && (
-        <Card className="p-3 flex items-start gap-2 border-amber-500/30 bg-amber-500/5">
-          <Info size={14} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-          <p className="text-xs text-muted-foreground">{t('common.reload_disable_banner')}</p>
-        </Card>
-      )}
 
       {/* Statistics Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -167,7 +160,7 @@ function ClientStatus({
               theme={theme}
               mode={mode}
               onViewDetails={onViewServerDetails}
-              onDisconnect={onDisconnectServer}
+              onDisconnect={handleDisconnect}
             />
           ))}
         </div>
@@ -221,7 +214,8 @@ function ClientStatus({
                             mode={mode}
                             variant="destructive"
                             size="icon"
-                            onClick={() => onDisconnectServer && onDisconnectServer(server.id)}
+                            onClick={() => handleDisconnect(server)}
+                            title={t('common.disconnect_title')}
                           >
                             <Power size={14} />
                           </Button>
@@ -377,7 +371,8 @@ function ServerCard({ server, theme, mode, onViewDetails, onDisconnect }) {
             mode={mode}
             variant="destructive"
             size="icon"
-            onClick={() => onDisconnect && onDisconnect(server.id)}
+            onClick={() => onDisconnect && onDisconnect(server)}
+            title={t('common.disconnect_title')}
           >
             <Power size={12} />
           </Button>

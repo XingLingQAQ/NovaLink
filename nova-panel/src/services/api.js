@@ -80,12 +80,16 @@ export function clearConnectionUrls() {
 
 /**
  * Perform a fetch against the REST API with auth headers.
+ * On 401, transparently attempts a single token refresh + retry before
+ * surfacing the error (avoids kicking the user on a stale-but-refreshable
+ * token). The refresh call itself never recurses on its own 401.
  * @param {string} path - path relative to API base, e.g. '/channels'
  * @param {object} options - fetch options (method, body, etc.)
+ * @param {boolean} _isRetry - internal guard against refresh loops
  * @returns {Promise<object>} - parsed JSON response
  * @throws {Error} on non-2xx with server message
  */
-export async function apiFetch(path, options = {}) {
+export async function apiFetch(path, options = {}, _isRetry = false) {
   const base = getApiBaseUrl();
   const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
   const headers = {
@@ -108,6 +112,26 @@ export async function apiFetch(path, options = {}) {
       data = JSON.parse(text);
     } catch {
       data = { raw: text };
+    }
+  }
+
+  // 401: try a single token refresh + retry before giving up. The _isRetry
+  // guard ensures a refresh-induced 401 (or a refresh endpoint 401) doesn't
+  // recurse infinitely.
+  if (response.status === 401 && !_isRetry) {
+    try {
+      const newToken = await authService.refreshAccessToken(base);
+      if (newToken) {
+        return apiFetch(path, options, true);
+      }
+    } catch (refreshErr) {
+      // Refresh failed — the token is truly invalid. Log out and surface the
+      // original 401 so the UI can react (e.g. show login).
+      authService.logout();
+      const error = new Error(i18n.t('common.api_error_request', { status: 401 }));
+      error.status = 401;
+      error.data = data;
+      throw error;
     }
   }
 
@@ -140,6 +164,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ channelId, content, senderName }),
     }),
+
+  // --- Channel CRUD (batch 2) ---
+  createChannel: (body) => apiFetch('/channels', { method: 'POST', body: JSON.stringify(body) }),
+  updateChannel: (id, body) => apiFetch(`/channels/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteChannel: (id) => apiFetch(`/channels/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  invitePlayer: (channelId, body) => apiFetch(`/channels/${encodeURIComponent(channelId)}/invite`, { method: 'POST', body: JSON.stringify(body || {}) }),
+
+  // --- Player mute / unmute / kick (batch 2) ---
+  mutePlayer: (uuid, body) => apiFetch(`/players/${encodeURIComponent(uuid)}/mute`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  unmutePlayer: (uuid, body) => apiFetch(`/players/${encodeURIComponent(uuid)}/unmute`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  getMutes: () => apiFetch('/mutes'),
+  kickPlayer: (uuid, body) => apiFetch(`/players/${encodeURIComponent(uuid)}/kick`, { method: 'POST', body: JSON.stringify(body || {}) }),
+
+  // --- Server / config / console (batch 2) ---
+  reloadConfig: () => apiFetch('/reload', { method: 'POST' }),
+  disconnectClient: (clientId) => apiFetch(`/clients/${encodeURIComponent(clientId)}`, { method: 'DELETE' }),
+  runConsoleCommand: (command) => apiFetch('/console', { method: 'POST', body: JSON.stringify({ command }) }),
 };
 
 export default api;

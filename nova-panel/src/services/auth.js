@@ -34,14 +34,18 @@ class AuthService {
       if (token) {
         this.token = token;
         this.refreshToken = refreshToken;
-        
+
         if (userJson) {
           this.user = JSON.parse(userJson);
         }
 
-        // Check if token is expired
+        // If the token is already expired, try to refresh once before kicking
+        // the user out. Only logout if refresh also fails (no refresh token or
+        // the backend rejects it). This avoids a hard logout on a stale tab.
         if (this._isTokenExpired(token)) {
-          this.logout();
+          // Defer the refresh attempt so construction isn't blocked by a network
+          // call; listeners are notified after the result resolves.
+          this.refreshAccessToken().catch(() => this.logout());
         }
       }
     } catch (error) {
@@ -142,7 +146,10 @@ class AuthService {
   }
 
   /**
-   * Refresh the access token using refresh token
+   * Refresh the access token using refresh token.
+   * On failure the caller is responsible for any logout decision (e.g. the
+   * apiFetch 401-retry path logs out only after a refresh failure). This method
+   * does NOT auto-logout so that a transient refresh error doesn't cascade.
    * @param {string} apiUrl - API base URL
    * @returns {Promise<string>} - New access token
    */
@@ -165,19 +172,18 @@ class AuthService {
       }
 
       const data = await response.json();
-      
+
       this.token = data.token;
       if (data.refreshToken) {
         this.refreshToken = data.refreshToken;
       }
-      
+
       this._saveToStorage();
       this._notifyListeners();
 
       return this.token;
     } catch (error) {
       console.error('[Auth] Token refresh failed:', error);
-      this.logout();
       throw error;
     }
   }
@@ -217,11 +223,47 @@ class AuthService {
       if (!payload || !payload.exp) {
         return true;
       }
-      
+
       // Check if expired (with 60 second buffer)
       return Date.now() >= (payload.exp * 1000) - 60000;
     } catch (error) {
       return true;
+    }
+  }
+
+  /**
+   * Check if the token will expire within the given number of milliseconds.
+   * Used by the proactive refresh path to refresh before expiry.
+   * @param {number} withinMs - milliseconds window (default 5 minutes)
+   * @returns {boolean}
+   */
+  _isTokenExpiringSoon(withinMs = 5 * 60 * 1000) {
+    if (!this.token) return false;
+    try {
+      const payload = this._parseToken(this.token);
+      if (!payload || !payload.exp) return false;
+      return Date.now() >= (payload.exp * 1000) - withinMs;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Proactively refresh the access token if it is expiring soon (within 5 min).
+   * Safe to call repeatedly — no-ops when the token is still fresh or there is
+   * no refresh token. Returns the (possibly new) token, or null if no refresh
+   * was performed.
+   * @param {string} apiUrl - API base URL
+   * @returns {Promise<string|null>}
+   */
+  async maybeRefreshToken(apiUrl = '/api') {
+    if (!this.token || !this.refreshToken) return null;
+    if (!this._isTokenExpiringSoon()) return null;
+    try {
+      return await this.refreshAccessToken(apiUrl);
+    } catch (err) {
+      // Refresh failed — let the next real request's 401 path handle logout.
+      return null;
     }
   }
 

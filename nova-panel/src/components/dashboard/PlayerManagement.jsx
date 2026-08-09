@@ -4,7 +4,12 @@
  *
  * Restyled to the shadcn/ui reference idiom: Tabs-style switcher, Card table
  * of players with pill platform badges, pill mute/kick Buttons (destructive
- * variant for kick). The honest-disable info banner uses an amber-tinted Card.
+ * variant for kick).
+ *
+ * Batch 2: mute/unmute/kick are now wired to real REST endpoints via the api
+ * client. The mute modal collects channelId/durationMs/reason and calls the App
+ * handler which performs the REST call + toast + list refresh. The kick action
+ * opens a confirm modal (destructive).
  */
 
 import React, { useState } from 'react';
@@ -15,7 +20,8 @@ import {
   MessageSquare,
   Shield,
   Clock,
-  Info,
+  Eye,
+  Loader2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import Card from '../ui/Card';
@@ -24,6 +30,7 @@ import Badge from '../ui/Badge';
 import Modal from '../ui/Modal';
 import CustomSelect from '../ui/CustomSelect';
 import Avatar from '../ui/Avatar';
+import { api } from '../../services/api';
 
 function PlayerManagement({
   theme,
@@ -31,6 +38,7 @@ function PlayerManagement({
   txtMain: _txtMain,
   txtSec: _txtSec,
   players = [],
+  channels = [],
   mutedPlayers = [],
   onMutePlayer,
   onUnmutePlayer,
@@ -43,16 +51,23 @@ function PlayerManagement({
   const [serverFilter, setServerFilter] = useState('all');
   const [platformFilter, setPlatformFilter] = useState('all');
   const [showMuteModal, setShowMuteModal] = useState(false);
-  const [muteTarget, setMuteTarget] = useState({
+  const [showDetailModal, setShowDetailModal] = useState(false);
+  const [playerDetail, setPlayerDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [kickTarget, setKickTarget] = useState(null);
+  const [unmuteTarget, setUnmuteTarget] = useState(null);
+
+  // Mute form — aligned with backend POST /api/players/{uuid}/mute body.
+  // { channelId?, durationMs?, reason? } — durationMs 0 = permanent.
+  const emptyMuteTarget = {
+    uuid: '',
     name: '',
     reason: '',
     duration: '1h',
     channel: 'all',
-  });
-
-  // Mute/unmute is not exposed to the panel via REST or WS.
-  // The App-level handlers show an honest-disable toast.
-  const muteActionDisabled = true;
+  };
+  const [muteTarget, setMuteTarget] = useState(emptyMuteTarget);
 
   // Filter players.
   const filteredPlayers = players.filter((p) => {
@@ -66,33 +81,145 @@ function PlayerManagement({
   // Get unique servers.
   const uniqueServers = [...new Set(players.map((p) => p.server))];
 
-  // Handle mute — delegates to App (honest-disable toast, no fake mutation).
-  const handleMute = (playerName) => {
-    if (muteActionDisabled) {
-      onMutePlayer && onMutePlayer({ name: playerName });
-      return;
+  // Channel options for the mute modal (all + each channel id).
+  const channelOptions = ['all', ...channels.map((c) => c.id).filter(Boolean)];
+
+  // Convert a duration string (from the Select) into a durationMs number for the backend.
+  // "permanent" / "0" -> 0 (permanent). "5m" -> 300000, "1h" -> 3600000, etc.
+  const durationToMs = (dur) => {
+    if (dur === 'permanent' || dur === '0' || !dur) return 0;
+    const match = String(dur).match(/^(\d+)\s*(s|m|h|d)$/i);
+    if (!match) {
+      const n = Number(dur);
+      return Number.isNaN(n) ? 0 : n * 1000;
     }
-    setMuteTarget({ ...muteTarget, name: playerName });
+    const num = parseInt(match[1], 10);
+    const unit = match[2].toLowerCase();
+    const multipliers = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
+    return num * (multipliers[unit] || 1000);
+  };
+
+  // Handle mute — opens the mute modal with the player pre-filled.
+  const handleMute = (player) => {
+    setMuteTarget({
+      ...emptyMuteTarget,
+      uuid: player.uuid,
+      name: player.name,
+    });
     setShowMuteModal(true);
   };
 
-  // Confirm mute.
-  const confirmMute = () => {
-    if (muteTarget.name && onMutePlayer) {
-      onMutePlayer(muteTarget);
+  // Confirm mute — calls the App handler with the backend-shaped payload.
+  const confirmMute = async () => {
+    if (!muteTarget.uuid || !onMutePlayer) return;
+    const payload = {
+      uuid: muteTarget.uuid,
+      name: muteTarget.name,
+      durationMs: durationToMs(muteTarget.duration),
+    };
+    if (muteTarget.channel && muteTarget.channel !== 'all') {
+      payload.channelId = muteTarget.channel;
+    }
+    if (muteTarget.reason) payload.reason = muteTarget.reason;
+    setSubmitting(true);
+    try {
+      await onMutePlayer(payload);
       setShowMuteModal(false);
-      setMuteTarget({ name: '', reason: '', duration: '1h', channel: 'all' });
+      setMuteTarget(emptyMuteTarget);
+    } catch {
+      // toast shown by App handler
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Handle unmute — opens a confirm modal.
+  const handleUnmute = (mute) => {
+    setUnmuteTarget(mute);
+  };
+
+  const confirmUnmute = async () => {
+    if (!unmuteTarget || !onUnmutePlayer) return;
+    const payload = { uuid: unmuteTarget.uuid, name: unmuteTarget.name };
+    if (unmuteTarget.channelId) payload.channelId = unmuteTarget.channelId;
+    setSubmitting(true);
+    try {
+      await onUnmutePlayer(payload);
+      setUnmuteTarget(null);
+    } catch {
+      // toast shown by App handler
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Handle kick — opens a confirm modal (destructive).
+  const handleKick = (player) => {
+    setKickTarget(player);
+  };
+
+  const confirmKick = async () => {
+    if (!kickTarget || !onKickPlayer) return;
+    const payload = { uuid: kickTarget.uuid, name: kickTarget.name };
+    if (kickTarget.channel) payload.channelId = kickTarget.channel;
+    setSubmitting(true);
+    try {
+      await onKickPlayer(payload);
+      setKickTarget(null);
+    } catch {
+      // toast shown by App handler
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Handle view player details — fetches full player info via REST.
+  const handleViewDetails = async (player) => {
+    setPlayerDetail(null);
+    setDetailLoading(true);
+    setShowDetailModal(true);
+    try {
+      const detail = await api.getPlayer(player.uuid).catch((e) => {
+        console.warn('[player detail] getPlayer failed:', e);
+        return null;
+      });
+      if (detail) setPlayerDetail(detail);
+      else setPlayerDetail(player);
+    } catch (err) {
+      console.error('[player detail] failed:', err);
+      setPlayerDetail(player);
+    } finally {
+      setDetailLoading(false);
     }
   };
 
   // Duration options.
   const durationOptions = [
+    { value: '5m', label: t('players.duration_5m') },
+    { value: '30m', label: t('players.duration_30m') },
     { value: '1h', label: t('players.duration_1h') },
     { value: '6h', label: t('players.duration_6h') },
     { value: '24h', label: t('players.duration_24h') },
     { value: '7d', label: t('players.duration_7d') },
     { value: 'permanent', label: t('players.duration_permanent') },
   ];
+
+  // Format a mute's expiry for display.
+  const formatExpiry = (mute) => {
+    if (!mute) return '-';
+    if (mute.permanent) return t('players.expire_permanent');
+    if (!mute.expireTime) return '-';
+    try {
+      const num = typeof mute.expireTime === 'number' ? mute.expireTime : Number(mute.expireTime);
+      if (Number.isNaN(num)) return String(mute.expireTime);
+      return new Date(num).toLocaleString();
+    } catch {
+      return String(mute.expireTime);
+    }
+  };
+
+  const inputClass =
+    'flex h-8 w-full rounded-md border-0 bg-secondary/55 px-3 py-1 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring placeholder:text-muted-foreground text-foreground';
 
   return (
     <div className="space-y-4">
@@ -132,14 +259,6 @@ function PlayerManagement({
           </button>
         </div>
       </div>
-
-      {/* Honest-disable info banner */}
-      {muteActionDisabled && (
-        <Card className="p-3 flex items-start gap-2 border-amber-500/30 bg-amber-500/5">
-          <Info size={14} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-          <p className="text-xs text-muted-foreground">{t('players.disable_banner')}</p>
-        </Card>
-      )}
 
       {/* Online Players Tab */}
       {tab === 'online' && (
@@ -222,14 +341,24 @@ function PlayerManagement({
                     </td>
                     <td className="p-3 text-right">
                       <div className="flex items-center justify-end gap-2">
+                        <Button
+                          theme={theme}
+                          mode={mode}
+                          variant="outline"
+                          size="icon"
+                          onClick={() => handleViewDetails(player)}
+                          title={t('players.details')}
+                        >
+                          <Eye size={12} />
+                        </Button>
                         {!player.muted && (
                           <Button
                             theme={theme}
                             mode={mode}
                             variant="outline"
                             className="text-xs"
-                            onClick={() => handleMute(player.name)}
-                            title={muteActionDisabled ? t('players.mute_title_disabled') : t('players.mute_title')}
+                            onClick={() => handleMute(player)}
+                            title={t('players.mute_title')}
                           >
                             {t('players.mute')}
                           </Button>
@@ -240,7 +369,8 @@ function PlayerManagement({
                             mode={mode}
                             variant="destructive"
                             size="icon"
-                            onClick={() => onKickPlayer(player.uuid)}
+                            onClick={() => handleKick(player)}
+                            title={t('players.kick_title')}
                           >
                             <UserX size={12} />
                           </Button>
@@ -271,34 +401,40 @@ function PlayerManagement({
               <thead>
                 <tr className="text-xs text-muted-foreground border-b border-border">
                   <th className="p-3 font-medium">{t('players.col_player')}</th>
+                  <th className="p-3 font-medium">{t('players.field_mute_channel')}</th>
                   <th className="p-3 font-medium">{t('players.col_reason')}</th>
                   <th className="p-3 font-medium">{t('players.col_expire')}</th>
-                  <th className="p-3 font-medium">{t('players.col_operator')}</th>
                   <th className="p-3 font-medium text-right">{t('players.col_action')}</th>
                 </tr>
               </thead>
               <tbody className="text-xs text-foreground">
                 {mutedPlayers.map((mute) => (
-                  <tr key={mute.uuid} className="border-b border-border last:border-0 hover:bg-muted/40 transition-colors">
+                  <tr key={(mute.uuid || '') + '|' + (mute.channelId || '')} className="border-b border-border last:border-0 hover:bg-muted/40 transition-colors">
                     <td className="p-3">
                       <div className="flex items-center gap-3">
-                        <Avatar name={mute.name} size={28} rounded="rounded-full" />
-                        <span className="font-medium">{mute.name}</span>
+                        <Avatar name={mute.name || mute.uuid} size={28} rounded="rounded-full" />
+                        <div className="min-w-0">
+                          <div className="font-medium">{mute.name || mute.uuid}</div>
+                          {mute.uuid && mute.uuid !== mute.name && (
+                            <div className="text-[10px] text-muted-foreground font-mono truncate">{mute.uuid}</div>
+                          )}
+                        </div>
                       </div>
                     </td>
-                    <td className="p-3 text-muted-foreground">{mute.reason}</td>
+                    <td className="p-3">
+                      {mute.channelId ? (
+                        <span className="rounded-md bg-muted px-1.5 py-0.5 text-xs">#{mute.channelId}</span>
+                      ) : (
+                        <Badge variant="info">{t('players.field_channel_placeholder')}</Badge>
+                      )}
+                    </td>
+                    <td className="p-3 text-muted-foreground">{mute.reason || '-'}</td>
                     <td className="p-3">
                       <div className="flex items-center gap-1">
                         <Clock size={12} className="text-muted-foreground" />
-                        <span className={mute.expireTime === t('players.duration_permanent') ? 'text-destructive' : 'text-muted-foreground'}>
-                          {mute.expireTime}
+                        <span className={mute.permanent ? 'text-destructive' : 'text-muted-foreground'}>
+                          {formatExpiry(mute)}
                         </span>
-                      </div>
-                    </td>
-                    <td className="p-3">
-                      <div className="flex items-center gap-1 text-muted-foreground">
-                        <Shield size={12} />
-                        {mute.operator}
                       </div>
                     </td>
                     <td className="p-3 text-right">
@@ -307,8 +443,8 @@ function PlayerManagement({
                         mode={mode}
                         variant="outline"
                         className="text-xs text-emerald-600 dark:text-emerald-400"
-                        onClick={() => onUnmutePlayer && onUnmutePlayer(mute.uuid)}
-                        title={muteActionDisabled ? t('players.unmute_title_disabled') : t('players.unmute_title')}
+                        onClick={() => handleUnmute(mute)}
+                        title={t('players.unmute_title')}
                       >
                         {t('players.unmute')}
                       </Button>
@@ -332,7 +468,7 @@ function PlayerManagement({
       {/* Mute Modal */}
       <Modal
         isOpen={showMuteModal}
-        onClose={() => setShowMuteModal(false)}
+        onClose={() => !submitting && setShowMuteModal(false)}
         title={t('players.mute_modal_title')}
         theme={theme}
         mode={mode}
@@ -345,9 +481,8 @@ function PlayerManagement({
             <input
               type="text"
               value={muteTarget.name}
-              onChange={(e) => setMuteTarget({ ...muteTarget, name: e.target.value })}
-              placeholder={t('players.field_player_name_placeholder')}
-              className="flex h-8 w-full rounded-md border-0 bg-secondary/55 px-3 py-1 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring placeholder:text-muted-foreground text-foreground"
+              disabled
+              className={`${inputClass} opacity-50 cursor-not-allowed`}
             />
           </div>
           <div className="space-y-2">
@@ -359,7 +494,7 @@ function PlayerManagement({
               value={muteTarget.reason}
               onChange={(e) => setMuteTarget({ ...muteTarget, reason: e.target.value })}
               placeholder={t('players.field_reason_placeholder')}
-              className="flex h-8 w-full rounded-md border-0 bg-secondary/55 px-3 py-1 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring placeholder:text-muted-foreground text-foreground"
+              className={inputClass}
             />
           </div>
           <div className="space-y-2">
@@ -374,16 +509,199 @@ function PlayerManagement({
               onChange={(val) => setMuteTarget({ ...muteTarget, duration: val })}
             />
           </div>
+          <div className="space-y-2">
+            <label className="text-xs font-normal leading-none text-muted-foreground">
+              {t('players.field_channel')}
+            </label>
+            <CustomSelect
+              theme={theme}
+              mode={mode}
+              options={channelOptions}
+              defaultValue="all"
+              onChange={(val) => setMuteTarget({ ...muteTarget, channel: val })}
+            />
+            <p className="text-[11px] text-muted-foreground">{t('players.field_channel_placeholder')}</p>
+          </div>
           <div className="flex gap-2 mt-6 pt-4 border-t border-border">
-            <Button variant="ghost" className="flex-1" theme={theme} mode={mode} onClick={() => setShowMuteModal(false)}>
+            <Button
+              variant="ghost"
+              className="flex-1"
+              theme={theme}
+              mode={mode}
+              onClick={() => setShowMuteModal(false)}
+              disabled={submitting}
+            >
               {t('common.cancel')}
             </Button>
-            <Button variant="default" className="flex-1" theme={theme} mode={mode} onClick={confirmMute}>
+            <Button
+              variant="default"
+              className="flex-1"
+              theme={theme}
+              mode={mode}
+              onClick={confirmMute}
+              disabled={submitting}
+            >
+              {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
               {t('common.confirm')}
             </Button>
           </div>
         </div>
       </Modal>
+
+      {/* Unmute Confirm Modal */}
+      <Modal
+        isOpen={!!unmuteTarget}
+        onClose={() => !submitting && setUnmuteTarget(null)}
+        title={t('players.unmute_title')}
+        theme={theme}
+        mode={mode}
+      >
+        <p className="text-xs text-muted-foreground">
+          {t('players.toast_unmute_success', { name: (unmuteTarget && (unmuteTarget.name || unmuteTarget.uuid)) || '' })}
+        </p>
+        <div className="flex gap-2 mt-6 pt-4 border-t border-border">
+          <Button
+            variant="ghost"
+            className="flex-1"
+            theme={theme}
+            mode={mode}
+            onClick={() => setUnmuteTarget(null)}
+            disabled={submitting}
+          >
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant="default"
+            className="flex-1 text-emerald-600 dark:text-emerald-400"
+            theme={theme}
+            mode={mode}
+            onClick={confirmUnmute}
+            disabled={submitting}
+          >
+            {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
+            {t('players.unmute')}
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Kick Confirm Modal */}
+      <Modal
+        isOpen={!!kickTarget}
+        onClose={() => !submitting && setKickTarget(null)}
+        title={t('players.kick_modal_title')}
+        theme={theme}
+        mode={mode}
+      >
+        <p className="text-xs text-muted-foreground">
+          {t('players.kick_confirm', { name: (kickTarget && kickTarget.name) || '' })}
+        </p>
+        <div className="flex gap-2 mt-6 pt-4 border-t border-border">
+          <Button
+            variant="ghost"
+            className="flex-1"
+            theme={theme}
+            mode={mode}
+            onClick={() => setKickTarget(null)}
+            disabled={submitting}
+          >
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant="destructive"
+            className="flex-1"
+            theme={theme}
+            mode={mode}
+            onClick={confirmKick}
+            disabled={submitting}
+          >
+            {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
+            {t('players.kick')}
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Player Details Modal */}
+      <Modal
+        isOpen={showDetailModal}
+        onClose={() => setShowDetailModal(false)}
+        title={t('players.details_modal_title')}
+        theme={theme}
+        mode={mode}
+      >
+        {detailLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 size={20} className="animate-spin text-muted-foreground" />
+          </div>
+        ) : playerDetail ? (
+          <PlayerDetails player={playerDetail} />
+        ) : null}
+        <div className="flex gap-2 mt-6 pt-4 border-t border-border">
+          <Button variant="ghost" className="flex-1" theme={theme} mode={mode} onClick={() => setShowDetailModal(false)}>
+            {t('common.confirm')}
+          </Button>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+// Player Details Component
+function PlayerDetails({ player }) {
+  const { t } = useTranslation();
+  const detail = player || {};
+  const name = detail.name || detail.uuid || '-';
+  const uuid = detail.uuid || '-';
+  const clientId = detail.clientId || detail.client_id || detail.server || '-';
+  const currentWorld = detail.currentWorld || detail.current_world || '-';
+  const activeChannel = detail.activeChannel || detail.active_channel || detail.channel || '-';
+  const joinedChannels = Array.isArray(detail.joinedChannels)
+    ? detail.joinedChannels
+    : (Array.isArray(detail.joined_channels) ? detail.joined_channels : []);
+
+  const rowClass = 'flex items-center justify-between p-2 rounded-md bg-muted/40 text-xs';
+
+  return (
+    <div className="space-y-3">
+      {/* Player Header */}
+      <div className="flex items-center gap-3 pb-3 border-b border-border">
+        <Avatar name={name} size={40} rounded="rounded-full" />
+        <div className="min-w-0">
+          <h4 className="text-sm font-medium text-foreground">{name}</h4>
+          <p className="text-xs text-muted-foreground font-mono truncate">{uuid}</p>
+        </div>
+      </div>
+
+      {/* Detail Rows */}
+      <div className="space-y-1.5">
+        <div className={rowClass}>
+          <span className="text-muted-foreground">{t('players.current_world')}</span>
+          <span className="text-foreground">{currentWorld}</span>
+        </div>
+        <div className={rowClass}>
+          <span className="text-muted-foreground">{t('players.active_channel')}</span>
+          <span className="text-foreground">{activeChannel}</span>
+        </div>
+        <div className={rowClass}>
+          <span className="text-muted-foreground">{t('players.client_id')}</span>
+          <span className="text-foreground">{clientId}</span>
+        </div>
+      </div>
+
+      {/* Joined Channels */}
+      <div className="pt-3 border-t border-border">
+        <h4 className="text-xs font-medium text-foreground mb-2">
+          {t('players.joined_channels')} ({joinedChannels.length})
+        </h4>
+        {joinedChannels.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-2 text-center">{t('players.no_joined_channels')}</p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {joinedChannels.map((ch, i) => (
+              <Badge key={i} variant="secondary">{ch}</Badge>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

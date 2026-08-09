@@ -182,6 +182,37 @@ export function adaptChatMessage(msgJson) {
 }
 
 /**
+ * Adapt a REST /api/mutes mute JSON object to the component muted-player shape.
+ * Backend mute JSON (from GET /api/mutes):
+ *   { playerId, playerName, channelId, reason, expireTime, remainingMs, permanent }
+ * - channelId is the literal "(global)" sentinel when the mute is global.
+ * - expireTime is 0 for permanent; remainingMs is -1 for permanent, 0 when expired.
+ * - permanent is a boolean (true when expireTime <= 0).
+ * Component prop shape (mutedPlayers entry):
+ *   { uuid, name, reason, expireTime, channelId, permanent, remainingMs, operator }
+ * The backend does not expose an "operator" field on the REST mute list, so we
+ * leave it blank (the column is rendered only when present).
+ */
+export function adaptMute(muteJson) {
+  if (!muteJson) return null;
+  const permanent = !!muteJson.permanent;
+  const channelId = muteJson.channelId || '';
+  // Treat the backend "(global)" sentinel as a global mute (no specific channel).
+  const isGlobal = !channelId || channelId === '(global)';
+  return {
+    uuid: muteJson.playerId || '',
+    name: muteJson.playerName || muteJson.playerId || '',
+    reason: muteJson.reason || '',
+    expireTime: permanent ? null : (muteJson.expireTime || 0),
+    channelId: isGlobal ? '' : channelId,
+    channelLabel: isGlobal ? '' : channelId,
+    permanent,
+    remainingMs: muteJson.remainingMs != null ? muteJson.remainingMs : (permanent ? -1 : 0),
+    operator: muteJson.operator || '',
+  };
+}
+
+/**
  * Adapt a WS notification to the component notification shape.
  * Backend notification payload: { title, message, level, timestamp }
  * level is "info" | "warning" | "error" — map to component type + icon.

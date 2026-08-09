@@ -19,6 +19,7 @@ import {
   Zap,
   Loader2,
   AlertCircle,
+  Terminal,
   Server as ServerIcon,
   Users as UsersIcon,
   MessageSquare as MessageIcon,
@@ -35,6 +36,7 @@ import {
   adaptClient,
   adaptChatMessage,
   adaptNotification,
+  adaptMute,
   buildDashboardStats,
 } from './utils/adapters';
 
@@ -42,14 +44,17 @@ import ToastContainer from './components/ui/ToastContainer';
 import Card from './components/ui/Card';
 import Button from './components/ui/Button';
 import Switch from './components/ui/Switch';
+import Modal from './components/ui/Modal';
 import NotificationDropdown from './components/dashboard/NotificationDropdown';
 
 // Dashboard View Components
 import DashboardView from './components/dashboard/DashboardView';
 import MessageMonitor from './components/dashboard/MessageMonitor';
+import ConsoleCommand from './components/dashboard/ConsoleCommand';
 import ChannelManagement from './components/dashboard/ChannelManagement';
 import PlayerManagement from './components/dashboard/PlayerManagement';
 import ClientStatus from './components/dashboard/ClientStatus';
+import WebhookManagement from './components/dashboard/WebhookManagement';
 
 import LoginScreen from './components/auth/LoginScreen';
 
@@ -134,7 +139,9 @@ function Dashboard({ currentUser, onLogout }) {
   const [servers, setServers] = useState([]);
   const [channels, setChannels] = useState([]);
   const [players, setPlayers] = useState([]);
-  const [mutedPlayers] = useState([]);
+  const [webhooks, setWebhooks] = useState([]);
+  const [webhooksLoading, setWebhooksLoading] = useState(false);
+  const [mutedPlayers, setMutedPlayers] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [toasts, setToasts] = useState([]);
@@ -163,6 +170,10 @@ function Dashboard({ currentUser, onLogout }) {
   const notificationRef = useRef(null);
   const chatContainerRef = useRef(null);
   const wsHandlersRef = useRef({});
+  // Server details modal (opened from ClientStatus "view details").
+  const [serverDetailTarget, setServerDetailTarget] = useState(null);
+  // Disconnect confirm modal (opened from ClientStatus "disconnect").
+  const [disconnectTarget, setDisconnectTarget] = useState(null);
   // Defers WS disconnect on effect cleanup so React StrictMode's dev-only
   // mount→unmount→remount cycle doesn't tear down a connection that's about to
   // be reused. A real unmount (logout / leave page) still disconnects, just
@@ -187,10 +198,11 @@ function Dashboard({ currentUser, onLogout }) {
   const fetchAllData = useCallback(async () => {
     setFetchError(null);
     try {
-      const [statusRes, channelsRes, playersRes] = await Promise.all([
+      const [statusRes, channelsRes, playersRes, mutesRes] = await Promise.all([
         api.status().catch((e) => { console.warn('[fetch] /api/status failed:', e); return null; }),
         api.getChannels().catch((e) => { console.warn('[fetch] /api/channels failed:', e); return null; }),
         api.getPlayers().catch((e) => { console.warn('[fetch] /api/players failed:', e); return null; }),
+        api.getMutes().catch((e) => { console.warn('[fetch] /api/mutes failed:', e); return null; }),
       ]);
 
       if (statusRes) setStatusData(statusRes);
@@ -203,8 +215,11 @@ function Dashboard({ currentUser, onLogout }) {
         setPlayers(playersRes.players.map(adaptPlayer).filter(Boolean));
       }
 
-      // Servers (clients) are only available via WS server_status; we don't have a REST endpoint.
-      // The WS broadcast will populate them shortly after connect.
+      if (mutesRes && Array.isArray(mutesRes.mutes)) {
+        setMutedPlayers(mutesRes.mutes.map(adaptMute).filter(Boolean));
+      }
+
+      // Webhooks loaded lazily when the tab is opened; not part of initial fetch.
       setInitialLoading(false);
     } catch (err) {
       console.error('[fetch] initial load failed:', err);
@@ -212,6 +227,43 @@ function Dashboard({ currentUser, onLogout }) {
       setInitialLoading(false);
     }
   }, []);
+
+  // Refresh only the channels list (used after channel CRUD).
+  const fetchChannels = useCallback(async () => {
+    try {
+      const channelsRes = await api.getChannels();
+      if (channelsRes && Array.isArray(channelsRes.channels)) {
+        setChannels(channelsRes.channels.map(adaptChannel).filter(Boolean));
+      }
+    } catch (err) {
+      console.warn('[fetchChannels] failed:', err);
+    }
+  }, []);
+
+  // Refresh only the players list (used after kick).
+  const fetchPlayers = useCallback(async () => {
+    try {
+      const playersRes = await api.getPlayers();
+      if (playersRes && Array.isArray(playersRes.players)) {
+        setPlayers(playersRes.players.map(adaptPlayer).filter(Boolean));
+      }
+    } catch (err) {
+      console.warn('[fetchPlayers] failed:', err);
+    }
+  }, []);
+
+  // Refresh only the mutes list (used after mute/unmute).
+  const fetchMutes = useCallback(async () => {
+    try {
+      const mutesRes = await api.getMutes();
+      if (mutesRes && Array.isArray(mutesRes.mutes)) {
+        setMutedPlayers(mutesRes.mutes.map(adaptMute).filter(Boolean));
+      }
+    } catch (err) {
+      console.warn('[fetchMutes] failed:', err);
+      addToast(t('players.toast_mutes_failed', { error: err.message }), 'error');
+    }
+  }, [addToast, t]);
 
   // Trigger initial fetch on mount. The fetch itself is async and calls setState
   // in callbacks (not synchronously in the effect body), which satisfies the
@@ -404,36 +456,191 @@ function Dashboard({ currentUser, onLogout }) {
     }
   }, [currentUser, addToast, t]);
 
-  // Mute / unmute: NO REST or WS admin-action path exists in the backend for the panel.
-  // Backend mute is via AdminActionPacket (plugin -> backend), not exposed to the panel.
-  // Honest disable: the PlayerManagement component renders the buttons as disabled with a tooltip.
-  const handleMutePlayer = useCallback(() => {
-    addToast(t('players.toast_mute'), 'error');
+  // Mute a player via REST POST /api/players/{uuid}/mute.
+  // body: { channelId?, durationMs?, reason? } — durationMs 0 (or omitted) = permanent.
+  const handleMutePlayer = useCallback(async (payload) => {
+    if (!payload || !payload.uuid) {
+      addToast(t('players.toast_mute_failed', { error: 'uuid' }), 'error');
+      return;
+    }
+    const body = {};
+    if (payload.channelId) body.channelId = payload.channelId;
+    body.durationMs = payload.durationMs != null ? payload.durationMs : 0;
+    if (payload.reason) body.reason = payload.reason;
+    try {
+      await api.mutePlayer(payload.uuid, body);
+      addToast(t('players.toast_mute_success', { name: payload.name || payload.uuid }), 'success');
+      await fetchMutes();
+      await fetchPlayers();
+    } catch (err) {
+      addToast(t('players.toast_mute_failed', { error: err.message }), 'error');
+    }
+  }, [addToast, t, fetchMutes, fetchPlayers]);
+
+  // Unmute a player via REST POST /api/players/{uuid}/unmute.
+  // body: { channelId? } — omit for a global unmute.
+  const handleUnmutePlayer = useCallback(async (payload) => {
+    const uuid = typeof payload === 'string' ? payload : (payload && payload.uuid);
+    if (!uuid) {
+      addToast(t('players.toast_unmute_failed', { error: 'uuid' }), 'error');
+      return;
+    }
+    const body = {};
+    if (typeof payload === 'object' && payload.channelId) body.channelId = payload.channelId;
+    try {
+      await api.unmutePlayer(uuid, body);
+      addToast(t('players.toast_unmute_success', { name: (payload && payload.name) || uuid }), 'success');
+      await fetchMutes();
+      await fetchPlayers();
+    } catch (err) {
+      addToast(t('players.toast_unmute_failed', { error: err.message }), 'error');
+    }
+  }, [addToast, t, fetchMutes, fetchPlayers]);
+
+  // Kick a player via REST POST /api/players/{uuid}/kick (moves to default channel).
+  const handleKickPlayer = useCallback(async (payload) => {
+    const uuid = typeof payload === 'string' ? payload : (payload && payload.uuid);
+    const name = typeof payload === 'object' ? (payload && payload.name) : null;
+    if (!uuid) {
+      addToast(t('players.toast_kick_failed', { error: 'uuid' }), 'error');
+      return;
+    }
+    const body = {};
+    if (typeof payload === 'object' && payload.channelId) body.channelId = payload.channelId;
+    try {
+      await api.kickPlayer(uuid, body);
+      addToast(t('players.toast_kick_success', { name: name || uuid }), 'success');
+      await fetchPlayers();
+    } catch (err) {
+      addToast(t('players.toast_kick_failed', { error: err.message }), 'error');
+    }
+  }, [addToast, t, fetchPlayers]);
+
+  // Reload config via REST POST /api/reload.
+  const handleReloadConfig = useCallback(async () => {
+    try {
+      await api.reloadConfig();
+      addToast(t('common.toast_reload_success'), 'success');
+    } catch (err) {
+      addToast(t('common.toast_reload_failed', { error: err.message }), 'error');
+    }
   }, [addToast, t]);
 
-  const handleUnmutePlayer = useCallback(() => {
-    addToast(t('players.toast_unmute'), 'error');
+  // Channel create/edit/delete via REST.
+  const handleCreateChannel = useCallback(async (body) => {
+    try {
+      await api.createChannel(body);
+      addToast(t('channels.toast_create'), 'success');
+      await fetchChannels();
+    } catch (err) {
+      addToast(t('channels.toast_create_failed', { error: err.message }), 'error');
+      throw err;
+    }
+  }, [addToast, t, fetchChannels]);
+
+  const handleEditChannel = useCallback(async (id, body) => {
+    try {
+      await api.updateChannel(id, body);
+      addToast(t('channels.toast_edit'), 'success');
+      await fetchChannels();
+    } catch (err) {
+      addToast(t('channels.toast_edit_failed', { error: err.message }), 'error');
+      throw err;
+    }
+  }, [addToast, t, fetchChannels]);
+
+  const handleDeleteChannel = useCallback(async (id) => {
+    try {
+      await api.deleteChannel(id);
+      addToast(t('channels.toast_delete'), 'success');
+      await fetchChannels();
+    } catch (err) {
+      addToast(t('channels.toast_delete_failed', { error: err.message }), 'error');
+      throw err;
+    }
+  }, [addToast, t, fetchChannels]);
+
+  // Generate an invite code via REST POST /api/channels/{id}/invite.
+  // Returns the invitation code string (or throws).
+  const handleInviteChannel = useCallback(async (channelId, body) => {
+    try {
+      const res = await api.invitePlayer(channelId, body);
+      addToast(t('channels.toast_invite'), 'success');
+      return res;
+    } catch (err) {
+      addToast(t('channels.toast_invite_failed', { error: err.message }), 'error');
+      throw err;
+    }
   }, [addToast, t]);
 
-  // Reload config: NO REST or WS path exists for config reload from the panel.
-  // Honest disable: ClientStatus renders the button disabled with a tooltip.
-  const handleReloadConfig = useCallback(() => {
-    addToast(t('common.reload_title_disabled'), 'error');
+  // Disconnect a game-server client via REST DELETE /api/clients/{clientId}.
+  const handleDisconnectServer = useCallback(async (clientId, name) => {
+    try {
+      await api.disconnectClient(clientId);
+      addToast(t('common.toast_disconnect_success', { name: name || clientId }), 'success');
+    } catch (err) {
+      addToast(t('common.toast_disconnect_failed', { error: err.message }), 'error');
+      throw err;
+    }
   }, [addToast, t]);
 
-  // Channel create/edit/delete: NO REST or WS path exists for channel CRUD from the panel.
-  // Honest disable: ChannelManagement renders these controls disabled with tooltips.
-  const handleCreateChannel = useCallback(() => {
-    addToast(t('channels.toast_create'), 'error');
+  // Open the server details modal (data already in `servers` state; no REST call).
+  const handleViewServerDetails = useCallback((server) => {
+    setServerDetailTarget(server);
+  }, []);
+
+  // Confirm + execute disconnect (called by the disconnect confirm modal).
+  const [disconnecting, setDisconnecting] = useState(false);
+  const confirmDisconnect = useCallback(async () => {
+    if (!disconnectTarget) return;
+    setDisconnecting(true);
+    try {
+      await handleDisconnectServer(disconnectTarget.id, disconnectTarget.name);
+      setDisconnectTarget(null);
+    } catch {
+      // toast already shown by handleDisconnectServer
+    } finally {
+      setDisconnecting(false);
+    }
+  }, [disconnectTarget, handleDisconnectServer]);
+
+  // Webhooks: full CRUD is supported via REST.
+  const fetchWebhooks = useCallback(async () => {
+    setWebhooksLoading(true);
+    try {
+      const res = await api.getWebhooks();
+      if (res && Array.isArray(res.webhooks)) {
+        setWebhooks(res.webhooks);
+      }
+    } catch (err) {
+      console.error('[webhooks] fetch failed:', err);
+      addToast(t('webhooks.toast_fetch_failed', { error: err.message }), 'error');
+    } finally {
+      setWebhooksLoading(false);
+    }
   }, [addToast, t]);
 
-  const handleEditChannel = useCallback(() => {
-    addToast(t('channels.toast_edit'), 'error');
-  }, [addToast, t]);
+  const handleCreateWebhook = useCallback(async (body) => {
+    try {
+      await api.createWebhook(body);
+      addToast(t('webhooks.toast_create_success'), 'success');
+      await fetchWebhooks();
+    } catch (err) {
+      addToast(t('webhooks.toast_create_failed', { error: err.message }), 'error');
+      throw err;
+    }
+  }, [addToast, t, fetchWebhooks]);
 
-  const handleDeleteChannel = useCallback(() => {
-    addToast(t('channels.toast_delete'), 'error');
-  }, [addToast, t]);
+  const handleDeleteWebhook = useCallback(async (id) => {
+    try {
+      await api.deleteWebhook(id);
+      addToast(t('webhooks.toast_delete_success'), 'success');
+      await fetchWebhooks();
+    } catch (err) {
+      addToast(t('webhooks.toast_delete_failed', { error: err.message }), 'error');
+      throw err;
+    }
+  }, [addToast, t, fetchWebhooks]);
 
   // Notifications.
   const handleMarkAllRead = useCallback(() => {
@@ -457,8 +664,12 @@ function Dashboard({ currentUser, onLogout }) {
     setTabLoading(true);
     setActiveTab(tab);
     if (isMobile) setSidebarOpen(false);
+    // Lazy-load webhooks when the tab is first opened.
+    if (tab === 'webhooks') {
+      fetchWebhooks();
+    }
     setTimeout(() => setTabLoading(false), 200);
-  }, [isMobile]);
+  }, [isMobile, fetchWebhooks]);
 
   // --- Derived / styling ---
   // Token-based text/background classes so the whole panel re-themes via the
@@ -481,10 +692,12 @@ function Dashboard({ currentUser, onLogout }) {
 
   const navItems = [
     { id: 'dashboard', icon: LayoutDashboard, label: t('common.nav_dashboard') },
-    { id: 'console', icon: MessageSquare, label: t('common.nav_console') },
+    { id: 'messages', icon: MessageSquare, label: t('common.nav_messages') },
+    { id: 'console', icon: Terminal, label: t('common.nav_console_command') },
     { id: 'servers', icon: Server, label: t('common.nav_servers') },
     { id: 'channels', icon: Hash, label: t('common.nav_channels') },
     { id: 'players', icon: Users, label: t('common.nav_players') },
+    { id: 'webhooks', icon: Bell, label: t('common.nav_webhooks') },
     { id: 'settings', icon: Settings, label: t('common.nav_settings') },
   ];
 
@@ -638,8 +851,8 @@ function Dashboard({ currentUser, onLogout }) {
                     />
                   )}
 
-                  {/* Console - Real-time Message Monitor */}
-                  {activeTab === 'console' && (
+                  {/* Messages - Real-time Message Monitor */}
+                  {activeTab === 'messages' && (
                     <MessageMonitor
                       theme="clean"
                       mode={mode}
@@ -655,6 +868,16 @@ function Dashboard({ currentUser, onLogout }) {
                     />
                   )}
 
+                  {/* Console - Backend Command Executor */}
+                  {activeTab === 'console' && (
+                    <ConsoleCommand
+                      theme="clean"
+                      mode={mode}
+                      txtMain={txtMain}
+                      txtSec={txtSec}
+                    />
+                  )}
+
                   {/* Servers - Client Status */}
                   {activeTab === 'servers' && (
                     <ClientStatus
@@ -664,6 +887,8 @@ function Dashboard({ currentUser, onLogout }) {
                       txtSec={txtSec}
                       servers={servers}
                       onReloadConfig={handleReloadConfig}
+                      onDisconnectServer={(server) => setDisconnectTarget(server)}
+                      onViewServerDetails={handleViewServerDetails}
                     />
                   )}
 
@@ -678,6 +903,7 @@ function Dashboard({ currentUser, onLogout }) {
                       onCreateChannel={handleCreateChannel}
                       onEditChannel={handleEditChannel}
                       onDeleteChannel={handleDeleteChannel}
+                      onInviteChannel={handleInviteChannel}
                     />
                   )}
 
@@ -689,9 +915,25 @@ function Dashboard({ currentUser, onLogout }) {
                       txtMain={txtMain}
                       txtSec={txtSec}
                       players={filteredPlayers}
+                      channels={channels}
                       mutedPlayers={mutedPlayers}
                       onMutePlayer={handleMutePlayer}
                       onUnmutePlayer={handleUnmutePlayer}
+                      onKickPlayer={handleKickPlayer}
+                    />
+                  )}
+
+                  {/* Webhooks - Webhook Management */}
+                  {activeTab === 'webhooks' && (
+                    <WebhookManagement
+                      theme="clean"
+                      mode={mode}
+                      txtMain={txtMain}
+                      txtSec={txtSec}
+                      webhooks={webhooks}
+                      loading={webhooksLoading}
+                      onCreateWebhook={handleCreateWebhook}
+                      onDeleteWebhook={handleDeleteWebhook}
                     />
                   )}
 
@@ -711,7 +953,134 @@ function Dashboard({ currentUser, onLogout }) {
               )}
             </div>
           </div>
+
+          {/* Server Details Modal */}
+          <Modal
+            isOpen={!!serverDetailTarget}
+            onClose={() => setServerDetailTarget(null)}
+            title={t('common.server_details_modal_title')}
+            theme="clean"
+            mode={mode}
+          >
+            {serverDetailTarget && (
+              <ServerDetailsContent server={serverDetailTarget} />
+            )}
+            <div className="flex gap-2 mt-6 pt-4 border-t border-border">
+              <Button variant="ghost" className="flex-1" theme="clean" mode={mode} onClick={() => setServerDetailTarget(null)}>
+                {t('common.confirm')}
+              </Button>
+            </div>
+          </Modal>
+
+          {/* Disconnect Server Confirm Modal */}
+          <Modal
+            isOpen={!!disconnectTarget}
+            onClose={() => !disconnecting && setDisconnectTarget(null)}
+            title={t('common.disconnect_modal_title')}
+            theme="clean"
+            mode={mode}
+          >
+            {disconnectTarget && (
+              <p className="text-xs text-muted-foreground">
+                {t('common.disconnect_confirm', { name: disconnectTarget.name || disconnectTarget.id })}
+              </p>
+            )}
+            <div className="flex gap-2 mt-6 pt-4 border-t border-border">
+              <Button
+                variant="ghost"
+                className="flex-1"
+                theme="clean"
+                mode={mode}
+                onClick={() => setDisconnectTarget(null)}
+                disabled={disconnecting}
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                variant="destructive"
+                className="flex-1"
+                theme="clean"
+                mode={mode}
+                onClick={confirmDisconnect}
+                disabled={disconnecting}
+              >
+                {disconnecting ? <Loader2 size={14} className="animate-spin" /> : null}
+                {t('common.disconnect')}
+              </Button>
+            </div>
+          </Modal>
         </main>
+      </div>
+    </div>
+  );
+}
+
+// ==================== Server Details Content ====================
+function ServerDetailsContent({ server }) {
+  const { t } = useTranslation();
+  const s = server || {};
+  const rowClass = 'flex items-center justify-between p-2 rounded-md bg-muted/40 text-xs';
+
+  const formatTime = (ts) => {
+    if (!ts) return '-';
+    try {
+      const num = typeof ts === 'number' ? ts : Number(ts);
+      if (Number.isNaN(num)) return String(ts);
+      return new Date(num).toLocaleString();
+    } catch {
+      return String(ts);
+    }
+  };
+
+  const formatUptime = (connectedAt) => {
+    if (!connectedAt) return '-';
+    const diff = Date.now() - (typeof connectedAt === 'number' ? connectedAt : Number(connectedAt));
+    if (Number.isNaN(diff) || diff < 0) return '-';
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    if (hours > 0) return `${hours}h ${minutes % 60}m`;
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+    return `${seconds}s`;
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <div className={rowClass}>
+        <span className="text-muted-foreground">{t('common.server_details_id')}</span>
+        <span className="text-foreground font-mono">{s.id || '-'}</span>
+      </div>
+      <div className={rowClass}>
+        <span className="text-muted-foreground">{t('players.col_server')}</span>
+        <span className="text-foreground">{s.name || s.id || '-'}</span>
+      </div>
+      <div className={rowClass}>
+        <span className="text-muted-foreground">{t('players.col_platform')}</span>
+        <span className="text-foreground">{s.platform || '-'}</span>
+      </div>
+      <div className={rowClass}>
+        <span className="text-muted-foreground">{t('common.col_version')}</span>
+        <span className="text-foreground">{s.version || '-'}</span>
+      </div>
+      {s.remoteAddress && (
+        <div className={rowClass}>
+          <span className="text-muted-foreground">{t('common.server_details_remote')}</span>
+          <span className="text-foreground font-mono">{s.remoteAddress}</span>
+        </div>
+      )}
+      <div className={rowClass}>
+        <span className="text-muted-foreground">{t('common.server_details_connected_at')}</span>
+        <span className="text-foreground">{formatTime(s.connectedAt)}</span>
+      </div>
+      <div className={rowClass}>
+        <span className="text-muted-foreground">{t('common.server_details_uptime')}</span>
+        <span className="text-foreground">{formatUptime(s.connectedAt)}</span>
+      </div>
+      <div className={rowClass}>
+        <span className="text-muted-foreground">{t('common.server_details_active')}</span>
+        <span className={s.status === 'online' ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}>
+          {s.status === 'online' ? t('common.active_yes') : t('common.active_no')}
+        </span>
       </div>
     </div>
   );

@@ -213,6 +213,38 @@ public class ChannelManager {
     }
 
     /**
+     * Updates an existing channel's mutable properties (displayName, maxCapacity,
+     * permission). Only non-null/non-default arguments are applied; null fields
+     * leave the existing value untouched. Mirrors the field-by-field update in
+     * {@code NovaLinkMain.upsertConfiguredChannel}.
+     *
+     * @param channelId the channel ID to update
+     * @param displayName the new display name (null to keep existing)
+     * @param maxCapacity the new max capacity (<=0 to keep existing)
+     * @param permission the new permission node (null to keep existing)
+     * @return the updated channel, or null if the channel was not found
+     */
+    public Channel updateChannel(String channelId, String displayName,
+                                 Integer maxCapacity, String permission) {
+        Channel channel = channels.get(channelId);
+        if (channel == null) {
+            return null;
+        }
+        if (displayName != null) {
+            channel.setDisplayName(displayName);
+        }
+        if (maxCapacity != null && maxCapacity > 0) {
+            channel.setMaxCapacity(maxCapacity);
+        }
+        if (permission != null) {
+            channel.setPermission(permission);
+        }
+        logger.info("Updated channel: {} (displayName={}, maxCapacity={}, permission={})",
+                channelId, displayName, maxCapacity, permission);
+        return channel;
+    }
+
+    /**
      * Gets all members of a channel.
      *
      * @param channelId the channel ID
