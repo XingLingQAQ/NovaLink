@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 class NetworkClient:
     """Asyncio-based network client for NovaLink communication."""
     
-    PROTOCOL_VERSION = 1
+    PROTOCOL_VERSION = 2
     PLATFORM_ENDSTONE = 10  # Platform identifier (must match Java PlatformType.ENDSTONE)
     KEEPALIVE_INTERVAL = 15  # seconds
     MAX_FRAME_LENGTH = 4 * 1024 * 1024  # 4 MiB (must match server-side limits)

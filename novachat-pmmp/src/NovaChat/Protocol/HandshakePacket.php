@@ -19,7 +19,7 @@ class HandshakePacket extends Packet {
     public const PLATFORM_PMMP = 0x09;
     
     /** Current protocol version */
-    public const PROTOCOL_VERSION = 1;
+    public const PROTOCOL_VERSION = 2;
     
     public int $protocolVersion = self::PROTOCOL_VERSION;
     public string $clientId = "";

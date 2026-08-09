@@ -9,6 +9,7 @@ import cn.nukkit.plugin.PluginBase;
 import cn.nukkit.scheduler.AsyncTask;
 import cn.nukkit.utils.Config;
 import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.extension.ExtensionManager;
 import com.nova.chat.nukkit.chat.ChatInterceptor;
 import com.nova.chat.nukkit.chat.MentionTabCompleter;
@@ -276,7 +277,7 @@ public class NovaChatNukkit extends PluginBase implements Listener {
             }
             client.sendPacket(packet);
             return true;
-        });
+        }, PlatformType.NUKKIT.name());
     }
 
     /**

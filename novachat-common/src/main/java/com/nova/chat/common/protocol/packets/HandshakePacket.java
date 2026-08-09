@@ -28,6 +28,9 @@ public class HandshakePacket extends Packet {
     /** Platform type of the client */
     private PlatformType platform;
 
+    /** Minecraft server version reported by the client (e.g. "1.20.4"). */
+    private String serverVersion;
+
     public HandshakePacket() {
         super();
     }
@@ -37,11 +40,17 @@ public class HandshakePacket extends Packet {
     }
 
     public HandshakePacket(int protocolVersion, String clientId, String passwordHash, PlatformType platform) {
+        this(protocolVersion, clientId, passwordHash, platform, "");
+    }
+
+    public HandshakePacket(int protocolVersion, String clientId, String passwordHash,
+                           PlatformType platform, String serverVersion) {
         super();
         this.protocolVersion = protocolVersion;
         this.clientId = clientId;
         this.passwordHash = passwordHash;
         this.platform = platform;
+        this.serverVersion = serverVersion != null ? serverVersion : "";
     }
 
     @Override
@@ -56,6 +65,10 @@ public class HandshakePacket extends Packet {
         PacketBuffer.writeString(buf, passwordHash != null ? passwordHash : "");
         // Unknown/missing platform defaults to BUKKIT (id 0) for wire stability
         buf.writeByte(platform != null ? platform.getId() : PlatformType.BUKKIT.getId());
+        // Trailing optional field (protocol v2+): server Minecraft version.
+        // Always written by v2 clients; old v1 backends never reach here because
+        // PROTOCOL_VERSION mismatch is rejected before read() matters.
+        PacketBuffer.writeString(buf, serverVersion != null ? serverVersion : "");
     }
 
     @Override
@@ -65,6 +78,12 @@ public class HandshakePacket extends Packet {
         passwordHash = PacketBuffer.readString(buf, 256);
         int platformId = buf.readUnsignedByte();
         platform = PlatformType.fromId(platformId);
+        // Optional trailing field: old clients/backends may not send serverVersion.
+        if (buf.isReadable()) {
+            serverVersion = PacketBuffer.readString(buf, 64);
+        } else {
+            serverVersion = "";
+        }
     }
 
 
@@ -102,12 +121,21 @@ public class HandshakePacket extends Packet {
         this.platform = platform;
     }
 
+    public String getServerVersion() {
+        return serverVersion;
+    }
+
+    public void setServerVersion(String serverVersion) {
+        this.serverVersion = serverVersion != null ? serverVersion : "";
+    }
+
     @Override
     public String toString() {
         return "HandshakePacket{" +
                 "protocolVersion=" + protocolVersion +
                 ", clientId='" + clientId + '\'' +
                 ", platform=" + platform +
+                ", serverVersion='" + serverVersion + '\'' +
                 '}';
     }
 }

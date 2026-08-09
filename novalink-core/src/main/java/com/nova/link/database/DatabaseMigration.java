@@ -18,7 +18,7 @@ public class DatabaseMigration {
 
     private static final Logger logger = LoggerFactory.getLogger(DatabaseMigration.class);
     private static final String MIGRATION_TABLE = "novalink_migrations";
-    private static final int CURRENT_VERSION = 1;
+    private static final int CURRENT_VERSION = 2;
 
     private final DataSource dataSource;
 
@@ -202,7 +202,17 @@ public class DatabaseMigration {
             }
             
             // Future migrations can be added here
-            // case 2 -> { ... }
+            case 2 -> {
+                // Add platform column to players table for tracking the platform
+                // a player connects from (e.g. BUKKIT, VELOCITY, NUKKIT).
+                // Both fresh and existing v1 databases reach this migration on
+                // upgrade to v2; the v1 CREATE TABLE intentionally omits the column
+                // so this ALTER is the single source of truth for it.
+                statements.add("""
+                    ALTER TABLE players ADD COLUMN platform VARCHAR(32) NULL AFTER active_channel
+                    """);
+            }
+            // case 3 -> { ... }
             
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
@@ -213,6 +223,7 @@ public class DatabaseMigration {
     private String getMigrationDescription(int version) {
         return switch (version) {
             case 1 -> "Initial schema - players, channels, mutes, invitations tables";
+            case 2 -> "Add platform column to players table";
             default -> "Unknown migration";
         };
     }

@@ -36,13 +36,15 @@ public class NetworkClient {
         ClientConnectionConfig connectionConfig = config.toClientConnectionConfig();
         SchedulerBridge scheduler = new VelocitySchedulerBridge(plugin);
         ClientLogger logger = new VelocityClientLogger(plugin);
+        String serverVersion = plugin.getServer().getVersion();
         this.core = new CoreNetworkClient(
                 connectionConfig,
                 PlatformType.VELOCITY,
                 scheduler,
                 logger,
                 "config.toml",
-                java.util.function.Function.identity()
+                java.util.function.Function.identity(),
+                serverVersion
         );
     }
 

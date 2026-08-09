@@ -30,7 +30,10 @@ public class PlayerState {
     
     /** Map of channel ID to mute info */
     private Map<String, MuteInfo> mutes;
-    
+
+    /** Platform the player connects from (e.g. "BUKKIT", "VELOCITY"); null = unknown/Java */
+    private String platform;
+
     /** Last seen timestamp */
     private long lastSeen;
 
@@ -55,6 +58,7 @@ public class PlayerState {
         this.joinedChannels = new HashSet<>(other.joinedChannels);
         this.activeChannel = other.activeChannel;
         this.mutes = new HashMap<>(other.mutes);
+        this.platform = other.platform;
         this.lastSeen = other.lastSeen;
     }
 
@@ -157,6 +161,14 @@ public class PlayerState {
         return lastSeen;
     }
 
+    public String getPlatform() {
+        return platform;
+    }
+
+    public void setPlatform(String platform) {
+        this.platform = platform;
+    }
+
     public void setLastSeen(long lastSeen) {
         this.lastSeen = lastSeen;
     }
@@ -177,13 +189,14 @@ public class PlayerState {
                 Objects.equals(currentWorld, that.currentWorld) &&
                 Objects.equals(joinedChannels, that.joinedChannels) &&
                 Objects.equals(activeChannel, that.activeChannel) &&
-                Objects.equals(mutes, that.mutes);
+                Objects.equals(mutes, that.mutes) &&
+                Objects.equals(platform, that.platform);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(playerId, playerName, clientId, currentWorld, 
-                joinedChannels, activeChannel, mutes, lastSeen);
+        return Objects.hash(playerId, playerName, clientId, currentWorld,
+                joinedChannels, activeChannel, mutes, platform, lastSeen);
     }
 
     @Override
@@ -196,6 +209,7 @@ public class PlayerState {
                 ", joinedChannels=" + joinedChannels +
                 ", activeChannel='" + activeChannel + '\'' +
                 ", mutesCount=" + mutes.size() +
+                ", platform='" + platform + '\'' +
                 ", lastSeen=" + lastSeen +
                 '}';
     }

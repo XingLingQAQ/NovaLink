@@ -284,6 +284,9 @@ public class WebSocketMessageHandler {
                 clientData.put("active", connection.isActive());
                 clientData.put("platform", connection.getPlatform() != null
                         ? connection.getPlatform().name() : "Unknown");
+                clientData.put("version", connection.getServerVersion() != null
+                        && !connection.getServerVersion().isEmpty()
+                        ? connection.getServerVersion() : "-");
                 clientData.put("ping", connection.getPing());
                 clientData.put("players", countPlayersByClient(connection.getClientId()));
                 clientList.add(clientData);
@@ -352,10 +355,14 @@ public class WebSocketMessageHandler {
                         ? state.getPlayerName() : playerId.toString());
                 playerData.put("server", state.getClientId());
                 playerData.put("muted", state.getMutes() != null && !state.getMutes().isEmpty());
+                playerData.put("platform", state.getPlatform() != null
+                        && !state.getPlatform().isEmpty()
+                        ? state.getPlatform() : "Java");
             } else {
                 playerData.put("name", playerId.toString());
                 playerData.put("server", null);
                 playerData.put("muted", false);
+                playerData.put("platform", "Java");
             }
             playerList.add(playerData);
         }
@@ -456,12 +463,15 @@ public class WebSocketMessageHandler {
                 clientData.put("active", connection.isActive());
                 clientData.put("platform", connection.getPlatform() != null
                         ? connection.getPlatform().name() : "Unknown");
+                clientData.put("version", connection.getServerVersion() != null
+                        && !connection.getServerVersion().isEmpty()
+                        ? connection.getServerVersion() : "-");
                 clientData.put("ping", connection.getPing());
                 clientData.put("players", countPlayersByClient(connection.getClientId()));
                 clientList.add(clientData);
             }
         }
-        
+
         JsonObject message = new JsonObject();
         message.addProperty("type", "server_status");
         message.add("clients", gson.toJsonTree(clientList));

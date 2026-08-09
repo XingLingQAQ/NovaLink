@@ -56,6 +56,8 @@ public final class CoreNetworkClient {
     private final String credentialsConfigFile;
     /** Optional username rewrite (e.g. instance suffix); identity by default. */
     private final Function<String, String> usernameTransformer;
+    /** Minecraft server version reported in the handshake (e.g. "1.20.4"); "" if unknown. */
+    private final String serverVersion;
 
     private final PacketRegistry packetRegistry;
     private final ReconnectPolicy reconnectPolicy;
@@ -94,7 +96,7 @@ public final class CoreNetworkClient {
             SchedulerBridge scheduler,
             ClientLogger logger
     ) {
-        this(connectionConfig, platformType, scheduler, logger, "config.yml", Function.identity());
+        this(connectionConfig, platformType, scheduler, logger, "config.yml", Function.identity(), "");
     }
 
     /**
@@ -115,6 +117,29 @@ public final class CoreNetworkClient {
             String credentialsConfigFile,
             Function<String, String> usernameTransformer
     ) {
+        this(connectionConfig, platformType, scheduler, logger, credentialsConfigFile, usernameTransformer, "");
+    }
+
+    /**
+     * Full constructor with server version.
+     *
+     * @param connectionConfig       host/port/credentials/timeouts/reconnect policy source
+     * @param platformType           advertised in the handshake
+     * @param scheduler              platform scheduler (seconds-based)
+     * @param logger                 platform logger
+     * @param credentialsConfigFile  file name mentioned in NC-401 errors
+     * @param usernameTransformer    rewrite handshake username (e.g. {@code user@node})
+     * @param serverVersion          Minecraft server version sent in the handshake; null/blank → ""
+     */
+    public CoreNetworkClient(
+            ClientConnectionConfig connectionConfig,
+            PlatformType platformType,
+            SchedulerBridge scheduler,
+            ClientLogger logger,
+            String credentialsConfigFile,
+            Function<String, String> usernameTransformer,
+            String serverVersion
+    ) {
         this.connectionConfig = Objects.requireNonNull(connectionConfig, "connectionConfig");
         this.platformType = Objects.requireNonNull(platformType, "platformType");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
@@ -125,6 +150,7 @@ public final class CoreNetworkClient {
         this.usernameTransformer = usernameTransformer != null
                 ? usernameTransformer
                 : Function.identity();
+        this.serverVersion = serverVersion != null ? serverVersion : "";
         this.packetRegistry = NovaProtocol.createRegistry();
         this.reconnectPolicy = connectionConfig.toReconnectPolicy();
         this.lastHost = connectionConfig.getHost();
@@ -327,7 +353,8 @@ public final class CoreNetworkClient {
                 NovaProtocol.PROTOCOL_VERSION,
                 username,
                 passwordHash,
-                platformType
+                platformType,
+                serverVersion
         );
     }
 

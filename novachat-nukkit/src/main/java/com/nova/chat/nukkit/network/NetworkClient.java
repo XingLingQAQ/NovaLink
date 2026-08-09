@@ -37,13 +37,15 @@ public class NetworkClient {
         ClientConnectionConfig connectionConfig = config.toClientConnectionConfig();
         SchedulerBridge scheduler = new NukkitSchedulerBridge(plugin);
         ClientLogger logger = new NukkitClientLogger(plugin);
+        String serverVersion = plugin.getServer().getVersion();
         this.core = new CoreNetworkClient(
                 connectionConfig,
                 PlatformType.NUKKIT,
                 scheduler,
                 logger,
                 "config.yml",
-                Function.identity()
+                Function.identity(),
+                serverVersion
         );
     }
 

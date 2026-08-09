@@ -2,6 +2,7 @@ package com.nova.chat.velocity;
 
 import com.google.inject.Inject;
 import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
 import com.nova.chat.velocity.chat.ChatListener;
@@ -225,7 +226,7 @@ public class NovaChatVelocity {
             }
             client.sendPacket(packet);
             return true;
-        });
+        }, PlatformType.VELOCITY.name());
     }
 
     /**

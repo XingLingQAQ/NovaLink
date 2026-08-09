@@ -55,13 +55,15 @@ public class NetworkClient {
         ClientConnectionConfig connectionConfig = config.toClientConnectionConfig();
         SchedulerBridge scheduler = new PNXSchedulerBridge(plugin);
         ClientLogger logger = new PNXClientLogger(plugin);
+        String serverVersion = plugin.getServer().getVersion();
         this.core = new CoreNetworkClient(
                 connectionConfig,
                 PlatformType.POWERNUKKITX,
                 scheduler,
                 logger,
                 "config.yml",
-                java.util.function.Function.identity()
+                java.util.function.Function.identity(),
+                serverVersion
         );
 
         // Preserve PNX chat/title handling that previously lived hard-coded in

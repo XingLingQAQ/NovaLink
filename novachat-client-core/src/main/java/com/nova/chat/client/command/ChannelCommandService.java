@@ -37,9 +37,19 @@ import java.util.UUID;
 public final class ChannelCommandService {
 
     private final PacketSender packetSender;
+    private final String platform;
 
     public ChannelCommandService(PacketSender packetSender) {
+        this(packetSender, null);
+    }
+
+    /**
+     * @param platform platform type name injected into channel-action packet extras
+     *                 (e.g. "BUKKIT", "VELOCITY"); null/blank omits the extra
+     */
+    public ChannelCommandService(PacketSender packetSender, String platform) {
         this.packetSender = Objects.requireNonNull(packetSender, "packetSender");
+        this.platform = platform;
     }
 
     /**
@@ -182,8 +192,8 @@ public final class ChannelCommandService {
                 "Reload requested; platform must handle config/reconnect");
     }
 
-    private static void addPlayerExtras(ChannelActionPacket packet, UUID playerId,
-                                         String playerName, String world) {
+    private void addPlayerExtras(ChannelActionPacket packet, UUID playerId,
+                                 String playerName, String world) {
         if (playerId != null) {
             packet.addExtra("playerId", playerId.toString());
         }
@@ -192,6 +202,9 @@ public final class ChannelCommandService {
         }
         if (world != null && !world.isBlank()) {
             packet.addExtra("world", world);
+        }
+        if (platform != null && !platform.isBlank()) {
+            packet.addExtra("platform", platform);
         }
     }
 }

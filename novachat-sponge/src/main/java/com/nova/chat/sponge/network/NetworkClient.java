@@ -37,13 +37,20 @@ public class NetworkClient {
         ClientConnectionConfig connectionConfig = config.toClientConnectionConfig();
         SchedulerBridge scheduler = new SpongeSchedulerBridge(plugin);
         ClientLogger logger = new SpongeClientLogger(plugin);
+        String serverVersion;
+        try {
+            serverVersion = Sponge.platform().minecraftVersion().name();
+        } catch (Throwable t) {
+            serverVersion = "";
+        }
         this.core = new CoreNetworkClient(
                 connectionConfig,
                 PlatformType.SPONGE,
                 scheduler,
                 logger,
                 "config.yml",
-                java.util.function.Function.identity()
+                java.util.function.Function.identity(),
+                serverVersion
         );
     }
 

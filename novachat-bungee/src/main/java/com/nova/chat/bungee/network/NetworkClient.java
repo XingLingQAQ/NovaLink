@@ -36,13 +36,15 @@ public class NetworkClient {
         ClientConnectionConfig connectionConfig = config.toClientConnectionConfig();
         SchedulerBridge scheduler = new BungeeSchedulerBridge(plugin);
         ClientLogger logger = new BungeeClientLogger(plugin);
+        String serverVersion = plugin.getProxy().getVersion();
         this.core = new CoreNetworkClient(
                 connectionConfig,
                 PlatformType.BUNGEECORD,
                 scheduler,
                 logger,
                 "config.yml",
-                java.util.function.Function.identity()
+                java.util.function.Function.identity(),
+                serverVersion
         );
     }
 

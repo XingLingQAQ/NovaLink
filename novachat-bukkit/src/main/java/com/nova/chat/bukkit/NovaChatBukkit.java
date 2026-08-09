@@ -14,6 +14,7 @@ import com.nova.chat.bukkit.world.WorldMonitor;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
+import com.nova.chat.common.protocol.PlatformType;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -204,7 +205,7 @@ public class NovaChatBukkit extends JavaPlugin {
             }
             client.sendPacket(packet);
             return true;
-        });
+        }, PlatformType.BUKKIT.name());
     }
 
     /**

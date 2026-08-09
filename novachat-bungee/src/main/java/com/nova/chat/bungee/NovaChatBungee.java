@@ -8,6 +8,7 @@ import com.nova.chat.bungee.listener.LocaleCaptureListener;
 import com.nova.chat.bungee.listener.ServerSwitchHandler;
 import com.nova.chat.bungee.network.NetworkClient;
 import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
 import net.md_5.bungee.api.plugin.Plugin;
@@ -196,7 +197,7 @@ public class NovaChatBungee extends Plugin {
             }
             client.sendPacket(packet);
             return true;
-        });
+        }, PlatformType.BUNGEECORD.name());
     }
 
     /**

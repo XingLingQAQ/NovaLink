@@ -14,8 +14,11 @@ public final class NovaProtocol {
      * IMPORTANT: When updating this value, also update:
      *   - novachat-pmmp/src/NovaChat/Protocol/HandshakePacket.php (PROTOCOL_VERSION)
      *   - novachat-endstone/novachat_endstone/network/client.py (PROTOCOL_VERSION)
+     *
+     * v2 (2026-08): HandshakePacket adds trailing serverVersion field. Old v1
+     * clients are rejected with NC-420 to avoid frame-decoder byte drift.
      */
-    public static final int PROTOCOL_VERSION = 1;
+    public static final int PROTOCOL_VERSION = 2;
 
     private NovaProtocol() {
         // Utility class

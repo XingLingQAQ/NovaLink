@@ -52,13 +52,15 @@ public class AsyncNetworkClient {
         this.scheduler = scheduler;
         SchedulerBridge bridge = new FoliaSchedulerBridge(scheduler);
         ClientLogger logger = new FoliaClientLogger(plugin);
+        String serverVersion = plugin.getServer().getVersion();
         this.core = new CoreNetworkClient(
                 config.toClientConnectionConfig(),
                 PlatformType.FOLIA,
                 bridge,
                 logger,
                 "config.yml",
-                Function.identity()
+                Function.identity(),
+                serverVersion
         );
     }
 

@@ -8,6 +8,7 @@ import cn.nukkit.event.player.PlayerQuitEvent;
 import cn.nukkit.plugin.PluginBase;
 import cn.nukkit.scheduler.AsyncTask;
 import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.extension.ExtensionManager;
 import com.nova.chat.pnx.chat.ChatInterceptor;
 import com.nova.chat.pnx.chat.MentionTabCompleter;
@@ -292,7 +293,7 @@ public class NovaChatPNX extends PluginBase implements Listener {
             }
             client.sendPacket(packet);
             return true;
-        });
+        }, PlatformType.POWERNUKKITX.name());
     }
 
     /**

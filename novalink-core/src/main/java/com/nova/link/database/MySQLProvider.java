@@ -94,27 +94,29 @@ public class MySQLProvider implements DatabaseProvider {
         }
 
         String sql = """
-            INSERT INTO players (player_id, player_name, client_id, current_world, joined_channels, active_channel, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO players (player_id, player_name, client_id, current_world, joined_channels, active_channel, platform, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 player_name = VALUES(player_name),
                 client_id = VALUES(client_id),
                 current_world = VALUES(current_world),
                 joined_channels = VALUES(joined_channels),
                 active_channel = VALUES(active_channel),
+                platform = VALUES(platform),
                 last_seen = VALUES(last_seen)
             """;
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
-            
+
             stmt.setString(1, state.getPlayerId().toString());
             stmt.setString(2, state.getPlayerName());
             stmt.setString(3, state.getClientId());
             stmt.setString(4, state.getCurrentWorld());
             stmt.setString(5, String.join(",", state.getJoinedChannels()));
             stmt.setString(6, state.getActiveChannel());
-            stmt.setLong(7, state.getLastSeen());
+            stmt.setString(7, state.getPlatform());
+            stmt.setLong(8, state.getLastSeen());
             
             stmt.executeUpdate();
             logger.debug("Saved player state for: {}", state.getPlayerId());
@@ -149,6 +151,7 @@ public class MySQLProvider implements DatabaseProvider {
                     }
                     
                     state.setActiveChannel(rs.getString("active_channel"));
+                    state.setPlatform(rs.getString("platform"));
                     state.setLastSeen(rs.getLong("last_seen"));
                     
                     // Load mutes

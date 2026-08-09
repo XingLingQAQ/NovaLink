@@ -113,6 +113,7 @@ public class ChannelActionHandler {
         }
         String playerName = firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name"));
         String world = packet.getExtra("world");
+        String platform = packet.getExtra("platform");
 
         if (playerId == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.JOIN, packet.getChannelId(), "NC-400", "Player ID is required");
@@ -167,7 +168,7 @@ public class ChannelActionHandler {
             }
         }
 
-        upsertPlayerState(connection, playerId, playerName, world, channelId);
+        upsertPlayerState(connection, playerId, playerName, world, channelId, platform);
         ChannelActionResponsePacket response = new ChannelActionResponsePacket(true, ChannelAction.JOIN, channelId, "", "Joined channel");
         return response;
     }
@@ -178,6 +179,7 @@ public class ChannelActionHandler {
             playerId = getUuid(packet.getExtra("player_uuid"), packet.getExtra("uuid"));
         }
         String playerName = firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name"));
+        String platform = packet.getExtra("platform");
 
         if (playerId == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, packet.getChannelId(), "NC-400", "Player ID is required");
@@ -210,6 +212,9 @@ public class ChannelActionHandler {
         // Update state (keep activeChannel null if leaving the active one; client decides fallback)
         PlayerState state = playerStateManager.getOrCreateState(playerId, playerName);
         state.setClientId(connection.getClientId());
+        if (platform != null && !platform.isBlank()) {
+            state.setPlatform(platform);
+        }
         playerStateManager.leaveChannel(playerId, channelId);
 
         return new ChannelActionResponsePacket(true, ChannelAction.LEAVE, channelId, "", "Left channel");
@@ -221,6 +226,7 @@ public class ChannelActionHandler {
             playerId = getUuid(packet.getExtra("player_uuid"), packet.getExtra("uuid"));
         }
         String playerName = firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name"));
+        String platform = packet.getExtra("platform");
         if (playerId == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.CREATE, packet.getChannelId(), "NC-400", "Player ID is required");
         }
@@ -253,7 +259,7 @@ public class ChannelActionHandler {
             // Not fatal: channel still exists in memory for this process.
         }
 
-        upsertPlayerState(connection, playerId, playerName, null, created.getChannelId());
+        upsertPlayerState(connection, playerId, playerName, null, created.getChannelId(), platform);
 
         ChannelActionResponsePacket response = new ChannelActionResponsePacket(true, ChannelAction.CREATE, created.getChannelId(), "", "Private channel created");
         response.addExtra("password", created.getPassword());
@@ -310,6 +316,7 @@ public class ChannelActionHandler {
         }
         String playerName = firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name"));
         String world = packet.getExtra("world");
+        String platform = packet.getExtra("platform");
 
         if (playerId == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, packet.getChannelId(), "NC-400", "Player ID is required");
@@ -338,7 +345,7 @@ public class ChannelActionHandler {
             return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, inviteCode, "NC-500", "Invite accepted but channelId missing");
         }
 
-        upsertPlayerState(connection, playerId, playerName, world, channelId);
+        upsertPlayerState(connection, playerId, playerName, world, channelId, platform);
 
         ChannelActionResponsePacket response = new ChannelActionResponsePacket(true, ChannelAction.ACCEPT, channelId, "", "Invitation accepted");
         response.addExtra("code", inviteCode.toUpperCase());
@@ -662,7 +669,8 @@ public class ChannelActionHandler {
                                    UUID playerId,
                                    String playerName,
                                    String world,
-                                   String activeChannel) {
+                                   String activeChannel,
+                                   String platform) {
         PlayerState state = playerStateManager.getOrCreateState(playerId, playerName);
         if (playerName != null && !playerName.isBlank()) {
             state.setPlayerName(playerName);
@@ -670,6 +678,9 @@ public class ChannelActionHandler {
         state.setClientId(connection.getClientId());
         if (world != null && !world.isBlank()) {
             state.setCurrentWorld(world);
+        }
+        if (platform != null && !platform.isBlank()) {
+            state.setPlatform(platform);
         }
         if (activeChannel != null && !activeChannel.isBlank()) {
             state.addJoinedChannel(activeChannel);

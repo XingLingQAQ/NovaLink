@@ -26,6 +26,7 @@ public class ClientConnection {
 
     // Runtime metadata reported by the client (for panel display)
     private volatile PlatformType platform;
+    private volatile String serverVersion;
     private volatile long ping;
     private volatile long lastPingAt;
 
@@ -213,6 +214,24 @@ public class ClientConnection {
     }
 
     /**
+     * Gets the Minecraft server version reported by this client during handshake.
+     *
+     * @return the server version string (e.g. "1.20.4"), or empty/null if not reported
+     */
+    public String getServerVersion() {
+        return serverVersion;
+    }
+
+    /**
+     * Sets the Minecraft server version reported by this client.
+     *
+     * @param serverVersion the server version string
+     */
+    public void setServerVersion(String serverVersion) {
+        this.serverVersion = serverVersion;
+    }
+
+    /**
      * Gets the last computed round-trip latency (ping) in milliseconds.
      *
      * @return the ping in ms, or 0 if no keepalive has been received yet
@@ -256,6 +275,7 @@ public class ClientConnection {
                 ", authenticated=" + authenticated +
                 ", clientId='" + clientId + '\'' +
                 ", platform=" + platform +
+                ", serverVersion='" + serverVersion + '\'' +
                 ", ping=" + ping +
                 '}';
     }

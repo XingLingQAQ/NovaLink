@@ -770,6 +770,9 @@ public class NovaLinkMain {
                 // Record the platform reported by the client so the panel can
                 // display it in the server-status broadcast.
                 connection.setPlatform(packet.getPlatform());
+                // Record the Minecraft server version reported by the client so
+                // the panel can display it in the server-status broadcast.
+                connection.setServerVersion(packet.getServerVersion());
                 // Bootstrap GLOBAL channel permission grants for this game-server client.
                 grantBootstrapPermissions(clientPermissionRegistry, clientPermissionBootstrap, packet.getClientId());
                 response = HandshakeResponsePacket.success("Authentication successful");

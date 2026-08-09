@@ -125,13 +125,15 @@ public class NetworkClient {
         ClientConnectionConfig connectionConfig = config.toClientConnectionConfig();
         SchedulerBridge scheduler = new BukkitSchedulerBridge(plugin);
         ClientLogger logger = new BukkitClientLogger(plugin);
+        String serverVersion = plugin.getServer().getVersion();
         this.core = new CoreNetworkClient(
                 connectionConfig,
                 PlatformType.BUKKIT,
                 scheduler,
                 logger,
                 "config.yml",
-                Function.identity()
+                Function.identity(),
+                serverVersion
         );
 
         // Register Bukkit-specific (non-default) handlers on the core.

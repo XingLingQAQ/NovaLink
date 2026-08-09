@@ -2,6 +2,7 @@ package com.nova.chat.sponge;
 
 import com.google.inject.Inject;
 import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
 import com.nova.chat.sponge.chat.ChatListener;
@@ -258,7 +259,7 @@ public class NovaChatSponge {
             }
             client.sendPacket(packet);
             return true;
-        });
+        }, PlatformType.SPONGE.name());
     }
 
     /**

@@ -1089,6 +1089,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         json.add("joinedChannels", channels);
 
         json.addProperty("muted", state.getMutes() != null && !state.getMutes().isEmpty());
+        json.addProperty("platform", state.getPlatform() != null
+                && !state.getPlatform().isEmpty()
+                ? state.getPlatform() : "Java");
 
         return json;
     }

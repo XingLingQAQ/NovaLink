@@ -428,6 +428,7 @@ public class RedisProvider implements DatabaseProvider {
         String currentWorld;
         Set<String> joinedChannels;
         String activeChannel;
+        String platform;
         Map<String, MuteInfoDto> mutes;
         long lastSeen;
 
@@ -440,6 +441,7 @@ public class RedisProvider implements DatabaseProvider {
             this.currentWorld = state.getCurrentWorld();
             this.joinedChannels = new HashSet<>(state.getJoinedChannels());
             this.activeChannel = state.getActiveChannel();
+            this.platform = state.getPlatform();
             this.mutes = new HashMap<>();
             for (Map.Entry<String, MuteInfo> entry : state.getMutes().entrySet()) {
                 this.mutes.put(entry.getKey(), new MuteInfoDto(entry.getValue()));
@@ -454,6 +456,7 @@ public class RedisProvider implements DatabaseProvider {
             state.setCurrentWorld(currentWorld);
             state.setJoinedChannels(joinedChannels != null ? joinedChannels : new HashSet<>());
             state.setActiveChannel(activeChannel);
+            state.setPlatform(platform);
             if (mutes != null) {
                 Map<String, MuteInfo> muteMap = new HashMap<>();
                 for (Map.Entry<String, MuteInfoDto> entry : mutes.entrySet()) {

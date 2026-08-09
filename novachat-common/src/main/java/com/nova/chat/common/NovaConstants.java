@@ -10,7 +10,7 @@ public final class NovaConstants {
     }
     
     // Protocol Version
-    public static final int PROTOCOL_VERSION = 1;
+    public static final int PROTOCOL_VERSION = 2;
     
     // Default Ports
     public static final int DEFAULT_PORT = 8888;
