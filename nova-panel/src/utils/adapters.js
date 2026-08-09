@@ -129,8 +129,9 @@ export function adaptPlayer(playerJson) {
  * Backend now enriches each entry with real name / server (clientId) / muted
  * alongside the original uuid + channels. name falls back to uuid when the
  * backend could not resolve it; server is null when unknown (shown as
- * 'unknown'); muted is a boolean. platform is not yet provided per-player by
- * the backend, so it stays as a 'Java' placeholder.
+ * 'unknown'); muted is a boolean. platform is now provided per-player by the
+ * backend as the PlatformType enum name (e.g. "BUKKIT", "VELOCITY", "NUKKIT")
+ * or null; we fall back to 'Java' when the backend omits it.
  */
 export function adaptWsPlayer(wsPlayer) {
   if (!wsPlayer) return null;
@@ -147,12 +148,13 @@ export function adaptWsPlayer(wsPlayer) {
 
 /**
  * Adapt a WS server_status client JSON object to the component server shape.
- * Backend client now provides real platform/ping/players (in addition to
- * id, connectionId, remoteAddress, connectedAt, active). platform is the
- * PlatformType enum name (e.g. "BUKKIT", "VELOCITY") or "Unknown" when the
- * backend could not determine it. ping is in ms; players is the online player
- * count on that server. version is not yet provided by the backend, so it
- * stays as a placeholder.
+ * Backend client now provides real platform/ping/players/version (in
+ * addition to id, connectionId, remoteAddress, connectedAt, active).
+ * platform is the PlatformType enum name (e.g. "BUKKIT", "VELOCITY") or
+ * "Unknown" when the backend could not determine it. ping is in ms; players
+ * is the online player count on that server. version is the real game
+ * version string (e.g. "1.20.4") or empty; we fall back to '-' when the
+ * backend omits it.
  */
 export function adaptClient(clientJson) {
   if (!clientJson) return null;
