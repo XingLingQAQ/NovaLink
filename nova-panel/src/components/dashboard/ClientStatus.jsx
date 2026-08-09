@@ -21,6 +21,7 @@ import {
   Trash2,
   Info
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 
@@ -34,6 +35,7 @@ function ClientStatus({
   onDisconnectServer,
   onViewServerDetails
 }) {
+  const { t } = useTranslation();
   const [viewMode, setViewMode] = useState('grid'); // 'grid' or 'list'
 
   // Config reload is not exposed to the panel via REST or WS.
@@ -60,9 +62,9 @@ function ClientStatus({
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h2 className={`text-2xl font-bold ${txtMain}`}>服务器管理</h2>
+          <h2 className={`text-2xl font-bold ${txtMain}`}>{t('common.servers_title')}</h2>
           <p className={`text-sm ${txtSec} mt-1`}>
-            已连接的游戏服务器 · {onlineCount}/{servers.length} 在线
+            {t('common.servers_subtitle', { online: onlineCount, total: servers.length })}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -109,9 +111,9 @@ function ClientStatus({
             mode={mode}
             variant="primary"
             onClick={onReloadConfig}
-            title={reloadConfigDisabled ? '配置重载需在服务端执行，面板暂不支持' : '重载配置'}
+            title={reloadConfigDisabled ? t('common.reload_title_disabled') : t('common.reload_title')}
           >
-            <RefreshCw size={16} /> 重载配置
+            <RefreshCw size={16} /> {t('common.reload')}
           </Button>
         </div>
       </div>
@@ -121,7 +123,7 @@ function ClientStatus({
         <Card theme={theme} mode={mode} className="p-3 flex items-start gap-2 border border-amber-500/20">
           <Info size={16} className="text-amber-400 shrink-0 mt-0.5" />
           <p className={`text-xs ${txtSec}`}>
-            配置重载需在服务端执行 nova reload 命令或重启后生效，面板暂不支持远程触发。服务器列表由 WebSocket 实时推送。
+            {t('common.reload_disable_banner')}
           </p>
         </Card>
       )}
@@ -130,22 +132,22 @@ function ClientStatus({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard
           theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec}
-          icon={Server} label="在线服务器" value={`${onlineCount}/${servers.length}`}
+          icon={Server} label={t('common.stat_online_servers')} value={`${onlineCount}/${servers.length}`}
           color={servers.length > 0 && onlineCount === servers.length ? 'text-emerald-400' : 'text-amber-400'}
         />
         <StatCard
           theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec}
-          icon={Users} label="总玩家数" value={totalPlayers}
+          icon={Users} label={t('common.stat_total_players')} value={totalPlayers}
           color="text-sky-400"
         />
         <StatCard
           theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec}
-          icon={Activity} label="平均延迟" value={onlineCount > 0 ? `${avgPing}ms` : '-'}
+          icon={Activity} label={t('common.stat_avg_ping')} value={onlineCount > 0 ? `${avgPing}ms` : '-'}
           color={avgPing < 50 ? 'text-emerald-400' : avgPing < 100 ? 'text-amber-400' : 'text-rose-400'}
         />
         <StatCard
           theme={theme} mode={mode} txtMain={txtMain} txtSec={txtSec}
-          icon={Clock} label="最早连接" value={servers.length > 0 && servers[0]?.connectedAt ? formatUptime(servers[0].connectedAt) : '-'}
+          icon={Clock} label={t('common.stat_earliest')} value={servers.length > 0 && servers[0]?.connectedAt ? formatUptime(servers[0].connectedAt) : '-'}
           color="text-purple-400"
         />
       </div>
@@ -154,8 +156,8 @@ function ClientStatus({
       {servers.length === 0 ? (
         <Card theme={theme} mode={mode} className="p-12 text-center">
           <Server size={48} className={`mx-auto mb-4 opacity-50 ${txtSec}`} />
-          <p className={txtMain}>暂无已连接服务器</p>
-          <p className={`text-sm ${txtSec} mt-1`}>服务器列表由 WebSocket 实时推送，连接后自动显示</p>
+          <p className={txtMain}>{t('common.no_servers')}</p>
+          <p className={`text-sm ${txtSec} mt-1`}>{t('common.no_servers_hint')}</p>
         </Card>
       ) : viewMode === 'grid' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -178,13 +180,13 @@ function ClientStatus({
             <table className="w-full text-left">
               <thead>
                 <tr className={`text-xs uppercase tracking-wider ${txtSec} border-b ${mode === 'dark' ? 'border-white/10' : 'border-slate-200'}`}>
-                  <th className="p-4 font-medium">服务器</th>
-                  <th className="p-4 font-medium">平台</th>
-                  <th className="p-4 font-medium">版本</th>
-                  <th className="p-4 font-medium">玩家</th>
-                  <th className="p-4 font-medium">延迟</th>
-                  <th className="p-4 font-medium">状态</th>
-                  <th className="p-4 font-medium text-right">操作</th>
+                  <th className="p-4 font-medium">{t('players.col_server')}</th>
+                  <th className="p-4 font-medium">{t('players.col_platform')}</th>
+                  <th className="p-4 font-medium">{t('common.col_version')}</th>
+                  <th className="p-4 font-medium">{t('players.col_player')}</th>
+                  <th className="p-4 font-medium">{t('common.col_ping')}</th>
+                  <th className="p-4 font-medium">{t('common.col_status')}</th>
+                  <th className="p-4 font-medium text-right">{t('players.col_action')}</th>
                 </tr>
               </thead>
               <tbody className={`text-sm ${txtMain}`}>
@@ -211,7 +213,7 @@ function ClientStatus({
                           ? 'bg-emerald-500/20 text-emerald-500' 
                           : 'bg-red-500/20 text-red-500'
                       }`}>
-                        {server.status === 'online' ? '在线' : '离线'}
+                        {server.status === 'online' ? t('common.status_online') : t('common.status_offline')}
                       </span>
                     </td>
                     <td className="p-4 text-right">
@@ -249,7 +251,7 @@ function ClientStatus({
       {/* Platform Summary */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card theme={theme} mode={mode} className="p-5">
-          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>平台分布</h3>
+          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('dashboard.platform_distribution')}</h3>
           <div className="space-y-3">
             {Object.entries(serversByPlatform).map(([platform, platformServers]) => {
               const online = platformServers.filter(s => s.status === 'online').length;
@@ -264,7 +266,7 @@ function ClientStatus({
                 }`}>
                   <div className="flex items-center justify-between mb-2">
                     <span className={`font-medium ${txtMain}`}>{platform}</span>
-                    <span className={`text-sm ${txtSec}`}>{online}/{total} 在线</span>
+                    <span className={`text-sm ${txtSec}`}>{t('common.online_ratio', { online, total })}</span>
                   </div>
                   <div className={`h-2 rounded-full ${theme === 'clean' ? 'bg-slate-200' : 'bg-white/10'}`}>
                     <div 
@@ -281,7 +283,7 @@ function ClientStatus({
         </Card>
 
         <Card theme={theme} mode={mode} className="p-5">
-          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>连接状态</h3>
+          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('common.settings_connection')}</h3>
           <div className="space-y-3">
             {servers.slice(0, 5).map((server) => (
               <div key={server.id} className="flex items-center justify-between">
@@ -334,14 +336,15 @@ function StatCard({ theme, mode, txtMain, txtSec, icon: Icon, label, value, colo
 
 // Server Card Component
 function ServerCard({ server, theme, mode, txtMain, txtSec, onViewDetails, onDisconnect }) {
+  const { t } = useTranslation();
   return (
     <Card theme={theme} mode={mode} className="p-5 relative">
       {/* Header */}
       <div className="flex items-start justify-between mb-4">
         <div className="flex items-center gap-3">
           <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
-            server.status === 'online' 
-              ? (theme === 'clean' ? 'bg-emerald-50 text-emerald-600' : 'bg-emerald-500/20 text-emerald-400') 
+            server.status === 'online'
+              ? (theme === 'clean' ? 'bg-emerald-50 text-emerald-600' : 'bg-emerald-500/20 text-emerald-400')
               : (theme === 'clean' ? 'bg-red-50 text-red-600' : 'bg-red-500/20 text-red-400')
           }`}>
             <Server size={24} />
@@ -351,61 +354,61 @@ function ServerCard({ server, theme, mode, txtMain, txtSec, onViewDetails, onDis
             <p className={`text-xs ${txtSec}`}>{server.platform}</p>
           </div>
         </div>
-        
+
         {/* Status Badge */}
         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-          server.status === 'online' 
-            ? 'bg-emerald-500/20 text-emerald-500' 
+          server.status === 'online'
+            ? 'bg-emerald-500/20 text-emerald-500'
             : 'bg-red-500/20 text-red-500'
         }`}>
-          {server.status === 'online' ? '在线' : '离线'}
+          {server.status === 'online' ? t('common.status_online') : t('common.status_offline')}
         </span>
       </div>
 
       {/* Stats Grid */}
       <div className="grid grid-cols-3 gap-2 text-center">
         <div className={`p-2 rounded-lg ${
-          theme === 'clean' 
-            ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50') 
+          theme === 'clean'
+            ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50')
             : 'bg-white/5'
         }`}>
           <p className={`text-lg font-bold ${txtMain}`}>{server.players}</p>
-          <p className={`text-xs ${txtSec}`}>玩家</p>
+          <p className={`text-xs ${txtSec}`}>{t('players.col_player')}</p>
         </div>
         <div className={`p-2 rounded-lg ${
-          theme === 'clean' 
-            ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50') 
+          theme === 'clean'
+            ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50')
             : 'bg-white/5'
         }`}>
           <p className={`text-lg font-bold ${
-            server.status === 'online' 
+            server.status === 'online'
               ? (server.ping < 50 ? 'text-emerald-400' : server.ping < 100 ? 'text-amber-400' : 'text-rose-400')
               : txtSec
           }`}>
             {server.status === 'online' ? server.ping : '-'}
           </p>
-          <p className={`text-xs ${txtSec}`}>延迟</p>
+          <p className={`text-xs ${txtSec}`}>{t('common.col_ping')}</p>
         </div>
         <div className={`p-2 rounded-lg ${
-          theme === 'clean' 
-            ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50') 
+          theme === 'clean'
+            ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50')
             : 'bg-white/5'
         }`}>
           <p className={`text-lg font-bold ${txtMain}`}>{server.version}</p>
-          <p className={`text-xs ${txtSec}`}>版本</p>
+          <p className={`text-xs ${txtSec}`}>{t('common.col_version')}</p>
         </div>
       </div>
 
       {/* Actions */}
       <div className="flex gap-2 mt-4">
-        <Button 
-          theme={theme} 
-          mode={mode} 
-          variant="ghost" 
+        <Button
+          theme={theme}
+          mode={mode}
+          variant="ghost"
           className="flex-1 text-sm"
           onClick={() => onViewDetails && onViewDetails(server)}
         >
-          <Eye size={14} /> 详情
+          <Eye size={14} /> {t('common.details')}
         </Button>
         {server.status === 'online' && (
           <Button 

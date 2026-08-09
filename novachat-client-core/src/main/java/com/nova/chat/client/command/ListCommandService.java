@@ -1,6 +1,7 @@
 package com.nova.chat.client.command;
 
 import com.nova.chat.client.channel.KnownChannelRegistry;
+import com.nova.chat.client.i18n.I18n;
 
 import java.util.List;
 import java.util.Set;
@@ -17,6 +18,9 @@ import java.util.Set;
  * <p>Channel IDs from the registry are listed sorted; any joined channel that
  * the registry does not yet advertise (e.g. a freshly joined channel before the
  * next ConfigSync) is appended after the known ones so it still shows up.
+ *
+ * <p>The empty prompt is resolved through {@link I18n} (key
+ * {@code chat.list.empty}) so it follows the configured default locale.
  */
 public final class ListCommandService {
 
@@ -25,9 +29,6 @@ public final class ListCommandService {
 
     /** Marker prepended to a channel the player has not joined. */
     private static final String NOT_JOINED_MARKER = "&7○&r";
-
-    /** Prompt shown when the backend has not advertised any channels yet. */
-    private static final String EMPTY_PROMPT = "暂无已知频道，请等待服务器下发频道列表";
 
     private ListCommandService() {
         // Utility class — not instantiated.
@@ -45,7 +46,7 @@ public final class ListCommandService {
         Set<String> joined = joinedChannels != null ? joinedChannels : Set.of();
 
         if (known.isEmpty() && joined.isEmpty()) {
-            return List.of(EMPTY_PROMPT);
+            return List.of(I18n.tr("chat.list.empty"));
         }
 
         List<String> lines = new java.util.ArrayList<>(known.size() + joined.size());

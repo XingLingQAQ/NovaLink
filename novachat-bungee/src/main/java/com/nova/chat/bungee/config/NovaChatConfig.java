@@ -28,6 +28,7 @@ public class NovaChatConfig {
     // Chat settings
     private boolean replaceVanilla;
     private String defaultChannel;
+    private String locale;
 
     // Format settings
     private String prefix;
@@ -109,9 +110,11 @@ public class NovaChatConfig {
         if (chat != null) {
             this.replaceVanilla = chat.getBoolean("replace_vanilla", false);
             this.defaultChannel = chat.getString("default_channel", "local");
+            this.locale = chat.getString("locale", "zh_CN");
         } else {
             this.replaceVanilla = false;
             this.defaultChannel = "local";
+            this.locale = "zh_CN";
         }
 
         // Format settings
@@ -150,6 +153,7 @@ public class NovaChatConfig {
         this.reconnectDelay = 5;
         this.replaceVanilla = false;
         this.defaultChannel = "local";
+        this.locale = "zh_CN";
         this.prefix = "&8[&bNovaChat&8]&r ";
         this.errorFormat = "&c错误: {message}";
         this.successFormat = "&a成功: {message}";
@@ -178,6 +182,7 @@ public class NovaChatConfig {
             chat:
               replace_vanilla: false
               default_channel: "local"
+              locale: "zh_CN"  # 默认语言（zh_CN / en_US）；玩家客户端语言优先
             
             # 消息格式
             format:
@@ -223,6 +228,17 @@ public class NovaChatConfig {
 
     public String getDefaultChannel() {
         return defaultChannel;
+    }
+
+    /**
+     * Gets the configured default locale string (e.g. {@code "zh_CN"},
+     * {@code "en_US"}). Used to seed {@link com.nova.chat.client.i18n.I18n} at
+     * startup; per-player client locales still override this.
+     *
+     * @return the configured locale string, never null (defaults to {@code "zh_CN"})
+     */
+    public String getLocale() {
+        return locale;
     }
 
     public String getPrefix() {

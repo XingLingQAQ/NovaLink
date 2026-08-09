@@ -15,6 +15,7 @@ import com.nova.chat.pnx.chat.MessageFormatter;
 import com.nova.chat.pnx.command.NovaChatCommand;
 import com.nova.chat.pnx.config.NovaChatConfig;
 import com.nova.chat.pnx.form.ChannelFormManager;
+import com.nova.chat.pnx.listener.LocaleListener;
 import com.nova.chat.pnx.network.NetworkClient;
 import com.nova.chat.pnx.world.WorldMonitor;
 import lombok.Getter;
@@ -105,7 +106,14 @@ public class NovaChatPNX extends PluginBase implements Listener {
         novaChatConfig = new NovaChatConfig(this);
         novaChatConfig.load();
         debugMode = novaChatConfig.isDebug();
-        
+
+        // Seed the shared I18n default locale from config (per-player locales
+        // captured by LocaleListener override this per player).
+        com.nova.chat.client.i18n.I18n.setDefaultLocale(
+                com.nova.chat.client.i18n.LocaleResolver.parseOrDefault(
+                        novaChatConfig.getLocale(),
+                        com.nova.chat.client.i18n.LocaleResolver.ROOT_LOCALE));
+
         // Initialize message formatter
         messageFormatter = new MessageFormatter(this);
         
@@ -118,7 +126,10 @@ public class NovaChatPNX extends PluginBase implements Listener {
         // Initialize chat interceptor
         chatInterceptor = new ChatInterceptor(this);
         getServer().getPluginManager().registerEvents(chatInterceptor, this);
-        
+
+        // Capture per-player Bedrock locale from the login chain (i18n)
+        getServer().getPluginManager().registerEvents(new LocaleListener(), this);
+
         // Initialize mention Tab completer (Requirements: 11.3)
         mentionTabCompleter = new MentionTabCompleter(this);
         

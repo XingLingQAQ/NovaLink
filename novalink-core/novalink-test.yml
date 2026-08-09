@@ -8,6 +8,7 @@ server:
   websocket-port: 8889
   secret-key: change-me-in-production
   worker-threads: 4
+  locale: zh_CN
 database:
   type: memory
   mysql:

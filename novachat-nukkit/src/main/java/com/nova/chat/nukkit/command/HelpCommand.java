@@ -1,13 +1,15 @@
 package com.nova.chat.nukkit.command;
 
 import cn.nukkit.command.CommandSender;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.nukkit.NovaChatNukkit;
 
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Help command - displays available commands.
- * 
+ *
  * Requirements: 26.1-26.4
  */
 public class HelpCommand extends AbstractSubCommand {
@@ -26,7 +28,7 @@ public class HelpCommand extends AbstractSubCommand {
 
     @Override
     public String getDescription() {
-        return "显示帮助信息";
+        return I18n.tr("chat.command.desc.help");
     }
 
     @Override
@@ -46,30 +48,28 @@ public class HelpCommand extends AbstractSubCommand {
 
     @Override
     public boolean execute(CommandSender sender, String[] args) {
-        messageHelper.sendRawMessage(sender, "&b&l========== NovaChat 帮助 ==========");
-        
+        UUID playerId = sender instanceof cn.nukkit.Player ? ((cn.nukkit.Player) sender).getUniqueId() : null;
+        messageHelper.sendRawMessage(sender, I18n.tr(playerId, "chat.command.help.title"));
+
         for (Map.Entry<String, SubCommand> entry : mainCommand.getSubCommands().entrySet()) {
             SubCommand cmd = entry.getValue();
-            
+
             // Skip hidden commands
             if (cmd.isHidden()) {
                 continue;
             }
-            
+
             // Skip commands the sender doesn't have permission for
             if (!cmd.hasPermission(sender)) {
                 continue;
             }
-            
-            String permission = cmd.getPermission();
-            String permDisplay = permission != null ? " &8(" + permission + ")" : "";
-            
-            messageHelper.sendRawMessage(sender, 
-                "&e" + cmd.getUsage() + " &7- " + cmd.getDescription() + permDisplay);
+
+            messageHelper.sendRawMessage(sender,
+                "&e" + cmd.getUsage() + " &r- " + cmd.getDescription());
         }
-        
-        messageHelper.sendRawMessage(sender, "&b&l=====================================");
-        
+
+        messageHelper.sendRawMessage(sender, "&6===========================");
+
         return true;
     }
 }

@@ -4,7 +4,9 @@ import cn.nukkit.Player;
 import cn.nukkit.command.CommandSender;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.nukkit.NovaChatNukkit;
 
@@ -33,7 +35,7 @@ public class JoinCommand extends AbstractSubCommand {
 
     @Override
     public String getDescription() {
-        return "加入一个频道";
+        return I18n.tr("chat.command.desc.join");
     }
 
     @Override
@@ -54,7 +56,7 @@ public class JoinCommand extends AbstractSubCommand {
     @Override
     public boolean execute(CommandSender sender, String[] args) {
         if (args.length < 1) {
-            sendError(sender, "用法: " + getUsage());
+            sendError(sender, I18n.tr("chat.command.usage.join"));
             return true;
         }
 
@@ -68,7 +70,7 @@ public class JoinCommand extends AbstractSubCommand {
 
         if (result.isSuccess()) {
             // Match previous Nukkit UX (in-progress join rather than service English text).
-            sendSuccess(sender, "正在加入频道 " + channelId + "...");
+            sendSuccess(sender, PlayerMessages.joining(player.getUniqueId(), channelId));
             plugin.debug("Player " + player.getName() + " joined channel: " + channelId);
         } else {
             // Actionable error via shared ErrorCode system (NC-503 network failure here).

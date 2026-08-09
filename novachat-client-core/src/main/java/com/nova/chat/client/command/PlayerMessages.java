@@ -1,7 +1,10 @@
 package com.nova.chat.client.command;
 
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.ChatModeDescriptions;
+
+import java.util.UUID;
 
 /**
  * Shared, platform-agnostic player-facing message templates for high-frequency
@@ -11,9 +14,14 @@ import com.nova.chat.client.state.ChatModeDescriptions;
  * replace hard-coded literals with these methods so wording stays aligned across
  * bukkit / folia / velocity / bungee / sponge / nukkit / pnx.
  *
- * <p>Color codes use the shared {@code &} form; platforms colorize / convert to
- * {@code §} via their own helper (or {@code LegacyColorCodes.ampersandToSection})
- * before sending.
+ * <p>All copy is resolved through {@link I18n} so a player sees messages in
+ * their own Minecraft client locale (zh_CN default, en_US secondary). Color
+ * codes use the shared {@code &} form and stay inside the i18n property
+ * values; platforms colorize / convert to {@code §} via their own helper
+ * (or {@code LegacyColorCodes.ampersandToSection}) before sending.
+ *
+ * <p>The {@code {0}} / {@code {1}} placeholders in the bundle values are
+ * filled by {@link java.text.MessageFormat}.
  *
  * <p>Config-driven platforms may treat these as defaults and still allow config
  * overrides for prefixes / entire strings.
@@ -28,33 +36,74 @@ public final class PlayerMessages {
      * Immediate ack shown when a join is requested (before backend confirmation).
      *
      * @param channel the channel id being joined; never null
-     * @return colored message, e.g. {@code 正在加入频道 &eglobal&7...}
+     * @return colored message, e.g. {@code 正在加入频道 &eglobal&7...} (zh_CN) /
+     *         {@code Joining channel &eglobal&7...} (en_US)
      */
     public static String joining(String channel) {
         requireChannel(channel);
-        return "正在加入频道 &e" + channel + "&7...";
+        return I18n.tr("chat.join.joining", channel);
+    }
+
+    /**
+     * Player-locale variant of {@link #joining(String)} — resolves the message
+     * in the player's registered client locale (falling back to the default
+     * locale when no per-player locale is registered).
+     *
+     * @param playerId the player's UUID (may be null → default locale)
+     * @param channel  the channel id being joined; never null
+     * @return colored message in the player's locale
+     */
+    public static String joining(UUID playerId, String channel) {
+        requireChannel(channel);
+        return I18n.tr(playerId, "chat.join.joining", channel);
     }
 
     /**
      * Confirmation shown after the backend accepts a JOIN.
      *
      * @param channel the channel id that was joined; never null
-     * @return colored message, e.g. {@code 已加入频道 &eglobal}
+     * @return colored message, e.g. {@code 已加入频道 &eglobal} (zh_CN) /
+     *         {@code Joined channel &eglobal} (en_US)
      */
     public static String joined(String channel) {
         requireChannel(channel);
-        return "已加入频道 &e" + channel;
+        return I18n.tr("chat.join.joined", channel);
+    }
+
+    /**
+     * Player-locale variant of {@link #joined(String)}.
+     *
+     * @param playerId the player's UUID (may be null → default locale)
+     * @param channel  the channel id that was joined; never null
+     * @return colored message in the player's locale
+     */
+    public static String joined(UUID playerId, String channel) {
+        requireChannel(channel);
+        return I18n.tr(playerId, "chat.join.joined", channel);
     }
 
     /**
      * Immediate ack shown when a leave is requested (before backend confirmation).
      *
      * @param channel the channel id being left; never null
-     * @return colored message, e.g. {@code 正在离开频道 &eglobal&7...}
+     * @return colored message, e.g. {@code 正在离开频道 &eglobal&7...} (zh_CN) /
+     *         {@code Leaving channel &eglobal&7...} (en_US)
      */
     public static String leaving(String channel) {
         requireChannel(channel);
-        return "正在离开频道 &e" + channel + "&7...";
+        return I18n.tr("chat.leave.leaving", channel);
+    }
+
+    /**
+     * Player-locale variant of {@link #leaving(String)}.
+     *
+     * @param playerId the player's UUID (may be null → default locale)
+     * @param channel  the channel id being left; never null
+     * @return colored message in the player's locale
+     */
+    public static String leaving(UUID playerId, String channel) {
+        requireChannel(channel);
+        return I18n.tr(playerId, "chat.leave.leaving", channel);
     }
 
     /**
@@ -70,7 +119,23 @@ public final class PlayerMessages {
         if (defaultChannel == null || defaultChannel.isBlank()) {
             throw new IllegalArgumentException("defaultChannel must not be null or blank");
         }
-        return "已离开频道 &e" + channel + "&7，已切换到默认频道: &e" + defaultChannel;
+        return I18n.tr("chat.leave.left", channel, defaultChannel);
+    }
+
+    /**
+     * Player-locale variant of {@link #left(String, String)}.
+     *
+     * @param playerId       the player's UUID (may be null → default locale)
+     * @param channel        the channel id that was left; never null
+     * @param defaultChannel the default channel the player fell back to; never null
+     * @return colored message in the player's locale
+     */
+    public static String left(UUID playerId, String channel, String defaultChannel) {
+        requireChannel(channel);
+        if (defaultChannel == null || defaultChannel.isBlank()) {
+            throw new IllegalArgumentException("defaultChannel must not be null or blank");
+        }
+        return I18n.tr(playerId, "chat.leave.left", channel, defaultChannel);
     }
 
     /**
@@ -79,29 +144,63 @@ public final class PlayerMessages {
      *
      * @param channel the active channel id; never null
      * @param mode    the player's chat mode; never null
-     * @return colored bar text, e.g. {@code &7当前频道：&bglobal &7（混合模式）}
+     * @return colored bar text, e.g. {@code &7当前频道：&bglobal &7（混合模式）} (zh_CN) /
+     *         {@code &7Current channel: &bglobal &7(Hybrid mode)} (en_US)
      */
     public static String currentChannelBar(String channel, ChatMode mode) {
         requireChannel(channel);
-        return "&7当前频道：&b" + channel + " &7（" + ChatModeDescriptions.modeName(mode) + "）";
+        return I18n.tr("chat.status.current_bar", channel, ChatModeDescriptions.modeName(mode));
+    }
+
+    /**
+     * Player-locale variant of {@link #currentChannelBar(String, ChatMode)}.
+     *
+     * @param playerId the player's UUID (may be null → default locale)
+     * @param channel  the active channel id; never null
+     * @param mode     the player's chat mode; never null
+     * @return colored bar text in the player's locale
+     */
+    public static String currentChannelBar(UUID playerId, String channel, ChatMode mode) {
+        requireChannel(channel);
+        return I18n.tr(playerId, "chat.status.current_bar", channel, ChatModeDescriptions.modeName(mode));
     }
 
     /**
      * PNX-style chat toggle confirmation when chat is enabled.
      *
-     * @return plain text {@code 聊天已开启}
+     * @return plain text {@code 聊天已开启} (zh_CN) / {@code Chat enabled} (en_US)
      */
     public static String chatOn() {
-        return "聊天已开启";
+        return I18n.tr("chat.toggle.on");
+    }
+
+    /**
+     * Player-locale variant of {@link #chatOn()}.
+     *
+     * @param playerId the player's UUID (may be null → default locale)
+     * @return plain text in the player's locale
+     */
+    public static String chatOn(UUID playerId) {
+        return I18n.tr(playerId, "chat.toggle.on");
     }
 
     /**
      * PNX-style chat toggle confirmation when chat is disabled.
      *
-     * @return plain text {@code 聊天已关闭}
+     * @return plain text {@code 聊天已关闭} (zh_CN) / {@code Chat disabled} (en_US)
      */
     public static String chatOff() {
-        return "聊天已关闭";
+        return I18n.tr("chat.toggle.off");
+    }
+
+    /**
+     * Player-locale variant of {@link #chatOff()}.
+     *
+     * @param playerId the player's UUID (may be null → default locale)
+     * @return plain text in the player's locale
+     */
+    public static String chatOff(UUID playerId) {
+        return I18n.tr(playerId, "chat.toggle.off");
     }
 
     private static void requireChannel(String channel) {

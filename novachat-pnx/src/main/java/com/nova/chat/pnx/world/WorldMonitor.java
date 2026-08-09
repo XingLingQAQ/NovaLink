@@ -6,6 +6,7 @@ import cn.nukkit.event.EventPriority;
 import cn.nukkit.event.Listener;
 import cn.nukkit.event.entity.EntityLevelChangeEvent;
 import cn.nukkit.event.player.PlayerJoinEvent;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.pnx.NovaChatPNX;
 
 /**
@@ -64,7 +65,7 @@ public class WorldMonitor implements Listener {
                 
                 // Notify player of channel switch
                 String prefix = plugin.getNovaChatConfig().getFormatPrefix();
-                player.sendMessage(prefix + "§7已自动切换到频道: §e" + channelId);
+                player.sendMessage(prefix + I18n.tr(player.getUniqueId(), "chat.world.switched", channelId));
                 
                 plugin.debug("Auto-switched " + player.getName() + 
                     " to channel " + channelId + " (world: " + worldName + ")");

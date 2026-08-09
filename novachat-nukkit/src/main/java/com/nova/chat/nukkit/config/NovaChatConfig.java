@@ -24,6 +24,7 @@ public class NovaChatConfig {
     // Chat settings
     private final boolean replaceVanilla;
     private final String defaultChannel;
+    private final String locale;
 
     // Format settings
     private final String prefix;
@@ -51,6 +52,7 @@ public class NovaChatConfig {
         // Chat settings
         this.replaceVanilla = config.getBoolean("chat.replace_vanilla", false);
         this.defaultChannel = config.getString("chat.default_channel", "local");
+        this.locale = config.getString("chat.locale", "zh_CN");
 
         // Format settings
         this.prefix = config.getString("format.prefix", "§8[§bNovaChat§8]§r ");
@@ -101,6 +103,16 @@ public class NovaChatConfig {
 
     public String getDefaultChannel() {
         return defaultChannel;
+    }
+
+    /**
+     * Gets the configured default locale code (e.g. {@code "zh_CN"},
+     * {@code "en_US"}). Used at startup to seed {@link com.nova.chat.client.i18n.I18n}.
+     *
+     * @return the configured locale code, defaulting to {@code "zh_CN"}
+     */
+    public String getLocale() {
+        return locale;
     }
 
     public String getPrefix() {

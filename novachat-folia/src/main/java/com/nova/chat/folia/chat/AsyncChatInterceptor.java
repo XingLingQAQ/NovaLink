@@ -1,6 +1,7 @@
 package com.nova.chat.folia.chat;
 
 import com.nova.chat.client.command.PlayerMessages;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -163,7 +164,7 @@ public class AsyncChatInterceptor implements Listener {
             }
             scheduler.runForPlayer(player, () -> {
                 if (player.isOnline()) {
-                    plugin.getMessageHelper().sendSuccess(player, "已加入频道 " + channelId);
+                    plugin.getMessageHelper().sendSuccess(player, PlayerMessages.joined(playerId, channelId));
                 }
             });
         }
@@ -228,25 +229,25 @@ public class AsyncChatInterceptor implements Listener {
                 try {
                     String channelId = notice.getChannelId();
                     if (notice.getAction() == ChannelAction.KICK) {
-                        String title = MessageHelper.colorize("&c你已被踢出频道");
+                        String title = MessageHelper.colorize(I18n.tr(notice.getTargetId(), "chat.notice.kick_title"));
                         String subtitle = MessageHelper.colorize(
-                                "&7被 &e" + operator + " &7踢出频道 &b" + channelId);
+                                I18n.tr(notice.getTargetId(), "chat.notice.kick_subtitle", operator, channelId));
                         target.sendTitle(title, subtitle,
                                 MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
                         target.spigot().sendMessage(ChatMessageType.ACTION_BAR,
                                 new TextComponent(MessageHelper.colorize(
-                                        "&c你已被 " + operator + " 踢出频道 " + channelId)));
+                                        I18n.tr(notice.getTargetId(), "chat.notice.kick_actionbar", operator, channelId))));
                         return;
                     }
                     // MUTE
-                    String title = MessageHelper.colorize("&c你已被禁言");
+                    String title = MessageHelper.colorize(I18n.tr(notice.getTargetId(), "chat.notice.mute_title"));
                     String subtitle = MessageHelper.colorize(
-                            "&7在频道 &b" + channelId + " &7持续 &e" + durationText);
+                            I18n.tr(notice.getTargetId(), "chat.notice.mute_subtitle", channelId, durationText));
                     target.sendTitle(title, subtitle,
                             MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
                     target.spigot().sendMessage(ChatMessageType.ACTION_BAR,
                             new TextComponent(MessageHelper.colorize(
-                                    "&c你已被禁言 " + durationText + "（频道 " + channelId + "）")));
+                                    I18n.tr(notice.getTargetId(), "chat.notice.mute_actionbar", durationText, channelId))));
                 } catch (Exception e) {
                     plugin.debug("Failed to notify kick/mute target: " + e.getMessage(), e);
                 }
@@ -269,8 +270,7 @@ public class AsyncChatInterceptor implements Listener {
         }
         PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         ChatMode mode = state.getChatMode();
-        String modeName = (mode == ChatMode.REPLACE) ? "频道模式" : "混合模式";
-        String text = "&7当前频道：&b" + channelId + " &7（" + modeName + "）";
+        String text = com.nova.chat.client.command.PlayerMessages.currentChannelBar(player.getUniqueId(), channelId, mode);
         player.spigot().sendMessage(ChatMessageType.ACTION_BAR,
                 new TextComponent(MessageHelper.colorize(text)));
     }
@@ -303,7 +303,7 @@ public class AsyncChatInterceptor implements Listener {
                     String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
                     String title = messageFormatter.translateColorCodes("&e" + mentioner);
                     String subtitle = messageFormatter.translateColorCodes(
-                            "&7在频道 &b" + channelId + " &7提到了你");
+                            I18n.tr(mentionedId, "chat.mention.subtitle", channelId));
                     player.sendTitle(title, subtitle,
                             MentionNotifier.DEFAULT_FADE_IN,
                             MentionNotifier.DEFAULT_STAY,
@@ -441,7 +441,7 @@ public class AsyncChatInterceptor implements Listener {
             // This is necessary because sendMessage() may interact with player state
             scheduler.runForPlayer(player, () -> {
                 if (player.isOnline()) {
-                    player.sendMessage(formatError("未连接到聊天服务器，请稍后再试"));
+                    player.sendMessage(formatError(I18n.tr(playerId, "chat.network.not_connected_retry")));
                 }
             });
             return;
@@ -517,7 +517,7 @@ public class AsyncChatInterceptor implements Listener {
         if (!plugin.getNetworkClient().isAuthenticated()) {
             scheduler.runForPlayer(player, () -> {
                 if (player.isOnline()) {
-                    player.sendMessage(formatError("未连接到聊天服务器"));
+                    player.sendMessage(formatError(I18n.tr(player.getUniqueId(), "chat.network.not_connected")));
                 }
             });
             return;

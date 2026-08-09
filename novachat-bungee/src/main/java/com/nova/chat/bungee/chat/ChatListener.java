@@ -1,6 +1,7 @@
 package com.nova.chat.bungee.chat;
 
 import com.nova.chat.client.command.PlayerMessages;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -134,7 +135,7 @@ public class ChatListener implements Listener {
             if (player == null) {
                 return;
             }
-            player.sendMessage(messageFormatter.formatSuccess("已加入频道 " + channelId));
+            player.sendMessage(messageFormatter.formatSuccess(PlayerMessages.joined(playerId, channelId)));
         }
 
         @Override
@@ -144,7 +145,7 @@ public class ChatListener implements Listener {
                 return;
             }
             player.sendMessage(messageFormatter.formatSuccess(
-                    PlayerMessages.left(channelId, config.getDefaultChannel())));
+                    PlayerMessages.left(playerId, channelId, config.getDefaultChannel())));
         }
 
         @Override
@@ -173,16 +174,17 @@ public class ChatListener implements Listener {
             if (target == null) {
                 return; // not on this proxy
             }
+            UUID targetId = notice.getTargetId();
             String channelId = notice.getChannelId();
             String operator = notice.getOperator();
             if (notice.getAction() == ChannelAction.KICK) {
                 target.sendMessage(messageFormatter.parseColors(
-                        "&c你已被 " + operator + " 踢出频道 " + channelId));
+                        I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId)));
                 return;
             }
             String durationText = notice.getDurationText();
             target.sendMessage(messageFormatter.parseColors(
-                    "&c你已被禁言 " + durationText + "（频道 " + channelId + "）"));
+                    I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId)));
         }
     }
 
@@ -242,7 +244,7 @@ public class ChatListener implements Listener {
         mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
             String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
             String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
-            String text = "&e" + mentioner + " &7在频道 &b" + channelId + " &7提到了你";
+            String text = "&e" + mentioner + " " + I18n.tr(mentionedId, "chat.mention.subtitle", channelId);
             player.sendMessage(messageFormatter.parseColors(text));
         });
     }
@@ -292,7 +294,7 @@ public class ChatListener implements Listener {
         
         // Check if connected to backend
         if (plugin.getNetworkClient() == null || !plugin.getNetworkClient().isAuthenticated()) {
-            player.sendMessage(messageFormatter.formatError("未连接到聊天服务器，请稍后再试"));
+            player.sendMessage(messageFormatter.formatError(I18n.tr(playerId, "chat.network.not_connected_retry")));
             return;
         }
         
@@ -356,7 +358,7 @@ public class ChatListener implements Listener {
      */
     public void sendToChannel(ProxiedPlayer player, String channelId, String message) {
         if (plugin.getNetworkClient() == null || !plugin.getNetworkClient().isAuthenticated()) {
-            player.sendMessage(messageFormatter.formatError("未连接到聊天服务器"));
+            player.sendMessage(messageFormatter.formatError(I18n.tr(player.getUniqueId(), "chat.network.not_connected")));
             return;
         }
         

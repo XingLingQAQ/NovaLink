@@ -6,6 +6,7 @@ import cn.nukkit.event.EventPriority;
 import cn.nukkit.event.Listener;
 import cn.nukkit.event.player.PlayerChatEvent;
 import cn.nukkit.event.player.PlayerJoinEvent;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.chat.MentionNotifier;
@@ -61,7 +62,8 @@ public class ChatInterceptor implements Listener {
         
         // Check if chat is enabled for this player
         if (!state.isChatEnabled()) {
-            player.sendMessage(plugin.getMessageFormatter().formatError("你的聊天已关闭，使用 /nc toggle 开启"));
+            player.sendMessage(plugin.getMessageFormatter().formatError(
+                    I18n.tr(player.getUniqueId(), "chat.status.chat_disabled")));
             event.setCancelled(true);
             return;
         }
@@ -107,12 +109,14 @@ public class ChatInterceptor implements Listener {
      */
     private void sendChatMessage(Player player, String channelId, String message) {
         if (!plugin.getNetworkClient().isConnected()) {
-            player.sendMessage(plugin.getMessageFormatter().formatError("未连接到聊天服务器"));
+            player.sendMessage(plugin.getMessageFormatter().formatError(
+                    I18n.tr(player.getUniqueId(), "chat.network.not_connected")));
             return;
         }
 
         if (!plugin.getNetworkClient().isAuthenticated()) {
-            player.sendMessage(plugin.getMessageFormatter().formatError("正在连接聊天服务器，请稍后再试"));
+            player.sendMessage(plugin.getMessageFormatter().formatError(
+                    I18n.tr(player.getUniqueId(), "chat.status.connecting")));
             return;
         }
 

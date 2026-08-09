@@ -6,6 +6,7 @@ import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.error.ErrorCode;
 import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.ChatModeDescriptions;
 import com.nova.chat.client.state.PlayerChannelState;
@@ -101,17 +102,27 @@ public class NovaChatCommand extends Command implements TabExecutor {
      * Shows help information.
      */
     private void showHelp(CommandSender sender) {
-        sender.sendMessage(new TextComponent(ChatColor.GOLD + "=== NovaChat 帮助 ==="));
-        sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc help - 显示帮助信息"));
-        sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc join <频道> [密码] - 加入频道"));
-        sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc leave [频道] - 离开频道"));
-        sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc list - 列出可用频道"));
-        sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc who [频道] - 查看频道在线成员"));
-        sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc toggle - 切换聊天模式"));
-        sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc <频道> <消息> - 发送消息到指定频道"));
+        java.util.UUID playerId = (sender instanceof ProxiedPlayer p) ? p.getUniqueId() : null;
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(playerId, "chat.command.help.title"))));
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(playerId, "chat.command.help.line_help"))));
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(playerId, "chat.command.help.line_join"))));
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(playerId, "chat.command.help.line_leave"))));
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(playerId, "chat.command.help.line_list"))));
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(playerId, "chat.command.help.line_who"))));
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(playerId, "chat.command.help.line_toggle"))));
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(playerId, "chat.command.help.line_msg"))));
 
         if (sender.hasPermission("novachat.admin")) {
-            sender.sendMessage(new TextComponent(ChatColor.YELLOW + "/nc reload - 重载配置"));
+            sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                    I18n.tr(playerId, "chat.command.help.line_reload"))));
         }
     }
 
@@ -123,12 +134,12 @@ public class NovaChatCommand extends Command implements TabExecutor {
      */
     private void handleJoin(CommandSender sender, String[] args) {
         if (!(sender instanceof ProxiedPlayer player)) {
-            sender.sendMessage(messageFormatter.formatError("此命令只能由玩家执行"));
+            sender.sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
             return;
         }
 
         if (args.length < 1) {
-            player.sendMessage(messageFormatter.formatError("用法: /nc join <频道> [密码]"));
+            player.sendMessage(messageFormatter.formatError(I18n.tr(player.getUniqueId(), "chat.command.usage.join")));
             return;
         }
 
@@ -147,7 +158,7 @@ public class NovaChatCommand extends Command implements TabExecutor {
             // §7: optimistic "joining…" receipt; the async ChannelActionResponsePacket
             // handler in ChatListener confirms with "已加入频道 X" once the backend
             // accepts, or surfaces an actionable error if it rejects.
-            player.sendMessage(messageFormatter.formatSuccess(PlayerMessages.joining(channelId)));
+            player.sendMessage(messageFormatter.formatSuccess(PlayerMessages.joining(player.getUniqueId(), channelId)));
             plugin.debug("Player " + player.getName() + " joined channel: " + channelId);
         } else {
             // Actionable error via shared ErrorCode system (NC-503 network failure here).
@@ -168,7 +179,7 @@ public class NovaChatCommand extends Command implements TabExecutor {
      */
     private void handleLeave(CommandSender sender, String[] args) {
         if (!(sender instanceof ProxiedPlayer player)) {
-            sender.sendMessage(messageFormatter.formatError("此命令只能由玩家执行"));
+            sender.sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
             return;
         }
 
@@ -193,7 +204,7 @@ public class NovaChatCommand extends Command implements TabExecutor {
             String defaultChannel = plugin.getPluginConfig().getDefaultChannel();
             state.setActiveChannelIfJoined(defaultChannel);
             player.sendMessage(messageFormatter.formatSuccess(
-                    PlayerMessages.leaving(leavingChannel)));
+                    PlayerMessages.leaving(player.getUniqueId(), leavingChannel)));
             plugin.debug("Player " + player.getName() + " left channel: " + leavingChannel);
         } else {
             // Actionable error: NC-433 not-in-channel vs NC-503 network failure (via ErrorCode).
@@ -210,7 +221,7 @@ public class NovaChatCommand extends Command implements TabExecutor {
      */
     private void handleList(CommandSender sender) {
         if (!(sender instanceof ProxiedPlayer player)) {
-            sender.sendMessage(messageFormatter.formatError("此命令只能由玩家执行"));
+            sender.sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
             return;
         }
 
@@ -221,11 +232,13 @@ public class NovaChatCommand extends Command implements TabExecutor {
         java.util.List<String> lines = com.nova.chat.client.command.ListCommandService
                 .formatChannelList(plugin.getKnownChannelRegistry(), joined);
 
-        sender.sendMessage(new TextComponent(ChatColor.GOLD + "=== NovaChat 频道列表 ==="));
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(player.getUniqueId(), "chat.command.list.title"))));
         for (String line : lines) {
             player.sendMessage(messageFormatter.formatSystemMessage(line));
         }
-        sender.sendMessage(new TextComponent(ChatColor.GOLD + "==========================="));
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(player.getUniqueId(), "chat.command.list.tail"))));
     }
 
     /**
@@ -243,7 +256,7 @@ public class NovaChatCommand extends Command implements TabExecutor {
      */
     private void handleToggle(CommandSender sender) {
         if (!(sender instanceof ProxiedPlayer player)) {
-            sender.sendMessage(messageFormatter.formatError("此命令只能由玩家执行"));
+            sender.sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
             return;
         }
 
@@ -258,7 +271,8 @@ public class NovaChatCommand extends Command implements TabExecutor {
 
         ChatMode newMode = state.getChatMode();
         String modeText = ChatModeDescriptions.modeName(newMode);
-        player.sendMessage(messageFormatter.formatSuccess("聊天模式已切换为: " + modeText));
+        player.sendMessage(messageFormatter.formatSuccess(
+                I18n.tr(player.getUniqueId(), "chat.command.toggle.switched", modeText)));
         player.sendMessage(messageFormatter.formatSystemMessage(ChatModeDescriptions.describe(newMode)));
         plugin.debug("Player " + player.getName() + " toggled chat mode to: " + newMode);
     }
@@ -279,7 +293,8 @@ public class NovaChatCommand extends Command implements TabExecutor {
         // Signal intent through shared service (documented no-op), then do platform reload.
         channelCommands.reload();
         plugin.reload();
-        sender.sendMessage(messageFormatter.formatSuccess("配置已重载"));
+        java.util.UUID playerId = (sender instanceof ProxiedPlayer p) ? p.getUniqueId() : null;
+        sender.sendMessage(messageFormatter.formatSuccess(I18n.tr(playerId, "chat.command.reload.success")));
     }
 
     /**
@@ -287,12 +302,12 @@ public class NovaChatCommand extends Command implements TabExecutor {
      */
     private void handleChannelMessage(CommandSender sender, String channelId, String[] args) {
         if (!(sender instanceof ProxiedPlayer player)) {
-            sender.sendMessage(messageFormatter.formatError("此命令只能由玩家执行"));
+            sender.sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
             return;
         }
 
         if (args.length < 1) {
-            player.sendMessage(messageFormatter.formatError("用法: /nc <频道> <消息>"));
+            player.sendMessage(messageFormatter.formatError(I18n.tr(player.getUniqueId(), "chat.command.usage.msg")));
             return;
         }
 

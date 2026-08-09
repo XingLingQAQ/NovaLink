@@ -19,6 +19,7 @@ import {
   Search,
   Info
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import Modal from '../ui/Modal';
@@ -33,6 +34,7 @@ function ChannelManagement({
   onEditChannel,
   onDeleteChannel
 }) {
+  const { t } = useTranslation();
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -126,16 +128,16 @@ function ChannelManagement({
       onDeleteChannel && onDeleteChannel(channelId);
       return;
     }
-    if (window.confirm('确定要删除此频道吗？此操作不可撤销。')) {
+    if (window.confirm(t('channels.delete_confirm'))) {
       onDeleteChannel && onDeleteChannel(channelId);
     }
   };
 
   // Channel type options
   const channelTypes = [
-    { value: 'GLOBAL', label: '全网频道', icon: Globe },
-    { value: 'SERVER', label: '服务器频道', icon: Hash },
-    { value: 'PRIVATE', label: '私有频道', icon: Lock }
+    { value: 'GLOBAL', label: t('channels.type_global'), icon: Globe },
+    { value: 'SERVER', label: t('channels.type_server'), icon: Hash },
+    { value: 'PRIVATE', label: t('channels.type_private'), icon: Lock }
   ];
 
   return (
@@ -143,17 +145,17 @@ function ChannelManagement({
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h2 className={`text-2xl font-bold ${txtMain}`}>频道管理</h2>
-          <p className={`text-sm ${txtSec} mt-1`}>配置聊天频道 · {channels.length} 个频道</p>
+          <h2 className={`text-2xl font-bold ${txtMain}`}>{t('channels.title')}</h2>
+          <p className={`text-sm ${txtSec} mt-1`}>{t('channels.subtitle', { count: channels.length })}</p>
         </div>
         <Button
           theme={theme}
           mode={mode}
           variant="primary"
           onClick={() => (channelCrudDisabled ? handleCreate() : setShowCreateModal(true))}
-          title={channelCrudDisabled ? '频道增删改需在服务端配置文件中修改，面板暂不支持' : '新建频道'}
+          title={channelCrudDisabled ? t('channels.create_title') : t('channels.create')}
         >
-          <Plus size={16} /> 新建频道
+          <Plus size={16} /> {t('channels.create')}
         </Button>
       </div>
 
@@ -162,7 +164,7 @@ function ChannelManagement({
         <Card theme={theme} mode={mode} className="p-3 flex items-start gap-2 border border-amber-500/20">
           <Info size={16} className="text-amber-400 shrink-0 mt-0.5" />
           <p className={`text-xs ${txtSec}`}>
-            频道的创建、编辑、删除需在服务端 NovaLink 配置文件中修改后重载。面板当前仅提供只读查看，点击上方按钮可查看说明。
+            {t('channels.disable_banner')}
           </p>
         </Card>
       )}
@@ -179,7 +181,7 @@ function ChannelManagement({
             <Search size={16} className={txtSec} />
             <input 
               type="text" 
-              placeholder="搜索频道..." 
+              placeholder={t('channels.search_placeholder')}
               className="bg-transparent border-none outline-none text-sm flex-1" 
               style={{ color: mode === 'dark' ? 'white' : 'black' }}
               value={searchQuery}
@@ -199,7 +201,7 @@ function ChannelManagement({
                     : (mode === 'dark' ? 'text-slate-400 hover:bg-white/10' : 'text-slate-500 hover:bg-slate-100')
                 }`}
               >
-                {type === 'all' ? '全部' : type}
+                {type === 'all' ? t('channels.filter_all') : type}
               </button>
             ))}
           </div>
@@ -236,8 +238,8 @@ function ChannelManagement({
                     ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50')
                     : 'bg-white/5'
                 }`}>
-                  <span className={txtSec}>权限: </span>
-                  <span className={txtMain}>{channel.permission || '无'}</span>
+                  <span className={txtSec}>{t('channels.permission')}: </span>
+                  <span className={txtMain}>{channel.permission || t('channels.permission_none')}</span>
                 </div>
                 {channel.format && (
                   <div className={`p-2 rounded-lg text-xs font-mono overflow-hidden ${
@@ -245,7 +247,7 @@ function ChannelManagement({
                       ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50')
                       : 'bg-white/5'
                   }`}>
-                    <span className={txtSec}>格式: </span>
+                    <span className={txtSec}>{t('channels.format')}: </span>
                     <span className={`${txtMain} truncate block`}>{channel.format}</span>
                   </div>
                 )}
@@ -254,11 +256,11 @@ function ChannelManagement({
                     ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50')
                     : 'bg-white/5'
                 }`}>
-                  <span className={txtSec}>成员: </span>
+                  <span className={txtSec}>{t('channels.members')}: </span>
                   <span className={txtMain}>{channel.memberCount || 0}/{channel.maxCapacity || 0}</span>
                   {channel.clientId && (
                     <>
-                      <span className={txtSec}>· 服务器: </span>
+                      <span className={txtSec}>· {t('channels.server')}: </span>
                       <span className={txtMain}>{channel.clientId}</span>
                     </>
                   )}
@@ -273,9 +275,9 @@ function ChannelManagement({
                   variant="ghost"
                   className="flex-1 text-sm"
                   onClick={() => handleEdit(channel)}
-                  title={channelCrudDisabled ? '频道编辑需在服务端配置文件中修改' : '编辑'}
+                  title={channelCrudDisabled ? t('channels.edit_title') : t('channels.edit')}
                 >
-                  <Edit size={14} /> 编辑
+                  <Edit size={14} /> {t('channels.edit')}
                 </Button>
                 <Button
                   theme={theme}
@@ -283,7 +285,7 @@ function ChannelManagement({
                   variant="danger"
                   className="text-sm"
                   onClick={() => handleDelete(channel.id)}
-                  title={channelCrudDisabled ? '频道删除需在服务端配置文件中修改' : '删除'}
+                  title={channelCrudDisabled ? t('channels.delete_title') : t('common.delete')}
                 >
                   <Trash2 size={14} />
                 </Button>
@@ -297,8 +299,8 @@ function ChannelManagement({
       {filteredChannels.length === 0 && (
         <Card theme={theme} mode={mode} className="p-12 text-center">
           <Hash size={48} className={`mx-auto mb-4 ${txtSec}`} />
-          <p className={txtMain}>没有找到频道</p>
-          <p className={`text-sm ${txtSec} mt-1`}>尝试调整搜索条件或创建新频道</p>
+          <p className={txtMain}>{t('channels.not_found')}</p>
+          <p className={`text-sm ${txtSec} mt-1`}>{t('channels.not_found_hint')}</p>
         </Card>
       )}
 
@@ -306,7 +308,7 @@ function ChannelManagement({
       <Modal 
         isOpen={showCreateModal} 
         onClose={() => setShowCreateModal(false)} 
-        title="创建频道" 
+        title={t('channels.create_modal_title')}
         theme={theme} 
         mode={mode}
       >
@@ -320,10 +322,10 @@ function ChannelManagement({
         />
         <div className="flex gap-3 mt-6 pt-4 border-t border-gray-200/10">
           <Button variant="ghost" className="flex-1" theme={theme} mode={mode} onClick={() => setShowCreateModal(false)}>
-            取消
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" className="flex-1" theme={theme} mode={mode} onClick={handleCreate}>
-            创建
+            {t('common.create')}
           </Button>
         </div>
       </Modal>
@@ -332,7 +334,7 @@ function ChannelManagement({
       <Modal 
         isOpen={showEditModal} 
         onClose={() => setShowEditModal(false)} 
-        title="编辑频道" 
+        title={t('channels.edit_modal_title')}
         theme={theme} 
         mode={mode}
       >
@@ -349,10 +351,10 @@ function ChannelManagement({
             />
             <div className="flex gap-3 mt-6 pt-4 border-t border-gray-200/10">
               <Button variant="ghost" className="flex-1" theme={theme} mode={mode} onClick={() => setShowEditModal(false)}>
-                取消
+                {t('common.cancel')}
               </Button>
               <Button variant="primary" className="flex-1" theme={theme} mode={mode} onClick={handleSaveEdit}>
-                保存
+                {t('common.save')}
               </Button>
             </div>
           </>
@@ -364,9 +366,10 @@ function ChannelManagement({
 
 // Channel Form Component
 function ChannelForm({ theme, mode, txtSec, channel, onChange, channelTypes, isEdit = false }) {
+  const { t } = useTranslation();
   const inputClass = `w-full px-4 py-2.5 rounded-xl border outline-none focus:ring-2 transition-all ${
-    theme === 'clean' 
-      ? (mode === 'dark' ? 'bg-slate-700 border-slate-600 focus:ring-sky-500 text-white' : 'bg-white border-slate-200 focus:ring-sky-500 text-slate-900') 
+    theme === 'clean'
+      ? (mode === 'dark' ? 'bg-slate-700 border-slate-600 focus:ring-sky-500 text-white' : 'bg-white border-slate-200 focus:ring-sky-500 text-slate-900')
       : 'bg-white/10 border-white/20 focus:ring-white/50 text-white placeholder:text-white/30'
   }`;
 
@@ -375,11 +378,11 @@ function ChannelForm({ theme, mode, txtSec, channel, onChange, channelTypes, isE
       {/* Channel ID */}
       <div>
         <label className={`block text-xs font-semibold uppercase tracking-wider mb-1.5 ${txtSec}`}>
-          频道 ID
+          {t('channels.field_channel_id')}
         </label>
-        <input 
-          type="text" 
-          value={channel.id} 
+        <input
+          type="text"
+          value={channel.id}
           onChange={(e) => onChange({ ...channel, id: e.target.value.toLowerCase().replace(/\s/g, '_') })}
           placeholder="channel_id"
           disabled={isEdit}
@@ -390,13 +393,13 @@ function ChannelForm({ theme, mode, txtSec, channel, onChange, channelTypes, isE
       {/* Channel Name */}
       <div>
         <label className={`block text-xs font-semibold uppercase tracking-wider mb-1.5 ${txtSec}`}>
-          显示名称
+          {t('channels.field_display_name')}
         </label>
-        <input 
-          type="text" 
-          value={channel.name} 
+        <input
+          type="text"
+          value={channel.name}
           onChange={(e) => onChange({ ...channel, name: e.target.value })}
-          placeholder="频道名称"
+          placeholder={t('channels.field_display_name_placeholder')}
           className={inputClass}
         />
       </div>
@@ -404,7 +407,7 @@ function ChannelForm({ theme, mode, txtSec, channel, onChange, channelTypes, isE
       {/* Channel Type */}
       <div>
         <label className={`block text-xs font-semibold uppercase tracking-wider mb-1.5 ${txtSec}`}>
-          频道类型
+          {t('channels.field_channel_type')}
         </label>
         <div className="grid grid-cols-3 gap-2">
           {channelTypes.map(type => (
@@ -429,11 +432,11 @@ function ChannelForm({ theme, mode, txtSec, channel, onChange, channelTypes, isE
       {/* Permission */}
       <div>
         <label className={`block text-xs font-semibold uppercase tracking-wider mb-1.5 ${txtSec}`}>
-          权限节点
+          {t('channels.field_permission')}
         </label>
-        <input 
-          type="text" 
-          value={channel.permission} 
+        <input
+          type="text"
+          value={channel.permission}
           onChange={(e) => onChange({ ...channel, permission: e.target.value })}
           placeholder="novachat.channel.example"
           className={inputClass}
@@ -443,17 +446,17 @@ function ChannelForm({ theme, mode, txtSec, channel, onChange, channelTypes, isE
       {/* Format */}
       <div>
         <label className={`block text-xs font-semibold uppercase tracking-wider mb-1.5 ${txtSec}`}>
-          消息格式
+          {t('channels.field_message_format')}
         </label>
-        <input 
-          type="text" 
-          value={channel.format} 
+        <input
+          type="text"
+          value={channel.format}
           onChange={(e) => onChange({ ...channel, format: e.target.value })}
           placeholder="&7[{channel}] {player}: {message}"
           className={`${inputClass} font-mono text-sm`}
         />
         <p className={`text-xs ${txtSec} mt-1`}>
-          可用变量: {'{player}'}, {'{channel}'}, {'{message}'}, {'{server}'}
+          {t('channels.field_format_vars')}
         </p>
       </div>
     </div>

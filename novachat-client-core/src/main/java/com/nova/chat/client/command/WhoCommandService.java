@@ -1,5 +1,7 @@
 package com.nova.chat.client.command;
 
+import com.nova.chat.client.i18n.I18n;
+
 /**
  * Shared {@code /nc who} service (UX-DESIGN §8.2).
  *
@@ -21,19 +23,14 @@ package com.nova.chat.client.command;
  * copy. When a future backend protocol adds member delivery, platforms can
  * stop calling {@link #getUnavailablePrompt()} and render the real list.
  *
+ * <p>The degraded prompt is resolved through {@link I18n} (key
+ * {@code chat.who.unavailable}) so it follows the configured default locale.
+ *
  * <p>TODO(backend): add a {@code ChannelMembersPacket} (or populate
  * {@code ChannelActionResponsePacket.extra} with member names) and wire
  * real member listing here.
  */
 public final class WhoCommandService {
-
-    /**
-     * Prompt shown when channel-member data is not available from the
-     * backend (the current state). Plain text, no color codes — platforms
-     * apply their own error styling.
-     */
-    public static final String UNAVAILABLE_PROMPT =
-            "频道成员查询暂不可用（需后端支持）";
 
     private WhoCommandService() {
         // Utility class — no instances.
@@ -52,11 +49,12 @@ public final class WhoCommandService {
     }
 
     /**
-     * Returns the degraded prompt to show for {@code /nc who}.
+     * Returns the degraded prompt to show for {@code /nc who}, resolved
+     * through {@link I18n} in the current default locale.
      *
      * @return the unavailable prompt (plain text)
      */
     public static String getUnavailablePrompt() {
-        return UNAVAILABLE_PROMPT;
+        return I18n.tr("chat.who.unavailable");
     }
 }

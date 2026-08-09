@@ -3,6 +3,7 @@ package com.nova.chat.pnx.command;
 import cn.nukkit.Player;
 import cn.nukkit.command.CommandSender;
 import com.nova.chat.client.command.ListCommandService;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.pnx.NovaChatPNX;
 
@@ -31,7 +32,7 @@ public class ListCommand extends AbstractSubCommand {
 
     @Override
     public String getDescription() {
-        return "列出可用频道";
+        return I18n.tr("chat.command.desc.list");
     }
 
     @Override
@@ -52,7 +53,7 @@ public class ListCommand extends AbstractSubCommand {
     @Override
     public boolean execute(CommandSender sender, String[] args) {
         if (!(sender instanceof Player)) {
-            sendError(sender, "此命令只能由玩家执行");
+            sendError(sender, I18n.tr("chat.command.player_only"));
             return true;
         }
         Player player = (Player) sender;
@@ -63,11 +64,11 @@ public class ListCommand extends AbstractSubCommand {
         List<String> lines = ListCommandService.formatChannelList(
                 plugin.getKnownChannelRegistry(), joined);
 
-        sendMessage(sender, "&8&m----------&r &bNovaChat 频道列表 &8&m----------");
+        sendMessage(sender, I18n.tr(player.getUniqueId(), "chat.command.list.title"));
         for (String line : lines) {
             sendMessage(sender, line);
         }
-        sendMessage(sender, "&8&m---------------------------------");
+        sendMessage(sender, I18n.tr(player.getUniqueId(), "chat.command.list.tail"));
         return true;
     }
 }

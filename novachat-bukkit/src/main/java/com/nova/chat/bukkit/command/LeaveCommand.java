@@ -3,6 +3,7 @@ package com.nova.chat.bukkit.command;
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.state.PlayerChannelState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -82,7 +83,7 @@ public class LeaveCommand extends AbstractSubCommand {
         ChannelCommandService channelCommands = plugin.getChannelCommandService();
         CommandResult result = channelCommands.leave(state, channelId, player.getName());
         if (result.isSuccess()) {
-            messageHelper.sendMessage(sender, "正在离开频道 &e" + channelId + "&7...");
+            messageHelper.sendMessage(sender, PlayerMessages.leaving(player.getUniqueId(), channelId));
 
             // Prefer the configured default only when it remains joined. This is
             // deliberately membership-preserving: leaving the default may leave no

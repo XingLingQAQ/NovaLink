@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.common.protocol.AdminAction;
 import com.nova.chat.common.protocol.packets.AdminActionPacket;
 import org.bukkit.command.CommandSender;
@@ -53,7 +54,7 @@ public class TitleCommand extends AbstractSubCommand {
     public boolean execute(CommandSender sender, String[] args) {
         if (args.length < 2) {
             messageHelper.sendUsage(sender, getUsage());
-            messageHelper.sendSuggestion(sender, "支持颜色代码，如 &c红色 或 &#FF0000");
+            messageHelper.sendSuggestion(sender, I18n.tr(playerIdOf(sender), "chat.title.color_hint"));
             return true;
         }
 
@@ -82,7 +83,7 @@ public class TitleCommand extends AbstractSubCommand {
         packet.addExtra("subtitle", subtitle);
 
         if (sendPacket(packet)) {
-            messageHelper.sendMessage(sender, "正在发送Title到频道 &e" + channelId + "&7...");
+            messageHelper.sendMessage(sender, I18n.tr(playerIdOf(sender), "chat.title.progress", channelId));
         } else {
             errorHandler.sendRequestFailed(sender);
         }

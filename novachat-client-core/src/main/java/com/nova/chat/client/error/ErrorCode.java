@@ -1,5 +1,7 @@
 package com.nova.chat.client.error;
 
+import com.nova.chat.client.i18n.I18n;
+
 /**
  * Shared enumeration of all NovaChat error codes, available to every platform
  * plugin via {@code novachat-client-core}.
@@ -10,9 +12,13 @@ package com.nova.chat.client.error;
  *   <li>NC-5XX: Server errors (backend, network, etc.)</li>
  * </ul>
  *
- * <p>Each code carries a short {@link #message} and an actionable
- * {@link #suggestion} so platforms can render consistent, operator-friendly
- * error text instead of generic "not connected" strings.
+ * <p>Each code carries a short {@link #getMessage() message} and an actionable
+ * {@link #getSuggestion() suggestion} resolved through {@link I18n} (keys
+ * {@code error.<code>.message} / {@code error.<code>.suggestion}) so platforms
+ * render consistent, operator-friendly, locale-aware error text instead of
+ * generic "not connected" strings. The natural-language text lives in
+ * {@code messages_zh_CN.properties} / {@code messages_en_US.properties}; the
+ * enum itself only owns the stable {@code NC-XXX} code string.
  *
  * <p>Architecture B: plugin-only. Never imported by {@code novalink-core}.
  *
@@ -25,92 +31,88 @@ public enum ErrorCode {
     // ==========================================
 
     /** Bad Request - 请求参数错误 */
-    BAD_REQUEST("NC-400", "请求参数错误", "请检查命令参数是否正确"),
+    BAD_REQUEST("NC-400"),
 
     /** Unauthorized - 认证失败 */
-    UNAUTHORIZED("NC-401", "认证失败", "请检查用户名和密码是否正确"),
+    UNAUTHORIZED("NC-401"),
 
     /** Forbidden - 权限不足 */
-    FORBIDDEN("NC-403", "权限不足", "您没有执行此操作的权限，请联系管理员"),
+    FORBIDDEN("NC-403"),
 
     /** Not Found - 资源不存在 */
-    NOT_FOUND("NC-404", "资源不存在", "请检查频道ID或玩家名称是否正确"),
+    NOT_FOUND("NC-404"),
 
     /** Conflict - 资源冲突 */
-    CONFLICT("NC-409", "资源冲突", "该资源已存在或正在被使用"),
+    CONFLICT("NC-409"),
 
     /** Gone - 邀请码过期 */
-    INVITE_EXPIRED("NC-410", "邀请码已过期", "请联系频道管理员获取新的邀请码"),
+    INVITE_EXPIRED("NC-410"),
 
     /** Used - 邀请码已使用 */
-    INVITE_USED("NC-411", "邀请码已使用", "每个邀请码只能使用一次"),
+    INVITE_USED("NC-411"),
 
     /** Too Many Requests - 请求过于频繁 */
-    RATE_LIMITED("NC-429", "请求过于频繁", "请稍后再试"),
+    RATE_LIMITED("NC-429"),
 
     /** Invalid Format - 格式错误 */
-    INVALID_FORMAT("NC-430", "格式错误", "请检查输入格式是否正确"),
+    INVALID_FORMAT("NC-430"),
 
     /** Channel Full - 频道已满 */
-    CHANNEL_FULL("NC-431", "频道已满", "该频道已达到最大容量"),
+    CHANNEL_FULL("NC-431"),
 
     /** Already Joined - 已加入频道 */
-    ALREADY_JOINED("NC-432", "已加入该频道", "您已经在该频道中"),
+    ALREADY_JOINED("NC-432"),
 
     /** Not In Channel - 不在频道中 */
-    NOT_IN_CHANNEL("NC-433", "不在该频道中", "您需要先加入该频道"),
+    NOT_IN_CHANNEL("NC-433"),
 
     /** Wrong Password - 密码错误 */
-    WRONG_PASSWORD("NC-434", "密码错误", "请检查频道密码是否正确"),
+    WRONG_PASSWORD("NC-434"),
 
     /** World Restricted - 世界限制 */
-    WORLD_RESTRICTED("NC-435", "世界限制", "该频道仅在特定世界可用"),
+    WORLD_RESTRICTED("NC-435"),
 
     /** Muted - 被禁言 */
-    MUTED("NC-436", "您已被禁言", "禁言期间无法发送消息"),
+    MUTED("NC-436"),
 
     /** Self Action - 不能对自己操作 */
-    SELF_ACTION("NC-437", "不能对自己执行此操作", "请选择其他玩家"),
+    SELF_ACTION("NC-437"),
 
     /** Target Offline - 目标玩家离线 */
-    TARGET_OFFLINE("NC-438", "目标玩家离线", "请确认玩家在线后再试"),
+    TARGET_OFFLINE("NC-438"),
 
     /** Invalid Duration - 无效时长 */
-    INVALID_DURATION("NC-439", "无效的时间格式", "请使用正确的时间格式，如: 1h, 30m, 1d"),
+    INVALID_DURATION("NC-439"),
 
     // ==========================================
     // 5XX - Server Errors (服务端错误)
     // ==========================================
 
     /** Internal Error - 服务器内部错误 */
-    INTERNAL_ERROR("NC-500", "服务器内部错误", "请联系管理员检查服务器日志"),
+    INTERNAL_ERROR("NC-500"),
 
     /** Not Implemented - 功能未实现 */
-    NOT_IMPLEMENTED("NC-501", "功能未实现", "该功能尚未开放"),
+    NOT_IMPLEMENTED("NC-501"),
 
     /** Bad Gateway - 后端网关错误 */
-    BAD_GATEWAY("NC-502", "后端网关错误", "请检查后端服务是否正常运行"),
+    BAD_GATEWAY("NC-502"),
 
     /** Service Unavailable - 服务不可用 */
-    SERVICE_UNAVAILABLE("NC-503", "服务不可用", "未连接到后端服务器，请稍后再试"),
+    SERVICE_UNAVAILABLE("NC-503"),
 
     /** Gateway Timeout - 网关超时 */
-    GATEWAY_TIMEOUT("NC-504", "请求超时", "后端响应超时，请稍后再试"),
+    GATEWAY_TIMEOUT("NC-504"),
 
     /** Database Error - 数据库错误 */
-    DATABASE_ERROR("NC-510", "数据库错误", "数据存储出现问题，请联系管理员"),
+    DATABASE_ERROR("NC-510"),
 
     /** Config Error - 配置错误 */
-    CONFIG_ERROR("NC-511", "配置错误", "请检查配置文件是否正确");
+    CONFIG_ERROR("NC-511");
 
     private final String code;
-    private final String message;
-    private final String suggestion;
 
-    ErrorCode(String code, String message, String suggestion) {
+    ErrorCode(String code) {
         this.code = code;
-        this.message = message;
-        this.suggestion = suggestion;
     }
 
     /**
@@ -123,21 +125,24 @@ public enum ErrorCode {
     }
 
     /**
-     * Gets the error message.
+     * Gets the error message, resolved through {@link I18n} in the current
+     * default locale (key {@code error.<code>.message}).
      *
-     * @return the error message
+     * @return the error message, never null
      */
     public String getMessage() {
-        return message;
+        return I18n.tr("error." + code + ".message");
     }
 
     /**
-     * Gets the suggestion for resolving the error.
+     * Gets the suggestion for resolving the error, resolved through
+     * {@link I18n} in the current default locale (key
+     * {@code error.<code>.suggestion}).
      *
-     * @return the suggestion
+     * @return the suggestion, never null
      */
     public String getSuggestion() {
-        return suggestion;
+        return I18n.tr("error." + code + ".suggestion");
     }
 
     /**
@@ -191,6 +196,6 @@ public enum ErrorCode {
 
     @Override
     public String toString() {
-        return code + ": " + message;
+        return code + ": " + getMessage();
     }
 }

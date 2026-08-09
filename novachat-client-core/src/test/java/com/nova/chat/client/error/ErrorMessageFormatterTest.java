@@ -1,5 +1,9 @@
 package com.nova.chat.client.error;
 
+import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.i18n.LocaleResolver;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -8,6 +12,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @DisplayName("ErrorMessageFormatter")
 class ErrorMessageFormatterTest {
+
+    private java.util.Locale savedDefault;
+
+    @BeforeEach
+    void saveDefault() {
+        savedDefault = I18n.getDefaultLocale();
+        // Default to zh_CN so the existing Chinese assertions pass.
+        I18n.setDefaultLocale(LocaleResolver.ROOT_LOCALE);
+    }
+
+    @AfterEach
+    void restoreDefault() {
+        I18n.setDefaultLocale(savedDefault);
+    }
 
     @Nested
     @DisplayName("format(ErrorCode)")
@@ -96,5 +114,20 @@ class ErrorMessageFormatterTest {
             tail.add(lines[i]);
         }
         return tail;
+    }
+
+    // ====================== en_US locale sample ======================
+
+    @Nested
+    @DisplayName("en_US locale")
+    class EnUSLocale {
+        @Test
+        void enUSFormatRendersEnglish() {
+            I18n.setDefaultLocale(LocaleResolver.EN_US);
+            String out = ErrorMessageFormatter.format(ErrorCode.WRONG_PASSWORD);
+            assertThat(out).contains("[NC-434]");
+            assertThat(out.split("\n")[0]).contains("Wrong password");
+            assertThat(linesAfter(out, 1)).anyMatch(l -> l.startsWith("Suggestion:"));
+        }
     }
 }

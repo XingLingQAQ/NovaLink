@@ -2,6 +2,7 @@ package com.nova.chat.nukkit.command;
 
 import cn.nukkit.command.CommandSender;
 import com.nova.chat.client.command.WhoCommandService;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.nukkit.NovaChatNukkit;
 
 /**
@@ -26,7 +27,7 @@ public class WhoCommand extends AbstractSubCommand {
 
     @Override
     public String getDescription() {
-        return "查看频道在线成员";
+        return I18n.tr("chat.command.desc.who");
     }
 
     @Override

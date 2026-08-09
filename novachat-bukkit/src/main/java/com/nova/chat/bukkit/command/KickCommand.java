@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
@@ -73,7 +74,7 @@ public class KickCommand extends AbstractSubCommand {
 
         if (channelId == null) {
             errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.BAD_REQUEST,
-                "请指定频道ID");
+                I18n.tr(playerIdOf(sender), "chat.command.specify_channel"));
             return true;
         }
 
@@ -99,7 +100,7 @@ public class KickCommand extends AbstractSubCommand {
         packet.addExtra("targetName", targetName);
 
         if (sendPacket(packet)) {
-            messageHelper.sendMessage(sender, "正在将 &e" + targetName + " &7踢出频道 &e" + channelId + "&7...");
+            messageHelper.sendMessage(sender, I18n.tr(playerIdOf(sender), "chat.kick.progress", targetName, channelId));
         } else {
             errorHandler.sendRequestFailed(sender);
         }

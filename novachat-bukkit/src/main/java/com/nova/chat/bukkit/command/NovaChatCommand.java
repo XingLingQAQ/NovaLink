@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.i18n.I18n;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -26,6 +27,11 @@ public class NovaChatCommand implements CommandExecutor, TabCompleter {
         this.plugin = plugin;
         this.messageHelper = new MessageHelper(plugin);
         registerSubCommands();
+    }
+
+    /** Resolves the player UUID of a sender (null for console → default locale). */
+    private static java.util.UUID playerIdOf(CommandSender sender) {
+        return sender instanceof Player ? ((Player) sender).getUniqueId() : null;
     }
 
     /**
@@ -66,20 +72,20 @@ public class NovaChatCommand implements CommandExecutor, TabCompleter {
         SubCommand subCommand = subCommands.get(subCommandName);
 
         if (subCommand == null) {
-            messageHelper.sendError(sender, "未知命令: " + subCommandName);
-            messageHelper.sendMessage(sender, "使用 &e/" + label + " help &7查看可用命令");
+            messageHelper.sendError(sender, I18n.tr(playerIdOf(sender), "chat.command.unknown", subCommandName));
+            messageHelper.sendMessage(sender, I18n.tr(playerIdOf(sender), "chat.command.unknown_hint", label));
             return true;
         }
 
         // Check permission
         if (!subCommand.hasPermission(sender)) {
-            messageHelper.sendError(sender, "你没有权限执行此命令 (NC-403)");
+            messageHelper.sendError(sender, I18n.tr(playerIdOf(sender), "chat.command.no_permission_code"));
             return true;
         }
 
         // Check if player-only command
         if (subCommand.isPlayerOnly() && !(sender instanceof Player)) {
-            messageHelper.sendError(sender, "此命令只能由玩家执行");
+            messageHelper.sendError(sender, I18n.tr(playerIdOf(sender), "chat.command.player_only"));
             return true;
         }
 

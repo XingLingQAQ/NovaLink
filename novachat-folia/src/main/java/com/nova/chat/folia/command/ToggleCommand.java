@@ -2,6 +2,7 @@ package com.nova.chat.folia.command;
 
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.ChatModeDescriptions;
 import com.nova.chat.client.state.PlayerChannelState;
@@ -63,8 +64,9 @@ public class ToggleCommand extends AbstractSubCommand {
 
         ChatMode newMode = state.getChatMode();
 
-        String modeDesc = newMode == ChatMode.REPLACE ? "频道模式" : "混合模式";
-        messageHelper.sendSuccess(sender, "聊天模式已切换为: &e" + modeDesc);
+        messageHelper.sendSuccess(sender,
+                I18n.tr(player.getUniqueId(), "chat.command.toggle.switched",
+                        "&e" + ChatModeDescriptions.modeName(newMode)));
         messageHelper.sendRaw(sender, "&7" + ChatModeDescriptions.describe(newMode));
 
         plugin.debug("Player " + player.getName() + " toggled chat mode to: " + newMode);

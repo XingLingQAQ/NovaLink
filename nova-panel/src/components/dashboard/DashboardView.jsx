@@ -15,26 +15,38 @@ import {
   ArrowDownRight,
   MoreHorizontal
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import Card from '../ui/Card';
 import Avatar from '../ui/Avatar';
 
 function DashboardView({ theme, mode, txtMain, txtSec, servers, channels, players, chatMessages, dashboardStats, statIconMap }) {
+  const { t } = useTranslation();
   // Use the pre-built stats from real backend data if provided; otherwise fall back to computed.
   const stats = dashboardStats && dashboardStats.length > 0
-    ? dashboardStats.map((s) => ({
-        ...s,
-        icon: (statIconMap && statIconMap[s.icon]) || Server,
-      }))
+    ? dashboardStats.map((s) => {
+        let change = s.change;
+        if (s.changeKey) {
+          change = t(s.changeKey, s.changeOfflineCount != null ? { count: s.changeOfflineCount } : undefined);
+        } else if (s.changeOfflineCount != null) {
+          change = t('dashboard.change_offline_count', { count: s.changeOfflineCount });
+        }
+        return {
+          ...s,
+          title: t(s.titleKey || s.title, { defaultValue: s.title }),
+          change,
+          icon: (statIconMap && statIconMap[s.icon]) || Server,
+        };
+      })
     : (() => {
         const onlineServers = servers.filter(s => s.status === 'online').length;
         const totalPlayers = players.length;
         const todayMessages = chatMessages?.length || 0;
         const activeChannels = channels?.length || 0;
         return [
-          { title: "在线服务器", value: `${onlineServers}/${servers.length}`, change: servers.some(s => s.status === 'offline') ? "有离线" : "全部在线", trend: servers.some(s => s.status === 'offline') ? "down" : "up", icon: Server },
-          { title: "在线玩家", value: totalPlayers.toString(), change: "实时", trend: totalPlayers > 0 ? "up" : "normal", icon: Users },
-          { title: "会话消息", value: todayMessages > 1000 ? `${(todayMessages / 1000).toFixed(1)}k` : todayMessages.toString(), change: todayMessages > 0 ? "本会话" : "暂无", trend: todayMessages > 0 ? "up" : "normal", icon: MessageSquare },
-          { title: "频道总数", value: activeChannels.toString(), change: "已注册", trend: "normal", icon: Hash },
+          { title: t('dashboard.online_servers'), value: `${onlineServers}/${servers.length}`, change: servers.some(s => s.status === 'offline') ? t('dashboard.change_has_offline') : t('dashboard.change_all_online'), trend: servers.some(s => s.status === 'offline') ? "down" : "up", icon: Server },
+          { title: t('dashboard.online_players'), value: totalPlayers.toString(), change: t('dashboard.change_realtime'), trend: totalPlayers > 0 ? "up" : "normal", icon: Users },
+          { title: t('dashboard.session_messages'), value: todayMessages > 1000 ? `${(todayMessages / 1000).toFixed(1)}k` : todayMessages.toString(), change: todayMessages > 0 ? t('dashboard.change_this_session') : t('dashboard.change_none'), trend: todayMessages > 0 ? "up" : "normal", icon: MessageSquare },
+          { title: t('dashboard.total_channels'), value: activeChannels.toString(), change: t('dashboard.change_registered'), trend: "normal", icon: Hash },
         ];
       })();
 
@@ -42,8 +54,8 @@ function DashboardView({ theme, mode, txtMain, txtSec, servers, channels, player
     <div className="space-y-6 animate-in fade-in zoom-in-95 duration-500">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className={`text-2xl font-bold ${txtMain}`}>仪表盘</h2>
-          <p className={`text-sm ${txtSec} mt-1`}>NovaLink 系统状态概览</p>
+          <h2 className={`text-2xl font-bold ${txtMain}`}>{t('dashboard.title')}</h2>
+          <p className={`text-sm ${txtSec} mt-1`}>{t('dashboard.subtitle')}</p>
         </div>
       </div>
 
@@ -87,17 +99,18 @@ function DashboardView({ theme, mode, txtMain, txtSec, servers, channels, player
 
 // Server Status Card
 function ServerStatusCard({ theme, mode, txtMain, txtSec, servers }) {
+  const { t } = useTranslation();
   if (!servers || servers.length === 0) {
     return (
       <Card theme={theme} mode={mode} className="p-5">
-        <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>服务器状态</h3>
-        <p className={`text-sm ${txtSec} text-center py-8`}>暂无已连接服务器，等待 WebSocket 推送...</p>
+        <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('dashboard.server_status')}</h3>
+        <p className={`text-sm ${txtSec} text-center py-8`}>{t('dashboard.no_servers_ws')}</p>
       </Card>
     );
   }
   return (
     <Card theme={theme} mode={mode} className="p-5">
-      <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>服务器状态</h3>
+      <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('dashboard.server_status')}</h3>
       <div className="space-y-3 max-h-[300px] overflow-y-auto custom-scrollbar">
         {servers.map((server) => (
           <div key={server.id} className={`flex items-center justify-between p-3 rounded-xl ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50') : 'bg-white/5'}`}>
@@ -109,8 +122,8 @@ function ServerStatusCard({ theme, mode, txtMain, txtSec, servers }) {
               </div>
             </div>
             <div className="text-right">
-              <p className={`font-semibold ${txtMain}`}>{server.players} 玩家</p>
-              <p className={`text-xs ${txtSec}`}>{server.status === 'online' ? `${server.ping}ms` : '离线'}</p>
+              <p className={`font-semibold ${txtMain}`}>{server.players} {t('dashboard.players')}</p>
+              <p className={`text-xs ${txtSec}`}>{server.status === 'online' ? `${server.ping}ms` : t('dashboard.offline')}</p>
             </div>
           </div>
         ))}
@@ -121,12 +134,13 @@ function ServerStatusCard({ theme, mode, txtMain, txtSec, servers }) {
 
 // Platform Distribution Card
 function PlatformDistributionCard({ theme, mode, txtMain, txtSec, servers }) {
+  const { t } = useTranslation();
   const platforms = ['Bukkit/Paper', 'Velocity/Bungee', 'Nukkit', 'LeviLamina'];
   const colors = ['bg-sky-500', 'bg-purple-500', 'bg-amber-500', 'bg-emerald-500'];
 
   return (
     <Card theme={theme} mode={mode} className="p-5">
-      <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>平台分布</h3>
+      <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('dashboard.platform_distribution')}</h3>
       <div className="space-y-4">
         {platforms.map((platform, i) => {
           const count = (servers || []).filter(s =>
@@ -139,7 +153,7 @@ function PlatformDistributionCard({ theme, mode, txtMain, txtSec, servers }) {
             <div key={platform}>
               <div className="flex justify-between mb-1">
                 <span className={`text-sm ${txtMain}`}>{platform}</span>
-                <span className={`text-sm ${txtSec}`}>{count} 服务器</span>
+                <span className={`text-sm ${txtSec}`}>{t('dashboard.servers_count', { count })}</span>
               </div>
               <div className={`h-2 rounded-full ${theme === 'clean' ? 'bg-slate-200' : 'bg-white/10'}`}>
                 <div className={`h-full rounded-full transition-all duration-1000 ${colors[i]}`} style={{ width: `${percent}%` }} />
@@ -148,7 +162,7 @@ function PlatformDistributionCard({ theme, mode, txtMain, txtSec, servers }) {
           );
         })}
         {(!servers || servers.length === 0) && (
-          <p className={`text-sm ${txtSec} text-center py-4`}>等待服务器数据...</p>
+          <p className={`text-sm ${txtSec} text-center py-4`}>{t('dashboard.waiting_server_data')}</p>
         )}
       </div>
     </Card>
@@ -157,14 +171,15 @@ function PlatformDistributionCard({ theme, mode, txtMain, txtSec, servers }) {
 
 // Recent Messages Card
 function RecentMessagesCard({ theme, mode, txtMain, txtSec, messages = [] }) {
+  const { t } = useTranslation();
   const recentMessages = (messages || []).slice(-5).reverse();
 
   return (
     <Card theme={theme} mode={mode} className="p-5">
-      <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>最近消息</h3>
+      <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('dashboard.recent_messages')}</h3>
       <div className="space-y-2">
         {recentMessages.length === 0 ? (
-          <p className={`text-sm ${txtSec} text-center py-4`}>暂无消息，等待 WebSocket 推送...</p>
+          <p className={`text-sm ${txtSec} text-center py-4`}>{t('dashboard.no_messages_ws')}</p>
         ) : (
           recentMessages.map((msg, idx) => (
             <div key={msg.id || idx} className={`p-2 rounded-lg text-sm ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50') : 'bg-white/5'}`}>
@@ -186,14 +201,15 @@ function RecentMessagesCard({ theme, mode, txtMain, txtSec, messages = [] }) {
 
 // Online Players Card
 function OnlinePlayersCard({ theme, mode, txtMain, txtSec, players = [] }) {
+  const { t } = useTranslation();
   const displayPlayers = (players || []).slice(0, 5);
 
   return (
     <Card theme={theme} mode={mode} className="p-5">
-      <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>在线玩家</h3>
+      <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('dashboard.online_players')}</h3>
       <div className="space-y-2">
         {displayPlayers.length === 0 ? (
-          <p className={`text-sm ${txtSec} text-center py-4`}>暂无在线玩家</p>
+          <p className={`text-sm ${txtSec} text-center py-4`}>{t('dashboard.no_online_players')}</p>
         ) : (
           displayPlayers.map((player) => (
             <div key={player.uuid} className={`flex items-center justify-between p-2 rounded-lg ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-700/50' : 'bg-slate-50') : 'bg-white/5'}`}>

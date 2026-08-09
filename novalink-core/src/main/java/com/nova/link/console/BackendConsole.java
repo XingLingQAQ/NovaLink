@@ -3,6 +3,7 @@ package com.nova.link.console;
 import com.nova.link.auth.PermissionManager;
 import com.nova.link.channel.Channel;
 import com.nova.link.database.PlayerState;
+import com.nova.link.i18n.I18n;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.reader.Completer;
@@ -100,31 +101,31 @@ public class BackendConsole {
      * types {@code stop}/{@code shutdown} or sends EOF (Ctrl+D).
      */
     public void run() {
-        System.out.println("NovaLink backend console ready. Type 'help' for commands, 'stop' to shut down.");
+        System.out.println(I18n.tr("console.boot.ready"));
         while (true) {
             String line;
             try {
-                line = reader.readLine("novalink> ");
+                line = reader.readLine(I18n.tr("console.prompt.novalink") + " ");
             } catch (EndOfFileException e) {
                 // Ctrl+D — treat as shutdown.
-                System.out.println("EOF received, shutting down...");
+                System.out.println(I18n.tr("console.shutdown.eof"));
                 shutdownHook.run();
                 return;
             } catch (UserInterruptException e) {
                 // Ctrl+C — the JVM shutdown hook handles shutdown; just exit the loop.
-                System.out.println("Interrupted, shutting down...");
+                System.out.println(I18n.tr("console.shutdown.interrupted"));
                 shutdownHook.run();
                 return;
             } catch (Exception e) {
                 logger.error("Console read error", e);
                 // Fall back to a plain BufferedReader if JLine misbehaves on this terminal.
-                System.err.println("Console error: " + e.getMessage() + " — continuing.");
+                System.err.println(I18n.tr("console.error.read", e.getMessage()));
                 continue;
             }
 
             String output = handler.dispatch(line);
             if (ConsoleCommandHandler.STOP_TOKEN.equals(output)) {
-                System.out.println("Shutting down...");
+                System.out.println(I18n.tr("console.shutdown.stopping"));
                 shutdownHook.run();
                 return;
             }
@@ -141,11 +142,11 @@ public class BackendConsole {
      */
     public static void printHelpAndExit() {
         StringBuilder sb = new StringBuilder();
-        sb.append("NovaLink backend — console commands:\n");
+        sb.append(I18n.tr("console.help.cli_title")).append('\n');
         for (String name : ConsoleCommandHandler.commandNames()) {
             sb.append("  ").append(name).append('\n');
         }
-        sb.append("\nRun without --help to start the server and enter the interactive console.\n");
+        sb.append(I18n.tr("console.help.cli_tail"));
         System.out.print(sb.toString());
     }
 

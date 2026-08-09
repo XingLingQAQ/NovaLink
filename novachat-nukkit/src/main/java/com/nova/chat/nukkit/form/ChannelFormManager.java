@@ -2,7 +2,9 @@ package com.nova.chat.nukkit.form;
 
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.ChatMode;
+import com.nova.chat.client.state.ChatModeDescriptions;
 
 import cn.nukkit.Player;
 import cn.nukkit.form.element.ElementButton;
@@ -104,45 +106,44 @@ public class ChannelFormManager {
      * @param player the player to show the form to
      */
     public void showChannelSelectionForm(Player player) {
+        UUID playerId = player.getUniqueId();
         FormWindowSimple form = new FormWindowSimple(
-            "§b频道选择 / Channel Selection",
+            I18n.tr(playerId, "chat.form.title.select"),
             ""
         );
-        
+
         // Get current channel and chat mode
         PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         String currentChannel = state.getActiveChannel();
         ChatMode currentMode = state.isModeOverridden() ? state.getChatMode() : plugin.getChatInterceptor().getGlobalMode();
-        String modeText = currentMode == ChatMode.REPLACE ? "频道模式" : "混合模式";
-        
+        String modeText = com.nova.chat.client.state.ChatModeDescriptions.modeName(currentMode);
+
         // Build content with current status
         StringBuilder content = new StringBuilder();
-        content.append("§7当前频道 / Current Channel: §e").append(currentChannel).append("\n");
-        content.append("§7聊天模式 / Chat Mode: §e").append(modeText).append("\n");
-        content.append("§7连接状态 / Connection: ");
-        if (plugin.getNetworkClient().isAuthenticated()) {
-            content.append("§a已连接 / Connected\n");
-        } else {
-            content.append("§c未连接 / Disconnected\n");
-        }
-        content.append("\n§7选择一个操作 / Select an action:");
+        content.append(I18n.tr(playerId, "chat.form.content.current_channel", currentChannel)).append("\n");
+        content.append(I18n.tr(playerId, "chat.form.content.chat_mode", modeText)).append("\n");
+        content.append(I18n.tr(playerId, "chat.form.content.connection",
+                plugin.getNetworkClient().isAuthenticated()
+                        ? I18n.tr(playerId, "chat.debug.value_connected")
+                        : I18n.tr(playerId, "chat.debug.value_disconnected"))).append("\n");
+        content.append("\n").append(I18n.tr(playerId, "chat.form.content.select_action"));
         form.setContent(content.toString());
-        
+
         // Add main action buttons
-        form.addButton(new ElementButton("§a加入频道\n§7Join Channel"));
-        form.addButton(new ElementButton("§e创建私有频道\n§7Create Private Channel"));
-        form.addButton(new ElementButton("§c离开当前频道\n§7Leave Current Channel"));
-        form.addButton(new ElementButton("§d切换聊天模式\n§7Toggle Chat Mode"));
-        form.addButton(new ElementButton("§b频道信息\n§7Channel Info"));
-        form.addButton(new ElementButton("§7设置\n§7Settings"));
-        
+        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.join")));
+        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.create")));
+        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.leave")));
+        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.toggle_mode")));
+        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.info")));
+        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.settings")));
+
         // Add quick-join buttons for common channels (excluding current)
         for (String channel : quickJoinChannels) {
             if (!channel.equals(currentChannel)) {
-                form.addButton(new ElementButton("§b快速加入: " + channel + "\n§7Quick Join"));
+                form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.quick_join", channel)));
             }
         }
-        
+
         player.showFormWindow(form, FORM_CHANNEL_SELECT);
     }
 
@@ -152,20 +153,23 @@ public class ChannelFormManager {
      * @param player the player to show the form to
      */
     public void showJoinChannelForm(Player player) {
-        FormWindowCustom form = new FormWindowCustom("§a加入频道 / Join Channel");
-        
-        form.addElement(new ElementLabel("§7输入要加入的频道ID和密码（如果需要）\n§7Enter channel ID and password (if required)"));
-        
+        UUID playerId = player.getUniqueId();
+        FormWindowCustom form = new FormWindowCustom(I18n.tr(playerId, "chat.form.title.join"));
+
+        form.addElement(new ElementLabel(I18n.tr(playerId, "chat.form.label.join_prompt")));
+
         // Add dropdown for known channels if available
         if (!availableChannels.isEmpty()) {
             List<String> channelList = new ArrayList<>(availableChannels);
-            channelList.add(0, "-- 手动输入 / Manual Input --");
-            form.addElement(new ElementDropdown("选择频道 / Select Channel", channelList, 0));
+            channelList.add(0, I18n.tr(playerId, "chat.form.label.manual_input"));
+            form.addElement(new ElementDropdown(I18n.tr(playerId, "chat.form.label.select_channel"), channelList, 0));
         }
-        
-        form.addElement(new ElementInput("频道ID / Channel ID", "例如: NC-5A3F / e.g. NC-5A3F", ""));
-        form.addElement(new ElementInput("密码（可选）/ Password (Optional)", "如果频道需要密码 / If channel requires password", ""));
-        
+
+        form.addElement(new ElementInput(I18n.tr(playerId, "chat.form.label.channel_id"),
+                I18n.tr(playerId, "chat.form.placeholder.channel_id"), ""));
+        form.addElement(new ElementInput(I18n.tr(playerId, "chat.form.label.password_optional"),
+                I18n.tr(playerId, "chat.form.placeholder.password_join"), ""));
+
         player.showFormWindow(form, FORM_JOIN_CHANNEL);
     }
 
@@ -175,13 +179,16 @@ public class ChannelFormManager {
      * @param player the player to show the form to
      */
     public void showCreateChannelForm(Player player) {
-        FormWindowCustom form = new FormWindowCustom("§e创建私有频道 / Create Private Channel");
-        
-        form.addElement(new ElementLabel("§7创建一个新的私有频道\n§7Create a new private channel"));
-        form.addElement(new ElementInput("频道名称 / Channel Name", "给你的频道起个名字 / Name your channel", ""));
-        form.addElement(new ElementInput("密码（可选）/ Password (Optional)", "留空将自动生成 / Leave empty to auto-generate", ""));
-        form.addElement(new ElementToggle("自动加入 / Auto Join", true));
-        
+        UUID playerId = player.getUniqueId();
+        FormWindowCustom form = new FormWindowCustom(I18n.tr(playerId, "chat.form.title.create"));
+
+        form.addElement(new ElementLabel(I18n.tr(playerId, "chat.form.label.create_prompt")));
+        form.addElement(new ElementInput(I18n.tr(playerId, "chat.form.label.channel_name"),
+                I18n.tr(playerId, "chat.form.placeholder.channel_name"), ""));
+        form.addElement(new ElementInput(I18n.tr(playerId, "chat.form.label.password_optional"),
+                I18n.tr(playerId, "chat.form.placeholder.password_create"), ""));
+        form.addElement(new ElementToggle(I18n.tr(playerId, "chat.form.label.auto_join"), true));
+
         player.showFormWindow(form, FORM_CREATE_CHANNEL);
     }
     
@@ -191,28 +198,26 @@ public class ChannelFormManager {
      * @param player the player to show the form to
      */
     public void showLeaveConfirmForm(Player player) {
+        UUID playerId = player.getUniqueId();
         PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         String currentChannel = state.getActiveChannel();
         String defaultChannel = plugin.getNovaChatConfig().getDefaultChannel();
-        
+
         if (currentChannel.equals(defaultChannel)) {
-            plugin.getMessageHelper().sendError(player, "你已经在默认频道中 / You are already in the default channel");
+            plugin.getMessageHelper().sendError(player, I18n.tr(playerId, "chat.action.already_default"));
             return;
         }
-        
+
         // Store pending leave for this player
         pendingChannelLeave.put(player.getUniqueId(), currentChannel);
-        
+
         FormWindowModal form = new FormWindowModal(
-            "§c确认离开 / Confirm Leave",
-            "§7你确定要离开频道 §e" + currentChannel + " §7吗？\n" +
-            "§7Are you sure you want to leave channel §e" + currentChannel + "§7?\n\n" +
-            "§7你将被移动到默认频道: §e" + defaultChannel + "\n" +
-            "§7You will be moved to default channel: §e" + defaultChannel,
-            "§a确认 / Confirm",
-            "§c取消 / Cancel"
+            I18n.tr(playerId, "chat.form.title.leave_confirm"),
+            I18n.tr(playerId, "chat.form.content.leave_prompt", currentChannel, defaultChannel),
+            I18n.tr(playerId, "chat.form.button.confirm"),
+            I18n.tr(playerId, "chat.form.button.cancel")
         );
-        
+
         player.showFormWindow(form, FORM_LEAVE_CONFIRM);
     }
     
@@ -222,35 +227,37 @@ public class ChannelFormManager {
      * @param player the player to show the form to
      */
     public void showChannelInfoForm(Player player) {
+        UUID playerId = player.getUniqueId();
         PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         String currentChannel = state.getActiveChannel();
-        
+
         FormWindowSimple form = new FormWindowSimple(
-            "§b频道信息 / Channel Info",
+            I18n.tr(playerId, "chat.form.title.info"),
             ""
         );
-        
-        StringBuilder content = new StringBuilder();
-        content.append("§e当前频道 / Current Channel:\n");
-        content.append("§7ID: §f").append(currentChannel).append("\n\n");
-        content.append("§e你的状态 / Your Status:\n");
-        content.append("§7世界 / World: §f").append(player.getLevel().getName()).append("\n");
-        
+
         ChatMode mode = state.isModeOverridden() ? state.getChatMode() : plugin.getChatInterceptor().getGlobalMode();
-        content.append("§7聊天模式 / Chat Mode: §f").append(mode == ChatMode.REPLACE ? "频道模式 / Channel Mode" : "混合模式 / Hybrid Mode").append("\n\n");
-        
-        content.append("§e可用频道 / Available Channels:\n");
+        String modeText = com.nova.chat.client.state.ChatModeDescriptions.modeName(mode);
+
+        StringBuilder content = new StringBuilder();
+        content.append(I18n.tr(playerId, "chat.form.content.info_current_channel", currentChannel)).append("\n\n");
+        content.append(I18n.tr(playerId, "chat.form.content.info_your_status")).append("\n");
+        content.append(I18n.tr(playerId, "chat.form.content.info_world", player.getLevel().getName())).append("\n");
+        content.append(I18n.tr(playerId, "chat.form.content.info_chat_mode", modeText)).append("\n\n");
+
+        content.append(I18n.tr(playerId, "chat.form.content.info_available")).append("\n");
+        String marker = I18n.tr(playerId, "chat.form.content.info_current_marker");
         for (String channel : availableChannels) {
             if (channel.equals(currentChannel)) {
-                content.append("§a• ").append(channel).append(" §7(当前 / current)\n");
+                content.append("§a• ").append(channel).append(" ").append(marker).append("\n");
             } else {
                 content.append("§7• ").append(channel).append("\n");
             }
         }
-        
+
         form.setContent(content.toString());
-        form.addButton(new ElementButton("§a返回 / Back"));
-        
+        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.back")));
+
         player.showFormWindow(form, FORM_CHANNEL_INFO);
     }
     
@@ -260,15 +267,16 @@ public class ChannelFormManager {
      * @param player the player to show the form to
      */
     public void showSettingsForm(Player player) {
+        UUID playerId = player.getUniqueId();
         PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         ChatMode currentMode = state.isModeOverridden() ? state.getChatMode() : plugin.getChatInterceptor().getGlobalMode();
-        
-        FormWindowCustom form = new FormWindowCustom("§7设置 / Settings");
-        
-        form.addElement(new ElementLabel("§7调整你的聊天设置\n§7Adjust your chat settings"));
-        form.addElement(new ElementToggle("频道模式 / Channel Mode", currentMode == ChatMode.REPLACE));
-        form.addElement(new ElementLabel("§7频道模式: 所有聊天发送到当前频道\n§7Channel Mode: All chat goes to current channel\n\n§7混合模式: 原版聊天正常工作\n§7Hybrid Mode: Vanilla chat works normally"));
-        
+
+        FormWindowCustom form = new FormWindowCustom(I18n.tr(playerId, "chat.form.title.settings"));
+
+        form.addElement(new ElementLabel(I18n.tr(playerId, "chat.form.label.settings_prompt")));
+        form.addElement(new ElementToggle(I18n.tr(playerId, "chat.form.label.channel_mode"), currentMode == ChatMode.REPLACE));
+        form.addElement(new ElementLabel(I18n.tr(playerId, "chat.form.content.settings_channel")));
+
         player.showFormWindow(form, FORM_SETTINGS);
     }
 
@@ -384,7 +392,7 @@ public class ChannelFormManager {
         }
         
         if (channelId == null || channelId.trim().isEmpty()) {
-            plugin.getMessageHelper().sendError(player, "请输入频道ID / Please enter a channel ID");
+            plugin.getMessageHelper().sendError(player, I18n.tr(player.getUniqueId(), "chat.action.enter_channel_id"));
             return;
         }
         
@@ -401,7 +409,7 @@ public class ChannelFormManager {
         boolean autoJoin = response.getToggleResponse(3);
         
         if (channelName == null || channelName.trim().isEmpty()) {
-            plugin.getMessageHelper().sendError(player, "请输入频道名称 / Please enter a channel name");
+            plugin.getMessageHelper().sendError(player, I18n.tr(player.getUniqueId(), "chat.action.enter_channel_name"));
             return;
         }
         
@@ -424,7 +432,7 @@ public class ChannelFormManager {
             } else {
                 // User cancelled
                 pendingChannelLeave.remove(player.getUniqueId());
-                plugin.getMessageHelper().sendMessage(player, "已取消 / Cancelled");
+                plugin.getMessageHelper().sendMessage(player, I18n.tr(player.getUniqueId(), "chat.action.cancelled"));
             }
         }
     }
@@ -435,17 +443,15 @@ public class ChannelFormManager {
     private void handleSettingsResponse(Player player, FormResponseCustom response) {
         // Form has: Label, Toggle (channel mode), Label
         boolean channelMode = response.getToggleResponse(1);
-        
+
         PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         ChatMode newMode = channelMode ? ChatMode.REPLACE : ChatMode.HYBRID;
         state.setChatMode(newMode);
         state.setModeOverridden(true);
-        
-        String modeDescription = newMode == ChatMode.REPLACE 
-            ? "频道模式 / Channel Mode" 
-            : "混合模式 / Hybrid Mode";
-        
-        plugin.getMessageHelper().sendSuccess(player, "聊天模式已设置为: §e" + modeDescription);
+
+        plugin.getMessageHelper().sendSuccess(player,
+                I18n.tr(player.getUniqueId(), "chat.command.toggle.switched",
+                        com.nova.chat.client.state.ChatModeDescriptions.modeName(newMode)));
     }
 
     /**
@@ -458,10 +464,11 @@ public class ChannelFormManager {
         CommandResult result = channelCommands.join(state, channelId, password, player.getName(), player.getLevel().getName());
 
         if (result.isSuccess()) {
-            plugin.getMessageHelper().sendSuccess(player, "正在加入频道 " + channelId + "...");
+            plugin.getMessageHelper().sendSuccess(player,
+                    com.nova.chat.client.command.PlayerMessages.joining(player.getUniqueId(), channelId));
             plugin.debug("Player " + player.getName() + " joined channel via form: " + channelId);
         } else {
-            plugin.getMessageHelper().sendError(player, "未连接到聊天服务器");
+            plugin.getMessageHelper().sendError(player, I18n.tr(player.getUniqueId(), "chat.network.not_connected"));
             plugin.debug("Player " + player.getName() + " failed form join " + channelId
                     + ": " + result.getMessage());
         }
@@ -484,10 +491,10 @@ public class ChannelFormManager {
      */
     private void createChannel(Player player, String channelName, String password, boolean autoJoin) {
         if (!plugin.getNetworkClient().isAuthenticated()) {
-            plugin.getMessageHelper().sendError(player, "未连接到聊天服务器 / Not connected to chat server");
+            plugin.getMessageHelper().sendError(player, I18n.tr(player.getUniqueId(), "chat.network.not_connected"));
             return;
         }
-        
+
         ChannelActionPacket packet = new ChannelActionPacket(
             ChannelAction.CREATE,
             null, // ID will be generated by backend
@@ -497,10 +504,11 @@ public class ChannelFormManager {
         packet.addExtra("player_name", player.getName());
         packet.addExtra("channel_name", channelName);
         packet.addExtra("auto_join", String.valueOf(autoJoin));
-        
+
         plugin.getNetworkClient().sendPacket(packet);
-        
-        plugin.getMessageHelper().sendSuccess(player, "正在创建频道 / Creating channel: " + channelName + "...");
+
+        plugin.getMessageHelper().sendSuccess(player,
+                I18n.tr(player.getUniqueId(), "chat.create.progress", channelName));
     }
 
     /**
@@ -514,7 +522,7 @@ public class ChannelFormManager {
         String defaultChannel = plugin.getNovaChatConfig().getDefaultChannel();
 
         if (channelId.equals(defaultChannel)) {
-            plugin.getMessageHelper().sendError(player, "你已经在默认频道中 / You are already in the default channel");
+            plugin.getMessageHelper().sendError(player, I18n.tr(player.getUniqueId(), "chat.action.already_default"));
             return;
         }
 
@@ -526,12 +534,13 @@ public class ChannelFormManager {
             if (!defaultChannel.equals(state.getActiveChannel())) {
                 state.setActiveChannel(defaultChannel);
             }
-            plugin.getMessageHelper().sendSuccess(player, "已离开频道 / Left channel: " + channelId);
+            plugin.getMessageHelper().sendSuccess(player,
+                    com.nova.chat.client.command.PlayerMessages.left(player.getUniqueId(), channelId, defaultChannel));
             plugin.debug("Player " + player.getName() + " left channel via form: " + channelId);
         } else if (result.getMessage() != null && result.getMessage().contains("Not in a channel")) {
-            plugin.getMessageHelper().sendError(player, "你当前不在任何频道中");
+            plugin.getMessageHelper().sendError(player, I18n.tr(player.getUniqueId(), "chat.action.not_in_channel"));
         } else {
-            plugin.getMessageHelper().sendError(player, "未连接到聊天服务器 / Not connected to chat server");
+            plugin.getMessageHelper().sendError(player, I18n.tr(player.getUniqueId(), "chat.network.not_connected"));
             plugin.debug("Player " + player.getName() + " failed form leave " + channelId
                     + ": " + result.getMessage());
         }
@@ -551,11 +560,10 @@ public class ChannelFormManager {
         }
 
         ChatMode newMode = state.getChatMode();
-        String modeDescription = newMode == ChatMode.REPLACE
-            ? "频道模式 / Channel Mode (所有聊天发送到频道 / All chat goes to channel)"
-            : "混合模式 / Hybrid Mode (原版聊天正常工作 / Vanilla chat works normally)";
-
-        plugin.getMessageHelper().sendSuccess(player, "聊天模式已切换为 / Chat mode changed to: §e" + modeDescription);
+        plugin.getMessageHelper().sendSuccess(player,
+                I18n.tr(player.getUniqueId(), "chat.command.toggle.switched",
+                        com.nova.chat.client.state.ChatModeDescriptions.modeName(newMode)));
+        plugin.getMessageHelper().sendMessage(player, ChatModeDescriptions.describe(newMode));
 
         // Show main menu again after toggle
         showChannelSelectionForm(player);

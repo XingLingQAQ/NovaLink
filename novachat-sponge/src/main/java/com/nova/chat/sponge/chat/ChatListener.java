@@ -1,6 +1,8 @@
 package com.nova.chat.sponge.chat;
 
 import com.nova.chat.client.command.PlayerMessages;
+import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.i18n.LocaleResolver;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -15,6 +17,7 @@ import com.nova.chat.sponge.config.NovaChatConfig;
 import net.kyori.adventure.sound.Sound;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import net.kyori.adventure.title.Title;
 import org.spongepowered.api.Sponge;
@@ -139,7 +142,8 @@ public class ChatListener {
                 if (opt.isEmpty()) {
                     return;
                 }
-                opt.get().sendMessage(plugin.getMessageFormatter().formatSuccess("已加入频道 " + channelId));
+                opt.get().sendMessage(plugin.getMessageFormatter().formatSuccess(
+                        PlayerMessages.joined(playerId, channelId)));
             });
         }
 
@@ -151,7 +155,7 @@ public class ChatListener {
                     return;
                 }
                 opt.get().sendMessage(plugin.getMessageFormatter().formatSuccess(
-                        PlayerMessages.left(channelId, config.getDefaultChannel())));
+                        PlayerMessages.left(playerId, channelId, config.getDefaultChannel())));
             });
         }
 
@@ -203,41 +207,32 @@ public class ChatListener {
                     return; // not on this server
                 }
                 ServerPlayer target = opt.get();
+                UUID targetId = target.uniqueId();
                 String channelId = notice.getChannelId();
                 Title.Times times = Title.Times.times(
                         Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
                         Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
                         Duration.ofMillis(MentionNotifier.DEFAULT_FADE_OUT * 50L));
                 if (notice.getAction() == ChannelAction.KICK) {
-                    Component title = Component.text("你已被踢出频道", NamedTextColor.RED);
-                    Component subtitle = Component.text()
-                            .append(Component.text("被 ", NamedTextColor.GRAY))
-                            .append(Component.text(operator, NamedTextColor.YELLOW))
-                            .append(Component.text(" 踢出频道 ", NamedTextColor.GRAY))
-                            .append(Component.text(channelId, NamedTextColor.AQUA))
-                            .build();
+                    Component title = LegacyComponentSerializer.legacyAmpersand().deserialize(
+                            I18n.tr(targetId, "chat.notice.kick_title"));
+                    Component subtitle = LegacyComponentSerializer.legacyAmpersand().deserialize(
+                            I18n.tr(targetId, "chat.notice.kick_subtitle", operator, channelId));
                     target.showTitle(Title.title(title, subtitle, times));
-                    target.sendActionBar(Component.text()
-                            .append(Component.text("你已被 ", NamedTextColor.RED))
-                            .append(Component.text(operator, NamedTextColor.YELLOW))
-                            .append(Component.text(" 踢出频道 " + channelId, NamedTextColor.RED))
-                            .build());
+                    Component actionbar = LegacyComponentSerializer.legacyAmpersand().deserialize(
+                            I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId));
+                    target.sendActionBar(actionbar);
                     return;
                 }
                 // MUTE
-                Component title = Component.text("你已被禁言", NamedTextColor.RED);
-                Component subtitle = Component.text()
-                        .append(Component.text("在频道 ", NamedTextColor.GRAY))
-                        .append(Component.text(channelId, NamedTextColor.AQUA))
-                        .append(Component.text(" 持续 ", NamedTextColor.GRAY))
-                        .append(Component.text(durationText, NamedTextColor.YELLOW))
-                        .build();
+                Component title = LegacyComponentSerializer.legacyAmpersand().deserialize(
+                        I18n.tr(targetId, "chat.notice.mute_title"));
+                Component subtitle = LegacyComponentSerializer.legacyAmpersand().deserialize(
+                        I18n.tr(targetId, "chat.notice.mute_subtitle", channelId, durationText));
                 target.showTitle(Title.title(title, subtitle, times));
-                target.sendActionBar(Component.text()
-                        .append(Component.text("你已被禁言 ", NamedTextColor.RED))
-                        .append(Component.text(durationText, NamedTextColor.YELLOW))
-                        .append(Component.text("（频道 " + channelId + "）", NamedTextColor.RED))
-                        .build());
+                Component actionbar = LegacyComponentSerializer.legacyAmpersand().deserialize(
+                        I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId));
+                target.sendActionBar(actionbar);
             });
         }
     }
@@ -256,13 +251,12 @@ public class ChatListener {
         }
         PlayerChannelState state = getState(player.uniqueId());
         ChatMode mode = (state != null) ? state.getChatMode() : null;
-        String modeName = (mode == ChatMode.REPLACE) ? "频道模式" : "混合模式";
-        Component bar = Component.text()
-                .append(Component.text("当前频道：", NamedTextColor.GRAY))
-                .append(Component.text(channelId, NamedTextColor.AQUA))
-                .append(Component.text("（" + modeName + "）", NamedTextColor.GRAY))
-                .build();
-        player.sendActionBar(bar);
+        // Shared bar template (chat.status.current_bar) carries &-color codes;
+        // deserialize via the legacy ampersand serializer so Adventure renders
+        // the colors. A null mode degrades to HYBRID, matching prior behavior.
+        String bar = PlayerMessages.currentChannelBar(
+                player.uniqueId(), channelId, mode != null ? mode : ChatMode.HYBRID);
+        player.sendActionBar(LegacyComponentSerializer.legacyAmpersand().deserialize(bar));
     }
 
     /**
@@ -318,11 +312,8 @@ public class ChatListener {
                 String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
                 String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
                 Component title = Component.text(mentioner, NamedTextColor.YELLOW);
-                Component subtitle = Component.text()
-                        .append(Component.text("在频道 ", NamedTextColor.GRAY))
-                        .append(Component.text(channelId, NamedTextColor.AQUA))
-                        .append(Component.text(" 提到了你", NamedTextColor.GRAY))
-                        .build();
+                Component subtitle = LegacyComponentSerializer.legacyAmpersand().deserialize(
+                        I18n.tr(mentionedId, "chat.mention.subtitle", channelId));
                 Title.Times times = Title.Times.times(
                         Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
                         Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
@@ -380,7 +371,7 @@ public class ChatListener {
         
         // Check if connected to backend
         if (!plugin.getNetworkClient().isAuthenticated()) {
-            player.sendMessage(formatError("未连接到聊天服务器，请稍后再试"));
+            player.sendMessage(formatError(I18n.tr(playerId, "chat.network.not_connected_retry")));
             return;
         }
         
@@ -400,6 +391,14 @@ public class ChatListener {
     public void onPlayerJoin(ServerSideConnectionEvent.Join event) {
         ServerPlayer player = event.player();
         getOrCreateState(player);
+
+        // Capture the player's Minecraft client locale so per-player i18n
+        // resolves in their language. Sponge API 8 has no locale-change event,
+        // so the locale is captured once on join (a re-join re-captures it).
+        // player.locale() comes from LocaleSource; LocaleResolver.parse accepts
+        // null/blank and falls back to the configured default locale.
+        I18n.registerPlayerLocale(player.uniqueId(), LocaleResolver.parse(player.locale().toString()));
+
         plugin.debug("Initialized chat state for " + player.name());
 
         // UX-DESIGN §8.1: push the shared welcome line once per session to
@@ -421,6 +420,9 @@ public class ChatListener {
         ServerPlayer player = event.player();
         playerStates.remove(player.uniqueId());
         welcomedPlayers.remove(player.uniqueId());
+        // Clear the per-player locale registration so a UUID reuse never
+        // inherits a stale locale.
+        I18n.registerPlayerLocale(player.uniqueId(), null);
         plugin.debug("Removed chat state for " + player.name());
     }
     
@@ -433,7 +435,7 @@ public class ChatListener {
      */
     public void sendToChannel(ServerPlayer player, String channelId, String message) {
         if (!plugin.getNetworkClient().isAuthenticated()) {
-            player.sendMessage(formatError("未连接到聊天服务器"));
+            player.sendMessage(formatError(I18n.tr(player.uniqueId(), "chat.network.not_connected")));
             return;
         }
         

@@ -14,6 +14,7 @@ public class ServerConfig {
     private int websocketPort = 8889;
     private String secretKey = "change-me-in-production";
     private int workerThreads = 4;
+    private String locale = "zh_CN";
 
     public ServerConfig() {}
 
@@ -57,6 +58,18 @@ public class ServerConfig {
         this.workerThreads = workerThreads > 0 ? workerThreads : 4;
     }
 
+    /**
+     * @return the backend console locale string (e.g. {@code "zh_CN"},
+     *         {@code "en_US"}); never null — defaults to {@code "zh_CN"}.
+     */
+    public String getLocale() {
+        return locale;
+    }
+
+    public void setLocale(String locale) {
+        this.locale = locale != null && !locale.isBlank() ? locale : "zh_CN";
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -66,11 +79,12 @@ public class ServerConfig {
                websocketPort == that.websocketPort &&
                workerThreads == that.workerThreads &&
                Objects.equals(bindAddress, that.bindAddress) &&
-               Objects.equals(secretKey, that.secretKey);
+               Objects.equals(secretKey, that.secretKey) &&
+               Objects.equals(locale, that.locale);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(bindAddress, port, websocketPort, secretKey, workerThreads);
+        return Objects.hash(bindAddress, port, websocketPort, secretKey, workerThreads, locale);
     }
 }

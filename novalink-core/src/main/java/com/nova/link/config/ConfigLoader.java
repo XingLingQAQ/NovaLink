@@ -228,7 +228,10 @@ public class ConfigLoader {
         if (data.containsKey("worker-threads")) {
             config.setWorkerThreads(((Number) data.get("worker-threads")).intValue());
         }
-        
+        if (data.containsKey("locale")) {
+            config.setLocale((String) data.get("locale"));
+        }
+
         return config;
     }
 
@@ -439,6 +442,7 @@ public class ConfigLoader {
         server.put("websocket-port", config.getServer().getWebsocketPort());
         server.put("secret-key", config.getServer().getSecretKey());
         server.put("worker-threads", config.getServer().getWorkerThreads());
+        server.put("locale", config.getServer().getLocale());
         data.put("server", server);
         
         // Database section

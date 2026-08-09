@@ -47,15 +47,15 @@ class DurationFormatterTest {
     @Test
     @DisplayName("returns UNKNOWN for null, blank, or non-numeric input")
     void returnsUnknownForBadInput() {
-        assertThat(DurationFormatter.formatSeconds((String) null)).isEqualTo(DurationFormatter.UNKNOWN);
-        assertThat(DurationFormatter.formatSeconds("")).isEqualTo(DurationFormatter.UNKNOWN);
-        assertThat(DurationFormatter.formatSeconds("abc")).isEqualTo(DurationFormatter.UNKNOWN);
+        assertThat(DurationFormatter.formatSeconds((String) null)).isEqualTo(DurationFormatter.unknown());
+        assertThat(DurationFormatter.formatSeconds("")).isEqualTo(DurationFormatter.unknown());
+        assertThat(DurationFormatter.formatSeconds("abc")).isEqualTo(DurationFormatter.unknown());
     }
 
     @Test
     @DisplayName("returns UNKNOWN for non-positive seconds")
     void returnsUnknownForNonPositive() {
-        assertThat(DurationFormatter.formatSeconds(0L)).isEqualTo(DurationFormatter.UNKNOWN);
-        assertThat(DurationFormatter.formatSeconds(-5L)).isEqualTo(DurationFormatter.UNKNOWN);
+        assertThat(DurationFormatter.formatSeconds(0L)).isEqualTo(DurationFormatter.unknown());
+        assertThat(DurationFormatter.formatSeconds(-5L)).isEqualTo(DurationFormatter.unknown());
     }
 }

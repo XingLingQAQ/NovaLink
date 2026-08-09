@@ -5,7 +5,8 @@
  * Requirements: 24.1, 24.4
  */
 
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import websocketService, { ConnectionState, MessageType } from '../services/websocket';
 import authService from '../services/auth';
 
@@ -16,6 +17,9 @@ const WebSocketContext = createContext(null);
  * WebSocket Provider Component
  */
 export function WebSocketProvider({ children, wsUrl }) {
+  const { t } = useTranslation();
+  const tRef = useRef(t);
+  useEffect(() => { tRef.current = t; }, [t]);
   const [connectionState, setConnectionState] = useState(ConnectionState.DISCONNECTED);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [error, setError] = useState(null);
@@ -106,7 +110,7 @@ export function WebSocketProvider({ children, wsUrl }) {
         id: message.id || Date.now(),
         title: message.title,
         desc: message.desc || message.description,
-        time: message.time || '刚刚',
+        time: message.time || tRef.current('notifications.default_time'),
         type: message.type || 'info',
         read: false
       };
@@ -133,7 +137,7 @@ export function WebSocketProvider({ children, wsUrl }) {
     const token = authService.getToken();
     
     if (!token) {
-      setError('请先登录');
+      setError(t('common.ws_error_login_first'));
       return false;
     }
 
@@ -142,10 +146,10 @@ export function WebSocketProvider({ children, wsUrl }) {
       await websocketService.connect(url, token);
       return true;
     } catch (err) {
-      setError(err.message || '连接失败');
+      setError(err.message || t('common.ws_error_connect'));
       return false;
     }
-  }, [url]);
+  }, [url, t]);
 
   /**
    * Disconnect from WebSocket server

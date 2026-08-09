@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   LayoutDashboard,
   Server,
@@ -106,6 +107,7 @@ export default function App() {
 
 // ==================== Dashboard ====================
 function Dashboard({ currentUser, onLogout }) {
+  const { t, i18n } = useTranslation();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
   const [theme, setTheme] = useState('glass');
@@ -146,6 +148,11 @@ function Dashboard({ currentUser, onLogout }) {
   const notificationRef = useRef(null);
   const chatContainerRef = useRef(null);
   const wsHandlersRef = useRef({});
+  // Keep a live ref to the translation function so long-lived WS handlers
+  // (registered once on mount) emit locale-aware toast text without re-running
+  // the WS effect on every language change.
+  const tRef = useRef(t);
+  useEffect(() => { tRef.current = t; }, [t]);
 
   // --- Toasts ---
   const addToast = useCallback((message, type = 'success') => {
@@ -181,7 +188,7 @@ function Dashboard({ currentUser, onLogout }) {
       setInitialLoading(false);
     } catch (err) {
       console.error('[fetch] initial load failed:', err);
-      setFetchError(err.message || '加载失败');
+      setFetchError(err.message || tRef.current('common.load_failed'));
       setInitialLoading(false);
     }
   }, []);
@@ -215,7 +222,7 @@ function Dashboard({ currentUser, onLogout }) {
       if (cancelled) return;
       setWsState(state);
       if (state === ConnectionState.ERROR) {
-        addToast('WebSocket 连接错误', 'error');
+        addToast(tRef.current('common.ws_toast_error'), 'error');
       }
     };
     websocketService.on('stateChange', handleStateChange);
@@ -295,7 +302,7 @@ function Dashboard({ currentUser, onLogout }) {
     // Connect (non-blocking — failures are surfaced via toasts/state).
     websocketService.connect(wsUrl, token).catch((err) => {
       console.error('[WS] connect failed:', err);
-      addToast('WebSocket 连接失败: ' + (err.message || err), 'error');
+      addToast(tRef.current('common.ws_toast_failed', { error: (err.message || err) }), 'error');
     });
 
     return () => {
@@ -359,54 +366,54 @@ function Dashboard({ currentUser, onLogout }) {
     const senderName = (currentUser && currentUser.username) || 'Panel';
     try {
       await api.sendMessage(channelId, content, senderName);
-      addToast('消息已发送', 'success');
+      addToast(t('messages.toast_sent'), 'success');
     } catch (err) {
-      addToast('发送失败: ' + err.message, 'error');
+      addToast(t('messages.toast_send_failed', { error: err.message }), 'error');
     }
-  }, [currentUser, addToast]);
+  }, [currentUser, addToast, t]);
 
   // Mute / unmute: NO REST or WS admin-action path exists in the backend for the panel.
   // Backend mute is via AdminActionPacket (plugin -> backend), not exposed to the panel.
   // Honest disable: the PlayerManagement component renders the buttons as disabled with a tooltip.
   const handleMutePlayer = useCallback(() => {
-    addToast('禁言操作需通过游戏内 /nc mute 执行，面板暂不支持', 'error');
-  }, [addToast]);
+    addToast(t('players.toast_mute'), 'error');
+  }, [addToast, t]);
 
   const handleUnmutePlayer = useCallback(() => {
-    addToast('解除禁言需通过游戏内 /nc unmute 执行，面板暂不支持', 'error');
-  }, [addToast]);
+    addToast(t('players.toast_unmute'), 'error');
+  }, [addToast, t]);
 
   // Reload config: NO REST or WS path exists for config reload from the panel.
   // Honest disable: ClientStatus renders the button disabled with a tooltip.
   const handleReloadConfig = useCallback(() => {
-    addToast('配置重载需在服务端执行，面板暂不支持', 'error');
-  }, [addToast]);
+    addToast(t('common.reload_title_disabled'), 'error');
+  }, [addToast, t]);
 
   // Channel create/edit/delete: NO REST or WS path exists for channel CRUD from the panel.
   // Honest disable: ChannelManagement renders these controls disabled with tooltips.
   const handleCreateChannel = useCallback(() => {
-    addToast('频道创建需在服务端配置文件中修改，面板暂不支持', 'error');
-  }, [addToast]);
+    addToast(t('channels.toast_create'), 'error');
+  }, [addToast, t]);
 
   const handleEditChannel = useCallback(() => {
-    addToast('频道编辑需在服务端配置文件中修改，面板暂不支持', 'error');
-  }, [addToast]);
+    addToast(t('channels.toast_edit'), 'error');
+  }, [addToast, t]);
 
   const handleDeleteChannel = useCallback(() => {
-    addToast('频道删除需在服务端配置文件中修改，面板暂不支持', 'error');
-  }, [addToast]);
+    addToast(t('channels.toast_delete'), 'error');
+  }, [addToast, t]);
 
   // Notifications.
   const handleMarkAllRead = useCallback(() => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-    addToast('已全部标记为已读', 'success');
-  }, [addToast]);
+    addToast(t('notifications.toast_all_read'), 'success');
+  }, [addToast, t]);
 
   const handleClearNotifications = useCallback(() => {
     setNotifications([]);
     setShowNotifications(false);
-    addToast('通知已清空', 'success');
-  }, [addToast]);
+    addToast(t('notifications.toast_cleared'), 'success');
+  }, [addToast, t]);
 
   // Settings toggles (local UI only).
   const handleSettingToggle = useCallback((key) => {
@@ -452,20 +459,20 @@ function Dashboard({ currentUser, onLogout }) {
   );
 
   const navItems = [
-    { id: 'dashboard', icon: LayoutDashboard, label: '仪表盘' },
-    { id: 'console', icon: MessageSquare, label: '实时控制台' },
-    { id: 'servers', icon: Server, label: '服务器' },
-    { id: 'channels', icon: Hash, label: '频道管理' },
-    { id: 'players', icon: Users, label: '玩家管理' },
-    { id: 'settings', icon: Settings, label: '系统设置' },
+    { id: 'dashboard', icon: LayoutDashboard, label: t('common.nav_dashboard') },
+    { id: 'console', icon: MessageSquare, label: t('common.nav_console') },
+    { id: 'servers', icon: Server, label: t('common.nav_servers') },
+    { id: 'channels', icon: Hash, label: t('common.nav_channels') },
+    { id: 'players', icon: Users, label: t('common.nav_players') },
+    { id: 'settings', icon: Settings, label: t('common.nav_settings') },
   ];
 
   const wsIndicator = (() => {
-    if (wsState === ConnectionState.AUTHENTICATED) return { color: 'bg-emerald-500', label: 'WS 已连接' };
-    if (wsState === ConnectionState.CONNECTED || wsState === ConnectionState.CONNECTING) return { color: 'bg-amber-500', label: 'WS 连接中' };
-    if (wsState === ConnectionState.RECONNECTING) return { color: 'bg-amber-500', label: 'WS 重连中' };
-    if (wsState === ConnectionState.ERROR) return { color: 'bg-red-500', label: 'WS 错误' };
-    return { color: 'bg-slate-500', label: 'WS 未连接' };
+    if (wsState === ConnectionState.AUTHENTICATED) return { color: 'bg-emerald-500', label: t('common.ws_connected') };
+    if (wsState === ConnectionState.CONNECTED || wsState === ConnectionState.CONNECTING) return { color: 'bg-amber-500', label: t('common.ws_connecting') };
+    if (wsState === ConnectionState.RECONNECTING) return { color: 'bg-amber-500', label: t('common.ws_reconnecting') };
+    if (wsState === ConnectionState.ERROR) return { color: 'bg-red-500', label: t('common.ws_error') };
+    return { color: 'bg-slate-500', label: t('common.ws_disconnected') };
   })();
 
   return (
@@ -505,14 +512,14 @@ function Dashboard({ currentUser, onLogout }) {
               ))}
             </nav>
             <div className={`mt-auto rounded-xl flex items-center transition-all duration-500 overflow-hidden shrink-0 ${!isMobile && !sidebarOpen ? 'p-1.5 justify-center' : 'p-3'} ${theme === 'clean' ? 'bg-slate-100/50' : 'bg-white/10 border border-white/10'}`}>
-              <div className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center bg-gradient-to-br from-sky-400 to-blue-500 text-white font-semibold ${!isMobile && !sidebarOpen ? '' : 'mr-3'}`} title={(currentUser && currentUser.username) || '用户'}>
+              <div className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center bg-gradient-to-br from-sky-400 to-blue-500 text-white font-semibold ${!isMobile && !sidebarOpen ? '' : 'mr-3'}`} title={(currentUser && currentUser.username) || t('common.user')}>
                 {((currentUser && currentUser.username) || 'U')[0].toUpperCase()}
               </div>
               <div className={`overflow-hidden transition-all duration-500 flex-1 min-w-0 ${!isMobile && !sidebarOpen ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>
-                <p className={`text-sm font-semibold whitespace-nowrap ${txtMain}`}>{(currentUser && currentUser.username) || '用户'}</p>
+                <p className={`text-sm font-semibold whitespace-nowrap ${txtMain}`}>{(currentUser && currentUser.username) || t('common.user')}</p>
                 <p className={`text-xs whitespace-nowrap ${txtSec}`}>{(currentUser && currentUser.role) || ''}</p>
               </div>
-              <button onClick={onLogout} className={`${txtSec} hover:text-red-400 transition-all duration-500 shrink-0 ${!isMobile && !sidebarOpen ? 'w-0 opacity-0 overflow-hidden' : 'w-auto opacity-100'}`} title="退出登录">
+              <button onClick={onLogout} className={`${txtSec} hover:text-red-400 transition-all duration-500 shrink-0 ${!isMobile && !sidebarOpen ? 'w-0 opacity-0 overflow-hidden' : 'w-auto opacity-100'}`} title={t('common.logout_title')}>
                 <LogOut size={18} />
               </button>
             </div>
@@ -529,7 +536,7 @@ function Dashboard({ currentUser, onLogout }) {
               </button>
               <div className={`hidden md:flex items-center gap-2 px-4 py-2 rounded-full transition-all ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-800' : 'bg-slate-100') : (mode === 'dark' ? 'bg-black/20 border border-white/10' : 'bg-white/20 border border-white/30')}`}>
                 <Search size={18} className={txtSec} />
-                <input type="text" placeholder="搜索..." className="bg-transparent border-none outline-none text-sm w-32 lg:w-48 placeholder:text-slate-400" style={{ color: mode === 'dark' ? 'white' : 'black' }} value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+                <input type="text" placeholder={t('common.search')} className="bg-transparent border-none outline-none text-sm w-32 lg:w-48 placeholder:text-slate-400" style={{ color: mode === 'dark' ? 'white' : 'black' }} value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
               </div>
             </div>
             <div className="flex items-center gap-3 md:gap-4">
@@ -550,6 +557,21 @@ function Dashboard({ currentUser, onLogout }) {
                 </button>
                 <NotificationDropdown isOpen={showNotifications} onClose={() => setShowNotifications(false)} theme={theme} mode={mode} notifications={notifications} onMarkAllRead={handleMarkAllRead} onClearAll={handleClearNotifications} />
               </div>
+              {/* Language switcher */}
+              <div className={`flex items-center p-1 rounded-full gap-1 ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-800' : 'bg-slate-200') : 'bg-black/20 border border-white/10 backdrop-blur-md'}`} title={t('language.switch_title')}>
+                <button
+                  onClick={() => i18n.changeLanguage('zh_CN')}
+                  className={`px-2 py-1 rounded-full text-xs font-medium transition-all ${i18n.language === 'zh_CN' || i18n.language === 'zh' ? (mode === 'dark' ? 'bg-slate-700 text-sky-300 shadow-sm' : 'bg-white shadow-sm text-sky-600') : (txtSec + ' hover:text-slate-200')}`}
+                >
+                  {t('language.zh')}
+                </button>
+                <button
+                  onClick={() => i18n.changeLanguage('en_US')}
+                  className={`px-2 py-1 rounded-full text-xs font-medium transition-all ${i18n.language === 'en_US' || i18n.language === 'en' ? (mode === 'dark' ? 'bg-slate-700 text-sky-300 shadow-sm' : 'bg-white shadow-sm text-sky-600') : (txtSec + ' hover:text-slate-200')}`}
+                >
+                  {t('language.en')}
+                </button>
+              </div>
               <div className={`flex items-center p-1 rounded-full gap-1 ${theme === 'clean' ? (mode === 'dark' ? 'bg-slate-800' : 'bg-slate-200') : 'bg-black/20 border border-white/10 backdrop-blur-md'}`}>
                 <button onClick={() => setMode('light')} className={`p-1.5 rounded-full transition-all ${mode === 'light' ? 'bg-white shadow-sm text-yellow-500' : 'text-slate-400 hover:text-slate-200'}`}><Sun size={16} /></button>
                 <button onClick={() => setMode('dark')} className={`p-1.5 rounded-full transition-all ${mode === 'dark' ? 'bg-slate-700 text-sky-300 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><Moon size={16} /></button>
@@ -563,14 +585,14 @@ function Dashboard({ currentUser, onLogout }) {
               {initialLoading ? (
                 <div className="h-96 flex flex-col items-center justify-center gap-3">
                   <Loader2 size={40} className={`animate-spin ${theme === 'clean' ? 'text-sky-500' : 'text-white'}`} />
-                  <p className={`text-sm ${txtSec}`}>正在加载 NovaLink 数据...</p>
+                  <p className={`text-sm ${txtSec}`}>{t('common.loading_data')}</p>
                 </div>
               ) : fetchError && channels.length === 0 && players.length === 0 ? (
                 <div className="h-96 flex flex-col items-center justify-center gap-4">
                   <AlertCircle size={40} className="text-rose-400" />
-                  <p className={`text-sm ${txtMain}`}>加载失败: {fetchError}</p>
+                  <p className={`text-sm ${txtMain}`}>{t('common.load_failed_msg', { error: fetchError })}</p>
                   <Button theme={theme} mode={mode} variant="primary" onClick={fetchAllData}>
-                    <RefreshCw size={16} /> 重试
+                    <RefreshCw size={16} /> {t('common.retry')}
                   </Button>
                 </div>
               ) : tabLoading ? (
@@ -675,27 +697,28 @@ function Dashboard({ currentUser, onLogout }) {
 
 // ==================== Settings View ====================
 function SettingsView({ theme, mode, txtMain, txtSec, settings, onToggle, setTheme, wsState, apiUrl, wsUrl }) {
+  const { t } = useTranslation();
   const wsLabel = (() => {
     switch (wsState) {
-      case ConnectionState.AUTHENTICATED: return '已认证';
-      case ConnectionState.CONNECTED: return '已连接';
-      case ConnectionState.CONNECTING: return '连接中';
-      case ConnectionState.RECONNECTING: return '重连中';
-      case ConnectionState.ERROR: return '错误';
-      default: return '未连接';
+      case ConnectionState.AUTHENTICATED: return t('common.ws_state_authenticated');
+      case ConnectionState.CONNECTED: return t('common.ws_state_connected');
+      case ConnectionState.CONNECTING: return t('common.ws_state_connecting');
+      case ConnectionState.RECONNECTING: return t('common.ws_state_reconnecting');
+      case ConnectionState.ERROR: return t('common.ws_state_error');
+      default: return t('common.ws_state_disconnected');
     }
   })();
 
   return (
     <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in duration-500">
       <div>
-        <h2 className={`text-2xl font-bold ${txtMain}`}>系统设置</h2>
-        <p className={`text-sm ${txtSec} mt-1`}>配置 NovaPanel 界面参数</p>
+        <h2 className={`text-2xl font-bold ${txtMain}`}>{t('common.settings_title')}</h2>
+        <p className={`text-sm ${txtSec} mt-1`}>{t('common.settings_subtitle')}</p>
       </div>
 
       <Card theme={theme} mode={mode} className="p-6 space-y-6">
         <div>
-          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>外观</h3>
+          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('common.settings_appearance')}</h3>
           <div className="grid grid-cols-2 gap-4">
             <div onClick={() => setTheme('clean')} className={`cursor-pointer rounded-xl border-2 overflow-hidden transition-all ${theme === 'clean' ? 'border-sky-500 scale-[1.02]' : 'border-transparent opacity-70 hover:opacity-100'}`}>
               <div className="h-24 bg-slate-100 p-3">
@@ -707,7 +730,7 @@ function SettingsView({ theme, mode, txtMain, txtSec, settings, onToggle, setThe
                 </div>
               </div>
               <div className={`p-3 ${mode === 'dark' ? 'bg-slate-800' : 'bg-white'}`}>
-                <span className={`text-sm font-medium ${txtMain}`}>简洁模式</span>
+                <span className={`text-sm font-medium ${txtMain}`}>{t('common.settings_clean')}</span>
               </div>
             </div>
             <div onClick={() => setTheme('glass')} className={`cursor-pointer rounded-xl border-2 overflow-hidden transition-all ${theme === 'glass' ? 'border-sky-500 scale-[1.02]' : 'border-transparent opacity-70 hover:opacity-100'}`}>
@@ -718,51 +741,51 @@ function SettingsView({ theme, mode, txtMain, txtSec, settings, onToggle, setThe
                 </div>
               </div>
               <div className={`p-3 ${mode === 'dark' ? 'bg-slate-800' : 'bg-white'}`}>
-                <span className={`text-sm font-medium ${txtMain}`}>玻璃模式</span>
+                <span className={`text-sm font-medium ${txtMain}`}>{t('common.settings_glass')}</span>
               </div>
             </div>
           </div>
         </div>
 
         <div className="pt-6 border-t border-gray-200/10">
-          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>连接状态</h3>
+          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('common.settings_connection')}</h3>
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <span className={txtMain}>API 地址</span>
+              <span className={txtMain}>{t('common.settings_api_address')}</span>
               <span className={`text-sm font-mono ${txtSec}`}>{apiUrl}</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className={txtMain}>WebSocket 地址</span>
+              <span className={txtMain}>{t('common.settings_ws_address')}</span>
               <span className={`text-sm font-mono ${txtSec}`}>{wsUrl}</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className={txtMain}>WebSocket 状态</span>
+              <span className={txtMain}>{t('common.settings_ws_state')}</span>
               <span className={`text-sm ${txtSec}`}>{wsLabel}</span>
             </div>
           </div>
         </div>
 
         <div className="pt-6 border-t border-gray-200/10">
-          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>聊天功能 (仅本地界面)</h3>
+          <h3 className={`text-lg font-semibold mb-4 ${txtMain}`}>{t('common.settings_chat_features')}</h3>
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <span className={txtMain}>敏感词过滤</span>
-                <p className={`text-xs ${txtSec}`}>面板界面设置，不影响后端</p>
+                <span className={txtMain}>{t('common.settings_filter')}</span>
+                <p className={`text-xs ${txtSec}`}>{t('common.settings_local_only')}</p>
               </div>
               <Switch checked={settings.enableFilter} onChange={() => onToggle('enableFilter')} theme={theme} mode={mode} />
             </div>
             <div className="flex items-center justify-between">
               <div>
-                <span className={txtMain}>消息日志</span>
-                <p className={`text-xs ${txtSec}`}>面板界面设置，不影响后端</p>
+                <span className={txtMain}>{t('common.settings_log')}</span>
+                <p className={`text-xs ${txtSec}`}>{t('common.settings_local_only')}</p>
               </div>
               <Switch checked={settings.logMessages} onChange={() => onToggle('logMessages')} theme={theme} mode={mode} />
             </div>
             <div className="flex items-center justify-between">
               <div>
-                <span className={txtMain}>跨服聊天</span>
-                <p className={`text-xs ${txtSec}`}>面板界面设置，不影响后端</p>
+                <span className={txtMain}>{t('common.settings_cross_server')}</span>
+                <p className={`text-xs ${txtSec}`}>{t('common.settings_local_only')}</p>
               </div>
               <Switch checked={settings.crossServerChat} onChange={() => onToggle('crossServerChat')} theme={theme} mode={mode} />
             </div>

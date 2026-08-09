@@ -1,6 +1,7 @@
 package com.nova.chat.velocity.chat;
 
 import com.nova.chat.client.command.PlayerMessages;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -136,14 +137,14 @@ public class ChatListener {
         @Override
         public void sendJoinSuccess(UUID playerId, String channelId) {
             plugin.getServer().getPlayer(playerId).ifPresent(player ->
-                    player.sendMessage(messageFormatter.formatSuccess("已加入频道 " + channelId)));
+                    player.sendMessage(messageFormatter.formatSuccess(PlayerMessages.joined(playerId, channelId))));
         }
 
         @Override
         public void sendLeaveSuccess(UUID playerId, String channelId) {
             plugin.getServer().getPlayer(playerId).ifPresent(player ->
                     player.sendMessage(messageFormatter.formatSuccess(
-                            PlayerMessages.left(channelId, config.getDefaultChannel()))));
+                            PlayerMessages.left(playerId, channelId, config.getDefaultChannel()))));
         }
 
         @Override
@@ -168,6 +169,7 @@ public class ChatListener {
         @Override
         public void notifyKickMuteTarget(ChannelResponseDispatcher.KickMuteNotice notice) {
             plugin.getServer().getPlayer(notice.getTargetId()).ifPresent(target -> {
+                UUID targetId = notice.getTargetId();
                 String channelId = notice.getChannelId();
                 String operator = notice.getOperator();
                 Title.Times times = Title.Times.times(
@@ -175,29 +177,21 @@ public class ChatListener {
                         Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
                         Duration.ofMillis(MentionNotifier.DEFAULT_FADE_OUT * 50L));
                 if (notice.getAction() == com.nova.chat.common.protocol.ChannelAction.KICK) {
-                    Component title = Component.text("你已被踢出频道", NamedTextColor.RED);
-                    Component subtitle = Component.text()
-                            .append(Component.text("被 ", NamedTextColor.GRAY))
-                            .append(Component.text(operator, NamedTextColor.YELLOW))
-                            .append(Component.text(" 踢出频道 ", NamedTextColor.GRAY))
-                            .append(Component.text(channelId, NamedTextColor.AQUA))
-                            .build();
+                    Component title = messageFormatter.parseColors(I18n.tr(targetId, "chat.notice.kick_title"));
+                    Component subtitle = messageFormatter.parseColors(
+                            I18n.tr(targetId, "chat.notice.kick_subtitle", operator, channelId));
                     target.showTitle(Title.title(title, subtitle, times));
-                    target.sendMessage(messageFormatter.formatError(
-                            "你已被 " + operator + " 踢出频道 " + channelId));
+                    target.sendMessage(messageFormatter.parseColors(
+                            I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId)));
                     return;
                 }
                 String durationText = notice.getDurationText();
-                Component title = Component.text("你已被禁言", NamedTextColor.RED);
-                Component subtitle = Component.text()
-                        .append(Component.text("在频道 ", NamedTextColor.GRAY))
-                        .append(Component.text(channelId, NamedTextColor.AQUA))
-                        .append(Component.text(" 持续 ", NamedTextColor.GRAY))
-                        .append(Component.text(durationText, NamedTextColor.YELLOW))
-                        .build();
+                Component title = messageFormatter.parseColors(I18n.tr(targetId, "chat.notice.mute_title"));
+                Component subtitle = messageFormatter.parseColors(
+                        I18n.tr(targetId, "chat.notice.mute_subtitle", channelId, durationText));
                 target.showTitle(Title.title(title, subtitle, times));
-                target.sendMessage(messageFormatter.formatError(
-                        "你已被禁言 " + durationText + "（频道 " + channelId + "）"));
+                target.sendMessage(messageFormatter.parseColors(
+                        I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId)));
             });
         }
     }
@@ -251,11 +245,8 @@ public class ChatListener {
                     String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
                     String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
                     Component title = Component.text(mentioner, NamedTextColor.YELLOW);
-                    Component subtitle = Component.text()
-                            .append(Component.text("在频道 ", NamedTextColor.GRAY))
-                            .append(Component.text(channelId, NamedTextColor.AQUA))
-                            .append(Component.text(" 提到了你", NamedTextColor.GRAY))
-                            .build();
+                    Component subtitle = messageFormatter.parseColors(
+                            I18n.tr(mentionedId, "chat.mention.subtitle", channelId));
                     Title.Times times = Title.Times.times(
                             Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
                             Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
@@ -309,7 +300,7 @@ public class ChatListener {
         
         // Check if connected to backend
         if (plugin.getNetworkClient() == null || !plugin.getNetworkClient().isAuthenticated()) {
-            player.sendMessage(messageFormatter.formatError("未连接到聊天服务器，请稍后再试"));
+            player.sendMessage(messageFormatter.formatError(I18n.tr(playerId, "chat.network.not_connected_retry")));
             return;
         }
         
@@ -370,7 +361,7 @@ public class ChatListener {
      */
     public void sendToChannel(Player player, String channelId, String message) {
         if (plugin.getNetworkClient() == null || !plugin.getNetworkClient().isAuthenticated()) {
-            player.sendMessage(messageFormatter.formatError("未连接到聊天服务器"));
+            player.sendMessage(messageFormatter.formatError(I18n.tr(player.getUniqueId(), "chat.network.not_connected")));
             return;
         }
         

@@ -6,6 +6,7 @@
  */
 
 import authService from './auth';
+import i18n from '../i18n';
 
 const DEFAULT_API_URL = '/api';
 
@@ -79,7 +80,7 @@ export async function apiFetch(path, options = {}) {
   try {
     response = await fetch(url, { ...options, headers });
   } catch (err) {
-    throw new Error(`无法连接到服务器: ${err.message || err}`);
+    throw new Error(i18n.t('common.api_error_connect', { error: err.message || err }));
   }
 
   let data = null;
@@ -93,7 +94,7 @@ export async function apiFetch(path, options = {}) {
   }
 
   if (!response.ok) {
-    const message = (data && (data.message || data.error)) || `请求失败 (${response.status})`;
+    const message = (data && (data.message || data.error)) || i18n.t('common.api_error_request', { status: response.status });
     const error = new Error(message);
     error.status = response.status;
     error.data = data;

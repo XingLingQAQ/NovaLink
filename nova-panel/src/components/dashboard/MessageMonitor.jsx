@@ -7,6 +7,7 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { Volume2, VolumeX, Filter, Send, Trash2, Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import CustomSelect from '../ui/CustomSelect';
@@ -24,6 +25,7 @@ function MessageMonitor({
   consoleAutoScroll: externalAutoScroll,
   setConsoleAutoScroll: externalSetAutoScroll
 }) {
+  const { t } = useTranslation();
   const [chatFilter, setChatFilter] = useState('all');
   const [serverFilter, setServerFilter] = useState('all');
   const [internalAutoScroll, setInternalAutoScroll] = useState(true);
@@ -82,8 +84,8 @@ function MessageMonitor({
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h2 className={`text-2xl font-bold ${txtMain}`}>实时控制台</h2>
-          <p className={`text-sm ${txtSec} mt-1`}>监控全服聊天消息 · {filteredMessages.length} 条消息</p>
+          <h2 className={`text-2xl font-bold ${txtMain}`}>{t('messages.title')}</h2>
+          <p className={`text-sm ${txtSec} mt-1`}>{t('messages.subtitle', { count: filteredMessages.length })}</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           {/* Channel Filter */}
@@ -113,7 +115,7 @@ function MessageMonitor({
           <button 
             onClick={() => setAutoScroll(!autoScroll)}
             className={`p-2 rounded-lg transition-colors ${autoScroll ? 'bg-sky-500/20 text-sky-500' : (mode === 'dark' ? 'bg-white/10 text-white/50' : 'bg-slate-100 text-slate-400')}`}
-            title={autoScroll ? '自动滚动: 开' : '自动滚动: 关'}
+            title={autoScroll ? t('messages.autoscroll_on') : t('messages.autoscroll_off')}
           >
             {autoScroll ? <Volume2 size={20} /> : <VolumeX size={20} />}
           </button>
@@ -141,7 +143,7 @@ function MessageMonitor({
         >
           {filteredMessages.length === 0 ? (
             <div className={`flex items-center justify-center h-full ${txtSec}`}>
-              <p>暂无消息</p>
+              <p>{t('messages.empty')}</p>
             </div>
           ) : (
             filteredMessages.map((msg, idx) => (
@@ -171,7 +173,7 @@ function MessageMonitor({
                 value={messageInput}
                 onChange={(e) => setMessageInput(e.target.value)}
                 onKeyPress={handleKeyPress}
-                placeholder="输入消息..."
+                placeholder={t('messages.input_placeholder')}
                 className={`flex-1 px-4 py-2 rounded-xl border outline-none focus:ring-2 transition-all ${
                   theme === 'clean' 
                     ? (mode === 'dark' ? 'bg-slate-700 border-slate-600 focus:ring-sky-500 text-white' : 'bg-white border-slate-200 focus:ring-sky-500 text-slate-900') 
@@ -200,7 +202,7 @@ function MessageMonitor({
           mode={mode} 
           txtMain={txtMain} 
           txtSec={txtSec}
-          label="总消息数"
+          label={t('messages.stat_total')}
           value={messages.length}
         />
         <StatCard 
@@ -208,7 +210,7 @@ function MessageMonitor({
           mode={mode} 
           txtMain={txtMain} 
           txtSec={txtSec}
-          label="Java 消息"
+          label={t('messages.stat_java')}
           value={messages.filter(m => m.platform === 'Java').length}
           color="text-emerald-400"
         />
@@ -217,7 +219,7 @@ function MessageMonitor({
           mode={mode} 
           txtMain={txtMain} 
           txtSec={txtSec}
-          label="Bedrock 消息"
+          label={t('messages.stat_bedrock')}
           value={messages.filter(m => m.platform === 'Bedrock').length}
           color="text-amber-400"
         />
@@ -226,7 +228,7 @@ function MessageMonitor({
           mode={mode} 
           txtMain={txtMain} 
           txtSec={txtSec}
-          label="活跃服务器"
+          label={t('messages.stat_active_servers')}
           value={servers.length}
           color="text-sky-400"
         />

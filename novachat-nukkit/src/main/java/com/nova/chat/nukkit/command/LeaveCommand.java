@@ -6,6 +6,7 @@ import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
 import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.nukkit.NovaChatNukkit;
 
@@ -35,7 +36,7 @@ public class LeaveCommand extends AbstractSubCommand {
 
     @Override
     public String getDescription() {
-        return "离开当前频道";
+        return I18n.tr("chat.command.desc.leave");
     }
 
     @Override
@@ -62,13 +63,13 @@ public class LeaveCommand extends AbstractSubCommand {
         String defaultChannel = plugin.getNovaChatConfig().getDefaultChannel();
 
         if (currentChannel == null || currentChannel.isBlank()) {
-            sendError(sender, "你当前不在任何频道中");
+            sendError(sender, I18n.tr(player.getUniqueId(), "chat.action.not_in_channel"));
             return true;
         }
 
         // Preserve prior Nukkit guard: cannot leave the default channel via /leave.
         if (currentChannel.equals(defaultChannel)) {
-            sendError(sender, "你已经在默认频道中");
+            sendError(sender, I18n.tr(player.getUniqueId(), "chat.action.already_default"));
             return true;
         }
 
@@ -80,7 +81,7 @@ public class LeaveCommand extends AbstractSubCommand {
             if (!defaultChannel.equals(state.getActiveChannel())) {
                 state.setActiveChannel(defaultChannel);
             }
-            sendSuccess(sender, PlayerMessages.leaving(currentChannel));
+            sendSuccess(sender, PlayerMessages.leaving(player.getUniqueId(), currentChannel));
             plugin.debug("Player " + player.getName() + " left channel: " + currentChannel);
         } else {
             // Actionable error: NC-433 not-in-channel vs NC-503 network failure (via ErrorCode).

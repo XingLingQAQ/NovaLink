@@ -3,6 +3,7 @@ package com.nova.chat.nukkit.command;
 import cn.nukkit.Player;
 import cn.nukkit.command.CommandSender;
 import com.nova.chat.client.command.ListCommandService;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.nukkit.NovaChatNukkit;
 
@@ -29,7 +30,7 @@ public class ListCommand extends AbstractSubCommand {
 
     @Override
     public String getDescription() {
-        return "列出可用频道";
+        return I18n.tr("chat.command.desc.list");
     }
 
     @Override
@@ -50,7 +51,7 @@ public class ListCommand extends AbstractSubCommand {
     @Override
     public boolean execute(CommandSender sender, String[] args) {
         if (!(sender instanceof Player)) {
-            sendError(sender, "此命令只能由玩家执行");
+            sendError(sender, I18n.tr("chat.command.player_only"));
             return true;
         }
         Player player = (Player) sender;
@@ -62,11 +63,11 @@ public class ListCommand extends AbstractSubCommand {
                 plugin.getKnownChannelRegistry(), joined);
 
         // Use the message helper's header/footer via raw messages for the list body.
-        messageHelper.sendRawMessage(sender, "&8&m----------&r &bNovaChat 频道列表 &8&m----------");
+        messageHelper.sendRawMessage(sender, I18n.tr(player.getUniqueId(), "chat.command.list.title"));
         for (String line : lines) {
             messageHelper.sendRawMessage(sender, line);
         }
-        messageHelper.sendRawMessage(sender, "&8&m---------------------------------");
+        messageHelper.sendRawMessage(sender, I18n.tr(player.getUniqueId(), "chat.command.list.tail"));
         return true;
     }
 }

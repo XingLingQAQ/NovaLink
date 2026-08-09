@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.bukkit.config.NovaChatConfig;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.client.network.ClientLogger;
 import com.nova.chat.client.network.CoreNetworkClient;
@@ -276,7 +277,7 @@ public class NetworkClient {
                     String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
                     String title = formatter.translateColorCodes("&e" + mentioner);
                     String subtitle = formatter.translateColorCodes(
-                            "&7在频道 &b" + channelId + " &7提到了你");
+                            I18n.tr(mentionedId, "chat.mention.subtitle", channelId));
 
                     player.sendTitle(title, subtitle,
                             MentionNotifier.DEFAULT_FADE_IN,
@@ -538,7 +539,8 @@ public class NetworkClient {
             if (errorCode != null && !errorCode.isEmpty()) {
                 plugin.getErrorHandler().sendErrorFromCode(player, errorCode, errorMessage);
             } else {
-                plugin.getMessageHelper().sendError(player, errorMessage != null ? errorMessage : "操作失败");
+                plugin.getMessageHelper().sendError(player,
+                        errorMessage != null ? errorMessage : I18n.tr(pending.playerId, "chat.action.failed"));
             }
 
             // Rollback optimistic local channel switch if applicable and still relevant
@@ -573,9 +575,11 @@ public class NetworkClient {
                 String password = response.getExtra("password");
                 String passwordGenerated = response.getExtra("passwordGenerated");
                 if (password != null && !password.isEmpty()) {
-                    plugin.getMessageHelper().sendMessage(player, "私有频道ID: &e" + channelId + "&7，密码: &e" + password);
+                    plugin.getMessageHelper().sendMessage(player,
+                            I18n.tr(player.getUniqueId(), "chat.create.result", channelId, password));
                     if ("true".equalsIgnoreCase(passwordGenerated)) {
-                        plugin.getMessageHelper().sendSuggestion(player, "该密码为系统自动生成，请妥善保存");
+                        plugin.getMessageHelper().sendSuggestion(player,
+                                I18n.tr(player.getUniqueId(), "chat.create.password_saved"));
                     }
                 }
                 break;
@@ -583,7 +587,9 @@ public class NetworkClient {
             case INVITE: {
                 String code = response.getExtra("code");
                 if (code != null && !code.isEmpty()) {
-                    plugin.getMessageHelper().sendMessage(player, "邀请码: &e" + code.toUpperCase() + "&7（对方执行 /nc accept " + code.toUpperCase() + "）");
+                    String upper = code.toUpperCase();
+                    plugin.getMessageHelper().sendMessage(player,
+                            I18n.tr(player.getUniqueId(), "chat.invite.code", upper));
                 }
                 break;
             }
@@ -628,34 +634,36 @@ public class NetworkClient {
                 : pending.channelId;
         String operator = pending.operatorName != null && !pending.operatorName.isEmpty()
                 ? pending.operatorName
-                : "管理员";
+                : I18n.tr(pending.targetId, "notice.operator.fallback");
 
         if (response.getAction() == ChannelAction.KICK) {
-            String title = com.nova.chat.bukkit.command.MessageHelper.colorize("&c你已被踢出频道");
+            String title = com.nova.chat.bukkit.command.MessageHelper.colorize(
+                    I18n.tr(pending.targetId, "chat.notice.kick_title"));
             String subtitle = com.nova.chat.bukkit.command.MessageHelper.colorize(
-                    "&7被 &e" + operator + " &7踢出频道 &b" + channelId);
+                    I18n.tr(pending.targetId, "chat.notice.kick_subtitle", operator, channelId));
             target.sendTitle(title, subtitle,
                     com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN,
                     com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY,
                     com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT);
             target.spigot().sendMessage(ChatMessageType.ACTION_BAR,
                     new TextComponent(com.nova.chat.bukkit.command.MessageHelper.colorize(
-                            "&c你已被 " + operator + " 踢出频道 " + channelId)));
+                            I18n.tr(pending.targetId, "chat.notice.kick_actionbar", operator, channelId))));
             return;
         }
 
         // MUTE
         String durationText = formatTrackedDuration(pending.durationSeconds);
-        String title = com.nova.chat.bukkit.command.MessageHelper.colorize("&c你已被禁言");
+        String title = com.nova.chat.bukkit.command.MessageHelper.colorize(
+                I18n.tr(pending.targetId, "chat.notice.mute_title"));
         String subtitle = com.nova.chat.bukkit.command.MessageHelper.colorize(
-                "&7在频道 &b" + channelId + " &7持续 &e" + durationText);
+                I18n.tr(pending.targetId, "chat.notice.mute_subtitle", channelId, durationText));
         target.sendTitle(title, subtitle,
                 com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN,
                 com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY,
                 com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT);
         target.spigot().sendMessage(ChatMessageType.ACTION_BAR,
                 new TextComponent(com.nova.chat.bukkit.command.MessageHelper.colorize(
-                        "&c你已被禁言 " + durationText + "（频道 " + channelId + "）")));
+                        I18n.tr(pending.targetId, "chat.notice.mute_actionbar", durationText, channelId))));
     }
 
     /** Formats a duration given as a seconds string, or "一段时间" if unknown. */
@@ -675,9 +683,8 @@ public class NetworkClient {
             return;
         }
         ChatMode mode = (state != null) ? state.getChatMode() : null;
-        String modeName = (mode == ChatMode.REPLACE) ? "频道模式" : "混合模式";
         String text = com.nova.chat.bukkit.command.MessageHelper.colorize(
-                "&7当前频道：&b" + channelId + " &7（" + modeName + "）");
+                com.nova.chat.client.command.PlayerMessages.currentChannelBar(player.getUniqueId(), channelId, mode));
         player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(text));
     }
 
@@ -721,14 +728,15 @@ public class NetworkClient {
                 plugin.getMessageHelper().sendSuccess(player,
                         response.getMessage() != null && !response.getMessage().isEmpty()
                                 ? response.getMessage()
-                                : "操作成功");
+                                : I18n.tr(pending.playerId, "chat.action.success"));
             } else {
                 String code = response.getErrorCode();
                 String msg = response.getMessage();
                 if (code != null && !code.isEmpty()) {
                     plugin.getErrorHandler().sendErrorFromCode(player, code, msg);
                 } else {
-                    plugin.getMessageHelper().sendError(player, msg != null ? msg : "操作失败");
+                    plugin.getMessageHelper().sendError(player,
+                            msg != null ? msg : I18n.tr(pending.playerId, "chat.action.failed"));
                 }
             }
         });
@@ -745,30 +753,30 @@ public class NetworkClient {
                 : pending.channelId;
 
         if (response.getAction() == null) {
-            return "操作成功";
+            return I18n.tr(pending.playerId, "chat.action.success");
         }
 
         switch (response.getAction()) {
             case JOIN:
-                return "已加入频道 &e" + channelId;
+                return I18n.tr(pending.playerId, "chat.join.joined", channelId);
             case LEAVE:
-                return "已离开频道 &e" + channelId;
+                return I18n.tr(pending.playerId, "chat.action.leave_simple", channelId);
             case CREATE:
-                return "创建频道请求已处理";
+                return I18n.tr(pending.playerId, "chat.action.create_processed");
             case DELETE:
-                return "删除频道请求已处理";
+                return I18n.tr(pending.playerId, "chat.action.delete_processed");
             case INVITE:
-                return "邀请请求已处理";
+                return I18n.tr(pending.playerId, "chat.action.invite_processed");
             case ACCEPT:
-                return "已接受邀请";
+                return I18n.tr(pending.playerId, "chat.action.accepted");
             case KICK:
-                return "踢出请求已处理";
+                return I18n.tr(pending.playerId, "chat.action.kick_processed");
             case MUTE:
-                return "禁言请求已处理";
+                return I18n.tr(pending.playerId, "chat.action.mute_processed");
             case UNMUTE:
-                return "解除禁言请求已处理";
+                return I18n.tr(pending.playerId, "chat.action.unmute_processed");
             default:
-                return "操作成功";
+                return I18n.tr(pending.playerId, "chat.action.success");
         }
     }
 

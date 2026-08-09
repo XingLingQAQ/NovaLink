@@ -2,6 +2,7 @@ package com.nova.chat.pnx.command;
 
 import cn.nukkit.command.CommandSender;
 import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.pnx.NovaChatPNX;
 
 import java.util.List;
@@ -24,7 +25,7 @@ public class ReloadCommand extends AbstractSubCommand {
 
     @Override
     public String getDescription() {
-        return "重载配置";
+        return I18n.tr("chat.command.desc.reload");
     }
 
     @Override
@@ -51,7 +52,7 @@ public class ReloadCommand extends AbstractSubCommand {
             channelCommands.reload();
         }
         plugin.reload();
-        sendSuccess(sender, "配置已重载");
+        sendSuccess(sender, I18n.tr("chat.command.reload.success"));
         return true;
     }
 

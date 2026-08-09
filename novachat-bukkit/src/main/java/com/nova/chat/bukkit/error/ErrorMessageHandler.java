@@ -3,14 +3,23 @@ package com.nova.chat.bukkit.error;
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.bukkit.command.MessageHelper;
 import com.nova.chat.client.error.ErrorCode;
+import com.nova.chat.client.i18n.I18n;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
 
+import java.util.UUID;
 import java.util.logging.Level;
 
 /**
  * Handles error message display and logging for NovaChat.
  * Provides formatted error messages with error codes and solution suggestions.
- * 
+ *
+ * <p>User-facing copy is resolved through the shared {@link I18n} service so it
+ * follows the player's locale (zh_CN default, en_US secondary). Error codes
+ * that map to {@link ErrorCode} resolve via the shared bundle
+ * ({@code error.NC-*}); custom platform messages use the {@code chat.error.*}
+ * keys.
+ *
  * Requirements: 27.1-27.4
  */
 public class ErrorMessageHandler {
@@ -20,16 +29,15 @@ public class ErrorMessageHandler {
 
     /** Error message format with code */
     private static final String ERROR_FORMAT = "&c%s &8| &7%s";
-    
-    /** Suggestion format */
-    private static final String SUGGESTION_FORMAT = "  &7提示: &f%s";
-    
-    /** Server error additional info */
-    private static final String SERVER_ERROR_INFO = "  &8错误ID: &7%s";
 
     public ErrorMessageHandler(NovaChatBukkit plugin, MessageHelper messageHelper) {
         this.plugin = plugin;
         this.messageHelper = messageHelper;
+    }
+
+    /** Resolves the player UUID of a sender (null for console → default locale). */
+    private static UUID playerIdOf(CommandSender sender) {
+        return sender instanceof Player ? ((Player) sender).getUniqueId() : null;
     }
 
     /**
@@ -39,22 +47,23 @@ public class ErrorMessageHandler {
      * @param error  the error to display
      */
     public void sendError(CommandSender sender, NovaError error) {
+        UUID playerId = playerIdOf(sender);
         // Send main error message
         String errorLine = String.format(ERROR_FORMAT, error.getCode(), error.getMessage());
         messageHelper.sendRaw(sender, "&8[&cNovaChat&8]&r " + errorLine);
-        
+
         // Send suggestion
         String suggestion = error.getSuggestion();
         if (suggestion != null && !suggestion.isEmpty()) {
-            messageHelper.sendRaw(sender, String.format(SUGGESTION_FORMAT, suggestion));
+            messageHelper.sendRaw(sender, "  &7" + I18n.tr(playerId, "error.suggestion_prefix") + " &f" + suggestion);
         }
-        
+
         // For server errors, show error ID for tracking
         if (error.isServerError()) {
             String errorId = error.getErrorId().toString().substring(0, 8);
-            messageHelper.sendRaw(sender, String.format(SERVER_ERROR_INFO, errorId));
+            messageHelper.sendRaw(sender, "  &8" + I18n.tr(playerId, "chat.error.error_id") + " &7" + errorId);
         }
-        
+
         // Log the error
         logError(error);
     }
@@ -108,9 +117,10 @@ public class ErrorMessageHandler {
         ErrorCode errorCode = ErrorCode.fromCode(code);
         if (code != null && !code.equals(errorCode.getCode())) {
             // Unknown backend code — preserve it in the message for diagnosis.
+            UUID playerId = playerIdOf(sender);
             sendError(sender, new NovaError(errorCode,
-                "未知错误: " + code,
-                "请联系管理员并提供此错误代码"));
+                I18n.tr(playerId, "chat.error.unknown_code", code),
+                I18n.tr(playerId, "chat.error.contact_admin_code")));
         } else {
             sendError(sender, errorCode);
         }
@@ -127,9 +137,10 @@ public class ErrorMessageHandler {
         ErrorCode errorCode = ErrorCode.fromCode(code);
         if (code != null && !code.equals(errorCode.getCode())) {
             // Unknown backend code — preserve it in the message for diagnosis.
+            UUID playerId = playerIdOf(sender);
             sendError(sender, new NovaError(errorCode,
                 code + ": " + message,
-                "请联系管理员并提供此错误代码"));
+                I18n.tr(playerId, "chat.error.contact_admin_code")));
         } else {
             sendError(sender, new NovaError(errorCode, message));
         }
@@ -178,41 +189,46 @@ public class ErrorMessageHandler {
      * Sends a "no permission" error with specific permission.
      */
     public void sendNoPermission(CommandSender sender, String permission) {
-        sendError(sender, new NovaError(ErrorCode.FORBIDDEN, 
-            "权限不足", 
-            "需要权限: " + permission));
+        UUID playerId = playerIdOf(sender);
+        sendError(sender, new NovaError(ErrorCode.FORBIDDEN,
+            I18n.tr(playerId, "error.NC-403.message"),
+            I18n.tr(playerId, "chat.error.need_permission", permission)));
     }
 
     /**
      * Sends a "player not found" error.
      */
     public void sendPlayerNotFound(CommandSender sender, String playerName) {
-        sendError(sender, NovaError.notFound("玩家 " + playerName));
+        UUID playerId = playerIdOf(sender);
+        sendError(sender, NovaError.notFound(I18n.tr(playerId, "chat.error.player_prefix", playerName)));
     }
 
     /**
      * Sends a "channel not found" error.
      */
     public void sendChannelNotFound(CommandSender sender, String channelId) {
-        sendError(sender, NovaError.notFound("频道 " + channelId));
+        UUID playerId = playerIdOf(sender);
+        sendError(sender, NovaError.notFound(I18n.tr(playerId, "chat.error.channel_prefix", channelId)));
     }
 
     /**
      * Sends a "player only" error.
      */
     public void sendPlayerOnly(CommandSender sender) {
-        sendError(sender, new NovaError(ErrorCode.BAD_REQUEST, 
-            "此命令只能由玩家执行", 
-            "请在游戏内使用此命令"));
+        UUID playerId = playerIdOf(sender);
+        sendError(sender, new NovaError(ErrorCode.BAD_REQUEST,
+            I18n.tr(playerId, "chat.command.player_only"),
+            I18n.tr(playerId, "chat.error.player_only_suggestion")));
     }
 
     /**
      * Sends an "invalid arguments" error.
      */
     public void sendInvalidArgs(CommandSender sender, String usage) {
-        NovaError error = new NovaError(ErrorCode.BAD_REQUEST, 
-            "参数错误", 
-            "用法: " + usage);
+        UUID playerId = playerIdOf(sender);
+        NovaError error = new NovaError(ErrorCode.BAD_REQUEST,
+            I18n.tr(playerId, "chat.error.invalid_args"),
+            I18n.tr(playerId, "chat.error.usage_prefix", usage));
         sendError(sender, error);
     }
 
@@ -255,9 +271,10 @@ public class ErrorMessageHandler {
      * Sends a "world restricted" error.
      */
     public void sendWorldRestricted(CommandSender sender, String channelId) {
-        sendError(sender, new NovaError(ErrorCode.WORLD_RESTRICTED, 
-            "无法加入频道 " + channelId, 
-            "该频道仅在特定世界可用，请前往对应世界"));
+        UUID playerId = playerIdOf(sender);
+        sendError(sender, new NovaError(ErrorCode.WORLD_RESTRICTED,
+            I18n.tr(playerId, "chat.error.world_restricted_join", channelId),
+            I18n.tr(playerId, "error.NC-435.suggestion")));
     }
 
     /**

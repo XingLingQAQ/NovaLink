@@ -2,10 +2,13 @@ package com.nova.chat.velocity;
 
 import com.google.inject.Inject;
 import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.i18n.LocaleResolver;
 import com.nova.chat.velocity.chat.ChatListener;
 import com.nova.chat.velocity.chat.MentionTabCompleter;
 import com.nova.chat.velocity.command.NovaChatCommand;
 import com.nova.chat.velocity.config.NovaChatConfig;
+import com.nova.chat.velocity.listener.LocaleCaptureListener;
 import com.nova.chat.velocity.listener.ServerSwitchHandler;
 import com.nova.chat.velocity.network.NetworkClient;
 import com.velocitypowered.api.command.CommandManager;
@@ -63,6 +66,9 @@ public class NovaChatVelocity {
     
     /** Server switch handler for cross-server routing */
     private ServerSwitchHandler serverSwitchHandler;
+
+    /** Captures player client locales for per-player i18n (Architecture B) */
+    private LocaleCaptureListener localeCaptureListener;
 
     /**
      * Shared known-channel registry populated from backend ConfigSync pushes
@@ -130,7 +136,12 @@ public class NovaChatVelocity {
     public void loadConfiguration() {
         config = new NovaChatConfig(dataDirectory);
         debugMode = config.isDebug();
-        
+
+        // Apply the configured default locale to the shared i18n service before
+        // any player-facing text is rendered. Falls back to zh_CN (ROOT_LOCALE)
+        // when the configured value is blank or unparseable.
+        I18n.setDefaultLocale(LocaleResolver.parseOrDefault(config.getLocale(), LocaleResolver.ROOT_LOCALE));
+
         if (debugMode) {
             logger.info("[Debug] Configuration loaded successfully");
         }
@@ -196,6 +207,10 @@ public class NovaChatVelocity {
         // Register server switch handler for cross-server routing (Requirements: 4.3, 5.3)
         serverSwitchHandler = new ServerSwitchHandler(this);
         server.getEventManager().register(this, serverSwitchHandler);
+
+        // Register locale capture listener for per-player i18n (Architecture B)
+        localeCaptureListener = new LocaleCaptureListener(this);
+        server.getEventManager().register(this, localeCaptureListener);
     }
     
     /**

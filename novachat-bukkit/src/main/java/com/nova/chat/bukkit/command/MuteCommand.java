@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
@@ -51,7 +52,7 @@ public class MuteCommand extends AbstractSubCommand {
     public boolean execute(CommandSender sender, String[] args) {
         if (args.length < 2) {
             messageHelper.sendUsage(sender, getUsage());
-            messageHelper.sendSuggestion(sender, "时间格式: 30s(秒), 10m(分钟), 1h(小时), 1d(天)");
+            messageHelper.sendSuggestion(sender, I18n.tr(playerIdOf(sender), "chat.mute.duration_hint"));
             return true;
         }
 
@@ -75,7 +76,7 @@ public class MuteCommand extends AbstractSubCommand {
 
         if (channelId == null) {
             errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.BAD_REQUEST,
-                "请指定频道ID");
+                I18n.tr(playerIdOf(sender), "chat.command.specify_channel"));
             return true;
         }
 
@@ -83,8 +84,8 @@ public class MuteCommand extends AbstractSubCommand {
         long durationSeconds = parseDuration(durationStr);
         if (durationSeconds <= 0) {
             errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.INVALID_DURATION,
-                "无效的时间格式: " + durationStr,
-                "时间格式: 30s(秒), 10m(分钟), 1h(小时), 1d(天)");
+                I18n.tr(playerIdOf(sender), "chat.mute.invalid_duration", durationStr),
+                I18n.tr(playerIdOf(sender), "chat.mute.duration_hint"));
             return true;
         }
 
@@ -111,7 +112,8 @@ public class MuteCommand extends AbstractSubCommand {
         packet.addExtra("duration", String.valueOf(durationSeconds));
 
         if (sendPacket(packet)) {
-            messageHelper.sendMessage(sender, "正在禁言 &e" + targetName + " &7在频道 &e" + channelId + " &7持续 &e" + formatDuration(durationSeconds) + "&7...");
+            messageHelper.sendMessage(sender,
+                    I18n.tr(playerIdOf(sender), "chat.mute.progress", targetName, channelId, formatDuration(durationSeconds)));
         } else {
             errorHandler.sendRequestFailed(sender);
         }

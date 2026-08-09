@@ -28,6 +28,7 @@
  */
 
 import { Globe, Hash, Lock, Shield, AlertTriangle, CheckCircle, Info, UserX } from 'lucide-react';
+import i18n from '../i18n';
 
 /**
  * Map a backend channel scope to the component "type" field.
@@ -205,9 +206,9 @@ export function adaptNotification(notifJson) {
   }
   return {
     id: notifJson.id || `notif-${notifJson.timestamp || Date.now()}`,
-    title: notifJson.title || '通知',
+    title: notifJson.title || i18n.t('notifications.default_title'),
     desc: notifJson.desc || notifJson.message || notifJson.description || '',
-    time: notifJson.time || '刚刚',
+    time: notifJson.time || i18n.t('notifications.default_time'),
     type,
     icon,
     read: false,
@@ -232,29 +233,38 @@ export function buildDashboardStats(statusJson, servers, channels, chatMessages)
   return [
     {
       title: '在线服务器',
+      titleKey: 'dashboard.online_servers',
       value: totalServers > 0 ? `${onlineServers}/${totalServers}` : '0',
       change: totalServers === 0 ? '无连接' : (onlineServers === totalServers ? '全部在线' : `${totalServers - onlineServers} 离线`),
+      changeKey: totalServers === 0 ? 'dashboard.change_none' : (onlineServers === totalServers ? 'dashboard.change_all_online' : undefined),
+      changeOfflineCount: totalServers === 0 ? undefined : (onlineServers === totalServers ? undefined : totalServers - onlineServers),
       trend: totalServers === 0 ? 'normal' : (onlineServers === totalServers ? 'up' : 'down'),
       icon: 'Server',
     },
     {
       title: '在线玩家',
+      titleKey: 'dashboard.online_players',
       value: String(playerCount),
       change: playerCount > 0 ? '实时' : '无玩家',
+      changeKey: playerCount > 0 ? 'dashboard.change_realtime' : 'dashboard.change_none',
       trend: playerCount > 0 ? 'up' : 'normal',
       icon: 'Users',
     },
     {
       title: '频道总数',
+      titleKey: 'dashboard.total_channels',
       value: String(channelCount),
       change: '已注册',
+      changeKey: 'dashboard.change_registered',
       trend: 'normal',
       icon: 'Hash',
     },
     {
       title: '会话消息',
+      titleKey: 'dashboard.session_messages',
       value: messageCount > 1000 ? `${(messageCount / 1000).toFixed(1)}k` : String(messageCount),
       change: messageCount > 0 ? '本会话' : '暂无',
+      changeKey: messageCount > 0 ? 'dashboard.change_this_session' : 'dashboard.change_none',
       trend: messageCount > 0 ? 'up' : 'normal',
       icon: 'MessageSquare',
     },

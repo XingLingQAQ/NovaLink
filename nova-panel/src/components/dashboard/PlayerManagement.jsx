@@ -16,23 +16,25 @@ import {
   Filter,
   Info
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import Modal from '../ui/Modal';
 import CustomSelect from '../ui/CustomSelect';
 import Avatar from '../ui/Avatar';
 
-function PlayerManagement({ 
-  theme, 
-  mode, 
-  txtMain, 
-  txtSec, 
+function PlayerManagement({
+  theme,
+  mode,
+  txtMain,
+  txtSec,
   players = [],
   mutedPlayers = [],
   onMutePlayer,
   onUnmutePlayer,
   onKickPlayer
 }) {
+  const { t } = useTranslation();
   const [tab, setTab] = useState('online');
   const [searchQuery, setSearchQuery] = useState('');
   const [serverFilter, setServerFilter] = useState('all');
@@ -81,11 +83,11 @@ function PlayerManagement({
 
   // Duration options
   const durationOptions = [
-    { value: '1h', label: '1 小时' },
-    { value: '6h', label: '6 小时' },
-    { value: '24h', label: '24 小时' },
-    { value: '7d', label: '7 天' },
-    { value: 'permanent', label: '永久' }
+    { value: '1h', label: t('players.duration_1h') },
+    { value: '6h', label: t('players.duration_6h') },
+    { value: '24h', label: t('players.duration_24h') },
+    { value: '7d', label: t('players.duration_7d') },
+    { value: 'permanent', label: t('players.duration_permanent') }
   ];
 
   return (
@@ -93,9 +95,9 @@ function PlayerManagement({
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h2 className={`text-2xl font-bold ${txtMain}`}>玩家管理</h2>
+          <h2 className={`text-2xl font-bold ${txtMain}`}>{t('players.title')}</h2>
           <p className={`text-sm ${txtSec} mt-1`}>
-            管理在线玩家和禁言 · {players.length} 在线 · {mutedPlayers.length} 禁言
+            {t('players.subtitle', { online: players.length, muted: mutedPlayers.length })}
           </p>
         </div>
 
@@ -114,7 +116,7 @@ function PlayerManagement({
             }`}
           >
             <Users size={16} />
-            在线玩家
+            {t('players.tab_online')}
           </button>
           <button 
             onClick={() => setTab('muted')} 
@@ -125,7 +127,7 @@ function PlayerManagement({
             }`}
           >
             <UserX size={16} />
-            禁言列表
+            {t('players.tab_muted')}
             {mutedPlayers.length > 0 && (
               <span className="bg-rose-500 text-white text-xs px-1.5 py-0.5 rounded-full">
                 {mutedPlayers.length}
@@ -140,7 +142,7 @@ function PlayerManagement({
         <Card theme={theme} mode={mode} className="p-3 flex items-start gap-2 border border-amber-500/20">
           <Info size={16} className="text-amber-400 shrink-0 mt-0.5" />
           <p className={`text-xs ${txtSec}`}>
-            禁言与解除禁言操作需通过游戏内 /nc mute 或 /nc unmute 命令执行，面板暂不支持远程禁言。点击禁言按钮可查看说明。
+            {t('players.disable_banner')}
           </p>
         </Card>
       )}
@@ -160,7 +162,7 @@ function PlayerManagement({
                 <Search size={16} className={txtSec} />
                 <input 
                   type="text" 
-                  placeholder="搜索玩家..." 
+                  placeholder={t('players.search_placeholder')}
                   className="bg-transparent border-none outline-none text-sm flex-1" 
                   style={{ color: mode === 'dark' ? 'white' : 'black' }}
                   value={searchQuery}
@@ -193,11 +195,11 @@ function PlayerManagement({
             <table className="w-full text-left">
               <thead>
                 <tr className={`text-xs uppercase tracking-wider ${txtSec} border-b ${mode === 'dark' ? 'border-white/10' : 'border-slate-200'}`}>
-                  <th className="p-4 font-medium">玩家</th>
-                  <th className="p-4 font-medium">服务器</th>
-                  <th className="p-4 font-medium">频道</th>
-                  <th className="p-4 font-medium">平台</th>
-                  <th className="p-4 font-medium text-right">操作</th>
+                  <th className="p-4 font-medium">{t('players.col_player')}</th>
+                  <th className="p-4 font-medium">{t('players.col_server')}</th>
+                  <th className="p-4 font-medium">{t('players.col_channel')}</th>
+                  <th className="p-4 font-medium">{t('players.col_platform')}</th>
+                  <th className="p-4 font-medium text-right">{t('players.col_action')}</th>
                 </tr>
               </thead>
               <tbody className={`text-sm ${txtMain}`}>
@@ -213,7 +215,7 @@ function PlayerManagement({
                           <div className="font-medium">{player.name}</div>
                           {player.muted && (
                             <span className="text-xs text-red-400 flex items-center gap-1">
-                              <UserX size={12} /> 已禁言
+                              <UserX size={12} /> {t('players.muted_badge')}
                             </span>
                           )}
                         </div>
@@ -247,9 +249,9 @@ function PlayerManagement({
                             variant="danger"
                             className="text-xs"
                             onClick={() => handleMute(player.name)}
-                            title={muteActionDisabled ? '需通过游戏内 /nc mute 操作，面板暂不支持' : '禁言'}
+                            title={muteActionDisabled ? t('players.mute_title_disabled') : t('players.mute_title')}
                           >
-                            禁言
+                            {t('players.mute')}
                           </Button>
                         )}
                         {onKickPlayer && (
@@ -260,7 +262,7 @@ function PlayerManagement({
                             className="text-xs text-amber-400"
                             onClick={() => onKickPlayer(player.uuid)}
                           >
-                            踢出
+                            {t('players.kick')}
                           </Button>
                         )}
                       </div>
@@ -275,7 +277,7 @@ function PlayerManagement({
           {filteredPlayers.length === 0 && (
             <div className={`p-12 text-center ${txtSec}`}>
               <Users size={48} className="mx-auto mb-4 opacity-50" />
-              <p>没有找到玩家</p>
+              <p>{t('players.not_found')}</p>
             </div>
           )}
         </Card>
@@ -288,11 +290,11 @@ function PlayerManagement({
             <table className="w-full text-left">
               <thead>
                 <tr className={`text-xs uppercase tracking-wider ${txtSec} border-b ${mode === 'dark' ? 'border-white/10' : 'border-slate-200'}`}>
-                  <th className="p-4 font-medium">玩家</th>
-                  <th className="p-4 font-medium">原因</th>
-                  <th className="p-4 font-medium">到期时间</th>
-                  <th className="p-4 font-medium">操作者</th>
-                  <th className="p-4 font-medium text-right">操作</th>
+                  <th className="p-4 font-medium">{t('players.col_player')}</th>
+                  <th className="p-4 font-medium">{t('players.col_reason')}</th>
+                  <th className="p-4 font-medium">{t('players.col_expire')}</th>
+                  <th className="p-4 font-medium">{t('players.col_operator')}</th>
+                  <th className="p-4 font-medium text-right">{t('players.col_action')}</th>
                 </tr>
               </thead>
               <tbody className={`text-sm ${txtMain}`}>
@@ -311,7 +313,7 @@ function PlayerManagement({
                     <td className="p-4">
                       <div className="flex items-center gap-1">
                         <Clock size={14} className={txtSec} />
-                        <span className={mute.expireTime === '永久' ? 'text-rose-400' : ''}>
+                        <span className={mute.expireTime === t('players.duration_permanent') ? 'text-rose-400' : ''}>
                           {mute.expireTime}
                         </span>
                       </div>
@@ -329,9 +331,9 @@ function PlayerManagement({
                         variant="ghost"
                         className="text-xs text-emerald-400"
                         onClick={() => onUnmutePlayer && onUnmutePlayer(mute.uuid)}
-                        title={muteActionDisabled ? '需通过游戏内 /nc unmute 操作，面板暂不支持' : '解除禁言'}
+                        title={muteActionDisabled ? t('players.unmute_title_disabled') : t('players.unmute_title')}
                       >
-                        解除禁言
+                        {t('players.unmute')}
                       </Button>
                     </td>
                   </tr>
@@ -344,7 +346,7 @@ function PlayerManagement({
           {mutedPlayers.length === 0 && (
             <div className={`p-12 text-center ${txtSec}`}>
               <MessageSquare size={48} className="mx-auto mb-4 opacity-50" />
-              <p>暂无禁言记录</p>
+              <p>{t('players.no_muted')}</p>
             </div>
           )}
         </Card>
@@ -354,20 +356,20 @@ function PlayerManagement({
       <Modal 
         isOpen={showMuteModal} 
         onClose={() => setShowMuteModal(false)} 
-        title="禁言玩家" 
+        title={t('players.mute_modal_title')}
         theme={theme} 
         mode={mode}
       >
         <div className="space-y-4">
           <div>
             <label className={`block text-xs font-semibold uppercase tracking-wider mb-1.5 ${txtSec}`}>
-              玩家名称
+              {t('players.field_player_name')}
             </label>
-            <input 
-              type="text" 
-              value={muteTarget.name} 
+            <input
+              type="text"
+              value={muteTarget.name}
               onChange={(e) => setMuteTarget({ ...muteTarget, name: e.target.value })}
-              placeholder="输入玩家名"
+              placeholder={t('players.field_player_name_placeholder')}
               className={`w-full px-4 py-2.5 rounded-xl border outline-none focus:ring-2 transition-all ${
                 theme === 'clean' 
                   ? (mode === 'dark' ? 'bg-slate-700 border-slate-600 focus:ring-sky-500 text-white' : 'bg-white border-slate-200 focus:ring-sky-500 text-slate-900') 
@@ -377,13 +379,13 @@ function PlayerManagement({
           </div>
           <div>
             <label className={`block text-xs font-semibold uppercase tracking-wider mb-1.5 ${txtSec}`}>
-              禁言原因
+              {t('players.field_reason')}
             </label>
-            <input 
-              type="text" 
-              value={muteTarget.reason} 
+            <input
+              type="text"
+              value={muteTarget.reason}
               onChange={(e) => setMuteTarget({ ...muteTarget, reason: e.target.value })}
-              placeholder="违规行为"
+              placeholder={t('players.field_reason_placeholder')}
               className={`w-full px-4 py-2.5 rounded-xl border outline-none focus:ring-2 transition-all ${
                 theme === 'clean' 
                   ? (mode === 'dark' ? 'bg-slate-700 border-slate-600 focus:ring-sky-500 text-white' : 'bg-white border-slate-200 focus:ring-sky-500 text-slate-900') 
@@ -393,7 +395,7 @@ function PlayerManagement({
           </div>
           <div>
             <label className={`block text-xs font-semibold uppercase tracking-wider mb-1.5 ${txtSec}`}>
-              时长
+              {t('players.field_duration')}
             </label>
             <CustomSelect 
               theme={theme} 
@@ -405,10 +407,10 @@ function PlayerManagement({
           </div>
           <div className="flex gap-3 mt-6 pt-4 border-t border-gray-200/10">
             <Button variant="ghost" className="flex-1" theme={theme} mode={mode} onClick={() => setShowMuteModal(false)}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="primary" className="flex-1" theme={theme} mode={mode} onClick={confirmMute}>
-              确认禁言
+              {t('common.confirm')}
             </Button>
           </div>
         </div>

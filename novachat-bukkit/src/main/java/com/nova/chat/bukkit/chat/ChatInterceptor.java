@@ -3,6 +3,7 @@ package com.nova.chat.bukkit.chat;
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.bukkit.api.event.ChannelMessageEvent;
 import com.nova.chat.bukkit.config.NovaChatConfig;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.chat.MentionNotifier;
@@ -146,7 +147,7 @@ public class ChatInterceptor implements Listener {
         
         // Check if connected to backend
         if (!plugin.getNetworkClient().isAuthenticated()) {
-            player.sendMessage(formatError("未连接到聊天服务器，请稍后再试"));
+            player.sendMessage(formatError(I18n.tr(playerId, "chat.network.not_connected_retry")));
             return;
         }
         
@@ -187,7 +188,7 @@ public class ChatInterceptor implements Listener {
      */
     public void sendToChannel(Player player, String channelId, String message) {
         if (!plugin.getNetworkClient().isAuthenticated()) {
-            player.sendMessage(formatError("未连接到聊天服务器"));
+            player.sendMessage(formatError(I18n.tr(player.getUniqueId(), "chat.network.not_connected")));
             return;
         }
         

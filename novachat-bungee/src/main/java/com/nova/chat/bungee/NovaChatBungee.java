@@ -4,9 +4,12 @@ import com.nova.chat.bungee.chat.ChatListener;
 import com.nova.chat.bungee.chat.MentionTabCompleter;
 import com.nova.chat.bungee.command.NovaChatCommand;
 import com.nova.chat.bungee.config.NovaChatConfig;
+import com.nova.chat.bungee.listener.LocaleCaptureListener;
 import com.nova.chat.bungee.listener.ServerSwitchHandler;
 import com.nova.chat.bungee.network.NetworkClient;
 import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.i18n.LocaleResolver;
 import net.md_5.bungee.api.plugin.Plugin;
 
 import java.util.concurrent.TimeUnit;
@@ -42,6 +45,9 @@ public class NovaChatBungee extends Plugin {
     
     /** Server switch handler for cross-server routing */
     private ServerSwitchHandler serverSwitchHandler;
+
+    /** Captures player client locales for per-player i18n (Architecture B) */
+    private LocaleCaptureListener localeCaptureListener;
 
     /**
      * Shared known-channel registry populated from backend ConfigSync pushes
@@ -102,7 +108,12 @@ public class NovaChatBungee extends Plugin {
     public void loadConfiguration() {
         config = new NovaChatConfig(getDataFolder());
         debugMode = config.isDebug();
-        
+
+        // Apply the configured default locale to the shared i18n service before
+        // any player-facing text is rendered. Falls back to zh_CN (ROOT_LOCALE)
+        // when the configured value is blank or unparseable.
+        I18n.setDefaultLocale(LocaleResolver.parseOrDefault(config.getLocale(), LocaleResolver.ROOT_LOCALE));
+
         if (debugMode) {
             getLogger().info("[Debug] Configuration loaded successfully");
         }
@@ -167,6 +178,10 @@ public class NovaChatBungee extends Plugin {
         // Register server switch handler for cross-server routing (Requirements: 4.3, 5.3)
         serverSwitchHandler = new ServerSwitchHandler(this);
         getProxy().getPluginManager().registerListener(this, serverSwitchHandler);
+
+        // Register locale capture listener for per-player i18n (Architecture B)
+        localeCaptureListener = new LocaleCaptureListener(this);
+        getProxy().getPluginManager().registerListener(this, localeCaptureListener);
     }
     
     /**

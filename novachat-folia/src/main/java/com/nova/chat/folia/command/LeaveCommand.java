@@ -2,7 +2,9 @@ package com.nova.chat.folia.command;
 
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.folia.NovaChatFolia;
 import org.bukkit.command.CommandSender;
@@ -66,7 +68,7 @@ public class LeaveCommand extends AbstractSubCommand {
         } else if (state.getActiveChannel() != null && !state.getActiveChannel().isBlank()) {
             channelId = state.getActiveChannel();
         } else {
-            messageHelper.sendError(sender, "请指定要离开的频道");
+            messageHelper.sendError(sender, I18n.tr(player.getUniqueId(), "chat.leave.specify"));
             return true;
         }
 
@@ -77,7 +79,7 @@ public class LeaveCommand extends AbstractSubCommand {
             // when the left channel was the active one, falls the active channel back
             // to the next joined channel (or null). This matches the shared behavior
             // used by the other platforms; Folia region threads read it via volatile.
-            messageHelper.sendMessage(sender, "正在离开频道 &e" + channelId + "&7...");
+            messageHelper.sendMessage(sender, PlayerMessages.leaving(player.getUniqueId(), channelId));
             plugin.debug("Player " + player.getName() + " left channel: " + channelId);
         } else {
             // Actionable error: NC-433 not-in-channel vs NC-503 network failure (via ErrorCode).

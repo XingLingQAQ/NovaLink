@@ -6,6 +6,7 @@ import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.error.ErrorCode;
 import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.ChatModeDescriptions;
 import com.nova.chat.client.state.PlayerChannelState;
@@ -14,8 +15,6 @@ import com.nova.chat.velocity.chat.ChatListener;
 import com.nova.chat.velocity.chat.MessageFormatter;
 import com.velocitypowered.api.command.SimpleCommand;
 import com.velocitypowered.api.proxy.Player;
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -99,17 +98,18 @@ public class NovaChatCommand implements SimpleCommand {
      * Shows help information.
      */
     private void showHelp(Invocation invocation) {
-        invocation.source().sendMessage(Component.text("=== NovaChat 帮助 ===", NamedTextColor.GOLD));
-        invocation.source().sendMessage(Component.text("/nc help - 显示帮助信息", NamedTextColor.YELLOW));
-        invocation.source().sendMessage(Component.text("/nc join <频道> [密码] - 加入频道", NamedTextColor.YELLOW));
-        invocation.source().sendMessage(Component.text("/nc leave [频道] - 离开频道", NamedTextColor.YELLOW));
-        invocation.source().sendMessage(Component.text("/nc list - 列出可用频道", NamedTextColor.YELLOW));
-        invocation.source().sendMessage(Component.text("/nc who [频道] - 查看频道在线成员", NamedTextColor.YELLOW));
-        invocation.source().sendMessage(Component.text("/nc toggle - 切换聊天模式", NamedTextColor.YELLOW));
-        invocation.source().sendMessage(Component.text("/nc <频道> <消息> - 发送消息到指定频道", NamedTextColor.YELLOW));
+        java.util.UUID playerId = (invocation.source() instanceof Player p) ? p.getUniqueId() : null;
+        invocation.source().sendMessage(messageFormatter.parseColors(I18n.tr(playerId, "chat.command.help.title")));
+        invocation.source().sendMessage(messageFormatter.parseColors(I18n.tr(playerId, "chat.command.help.line_help")));
+        invocation.source().sendMessage(messageFormatter.parseColors(I18n.tr(playerId, "chat.command.help.line_join")));
+        invocation.source().sendMessage(messageFormatter.parseColors(I18n.tr(playerId, "chat.command.help.line_leave")));
+        invocation.source().sendMessage(messageFormatter.parseColors(I18n.tr(playerId, "chat.command.help.line_list")));
+        invocation.source().sendMessage(messageFormatter.parseColors(I18n.tr(playerId, "chat.command.help.line_who")));
+        invocation.source().sendMessage(messageFormatter.parseColors(I18n.tr(playerId, "chat.command.help.line_toggle")));
+        invocation.source().sendMessage(messageFormatter.parseColors(I18n.tr(playerId, "chat.command.help.line_msg")));
 
         if (invocation.source().hasPermission("novachat.admin")) {
-            invocation.source().sendMessage(Component.text("/nc reload - 重载配置", NamedTextColor.YELLOW));
+            invocation.source().sendMessage(messageFormatter.parseColors(I18n.tr(playerId, "chat.command.help.line_reload")));
         }
     }
 
@@ -121,12 +121,12 @@ public class NovaChatCommand implements SimpleCommand {
      */
     private void handleJoin(Invocation invocation, String[] args) {
         if (!(invocation.source() instanceof Player player)) {
-            invocation.source().sendMessage(messageFormatter.formatError("此命令只能由玩家执行"));
+            invocation.source().sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
             return;
         }
 
         if (args.length < 1) {
-            player.sendMessage(messageFormatter.formatError("用法: /nc join <频道> [密码]"));
+            player.sendMessage(messageFormatter.formatError(I18n.tr(player.getUniqueId(), "chat.command.usage.join")));
             return;
         }
 
@@ -145,7 +145,7 @@ public class NovaChatCommand implements SimpleCommand {
             // §7: optimistic "joining…" receipt; the async ChannelActionResponsePacket
             // handler in ChatListener confirms with "已加入频道 X" once the backend
             // accepts, or surfaces an actionable error if it rejects.
-            player.sendMessage(messageFormatter.formatSuccess(PlayerMessages.joining(channelId)));
+            player.sendMessage(messageFormatter.formatSuccess(PlayerMessages.joining(player.getUniqueId(), channelId)));
             plugin.debug("Player " + player.getUsername() + " joined channel: " + channelId);
         } else {
             // Actionable error via shared ErrorCode system (NC-503 network failure here).
@@ -166,7 +166,7 @@ public class NovaChatCommand implements SimpleCommand {
      */
     private void handleLeave(Invocation invocation, String[] args) {
         if (!(invocation.source() instanceof Player player)) {
-            invocation.source().sendMessage(messageFormatter.formatError("此命令只能由玩家执行"));
+            invocation.source().sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
             return;
         }
 
@@ -191,7 +191,7 @@ public class NovaChatCommand implements SimpleCommand {
             String defaultChannel = plugin.getConfig().getDefaultChannel();
             state.setActiveChannelIfJoined(defaultChannel);
             player.sendMessage(messageFormatter.formatSuccess(
-                    PlayerMessages.leaving(leavingChannel)));
+                    PlayerMessages.leaving(player.getUniqueId(), leavingChannel)));
             plugin.debug("Player " + player.getUsername() + " left channel: " + leavingChannel);
         } else {
             // Actionable error: NC-433 not-in-channel vs NC-503 network failure (via ErrorCode).
@@ -208,7 +208,7 @@ public class NovaChatCommand implements SimpleCommand {
      */
     private void handleList(Invocation invocation) {
         if (!(invocation.source() instanceof Player player)) {
-            invocation.source().sendMessage(messageFormatter.formatError("此命令只能由玩家执行"));
+            invocation.source().sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
             return;
         }
 
@@ -219,11 +219,11 @@ public class NovaChatCommand implements SimpleCommand {
         java.util.List<String> lines = com.nova.chat.client.command.ListCommandService
                 .formatChannelList(plugin.getKnownChannelRegistry(), joined);
 
-        player.sendMessage(Component.text("=== NovaChat 频道列表 ===", NamedTextColor.GOLD));
+        player.sendMessage(messageFormatter.parseColors(I18n.tr(player.getUniqueId(), "chat.command.list.title")));
         for (String line : lines) {
             player.sendMessage(messageFormatter.formatSystemMessage(line));
         }
-        player.sendMessage(Component.text("===========================", NamedTextColor.GOLD));
+        player.sendMessage(messageFormatter.parseColors(I18n.tr(player.getUniqueId(), "chat.command.list.tail")));
     }
 
     /**
@@ -242,7 +242,7 @@ public class NovaChatCommand implements SimpleCommand {
      */
     private void handleToggle(Invocation invocation) {
         if (!(invocation.source() instanceof Player player)) {
-            invocation.source().sendMessage(messageFormatter.formatError("此命令只能由玩家执行"));
+            invocation.source().sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
             return;
         }
 
@@ -257,7 +257,8 @@ public class NovaChatCommand implements SimpleCommand {
 
         ChatMode newMode = state.getChatMode();
         String modeText = ChatModeDescriptions.modeName(newMode);
-        player.sendMessage(messageFormatter.formatSuccess("聊天模式已切换为: " + modeText));
+        player.sendMessage(messageFormatter.formatSuccess(
+                I18n.tr(player.getUniqueId(), "chat.command.toggle.switched", modeText)));
         player.sendMessage(messageFormatter.formatSystemMessage(ChatModeDescriptions.describe(newMode)));
         plugin.debug("Player " + player.getUsername() + " toggled chat mode to: " + newMode);
     }
@@ -278,7 +279,8 @@ public class NovaChatCommand implements SimpleCommand {
         // Signal intent through shared service (documented no-op), then do platform reload.
         channelCommands.reload();
         plugin.reload();
-        invocation.source().sendMessage(messageFormatter.formatSuccess("配置已重载"));
+        java.util.UUID playerId = (invocation.source() instanceof Player p) ? p.getUniqueId() : null;
+        invocation.source().sendMessage(messageFormatter.formatSuccess(I18n.tr(playerId, "chat.command.reload.success")));
     }
 
     /**
@@ -286,12 +288,12 @@ public class NovaChatCommand implements SimpleCommand {
      */
     private void handleChannelMessage(Invocation invocation, String channelId, String[] args) {
         if (!(invocation.source() instanceof Player player)) {
-            invocation.source().sendMessage(messageFormatter.formatError("此命令只能由玩家执行"));
+            invocation.source().sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
             return;
         }
 
         if (args.length < 1) {
-            player.sendMessage(messageFormatter.formatError("用法: /nc <频道> <消息>"));
+            player.sendMessage(messageFormatter.formatError(I18n.tr(player.getUniqueId(), "chat.command.usage.msg")));
             return;
         }
 

@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import org.bukkit.command.CommandSender;
@@ -49,7 +50,7 @@ public class CreateCommand extends AbstractSubCommand {
     public boolean execute(CommandSender sender, String[] args) {
         if (args.length < 1) {
             messageHelper.sendUsage(sender, getUsage());
-            messageHelper.sendSuggestion(sender, "如果不指定密码，系统将自动生成6位随机密码");
+            messageHelper.sendSuggestion(sender, I18n.tr(playerIdOf(sender), "chat.create.suggestion"));
             return true;
         }
 
@@ -64,13 +65,13 @@ public class CreateCommand extends AbstractSubCommand {
         // Validate channel name
         if (channelName.length() < 2 || channelName.length() > 16) {
             errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.INVALID_FORMAT,
-                "频道名称长度必须在2-16个字符之间");
+                I18n.tr(player.getUniqueId(), "chat.create.name_length"));
             return true;
         }
 
         if (!channelName.matches("^[a-zA-Z0-9_\\u4e00-\\u9fa5]+$")) {
             errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.INVALID_FORMAT,
-                "频道名称只能包含字母、数字、下划线和中文");
+                I18n.tr(player.getUniqueId(), "chat.create.name_chars"));
             return true;
         }
 
@@ -81,9 +82,9 @@ public class CreateCommand extends AbstractSubCommand {
         packet.addExtra("displayName", channelName);
 
         if (sendPacket(packet)) {
-            messageHelper.sendMessage(sender, "正在创建私有频道 &e" + channelName + "&7...");
+            messageHelper.sendMessage(sender, I18n.tr(player.getUniqueId(), "chat.create.progress", channelName));
             if (password.isEmpty()) {
-                messageHelper.sendMessage(sender, "系统将为你生成随机密码");
+                messageHelper.sendMessage(sender, I18n.tr(player.getUniqueId(), "chat.create.random_password"));
             }
         } else {
             errorHandler.sendRequestFailed(sender);

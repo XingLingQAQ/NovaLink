@@ -2,9 +2,13 @@ package com.nova.chat.folia.command;
 
 import com.nova.chat.client.command.MessagePrefixes;
 import com.nova.chat.client.format.MessageFormatService;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.folia.NovaChatFolia;
 import org.bukkit.ChatColor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
+
+import java.util.UUID;
 
 /**
  * Helper class for formatting and sending messages to players.
@@ -71,7 +75,7 @@ public class MessageHelper {
      * @param usage  the usage string
      */
     public void sendUsage(CommandSender sender, String usage) {
-        sender.sendMessage(colorize("&c用法: &e" + usage));
+        sender.sendMessage(colorize("&c" + I18n.tr(playerIdOf(sender), "chat.error.usage_prefix", usage)));
     }
 
     /**
@@ -102,6 +106,16 @@ public class MessageHelper {
      */
     public void sendCommandHelp(CommandSender sender, String command, String description) {
         sender.sendMessage(colorize("&e" + command + " &8- &7" + description));
+    }
+
+    /**
+     * Resolves the player UUID of a command sender, or {@code null} for console/RCON.
+     *
+     * @param sender the command sender
+     * @return the sender's UUID if it is a player, otherwise {@code null} (→ default locale)
+     */
+    private static UUID playerIdOf(CommandSender sender) {
+        return sender instanceof Player ? ((Player) sender).getUniqueId() : null;
     }
 
     /**

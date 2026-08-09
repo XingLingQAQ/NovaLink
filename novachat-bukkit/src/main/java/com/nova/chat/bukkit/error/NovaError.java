@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit.error;
 
 import com.nova.chat.client.error.ErrorCode;
+import com.nova.chat.client.i18n.I18n;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -222,7 +223,7 @@ public class NovaError {
      * Creates a NOT_FOUND error.
      */
     public static NovaError notFound(String resource) {
-        return new NovaError(ErrorCode.NOT_FOUND, resource + " 不存在");
+        return new NovaError(ErrorCode.NOT_FOUND, resource + " " + I18n.tr("chat.error.not_found_suffix"));
     }
 
     /**
@@ -299,7 +300,7 @@ public class NovaError {
      * Creates a MUTED error.
      */
     public static NovaError muted(String remainingTime) {
-        return new NovaError(ErrorCode.MUTED, "您已被禁言，剩余时间: " + remainingTime);
+        return new NovaError(ErrorCode.MUTED, I18n.tr("chat.error.muted_remaining", remainingTime));
     }
 
     /**
@@ -313,7 +314,7 @@ public class NovaError {
      * Creates a TARGET_OFFLINE error.
      */
     public static NovaError targetOffline(String playerName) {
-        return new NovaError(ErrorCode.TARGET_OFFLINE, "玩家 " + playerName + " 不在线");
+        return new NovaError(ErrorCode.TARGET_OFFLINE, I18n.tr("chat.error.player_offline", playerName));
     }
 
     /**

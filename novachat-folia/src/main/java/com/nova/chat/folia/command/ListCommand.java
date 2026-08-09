@@ -1,6 +1,7 @@
 package com.nova.chat.folia.command;
 
 import com.nova.chat.client.command.ListCommandService;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.folia.NovaChatFolia;
 import org.bukkit.command.CommandSender;
@@ -52,7 +53,7 @@ public class ListCommand extends AbstractSubCommand {
     @Override
     public boolean execute(CommandSender sender, String[] args) {
         if (!(sender instanceof Player)) {
-            messageHelper.sendError(sender, "此命令只能由玩家执行");
+            messageHelper.sendError(sender, I18n.tr(playerIdOf(sender), "chat.command.player_only"));
             return true;
         }
         Player player = (Player) sender;
@@ -63,7 +64,7 @@ public class ListCommand extends AbstractSubCommand {
         List<String> lines = ListCommandService.formatChannelList(
                 plugin.getKnownChannelRegistry(), joined);
 
-        messageHelper.sendHeader(sender, "NovaChat 频道列表");
+        messageHelper.sendHeader(sender, I18n.tr(player.getUniqueId(), "chat.command.list.title"));
         for (String line : lines) {
             messageHelper.sendRaw(sender, line);
         }

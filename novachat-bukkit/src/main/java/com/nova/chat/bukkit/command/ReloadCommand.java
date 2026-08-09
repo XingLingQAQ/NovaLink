@@ -2,6 +2,7 @@ package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.i18n.I18n;
 import org.bukkit.command.CommandSender;
 
 import java.util.Collections;
@@ -51,16 +52,16 @@ public class ReloadCommand extends AbstractSubCommand {
 
     @Override
     public boolean execute(CommandSender sender, String[] args) {
-        messageHelper.sendMessage(sender, "正在重新加载配置...");
+        messageHelper.sendMessage(sender, I18n.tr(playerIdOf(sender), "chat.reload.progress"));
 
         // Signal intent through the shared service (documented no-op), then do the platform reload.
         plugin.getChannelCommandService().reload();
 
         try {
             plugin.reload();
-            messageHelper.sendSuccess(sender, "配置已重新加载");
+            messageHelper.sendSuccess(sender, I18n.tr(playerIdOf(sender), "chat.command.reload.success"));
         } catch (Exception e) {
-            messageHelper.sendError(sender, "重新加载失败: " + e.getMessage());
+            messageHelper.sendError(sender, I18n.tr(playerIdOf(sender), "chat.reload.failed", e.getMessage()));
             plugin.getLogger().severe("Failed to reload configuration: " + e.getMessage());
             e.printStackTrace();
         }

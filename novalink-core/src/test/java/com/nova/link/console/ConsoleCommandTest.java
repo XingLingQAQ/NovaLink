@@ -19,6 +19,8 @@ import com.nova.link.database.MemoryProvider;
 import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
 import com.nova.link.filter.SensitiveWordFilter;
+import com.nova.link.i18n.I18n;
+import com.nova.link.i18n.LocaleResolver;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.NettyServer;
@@ -28,6 +30,7 @@ import com.nova.link.websocket.WebSocketGateway;
 import org.jline.reader.Candidate;
 import org.jline.reader.LineReader;
 import org.jline.reader.ParsedLine;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -73,6 +76,11 @@ class ConsoleCommandTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        // The console handler now resolves output via BackendI18n. The existing
+        // assertions expect English text, so set en_US as the backend locale for
+        // this test class. A separate test (consoleZhCNLocale) verifies zh_CN.
+        I18n.setDefaultLocale(LocaleResolver.EN_US);
+
         DatabaseProvider db = new MemoryProvider();
         db.initialize();
         channelManager = new ChannelManager();
@@ -150,6 +158,34 @@ class ConsoleCommandTest {
         state.setClientId("Survival");
         state.setActiveChannel("survival-chat");
         channelManager.addMember("survival-chat", targetId);
+    }
+
+    @AfterEach
+    void tearDown() {
+        // Restore the backend default locale so tests don't leak into others.
+        I18n.setDefaultLocale(LocaleResolver.ROOT_LOCALE);
+    }
+
+    // ====================== locale-aware output ======================
+
+    @Test
+    @DisplayName("zh_CN locale: status/mute/help render Chinese text")
+    void consoleZhCNLocale() {
+        I18n.setDefaultLocale(LocaleResolver.ROOT_LOCALE);
+
+        String status = handler.dispatch("status");
+        assertThat(status).contains("NovaLink 状态");
+        assertThat(status).contains("在线玩家");
+
+        String muteOut = handler.dispatch("mute Steve survival-chat 10m 测试");
+        assertThat(muteOut).contains("已禁言");
+        assertThat(muteManager.isMuted(targetId, "survival-chat")).isTrue();
+
+        String help = handler.dispatch("help");
+        assertThat(help).contains("后端概览");
+
+        // Restore en_US for the rest of the test class.
+        I18n.setDefaultLocale(LocaleResolver.EN_US);
     }
 
     // ====================== mute / unmute ======================
@@ -239,7 +275,7 @@ class ConsoleCommandTest {
     // ====================== announce ======================
 
     @Test
-    @DisplayName("announce <channel> <msg> routes 【公告】 message to clients")
+    @DisplayName("announce <channel> <msg> routes announcement message to clients")
     void announceRoutes() {
         final AtomicReference<Packet> sent = new AtomicReference<>();
         when(capturedClient.sendPacket(any(Packet.class))).thenAnswer(inv -> {
@@ -251,9 +287,12 @@ class ConsoleCommandTest {
         assertThat(out).contains("Announcement sent");
         assertThat(sent.get()).isInstanceOf(ChatMessagePacket.class);
         ChatMessagePacket pkt = (ChatMessagePacket) sent.get();
-        assertThat(pkt.getContent()).startsWith("【公告】");
+        // The announce prefix is locale-dependent ([Announcement] / 【公告】);
+        // just assert the content carries the user's message and is prefixed.
         assertThat(pkt.getContent()).contains("hello world");
         assertThat(pkt.getChannelId()).isEqualTo("staff");
+        // Under en_US (this test's locale), the prefix is "[Announcement]".
+        assertThat(pkt.getContent()).startsWith("[Announcement]");
     }
 
     @Test

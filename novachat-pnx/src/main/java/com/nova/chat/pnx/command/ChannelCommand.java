@@ -2,6 +2,7 @@ package com.nova.chat.pnx.command;
 
 import cn.nukkit.Player;
 import cn.nukkit.command.CommandSender;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.pnx.NovaChatPNX;
 
 import java.util.List;
@@ -24,7 +25,7 @@ public class ChannelCommand extends AbstractSubCommand {
 
     @Override
     public String getDescription() {
-        return "打开频道选择界面";
+        return I18n.tr("chat.command.desc.channel");
     }
 
     @Override
@@ -45,12 +46,12 @@ public class ChannelCommand extends AbstractSubCommand {
     @Override
     public boolean execute(CommandSender sender, String[] args) {
         Player player = getPlayer(sender);
-        
+
         if (plugin.getChannelFormManager() == null) {
-            sendError(sender, "表单系统未初始化");
+            sendError(sender, I18n.tr(player.getUniqueId(), "chat.action.form_unavailable"));
             return true;
         }
-        
+
         plugin.getChannelFormManager().showChannelSelectionForm(player);
         return true;
     }

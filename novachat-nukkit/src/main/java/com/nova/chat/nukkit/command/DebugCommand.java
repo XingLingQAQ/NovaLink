@@ -1,6 +1,7 @@
 package com.nova.chat.nukkit.command;
 
 import cn.nukkit.command.CommandSender;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.nukkit.NovaChatNukkit;
 
 /**
@@ -21,7 +22,7 @@ public class DebugCommand extends AbstractSubCommand {
 
     @Override
     public String getDescription() {
-        return "切换调试模式";
+        return I18n.tr("chat.command.desc.debug");
     }
 
     @Override
@@ -42,7 +43,7 @@ public class DebugCommand extends AbstractSubCommand {
     @Override
     public boolean execute(CommandSender sender, String[] args) {
         boolean newState;
-        
+
         if (args.length > 0) {
             String arg = args[0].toLowerCase();
             if (arg.equals("on") || arg.equals("true") || arg.equals("1")) {
@@ -50,22 +51,22 @@ public class DebugCommand extends AbstractSubCommand {
             } else if (arg.equals("off") || arg.equals("false") || arg.equals("0")) {
                 newState = false;
             } else {
-                sendError(sender, "用法: " + getUsage());
+                sendError(sender, I18n.tr("chat.error.usage_prefix", getUsage()));
                 return true;
             }
         } else {
             // Toggle current state
             newState = !plugin.isDebugMode();
         }
-        
+
         plugin.setDebugMode(newState);
-        
+
         if (newState) {
-            sendSuccess(sender, "调试模式已 &a开启");
+            sendSuccess(sender, I18n.tr("chat.debug.mode_on"));
         } else {
-            sendSuccess(sender, "调试模式已 &c关闭");
+            sendSuccess(sender, I18n.tr("chat.debug.mode_off"));
         }
-        
+
         return true;
     }
 }

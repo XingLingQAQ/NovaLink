@@ -1,13 +1,33 @@
 package com.nova.chat.client.error;
 
+import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.i18n.LocaleResolver;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+
+import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @DisplayName("ErrorCode")
 class ErrorCodeTest {
+
+    private Locale savedDefault;
+
+    @BeforeEach
+    void saveDefault() {
+        savedDefault = I18n.getDefaultLocale();
+        // Default to zh_CN so the existing Chinese assertions pass.
+        I18n.setDefaultLocale(LocaleResolver.ROOT_LOCALE);
+    }
+
+    @AfterEach
+    void restoreDefault() {
+        I18n.setDefaultLocale(savedDefault);
+    }
 
     @Nested
     @DisplayName("code string")
@@ -127,5 +147,20 @@ class ErrorCodeTest {
                     .as("duplicate code: " + code.getCode())
                     .isTrue();
         }
+    }
+
+    // ====================== en_US locale sample ======================
+
+    @Test
+    @DisplayName("en_US: getMessage/getSuggestion/toString render English")
+    void enUSLocale() {
+        I18n.setDefaultLocale(LocaleResolver.EN_US);
+        assertThat(ErrorCode.WRONG_PASSWORD.getMessage()).isEqualTo("Wrong password");
+        assertThat(ErrorCode.WRONG_PASSWORD.getSuggestion()).isEqualTo("Please check the channel password");
+        assertThat(ErrorCode.SERVICE_UNAVAILABLE.getMessage()).isEqualTo("Service unavailable");
+        String s = ErrorCode.WRONG_PASSWORD.toString();
+        assertThat(s).contains("NC-434").contains("Wrong password");
+        // Restore zh_CN for any subsequent assertions.
+        I18n.setDefaultLocale(LocaleResolver.ROOT_LOCALE);
     }
 }

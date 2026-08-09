@@ -2,6 +2,8 @@ package com.nova.chat.pnx.command;
 
 import cn.nukkit.Player;
 import cn.nukkit.command.CommandSender;
+import com.nova.chat.client.command.PlayerMessages;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.pnx.NovaChatPNX;
 import com.nova.chat.pnx.chat.ChatInterceptor;
 
@@ -25,7 +27,7 @@ public class ToggleCommand extends AbstractSubCommand {
 
     @Override
     public String getDescription() {
-        return "切换聊天开关";
+        return I18n.tr("chat.command.desc.toggle");
     }
 
     @Override
@@ -46,15 +48,15 @@ public class ToggleCommand extends AbstractSubCommand {
     @Override
     public boolean execute(CommandSender sender, String[] args) {
         Player player = getPlayer(sender);
-        
+
         ChatInterceptor.PlayerChatState state = plugin.getChatInterceptor().getOrCreateState(player);
         boolean newState = !state.isChatEnabled();
         state.setChatEnabled(newState);
 
         if (newState) {
-            sendSuccess(sender, "聊天已开启");
+            sendSuccess(sender, PlayerMessages.chatOn(player.getUniqueId()));
         } else {
-            sendSuccess(sender, "聊天已关闭");
+            sendSuccess(sender, PlayerMessages.chatOff(player.getUniqueId()));
         }
 
         return true;

@@ -10,6 +10,7 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
 import java.util.List;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -25,6 +26,17 @@ public abstract class AbstractSubCommand implements SubCommand {
     protected AbstractSubCommand(NovaChatFolia plugin) {
         this.plugin = plugin;
         this.messageHelper = plugin.getMessageHelper();
+    }
+
+    /**
+     * Resolves the player UUID of a command sender, or {@code null} for console/RCON
+     * (so {@link I18n#tr(UUID, String, Object...)} falls back to the default locale).
+     *
+     * @param sender the command sender
+     * @return the sender's UUID if it is a player, otherwise {@code null}
+     */
+    protected static UUID playerIdOf(CommandSender sender) {
+        return sender instanceof Player ? ((Player) sender).getUniqueId() : null;
     }
 
     /**
@@ -149,14 +161,6 @@ public abstract class AbstractSubCommand implements SubCommand {
      * @return the formatted string
      */
     protected String formatDuration(long seconds) {
-        if (seconds < 60) {
-            return seconds + "秒";
-        } else if (seconds < 3600) {
-            return (seconds / 60) + "分钟";
-        } else if (seconds < 86400) {
-            return (seconds / 3600) + "小时";
-        } else {
-            return (seconds / 86400) + "天";
-        }
+        return com.nova.chat.client.format.DurationFormatter.formatSeconds(seconds);
     }
 }

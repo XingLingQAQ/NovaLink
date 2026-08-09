@@ -1,5 +1,7 @@
 package com.nova.chat.client.error;
 
+import com.nova.chat.client.i18n.I18n;
+
 /**
  * Formats {@link ErrorCode} values into player-facing multi-line messages.
  *
@@ -10,6 +12,11 @@ package com.nova.chat.client.error;
  *   提示: 请检查频道密码是否正确
  * </pre>
  *
+ * <p>All natural-language text (message, suggestion, and the suggestion
+ * prefix) is resolved through {@link I18n} so the output follows the
+ * configured default locale. The bracketed {@code [NC-XXX]} code is
+ * locale-independent. Color codes are not added here; platforms colorize.
+ *
  * <p>Pure functions, no platform dependencies — safe to call from any thread.
  * Platforms supply their own colorization / send wrapper; this class only owns
  * the shared text contract.
@@ -18,8 +25,14 @@ package com.nova.chat.client.error;
  */
 public final class ErrorMessageFormatter {
 
-    /** Prefix used for the suggestion line. */
-    public static final String SUGGESTION_PREFIX = "提示: ";
+    /**
+     * Prefix used for the suggestion line, resolved from the default locale
+     * at class-load (key {@code error.suggestion_prefix}). Kept as a
+     * {@code public static final String} for backward compatibility; the
+     * {@link #format(ErrorCode)} path re-resolves it via {@link I18n} so a
+     * locale change after startup is honored.
+     */
+    public static final String SUGGESTION_PREFIX = I18n.tr("error.suggestion_prefix");
 
     private ErrorMessageFormatter() {
     }
@@ -64,13 +77,15 @@ public final class ErrorMessageFormatter {
     }
 
     /**
-     * Builds the canonical two-line form from raw parts.
+     * Builds the canonical two-line form from raw parts. The suggestion
+     * prefix is resolved through {@link I18n} so it follows the current
+     * default locale.
      */
     private static String format(String code, String message, String suggestion) {
         StringBuilder sb = new StringBuilder();
         sb.append('[').append(code).append("] ").append(message);
         if (suggestion != null && !suggestion.isBlank()) {
-            sb.append('\n').append(SUGGESTION_PREFIX).append(suggestion);
+            sb.append('\n').append(I18n.tr("error.suggestion_prefix")).append(' ').append(suggestion);
         }
         return sb.toString();
     }

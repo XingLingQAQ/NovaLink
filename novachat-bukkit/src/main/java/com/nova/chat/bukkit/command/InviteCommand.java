@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
@@ -69,7 +70,7 @@ public class InviteCommand extends AbstractSubCommand {
             PlayerChannelState state = getPlayerState(player);
             if (state == null || state.getActiveChannel() == null) {
                 errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.NOT_IN_CHANNEL,
-                    "请指定频道ID或先加入一个频道");
+                    I18n.tr(player.getUniqueId(), "chat.invite.specify_channel"));
                 return true;
             }
             channelId = state.getActiveChannel();
@@ -91,7 +92,7 @@ public class InviteCommand extends AbstractSubCommand {
         packet.addExtra("targetName", targetName);
 
         if (sendPacket(packet)) {
-            messageHelper.sendMessage(sender, "正在邀请 &e" + targetName + " &7加入频道 &e" + channelId + "&7...");
+            messageHelper.sendMessage(sender, I18n.tr(player.getUniqueId(), "chat.invite.progress", targetName, channelId));
         } else {
             errorHandler.sendRequestFailed(sender);
         }

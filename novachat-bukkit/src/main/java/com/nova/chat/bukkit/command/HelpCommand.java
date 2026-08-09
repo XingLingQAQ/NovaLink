@@ -1,13 +1,18 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.i18n.I18n;
 import org.bukkit.command.CommandSender;
 
 import java.util.Map;
 
 /**
  * Help command - displays available commands based on player permissions.
- * 
+ *
+ * <p>Renders the localized help title; per-subcommand usage/description lines
+ * still come from each {@link SubCommand}'s {@code getUsage/getDescription}
+ * (command metadata, not player chat copy).
+ *
  * Requirements: 26.1-26.4
  */
 public class HelpCommand extends AbstractSubCommand {
@@ -46,7 +51,7 @@ public class HelpCommand extends AbstractSubCommand {
 
     @Override
     public boolean execute(CommandSender sender, String[] args) {
-        messageHelper.sendHeader(sender, "NovaChat 帮助");
+        messageHelper.sendHeader(sender, I18n.tr(playerIdOf(sender), "chat.command.help.title"));
         
         Map<String, SubCommand> subCommands = mainCommand.getSubCommands();
         

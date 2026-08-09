@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit.world;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
@@ -220,22 +221,23 @@ public class WorldMonitor implements Listener {
         
         // Update local state
         plugin.getChatInterceptor().setPlayerChannel(player, toChannel);
-        
+
         // Notify player (Requirement 9.4)
-        String message = formatSwitchMessage(fromChannel, toChannel);
+        String message = formatSwitchMessage(player.getUniqueId(), fromChannel, toChannel);
         player.sendMessage(message);
     }
 
     /**
      * Formats the channel switch notification message.
      *
+     * @param playerId the player's UUID (for per-player locale)
      * @param fromChannel the old channel
      * @param toChannel the new channel
      * @return the formatted message
      */
-    private String formatSwitchMessage(String fromChannel, String toChannel) {
+    private String formatSwitchMessage(UUID playerId, String fromChannel, String toChannel) {
         String prefix = plugin.getNovaChatConfig().getPrefix();
-        return prefix + "§e已自动切换频道: §7" + fromChannel + " §e-> §a" + toChannel;
+        return prefix + I18n.tr(playerId, "chat.world.auto_switch", fromChannel, toChannel);
     }
 
     /**

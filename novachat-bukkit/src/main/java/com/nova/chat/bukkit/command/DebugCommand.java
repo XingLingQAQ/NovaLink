@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.i18n.I18n;
 import org.bukkit.command.CommandSender;
 
 import java.util.Arrays;
@@ -66,10 +67,10 @@ public class DebugCommand extends AbstractSubCommand {
         plugin.setDebugMode(newState);
 
         if (newState) {
-            messageHelper.sendSuccess(sender, "调试模式已 &a开启");
-            messageHelper.sendMessage(sender, "详细日志将输出到控制台");
+            messageHelper.sendSuccess(sender, I18n.tr(playerIdOf(sender), "chat.debug.enabled"));
+            messageHelper.sendMessage(sender, I18n.tr(playerIdOf(sender), "chat.debug.log_hint"));
         } else {
-            messageHelper.sendSuccess(sender, "调试模式已 &c关闭");
+            messageHelper.sendSuccess(sender, I18n.tr(playerIdOf(sender), "chat.debug.disabled"));
         }
 
         return true;

@@ -24,6 +24,7 @@ public class NovaChatConfig {
     // Chat settings
     private final boolean replaceVanilla;
     private final String defaultChannel;
+    private final String locale;
 
     // Format settings
     private final String prefix;
@@ -50,6 +51,7 @@ public class NovaChatConfig {
             this.reconnectDelay = 5;
             this.replaceVanilla = false;
             this.defaultChannel = "local";
+            this.locale = "zh_CN";
             this.prefix = "&8[&bNovaChat&8]&r ";
             this.errorFormat = "&c错误: {message}";
             this.successFormat = "&a成功: {message}";
@@ -71,6 +73,7 @@ public class NovaChatConfig {
         CommentedConfigurationNode chatNode = rootNode.node("chat");
         this.replaceVanilla = chatNode.node("replace_vanilla").getBoolean(false);
         this.defaultChannel = chatNode.node("default_channel").getString("local");
+        this.locale = chatNode.node("locale").getString("zh_CN");
 
         // Format settings
         CommentedConfigurationNode formatNode = rootNode.node("format");
@@ -124,6 +127,15 @@ public class NovaChatConfig {
 
     public String getDefaultChannel() {
         return defaultChannel;
+    }
+
+    /**
+     * @return the configured default locale tag (e.g. {@code "zh_CN"}), used
+     *         to seed {@link com.nova.chat.client.i18n.I18n#setDefaultLocale}
+     *         at startup. Never null; defaults to {@code "zh_CN"}.
+     */
+    public String getLocale() {
+        return locale;
     }
 
     public String getPrefix() {

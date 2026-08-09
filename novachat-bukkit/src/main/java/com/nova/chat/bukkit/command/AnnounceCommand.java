@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.common.protocol.AdminAction;
 import com.nova.chat.common.protocol.packets.AdminActionPacket;
 import org.bukkit.command.CommandSender;
@@ -65,7 +66,7 @@ public class AnnounceCommand extends AbstractSubCommand {
 
         if (content.isEmpty()) {
             errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.BAD_REQUEST,
-                "公告内容不能为空");
+                I18n.tr(playerIdOf(sender), "chat.announce.empty"));
             return true;
         }
 
@@ -85,7 +86,7 @@ public class AnnounceCommand extends AbstractSubCommand {
         packet.addExtra("content", content);
 
         if (sendPacket(packet)) {
-            messageHelper.sendMessage(sender, "正在发送公告到频道 &e" + channelId + "&7...");
+            messageHelper.sendMessage(sender, I18n.tr(playerIdOf(sender), "chat.announce.progress", channelId));
         } else {
             errorHandler.sendRequestFailed(sender);
         }

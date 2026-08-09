@@ -1,5 +1,6 @@
 package com.nova.chat.folia.command;
 
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.folia.NovaChatFolia;
 import org.bukkit.command.CommandSender;
 
@@ -46,7 +47,7 @@ public class HelpCommand extends AbstractSubCommand {
 
     @Override
     public boolean execute(CommandSender sender, String[] args) {
-        messageHelper.sendHeader(sender, "NovaChat 帮助");
+        messageHelper.sendHeader(sender, I18n.tr(playerIdOf(sender), "chat.command.help.title"));
         
         Map<String, SubCommand> subCommands = mainCommand.getSubCommands();
         

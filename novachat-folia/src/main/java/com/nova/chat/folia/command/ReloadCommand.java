@@ -1,5 +1,6 @@
 package com.nova.chat.folia.command;
 
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.folia.NovaChatFolia;
 import org.bukkit.command.CommandSender;
 
@@ -50,7 +51,7 @@ public class ReloadCommand extends AbstractSubCommand {
         // perform the platform-owned config reload / reconnect.
         plugin.getChannelCommandService().reload();
         plugin.reload();
-        messageHelper.sendSuccess(sender, "配置已重新加载");
+        messageHelper.sendSuccess(sender, I18n.tr(playerIdOf(sender), "chat.command.reload.success"));
         return true;
     }
 }

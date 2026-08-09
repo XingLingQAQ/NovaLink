@@ -3,6 +3,7 @@ package com.nova.chat.client.network;
 import com.nova.chat.client.error.ErrorCode;
 import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.format.DurationFormatter;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 
@@ -148,7 +149,7 @@ public final class ChannelResponseDispatcher {
             operator = packet.getExtra("operatorName");
         }
         if (operator == null || operator.isEmpty()) {
-            operator = "管理员";
+            operator = I18n.tr("notice.operator.fallback");
         }
         String durationSeconds = pending != null ? pending.getDurationSeconds() : null;
         if (durationSeconds == null || durationSeconds.isEmpty()) {

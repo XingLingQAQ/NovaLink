@@ -4,6 +4,7 @@ import cn.nukkit.Player;
 import cn.nukkit.command.Command;
 import cn.nukkit.command.CommandExecutor;
 import cn.nukkit.command.CommandSender;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.pnx.NovaChatPNX;
 
 import java.util.*;
@@ -68,20 +69,22 @@ public class NovaChatCommand extends Command implements CommandExecutor {
         SubCommand subCommand = subCommands.get(subCommandName);
 
         if (subCommand == null) {
-            sendError(sender, "未知命令: " + subCommandName);
-            sendMessage(sender, "使用 §e/" + label + " help §7查看可用命令");
+            UUID playerId = sender instanceof Player ? ((Player) sender).getUniqueId() : null;
+            sendError(sender, I18n.tr(playerId, "chat.command.unknown", subCommandName));
+            sendMessage(sender, I18n.tr(playerId, "chat.command.unknown_hint", label));
             return true;
         }
 
         // Check permission
         if (!subCommand.hasPermission(sender)) {
-            sendError(sender, "你没有权限执行此命令 (NC-403)");
+            UUID playerId = sender instanceof Player ? ((Player) sender).getUniqueId() : null;
+            sendError(sender, I18n.tr(playerId, "chat.command.no_permission_code"));
             return true;
         }
 
         // Check if player-only command
         if (subCommand.isPlayerOnly() && !(sender instanceof Player)) {
-            sendError(sender, "此命令只能由玩家执行");
+            sendError(sender, I18n.tr("chat.command.player_only"));
             return true;
         }
 

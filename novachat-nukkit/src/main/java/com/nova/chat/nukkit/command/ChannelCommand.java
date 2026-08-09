@@ -2,6 +2,7 @@ package com.nova.chat.nukkit.command;
 
 import cn.nukkit.Player;
 import cn.nukkit.command.CommandSender;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.nukkit.NovaChatNukkit;
 import com.nova.chat.nukkit.form.ChannelFormManager;
 
@@ -26,7 +27,7 @@ public class ChannelCommand extends AbstractSubCommand {
 
     @Override
     public String getDescription() {
-        return "打开频道选择界面";
+        return I18n.tr("chat.command.desc.channel");
     }
 
     @Override
@@ -47,17 +48,17 @@ public class ChannelCommand extends AbstractSubCommand {
     @Override
     public boolean execute(CommandSender sender, String[] args) {
         Player player = getPlayer(sender);
-        
+
         // Check if connected to backend
         if (!plugin.getNetworkClient().isAuthenticated()) {
-            sendError(sender, "未连接到聊天服务器");
+            sendError(sender, I18n.tr(player.getUniqueId(), "chat.network.not_connected"));
             return true;
         }
-        
+
         // Open the channel selection form
         ChannelFormManager formManager = plugin.getFormManager();
         formManager.showChannelSelectionForm(player);
-        
+
         return true;
     }
 }

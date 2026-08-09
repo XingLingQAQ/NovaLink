@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.common.protocol.packets.AdminActionPacket;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -76,7 +77,7 @@ public class AuthCommand extends AbstractSubCommand {
         packet.addExtra("playerName", player.getName());
 
         if (sendPacket(packet)) {
-            messageHelper.sendMessage(sender, "正在验证超级管理员身份...");
+            messageHelper.sendMessage(sender, I18n.tr(player.getUniqueId(), "chat.auth.progress"));
         } else {
             errorHandler.sendRequestFailed(sender);
         }

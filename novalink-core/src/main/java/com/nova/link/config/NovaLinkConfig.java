@@ -62,6 +62,7 @@ public class NovaLinkConfig {
         config.server.setWebsocketPort(8889);
         config.server.setSecretKey("change-me-in-production");
         config.server.setWorkerThreads(4);
+        config.server.setLocale("zh_CN");
         
         // Default database config
         config.database.setType("memory");

@@ -7,10 +7,13 @@ import com.nova.chat.bukkit.command.MessageHelper;
 import com.nova.chat.bukkit.command.NovaChatCommand;
 import com.nova.chat.bukkit.config.NovaChatConfig;
 import com.nova.chat.bukkit.error.ErrorMessageHandler;
+import com.nova.chat.bukkit.i18n.LocaleListener;
 import com.nova.chat.bukkit.network.NetworkClient;
 import com.nova.chat.bukkit.welcome.WelcomeListener;
 import com.nova.chat.bukkit.world.WorldMonitor;
 import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.i18n.LocaleResolver;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -81,7 +84,11 @@ public class NovaChatBukkit extends JavaPlugin {
         
         // Load configuration
         loadConfiguration();
-        
+
+        // Initialize the shared i18n default locale from chat.locale (zh_CN fallback).
+        I18n.setDefaultLocale(LocaleResolver.parseOrDefault(
+                novaChatConfig.getLocale(), LocaleResolver.ROOT_LOCALE));
+
         // Initialize message helper and error handler
         initializeMessageHandlers();
         
@@ -218,6 +225,10 @@ public class NovaChatBukkit extends JavaPlugin {
 
         // Register first-join welcome listener (UX-DESIGN §8.1)
         getServer().getPluginManager().registerEvents(new WelcomeListener(this), this);
+
+        // Register per-player locale capture (i18n) — client locale drives
+        // player-facing text resolution via I18n.tr(playerId, ...).
+        getServer().getPluginManager().registerEvents(new LocaleListener(), this);
     }
     
     /**
@@ -247,7 +258,11 @@ public class NovaChatBukkit extends JavaPlugin {
      */
     public void reload() {
         loadConfiguration();
-        
+
+        // Re-apply the configured default locale so a /nc reload picks up locale changes.
+        I18n.setDefaultLocale(LocaleResolver.parseOrDefault(
+                novaChatConfig.getLocale(), LocaleResolver.ROOT_LOCALE));
+
         // Reload chat interceptor settings
         if (chatInterceptor != null) {
             chatInterceptor.reload();

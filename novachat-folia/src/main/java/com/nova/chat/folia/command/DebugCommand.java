@@ -1,5 +1,6 @@
 package com.nova.chat.folia.command;
 
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.folia.NovaChatFolia;
 import org.bukkit.command.CommandSender;
 
@@ -62,18 +63,18 @@ public class DebugCommand extends AbstractSubCommand {
         }
         
         plugin.setDebugMode(newState);
-        
+
         if (newState) {
-            messageHelper.sendSuccess(sender, "调试模式已 &a启用");
-            
+            messageHelper.sendSuccess(sender, I18n.tr(playerIdOf(sender), "chat.debug.enabled"));
+
             // Show debug info
-            messageHelper.sendRaw(sender, "&7--- 调试信息 ---");
-            messageHelper.sendRaw(sender, "&7Folia: &e" + plugin.getScheduler().isFolia());
-            messageHelper.sendRaw(sender, "&7已连接: &e" + plugin.getNetworkClient().isConnected());
-            messageHelper.sendRaw(sender, "&7已认证: &e" + plugin.getNetworkClient().isAuthenticated());
-            messageHelper.sendRaw(sender, "&7玩家状态数: &e" + plugin.getChatInterceptor().getPlayerStateCount());
+            messageHelper.sendRaw(sender, I18n.tr(playerIdOf(sender), "chat.debug.info_header"));
+            messageHelper.sendRaw(sender, I18n.tr(playerIdOf(sender), "chat.debug.folia", plugin.getScheduler().isFolia()));
+            messageHelper.sendRaw(sender, I18n.tr(playerIdOf(sender), "chat.debug.connected", plugin.getNetworkClient().isConnected()));
+            messageHelper.sendRaw(sender, I18n.tr(playerIdOf(sender), "chat.debug.authenticated", plugin.getNetworkClient().isAuthenticated()));
+            messageHelper.sendRaw(sender, I18n.tr(playerIdOf(sender), "chat.debug.state_count", plugin.getChatInterceptor().getPlayerStateCount()));
         } else {
-            messageHelper.sendSuccess(sender, "调试模式已 &c禁用");
+            messageHelper.sendSuccess(sender, I18n.tr(playerIdOf(sender), "chat.debug.disabled"));
         }
         
         return true;

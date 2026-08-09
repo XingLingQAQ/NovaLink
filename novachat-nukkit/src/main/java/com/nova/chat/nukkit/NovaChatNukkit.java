@@ -16,6 +16,7 @@ import com.nova.chat.nukkit.command.MessageHelper;
 import com.nova.chat.nukkit.command.NovaChatCommand;
 import com.nova.chat.nukkit.config.NovaChatConfig;
 import com.nova.chat.nukkit.form.ChannelFormManager;
+import com.nova.chat.nukkit.listener.LocaleListener;
 import com.nova.chat.nukkit.network.NetworkClient;
 import com.nova.chat.nukkit.world.WorldMonitor;
 
@@ -88,6 +89,13 @@ public class NovaChatNukkit extends PluginBase implements Listener {
 
         // Load configuration
         loadConfiguration();
+
+        // Seed the shared I18n default locale from config (per-player locales
+        // captured by LocaleListener override this per player).
+        com.nova.chat.client.i18n.I18n.setDefaultLocale(
+                com.nova.chat.client.i18n.LocaleResolver.parseOrDefault(
+                        novaChatConfig.getLocale(),
+                        com.nova.chat.client.i18n.LocaleResolver.ROOT_LOCALE));
 
         // Initialize message helper
         messageHelper = new MessageHelper(this);
@@ -278,7 +286,10 @@ public class NovaChatNukkit extends PluginBase implements Listener {
         // Register chat interceptor
         chatInterceptor = new ChatInterceptor(this);
         getServer().getPluginManager().registerEvents(chatInterceptor, this);
-        
+
+        // Capture per-player Bedrock locale from the login chain (i18n)
+        getServer().getPluginManager().registerEvents(new LocaleListener(), this);
+
         // Initialize mention Tab completer (Requirements: 11.3)
         mentionTabCompleter = new MentionTabCompleter(this);
         

@@ -26,6 +26,7 @@ public class NovaChatConfig {
     // Chat settings
     private boolean replaceVanilla;
     private String defaultChannel;
+    private String locale;
 
     // Format settings
     private String formatPrefix;
@@ -63,6 +64,7 @@ public class NovaChatConfig {
         // Chat settings
         replaceVanilla = config.getBoolean("chat.replace_vanilla", false);
         defaultChannel = config.getString("chat.default_channel", "local");
+        locale = config.getString("chat.locale", "zh_CN");
 
         // Format settings
         formatPrefix = config.getString("format.prefix", "§8[§bNovaChat§8]§r ");

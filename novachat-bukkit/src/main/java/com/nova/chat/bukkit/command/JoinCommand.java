@@ -3,6 +3,7 @@ package com.nova.chat.bukkit.command;
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.state.PlayerChannelState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -74,7 +75,7 @@ public class JoinCommand extends AbstractSubCommand {
 
         CommandResult result = channelCommands.join(state, channelId, password, player.getName(), player.getWorld().getName());
         if (result.isSuccess()) {
-            messageHelper.sendMessage(sender, "正在加入频道 &e" + channelId + "&7...");
+            messageHelper.sendMessage(sender, PlayerMessages.joining(player.getUniqueId(), channelId));
 
             // Optimistically update local active channel so incoming Title/announcement routing works immediately.
             // Backend may still reject; in that case player can retry and/or /nc join again.

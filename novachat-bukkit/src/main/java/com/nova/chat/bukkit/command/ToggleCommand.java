@@ -3,6 +3,7 @@ package com.nova.chat.bukkit.command;
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.ChatModeDescriptions;
 import com.nova.chat.client.state.PlayerChannelState;
@@ -78,11 +79,9 @@ public class ToggleCommand extends AbstractSubCommand {
 
         ChatMode newMode = state.getChatMode();
 
-        if (newMode == ChatMode.REPLACE) {
-            messageHelper.sendSuccess(sender, "聊天模式已切换为 &e频道模式");
-        } else {
-            messageHelper.sendSuccess(sender, "聊天模式已切换为 &e混合模式");
-        }
+        messageHelper.sendSuccess(sender,
+                I18n.tr(player.getUniqueId(), "chat.command.toggle.switched",
+                        "&e" + ChatModeDescriptions.modeName(newMode)));
         messageHelper.sendMessage(sender, ChatModeDescriptions.describe(newMode));
 
         return true;

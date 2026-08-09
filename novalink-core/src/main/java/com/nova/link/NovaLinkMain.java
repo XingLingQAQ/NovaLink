@@ -19,6 +19,8 @@ import com.nova.link.console.ConsoleCommandHandler;
 import com.nova.link.config.*;
 import com.nova.link.database.*;
 import com.nova.link.filter.SensitiveWordFilter;
+import com.nova.link.i18n.I18n;
+import com.nova.link.i18n.LocaleResolver;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.network.NettyServer;
 import com.nova.link.network.ServerNetworkHandler;
@@ -114,6 +116,12 @@ public class NovaLinkMain {
         if ("change-me-in-production".equals(config.getServer().getSecretKey())) {
             logger.warn("Server secret-key is still the default value. Please change it in {}", configPath);
         }
+
+        // Apply the configured backend console locale so all console / backend
+        // user-facing text resolves in the operator's language (zh_CN default).
+        Locale backendLocale = LocaleResolver.parseOrDefault(config.getServer().getLocale(), LocaleResolver.ROOT_LOCALE);
+        I18n.setDefaultLocale(backendLocale);
+        logger.info("Backend console locale: {}", backendLocale);
 
         // Initialize authentication
         IpBanManager ipBanManager = new IpBanManager(

@@ -1,6 +1,7 @@
 package com.nova.chat.pnx.network;
 
 import com.nova.chat.client.command.PlayerMessages;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.network.ClientConnectionConfig;
@@ -225,14 +226,14 @@ public class NetworkClient {
             String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
             String title = plugin.getMessageFormatter().colorize("&e" + mentioner);
             String subtitle = plugin.getMessageFormatter().colorize(
-                    "&7在频道 &b" + channelId + " &7提到了你");
+                    I18n.tr(mentionedId, "chat.mention.subtitle", channelId));
             player.sendTitle(title, subtitle,
                     MentionNotifier.DEFAULT_FADE_IN,
                     MentionNotifier.DEFAULT_STAY,
                     MentionNotifier.DEFAULT_FADE_OUT);
             // Action-bar reinforcement (works even if title display is overridden).
             player.sendActionBar(plugin.getMessageFormatter().colorize(
-                    "&e" + mentioner + " &7在频道 &b" + channelId + " &7提到了你"));
+                    "&e" + mentioner + " " + I18n.tr(mentionedId, "chat.mention.subtitle", channelId)));
         });
     }
 
@@ -287,7 +288,8 @@ public class NetworkClient {
                 if (player == null) {
                     return;
                 }
-                player.sendMessage(plugin.getMessageFormatter().formatSuccess("已加入频道 " + channelId));
+                player.sendMessage(plugin.getMessageFormatter().formatSuccess(
+                        PlayerMessages.joined(playerId, channelId)));
             });
         }
 
@@ -299,7 +301,7 @@ public class NetworkClient {
                     return;
                 }
                 player.sendMessage(plugin.getMessageFormatter().formatSuccess(
-                        PlayerMessages.left(channelId, plugin.getNovaChatConfig().getDefaultChannel())));
+                        PlayerMessages.left(playerId, channelId, plugin.getNovaChatConfig().getDefaultChannel())));
             });
         }
 
@@ -351,25 +353,28 @@ public class NetworkClient {
                 if (target == null) {
                     return; // not on this server
                 }
+                java.util.UUID targetId = target.getUniqueId();
                 String channelId = notice.getChannelId();
                 if (notice.getAction() == ChannelAction.KICK) {
-                    String title = plugin.getMessageFormatter().colorize("&c你已被踢出频道");
+                    String title = plugin.getMessageFormatter().colorize(
+                            I18n.tr(targetId, "chat.notice.kick_title"));
                     String subtitle = plugin.getMessageFormatter().colorize(
-                            "&7被 &e" + operator + " &7踢出频道 &b" + channelId);
+                            I18n.tr(targetId, "chat.notice.kick_subtitle", operator, channelId));
                     target.sendTitle(title, subtitle,
                             MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
                     target.sendActionBar(plugin.getMessageFormatter().colorize(
-                            "&c你已被 " + operator + " 踢出频道 " + channelId));
+                            I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId)));
                     return;
                 }
                 // MUTE
-                String title = plugin.getMessageFormatter().colorize("&c你已被禁言");
+                String title = plugin.getMessageFormatter().colorize(
+                        I18n.tr(targetId, "chat.notice.mute_title"));
                 String subtitle = plugin.getMessageFormatter().colorize(
-                        "&7在频道 &b" + channelId + " &7持续 &e" + durationText);
+                        I18n.tr(targetId, "chat.notice.mute_subtitle", channelId, durationText));
                 target.sendTitle(title, subtitle,
                         MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY, MentionNotifier.DEFAULT_FADE_OUT);
                 target.sendActionBar(plugin.getMessageFormatter().colorize(
-                        "&c你已被禁言 " + durationText + "（频道 " + channelId + "）"));
+                        I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId)));
             });
         }
     }
@@ -388,8 +393,10 @@ public class NetworkClient {
         }
         PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
         ChatMode mode = state.getChatMode();
-        String modeName = (mode == ChatMode.REPLACE) ? "频道模式" : "混合模式";
-        String text = "&7当前频道：&b" + channelId + " &7（" + modeName + "）";
+        if (mode == null) {
+            mode = ChatMode.HYBRID;
+        }
+        String text = PlayerMessages.currentChannelBar(player.getUniqueId(), channelId, mode);
         player.sendActionBar(plugin.getMessageFormatter().colorize(text));
     }
 

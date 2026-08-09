@@ -4,7 +4,9 @@ import cn.nukkit.Player;
 import cn.nukkit.command.CommandSender;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.pnx.NovaChatPNX;
 
@@ -28,7 +30,7 @@ public class JoinCommand extends AbstractSubCommand {
 
     @Override
     public String getDescription() {
-        return "加入频道";
+        return I18n.tr("chat.command.desc.join");
     }
 
     @Override
@@ -49,9 +51,9 @@ public class JoinCommand extends AbstractSubCommand {
     @Override
     public boolean execute(CommandSender sender, String[] args) {
         Player player = getPlayer(sender);
-        
+
         if (args.length < 1) {
-            sendError(sender, "用法: /nc join <频道>");
+            sendError(sender, I18n.tr(player.getUniqueId(), "chat.command.usage.join"));
             return true;
         }
 
@@ -60,7 +62,7 @@ public class JoinCommand extends AbstractSubCommand {
         // Check permission for specific channel
         if (!player.hasPermission("novachat.channel." + channelId) &&
             !player.hasPermission("novachat.channel.*")) {
-            sendError(sender, "你没有权限加入此频道");
+            sendError(sender, I18n.tr(player.getUniqueId(), "chat.action.no_permission_join"));
             return true;
         }
 
@@ -72,7 +74,7 @@ public class JoinCommand extends AbstractSubCommand {
             // §7: optimistic "joining…" receipt; the async ChannelActionResponsePacket
             // handler confirms with "已加入频道 X" once the backend accepts, or
             // surfaces an actionable error if it rejects.
-            sendSuccess(sender, "正在加入频道 " + channelId + "...");
+            sendSuccess(sender, PlayerMessages.joining(player.getUniqueId(), channelId));
             plugin.debug("Player " + player.getName() + " joined channel: " + channelId);
         } else {
             // Actionable error via shared ErrorCode system (NC-503 network failure here).

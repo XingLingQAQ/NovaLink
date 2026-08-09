@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import org.bukkit.command.CommandSender;
@@ -62,7 +63,8 @@ public class AcceptCommand extends AbstractSubCommand {
         // Validate invite code format (6 alphanumeric characters)
         if (!inviteCode.matches("^[A-Z0-9]{6}$")) {
             errorHandler.sendError(sender, com.nova.chat.client.error.ErrorCode.INVALID_FORMAT,
-                "无效的邀请码格式", "邀请码应为6位字母数字组合");
+                I18n.tr(player.getUniqueId(), "chat.accept.invalid_format"),
+                I18n.tr(player.getUniqueId(), "chat.accept.invalid_hint"));
             return true;
         }
 
@@ -73,7 +75,7 @@ public class AcceptCommand extends AbstractSubCommand {
         packet.addExtra("world", player.getWorld().getName());
 
         if (sendPacket(packet)) {
-            messageHelper.sendMessage(sender, "正在验证邀请码 &e" + inviteCode + "&7...");
+            messageHelper.sendMessage(sender, I18n.tr(player.getUniqueId(), "chat.accept.progress", inviteCode));
         } else {
             errorHandler.sendRequestFailed(sender);
         }

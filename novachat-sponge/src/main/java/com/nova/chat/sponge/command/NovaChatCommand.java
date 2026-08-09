@@ -5,6 +5,7 @@ import com.nova.chat.client.command.CommandResult;
 import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.error.ErrorCode;
 import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.ChatModeDescriptions;
 import com.nova.chat.client.state.PlayerChannelState;
@@ -15,6 +16,8 @@ import org.spongepowered.api.command.parameter.CommandContext;
 import org.spongepowered.api.command.parameter.Parameter;
 import org.spongepowered.api.entity.living.player.server.ServerPlayer;
 import org.spongepowered.api.service.permission.Subject;
+
+import java.util.UUID;
 
 /**
  * Main command handler for NovaChat Sponge plugin.
@@ -93,7 +96,7 @@ public class NovaChatCommand {
      */
     private Command.Parameterized buildHelpCommand() {
         return Command.builder()
-            .shortDescription(Component.text("显示可用命令列表"))
+            .shortDescription(Component.text(I18n.tr("chat.command.desc.help")))
             .executor(this::executeHelp)
             .build();
     }
@@ -105,7 +108,7 @@ public class NovaChatCommand {
     private Command.Parameterized buildJoinCommand(Parameter.Value<String> channelParam,
                                                     Parameter.Value<String> passwordParam) {
         return Command.builder()
-            .shortDescription(Component.text("加入一个频道"))
+            .shortDescription(Component.text(I18n.tr("chat.command.desc.join")))
             .addParameter(channelParam)
             .addParameter(passwordParam)
             .executor(ctx -> executeJoin(ctx, channelParam, passwordParam))
@@ -118,7 +121,7 @@ public class NovaChatCommand {
      */
     private Command.Parameterized buildLeaveCommand() {
         return Command.builder()
-            .shortDescription(Component.text("离开当前频道"))
+            .shortDescription(Component.text(I18n.tr("chat.command.desc.leave")))
             .executor(this::executeLeave)
             .build();
     }
@@ -131,7 +134,7 @@ public class NovaChatCommand {
      */
     private Command.Parameterized buildListCommand() {
         return Command.builder()
-            .shortDescription(Component.text("列出可用频道"))
+            .shortDescription(Component.text(I18n.tr("chat.command.desc.list")))
             .executor(this::executeList)
             .build();
     }
@@ -146,7 +149,7 @@ public class NovaChatCommand {
     private Command.Parameterized buildWhoCommand() {
         Parameter.Value<String> channelParam = Parameter.string().key("channel").optional().build();
         return Command.builder()
-            .shortDescription(Component.text("查看频道在线成员"))
+            .shortDescription(Component.text(I18n.tr("chat.command.desc.who")))
             .addParameter(channelParam)
             .executor(this::executeWho)
             .build();
@@ -168,7 +171,7 @@ public class NovaChatCommand {
      */
     private Command.Parameterized buildToggleCommand() {
         return Command.builder()
-            .shortDescription(Component.text("切换聊天模式"))
+            .shortDescription(Component.text(I18n.tr("chat.command.desc.toggle")))
             .executor(this::executeToggle)
             .build();
     }
@@ -179,7 +182,7 @@ public class NovaChatCommand {
     private Command.Parameterized buildReloadCommand() {
         return Command.builder()
             .permission("novachat.admin.reload")
-            .shortDescription(Component.text("重新加载配置"))
+            .shortDescription(Component.text(I18n.tr("chat.command.desc.reload")))
             .executor(this::executeReload)
             .build();
     }
@@ -190,7 +193,7 @@ public class NovaChatCommand {
     private Command.Parameterized buildDebugCommand() {
         return Command.builder()
             .permission("novachat.admin.debug")
-            .shortDescription(Component.text("切换调试模式"))
+            .shortDescription(Component.text(I18n.tr("chat.command.desc.debug")))
             .executor(this::executeDebug)
             .build();
     }
@@ -200,28 +203,30 @@ public class NovaChatCommand {
      */
     private org.spongepowered.api.command.CommandResult executeHelp(CommandContext ctx) throws org.spongepowered.api.command.exception.CommandException {
         Subject subject = ctx.subject();
+        UUID playerId = playerIdOf(subject);
 
-        sendHeader(subject, "NovaChat 帮助");
+        // Shared header/footer + per-line help copy (chat.command.help.*).
+        sendMessage(subject, I18n.tr(playerId, "chat.command.help.title"));
 
         // Basic-user commands are always shown — the basic-user permission
         // nodes are not set on the command builders (see buildCommand()
         // comment about SpongeAPI 8 default-deny), so there is no meaningful
         // permission to gate the help text on.
-        sendCommandHelp(subject, "/nc help", "显示可用命令列表");
-        sendCommandHelp(subject, "/nc join <频道ID> [密码]", "加入一个频道");
-        sendCommandHelp(subject, "/nc leave", "离开当前频道");
-        sendCommandHelp(subject, "/nc list", "列出可用频道");
-        sendCommandHelp(subject, "/nc who [频道]", "查看频道在线成员");
-        sendCommandHelp(subject, "/nc toggle", "切换聊天模式");
+        sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_help"));
+        sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_join"));
+        sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_leave"));
+        sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_list"));
+        sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_who"));
+        sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_toggle"));
         // Admin commands are still gated by their permissions.
         if (hasPermission(subject, "novachat.admin.reload")) {
-            sendCommandHelp(subject, "/nc reload", "重新加载配置");
+            sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_reload"));
         }
         if (hasPermission(subject, "novachat.admin.debug")) {
-            sendCommandHelp(subject, "/nc debug", "切换调试模式");
+            sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_debug"));
         }
 
-        sendFooter(subject);
+        sendMessage(subject, I18n.tr(playerId, "chat.command.list.tail"));
         return org.spongepowered.api.command.CommandResult.success();
     }
 
@@ -235,8 +240,9 @@ public class NovaChatCommand {
     private org.spongepowered.api.command.CommandResult executeJoin(CommandContext ctx, Parameter.Value<String> channelParam,
                                       Parameter.Value<String> passwordParam) throws org.spongepowered.api.command.exception.CommandException {
         if (!(ctx.cause().root() instanceof ServerPlayer)) {
-            sendError(ctx.subject(), "此命令只能由玩家执行");
-            return org.spongepowered.api.command.CommandResult.error(Component.text("此命令只能由玩家执行"));
+            String playerOnly = I18n.tr("chat.command.player_only");
+            sendError(ctx.subject(), playerOnly);
+            return org.spongepowered.api.command.CommandResult.error(Component.text(playerOnly));
         }
 
         ServerPlayer player = (ServerPlayer) ctx.cause().root();
@@ -255,7 +261,7 @@ public class NovaChatCommand {
         if (result.isSuccess()) {
             // Sponge-specific extra the shared service does not own.
             addWorldExtra(player);
-            sendMessage(ctx.subject(), PlayerMessages.joining(channelId));
+            sendMessage(ctx.subject(), PlayerMessages.joining(player.uniqueId(), channelId));
             plugin.debug("Player " + player.name() + " joined channel: " + channelId);
         } else {
             // Actionable error via shared ErrorCode system (NC-503 network failure here).
@@ -277,8 +283,9 @@ public class NovaChatCommand {
      */
     private org.spongepowered.api.command.CommandResult executeLeave(CommandContext ctx) throws org.spongepowered.api.command.exception.CommandException {
         if (!(ctx.cause().root() instanceof ServerPlayer)) {
-            sendError(ctx.subject(), "此命令只能由玩家执行");
-            return org.spongepowered.api.command.CommandResult.error(Component.text("此命令只能由玩家执行"));
+            String playerOnly = I18n.tr("chat.command.player_only");
+            sendError(ctx.subject(), playerOnly);
+            return org.spongepowered.api.command.CommandResult.error(Component.text(playerOnly));
         }
 
         ServerPlayer player = (ServerPlayer) ctx.cause().root();
@@ -298,7 +305,7 @@ public class NovaChatCommand {
         CommandResult result = channelCommands.leave(state, channelId, player.name());
 
         if (result.isSuccess()) {
-            sendMessage(ctx.subject(), PlayerMessages.leaving(channelId));
+            sendMessage(ctx.subject(), PlayerMessages.leaving(player.uniqueId(), channelId));
             plugin.debug("Player " + player.name() + " left channel: " + channelId);
         } else {
             // Actionable error: NC-433 not-in-channel vs NC-503 network failure (via ErrorCode).
@@ -318,8 +325,9 @@ public class NovaChatCommand {
      */
     private org.spongepowered.api.command.CommandResult executeList(CommandContext ctx) throws org.spongepowered.api.command.exception.CommandException {
         if (!(ctx.cause().root() instanceof ServerPlayer player)) {
-            sendError(ctx.subject(), "此命令只能由玩家执行");
-            return org.spongepowered.api.command.CommandResult.error(Component.text("此命令只能由玩家执行"));
+            String playerOnly = I18n.tr("chat.command.player_only");
+            sendError(ctx.subject(), playerOnly);
+            return org.spongepowered.api.command.CommandResult.error(Component.text(playerOnly));
         }
 
         PlayerChannelState state = plugin.getChatListener().getState(player.uniqueId());
@@ -328,11 +336,12 @@ public class NovaChatCommand {
         java.util.List<String> lines = com.nova.chat.client.command.ListCommandService
                 .formatChannelList(plugin.getKnownChannelRegistry(), joined);
 
-        sendHeader(ctx.subject(), "NovaChat 频道列表");
+        UUID playerId = player.uniqueId();
+        sendMessage(ctx.subject(), I18n.tr(playerId, "chat.command.list.title"));
         for (String line : lines) {
             sendMessage(ctx.subject(), line);
         }
-        sendFooter(ctx.subject());
+        sendMessage(ctx.subject(), I18n.tr(playerId, "chat.command.list.tail"));
         return org.spongepowered.api.command.CommandResult.success();
     }
 
@@ -342,8 +351,9 @@ public class NovaChatCommand {
      */
     private org.spongepowered.api.command.CommandResult executeToggle(CommandContext ctx) throws org.spongepowered.api.command.exception.CommandException {
         if (!(ctx.cause().root() instanceof ServerPlayer)) {
-            sendError(ctx.subject(), "此命令只能由玩家执行");
-            return org.spongepowered.api.command.CommandResult.error(Component.text("此命令只能由玩家执行"));
+            String playerOnly = I18n.tr("chat.command.player_only");
+            sendError(ctx.subject(), playerOnly);
+            return org.spongepowered.api.command.CommandResult.error(Component.text(playerOnly));
         }
 
         ServerPlayer player = (ServerPlayer) ctx.cause().root();
@@ -357,10 +367,11 @@ public class NovaChatCommand {
         }
 
         ChatMode newMode = state.getChatMode();
+        UUID playerId = player.uniqueId();
 
-        String modeText = ChatModeDescriptions.modeName(newMode);
-        sendSuccess(ctx.subject(), "聊天模式已切换为 " + modeText);
-        sendMessage(ctx.subject(), ChatModeDescriptions.describe(newMode));
+        String modeText = ChatModeDescriptions.modeName(playerId, newMode);
+        sendSuccess(ctx.subject(), I18n.tr(playerId, "chat.command.toggle.switched", modeText));
+        sendMessage(ctx.subject(), ChatModeDescriptions.describe(playerId, newMode));
 
         plugin.debug("Player " + player.name() + " toggled chat mode to: " + newMode);
         return org.spongepowered.api.command.CommandResult.success();
@@ -375,7 +386,7 @@ public class NovaChatCommand {
     private org.spongepowered.api.command.CommandResult executeReload(CommandContext ctx) throws org.spongepowered.api.command.exception.CommandException {
         plugin.getChannelCommandService().reload();
         plugin.reload();
-        sendSuccess(ctx.subject(), "配置已重新加载");
+        sendSuccess(ctx.subject(), I18n.tr(playerIdOf(ctx.subject()), "chat.command.reload.success"));
         return org.spongepowered.api.command.CommandResult.success();
     }
 
@@ -385,11 +396,12 @@ public class NovaChatCommand {
     private org.spongepowered.api.command.CommandResult executeDebug(CommandContext ctx) throws org.spongepowered.api.command.exception.CommandException {
         boolean newState = !plugin.isDebugMode();
         plugin.setDebugMode(newState);
+        UUID playerId = playerIdOf(ctx.subject());
 
         if (newState) {
-            sendSuccess(ctx.subject(), "调试模式已 &a启用");
+            sendSuccess(ctx.subject(), I18n.tr(playerId, "chat.debug.enabled"));
         } else {
-            sendSuccess(ctx.subject(), "调试模式已 &c禁用");
+            sendSuccess(ctx.subject(), I18n.tr(playerId, "chat.debug.disabled"));
         }
 
         return org.spongepowered.api.command.CommandResult.success();
@@ -441,24 +453,17 @@ public class NovaChatCommand {
         }
     }
 
-    private void sendHeader(Subject subject, String title) {
+    private void sendCommandHelp(Subject subject, String line) {
         if (subject instanceof ServerPlayer) {
-            ((ServerPlayer) subject).sendMessage(plugin.getMessageFormatter().formatMessage(
-                "&8&m----------&r &b" + title + " &8&m----------"));
+            ((ServerPlayer) subject).sendMessage(plugin.getMessageFormatter().formatMessage(line));
         }
     }
 
-    private void sendFooter(Subject subject) {
-        if (subject instanceof ServerPlayer) {
-            ((ServerPlayer) subject).sendMessage(plugin.getMessageFormatter().formatMessage(
-                "&8&m---------------------------------"));
-        }
-    }
-
-    private void sendCommandHelp(Subject subject, String usage, String description) {
-        if (subject instanceof ServerPlayer) {
-            ((ServerPlayer) subject).sendMessage(plugin.getMessageFormatter().formatMessage(
-                "&e" + usage + " &8- &7" + description));
-        }
+    /**
+     * Resolves the player's UUID from a command subject for per-player i18n,
+     * or null for non-player (console) senders so the default locale is used.
+     */
+    private UUID playerIdOf(Subject subject) {
+        return subject instanceof ServerPlayer ? ((ServerPlayer) subject).uniqueId() : null;
     }
 }

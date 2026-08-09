@@ -1,7 +1,9 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Info, AlertTriangle, CheckCircle, UserX } from 'lucide-react';
 
 const NotificationDropdown = ({ isOpen, theme, mode, notifications, onMarkAllRead, onClearAll }) => {
+    const { t } = useTranslation();
     let containerStyles = "absolute top-full right-0 mt-3 w-80 sm:w-96 rounded-2xl shadow-2xl z-50 overflow-hidden origin-top-right transition-all duration-300 border ";
 
     if (theme === 'clean') {
@@ -22,24 +24,24 @@ const NotificationDropdown = ({ isOpen, theme, mode, notifications, onMarkAllRea
         <div className={containerStyles}>
             <div className={`px-4 py-3 border-b ${divider} flex justify-between items-center`}>
                 <div className="flex items-center gap-2">
-                    <h3 className={`font-semibold ${txtMain}`}>系统通知</h3>
+                    <h3 className={`font-semibold ${txtMain}`}>{t('notifications.title')}</h3>
                     {unreadCount > 0 && (
                         <span className="bg-sky-500 text-white text-[10px] px-1.5 py-0.5 rounded-full">{unreadCount}</span>
                     )}
                 </div>
                 <div className="flex gap-2">
                     <button onClick={onMarkAllRead} className={`text-xs ${theme === 'clean' ? 'text-sky-600 hover:text-sky-700' : 'text-white/70 hover:text-white'} transition-colors`}>
-                        全部已读
+                        {t('notifications.mark_all_read')}
                     </button>
                     <button onClick={onClearAll} className={`text-xs ${theme === 'clean' ? 'text-slate-400 hover:text-rose-500' : 'text-white/40 hover:text-rose-400'} transition-colors`}>
-                        清空
+                        {t('notifications.clear')}
                     </button>
                 </div>
             </div>
 
             <div className="max-h-[320px] overflow-y-auto scrollbar-hide">
                 {notifications.length === 0 ? (
-                    <div className={`p-8 text-center ${txtSec} text-sm`}>暂无通知</div>
+                    <div className={`p-8 text-center ${txtSec} text-sm`}>{t('notifications.empty')}</div>
                 ) : (
                     notifications.map((notif) => {
                         const Icon = notif.icon
@@ -68,7 +70,7 @@ const NotificationDropdown = ({ isOpen, theme, mode, notifications, onMarkAllRea
                 )}
             </div>
             <div className={`p-3 border-t ${divider} text-center`}>
-                <button className={`text-sm font-medium ${txtSec} hover:text-current transition-colors`}>查看全部</button>
+                <button className={`text-sm font-medium ${txtSec} hover:text-current transition-colors`}>{t('notifications.view_all')}</button>
             </div>
         </div>
     );

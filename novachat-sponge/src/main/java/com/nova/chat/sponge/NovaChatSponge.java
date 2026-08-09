@@ -2,6 +2,8 @@ package com.nova.chat.sponge;
 
 import com.google.inject.Inject;
 import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.i18n.LocaleResolver;
 import com.nova.chat.sponge.chat.ChatListener;
 import com.nova.chat.sponge.chat.MentionTabCompleter;
 import com.nova.chat.sponge.chat.MessageFormatter;
@@ -95,12 +97,17 @@ public class NovaChatSponge {
     @Listener
     public void onConstruct(ConstructPluginEvent event) {
         logger.info("NovaChat Sponge plugin constructing...");
-        
+
         // Save default config if not exists
         saveDefaultConfig();
-        
+
         // Load configuration
         loadConfiguration();
+
+        // Seed the shared i18n default locale from chat.locale (zh_CN fallback).
+        // Player-specific locales are registered later on join (ChatListener).
+        I18n.setDefaultLocale(
+                LocaleResolver.parseOrDefault(novaChatConfig.getLocale(), LocaleResolver.ROOT_LOCALE));
     }
     
     @Listener
@@ -272,7 +279,11 @@ public class NovaChatSponge {
      */
     public void reload() {
         loadConfiguration();
-        
+
+        // Re-seed the i18n default locale in case chat.locale changed.
+        I18n.setDefaultLocale(
+                LocaleResolver.parseOrDefault(novaChatConfig.getLocale(), LocaleResolver.ROOT_LOCALE));
+
         // Reload chat listener settings
         if (chatListener != null) {
             chatListener.reload();

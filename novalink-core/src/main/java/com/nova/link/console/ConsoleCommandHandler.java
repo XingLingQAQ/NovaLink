@@ -12,6 +12,7 @@ import com.nova.link.config.ConfigManager;
 import com.nova.link.database.MuteInfo;
 import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
+import com.nova.link.i18n.I18n;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.mute.MuteResult;
 import com.nova.link.network.ClientConnection;
@@ -49,28 +50,28 @@ import java.util.concurrent.TimeUnit;
  */
 public class ConsoleCommandHandler {
 
-    /** Command name -> one-line description, in stable display order. */
+    /** Command name -> i18n key for its one-line summary, in stable display order. */
     private static final Map<String, String> COMMAND_SUMMARY = new LinkedHashMap<>();
     static {
-        COMMAND_SUMMARY.put("help", "List commands or show detailed help: help [command]");
-        COMMAND_SUMMARY.put("status", "Backend overview: players, servers, channels, spy, reloads");
-        COMMAND_SUMMARY.put("players", "List online players");
-        COMMAND_SUMMARY.put("clients", "List connected authenticated game servers");
-        COMMAND_SUMMARY.put("channels", "List all channels");
-        COMMAND_SUMMARY.put("channel", "Show one channel + members: channel <id>");
-        COMMAND_SUMMARY.put("mute", "Mute a player: mute <player|name> <channel> <dur> [reason]");
-        COMMAND_SUMMARY.put("unmute", "Unmute a player: unmute <player> <channel>");
-        COMMAND_SUMMARY.put("mutes", "List active mutes: mutes [player]");
-        COMMAND_SUMMARY.put("kick", "Kick a player from a channel: kick <player> <channel>");
-        COMMAND_SUMMARY.put("announce", "Broadcast an announcement: announce <channel> <msg>");
-        COMMAND_SUMMARY.put("title", "Send a title: title <channel> <title> [subtitle]");
-        COMMAND_SUMMARY.put("reload", "Hot-reload config and broadcast ConfigSync");
-        COMMAND_SUMMARY.put("spies", "List active spy sessions / monitored channels");
-        COMMAND_SUMMARY.put("spy", "Spy control: spy start <channel> [adminId] | spy off [adminId]");
-        COMMAND_SUMMARY.put("create", "Create a channel: create <name> [password] [scope]");
-        COMMAND_SUMMARY.put("delete", "Delete a channel: delete <id>");
-        COMMAND_SUMMARY.put("stop", "Graceful shutdown (alias: shutdown)");
-        COMMAND_SUMMARY.put("shutdown", "Graceful shutdown (alias: stop)");
+        COMMAND_SUMMARY.put("help", "console.summary.help");
+        COMMAND_SUMMARY.put("status", "console.summary.status");
+        COMMAND_SUMMARY.put("players", "console.summary.players");
+        COMMAND_SUMMARY.put("clients", "console.summary.clients");
+        COMMAND_SUMMARY.put("channels", "console.summary.channels");
+        COMMAND_SUMMARY.put("channel", "console.summary.channel");
+        COMMAND_SUMMARY.put("mute", "console.summary.mute");
+        COMMAND_SUMMARY.put("unmute", "console.summary.unmute");
+        COMMAND_SUMMARY.put("mutes", "console.summary.mutes");
+        COMMAND_SUMMARY.put("kick", "console.summary.kick");
+        COMMAND_SUMMARY.put("announce", "console.summary.announce");
+        COMMAND_SUMMARY.put("title", "console.summary.title");
+        COMMAND_SUMMARY.put("reload", "console.summary.reload");
+        COMMAND_SUMMARY.put("spies", "console.summary.spies");
+        COMMAND_SUMMARY.put("spy", "console.summary.spy");
+        COMMAND_SUMMARY.put("create", "console.summary.create");
+        COMMAND_SUMMARY.put("delete", "console.summary.delete");
+        COMMAND_SUMMARY.put("stop", "console.summary.stop");
+        COMMAND_SUMMARY.put("shutdown", "console.summary.shutdown");
     }
 
     private final BackendContext ctx;
@@ -130,7 +131,7 @@ public class ConsoleCommandHandler {
             case "delete": return handleDelete(args);
             case "stop": case "shutdown": return handleStop();
             default:
-                return "Unknown command: " + cmd + " — type 'help' for the command list.\n";
+                return nl(I18n.tr("console.unknown_command", cmd));
         }
     }
 
@@ -139,35 +140,26 @@ public class ConsoleCommandHandler {
     private String handleHelp(String[] args) {
         if (args.length == 0) {
             StringBuilder sb = new StringBuilder();
-            sb.append("NovaLink backend console commands:\n");
+            sb.append(I18n.tr("console.help.title")).append('\n');
             for (Map.Entry<String, String> e : COMMAND_SUMMARY.entrySet()) {
-                sb.append("  ").append(pad(e.getKey(), 10)).append(" — ").append(e.getValue()).append('\n');
+                sb.append("  ").append(pad(e.getKey(), 10)).append(" — ").append(I18n.tr(e.getValue())).append('\n');
             }
-            sb.append("\nType 'help <command>' for detailed usage.\n");
+            sb.append(I18n.tr("console.help.tail"));
             return sb.toString();
         }
         String target = args[0].toLowerCase(Locale.ROOT);
-        switch (target) {
-            case "help": return "help [command]\n  With no arg: list all commands.\n  With a command name: show detailed usage.\n";
-            case "status": return "status\n  Prints: online players, connected servers, channels, active spy sessions, config reload count.\n";
-            case "players": return "players\n  Lists all cached (online) players: playerId / name / clientId / activeChannel.\n";
-            case "clients": return "clients\n  Lists authenticated game-server connections: clientId / remote address / port / connect time.\n";
-            case "channels": return "channels\n  Lists every channel: id / scope / owner client / display name / member count.\n";
-            case "channel": return "channel <id>\n  Shows one channel's detail + its member UUIDs.\n";
-            case "mute": return "mute <player|name> <channel> <dur> [reason]\n  Mutes a player in a channel. Dur formats: 30s / 10m / 2h / 1d / 0 or 'perm' (permanent).\n  <player> may be a UUID or an online player name (cross-server resolved).\n  Example: mute Steve staff 10m spam\n";
-            case "unmute": return "unmute <player> <channel>\n  Unmutes a player in a channel. <player> may be a UUID or an online name.\n";
-            case "mutes": return "mutes [player]\n  With no arg: lists all active mutes across online players.\n  With a player UUID or name: lists that player's active mutes.\n";
-            case "kick": return "kick <player> <channel>\n  Kicks a player from a channel (cross-server name resolution). <player> may be a UUID or name.\n";
-            case "announce": return "announce <channel> <msg...>\n  Broadcasts an announcement prefixed with 【公告】 to the channel via the message router.\n";
-            case "title": return "title <channel> <title> [subtitle...]\n  Sends a TitlePacket to the channel (broadcast for GLOBAL, single client for SERVER/PRIVATE).\n";
-            case "reload": return "reload\n  Hot-reloads config and broadcasts a ConfigSyncPacket to all authenticated clients.\n";
-            case "spies": return "spies\n  Lists all currently monitored channels + total spy session count.\n";
-            case "spy": return "spy start <channel> [adminId]\n  spy off [adminId]\n  Starts/stops spy sessions. adminId defaults to the console sentinel.\n";
-            case "create": return "create <name> [password] [scope]\n  Creates a channel. scope = global (default) or private. If a password is given, the channel is created private+password.\n";
-            case "delete": return "delete <id>\n  Deletes a channel. Removes members and (for private) untracks the id.\n";
-            case "stop": case "shutdown": return "stop|shutdown\n  Triggers graceful shutdown of all backend services.\n";
-            default: return "No help for unknown command: " + target + "\n";
+        String key = "console.help." + target;
+        // stop/shutdown share the same help text key; map both.
+        if ("shutdown".equals(target)) {
+            key = "console.help.stop";
         }
+        // Verify the key exists in the bundle; if not, fall back to the
+        // unknown-help message (matches the old "No help for unknown command").
+        String resolved = I18n.tr(key);
+        if (resolved.equals(key)) {
+            return nl(I18n.tr("console.help.unknown", target));
+        }
+        return resolved;
     }
 
     // ============================ status ============================
@@ -182,13 +174,12 @@ public class ConsoleCommandHandler {
         int reloads = ctx.getConfigManager().getReloadCount();
 
         StringBuilder sb = new StringBuilder();
-        sb.append("=== NovaLink status ===\n");
-        sb.append("  Online players : ").append(players).append('\n');
-        sb.append("  Connections    : ").append(conns)
-          .append(" (authenticated: ").append(authed).append(")\n");
-        sb.append("  Channels       : ").append(channels).append('\n');
-        sb.append("  Spy sessions   : ").append(spyTotal).append('\n');
-        sb.append("  Config reloads : ").append(reloads).append('\n');
+        sb.append(I18n.tr("console.status.header")).append('\n');
+        sb.append(I18n.tr("console.status.online_players", players)).append('\n');
+        sb.append(I18n.tr("console.status.connections", conns, authed)).append('\n');
+        sb.append(I18n.tr("console.status.channels", channels)).append('\n');
+        sb.append(I18n.tr("console.status.spy_sessions", spyTotal)).append('\n');
+        sb.append(I18n.tr("console.status.config_reloads", reloads)).append('\n');
         return sb.toString();
     }
 
@@ -197,12 +188,14 @@ public class ConsoleCommandHandler {
     private String handlePlayers() {
         Collection<PlayerState> states = ctx.getPlayerStateManager().getAllPlayerStates();
         if (states.isEmpty()) {
-            return "No online players.\n";
+            return nl(I18n.tr("console.players.empty"));
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("Online players (").append(states.size()).append("):\n");
-        sb.append("  ").append(pad("playerId", 38))
-          .append(pad("name", 16)).append(pad("clientId", 14)).append("activeChannel").append('\n');
+        sb.append(I18n.tr("console.players.header", states.size()));
+        sb.append("  ").append(pad(I18n.tr("console.players.col_playerId"), 38))
+          .append(pad(I18n.tr("console.players.col_name"), 16))
+          .append(pad(I18n.tr("console.players.col_clientId"), 14))
+          .append(I18n.tr("console.players.col_activeChannel")).append('\n');
         for (PlayerState s : states) {
             sb.append("  ").append(pad(s.getPlayerId().toString(), 38))
               .append(pad(s.getPlayerName() != null ? s.getPlayerName() : "-", 16))
@@ -222,12 +215,14 @@ public class ConsoleCommandHandler {
             }
         }
         if (authed.isEmpty()) {
-            return "No authenticated game servers connected.\n";
+            return nl(I18n.tr("console.clients.empty"));
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("Authenticated game servers (").append(authed.size()).append("):\n");
-        sb.append("  ").append(pad("clientId", 16)).append(pad("remote", 18))
-          .append(pad("port", 8)).append(pad("connectedAt", 14)).append('\n');
+        sb.append(I18n.tr("console.clients.header", authed.size()));
+        sb.append("  ").append(pad(I18n.tr("console.clients.col_clientId"), 16))
+          .append(pad(I18n.tr("console.clients.col_remote"), 18))
+          .append(pad(I18n.tr("console.clients.col_port"), 8))
+          .append(I18n.tr("console.clients.col_connectedAt")).append('\n');
         for (ClientConnection c : authed) {
             sb.append("  ").append(pad(c.getClientId() != null ? c.getClientId() : "-", 16))
               .append(pad(c.getRemoteAddress(), 18))
@@ -242,12 +237,15 @@ public class ConsoleCommandHandler {
     private String handleChannels() {
         Collection<Channel> all = ctx.getChannelManager().getAllChannels();
         if (all.isEmpty()) {
-            return "No channels.\n";
+            return nl(I18n.tr("console.channels.empty"));
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("Channels (").append(all.size()).append("):\n");
-        sb.append("  ").append(pad("id", 18)).append(pad("scope", 8))
-          .append(pad("client", 14)).append(pad("name", 18)).append("members").append('\n');
+        sb.append(I18n.tr("console.channels.header", all.size()));
+        sb.append("  ").append(pad(I18n.tr("console.channels.col_id"), 18))
+          .append(pad(I18n.tr("console.channels.col_scope"), 8))
+          .append(pad(I18n.tr("console.channels.col_client"), 14))
+          .append(pad(I18n.tr("console.channels.col_name"), 18))
+          .append(I18n.tr("console.channels.col_members")).append('\n');
         for (Channel ch : all) {
             sb.append("  ").append(pad(ch.getId(), 18))
               .append(pad(ch.getScope().name(), 8))
@@ -260,24 +258,24 @@ public class ConsoleCommandHandler {
 
     private String handleChannelDetail(String[] args) {
         if (args.length < 1) {
-            return "Usage: channel <id>\n";
+            return nl(I18n.tr("console.channel.usage"));
         }
         Channel ch = ctx.getChannelManager().getChannel(args[0]);
         if (ch == null) {
-            return "Channel not found: " + args[0] + "\n";
+            return nl(I18n.tr("console.channel.not_found", args[0]));
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("Channel: ").append(ch.getId()).append('\n');
-        sb.append("  display : ").append(ch.getDisplayName()).append('\n');
-        sb.append("  scope   : ").append(ch.getScope()).append('\n');
-        sb.append("  client  : ").append(ch.getClientId() != null ? ch.getClientId() : "-").append('\n');
-        sb.append("  owner   : ").append(ch.getOwnerId() != null ? ch.getOwnerId() : "-").append('\n');
-        sb.append("  members : ").append(ch.getMemberCount()).append(" / ").append(ch.getMaxCapacity()).append('\n');
+        sb.append(I18n.tr("console.channel.header", ch.getId())).append('\n');
+        sb.append(I18n.tr("console.channel.display", ch.getDisplayName())).append('\n');
+        sb.append(I18n.tr("console.channel.scope", ch.getScope())).append('\n');
+        sb.append(I18n.tr("console.channel.client", ch.getClientId() != null ? ch.getClientId() : "-")).append('\n');
+        sb.append(I18n.tr("console.channel.owner", ch.getOwnerId() != null ? ch.getOwnerId() : "-")).append('\n');
+        sb.append(I18n.tr("console.channel.members", ch.getMemberCount(), ch.getMaxCapacity())).append('\n');
         Set<UUID> members = ctx.getChannelManager().getChannelMembers(ch.getId());
         if (!members.isEmpty()) {
-            sb.append("  member UUIDs:\n");
+            sb.append(I18n.tr("console.channel.member_uuids")).append('\n');
             for (UUID m : members) {
-                sb.append("    ").append(m).append('\n');
+                sb.append(I18n.tr("console.channel.member_uuid_item", m)).append('\n');
             }
         }
         return sb.toString();
@@ -287,48 +285,48 @@ public class ConsoleCommandHandler {
 
     private String handleMute(String[] args) {
         if (args.length < 3) {
-            return "Usage: mute <player|name> <channel> <dur> [reason]\n  Dur: 30s / 10m / 2h / 1d / 0 or perm\n";
+            return nl(I18n.tr("console.mute.usage"));
         }
         UUID target = resolveTarget(args[0]);
         if (target == null) {
-            return "Could not resolve target player: " + args[0] + " (not a UUID and not online)\n";
+            return nl(I18n.tr("console.mute.target_unresolved", args[0]));
         }
         String channel = args[1];
         if (!ctx.getChannelManager().channelExists(channel)) {
-            return "Channel not found: " + channel + "\n";
+            return nl(I18n.tr("console.mute.channel_not_found", channel));
         }
         long durationMs;
         try {
             durationMs = parseDurationMs(args[2]);
         } catch (IllegalArgumentException e) {
-            return "Invalid duration '" + args[2] + "': " + e.getMessage() + "\n";
+            return nl(I18n.tr("console.mute.invalid_duration", args[2], e.getMessage()));
         }
-        String reason = args.length >= 4 ? joinFrom(args, 3) : "Muted by console";
+        String reason = args.length >= 4 ? joinFrom(args, 3) : I18n.tr("console.mute.reason_default");
 
         MuteResult result = ctx.getMuteManager().mutePlayer(
                 ConsoleSentinel.CONSOLE_SENTINEL, target, channel, durationMs, reason, null);
         if (result.isSuccess()) {
-            return "Muted " + args[0] + " (" + target + ") in " + channel
-                    + " for " + describeDuration(durationMs) + ". Reason: " + reason + "\n";
+            return nl(I18n.tr("console.mute.success", args[0], target, channel,
+                    describeDuration(durationMs), reason));
         }
-        return "Mute failed: " + result.getMessage() + " (" + result.getErrorCode() + ")\n";
+        return nl(I18n.tr("console.mute.failed", result.getMessage(), result.getErrorCode()));
     }
 
     private String handleUnmute(String[] args) {
         if (args.length < 2) {
-            return "Usage: unmute <player> <channel>\n";
+            return nl(I18n.tr("console.unmute.usage"));
         }
         UUID target = resolveTarget(args[0]);
         if (target == null) {
-            return "Could not resolve target player: " + args[0] + "\n";
+            return nl(I18n.tr("console.unmute.target_unresolved", args[0]));
         }
         String channel = args[1];
         MuteResult result = ctx.getMuteManager().unmutePlayer(
                 ConsoleSentinel.CONSOLE_SENTINEL, target, channel, null);
         if (result.isSuccess()) {
-            return "Unmuted " + args[0] + " (" + target + ") in " + channel + "\n";
+            return nl(I18n.tr("console.unmute.success", args[0], target, channel));
         }
-        return "Unmute failed: " + result.getMessage() + " (" + result.getErrorCode() + ")\n";
+        return nl(I18n.tr("console.unmute.failed", result.getMessage(), result.getErrorCode()));
     }
 
     private String handleMutes(String[] args) {
@@ -337,7 +335,7 @@ public class ConsoleCommandHandler {
             Collection<PlayerState> states = ctx.getPlayerStateManager().getAllPlayerStates();
             int total = 0;
             StringBuilder sb = new StringBuilder();
-            sb.append("Active mutes:\n");
+            sb.append(I18n.tr("console.mutes.header")).append('\n');
             for (PlayerState s : states) {
                 List<MuteInfo> mutes = ctx.getMuteManager().getActiveMutes(s.getPlayerId());
                 if (mutes.isEmpty()) {
@@ -345,31 +343,32 @@ public class ConsoleCommandHandler {
                 }
                 for (MuteInfo m : mutes) {
                     total++;
-                    sb.append("  ").append(s.getPlayerName() != null ? s.getPlayerName() : s.getPlayerId())
-                      .append(" (").append(s.getPlayerId()).append(") in ")
-                      .append(m.getChannelId() != null ? m.getChannelId() : "(global)")
-                      .append(" — ").append(describeDuration(m.getRemainingTime()))
-                      .append(" reason=").append(m.getReason() != null ? m.getReason() : "-")
-                      .append('\n');
+                    sb.append(I18n.tr("console.mutes.entry",
+                            s.getPlayerName() != null ? s.getPlayerName() : s.getPlayerId(),
+                            s.getPlayerId(),
+                            m.getChannelId() != null ? m.getChannelId() : "(global)",
+                            describeDuration(m.getRemainingTime()),
+                            m.getReason() != null ? m.getReason() : "-")).append('\n');
                 }
             }
-            sb.append("Total: ").append(total).append('\n');
+            sb.append(I18n.tr("console.mutes.total", total)).append('\n');
             return sb.toString();
         }
         UUID target = resolveTarget(args[0]);
         if (target == null) {
-            return "Could not resolve target player: " + args[0] + "\n";
+            return nl(I18n.tr("console.mutes.target_unresolved", args[0]));
         }
         List<MuteInfo> mutes = ctx.getMuteManager().getActiveMutes(target);
         if (mutes.isEmpty()) {
-            return "No active mutes for " + args[0] + "\n";
+            return nl(I18n.tr("console.mutes.none_for", args[0]));
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("Active mutes for ").append(args[0]).append(" (").append(target).append("):\n");
+        sb.append(I18n.tr("console.mutes.header_for", args[0], target)).append('\n');
         for (MuteInfo m : mutes) {
-            sb.append("  ").append(m.getChannelId() != null ? m.getChannelId() : "(global)")
-              .append(" — ").append(describeDuration(m.getRemainingTime()))
-              .append(" reason=").append(m.getReason() != null ? m.getReason() : "-").append('\n');
+            sb.append(I18n.tr("console.mutes.entry_for",
+                    m.getChannelId() != null ? m.getChannelId() : "(global)",
+                    describeDuration(m.getRemainingTime()),
+                    m.getReason() != null ? m.getReason() : "-")).append('\n');
         }
         return sb.toString();
     }
@@ -378,19 +377,19 @@ public class ConsoleCommandHandler {
 
     private String handleKick(String[] args) {
         if (args.length < 2) {
-            return "Usage: kick <player> <channel>\n";
+            return nl(I18n.tr("console.kick.usage"));
         }
         UUID target = resolveTarget(args[0]);
         if (target == null) {
-            return "Could not resolve target player: " + args[0] + "\n";
+            return nl(I18n.tr("console.kick.target_unresolved", args[0]));
         }
         String channel = args[1];
         Channel ch = ctx.getChannelManager().getChannel(channel);
         if (ch == null) {
-            return "Channel not found: " + channel + "\n";
+            return nl(I18n.tr("console.kick.channel_not_found", channel));
         }
         if (!ch.isMember(target)) {
-            return "Target " + args[0] + " is not a member of " + channel + "\n";
+            return nl(I18n.tr("console.kick.not_member", args[0], channel));
         }
         // Mirror ChannelActionHandler.handleKick: remove member + update state.
         ctx.getChannelManager().removeMember(channel, target);
@@ -399,57 +398,57 @@ public class ConsoleCommandHandler {
         } catch (Exception e) {
             // non-fatal, matches handler
         }
-        return "Kicked " + args[0] + " (" + target + ") from " + channel + "\n";
+        return nl(I18n.tr("console.kick.success", args[0], target, channel));
     }
 
     // ============================ announce ============================
 
     private String handleAnnounce(String[] args) {
         if (args.length < 2) {
-            return "Usage: announce <channel> <msg...>\n";
+            return nl(I18n.tr("console.announce.usage"));
         }
         String channel = args[0];
         String content = joinFrom(args, 1);
         Channel ch = ctx.getChannelManager().getChannel(channel);
         if (ch == null) {
-            return "Channel not found: " + channel + "\n";
+            return nl(I18n.tr("console.announce.channel_not_found", channel));
         }
-        String message = "【公告】 " + content;
+        String message = I18n.tr("console.announce.prefix", content);
         Map<String, String> placeholders = new HashMap<>();
         placeholders.put("_announcement", "true");
         placeholders.put("_operator", ConsoleSentinel.CONSOLE_NAME);
         // Mirror AdminActionHandler.handleAnnounce: trusted routeMessage by id.
         Set<String> recipients = ctx.getMessageRouter().routeMessage(
                 channel, ConsoleSentinel.CONSOLE_SENTINEL, ConsoleSentinel.CONSOLE_NAME, message, placeholders);
-        return "Announcement sent to " + channel + " (recipients: " + recipients.size() + ")\n";
+        return nl(I18n.tr("console.announce.success", channel, recipients.size()));
     }
 
     // ============================ title ============================
 
     private String handleTitle(String[] args) {
         if (args.length < 2) {
-            return "Usage: title <channel> <title> [subtitle...]\n";
+            return nl(I18n.tr("console.title.usage"));
         }
         String channel = args[0];
         String title = args[1];
         String subtitle = args.length >= 3 ? joinFrom(args, 2) : "";
         Channel ch = ctx.getChannelManager().getChannel(channel);
         if (ch == null) {
-            return "Channel not found: " + channel + "\n";
+            return nl(I18n.tr("console.title.channel_not_found", channel));
         }
         // Mirror AdminActionHandler.handleTitle.
         TitlePacket packet = new TitlePacket(channel, title, subtitle, ConsoleSentinel.CONSOLE_SENTINEL);
         if (ch.getScope() == ChannelScope.GLOBAL) {
             ctx.getNetworkHandler().broadcastAuthenticated(packet);
-            return "Title sent to global channel " + channel + "\n";
+            return nl(I18n.tr("console.title.global_success", channel));
         }
         String targetClientId = ch.getClientId();
         ClientConnection target = targetClientId != null ? ctx.getNetworkHandler().findByClientId(targetClientId) : null;
         if (target == null || !target.isActive() || !target.isAuthenticated()) {
-            return "Target client not connected for channel " + channel + "\n";
+            return nl(I18n.tr("console.title.client_not_connected", channel));
         }
         target.sendPacket(packet);
-        return "Title sent to channel " + channel + " on client " + targetClientId + "\n";
+        return nl(I18n.tr("console.title.server_success", channel, targetClientId));
     }
 
     // ============================ reload ============================
@@ -458,9 +457,9 @@ public class ConsoleCommandHandler {
         ConfigManager cm = ctx.getConfigManager();
         try {
             cm.reload(true);
-            return "Configuration reloaded (count=" + cm.getReloadCount() + "); ConfigSync broadcast.\n";
+            return nl(I18n.tr("console.reload.success", cm.getReloadCount()));
         } catch (ConfigException e) {
-            return "Reload failed: " + e.getMessage() + "\n";
+            return nl(I18n.tr("console.reload.failed", e.getMessage()));
         }
     }
 
@@ -471,14 +470,13 @@ public class ConsoleCommandHandler {
         List<String> monitored = sm.getAllMonitoredChannels();
         int total = sm.getTotalSpySessionCount();
         StringBuilder sb = new StringBuilder();
-        sb.append("Spy sessions: ").append(total).append('\n');
+        sb.append(I18n.tr("console.spies.header", total)).append('\n');
         if (monitored.isEmpty()) {
-            sb.append("  No channels currently monitored.\n");
+            sb.append(I18n.tr("console.spies.none")).append('\n');
         } else {
-            sb.append("  Monitored channels:\n");
+            sb.append(I18n.tr("console.spies.monitored")).append('\n');
             for (String ch : monitored) {
-                sb.append("    ").append(ch)
-                  .append(" (admins: ").append(sm.getChannelSpies(ch).size()).append(")\n");
+                sb.append(I18n.tr("console.spies.monitored_item", ch, sm.getChannelSpies(ch).size())).append('\n');
             }
         }
         return sb.toString();
@@ -488,19 +486,19 @@ public class ConsoleCommandHandler {
 
     private String handleSpy(String[] args) {
         if (args.length == 0) {
-            return "Usage: spy start <channel> [adminId] | spy off [adminId]\n";
+            return nl(I18n.tr("console.spy.usage"));
         }
         String sub = args[0].toLowerCase(Locale.ROOT);
         switch (sub) {
             case "start": return handleSpyStart(args);
             case "off": return handleSpyOff(args);
-            default: return "Unknown spy subcommand: " + sub + " (start | off)\n";
+            default: return nl(I18n.tr("console.spy.unknown_sub", sub));
         }
     }
 
     private String handleSpyStart(String[] args) {
         if (args.length < 2) {
-            return "Usage: spy start <channel> [adminId]\n";
+            return nl(I18n.tr("console.spy.start.usage"));
         }
         String channel = args[1];
         UUID adminId = args.length >= 3 ? parseUuid(args[2]) : null;
@@ -514,9 +512,9 @@ public class ConsoleCommandHandler {
         ensureConsoleSuperAdminSession();
         SpyResult result = ctx.getSpyManager().startSpying(adminId, channel, null);
         if (result.isSuccess()) {
-            return "Spy started: " + result.getMessage() + "\n";
+            return nl(I18n.tr("console.spy.start.success", result.getMessage()));
         }
-        return "Spy start failed: " + result.getMessage() + " (" + result.getErrorCode() + ")\n";
+        return nl(I18n.tr("console.spy.start.failed", result.getMessage(), result.getErrorCode()));
     }
 
     private String handleSpyOff(String[] args) {
@@ -526,16 +524,16 @@ public class ConsoleCommandHandler {
         }
         SpyResult result = ctx.getSpyManager().stopAllSpying(adminId);
         if (result.isSuccess()) {
-            return "Spy stopped: " + result.getMessage() + "\n";
+            return nl(I18n.tr("console.spy.off.success", result.getMessage()));
         }
-        return "Spy off failed: " + result.getMessage() + " (" + result.getErrorCode() + ")\n";
+        return nl(I18n.tr("console.spy.off.failed", result.getMessage(), result.getErrorCode()));
     }
 
     // ============================ create / delete ============================
 
     private String handleCreate(String[] args) {
         if (args.length < 1) {
-            return "Usage: create <name> [password] [scope]\n  scope = global (default) | private\n";
+            return nl(I18n.tr("console.create.usage"));
         }
         String name = args[0];
         String password = args.length >= 2 ? args[1] : null;
@@ -543,7 +541,7 @@ public class ConsoleCommandHandler {
         String scope = scopeRaw.trim().toLowerCase(Locale.ROOT);
 
         if (ctx.getChannelManager().channelExists(name)) {
-            return "Channel already exists: " + name + "\n";
+            return nl(I18n.tr("console.create.already_exists", name));
         }
 
         if ("private".equals(scope) || password != null) {
@@ -553,14 +551,16 @@ public class ConsoleCommandHandler {
                 PrivateChannelManager.PrivateChannelCreationResult created =
                         ctx.getPrivateChannelManager().createPrivateChannel(
                                 name, "console", ConsoleSentinel.CONSOLE_SENTINEL, password);
-                return "Created private channel " + created.getChannelId()
-                        + " (password" + (created.isPasswordGenerated() ? " auto-generated: " + created.getPassword() : " set") + ")\n";
+                String pwNote = created.isPasswordGenerated()
+                        ? I18n.tr("console.create.private_password_auto", created.getPassword())
+                        : I18n.tr("console.create.private_password_set");
+                return nl(I18n.tr("console.create.private_success", created.getChannelId(), pwNote));
             } catch (Exception e) {
-                return "Failed to create private channel: " + e.getMessage() + "\n";
+                return nl(I18n.tr("console.create.private_failed", e.getMessage()));
             }
         }
         if (!"global".equals(scope)) {
-            return "Unknown scope: " + scope + " (global | private)\n";
+            return nl(I18n.tr("console.create.unknown_scope", scope));
         }
         try {
             ChannelConfig config = ChannelConfig.builder()
@@ -569,20 +569,20 @@ public class ConsoleCommandHandler {
                     .scope(ChannelScope.GLOBAL)
                     .build();
             ctx.getChannelManager().createChannel(config);
-            return "Created global channel " + name + "\n";
+            return nl(I18n.tr("console.create.global_success", name));
         } catch (Exception e) {
-            return "Failed to create channel: " + e.getMessage() + "\n";
+            return nl(I18n.tr("console.create.global_failed", e.getMessage()));
         }
     }
 
     private String handleDelete(String[] args) {
         if (args.length < 1) {
-            return "Usage: delete <id>\n";
+            return nl(I18n.tr("console.delete.usage"));
         }
         String id = args[0];
         Channel ch = ctx.getChannelManager().getChannel(id);
         if (ch == null) {
-            return "Channel not found: " + id + "\n";
+            return nl(I18n.tr("console.delete.not_found", id));
         }
         // Remove all members first (clear membership side-effects).
         for (UUID m : new ArrayList<>(ctx.getChannelManager().getChannelMembers(id))) {
@@ -598,9 +598,9 @@ public class ConsoleCommandHandler {
             ctx.getPrivateChannelManager().removeTrackedId(id);
         }
         if (deleted) {
-            return "Deleted channel " + id + "\n";
+            return nl(I18n.tr("console.delete.success", id));
         }
-        return "Failed to delete channel " + id + "\n";
+        return nl(I18n.tr("console.delete.failed", id));
     }
 
     // ============================ stop ============================
@@ -700,6 +700,19 @@ public class ConsoleCommandHandler {
             sb.append(args[i]);
         }
         return sb.toString();
+    }
+
+    /**
+     * Ensures a rendered i18n line ends with exactly one newline. Usage/help
+     * keys already embed their trailing {@code \n} in the bundle value, so this
+     * is a no-op for them; single-line success/error keys get the newline added
+     * so console output matches the pre-i18n format.
+     */
+    private static String nl(String s) {
+        if (s == null || s.isEmpty()) {
+            return s;
+        }
+        return s.endsWith("\n") ? s : s + '\n';
     }
 
     private static String pad(String s, int width) {

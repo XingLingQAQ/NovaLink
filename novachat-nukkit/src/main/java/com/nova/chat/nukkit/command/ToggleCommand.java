@@ -4,6 +4,7 @@ import cn.nukkit.Player;
 import cn.nukkit.command.CommandSender;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.ChatModeDescriptions;
 import com.nova.chat.client.state.PlayerChannelState;
@@ -30,7 +31,7 @@ public class ToggleCommand extends AbstractSubCommand {
 
     @Override
     public String getDescription() {
-        return "切换聊天模式";
+        return I18n.tr("chat.command.desc.toggle");
     }
 
     @Override
@@ -62,9 +63,9 @@ public class ToggleCommand extends AbstractSubCommand {
         }
 
         ChatMode newMode = state.getChatMode();
-        String modeName = newMode == ChatMode.REPLACE ? "频道模式" : "混合模式";
 
-        sendSuccess(sender, "聊天模式已切换为: &e" + modeName);
+        sendSuccess(sender, I18n.tr(player.getUniqueId(), "chat.command.toggle.switched",
+                ChatModeDescriptions.modeName(newMode)));
         sendMessage(sender, ChatModeDescriptions.describe(newMode));
         plugin.debug("Player " + player.getName() + " toggled chat mode to: " + newMode);
 
