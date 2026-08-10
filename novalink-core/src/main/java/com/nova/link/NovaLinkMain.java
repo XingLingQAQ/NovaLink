@@ -74,6 +74,14 @@ public class NovaLinkMain {
      */
     private volatile CountDownLatch shutdownLatch;
 
+    /**
+     * Backend entry point. Honors {@code --help}/{@code -h} by printing the
+     * console command list and exiting without starting a server; otherwise
+     * bootstraps the backend, runs the JLine console loop on this thread, and
+     * performs best-effort cleanup on fatal startup failure.
+     *
+     * @param args raw command-line arguments
+     */
     public static void main(String[] args) {
         // --help / -h: print the command list and exit 0 without starting a server.
         // Lets the console wiring be smoke-tested without a full backend.

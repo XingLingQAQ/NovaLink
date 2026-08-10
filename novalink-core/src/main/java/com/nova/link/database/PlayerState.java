@@ -100,12 +100,14 @@ public class PlayerState {
         this.joinedChannels = joinedChannels != null ? new HashSet<>(joinedChannels) : new HashSet<>();
     }
 
+    /** Adds a channel id to the player's joined set; null ids are ignored. */
     public void addJoinedChannel(String channelId) {
         if (channelId != null) {
             joinedChannels.add(channelId);
         }
     }
 
+    /** Removes a channel id from the player's joined set, if present. */
     public void removeJoinedChannel(String channelId) {
         joinedChannels.remove(channelId);
     }
@@ -130,12 +132,14 @@ public class PlayerState {
         this.mutes = mutes != null ? new HashMap<>(mutes) : new HashMap<>();
     }
 
+    /** Associates a mute with the given channel id; null keys or values are ignored. */
     public void addMute(String channelId, MuteInfo muteInfo) {
         if (channelId != null && muteInfo != null) {
             mutes.put(channelId, muteInfo);
         }
     }
 
+    /** Removes any mute recorded for the given channel id. */
     public void removeMute(String channelId) {
         mutes.remove(channelId);
     }
@@ -173,6 +177,7 @@ public class PlayerState {
         this.lastSeen = lastSeen;
     }
 
+    /** Refreshes the last-seen timestamp to the current time. */
     public void updateLastSeen() {
         this.lastSeen = System.currentTimeMillis();
     }

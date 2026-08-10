@@ -98,6 +98,18 @@ public class ChannelActionHandler {
         this.notificationStore = notificationStore;
     }
 
+    /**
+     * Dispatches a channel action packet to its per-action handler (join, leave,
+     * create, invite, accept, kick, mute/unmute, ban/unban, delete, who).
+     *
+     * <p>Rejects unauthenticated connections and null/malformed packets before
+     * dispatch, and wraps any handler exception into an {@code NC-500} response
+     * so a single bad action never drops the connection.
+     *
+     * @param connection the authenticated client connection
+     * @param packet     the action request
+     * @return a response packet indicating success or a coded failure
+     */
     public ChannelActionResponsePacket handle(ClientConnection connection, ChannelActionPacket packet) {
         if (packet == null || packet.getAction() == null) {
             return new ChannelActionResponsePacket(false, null, "", "NC-400", "Invalid channel action packet");
