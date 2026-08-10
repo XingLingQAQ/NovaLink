@@ -125,6 +125,10 @@ public class NovaChatNeoForge {
         return config;
     }
 
+    /**
+     * Reloads the configuration from disk and propagates the change to the
+     * platform's replace-vanilla-chat flag and the shared chat interceptor.
+     */
     public void reloadConfig() {
         config = configManager.loadConfig();
         platform.setReplaceVanillaChat(config.getChat().isReplaceVanilla());

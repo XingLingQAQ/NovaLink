@@ -39,6 +39,16 @@ public class NeoForgeCommandRegistrar {
     private static CommandManager commandManager;
     private static ModServices services;
 
+    /**
+     * Registers all seven NovaChat subcommands (help/join/leave/list/who/toggle/
+     * reload) with the shared {@link CommandManager} and subscribes a
+     * {@link CommandEventHandler} to the NeoForge event bus so the brigadier
+     * {@code novachat}/{@code nc} trees are built when
+     * {@link RegisterCommandsEvent} fires.
+     *
+     * @param manager  the shared command manager to register handlers into
+     * @param services the shared mod services attached to each command context
+     */
     public static void registerCommands(CommandManager manager, ModServices services) {
         NeoForgeCommandRegistrar.commandManager = manager;
         NeoForgeCommandRegistrar.services = services;

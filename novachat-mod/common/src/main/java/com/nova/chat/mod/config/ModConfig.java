@@ -161,7 +161,12 @@ public class ModConfig {
         public void setReconnectDelay(int reconnectDelay) {
             this.reconnectDelay = reconnectDelay;
         }
-        
+
+        /**
+         * Validates the backend configuration.
+         * @return true if host is non-empty, port is in 1..65535, credentials and
+         *         a positive reconnect delay are all set
+         */
         public boolean validate() {
             return host != null && !host.isEmpty() &&
                    port > 0 && port <= 65535 &&
@@ -213,6 +218,10 @@ public class ModConfig {
             this.locale = locale;
         }
 
+        /**
+         * Validates the chat configuration.
+         * @return true if a non-empty default channel is configured
+         */
         public boolean validate() {
             return defaultChannel != null && !defaultChannel.isEmpty();
         }

@@ -4,9 +4,13 @@ package com.nova.chat.mod.platform;
  * Enum representing different Minecraft mod loaders
  */
 public enum PlatformType {
+    /** The Fabric mod loader. */
     FABRIC("Fabric"),
+    /** The NeoForge mod loader. */
     NEOFORGE("NeoForge"),
+    /** The Quilt mod loader (Fabric-compatible). */
     QUILT("Quilt"),
+    /** The legacy Forge mod loader. */
     FORGE("Forge");
 
     private final String displayName;

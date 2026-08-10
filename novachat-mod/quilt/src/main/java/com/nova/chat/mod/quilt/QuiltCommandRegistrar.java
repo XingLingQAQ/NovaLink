@@ -37,6 +37,15 @@ public class QuiltCommandRegistrar {
     private static CommandManager commandManager;
     private static ModServices services;
 
+    /**
+     * Registers all seven NovaChat subcommands (help/join/leave/list/who/toggle/
+     * reload) with the shared {@link CommandManager} and registers a
+     * {@link CommandRegistrationCallback} listener (via the Quilted Fabric API)
+     * that builds the brigadier {@code novachat}/{@code nc} command trees.
+     *
+     * @param manager  the shared command manager to register handlers into
+     * @param services the shared mod services attached to each command context
+     */
     public static void registerCommands(CommandManager manager, ModServices services) {
         QuiltCommandRegistrar.commandManager = manager;
         QuiltCommandRegistrar.services = services;
