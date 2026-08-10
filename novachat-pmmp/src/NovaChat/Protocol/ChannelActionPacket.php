@@ -6,37 +6,43 @@ namespace NovaChat\Protocol;
 
 /**
  * Channel action packet for channel operations.
- * 
- * Fields:
+ *
+ * Wire:
  * - action (byte): Action type
  * - channelId (string): Channel identifier
  * - password (string): Channel password (if required)
  * - extra (map): Extra key-value data
+ *
+ * Action wire IDs are 0-based and must match the Java ChannelAction enum:
+ *   JOIN=0, LEAVE=1, CREATE=2, DELETE=3, INVITE=4, ACCEPT=5,
+ *   KICK=6, MUTE=7, UNMUTE=8, BAN=9, UNBAN=10, WHO=11
  */
 class ChannelActionPacket extends Packet {
-    
-    // Action types
-    public const ACTION_JOIN = 0x01;
-    public const ACTION_LEAVE = 0x02;
-    public const ACTION_CREATE = 0x03;
-    public const ACTION_DELETE = 0x04;
-    public const ACTION_INVITE = 0x05;
-    public const ACTION_ACCEPT = 0x06;
-    public const ACTION_KICK = 0x07;
-    public const ACTION_LIST = 0x08;
-    public const ACTION_ACCEPT_INVITE = 0x09;
-    public const ACTION_ADMIN = 0x0A;
-    
+
+    // Action types (0-based, matching Java ChannelAction enum)
+    public const ACTION_JOIN = 0;
+    public const ACTION_LEAVE = 1;
+    public const ACTION_CREATE = 2;
+    public const ACTION_DELETE = 3;
+    public const ACTION_INVITE = 4;
+    public const ACTION_ACCEPT = 5;
+    public const ACTION_KICK = 6;
+    public const ACTION_MUTE = 7;
+    public const ACTION_UNMUTE = 8;
+    public const ACTION_BAN = 9;
+    public const ACTION_UNBAN = 10;
+    public const ACTION_WHO = 11;
+
     public int $action = 0;
     public string $channelId = "";
     public string $password = "";
     /** @var array<string, string> */
     public array $extra = [];
-    
+
     public function getId(): int {
         return self::CHANNEL_ACTION;
     }
-    
+
     public function encode(PacketBuffer $buffer): void {
         $buffer->writeByte($this->action);
         $buffer->writeString($this->channelId);
@@ -47,7 +53,7 @@ class ChannelActionPacket extends Packet {
             $buffer->writeString((string)$value);
         }
     }
-    
+
     public function decode(PacketBuffer $buffer): void {
         $this->action = $buffer->readByte();
         $this->channelId = $buffer->readString();

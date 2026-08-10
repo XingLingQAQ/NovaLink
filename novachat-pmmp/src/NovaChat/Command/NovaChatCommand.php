@@ -82,6 +82,8 @@ class NovaChatCommand extends Command implements PluginOwned {
             "help" => $this->handleHelp($sender),
             "join" => $this->handleJoin($sender, $args),
             "leave" => $this->handleLeave($sender),
+            "list" => $this->handleList($sender),
+            "who" => $this->handleWho($sender, $args),
             "create" => $this->handleCreate($sender, $args),
             "invite" => $this->handleInvite($sender, $args),
             "accept" => $this->handleAccept($sender, $args),
@@ -108,6 +110,8 @@ class NovaChatCommand extends Command implements PluginOwned {
         $sender->sendMessage(TextFormat::GRAY . "/nc help" . TextFormat::WHITE . " - Show this help");
         $sender->sendMessage(TextFormat::GRAY . "/nc join <channel>" . TextFormat::WHITE . " - Join a channel");
         $sender->sendMessage(TextFormat::GRAY . "/nc leave" . TextFormat::WHITE . " - Leave current channel");
+        $sender->sendMessage(TextFormat::GRAY . "/nc list" . TextFormat::WHITE . " - List available channels");
+        $sender->sendMessage(TextFormat::GRAY . "/nc who [channel]" . TextFormat::WHITE . " - List online members");
         $sender->sendMessage(TextFormat::GRAY . "/nc toggle" . TextFormat::WHITE . " - Toggle chat on/off");
         $sender->sendMessage(TextFormat::GRAY . "/nc status" . TextFormat::WHITE . " - Show connection status");
         
@@ -170,14 +174,25 @@ class NovaChatCommand extends Command implements PluginOwned {
         }
         
         $channelId = $args[0];
+        $password = $args[1] ?? "";
         $chatHandler = $this->plugin->getChatHandler();
-        
+
         if ($chatHandler !== null) {
+            // Send JOIN action to backend if connected.
+            $networkClient = $this->plugin->getNetworkClient();
+            if ($networkClient !== null && $networkClient->isAuthenticated()) {
+                $networkClient->sendChannelAction(
+                    ChannelActionPacket::ACTION_JOIN,
+                    $channelId,
+                    $password
+                );
+            }
             $chatHandler->setPlayerChannel($sender, $channelId);
+            $chatHandler->addKnownChannel($channelId);
             $prefix = $this->plugin->getConfigManager()->getPrefix();
             $sender->sendMessage($prefix . TextFormat::GREEN . "Joined channel: " . TextFormat::YELLOW . $channelId);
         }
-        
+
         return true;
     }
     
@@ -200,19 +215,101 @@ class NovaChatCommand extends Command implements PluginOwned {
         
         $chatHandler = $this->plugin->getChatHandler();
         $defaultChannel = $this->plugin->getConfigManager()->getDefaultChannel();
-        
+
         if ($chatHandler !== null) {
+            $currentChannel = $chatHandler->getPlayerChannel($sender);
+            // Send LEAVE action to backend if connected and not already on default.
+            if ($currentChannel !== $defaultChannel) {
+                $networkClient = $this->plugin->getNetworkClient();
+                if ($networkClient !== null && $networkClient->isAuthenticated()) {
+                    $networkClient->sendChannelAction(
+                        ChannelActionPacket::ACTION_LEAVE,
+                        $currentChannel
+                    );
+                }
+            }
             $chatHandler->setPlayerChannel($sender, $defaultChannel);
             $prefix = $this->plugin->getConfigManager()->getPrefix();
             $sender->sendMessage($prefix . TextFormat::GREEN . "Returned to default channel: " . TextFormat::YELLOW . $defaultChannel);
         }
-        
+
         return true;
     }
-    
+
+    /**
+     * Handles the list subcommand — lists known channels.
+     *
+     * @param CommandSender $sender Command sender
+     * @return bool True
+     */
+    private function handleList(CommandSender $sender): bool {
+        $chatHandler = $this->plugin->getChatHandler();
+        $prefix = $this->plugin->getConfigManager()->getPrefix();
+
+        $sender->sendMessage($prefix . TextFormat::YELLOW . "NovaChat Channels:");
+
+        if ($chatHandler !== null) {
+            $channels = $chatHandler->getKnownChannels();
+            if (count($channels) === 0) {
+                $sender->sendMessage(TextFormat::GRAY . "No known channels yet, please wait for the server to push the channel list.");
+            } else {
+                sort($channels);
+                foreach ($channels as $channelId) {
+                    $sender->sendMessage(TextFormat::GRAY . "- " . TextFormat::AQUA . $channelId);
+                }
+            }
+        } else {
+            $sender->sendMessage(TextFormat::RED . "Chat handler not initialized.");
+        }
+
+        return true;
+    }
+
+    /**
+     * Handles the who subcommand — queries online members of a channel.
+     *
+     * @param CommandSender $sender Command sender
+     * @param array $args Arguments
+     * @return bool True
+     */
+    private function handleWho(CommandSender $sender, array $args): bool {
+        if (!$sender instanceof Player) {
+            $sender->sendMessage(TextFormat::RED . "This command can only be used by players.");
+            return true;
+        }
+
+        $chatHandler = $this->plugin->getChatHandler();
+        $prefix = $this->plugin->getConfigManager()->getPrefix();
+
+        $channelId = count($args) > 0 ? $args[0] : "";
+        if ($channelId === "" && $chatHandler !== null) {
+            $channelId = $chatHandler->getPlayerChannel($sender);
+        }
+
+        if ($channelId === "") {
+            $sender->sendMessage($prefix . TextFormat::RED . "Please specify a channel id.");
+            return true;
+        }
+
+        $networkClient = $this->plugin->getNetworkClient();
+        if ($networkClient === null || !$networkClient->isAuthenticated()) {
+            $sender->sendMessage($prefix . TextFormat::RED . "Channel member query is unavailable (requires backend support).");
+            return true;
+        }
+
+        // Fire a WHO channel action; the backend replies with a
+        // ChannelActionResponse whose extra carries the member list.
+        if ($chatHandler !== null) {
+            $chatHandler->whoChannel($sender, $channelId);
+        }
+        $sender->sendMessage($prefix . TextFormat::GREEN . "Fetching online members for " . TextFormat::YELLOW . $channelId . TextFormat::GREEN . "...");
+
+        return true;
+    }
+
     /**
      * Handles the toggle subcommand.
-     * 
+     *
      * @param CommandSender $sender Command sender
      * @return bool True
      */
@@ -327,7 +424,7 @@ class NovaChatCommand extends Command implements PluginOwned {
                 $password,
                 $extra
             );
-            
+
             $prefix = $this->plugin->getConfigManager()->getPrefix();
             $sender->sendMessage($prefix . TextFormat::GREEN . "Creating channel: " . TextFormat::YELLOW . $channelName);
         } else {
@@ -415,7 +512,7 @@ class NovaChatCommand extends Command implements PluginOwned {
                 "code" => $invitationCode,
             ];
             $networkClient->sendChannelAction(
-                ChannelActionPacket::ACTION_ACCEPT_INVITE,
+                ChannelActionPacket::ACTION_ACCEPT,
                 "",
                 "",
                 $extra
@@ -453,15 +550,14 @@ class NovaChatCommand extends Command implements PluginOwned {
         
         $networkClient = $this->plugin->getNetworkClient();
         if ($networkClient !== null && $networkClient->isAuthenticated()) {
-            // Send mute action to backend via admin action
+            // Send mute action to backend
             $extra = [
-                "action" => "mute",
                 "target" => $targetName,
                 "duration" => (string)$duration,
-                "admin" => $sender->getName(),
+                "operatorName" => $sender->getName(),
             ];
             $networkClient->sendChannelAction(
-                ChannelActionPacket::ACTION_ADMIN,
+                ChannelActionPacket::ACTION_MUTE,
                 "",
                 "",
                 $extra
@@ -507,12 +603,11 @@ class NovaChatCommand extends Command implements PluginOwned {
         if ($networkClient !== null && $networkClient->isAuthenticated()) {
             // Send kick action to backend
             $extra = [
-                "action" => "kick",
                 "target" => $targetName,
-                "admin" => $sender->getName(),
+                "operatorName" => $sender->getName(),
             ];
             $networkClient->sendChannelAction(
-                ChannelActionPacket::ACTION_ADMIN,
+                ChannelActionPacket::ACTION_KICK,
                 $currentChannel,
                 "",
                 $extra
@@ -550,19 +645,13 @@ class NovaChatCommand extends Command implements PluginOwned {
         
         $networkClient = $this->plugin->getNetworkClient();
         if ($networkClient !== null && $networkClient->isAuthenticated()) {
-            // Send announcement action to backend
-            $extra = [
-                "action" => "announce",
-                "message" => $message,
-                "admin" => $sender->getName(),
-            ];
-            $networkClient->sendChannelAction(
-                ChannelActionPacket::ACTION_ADMIN,
-                "",
-                "",
-                $extra
-            );
-            
+            // Send announcement packet to backend
+            $packet = new \NovaChat\Protocol\AnnouncementPacket();
+            $packet->announcementId = uniqid("announce_", true);
+            $packet->content = $message;
+            $packet->type = \NovaChat\Protocol\AnnouncementPacket::TYPE_CHAT;
+            $networkClient->sendPacket($packet);
+
             $prefix = $this->plugin->getConfigManager()->getPrefix();
             $sender->sendMessage($prefix . TextFormat::GREEN . "Announcement sent.");
         } else {

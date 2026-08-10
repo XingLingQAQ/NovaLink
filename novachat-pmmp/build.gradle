@@ -1,0 +1,85 @@
+// NovaChat-PMMP Gradle wrapper.
+//
+// PocketMine-MP plugins are PHP packages built/tested with Composer + PHPUnit.
+// This project does NOT apply the java plugin; it uses the base plugin
+// (lifecycle clean/build) and delegates the real work to the PHP toolchain
+// via Exec tasks:
+//   - testEnv   : ensures PHPUnit phar + Eris library are available
+//   - phpunit   : runs the PHPUnit test suite (via phar + custom bootstrap)
+//   - build     : depends on testEnv + phpunit
+//   - clean     : remove vendor/ + build/ + .phpunit.cache/
+//
+// The standard `composer install` approach downloads the full pocketmine-mp
+// runtime (~100MB) which is slow on restricted networks. Instead, tests use
+// a standalone PHPUnit phar + git-cloned Eris library + a custom PSR-4
+// bootstrap (tests/bootstrap.php) that loads only the NovaChat classes and
+// Eris — sufficient for the protocol/i18n unit tests that don't depend on
+// pocketmine runtime classes.
+//
+// Run independently with:  gradle :pmmp:build  (once included in settings.gradle)
+// or directly from this dir: gradle -p novachat-pmmp build
+
+plugins {
+    id 'base'
+}
+
+ext.phpCmd = 'php'
+
+tasks.register('testEnv') {
+    group = 'build'
+    description = 'Ensures PHPUnit phar and Eris library are available for testing.'
+    def phpunitPhar = layout.projectDirectory.file('vendor/bin/phpunit.phar').asFile
+    def erisDir = layout.projectDirectory.dir('vendor/giorgiosironi/eris').asFile
+    outputs.file phpunitPhar
+    outputs.dir erisDir
+    doLast {
+        def vendorBin = layout.projectDirectory.dir('vendor/bin').asFile
+        if (!vendorBin.exists()) vendorBin.mkdirs()
+        // Download PHPUnit phar if missing.
+        if (!phpunitPhar.exists()) {
+            exec {
+                commandLine 'powershell', '-Command',
+                    "Invoke-WebRequest -Uri 'https://phar.phpunit.de/phpunit-10.5.phar' -OutFile '${phpunitPhar.absolutePath}' -TimeoutSec 120"
+                workingDir projectDir
+            }
+        }
+        // Clone Eris if missing.
+        if (!erisDir.exists() || !erisDir.listFiles()) {
+            def parent = erisDir.parentFile
+            if (!parent.exists()) parent.mkdirs()
+            exec {
+                commandLine 'git', 'clone', '--depth', '1',
+                    'https://github.com/giorgiosironi/eris.git',
+                    erisDir.absolutePath
+                workingDir projectDir
+            }
+        }
+    }
+}
+
+tasks.register('phpunit', Exec) {
+    group = 'verification'
+    description = 'Runs the PHPUnit test suite via phar.'
+    dependsOn tasks.named('testEnv')
+    def phpunitPhar = layout.projectDirectory.file('vendor/bin/phpunit.phar').asFile
+    commandLine ext.phpCmd, phpunitPhar.absolutePath, '--configuration', 'phpunit.xml'
+    workingDir projectDir
+    inputs.dir layout.projectDirectory.dir('tests')
+    inputs.dir layout.projectDirectory.dir('src')
+    inputs.file layout.projectDirectory.file('phpunit.xml').asFile
+}
+
+tasks.register('build') {
+    group = 'build'
+    description = 'Builds the PMMP plugin (test env + phpunit).'
+    dependsOn tasks.named('testEnv'), tasks.named('phpunit')
+}
+
+tasks.named('clean') {
+    doLast {
+        delete layout.projectDirectory.dir('vendor').asFile
+        delete layout.projectDirectory.dir('build').asFile
+        delete layout.projectDirectory.dir('.phpunit.cache').asFile
+        delete layout.projectDirectory.file('.phpunit.result.cache').asFile
+    }
+}

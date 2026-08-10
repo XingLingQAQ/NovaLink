@@ -12,7 +12,7 @@ namespace NovaChat\Protocol;
  */
 abstract class Packet {
     
-    // Packet IDs
+    // Packet IDs (must match Java PacketIds)
     public const HANDSHAKE = 0x01;
     public const HANDSHAKE_RESPONSE = 0x02;
     public const CHAT_MESSAGE = 0x03;
@@ -20,11 +20,14 @@ abstract class Packet {
     public const CHANNEL_ACTION_RESPONSE = 0x05;
     public const CONFIG_SYNC = 0x06;
     public const KEEP_ALIVE = 0x07;
+    public const PLAYER_STATE = 0x08;
     public const TITLE = 0x09;
     public const ANNOUNCEMENT = 0x0A;
     public const ADMIN_ACTION = 0x0B;
     public const ADMIN_ACTION_RESPONSE = 0x0C;
     public const CHANNEL_UPDATE = 0x0D;
+    public const ITEM_DISPLAY = 0x10;
+    public const MENTION = 0x12;
 
     // Alias for backward compatibility
     public const TITLE_MESSAGE = self::TITLE;
@@ -117,10 +120,16 @@ abstract class Packet {
             self::HANDSHAKE_RESPONSE => new HandshakeResponsePacket(),
             self::CHAT_MESSAGE => new ChatMessagePacket(),
             self::CHANNEL_ACTION => new ChannelActionPacket(),
+            self::CHANNEL_ACTION_RESPONSE => new ChannelActionResponsePacket(),
+            self::CONFIG_SYNC => new ConfigSyncPacket(),
             self::KEEP_ALIVE => new KeepAlivePacket(),
             self::CHANNEL_UPDATE => new ChannelUpdatePacket(),
             self::TITLE => new TitleMessagePacket(),
             self::ANNOUNCEMENT => new AnnouncementPacket(),
+            self::ADMIN_ACTION => new AdminActionPacket(),
+            self::ADMIN_ACTION_RESPONSE => new AdminActionResponsePacket(),
+            self::ITEM_DISPLAY => new ItemDisplayPacket(),
+            self::MENTION => new MentionPacket(),
             default => null,
         };
     }

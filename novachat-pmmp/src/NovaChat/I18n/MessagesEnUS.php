@@ -1,0 +1,121 @@
+<?php
+
+declare(strict_types=1);
+
+namespace NovaChat\I18n;
+
+/**
+ * English (US) messages for NovaChat-PMMP.
+ *
+ * Mirrors client-core/src/main/resources/messages_en_US.properties.
+ * Color codes (§c, &e) stay inside the values; only natural language swaps.
+ */
+class MessagesEnUS {
+
+    /** @var array<string, string> */
+    public const MESSAGES = [
+        "chat.join.joining" => "Joining channel &e{0}&7...",
+        "chat.join.joined" => "Joined channel &e{0}",
+        "chat.leave.leaving" => "Leaving channel &e{0}&7...",
+        "chat.leave.left" => "Left channel &e{0}&7, switched to default: &e{1}",
+        "chat.status.current_bar" => "&7Current channel: &b{0} &7({1})",
+        "chat.toggle.on" => "Chat enabled",
+        "chat.toggle.off" => "Chat disabled",
+
+        "chat.command.help.title" => "&6=== NovaChat Help ===",
+        "chat.command.help.line_help" => "&e/nc help &r- Show this help",
+        "chat.command.help.line_join" => "&e/nc join <channel> [password] &r- Join a channel",
+        "chat.command.help.line_leave" => "&e/nc leave [channel] &r- Leave a channel",
+        "chat.command.help.line_list" => "&e/nc list &r- List available channels",
+        "chat.command.help.line_who" => "&e/nc who [channel] &r- List online members",
+        "chat.command.help.line_toggle" => "&e/nc toggle &r- Toggle chat mode",
+        "chat.command.help.line_reload" => "&e/nc reload &r- Reload config",
+        "chat.command.desc.help" => "Show available commands",
+        "chat.command.desc.join" => "Join a channel",
+        "chat.command.desc.leave" => "Leave the current channel",
+        "chat.command.desc.list" => "List available channels",
+        "chat.command.desc.who" => "List online members of a channel",
+        "chat.command.desc.toggle" => "Toggle chat mode",
+        "chat.command.desc.reload" => "Reload configuration",
+        "chat.command.list.title" => "&6=== NovaChat Channel List ===",
+        "chat.command.list.tail" => "&6===========================",
+        "chat.command.player_only" => "This command can only be run by a player",
+        "chat.command.usage.join" => "Usage: /nc join <channel> [password]",
+        "chat.command.reload.success" => "Configuration reloaded",
+        "chat.command.toggle.switched" => "Chat mode switched to: {0}",
+        "chat.command.no_permission" => "You do not have permission to do this",
+        "chat.command.unknown" => "Unknown command: {0}",
+        "chat.command.unknown_hint" => "Use &e/{0} help &7to see available commands",
+        "chat.command.no_permission_code" => "You do not have permission (NC-403)",
+        "chat.command.specify_channel" => "Please specify a channel id",
+
+        "chat.network.not_connected_retry" => "Not connected to chat server, please retry later",
+        "chat.network.not_connected" => "Not connected to chat server",
+
+        "chat.mention.subtitle" => "&7mentioned you in &b{0}",
+
+        "chat.notice.kick_title" => "&cYou have been kicked from the channel",
+        "chat.notice.kick_subtitle" => "&7Kicked by &e{0} &7from &b{1}",
+        "chat.notice.kick_actionbar" => "&cYou were kicked by {0} from {1}",
+        "chat.notice.mute_title" => "&cYou have been muted",
+        "chat.notice.mute_subtitle" => "&7In channel &b{0} &7for &e{1}",
+        "chat.notice.mute_actionbar" => "&cYou were muted for {0} (channel {1})",
+
+        "chat.action.success" => "Action succeeded",
+        "chat.action.failed" => "Action failed",
+        "chat.action.leave_simple" => "Left channel &e{0}",
+
+        "chat.list.empty" => "No known channels yet, please wait for the server to push the channel list",
+
+        "chat.who.unavailable" => "Channel member query is unavailable (requires backend support)",
+        "chat.who.fetching" => "Fetching online members for &e{0}&7...",
+        "chat.who.list_header" => "&6Channel &e{0} &6online members &7({1}):",
+        "chat.who.list_body" => "&7{0}",
+        "chat.who.list_empty" => "&7No online members",
+        "chat.who.no_channel" => "You are not in any channel, please specify a channel id",
+        "chat.who.specify_channel" => "Please specify a channel id",
+
+        "chat.welcome.line" => "&6Welcome!&r Type &e/nc help &rto see channels, &e/nc list &rto list channels",
+
+        "error.suggestion_prefix" => "Hint:",
+        "error.NC-400.message" => "Bad request",
+        "error.NC-400.suggestion" => "Please check the command arguments",
+        "error.NC-401.message" => "Authentication failed",
+        "error.NC-401.suggestion" => "Please check the username and password",
+        "error.NC-403.message" => "Forbidden",
+        "error.NC-403.suggestion" => "You do not have permission, contact an admin",
+        "error.NC-404.message" => "Not found",
+        "error.NC-404.suggestion" => "Please check the channel id or player name",
+        "error.NC-409.message" => "Conflict",
+        "error.NC-409.suggestion" => "The resource already exists or is in use",
+        "error.NC-420.message" => "Protocol version mismatch",
+        "error.NC-420.suggestion" => "Please upgrade your NovaChat client to a protocol v2 build",
+        "error.NC-429.message" => "Too many requests",
+        "error.NC-429.suggestion" => "Please try again later",
+        "error.NC-430.message" => "Invalid format",
+        "error.NC-430.suggestion" => "Please check the input format",
+        "error.NC-431.message" => "Channel full",
+        "error.NC-431.suggestion" => "The channel has reached its capacity",
+        "error.NC-432.message" => "Already in channel",
+        "error.NC-432.suggestion" => "You are already in this channel",
+        "error.NC-433.message" => "Not in channel",
+        "error.NC-433.suggestion" => "You need to join the channel first",
+        "error.NC-434.message" => "Wrong password",
+        "error.NC-434.suggestion" => "Please check the channel password",
+        "error.NC-435.message" => "World restricted",
+        "error.NC-435.suggestion" => "This channel is only available in specific worlds",
+        "error.NC-436.message" => "You are muted",
+        "error.NC-436.suggestion" => "You cannot send messages while muted",
+        "error.NC-500.message" => "Internal server error",
+        "error.NC-500.suggestion" => "Please contact an admin to check the server logs",
+        "error.NC-503.message" => "Service unavailable",
+        "error.NC-503.suggestion" => "Not connected to the backend, please try again later",
+
+        "notice.operator.fallback" => "an operator",
+        "notice.duration.unknown" => "a while",
+        "duration.seconds" => "{0}s",
+        "duration.minutes" => "{0}m",
+        "duration.hours" => "{0}h",
+        "duration.days" => "{0}d",
+    ];
+}

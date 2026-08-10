@@ -6,9 +6,10 @@
 # 后端连接设置 / Backend Connection Settings
 backend:
   host: "127.0.0.1"
-  port: 8888
+  port: 18888
   username: "PMMP_Server"
   password: "your-password-here"
+  server-version: "5.0.0"  # 服务器版本（协议v2握手上报）/ Server version (reported in protocol v2 handshake)
   reconnect-delay: 5  # 重连延迟（秒）/ Reconnect delay (seconds)
 
 # 聊天设置 / Chat Settings

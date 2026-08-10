@@ -25,6 +25,7 @@ class ConfigManager {
     private int $backendPort;
     private string $backendUsername;
     private string $backendPassword;
+    private string $serverVersion;
     private int $reconnectDelay;
     
     // Chat settings
@@ -60,9 +61,10 @@ class ConfigManager {
     private function loadConfig(): void {
         // Backend settings
         $this->backendHost = $this->config->getNested("backend.host", "127.0.0.1");
-        $this->backendPort = (int) $this->config->getNested("backend.port", 8888);
+        $this->backendPort = (int) $this->config->getNested("backend.port", 18888);
         $this->backendUsername = $this->config->getNested("backend.username", "PMMP_Server");
         $this->backendPassword = $this->config->getNested("backend.password", "");
+        $this->serverVersion = (string) $this->config->getNested("backend.server-version", "5.0.0");
         $this->reconnectDelay = (int) $this->config->getNested("backend.reconnect-delay", 5);
         
         // Chat settings
@@ -117,11 +119,20 @@ class ConfigManager {
     
     /**
      * Gets the backend password.
-     * 
+     *
      * @return string The backend password
      */
     public function getBackendPassword(): string {
         return $this->backendPassword;
+    }
+
+    /**
+     * Gets the server version reported in the protocol v2 handshake.
+     *
+     * @return string The server version
+     */
+    public function getServerVersion(): string {
+        return $this->serverVersion;
     }
     
     /**

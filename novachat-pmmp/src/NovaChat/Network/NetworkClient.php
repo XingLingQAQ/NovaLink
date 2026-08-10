@@ -308,6 +308,16 @@ class NetworkClient {
             $this->handleHandshakeResponse($packet);
         } elseif ($packet instanceof ChatMessagePacket) {
             $this->handleChatMessage($packet);
+        } elseif ($packet instanceof \NovaChat\Protocol\ChannelActionResponsePacket) {
+            $this->handleChannelActionResponse($packet);
+        } elseif ($packet instanceof \NovaChat\Protocol\ConfigSyncPacket) {
+            $this->handleConfigSync($packet);
+        } elseif ($packet instanceof \NovaChat\Protocol\MentionPacket) {
+            $this->handleMention($packet);
+        } elseif ($packet instanceof \NovaChat\Protocol\ItemDisplayPacket) {
+            $this->handleItemDisplay($packet);
+        } elseif ($packet instanceof \NovaChat\Protocol\AdminActionResponsePacket) {
+            $this->handleAdminActionResponse($packet);
         } elseif ($packet instanceof \NovaChat\Protocol\AnnouncementPacket) {
             $this->handleAnnouncement($packet);
         } elseif ($packet instanceof \NovaChat\Protocol\TitleMessagePacket) {
@@ -330,9 +340,12 @@ class NetworkClient {
         if ($packet->success) {
             $this->authenticated = true;
             $this->plugin->getLogger()->info("Successfully authenticated with NovaLink backend");
-            $this->plugin->debug("Config received: " . $packet->configJson);
+            if ($packet->message !== "") {
+                $this->plugin->debug("Handshake message: " . $packet->message);
+            }
         } else {
-            $this->plugin->getLogger()->error("Authentication failed: " . $packet->errorCode);
+            $this->plugin->getLogger()->error("Authentication failed: " . $packet->errorCode .
+                ($packet->message !== "" ? " - " . $packet->message : ""));
             
             // Handle specific error codes with clear messages
             switch ($packet->errorCode) {
@@ -391,13 +404,76 @@ class NetworkClient {
     
     /**
      * Handles incoming channel update packet.
-     * 
+     *
      * @param \NovaChat\Protocol\ChannelUpdatePacket $packet The packet
      */
     private function handleChannelUpdate(\NovaChat\Protocol\ChannelUpdatePacket $packet): void {
         $chatHandler = $this->plugin->getChatHandler();
         if ($chatHandler !== null) {
             $chatHandler->handleChannelUpdate($packet);
+        }
+    }
+
+    /**
+     * Handles incoming channel action response — routes kick/mute target
+     * notifications and tracks known channels.
+     *
+     * @param \NovaChat\Protocol\ChannelActionResponsePacket $packet The packet
+     */
+    private function handleChannelActionResponse(\NovaChat\Protocol\ChannelActionResponsePacket $packet): void {
+        $chatHandler = $this->plugin->getChatHandler();
+        if ($chatHandler !== null) {
+            $chatHandler->handleChannelActionResponse($packet);
+        }
+    }
+
+    /**
+     * Handles incoming config sync packet.
+     *
+     * @param \NovaChat\Protocol\ConfigSyncPacket $packet The packet
+     */
+    private function handleConfigSync(\NovaChat\Protocol\ConfigSyncPacket $packet): void {
+        $chatHandler = $this->plugin->getChatHandler();
+        if ($chatHandler !== null) {
+            $chatHandler->handleConfigSync($packet);
+        }
+    }
+
+    /**
+     * Handles incoming mention packet — highlight + title to the mentioned player.
+     *
+     * @param \NovaChat\Protocol\MentionPacket $packet The packet
+     */
+    private function handleMention(\NovaChat\Protocol\MentionPacket $packet): void {
+        $chatHandler = $this->plugin->getChatHandler();
+        if ($chatHandler !== null) {
+            $chatHandler->handleMention($packet);
+        }
+    }
+
+    /**
+     * Handles incoming item display packet — [item]/[i] tag display.
+     *
+     * @param \NovaChat\Protocol\ItemDisplayPacket $packet The packet
+     */
+    private function handleItemDisplay(\NovaChat\Protocol\ItemDisplayPacket $packet): void {
+        $chatHandler = $this->plugin->getChatHandler();
+        if ($chatHandler !== null) {
+            $chatHandler->handleItemDisplay($packet);
+        }
+    }
+
+    /**
+     * Handles incoming admin action response packet.
+     *
+     * @param \NovaChat\Protocol\AdminActionResponsePacket $packet The packet
+     */
+    private function handleAdminActionResponse(\NovaChat\Protocol\AdminActionResponsePacket $packet): void {
+        if ($packet->success) {
+            $this->plugin->debug("Admin action succeeded: " . $packet->message);
+        } else {
+            $this->plugin->getLogger()->warning("Admin action failed: " . $packet->errorCode .
+                ($packet->message !== "" ? " - " . $packet->message : ""));
         }
     }
     
@@ -446,7 +522,8 @@ class NetworkClient {
         $packet->clientId = $this->config->getBackendUsername();
         $packet->passwordHash = hash("sha256", $this->config->getBackendPassword());
         $packet->platform = HandshakePacket::PLATFORM_PMMP;
-        
+        $packet->serverVersion = $this->config->getServerVersion();
+
         $this->sendPacket($packet);
     }
     

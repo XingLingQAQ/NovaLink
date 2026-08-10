@@ -6,10 +6,16 @@ namespace NovaChat\Tests\Protocol;
 
 use Eris\Generator;
 use Eris\TestTrait;
+use NovaChat\I18n\I18n;
 use NovaChat\Protocol\ChannelActionPacket;
+use NovaChat\Protocol\ChannelActionResponsePacket;
 use NovaChat\Protocol\ChatMessagePacket;
+use NovaChat\Protocol\ConfigSyncPacket;
 use NovaChat\Protocol\HandshakePacket;
+use NovaChat\Protocol\HandshakeResponsePacket;
+use NovaChat\Protocol\ItemDisplayPacket;
 use NovaChat\Protocol\KeepAlivePacket;
+use NovaChat\Protocol\MentionPacket;
 use NovaChat\Protocol\Packet;
 use NovaChat\Protocol\PacketBuffer;
 use PHPUnit\Framework\TestCase;
@@ -135,27 +141,28 @@ class PacketSerializationPropertyTest extends TestCase {
             Generator\choose(0, 255),
             Generator\string(),
             Generator\string(),
+            Generator\string(),
             Generator\string()
         )
         ->withMaxSize(100)
-        ->then(function (int $action, string $channelId, string $password, string $extra): void {
+        ->then(function (int $action, string $channelId, string $password, string $extraKey, string $extraValue): void {
             // Create original packet
             $original = new ChannelActionPacket();
             $original->action = $action;
             $original->channelId = $channelId;
             $original->password = $password;
-            $original->extra = $extra;
-            
+            $original->extra = [$extraKey => $extraValue];
+
             // Serialize
             $serialized = $original->serialize();
-            
+
             // Deserialize (skip length prefix)
             $buffer = new PacketBuffer($serialized);
             $length = $buffer->readVarInt();
             $data = $buffer->readBytes($length);
-            
+
             $decoded = Packet::fromBytes($data);
-            
+
             // Assert
             $this->assertInstanceOf(ChannelActionPacket::class, $decoded);
             $this->assertSame($original->action, $decoded->action);
@@ -234,5 +241,229 @@ class PacketSerializationPropertyTest extends TestCase {
                 "Packet ID not preserved for " . get_class($original)
             );
         }
+    }
+
+    /**
+     * HandshakePacket protocol v2 — server_version field is encoded and
+     * survives a round-trip.
+     */
+    public function testHandshakeV2ServerVersionRoundTrip(): void {
+        $original = new HandshakePacket();
+        $original->protocolVersion = HandshakePacket::PROTOCOL_VERSION;
+        $original->clientId = "srv";
+        $original->passwordHash = "abc";
+        $original->platform = HandshakePacket::PLATFORM_PMMP;
+        $original->serverVersion = "5.0.0";
+
+        $serialized = $original->serialize();
+        $buffer = new PacketBuffer($serialized);
+        $length = $buffer->readVarInt();
+        $data = $buffer->readBytes($length);
+
+        $decoded = Packet::fromBytes($data);
+        $this->assertInstanceOf(HandshakePacket::class, $decoded);
+        $this->assertSame(HandshakePacket::PROTOCOL_VERSION, $decoded->protocolVersion);
+        $this->assertSame("srv", $decoded->clientId);
+        $this->assertSame("abc", $decoded->passwordHash);
+        $this->assertSame(HandshakePacket::PLATFORM_PMMP, $decoded->platform);
+        $this->assertSame("5.0.0", $decoded->serverVersion);
+    }
+
+    /**
+     * HandshakePacket decode is backward-compatible with a v1-style payload
+     * that omits the trailing server_version field.
+     */
+    public function testHandshakeDecodeWithoutServerVersionIsBackwardCompatible(): void {
+        $buffer = new PacketBuffer();
+        $buffer->writeVarInt(HandshakePacket::PROTOCOL_VERSION);
+        $buffer->writeString("srv");
+        $buffer->writeString("abc");
+        $buffer->writeByte(HandshakePacket::PLATFORM_PMMP);
+        $buffer->reset();
+
+        $decoded = new HandshakePacket();
+        $decoded->decode($buffer);
+        $this->assertSame("", $decoded->serverVersion);
+    }
+
+    /**
+     * HandshakeResponsePacket field order: success | errorCode | message
+     * (errorCode BEFORE message, no configJson).
+     */
+    public function testHandshakeResponseFieldOrder(): void {
+        $buffer = new PacketBuffer();
+        $buffer->writeBoolean(true);
+        $buffer->writeString("NC-200");
+        $buffer->writeString("OK");
+        $buffer->reset();
+
+        $decoded = new HandshakeResponsePacket();
+        $decoded->decode($buffer);
+        $this->assertTrue($decoded->success);
+        $this->assertSame("NC-200", $decoded->errorCode);
+        $this->assertSame("OK", $decoded->message);
+    }
+
+    /**
+     * ChannelAction constants are 0-based, matching the Java enum.
+     */
+    public function testChannelActionIdsMatchJava(): void {
+        $this->assertSame(0, ChannelActionPacket::ACTION_JOIN);
+        $this->assertSame(1, ChannelActionPacket::ACTION_LEAVE);
+        $this->assertSame(2, ChannelActionPacket::ACTION_CREATE);
+        $this->assertSame(3, ChannelActionPacket::ACTION_DELETE);
+        $this->assertSame(4, ChannelActionPacket::ACTION_INVITE);
+        $this->assertSame(5, ChannelActionPacket::ACTION_ACCEPT);
+        $this->assertSame(6, ChannelActionPacket::ACTION_KICK);
+        $this->assertSame(7, ChannelActionPacket::ACTION_MUTE);
+        $this->assertSame(8, ChannelActionPacket::ACTION_UNMUTE);
+        $this->assertSame(9, ChannelActionPacket::ACTION_BAN);
+        $this->assertSame(10, ChannelActionPacket::ACTION_UNBAN);
+        $this->assertSame(11, ChannelActionPacket::ACTION_WHO);
+    }
+
+    /**
+     * ChannelActionResponsePacket round-trip with extra map.
+     */
+    public function testChannelActionResponseRoundTrip(): void {
+        $original = new ChannelActionResponsePacket();
+        $original->success = false;
+        $original->action = ChannelActionPacket::ACTION_KICK;
+        $original->channelId = "global";
+        $original->errorCode = "NC-403";
+        $original->message = "Forbidden";
+        $original->extra = ["operatorName" => "Admin", "targetUuid" => "abc-123"];
+
+        $serialized = $original->serialize();
+        $buffer = new PacketBuffer($serialized);
+        $length = $buffer->readVarInt();
+        $data = $buffer->readBytes($length);
+
+        $decoded = Packet::fromBytes($data);
+        $this->assertInstanceOf(ChannelActionResponsePacket::class, $decoded);
+        $this->assertFalse($decoded->success);
+        $this->assertSame(ChannelActionPacket::ACTION_KICK, $decoded->action);
+        $this->assertSame("global", $decoded->channelId);
+        $this->assertSame("NC-403", $decoded->errorCode);
+        $this->assertSame("Forbidden", $decoded->message);
+        $this->assertSame(["operatorName" => "Admin", "targetUuid" => "abc-123"], $decoded->extra);
+    }
+
+    /**
+     * ConfigSyncPacket round-trip.
+     */
+    public function testConfigSyncRoundTrip(): void {
+        $original = new ConfigSyncPacket();
+        $original->configJson = '{"channels":["global","local"]}';
+        $original->timestamp = 12345;
+
+        $serialized = $original->serialize();
+        $buffer = new PacketBuffer($serialized);
+        $length = $buffer->readVarInt();
+        $data = $buffer->readBytes($length);
+
+        $decoded = Packet::fromBytes($data);
+        $this->assertInstanceOf(ConfigSyncPacket::class, $decoded);
+        $this->assertSame('{"channels":["global","local"]}', $decoded->configJson);
+        $this->assertSame(12345, $decoded->timestamp);
+    }
+
+    /**
+     * MentionPacket round-trip.
+     */
+    public function testMentionRoundTrip(): void {
+        $original = new MentionPacket();
+        $original->mentionerId = self::generateUUID();
+        $original->mentionerName = "Steve";
+        $original->mentionedId = self::generateUUID();
+        $original->channelId = "global";
+        $original->messagePreview = "hi @Alex";
+        $original->timestamp = 999;
+
+        $serialized = $original->serialize();
+        $buffer = new PacketBuffer($serialized);
+        $length = $buffer->readVarInt();
+        $data = $buffer->readBytes($length);
+
+        $decoded = Packet::fromBytes($data);
+        $this->assertInstanceOf(MentionPacket::class, $decoded);
+        $this->assertSame("Steve", $decoded->mentionerName);
+        $this->assertSame("global", $decoded->channelId);
+        $this->assertSame("hi @Alex", $decoded->messagePreview);
+        $this->assertSame(999, $decoded->timestamp);
+    }
+
+    /**
+     * ItemDisplayPacket round-trip.
+     */
+    public function testItemDisplayRoundTrip(): void {
+        $original = new ItemDisplayPacket();
+        $original->senderId = self::generateUUID();
+        $original->senderName = "Alex";
+        $original->channelId = "local";
+        $original->itemJson = '{"id":"diamond"}';
+        $original->timestamp = 42;
+
+        $serialized = $original->serialize();
+        $buffer = new PacketBuffer($serialized);
+        $length = $buffer->readVarInt();
+        $data = $buffer->readBytes($length);
+
+        $decoded = Packet::fromBytes($data);
+        $this->assertInstanceOf(ItemDisplayPacket::class, $decoded);
+        $this->assertSame("Alex", $decoded->senderName);
+        $this->assertSame("local", $decoded->channelId);
+        $this->assertSame('{"id":"diamond"}', $decoded->itemJson);
+        $this->assertSame(42, $decoded->timestamp);
+    }
+
+    /**
+     * I18n zh_CN default lookup with placeholder substitution.
+     */
+    public function testI18nZhCNLookup(): void {
+        $i18n = new I18n();
+        $msg = $i18n->get("chat.join.joined", "zh_CN", ["global"]);
+        $this->assertStringContainsString("已加入频道", $msg);
+        $this->assertStringContainsString("global", $msg);
+    }
+
+    /**
+     * I18n en_US lookup.
+     */
+    public function testI18nEnUSLookup(): void {
+        $i18n = new I18n();
+        $msg = $i18n->get("chat.join.joined", "en_US", ["global"]);
+        $this->assertStringContainsString("Joined channel", $msg);
+        $this->assertStringContainsString("global", $msg);
+    }
+
+    /**
+     * I18n falls back to the key itself when absent from both bundles.
+     */
+    public function testI18nFallbackToKey(): void {
+        $i18n = new I18n();
+        $msg = $i18n->get("nonexistent.key", "en_US");
+        $this->assertSame("nonexistent.key", $msg);
+    }
+
+    /**
+     * I18n error message combines message + suggestion.
+     */
+    public function testI18nErrorMessage(): void {
+        $i18n = new I18n();
+        $msg = $i18n->errorMessage("NC-404", "zh_CN");
+        $this->assertStringContainsString("资源不存在", $msg);
+        $this->assertStringContainsString("请检查频道ID或玩家名称是否正确", $msg);
+    }
+
+    /**
+     * I18n kick/mute notice keys exist in both locales.
+     */
+    public function testI18nKickMuteNoticeKeysExist(): void {
+        $i18n = new I18n();
+        $this->assertStringContainsString("踢出", $i18n->get("chat.notice.kick_title", "zh_CN"));
+        $this->assertStringContainsString("禁言", $i18n->get("chat.notice.mute_title", "zh_CN"));
+        $this->assertStringContainsString("kicked", strtolower($i18n->get("chat.notice.kick_title", "en_US")));
+        $this->assertStringContainsString("muted", strtolower($i18n->get("chat.notice.mute_title", "en_US")));
     }
 }

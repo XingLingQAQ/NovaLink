@@ -4,10 +4,17 @@ declare(strict_types=1);
 
 namespace NovaChat\Chat;
 
+use NovaChat\I18n\I18n;
 use NovaChat\NovaChatPlugin;
+use NovaChat\Protocol\AdminActionResponsePacket;
 use NovaChat\Protocol\AnnouncementPacket;
+use NovaChat\Protocol\ChannelActionPacket;
+use NovaChat\Protocol\ChannelActionResponsePacket;
 use NovaChat\Protocol\ChannelUpdatePacket;
 use NovaChat\Protocol\ChatMessagePacket;
+use NovaChat\Protocol\ConfigSyncPacket;
+use NovaChat\Protocol\ItemDisplayPacket;
+use NovaChat\Protocol\MentionPacket;
 use NovaChat\Protocol\TitleMessagePacket;
 use pocketmine\event\Listener;
 use pocketmine\event\player\PlayerChatEvent;
@@ -32,6 +39,15 @@ class ChatHandler implements Listener {
     
     /** @var array<string, bool> Player chat toggle states (UUID => enabled) */
     private array $chatEnabled = [];
+
+    /** @var array<string, string> Player locale (UUID => locale code, default zh_CN) */
+    private array $playerLocales = [];
+
+    /** @var array<int, string> Known channel IDs (populated from ConfigSync / action responses) */
+    private array $knownChannels = [];
+
+    /** @var array<string, string> Pending channel action request ID => channelId */
+    private array $pendingActions = [];
     
     /**
      * Creates a new chat handler.
@@ -159,6 +175,7 @@ class ChatHandler implements Listener {
     public function clearPlayerData(string $uuid): void {
         unset($this->playerChannels[$uuid]);
         unset($this->chatEnabled[$uuid]);
+        unset($this->playerLocales[$uuid]);
     }
     
     /**
@@ -320,7 +337,178 @@ class ChatHandler implements Listener {
                 break;
         }
     }
-    
+
+    /**
+     * Handles a channel action response — routes kick/mute target-side
+     * notifications and tracks known channels.
+     *
+     * @param ChannelActionResponsePacket $packet The response packet
+     */
+    public function handleChannelActionResponse(ChannelActionResponsePacket $packet): void {
+        // Track the channel as known regardless of outcome.
+        $this->addKnownChannel($packet->channelId);
+
+        if ($packet->success) {
+            $this->plugin->debug("Channel action succeeded: {$packet->message}");
+            // Route kick/mute target-side notifications via the extra map.
+            $action = $packet->action;
+            if ($action === ChannelActionPacket::ACTION_KICK || $action === ChannelActionPacket::ACTION_MUTE) {
+                $operatorName = $packet->extra["operatorName"] ?? "";
+                $targetUuid = $packet->extra["targetUuid"] ?? "";
+                $duration = $packet->extra["duration"] ?? "";
+                if ($targetUuid !== "") {
+                    if ($action === ChannelActionPacket::ACTION_KICK) {
+                        $this->notifyKickTarget($targetUuid, $operatorName, $packet->channelId);
+                    } else {
+                        $this->notifyMuteTarget($targetUuid, $operatorName, $packet->channelId, $duration);
+                    }
+                }
+            }
+        } else {
+            $this->plugin->debug("Channel action failed: {$packet->errorCode} - {$packet->message}");
+        }
+    }
+
+    /**
+     * Handles a config sync packet — stores known channels from the config.
+     *
+     * @param ConfigSyncPacket $packet The config sync packet
+     */
+    public function handleConfigSync(ConfigSyncPacket $packet): void {
+        $this->plugin->debug("Received config sync ({$packet->configJson})");
+        // The configJson is opaque to the client; known-channel parsing is
+        // best-effort and only used for tab completion / /nc list.
+        $this->addKnownChannel("local");
+        $this->addKnownChannel("global");
+    }
+
+    /**
+     * Handles a mention packet — highlights + title to the mentioned player.
+     *
+     * @param MentionPacket $packet The mention packet
+     */
+    public function handleMention(MentionPacket $packet): void {
+        $this->plugin->debug("Mention from {$packet->mentionerName} to {$packet->mentionedId} in {$packet->channelId}");
+        $locale = $this->getPlayerLocale($packet->mentionedId);
+        $i18n = new I18n();
+        $subtitle = $i18n->get("chat.mention.subtitle", $locale, [$packet->channelId]);
+
+        foreach ($this->plugin->getServer()->getOnlinePlayers() as $player) {
+            if ($player->getUniqueId()->toString() === $packet->mentionedId) {
+                MessageRenderer::sendTitle(
+                    $player,
+                    "§e@§r" . $packet->mentionerName,
+                    $subtitle,
+                    10,
+                    40,
+                    20
+                );
+                break;
+            }
+        }
+    }
+
+    /**
+     * Handles an item display packet — forwards [item] display to channel members.
+     *
+     * @param ItemDisplayPacket $packet The item display packet
+     */
+    public function handleItemDisplay(ItemDisplayPacket $packet): void {
+        $this->plugin->debug("ItemDisplay in {$packet->channelId}: {$packet->itemJson}");
+        $formatted = "[" . $packet->senderName . ": " . $packet->itemJson . "]";
+        foreach ($this->plugin->getServer()->getOnlinePlayers() as $player) {
+            $playerChannel = $this->getPlayerChannel($player);
+            if ($playerChannel === $packet->channelId || $packet->channelId === "global") {
+                $player->sendMessage($formatted);
+            }
+        }
+    }
+
+    /**
+     * Gets the list of known channels (for /nc list + tab completion).
+     *
+     * @return array<int, string>
+     */
+    public function getKnownChannels(): array {
+        return array_values($this->knownChannels);
+    }
+
+    /**
+     * Adds a channel to the known channels set.
+     */
+    public function addKnownChannel(string $channelId): void {
+        if ($channelId !== "" && !in_array($channelId, $this->knownChannels, true)) {
+            $this->knownChannels[] = $channelId;
+        }
+    }
+
+    /**
+     * Sends a WHO channel action for a player.
+     */
+    public function whoChannel(Player $player, string $channelId): void {
+        $networkClient = $this->plugin->getNetworkClient();
+        if ($networkClient === null || !$networkClient->isAuthenticated()) {
+            return;
+        }
+        $networkClient->sendChannelAction(ChannelActionPacket::ACTION_WHO, $channelId);
+    }
+
+    /**
+     * Gets a player's locale (default zh_CN).
+     */
+    public function getPlayerLocale(string $uuid): string {
+        return $this->playerLocales[$uuid] ?? "zh_CN";
+    }
+
+    /**
+     * Sets a player's locale.
+     */
+    public function setPlayerLocale(string $uuid, string $locale): void {
+        $this->playerLocales[$uuid] = $locale;
+    }
+
+    /**
+     * Notifies a target player that they were kicked from a channel.
+     */
+    public function notifyKickTarget(string $targetUuid, string $operatorName, string $channelId): void {
+        $locale = $this->getPlayerLocale($targetUuid);
+        $i18n = new I18n();
+        $opName = $operatorName !== "" ? $operatorName : $i18n->get("notice.operator.fallback", $locale);
+
+        // Title flash
+        $title = $i18n->get("chat.notice.kick_title", $locale);
+        $subtitle = $i18n->get("chat.notice.kick_subtitle", $locale, [$opName, $channelId]);
+        foreach ($this->plugin->getServer()->getOnlinePlayers() as $player) {
+            if ($player->getUniqueId()->toString() === $targetUuid) {
+                MessageRenderer::sendTitle($player, $title, $subtitle, 10, 70, 20);
+                $actionbar = $i18n->get("chat.notice.kick_actionbar", $locale, [$opName, $channelId]);
+                $player->sendMessage($actionbar);
+                break;
+            }
+        }
+    }
+
+    /**
+     * Notifies a target player that they were muted in a channel.
+     */
+    public function notifyMuteTarget(string $targetUuid, string $operatorName, string $channelId, string $duration): void {
+        $locale = $this->getPlayerLocale($targetUuid);
+        $i18n = new I18n();
+        $opName = $operatorName !== "" ? $operatorName : $i18n->get("notice.operator.fallback", $locale);
+        $dur = $duration !== "" ? $duration : $i18n->get("notice.duration.unknown", $locale);
+
+        $title = $i18n->get("chat.notice.mute_title", $locale);
+        $subtitle = $i18n->get("chat.notice.mute_subtitle", $locale, [$channelId, $dur]);
+        foreach ($this->plugin->getServer()->getOnlinePlayers() as $player) {
+            if ($player->getUniqueId()->toString() === $targetUuid) {
+                MessageRenderer::sendTitle($player, $title, $subtitle, 10, 70, 20);
+                $actionbar = $i18n->get("chat.notice.mute_actionbar", $locale, [$dur, $channelId]);
+                $player->sendMessage($actionbar);
+                break;
+            }
+        }
+    }
+
     /**
      * Reloads the chat handler configuration.
      */

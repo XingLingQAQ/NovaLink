@@ -18,6 +18,14 @@ Thumbs.db
 # Test coverage
 /coverage/
 .phpunit.result.cache
+.phpunit.cache/
+
+# Gradle build output
+/build/
+
+# Logs
+*.log
+logs/
 
 # PHPStan
 phpstan.neon.local
