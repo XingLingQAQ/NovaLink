@@ -23,8 +23,6 @@ plugins {
     id 'base'
 }
 
-ext.phpCmd = 'php'
-
 tasks.register('testEnv') {
     group = 'build'
     description = 'Ensures PHPUnit phar and Eris library are available for testing.'
@@ -62,14 +60,14 @@ tasks.register('phpunit', Exec) {
     description = 'Runs the PHPUnit test suite via phar.'
     dependsOn tasks.named('testEnv')
     def phpunitPhar = layout.projectDirectory.file('vendor/bin/phpunit.phar').asFile
-    commandLine ext.phpCmd, phpunitPhar.absolutePath, '--configuration', 'phpunit.xml'
+    commandLine 'php', phpunitPhar.absolutePath, '--configuration', 'phpunit.xml'
     workingDir projectDir
     inputs.dir layout.projectDirectory.dir('tests')
     inputs.dir layout.projectDirectory.dir('src')
     inputs.file layout.projectDirectory.file('phpunit.xml').asFile
 }
 
-tasks.register('build') {
+tasks.named('build') {
     group = 'build'
     description = 'Builds the PMMP plugin (test env + phpunit).'
     dependsOn tasks.named('testEnv'), tasks.named('phpunit')

@@ -10,19 +10,19 @@
 //   - build          : depends on xmakeConfigure + xmakeBuild
 //   - clean          : `xmake clean` + remove build/.xmake
 //
-// Run independently with:  gradle :levilamina:build  (once included in settings.gradle)
+// Run independently with:  gradle :novachat-levilamina:build
 // or directly from this dir: gradle -p novachat-levilamina build
 
 plugins {
     id 'base'
 }
 
-ext.buildMode = project.findProperty('mode') ?: 'release'
+def buildMode = project.findProperty('mode') ?: 'release'
 
 tasks.register('xmakeConfigure', Exec) {
     group = 'build'
-    description = "Configures the xmake project (mode=${ext.buildMode})."
-    commandLine 'xmake', 'f', '-m', ext.buildMode.toString()
+    description = "Configures the xmake project (mode=${buildMode})."
+    commandLine 'xmake', 'f', '-m', buildMode.toString()
     workingDir projectDir
     // Re-configure only if the build directory is missing.
     onlyIf { !layout.projectDirectory.dir('.xmake').asFile.exists() }
@@ -50,7 +50,7 @@ tasks.register('test', Exec) {
     ignoreExitValue = true
 }
 
-tasks.register('build') {
+tasks.named('build') {
     group = 'build'
     description = 'Builds the LeviLamina plugin (configure + build).'
     dependsOn tasks.named('xmakeBuild')
