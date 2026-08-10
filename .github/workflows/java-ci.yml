@@ -72,13 +72,11 @@ jobs:
             mod-loom-${{ runner.os }}-
 
       - name: Build and test all Java modules
-        env:
-          # Ensure a UTF-8 locale for Java source encoding (ubuntu runners default to C.UTF-8,
-          # this is belt-and-braces for processResources expand() of zh_CN resources).
-          JAVA_TOOL_OPTIONS_OPTIONS: "-Dfile.encoding=UTF-8"
         run: |
           # Override the Windows scoop installations path so Gradle's toolchain
           # auto-detection falls back to the setup-java installs (JDK 21 + 25).
+          # (build.gradle already sets options.encoding=UTF-8 on JavaCompile, and
+          # ubuntu-24.04 runners default to a UTF-8 locale, so no extra env needed.)
           ./gradlew build test --console=plain \
             -Porg.gradle.java.installations.paths= \
             -Dorg.gradle.java.installations.paths=
