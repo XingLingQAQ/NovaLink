@@ -36,7 +36,7 @@ public class NetworkClient {
         ClientConnectionConfig connectionConfig = config.toClientConnectionConfig();
         SchedulerBridge scheduler = new VelocitySchedulerBridge(plugin);
         ClientLogger logger = new VelocityClientLogger(plugin);
-        String serverVersion = plugin.getServer().getVersion();
+        String serverVersion = plugin.getServer().getVersion().getVersion();
         this.core = new CoreNetworkClient(
                 connectionConfig,
                 PlatformType.VELOCITY,
