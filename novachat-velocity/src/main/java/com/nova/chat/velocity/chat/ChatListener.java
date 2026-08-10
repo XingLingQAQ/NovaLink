@@ -149,15 +149,36 @@ public class ChatListener {
 
         @Override
         public void sendJoinChannelStatusBar(UUID playerId, String channelId) {
-            // §7 action bar ("当前频道：X（模式）") is intentionally not sent here:
-            // Velocity is a proxy and has no stable action-bar API that reliably
-            // reaches the downstream client. TODO: revisit if a reliable proxy
-            // action-bar path becomes available.
+            // §7 status ("当前频道：X（模式）"): Velocity is a proxy with no stable
+            // action-bar API, so we render a one-shot title instead of a persistent
+            // bar. The title shows the channel name; the subtitle reuses the shared
+            // "current channel" copy. Times are short so it reads as a transient
+            // confirmation, not a lingering overlay.
+            plugin.getServer().getPlayer(playerId).ifPresent(player -> {
+                Component title = messageFormatter.parseColors(channelId != null ? channelId : "");
+                Component subtitle = messageFormatter.parseColors(
+                        I18n.tr(playerId, "chat.status.current_bar", channelId != null ? channelId : "", ""));
+                Title.Times times = Title.Times.times(
+                        Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
+                        Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
+                        Duration.ofMillis(MentionNotifier.DEFAULT_FADE_OUT * 50L));
+                player.showTitle(Title.title(title, subtitle, times));
+            });
         }
 
         @Override
         public void sendLeaveChannelStatusBar(UUID playerId) {
-            // No-op — see sendJoinChannelStatusBar.
+            // One-shot title on leave (see sendJoinChannelStatusBar). No target
+            // channel to name, so the title is the shared "left channel" copy and
+            // the subtitle is empty.
+            plugin.getServer().getPlayer(playerId).ifPresent(player -> {
+                Component title = messageFormatter.parseColors(I18n.tr(playerId, "chat.leave.leaving", ""));
+                Title.Times times = Title.Times.times(
+                        Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
+                        Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
+                        Duration.ofMillis(MentionNotifier.DEFAULT_FADE_OUT * 50L));
+                player.showTitle(Title.title(title, Component.empty(), times));
+            });
         }
 
         @Override
