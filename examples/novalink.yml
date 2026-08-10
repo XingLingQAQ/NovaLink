@@ -32,14 +32,23 @@ server:
 # Database Settings / 数据库设置
 # ==========================================
 database:
-  # Database type: mysql, redis, memory
-  # 数据库类型：mysql, redis, memory
-  # - mysql: Persistent storage with MySQL
-  # - redis: Cache with Redis (requires MySQL for persistence)
+  # Database type: mysql, postgresql, sqlite, redis, memory
+  # 数据库类型：mysql, postgresql, sqlite, redis, memory
+  # - mysql: Persistent storage with MySQL (or MariaDB — see note below)
+  # - postgresql: Persistent storage with PostgreSQL
+  # - sqlite: Embedded file-based storage (no server needed, good for small/single-node)
+  # - redis: Cache with Redis (requires MySQL/PostgreSQL/SQLite for persistence)
   # - memory: In-memory storage (data lost on restart)
+  #
+  # MariaDB note / MariaDB 说明:
+  #   MariaDB 10.3+ is supported via type: mysql. The MySQL connector-j driver
+  #   connects to MariaDB servers transparently. Just point the mysql.* settings
+  #   at your MariaDB host/port (default 3306).
+  #   MariaDB 10.3+ 可通过 type: mysql 连接，mysql 连接器兼容 MariaDB，
+  #   只需将 mysql.* 配置指向 MariaDB 服务器即可。
   type: mysql
-  
-  # MySQL Configuration / MySQL 配置
+
+  # MySQL Configuration (also used for MariaDB) / MySQL 配置（也用于 MariaDB）
   mysql:
     host: 127.0.0.1
     port: 3306
@@ -48,7 +57,24 @@ database:
     password: your-mysql-password
     # Connection pool size / 连接池大小
     pool-size: 10
-  
+
+  # PostgreSQL Configuration / PostgreSQL 配置
+  postgresql:
+    host: 127.0.0.1
+    port: 5432
+    database: novalink
+    username: postgres
+    password: your-postgresql-password
+    # Connection pool size / 连接池大小
+    pool-size: 10
+
+  # SQLite Configuration / SQLite 配置
+  sqlite:
+    # Database file path (relative to backend working dir) / 数据库文件路径（相对后端工作目录）
+    file-path: data/novalink.db
+    # Connection pool size (SQLite is single-writer; keep small) / 连接池大小（SQLite 单写，建议小）
+    pool-size: 5
+
   # Redis Configuration (Optional) / Redis 配置（可选）
   redis:
     # Enable Redis caching / 启用 Redis 缓存

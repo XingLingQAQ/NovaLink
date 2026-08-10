@@ -18,6 +18,16 @@ database:
     username: root
     password: ''
     pool-size: 10
+  postgresql:
+    host: 127.0.0.1
+    port: 5432
+    database: novalink
+    username: postgres
+    password: ''
+    pool-size: 10
+  sqlite:
+    file-path: data/novalink.db
+    pool-size: 5
   redis:
     enabled: false
     host: 127.0.0.1

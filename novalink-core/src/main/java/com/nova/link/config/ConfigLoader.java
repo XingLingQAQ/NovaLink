@@ -260,7 +260,25 @@ public class ConfigLoader {
             if (mysqlData.containsKey("password")) mysql.setPassword((String) mysqlData.get("password"));
             if (mysqlData.containsKey("pool-size")) mysql.setPoolSize(((Number) mysqlData.get("pool-size")).intValue());
         }
-        
+
+        if (data.containsKey("postgresql")) {
+            Map<String, Object> pgData = (Map<String, Object>) data.get("postgresql");
+            DatabaseConfig.PostgreSQLConfig pg = config.getPostgresql();
+            if (pgData.containsKey("host")) pg.setHost((String) pgData.get("host"));
+            if (pgData.containsKey("port")) pg.setPort(((Number) pgData.get("port")).intValue());
+            if (pgData.containsKey("database")) pg.setDatabase((String) pgData.get("database"));
+            if (pgData.containsKey("username")) pg.setUsername((String) pgData.get("username"));
+            if (pgData.containsKey("password")) pg.setPassword((String) pgData.get("password"));
+            if (pgData.containsKey("pool-size")) pg.setPoolSize(((Number) pgData.get("pool-size")).intValue());
+        }
+
+        if (data.containsKey("sqlite")) {
+            Map<String, Object> sqliteData = (Map<String, Object>) data.get("sqlite");
+            DatabaseConfig.SQLiteConfig sqlite = config.getSqlite();
+            if (sqliteData.containsKey("file-path")) sqlite.setFilePath((String) sqliteData.get("file-path"));
+            if (sqliteData.containsKey("pool-size")) sqlite.setPoolSize(((Number) sqliteData.get("pool-size")).intValue());
+        }
+
         if (data.containsKey("redis")) {
             Map<String, Object> redisData = (Map<String, Object>) data.get("redis");
             DatabaseConfig.RedisConfig redis = config.getRedis();
@@ -269,7 +287,7 @@ public class ConfigLoader {
             if (redisData.containsKey("port")) redis.setPort(((Number) redisData.get("port")).intValue());
             if (redisData.containsKey("password")) redis.setPassword((String) redisData.get("password"));
         }
-        
+
         return config;
     }
 
@@ -496,7 +514,21 @@ public class ConfigLoader {
         mysql.put("password", config.getDatabase().getMysql().getPassword());
         mysql.put("pool-size", config.getDatabase().getMysql().getPoolSize());
         database.put("mysql", mysql);
-        
+
+        Map<String, Object> postgresql = new LinkedHashMap<>();
+        postgresql.put("host", config.getDatabase().getPostgresql().getHost());
+        postgresql.put("port", config.getDatabase().getPostgresql().getPort());
+        postgresql.put("database", config.getDatabase().getPostgresql().getDatabase());
+        postgresql.put("username", config.getDatabase().getPostgresql().getUsername());
+        postgresql.put("password", config.getDatabase().getPostgresql().getPassword());
+        postgresql.put("pool-size", config.getDatabase().getPostgresql().getPoolSize());
+        database.put("postgresql", postgresql);
+
+        Map<String, Object> sqlite = new LinkedHashMap<>();
+        sqlite.put("file-path", config.getDatabase().getSqlite().getFilePath());
+        sqlite.put("pool-size", config.getDatabase().getSqlite().getPoolSize());
+        database.put("sqlite", sqlite);
+
         Map<String, Object> redis = new LinkedHashMap<>();
         redis.put("enabled", config.getDatabase().getRedis().isEnabled());
         redis.put("host", config.getDatabase().getRedis().getHost());

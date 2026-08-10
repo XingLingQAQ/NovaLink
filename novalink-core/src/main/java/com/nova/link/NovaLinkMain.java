@@ -511,6 +511,24 @@ public class NovaLinkMain {
                         mysql.getPassword(),
                         mysql.getPoolSize()
                 );
+            case "postgresql":
+            case "postgres":
+            case "pg":
+                DatabaseConfig.PostgreSQLConfig pg = config.getDatabase().getPostgresql();
+                return new PostgreSQLProvider(
+                        pg.getHost(),
+                        pg.getPort(),
+                        pg.getDatabase(),
+                        pg.getUsername(),
+                        pg.getPassword(),
+                        pg.getPoolSize()
+                );
+            case "sqlite":
+                DatabaseConfig.SQLiteConfig sqlite = config.getDatabase().getSqlite();
+                return new SQLiteProvider(
+                        sqlite.getFilePath(),
+                        sqlite.getPoolSize()
+                );
             case "redis":
                 DatabaseConfig.RedisConfig redis = config.getDatabase().getRedis();
                 return new RedisProvider(redis.getHost(), redis.getPort(), redis.getPassword());

@@ -112,47 +112,109 @@ public class ConfigParsingRoundTripPropertyTest {
         original.getDatabase().getMysql().setPoolSize(poolSize);
         original.getDatabase().getRedis().setEnabled(redisEnabled);
         original.getDatabase().getRedis().setPort(redisPort);
-        
+
         // Round-trip through file
         NovaLinkConfig roundTripped = roundTripConfig(original);
-        
+
         // PROPERTY: Database config should be equivalent after round-trip
         assertThat(roundTripped.getDatabase().getType())
                 .as("Database type should survive round-trip")
                 .isEqualTo(dbType);
-        
+
         assertThat(roundTripped.getDatabase().getMysql().getHost())
                 .as("MySQL host should survive round-trip")
                 .isEqualTo(mysqlHost);
-        
+
         assertThat(roundTripped.getDatabase().getMysql().getPort())
                 .as("MySQL port should survive round-trip")
                 .isEqualTo(mysqlPort);
-        
+
         assertThat(roundTripped.getDatabase().getMysql().getDatabase())
                 .as("MySQL database should survive round-trip")
                 .isEqualTo(mysqlDatabase);
-        
+
         assertThat(roundTripped.getDatabase().getMysql().getUsername())
                 .as("MySQL username should survive round-trip")
                 .isEqualTo(mysqlUsername);
-        
+
         assertThat(roundTripped.getDatabase().getMysql().getPoolSize())
                 .as("MySQL pool size should survive round-trip")
                 .isEqualTo(poolSize);
-        
+
         assertThat(roundTripped.getDatabase().getRedis().isEnabled())
                 .as("Redis enabled should survive round-trip")
                 .isEqualTo(redisEnabled);
-        
+
         assertThat(roundTripped.getDatabase().getRedis().getPort())
                 .as("Redis port should survive round-trip")
                 .isEqualTo(redisPort);
     }
 
+    /**
+     * Property 16 (continued): PostgreSQL + SQLite configuration round-trip.
+     *
+     * **Validates: Requirements 20.1-20.6**
+     */
+    @Property(tries = 100)
+    void postgresqlAndSqliteConfigRoundTrip(
+            @ForAll("validHostnames") String pgHost,
+            @ForAll @IntRange(min = 1024, max = 65535) int pgPort,
+            @ForAll("validIdentifiers") String pgDatabase,
+            @ForAll("validIdentifiers") String pgUsername,
+            @ForAll @IntRange(min = 1, max = 50) int pgPoolSize,
+            @ForAll("validFilePaths") String sqliteFilePath,
+            @ForAll @IntRange(min = 1, max = 20) int sqlitePoolSize
+    ) throws Exception {
+        NovaLinkConfig original = NovaLinkConfig.createDefault();
+        original.getDatabase().setType("postgresql");
+        original.getDatabase().getPostgresql().setHost(pgHost);
+        original.getDatabase().getPostgresql().setPort(pgPort);
+        original.getDatabase().getPostgresql().setDatabase(pgDatabase);
+        original.getDatabase().getPostgresql().setUsername(pgUsername);
+        original.getDatabase().getPostgresql().setPoolSize(pgPoolSize);
+        original.getDatabase().getSqlite().setFilePath(sqliteFilePath);
+        original.getDatabase().getSqlite().setPoolSize(sqlitePoolSize);
+
+        NovaLinkConfig roundTripped = roundTripConfig(original);
+
+        assertThat(roundTripped.getDatabase().getPostgresql().getHost())
+                .as("PostgreSQL host should survive round-trip")
+                .isEqualTo(pgHost);
+        assertThat(roundTripped.getDatabase().getPostgresql().getPort())
+                .as("PostgreSQL port should survive round-trip")
+                .isEqualTo(pgPort);
+        assertThat(roundTripped.getDatabase().getPostgresql().getDatabase())
+                .as("PostgreSQL database should survive round-trip")
+                .isEqualTo(pgDatabase);
+        assertThat(roundTripped.getDatabase().getPostgresql().getUsername())
+                .as("PostgreSQL username should survive round-trip")
+                .isEqualTo(pgUsername);
+        assertThat(roundTripped.getDatabase().getPostgresql().getPoolSize())
+                .as("PostgreSQL pool size should survive round-trip")
+                .isEqualTo(pgPoolSize);
+        assertThat(roundTripped.getDatabase().getSqlite().getFilePath())
+                .as("SQLite file path should survive round-trip")
+                .isEqualTo(sqliteFilePath);
+        assertThat(roundTripped.getDatabase().getSqlite().getPoolSize())
+                .as("SQLite pool size should survive round-trip")
+                .isEqualTo(sqlitePoolSize);
+    }
+
     @Provide
     Arbitrary<String> databaseTypes() {
-        return Arbitraries.of("mysql", "redis", "memory");
+        return Arbitraries.of("mysql", "postgresql", "sqlite", "redis", "memory");
+    }
+
+    @Provide
+    Arbitrary<String> validFilePaths() {
+        return Arbitraries.strings()
+                .withCharRange('a', 'z')
+                .withCharRange('0', '9')
+                .withCharRange('/', '/')
+                .withCharRange('.', '_')
+                .ofMinLength(3)
+                .ofMaxLength(30)
+                .filter(s -> s.endsWith(".db") || s.contains("/"));
     }
 
     @Provide
