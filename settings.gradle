@@ -38,6 +38,6 @@ include 'NovaChat:Sponge:sponge'
 // Non-Java Bedrock client modules (PHP/Python/C++). These use the base plugin
 // and delegate to their native toolchains via Exec tasks. They are excluded
 // from the root subprojects { apply plugin: 'java' } block in build.gradle.
-include 'novachat-endstone'
-include 'novachat-levilamina'
-include 'novachat-pmmp'
+include 'NovaChat:Bedrock:endstone'
+include 'NovaChat:Bedrock:levilamina'
+include 'NovaChat:Bedrock:pmmp'

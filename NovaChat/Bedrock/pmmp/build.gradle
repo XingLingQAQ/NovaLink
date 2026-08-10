@@ -16,8 +16,8 @@
 // Eris — sufficient for the protocol/i18n unit tests that don't depend on
 // pocketmine runtime classes.
 //
-// Run independently with:  gradle :pmmp:build  (once included in settings.gradle)
-// or directly from this dir: gradle -p novachat-pmmp build
+// Run independently with:  gradle :NovaChat:Bedrock:pmmp:build
+// or directly from this dir: gradle -p NovaChat/Bedrock/pmmp build
 
 plugins {
     id 'base'

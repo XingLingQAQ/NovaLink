@@ -32,7 +32,7 @@ subprojects {
     // Non-Java Bedrock client modules (PHP/Python/C++) use the base plugin and
     // delegate to their native toolchains. Skip the Java plugin + dependencies
     // for them so `gradle build` works across the whole monorepo.
-    def nonJavaBedrock = ['novachat-endstone', 'novachat-levilamina', 'novachat-pmmp']
+    def nonJavaBedrock = ['endstone', 'levilamina', 'pmmp']
     if (nonJavaBedrock.contains(project.name)) {
         return
     }

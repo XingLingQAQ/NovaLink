@@ -8,8 +8,8 @@
 //   - build     : depends on pythonEnv + pytest
 //   - clean     : remove venv + __pycache__
 //
-// Run independently with:  gradle :novachat-endstone:build
-// or directly from this dir: gradle -p novachat-endstone build
+// Run independently with:  gradle :NovaChat:Bedrock:endstone:build
+// or directly from this dir: gradle -p NovaChat/Bedrock/endstone build
 
 plugins {
     id 'base'

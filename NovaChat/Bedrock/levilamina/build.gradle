@@ -10,8 +10,8 @@
 //   - build          : depends on xmakeConfigure + xmakeBuild
 //   - clean          : `xmake clean` + remove build/.xmake
 //
-// Run independently with:  gradle :novachat-levilamina:build
-// or directly from this dir: gradle -p novachat-levilamina build
+// Run independently with:  gradle :NovaChat:Bedrock:levilamina:build
+// or directly from this dir: gradle -p NovaChat/Bedrock/levilamina build
 
 plugins {
     id 'base'
