@@ -22,6 +22,7 @@ public final class MessagePipelineResult {
         MISSING_CHANNEL_ID,
         CHANNEL_NOT_FOUND,
         SENDER_MUTED,
+        SENDER_BANNED,
         CROSS_CLIENT_DENIED,
         NO_RECIPIENTS
     }

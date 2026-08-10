@@ -8,7 +8,7 @@ import { cn } from '../../lib/cn';
  * Pill-ish rounded-lg popover with token-driven bg/border, muted rows.
  * Legacy `theme`/`mode` props are accepted but ignored (tokens auto-switch).
  */
-const NotificationDropdown = ({ isOpen, theme, mode, notifications, onMarkAllRead, onClearAll }) => {
+const NotificationDropdown = ({ isOpen, theme, mode, notifications, onMarkAllRead, onClearAll, onOpenList }) => {
   void theme; void mode;
   const { t } = useTranslation();
   const containerStyles = cn(
@@ -89,7 +89,10 @@ const NotificationDropdown = ({ isOpen, theme, mode, notifications, onMarkAllRea
         )}
       </div>
       <div className={cn('p-3 border-t text-center', divider)}>
-        <button className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors">
+        <button
+          onClick={onOpenList}
+          className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+        >
           {t('notifications.view_all')}
         </button>
       </div>

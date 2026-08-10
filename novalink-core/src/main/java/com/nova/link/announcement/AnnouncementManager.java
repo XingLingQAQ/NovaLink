@@ -5,6 +5,7 @@ import com.nova.link.auth.PermissionManager;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
+import com.nova.link.notification.NotificationStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,6 +50,13 @@ public class AnnouncementManager {
     private final ChannelManager channelManager;
     private final SecureRandom random = new SecureRandom();
 
+    /**
+     * Optional notification store so announcement events are persisted and
+     * broadcast to the web panel. Injected via setter to keep the constructor
+     * signature stable.
+     */
+    private NotificationStore notificationStore;
+
     /** Executor for scheduled announcements */
     private ScheduledExecutorService scheduler;
 
@@ -58,6 +66,14 @@ public class AnnouncementManager {
     public AnnouncementManager(PermissionManager permissionManager, ChannelManager channelManager) {
         this.permissionManager = permissionManager;
         this.channelManager = channelManager;
+    }
+
+    /**
+     * Sets the optional notification store so announcement events are persisted
+     * and broadcast to the web panel.
+     */
+    public void setNotificationStore(NotificationStore notificationStore) {
+        this.notificationStore = notificationStore;
     }
 
     /**
@@ -147,8 +163,20 @@ public class AnnouncementManager {
             announcementSender.accept(channelId, content);
         }
 
-        logger.info("Immediate announcement sent to channel {} by {}: {}", 
+        logger.info("Immediate announcement sent to channel {} by {}: {}",
                 channelId, operatorId, truncateContent(content));
+
+        // Surface the announcement to the web panel notification feed.
+        if (notificationStore != null) {
+            try {
+                notificationStore.createNotification(
+                        "Announcement",
+                        "Announcement sent to channel " + channelId + ": " + truncateContent(content),
+                        "info");
+            } catch (Exception ignored) {
+                // non-fatal
+            }
+        }
 
         return AnnouncementResult.success("Announcement sent successfully");
     }
@@ -198,8 +226,20 @@ public class AnnouncementManager {
             }
         }
 
-        logger.info("Broadcast sent to {} channels by {}: {}", 
+        logger.info("Broadcast sent to {} channels by {}: {}",
                 sentCount, operatorId, truncateContent(content));
+
+        // Surface the broadcast to the web panel notification feed.
+        if (notificationStore != null) {
+            try {
+                notificationStore.createNotification(
+                        "Announcement",
+                        "Broadcast sent to " + sentCount + " channels: " + truncateContent(content),
+                        "info");
+            } catch (Exception ignored) {
+                // non-fatal
+            }
+        }
 
         return AnnouncementResult.success("Broadcast sent to " + sentCount + " channels");
     }

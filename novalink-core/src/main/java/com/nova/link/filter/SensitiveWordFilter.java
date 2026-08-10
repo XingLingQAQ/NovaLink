@@ -35,9 +35,33 @@ public class SensitiveWordFilter {
     
     // Compiled patterns for word matching (built from sensitiveWords)
     private volatile Pattern wordPattern = null;
-    
+
+    // FeatureConfig.filterEnabled — when false, filter() short-circuits to a
+    // clean result so no replacement is applied. Volatile for hot-reload.
+    private volatile boolean enabled = true;
+
     public SensitiveWordFilter() {
         loadBuiltinWordList();
+    }
+
+    /**
+     * Returns whether the filter is currently enabled.
+     *
+     * @return true when filtering is active
+     */
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    /**
+     * Enables or disables the filter. When disabled, {@link #filter} returns a
+     * clean (unfiltered) result without applying any replacement.
+     *
+     * @param enabled true to enable filtering, false to bypass
+     */
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+        log.debug("SensitiveWordFilter enabled={}", enabled);
     }
     
     /**
@@ -201,6 +225,9 @@ public class SensitiveWordFilter {
      * @return the filter result containing the filtered message
      */
     public FilterResult filter(String message) {
+        if (!enabled) {
+            return FilterResult.clean(message != null ? message : "");
+        }
         if (message == null || message.isEmpty()) {
             return FilterResult.clean(message == null ? "" : message);
         }

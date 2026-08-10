@@ -48,14 +48,29 @@ public class MuteManager {
     private final PermissionManager permissionManager;
     private final ChannelManager channelManager;
 
+    /**
+     * Optional notification store. When set, successful mute/unmute operations
+     * create a persisted + broadcast notification. Injected via setter to keep
+     * the constructor signature stable.
+     */
+    private com.nova.link.notification.NotificationStore notificationStore;
+
     private ScheduledExecutorService cleanupExecutor;
 
-    public MuteManager(DatabaseProvider databaseProvider, 
+    public MuteManager(DatabaseProvider databaseProvider,
                        PermissionManager permissionManager,
                        ChannelManager channelManager) {
         this.databaseProvider = databaseProvider;
         this.permissionManager = permissionManager;
         this.channelManager = channelManager;
+    }
+
+    /**
+     * Sets the optional notification store so mute/unmute events are persisted
+     * and broadcast to the web panel.
+     */
+    public void setNotificationStore(com.nova.link.notification.NotificationStore notificationStore) {
+        this.notificationStore = notificationStore;
     }
 
     /**
@@ -160,6 +175,20 @@ public class MuteManager {
 
         logger.info("Player {} muted in channel {} by {} for {} ms. Reason: {}",
                 targetPlayerId, channelId, operatorId, durationMs, reason);
+
+        if (notificationStore != null) {
+            try {
+                String scope = channelId != null ? channelId : "global";
+                notificationStore.createNotification(
+                        "Player Muted",
+                        "Player " + targetPlayerId + " muted in " + scope
+                                + " for " + describeDuration(durationMs)
+                                + ". Reason: " + (reason != null ? reason : "-"),
+                        "warning");
+            } catch (Exception e) {
+                logger.debug("Failed to create mute notification: {}", e.getMessage());
+            }
+        }
 
         return MuteResult.success("Player muted successfully");
     }
@@ -270,6 +299,18 @@ public class MuteManager {
         }
 
         logger.info("Player {} unmuted in channel {} by {}", targetPlayerId, channelId, operatorId);
+
+        if (notificationStore != null) {
+            try {
+                String scope = channelId != null ? channelId : "global";
+                notificationStore.createNotification(
+                        "Player Unmuted",
+                        "Player " + targetPlayerId + " unmuted in " + scope,
+                        "info");
+            } catch (Exception e) {
+                logger.debug("Failed to create unmute notification: {}", e.getMessage());
+            }
+        }
 
         return MuteResult.success("Player unmuted successfully");
     }
@@ -522,5 +563,16 @@ public class MuteManager {
      */
     public void clearCache() {
         muteCache.clear();
+    }
+
+    private static String describeDuration(long ms) {
+        if (ms <= 0) {
+            return "permanent";
+        }
+        long secs = ms / 1000;
+        if (secs < 60) return secs + "s";
+        if (secs < 3600) return (secs / 60) + "m";
+        if (secs < 86400) return (secs / 3600) + "h";
+        return (secs / 86400) + "d";
     }
 }

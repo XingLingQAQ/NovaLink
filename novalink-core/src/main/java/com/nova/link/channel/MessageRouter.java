@@ -1,7 +1,9 @@
 package com.nova.link.channel;
 
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.link.ban.BanManager;
 import com.nova.link.filter.SensitiveWordFilter;
+import com.nova.link.log.ChatLogger;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.network.ServerNetworkHandler;
 import com.nova.link.spy.SpyManager;
@@ -70,8 +72,16 @@ public class MessageRouter {
         pipeline.setMuteManager(muteManager);
     }
 
+    public void setBanManager(BanManager banManager) {
+        pipeline.setBanManager(banManager);
+    }
+
     public void setSensitiveWordFilter(SensitiveWordFilter sensitiveWordFilter) {
         pipeline.setSensitiveWordFilter(sensitiveWordFilter);
+    }
+
+    public void setChatLogger(ChatLogger chatLogger) {
+        pipeline.setChatLogger(chatLogger);
     }
 
     /**

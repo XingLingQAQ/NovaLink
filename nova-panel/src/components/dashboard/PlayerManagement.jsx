@@ -19,6 +19,7 @@ import {
   UserX,
   MessageSquare,
   Shield,
+  ShieldOff,
   Clock,
   Eye,
   Loader2,
@@ -31,6 +32,7 @@ import Modal from '../ui/Modal';
 import CustomSelect from '../ui/CustomSelect';
 import Avatar from '../ui/Avatar';
 import { api } from '../../services/api';
+import { formatRemainingMs } from '../../utils/adapters';
 
 function PlayerManagement({
   theme,
@@ -40,9 +42,12 @@ function PlayerManagement({
   players = [],
   channels = [],
   mutedPlayers = [],
+  bannedPlayers = [],
   onMutePlayer,
   onUnmutePlayer,
   onKickPlayer,
+  onBanPlayer,
+  onUnbanPlayer,
 }) {
   void _txtMain; void _txtSec;
   const { t } = useTranslation();
@@ -57,6 +62,7 @@ function PlayerManagement({
   const [submitting, setSubmitting] = useState(false);
   const [kickTarget, setKickTarget] = useState(null);
   const [unmuteTarget, setUnmuteTarget] = useState(null);
+  const [unbanTarget, setUnbanTarget] = useState(null);
 
   // Mute form — aligned with backend POST /api/players/{uuid}/mute body.
   // { channelId?, durationMs?, reason? } — durationMs 0 = permanent.
@@ -68,6 +74,19 @@ function PlayerManagement({
     channel: 'all',
   };
   const [muteTarget, setMuteTarget] = useState(emptyMuteTarget);
+
+  // Ban form — aligned with backend POST /api/players/{uuid}/ban body.
+  // { channelId?, durationMs, reason } — durationMs 0 = permanent; channelId
+  // omitted/empty = global ban.
+  const emptyBanTarget = {
+    uuid: '',
+    name: '',
+    reason: '',
+    duration: '1h',
+    channel: 'all',
+  };
+  const [banTarget, setBanTarget] = useState(emptyBanTarget);
+  const [showBanModal, setShowBanModal] = useState(false);
 
   // Filter players.
   const filteredPlayers = players.filter((p) => {
@@ -173,6 +192,86 @@ function PlayerManagement({
     }
   };
 
+  // Handle ban — opens the ban modal with the player pre-filled.
+  const handleBan = (player) => {
+    setBanTarget({
+      ...emptyBanTarget,
+      uuid: player.uuid,
+      name: player.name,
+    });
+    setShowBanModal(true);
+  };
+
+  // Confirm ban — calls the App handler with the backend-shaped payload.
+  const confirmBan = async () => {
+    if (!banTarget.uuid || !onBanPlayer) return;
+    const payload = {
+      uuid: banTarget.uuid,
+      name: banTarget.name,
+      durationMs: durationToMs(banTarget.duration),
+      reason: banTarget.reason || '',
+    };
+    if (banTarget.channel && banTarget.channel !== 'all') {
+      payload.channelId = banTarget.channel;
+    }
+    setSubmitting(true);
+    try {
+      await onBanPlayer(payload);
+      setShowBanModal(false);
+      setBanTarget(emptyBanTarget);
+    } catch {
+      // toast shown by App handler
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Handle unban — opens a confirm modal.
+  const handleUnban = (ban) => {
+    setUnbanTarget(ban);
+  };
+
+  const confirmUnban = async () => {
+    if (!unbanTarget || !onUnbanPlayer) return;
+    const payload = { uuid: unbanTarget.uuid, name: unbanTarget.name };
+    if (unbanTarget.channelId) payload.channelId = unbanTarget.channelId;
+    setSubmitting(true);
+    try {
+      await onUnbanPlayer(payload);
+      setUnbanTarget(null);
+    } catch {
+      // toast shown by App handler
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Format a ban's expiry for display.
+  const formatBanExpiry = (ban) => {
+    if (!ban) return '-';
+    if (ban.permanent) return t('players.ban_permanent');
+    if (!ban.expireTime) return '-';
+    try {
+      const num = typeof ban.expireTime === 'number' ? ban.expireTime : Number(ban.expireTime);
+      if (Number.isNaN(num)) return String(ban.expireTime);
+      return new Date(num).toLocaleString();
+    } catch {
+      return String(ban.expireTime);
+    }
+  };
+
+  // Format a ban's created-at timestamp for display.
+  const formatBanCreated = (ban) => {
+    if (!ban || !ban.createdAt) return '-';
+    try {
+      const num = typeof ban.createdAt === 'number' ? ban.createdAt : Number(ban.createdAt);
+      if (Number.isNaN(num)) return String(ban.createdAt);
+      return new Date(num).toLocaleString();
+    } catch {
+      return String(ban.createdAt);
+    }
+  };
+
   // Handle view player details — fetches full player info via REST.
   const handleViewDetails = async (player) => {
     setPlayerDetail(null);
@@ -228,7 +327,7 @@ function PlayerManagement({
         <div>
           <h2 className="text-xl font-medium text-foreground">{t('players.title')}</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            {t('players.subtitle', { online: players.length, muted: mutedPlayers.length })}
+            {t('players.subtitle', { online: players.length, muted: mutedPlayers.length, banned: bannedPlayers.length })}
           </p>
         </div>
 
@@ -254,6 +353,20 @@ function PlayerManagement({
             {mutedPlayers.length > 0 && (
               <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-destructive-foreground">
                 {mutedPlayers.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setTab('banned')}
+            className={`inline-flex h-7 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors ${
+              tab === 'banned' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <ShieldOff size={14} />
+            {t('players.tab_banned')}
+            {bannedPlayers.length > 0 && (
+              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-destructive-foreground">
+                {bannedPlayers.length}
               </span>
             )}
           </button>
@@ -363,6 +476,18 @@ function PlayerManagement({
                             {t('players.mute')}
                           </Button>
                         )}
+                        {onBanPlayer && (
+                          <Button
+                            theme={theme}
+                            mode={mode}
+                            variant="destructive"
+                            className="text-xs"
+                            onClick={() => handleBan(player)}
+                            title={t('players.ban_title')}
+                          >
+                            {t('players.ban')}
+                          </Button>
+                        )}
                         {onKickPlayer && (
                           <Button
                             theme={theme}
@@ -460,6 +585,86 @@ function PlayerManagement({
             <div className="p-12 text-center text-muted-foreground">
               <MessageSquare size={40} className="mx-auto mb-3 opacity-50" />
               <p className="text-sm">{t('players.no_muted')}</p>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* Banned Players Tab */}
+      {tab === 'banned' && (
+        <Card className="overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="text-xs text-muted-foreground border-b border-border">
+                  <th className="p-3 font-medium">{t('players.col_player')}</th>
+                  <th className="p-3 font-medium">{t('players.field_mute_channel')}</th>
+                  <th className="p-3 font-medium">{t('players.col_reason')}</th>
+                  <th className="p-3 font-medium">{t('players.col_expire_time')}</th>
+                  <th className="p-3 font-medium">{t('players.col_remaining')}</th>
+                  <th className="p-3 font-medium">{t('players.col_ban_created')}</th>
+                  <th className="p-3 font-medium text-right">{t('players.col_action')}</th>
+                </tr>
+              </thead>
+              <tbody className="text-xs text-foreground">
+                {bannedPlayers.map((ban) => (
+                  <tr key={(ban.uuid || '') + '|' + (ban.channelId || '') + '|' + (ban.createdAt || '')} className="border-b border-border last:border-0 hover:bg-muted/40 transition-colors">
+                    <td className="p-3">
+                      <div className="flex items-center gap-3">
+                        <Avatar name={ban.name || ban.uuid} size={28} rounded="rounded-full" />
+                        <div className="min-w-0">
+                          <div className="font-medium">{ban.name || ban.uuid}</div>
+                          {ban.uuid && ban.uuid !== ban.name && (
+                            <div className="text-[10px] text-muted-foreground font-mono truncate">{ban.uuid}</div>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="p-3">
+                      {ban.channelId ? (
+                        <span className="rounded-md bg-muted px-1.5 py-0.5 text-xs">#{ban.channelId}</span>
+                      ) : (
+                        <Badge variant="info">{t('players.ban_global')}</Badge>
+                      )}
+                    </td>
+                    <td className="p-3 text-muted-foreground">{ban.reason || '-'}</td>
+                    <td className="p-3">
+                      <div className="flex items-center gap-1">
+                        <Clock size={12} className="text-muted-foreground" />
+                        <span className={ban.permanent ? 'text-destructive' : 'text-muted-foreground'}>
+                          {formatBanExpiry(ban)}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="p-3">
+                      <span className={ban.permanent ? 'text-destructive' : (ban.remainingMs <= 0 ? 'text-muted-foreground' : 'text-foreground')}>
+                        {formatRemainingMs(ban.remainingMs, { permanentLabel: t('players.ban_permanent'), expiredLabel: t('players.ban_expired') })}
+                      </span>
+                    </td>
+                    <td className="p-3 text-muted-foreground">{formatBanCreated(ban)}</td>
+                    <td className="p-3 text-right">
+                      <Button
+                        theme={theme}
+                        mode={mode}
+                        variant="outline"
+                        className="text-xs text-emerald-600 dark:text-emerald-400"
+                        onClick={() => handleUnban(ban)}
+                        title={t('players.unban_title')}
+                      >
+                        {t('players.unban')}
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Empty State */}
+          {bannedPlayers.length === 0 && (
+            <div className="p-12 text-center text-muted-foreground">
+              <ShieldOff size={40} className="mx-auto mb-3 opacity-50" />
+              <p className="text-sm">{t('players.no_banned')}</p>
             </div>
           )}
         </Card>
@@ -616,6 +821,125 @@ function PlayerManagement({
           >
             {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
             {t('players.kick')}
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Ban Modal */}
+      <Modal
+        isOpen={showBanModal}
+        onClose={() => !submitting && setShowBanModal(false)}
+        title={t('players.ban_modal_title')}
+        theme={theme}
+        mode={mode}
+      >
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-xs font-normal leading-none text-muted-foreground">
+              {t('players.field_player_name')}
+            </label>
+            <input
+              type="text"
+              value={banTarget.name}
+              disabled
+              className={`${inputClass} opacity-50 cursor-not-allowed`}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-normal leading-none text-muted-foreground">
+              {t('players.field_ban_reason')}
+            </label>
+            <input
+              type="text"
+              value={banTarget.reason}
+              onChange={(e) => setBanTarget({ ...banTarget, reason: e.target.value })}
+              placeholder={t('players.field_ban_reason_placeholder')}
+              className={inputClass}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-normal leading-none text-muted-foreground">
+              {t('players.field_duration')}
+            </label>
+            <CustomSelect
+              theme={theme}
+              mode={mode}
+              options={durationOptions.map((d) => d.value)}
+              defaultValue="1h"
+              onChange={(val) => setBanTarget({ ...banTarget, duration: val })}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-normal leading-none text-muted-foreground">
+              {t('players.field_ban_channel')}
+            </label>
+            <CustomSelect
+              theme={theme}
+              mode={mode}
+              options={channelOptions}
+              defaultValue="all"
+              onChange={(val) => setBanTarget({ ...banTarget, channel: val })}
+            />
+            <p className="text-[11px] text-muted-foreground">{t('players.field_channel_placeholder')}</p>
+          </div>
+          <div className="flex gap-2 mt-6 pt-4 border-t border-border">
+            <Button
+              variant="ghost"
+              className="flex-1"
+              theme={theme}
+              mode={mode}
+              onClick={() => setShowBanModal(false)}
+              disabled={submitting}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              className="flex-1"
+              theme={theme}
+              mode={mode}
+              onClick={confirmBan}
+              disabled={submitting}
+            >
+              {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
+              {t('players.ban')}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Unban Confirm Modal */}
+      <Modal
+        isOpen={!!unbanTarget}
+        onClose={() => !submitting && setUnbanTarget(null)}
+        title={t('players.unban_modal_title')}
+        theme={theme}
+        mode={mode}
+      >
+        <p className="text-xs text-muted-foreground">
+          {t('players.unban_confirm', { name: (unbanTarget && (unbanTarget.name || unbanTarget.uuid)) || '' })}
+        </p>
+        <div className="flex gap-2 mt-6 pt-4 border-t border-border">
+          <Button
+            variant="ghost"
+            className="flex-1"
+            theme={theme}
+            mode={mode}
+            onClick={() => setUnbanTarget(null)}
+            disabled={submitting}
+          >
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant="default"
+            className="flex-1 text-emerald-600 dark:text-emerald-400"
+            theme={theme}
+            mode={mode}
+            onClick={confirmUnban}
+            disabled={submitting}
+          >
+            {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
+            {t('players.unban')}
           </Button>
         </div>
       </Modal>

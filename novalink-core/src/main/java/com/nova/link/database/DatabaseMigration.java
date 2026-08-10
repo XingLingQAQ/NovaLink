@@ -18,7 +18,7 @@ public class DatabaseMigration {
 
     private static final Logger logger = LoggerFactory.getLogger(DatabaseMigration.class);
     private static final String MIGRATION_TABLE = "novalink_migrations";
-    private static final int CURRENT_VERSION = 2;
+    private static final int CURRENT_VERSION = 4;
 
     private final DataSource dataSource;
 
@@ -212,8 +212,44 @@ public class DatabaseMigration {
                     ALTER TABLE players ADD COLUMN platform VARCHAR(32) NULL AFTER active_channel
                     """);
             }
-            // case 3 -> { ... }
-            
+            case 3 -> {
+                // Bans table — mirrors mutes schema. channelId NULL means a
+                // global ban. UNIQUE(player_id, channel_id) keeps one active ban
+                // per player/channel combination.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS bans (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        player_id VARCHAR(36) NOT NULL,
+                        channel_id VARCHAR(64),
+                        expire_time BIGINT,
+                        reason TEXT,
+                        operator_id VARCHAR(36),
+                        created_at BIGINT,
+                        INDEX idx_player_id (player_id),
+                        INDEX idx_channel_id (channel_id),
+                        INDEX idx_expire_time (expire_time),
+                        UNIQUE KEY uk_player_channel (player_id, channel_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+            }
+            case 4 -> {
+                // Notifications table — persisted panel notifications with a
+                // read flag for unread tracking and an index on created_at for
+                // ordered pagination.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS notifications (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        title VARCHAR(255) NOT NULL,
+                        message TEXT NOT NULL,
+                        level VARCHAR(16) NOT NULL DEFAULT 'info',
+                        created_at BIGINT NOT NULL,
+                        read BOOLEAN NOT NULL DEFAULT FALSE,
+                        INDEX idx_created_at (created_at),
+                        INDEX idx_read (read)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+            }
+
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
         
@@ -224,6 +260,8 @@ public class DatabaseMigration {
         return switch (version) {
             case 1 -> "Initial schema - players, channels, mutes, invitations tables";
             case 2 -> "Add platform column to players table";
+            case 3 -> "Add bans table for player ban management";
+            case 4 -> "Add notifications table for persisted panel notifications";
             default -> "Unknown migration";
         };
     }

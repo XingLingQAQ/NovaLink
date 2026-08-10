@@ -27,7 +27,10 @@ public class RedisProvider implements DatabaseProvider {
     private static final String PLAYER_PREFIX = KEY_PREFIX + "player:";
     private static final String CHANNEL_PREFIX = KEY_PREFIX + "channel:";
     private static final String MUTE_PREFIX = KEY_PREFIX + "mute:";
+    private static final String BAN_PREFIX = KEY_PREFIX + "ban:";
     private static final String INVITATION_PREFIX = KEY_PREFIX + "invitation:";
+    private static final String NOTIFICATION_PREFIX = KEY_PREFIX + "notification:";
+    private static final String NOTIFICATION_INDEX = KEY_PREFIX + "notifications";
     private static final String PLAYER_INDEX = KEY_PREFIX + "players";
     private static final String CHANNEL_INDEX = KEY_PREFIX + "channels";
 
@@ -147,8 +150,9 @@ public class RedisProvider implements DatabaseProvider {
             String key = PLAYER_PREFIX + playerId.toString();
             jedis.del(key);
             jedis.srem(PLAYER_INDEX, playerId.toString());
-            // Also delete mutes
+            // Also delete mutes and bans
             jedis.del(MUTE_PREFIX + playerId.toString());
+            jedis.del(BAN_PREFIX + playerId.toString());
             logger.debug("Deleted player state for: {}", playerId);
         } catch (Exception e) {
             throw new DatabaseException("Failed to delete player state from Redis", e);
@@ -325,6 +329,236 @@ public class RedisProvider implements DatabaseProvider {
             throw new DatabaseException("Failed to cleanup expired mutes from Redis", e);
         }
         return count;
+    }
+
+    // ==================== Ban Operations ====================
+
+    @Override
+    public void saveBan(UUID playerId, BanInfo banInfo) throws DatabaseException {
+        if (playerId == null || banInfo == null) {
+            throw new DatabaseException("Player ID and ban info cannot be null");
+        }
+
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = BAN_PREFIX + playerId.toString();
+            String field = banInfo.getChannelId() != null ? banInfo.getChannelId() : "__global__";
+            String json = gson.toJson(new BanInfoDto(banInfo));
+            jedis.hset(key, field, json);
+
+            logger.debug("Saved ban for player {} in channel {}", playerId, banInfo.getChannelId());
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to save ban to Redis", e);
+        }
+    }
+
+    @Override
+    public List<BanInfo> loadBans(UUID playerId) throws DatabaseException {
+        if (playerId == null) {
+            return Collections.emptyList();
+        }
+
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = BAN_PREFIX + playerId.toString();
+            Map<String, String> bans = jedis.hgetAll(key);
+            return bans.values().stream()
+                    .map(json -> gson.fromJson(json, BanInfoDto.class).toBanInfo())
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to load bans from Redis", e);
+        }
+    }
+
+    @Override
+    public void deleteBan(UUID playerId, String channelId) throws DatabaseException {
+        if (playerId == null) {
+            return;
+        }
+
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = BAN_PREFIX + playerId.toString();
+            String field = channelId != null ? channelId : "__global__";
+            jedis.hdel(key, field);
+            logger.debug("Deleted ban for player {} in channel {}", playerId, channelId);
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to delete ban from Redis", e);
+        }
+    }
+
+    @Override
+    public int cleanupExpiredBans() throws DatabaseException {
+        int count = 0;
+        try (Jedis jedis = jedisPool.getResource()) {
+            Set<String> playerIds = jedis.smembers(PLAYER_INDEX);
+            long now = System.currentTimeMillis();
+
+            for (String playerId : playerIds) {
+                String key = BAN_PREFIX + playerId;
+                Map<String, String> bans = jedis.hgetAll(key);
+
+                for (Map.Entry<String, String> entry : bans.entrySet()) {
+                    BanInfoDto dto = gson.fromJson(entry.getValue(), BanInfoDto.class);
+                    if (dto.expireTime > 0 && now > dto.expireTime) {
+                        jedis.hdel(key, entry.getKey());
+                        count++;
+                    }
+                }
+            }
+
+            if (count > 0) {
+                logger.debug("Cleaned up {} expired bans", count);
+            }
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to cleanup expired bans from Redis", e);
+        }
+        return count;
+    }
+
+    // ==================== Notification Operations ====================
+
+    @Override
+    public void saveNotification(Notification notification) throws DatabaseException {
+        if (notification == null) {
+            throw new DatabaseException("Notification cannot be null");
+        }
+
+        try (Jedis jedis = jedisPool.getResource()) {
+            // Generate an id using INCR on a dedicated counter.
+            long id = jedis.incr(KEY_PREFIX + "notification:seq");
+            try {
+                java.lang.reflect.Field f = Notification.class.getDeclaredField("id");
+                f.setAccessible(true);
+                f.setLong(notification, id);
+            } catch (ReflectiveOperationException e) {
+                logger.debug("Could not stamp notification id: {}", e.getMessage());
+            }
+
+            String key = NOTIFICATION_PREFIX + id;
+            String json = gson.toJson(new NotificationDto(notification));
+            jedis.set(key, json);
+            // Index by createdAt in a ZSET so we can paginate in descending order.
+            jedis.zadd(NOTIFICATION_INDEX, notification.getCreatedAt(), String.valueOf(id));
+            logger.debug("Saved notification id={} title={}", id, notification.getTitle());
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to save notification to Redis", e);
+        }
+    }
+
+    @Override
+    public List<Notification> getNotifications(int offset, int limit, boolean unreadOnly) throws DatabaseException {
+        if (limit <= 0) {
+            return Collections.emptyList();
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            // ZREVRANGEBYSCORE gives descending-by-score (createdAt) ordering.
+            // Use +inf/-inf to fetch the whole indexed range, then slice in-memory
+            // so the unreadOnly filter + offset/limit are honored consistently.
+            List<String> ids = jedis.zrevrangeByScore(NOTIFICATION_INDEX, "+inf", "-inf");
+            List<Notification> result = new ArrayList<>();
+            int collected = 0;
+            int skipped = 0;
+            for (String idStr : ids) {
+                String json = jedis.get(NOTIFICATION_PREFIX + idStr);
+                if (json == null) {
+                    continue;
+                }
+                NotificationDto dto = gson.fromJson(json, NotificationDto.class);
+                if (unreadOnly && dto.read) {
+                    continue;
+                }
+                if (skipped < offset) {
+                    skipped++;
+                    continue;
+                }
+                result.add(dto.toNotification());
+                collected++;
+                if (collected >= limit) {
+                    break;
+                }
+            }
+            return result;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to load notifications from Redis", e);
+        }
+    }
+
+    @Override
+    public void markNotificationRead(long id) throws DatabaseException {
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = NOTIFICATION_PREFIX + id;
+            String json = jedis.get(key);
+            if (json != null) {
+                NotificationDto dto = gson.fromJson(json, NotificationDto.class);
+                dto.read = true;
+                jedis.set(key, gson.toJson(dto));
+                logger.debug("Marked notification {} as read", id);
+            }
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to mark notification as read in Redis", e);
+        }
+    }
+
+    @Override
+    public void markAllNotificationsRead() throws DatabaseException {
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<String> ids = jedis.zrangeByScore(NOTIFICATION_INDEX, "-inf", "+inf");
+            int count = 0;
+            for (String idStr : ids) {
+                String key = NOTIFICATION_PREFIX + idStr;
+                String json = jedis.get(key);
+                if (json != null) {
+                    NotificationDto dto = gson.fromJson(json, NotificationDto.class);
+                    if (!dto.read) {
+                        dto.read = true;
+                        jedis.set(key, gson.toJson(dto));
+                        count++;
+                    }
+                }
+            }
+            if (count > 0) {
+                logger.debug("Marked {} notifications as read", count);
+            }
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to mark all notifications as read in Redis", e);
+        }
+    }
+
+    @Override
+    public int clearNotifications() throws DatabaseException {
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<String> ids = jedis.zrangeByScore(NOTIFICATION_INDEX, "-inf", "+inf");
+            int count = 0;
+            for (String idStr : ids) {
+                jedis.del(NOTIFICATION_PREFIX + idStr);
+                count++;
+            }
+            jedis.del(NOTIFICATION_INDEX);
+            if (count > 0) {
+                logger.debug("Cleared {} notifications", count);
+            }
+            return count;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to clear notifications from Redis", e);
+        }
+    }
+
+    @Override
+    public int getUnreadCount() throws DatabaseException {
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<String> ids = jedis.zrangeByScore(NOTIFICATION_INDEX, "-inf", "+inf");
+            int count = 0;
+            for (String idStr : ids) {
+                String json = jedis.get(NOTIFICATION_PREFIX + idStr);
+                if (json != null) {
+                    NotificationDto dto = gson.fromJson(json, NotificationDto.class);
+                    if (!dto.read) {
+                        count++;
+                    }
+                }
+            }
+            return count;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to get unread count from Redis", e);
+        }
     }
 
     // ==================== Invitation Operations ====================
@@ -529,6 +763,53 @@ public class RedisProvider implements DatabaseProvider {
         MuteInfo toMuteInfo() {
             UUID opId = operatorId != null ? UUID.fromString(operatorId) : null;
             return new MuteInfo(channelId, expireTime, reason, opId, createdAt);
+        }
+    }
+
+    private static class BanInfoDto {
+        String channelId;
+        long expireTime;
+        String reason;
+        String operatorId;
+        long createdAt;
+
+        BanInfoDto() {}
+
+        BanInfoDto(BanInfo ban) {
+            this.channelId = ban.getChannelId();
+            this.expireTime = ban.getExpireTime();
+            this.reason = ban.getReason();
+            this.operatorId = ban.getOperatorId() != null ? ban.getOperatorId().toString() : null;
+            this.createdAt = ban.getCreatedAt();
+        }
+
+        BanInfo toBanInfo() {
+            UUID opId = operatorId != null ? UUID.fromString(operatorId) : null;
+            return new BanInfo(channelId, expireTime, reason, opId, createdAt);
+        }
+    }
+
+    private static class NotificationDto {
+        long id;
+        String title;
+        String message;
+        String level;
+        long createdAt;
+        boolean read;
+
+        NotificationDto() {}
+
+        NotificationDto(Notification n) {
+            this.id = n.getId();
+            this.title = n.getTitle();
+            this.message = n.getMessage();
+            this.level = n.getLevel();
+            this.createdAt = n.getCreatedAt();
+            this.read = n.isRead();
+        }
+
+        Notification toNotification() {
+            return new Notification(id, title, message, level, createdAt, read);
         }
     }
 

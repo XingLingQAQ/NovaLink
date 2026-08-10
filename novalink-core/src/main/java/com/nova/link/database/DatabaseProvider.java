@@ -140,6 +140,97 @@ public interface DatabaseProvider {
      */
     int cleanupExpiredMutes() throws DatabaseException;
 
+    // ==================== Ban Operations ====================
+
+    /**
+     * Saves a ban record.
+     *
+     * @param playerId the player UUID
+     * @param banInfo the ban information
+     * @throws DatabaseException if the save operation fails
+     */
+    void saveBan(UUID playerId, BanInfo banInfo) throws DatabaseException;
+
+    /**
+     * Loads all bans for a player.
+     *
+     * @param playerId the player UUID
+     * @return list of ban records
+     * @throws DatabaseException if the load operation fails
+     */
+    List<BanInfo> loadBans(UUID playerId) throws DatabaseException;
+
+    /**
+     * Deletes a ban record.
+     *
+     * @param playerId the player UUID
+     * @param channelId the channel ID (null for global ban)
+     * @throws DatabaseException if the delete operation fails
+     */
+    void deleteBan(UUID playerId, String channelId) throws DatabaseException;
+
+    /**
+     * Deletes all expired bans.
+     *
+     * @return number of bans deleted
+     * @throws DatabaseException if the operation fails
+     */
+    int cleanupExpiredBans() throws DatabaseException;
+
+    // ==================== Notification Operations ====================
+
+    /**
+     * Saves a notification record. The provider assigns the id and returns the
+     * persisted notification (with the generated id) to the caller via the
+     * store layer.
+     *
+     * @param notification the notification to save
+     * @throws DatabaseException if the save operation fails
+     */
+    void saveNotification(Notification notification) throws DatabaseException;
+
+    /**
+     * Loads notifications with pagination.
+     *
+     * @param offset the offset (0-based)
+     * @param limit the maximum number of notifications to return
+     * @param unreadOnly when true, only unread notifications are returned
+     * @return list of notifications ordered by created_at descending
+     * @throws DatabaseException if the load operation fails
+     */
+    List<Notification> getNotifications(int offset, int limit, boolean unreadOnly) throws DatabaseException;
+
+    /**
+     * Marks a notification as read.
+     *
+     * @param id the notification id
+     * @throws DatabaseException if the operation fails
+     */
+    void markNotificationRead(long id) throws DatabaseException;
+
+    /**
+     * Marks all unread notifications as read.
+     *
+     * @throws DatabaseException if the operation fails
+     */
+    void markAllNotificationsRead() throws DatabaseException;
+
+    /**
+     * Deletes all notifications.
+     *
+     * @return number of notifications deleted
+     * @throws DatabaseException if the operation fails
+     */
+    int clearNotifications() throws DatabaseException;
+
+    /**
+     * Gets the count of unread notifications.
+     *
+     * @return the unread count
+     * @throws DatabaseException if the operation fails
+     */
+    int getUnreadCount() throws DatabaseException;
+
     // ==================== Invitation Operations ====================
 
     /**

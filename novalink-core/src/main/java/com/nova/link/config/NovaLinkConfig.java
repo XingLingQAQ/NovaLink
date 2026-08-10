@@ -39,6 +39,9 @@ public class NovaLinkConfig {
     // Client configurations
     private List<ClientConfig> clients;
 
+    // Feature toggles (Settings page)
+    private FeatureConfig features;
+
     public NovaLinkConfig() {
         this.server = new ServerConfig();
         this.database = new DatabaseConfig();
@@ -48,6 +51,7 @@ public class NovaLinkConfig {
         this.globalChannels = new LinkedHashMap<>();
         this.templates = new LinkedHashMap<>();
         this.clients = new ArrayList<>();
+        this.features = new FeatureConfig();
     }
 
     /**
@@ -154,6 +158,14 @@ public class NovaLinkConfig {
         this.clients = clients != null ? clients : new ArrayList<>();
     }
 
+    public FeatureConfig getFeatures() {
+        return features;
+    }
+
+    public void setFeatures(FeatureConfig features) {
+        this.features = features != null ? features : new FeatureConfig();
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -166,12 +178,13 @@ public class NovaLinkConfig {
                Objects.equals(superAdmins, that.superAdmins) &&
                Objects.equals(globalChannels, that.globalChannels) &&
                Objects.equals(templates, that.templates) &&
-               Objects.equals(clients, that.clients);
+               Objects.equals(clients, that.clients) &&
+               Objects.equals(features, that.features);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(server, database, security, superAdmins, debug, 
-                           globalChannels, templates, clients);
+        return Objects.hash(server, database, security, superAdmins, debug,
+                           globalChannels, templates, clients, features);
     }
 }

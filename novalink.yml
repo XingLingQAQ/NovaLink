@@ -51,3 +51,7 @@ clients:
     password: panel-secret
     display-name: NovaPanel
     permissions: []
+features:
+  filter-enabled: true
+  message-log-enabled: false
+  cross-server-chat-enabled: true

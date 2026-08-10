@@ -29,7 +29,13 @@ public enum ChannelAction {
     MUTE(7),
     
     /** Unmute a player in a channel */
-    UNMUTE(8);
+    UNMUTE(8),
+
+    /** Ban a player from a channel (null channelId = global ban) */
+    BAN(9),
+
+    /** Unban a player from a channel */
+    UNBAN(10);
 
     private final int id;
 

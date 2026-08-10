@@ -4,6 +4,7 @@ import com.nova.link.api.WebhookManager;
 import com.nova.link.auth.AuthManager;
 import com.nova.link.auth.ClientPermissionRegistry;
 import com.nova.link.auth.PermissionManager;
+import com.nova.link.ban.BanManager;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.InvitationManager;
 import com.nova.link.channel.MessageRouter;
@@ -15,6 +16,7 @@ import com.nova.link.filter.SensitiveWordFilter;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.network.NettyServer;
 import com.nova.link.network.ServerNetworkHandler;
+import com.nova.link.notification.NotificationStore;
 import com.nova.link.spy.SpyManager;
 import com.nova.link.websocket.WebSocketGateway;
 
@@ -40,6 +42,8 @@ public final class BackendContext {
     private final PrivateChannelManager privateChannelManager;
     private final InvitationManager invitationManager;
     private final MuteManager muteManager;
+    private final BanManager banManager;
+    private final NotificationStore notificationStore;
     private final SensitiveWordFilter sensitiveWordFilter;
     private final ServerNetworkHandler networkHandler;
     private final MessageRouter messageRouter;
@@ -58,6 +62,8 @@ public final class BackendContext {
                           PrivateChannelManager privateChannelManager,
                           InvitationManager invitationManager,
                           MuteManager muteManager,
+                          BanManager banManager,
+                          NotificationStore notificationStore,
                           SensitiveWordFilter sensitiveWordFilter,
                           ServerNetworkHandler networkHandler,
                           MessageRouter messageRouter,
@@ -75,6 +81,8 @@ public final class BackendContext {
         this.privateChannelManager = privateChannelManager;
         this.invitationManager = invitationManager;
         this.muteManager = muteManager;
+        this.banManager = banManager;
+        this.notificationStore = notificationStore;
         this.sensitiveWordFilter = sensitiveWordFilter;
         this.networkHandler = networkHandler;
         this.messageRouter = messageRouter;
@@ -94,6 +102,8 @@ public final class BackendContext {
     public PrivateChannelManager getPrivateChannelManager() { return privateChannelManager; }
     public InvitationManager getInvitationManager() { return invitationManager; }
     public MuteManager getMuteManager() { return muteManager; }
+    public BanManager getBanManager() { return banManager; }
+    public NotificationStore getNotificationStore() { return notificationStore; }
     public SensitiveWordFilter getSensitiveWordFilter() { return sensitiveWordFilter; }
     public ServerNetworkHandler getNetworkHandler() { return networkHandler; }
     public MessageRouter getMessageRouter() { return messageRouter; }

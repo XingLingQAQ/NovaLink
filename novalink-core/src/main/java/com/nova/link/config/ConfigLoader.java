@@ -202,7 +202,12 @@ public class ConfigLoader {
             if (data.containsKey("clients")) {
                 config.setClients(parseClients((List<Map<String, Object>>) data.get("clients")));
             }
-            
+
+            // Parse features (Settings page)
+            if (data.containsKey("features")) {
+                config.setFeatures(parseFeatureConfig((Map<String, Object>) data.get("features")));
+            }
+
             return config;
             
         } catch (Exception e) {
@@ -443,8 +448,25 @@ public class ConfigLoader {
             
             clients.add(client);
         }
-        
+
         return clients;
+    }
+
+    private FeatureConfig parseFeatureConfig(Map<String, Object> data) {
+        FeatureConfig features = new FeatureConfig();
+        if (data == null) return features;
+
+        if (data.containsKey("filter-enabled")) {
+            features.setFilterEnabled(Boolean.TRUE.equals(data.get("filter-enabled")));
+        }
+        if (data.containsKey("message-log-enabled")) {
+            features.setMessageLogEnabled(Boolean.TRUE.equals(data.get("message-log-enabled")));
+        }
+        if (data.containsKey("cross-server-chat-enabled")) {
+            features.setCrossServerChatEnabled(Boolean.TRUE.equals(data.get("cross-server-chat-enabled")));
+        }
+
+        return features;
     }
 
     // Serialization methods
@@ -577,7 +599,16 @@ public class ConfigLoader {
             clients.add(clientData);
         }
         data.put("clients", clients);
-        
+
+        // Features (Settings page)
+        if (config.getFeatures() != null) {
+            Map<String, Object> features = new LinkedHashMap<>();
+            features.put("filter-enabled", config.getFeatures().isFilterEnabled());
+            features.put("message-log-enabled", config.getFeatures().isMessageLogEnabled());
+            features.put("cross-server-chat-enabled", config.getFeatures().isCrossServerChatEnabled());
+            data.put("features", features);
+        }
+
         Yaml yaml = createYaml();
         return yaml.dump(data);
     }
@@ -611,6 +642,11 @@ public class ConfigLoader {
         // Auto-complete security config
         if (config.getSecurity() == null) {
             config.setSecurity(defaults.getSecurity());
+        }
+
+        // Auto-complete features config
+        if (config.getFeatures() == null) {
+            config.setFeatures(defaults.getFeatures());
         }
     }
 

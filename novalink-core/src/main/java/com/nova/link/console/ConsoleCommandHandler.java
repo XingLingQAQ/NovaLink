@@ -1,6 +1,8 @@
 package com.nova.link.console;
 
 import com.nova.chat.common.protocol.packets.TitlePacket;
+import com.nova.link.ban.BanManager;
+import com.nova.link.ban.BanResult;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
@@ -9,6 +11,7 @@ import com.nova.link.channel.MessageRouter;
 import com.nova.link.channel.PrivateChannelManager;
 import com.nova.link.config.ConfigException;
 import com.nova.link.config.ConfigManager;
+import com.nova.link.database.BanInfo;
 import com.nova.link.database.MuteInfo;
 import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
@@ -62,6 +65,9 @@ public class ConsoleCommandHandler {
         COMMAND_SUMMARY.put("mute", "console.summary.mute");
         COMMAND_SUMMARY.put("unmute", "console.summary.unmute");
         COMMAND_SUMMARY.put("mutes", "console.summary.mutes");
+        COMMAND_SUMMARY.put("ban", "console.summary.ban");
+        COMMAND_SUMMARY.put("unban", "console.summary.unban");
+        COMMAND_SUMMARY.put("bans", "console.summary.bans");
         COMMAND_SUMMARY.put("kick", "console.summary.kick");
         COMMAND_SUMMARY.put("announce", "console.summary.announce");
         COMMAND_SUMMARY.put("title", "console.summary.title");
@@ -121,6 +127,9 @@ public class ConsoleCommandHandler {
             case "mute": return handleMute(args);
             case "unmute": return handleUnmute(args);
             case "mutes": return handleMutes(args);
+            case "ban": return handleBan(args);
+            case "unban": return handleUnban(args);
+            case "bans": return handleBans(args);
             case "kick": return handleKick(args);
             case "announce": return handleAnnounce(args);
             case "title": return handleTitle(args);
@@ -373,6 +382,124 @@ public class ConsoleCommandHandler {
         return sb.toString();
     }
 
+    // ============================ ban / unban / bans ============================
+
+    private String handleBan(String[] args) {
+        if (ctx.getBanManager() == null) {
+            return nl(I18n.tr("console.ban.disabled"));
+        }
+        if (args.length < 3) {
+            return nl(I18n.tr("console.ban.usage"));
+        }
+        UUID target = resolveTarget(args[0]);
+        if (target == null) {
+            return nl(I18n.tr("console.ban.target_unresolved", args[0]));
+        }
+        // "*" or "global" => global ban (channelId null).
+        String channelArg = args[1];
+        String channelId;
+        if (channelArg.equals("*") || channelArg.equalsIgnoreCase("global")) {
+            channelId = null;
+        } else {
+            if (!ctx.getChannelManager().channelExists(channelArg)) {
+                return nl(I18n.tr("console.ban.channel_not_found", channelArg));
+            }
+            channelId = channelArg;
+        }
+        long durationMs;
+        try {
+            durationMs = parseDurationMs(args[2]);
+        } catch (IllegalArgumentException e) {
+            return nl(I18n.tr("console.ban.invalid_duration", args[2], e.getMessage()));
+        }
+        String reason = args.length >= 4 ? joinFrom(args, 3) : I18n.tr("console.ban.reason_default");
+
+        BanResult result = ctx.getBanManager().banPlayer(
+                ConsoleSentinel.CONSOLE_SENTINEL, target, channelId, durationMs, reason, null);
+        if (result.isSuccess()) {
+            return nl(I18n.tr("console.ban.success", args[0], target,
+                    channelId != null ? channelId : "(global)",
+                    describeDuration(durationMs), reason));
+        }
+        return nl(I18n.tr("console.ban.failed", result.getMessage(), result.getErrorCode()));
+    }
+
+    private String handleUnban(String[] args) {
+        if (ctx.getBanManager() == null) {
+            return nl(I18n.tr("console.ban.disabled"));
+        }
+        if (args.length < 2) {
+            return nl(I18n.tr("console.unban.usage"));
+        }
+        UUID target = resolveTarget(args[0]);
+        if (target == null) {
+            return nl(I18n.tr("console.unban.target_unresolved", args[0]));
+        }
+        String channelArg = args[1];
+        String channelId;
+        if (channelArg.equals("*") || channelArg.equalsIgnoreCase("global")) {
+            channelId = null;
+        } else {
+            channelId = channelArg;
+        }
+        BanResult result = ctx.getBanManager().unbanPlayer(
+                ConsoleSentinel.CONSOLE_SENTINEL, target, channelId, null);
+        if (result.isSuccess()) {
+            return nl(I18n.tr("console.unban.success", args[0], target,
+                    channelId != null ? channelId : "(global)"));
+        }
+        return nl(I18n.tr("console.unban.failed", result.getMessage(), result.getErrorCode()));
+    }
+
+    private String handleBans(String[] args) {
+        if (ctx.getBanManager() == null) {
+            return nl(I18n.tr("console.ban.disabled"));
+        }
+        if (args.length == 0) {
+            // Aggregate across all known players (BanManager has no list-all).
+            Collection<PlayerState> states = ctx.getPlayerStateManager().getAllPlayerStates();
+            int total = 0;
+            StringBuilder sb = new StringBuilder();
+            sb.append(I18n.tr("console.bans.header")).append('\n');
+            for (PlayerState s : states) {
+                List<BanInfo> bans = ctx.getBanManager().getActiveBans(s.getPlayerId());
+                if (bans.isEmpty()) {
+                    continue;
+                }
+                for (BanInfo b : bans) {
+                    total++;
+                    sb.append(I18n.tr("console.bans.entry",
+                            s.getPlayerName() != null ? s.getPlayerName() : s.getPlayerId(),
+                            s.getPlayerId(),
+                            b.getChannelId() != null ? b.getChannelId() : "(global)",
+                            b.isPermanent() ? I18n.tr("console.ban.permanent")
+                                    : describeDuration(b.getRemainingTime()),
+                            b.getReason() != null ? b.getReason() : "-")).append('\n');
+                }
+            }
+            sb.append(I18n.tr("console.bans.total", total)).append('\n');
+            return sb.toString();
+        }
+        UUID target = resolveTarget(args[0]);
+        if (target == null) {
+            return nl(I18n.tr("console.bans.target_unresolved", args[0]));
+        }
+        List<BanInfo> bans = ctx.getBanManager().getActiveBans(target);
+        if (bans.isEmpty()) {
+            return nl(I18n.tr("console.bans.none_for", args[0]));
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append(I18n.tr("console.bans.header_for", args[0], target)).append('\n');
+        for (BanInfo b : bans) {
+            sb.append(I18n.tr("console.bans.entry_for",
+                    b.getChannelId() != null ? b.getChannelId() : "(global)",
+                    b.isPermanent() ? I18n.tr("console.ban.permanent")
+                            : describeDuration(b.getRemainingTime()),
+                    b.getReason() != null ? b.getReason() : "-")).append('\n');
+        }
+        return sb.toString();
+    }
+
     // ============================ kick ============================
 
     private String handleKick(String[] args) {
@@ -397,6 +524,17 @@ public class ConsoleCommandHandler {
             ctx.getPlayerStateManager().leaveChannel(target, channel);
         } catch (Exception e) {
             // non-fatal, matches handler
+        }
+        // Surface the kick to the web panel notification feed.
+        if (ctx.getNotificationStore() != null) {
+            try {
+                ctx.getNotificationStore().createNotification(
+                        "Player Kicked",
+                        "console kicked " + args[0] + " (" + target + ") from " + channel,
+                        "warning");
+            } catch (Exception ignored) {
+                // non-fatal
+            }
         }
         return nl(I18n.tr("console.kick.success", args[0], target, channel));
     }
@@ -457,6 +595,17 @@ public class ConsoleCommandHandler {
         ConfigManager cm = ctx.getConfigManager();
         try {
             cm.reload(true);
+            // Surface the reload to the web panel notification feed.
+            if (ctx.getNotificationStore() != null) {
+                try {
+                    ctx.getNotificationStore().createNotification(
+                            "Config Reloaded",
+                            "Configuration was hot-reloaded from the console.",
+                            "info");
+                } catch (Exception ignored) {
+                    // non-fatal
+                }
+            }
             return nl(I18n.tr("console.reload.success", cm.getReloadCount()));
         } catch (ConfigException e) {
             return nl(I18n.tr("console.reload.failed", e.getMessage()));

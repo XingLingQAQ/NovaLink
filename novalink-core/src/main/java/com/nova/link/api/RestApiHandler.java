@@ -5,6 +5,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.nova.link.auth.AuthManager;
+import com.nova.link.ban.BanManager;
+import com.nova.link.ban.BanResult;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
@@ -13,14 +15,17 @@ import com.nova.link.channel.InvitationManager;
 import com.nova.link.channel.MessageRouter;
 import com.nova.link.config.ConfigManager;
 import com.nova.link.console.ConsoleCommandHandler;
+import com.nova.link.database.BanInfo;
 import com.nova.link.database.Invitation;
 import com.nova.link.database.MuteInfo;
+import com.nova.link.database.Notification;
 import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.mute.MuteResult;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.ServerNetworkHandler;
+import com.nova.link.notification.NotificationStore;
 import com.nova.link.websocket.JwtService;
 import io.jsonwebtoken.Claims;
 import io.netty.buffer.ByteBuf;
@@ -67,18 +72,22 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     private final MessageRouter messageRouter;
     private final WebhookManager webhookManager;
     private final MuteManager muteManager;
+    private final BanManager banManager;
     private final InvitationManager invitationManager;
     private final ConfigManager configManager;
     private final ServerNetworkHandler networkHandler;
     private final ConsoleCommandHandler consoleCommandHandler;
+    private final NotificationStore notificationStore;
     private final Gson gson;
 
     public RestApiHandler(JwtService jwtService, AuthManager authManager,
                           ChannelManager channelManager, PlayerStateManager playerStateManager,
                           MessageRouter messageRouter, WebhookManager webhookManager,
-                          MuteManager muteManager, InvitationManager invitationManager,
+                          MuteManager muteManager, BanManager banManager,
+                          InvitationManager invitationManager,
                           ConfigManager configManager, ServerNetworkHandler networkHandler,
-                          ConsoleCommandHandler consoleCommandHandler) {
+                          ConsoleCommandHandler consoleCommandHandler,
+                          NotificationStore notificationStore) {
         this.jwtService = jwtService;
         this.authManager = authManager;
         this.channelManager = channelManager;
@@ -86,10 +95,12 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         this.messageRouter = messageRouter;
         this.webhookManager = webhookManager;
         this.muteManager = muteManager;
+        this.banManager = banManager;
         this.invitationManager = invitationManager;
         this.configManager = configManager;
         this.networkHandler = networkHandler;
         this.consoleCommandHandler = consoleCommandHandler;
+        this.notificationStore = notificationStore;
         this.gson = new Gson();
     }
 
@@ -178,9 +189,21 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             String playerId = path.substring("/api/players/".length(), path.lastIndexOf("/kick"));
             handleKickPlayer(ctx, request, playerId);
         }
+        // Ban endpoints
+        else if (path.matches("/api/players/[^/]+/ban") && method == HttpMethod.POST) {
+            String playerId = path.substring("/api/players/".length(), path.lastIndexOf("/ban"));
+            handleBanPlayer(ctx, request, playerId);
+        } else if (path.matches("/api/players/[^/]+/unban") && method == HttpMethod.POST) {
+            String playerId = path.substring("/api/players/".length(), path.lastIndexOf("/unban"));
+            handleUnbanPlayer(ctx, request, playerId);
+        }
         // Mutes listing endpoint
         else if (path.equals("/api/mutes") && method == HttpMethod.GET) {
             handleGetMutes(ctx, request);
+        }
+        // Bans listing endpoint
+        else if (path.equals("/api/bans") && method == HttpMethod.GET) {
+            handleGetBans(ctx, request);
         }
         // Webhook endpoints
         else if (path.equals("/api/webhooks") && method == HttpMethod.GET) {
@@ -199,6 +222,23 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         // Config reload endpoint
         else if (path.equals("/api/reload") && method == HttpMethod.POST) {
             handleReload(ctx, request);
+        }
+        // Settings endpoints (FeatureConfig)
+        else if (path.equals("/api/settings") && method == HttpMethod.GET) {
+            handleGetSettings(ctx, request);
+        } else if (path.equals("/api/settings") && method == HttpMethod.PUT) {
+            handleUpdateSettings(ctx, request);
+        }
+        // Notification endpoints
+        else if (path.equals("/api/notifications") && method == HttpMethod.GET) {
+            handleGetNotifications(ctx, request);
+        } else if (path.matches("/api/notifications/[^/]+/read") && method == HttpMethod.POST) {
+            String idStr = path.substring("/api/notifications/".length(), path.lastIndexOf("/read"));
+            handleMarkNotificationRead(ctx, request, idStr);
+        } else if (path.equals("/api/notifications/read-all") && method == HttpMethod.POST) {
+            handleMarkAllNotificationsRead(ctx, request);
+        } else if (path.equals("/api/notifications") && method == HttpMethod.DELETE) {
+            handleClearNotifications(ctx, request);
         }
         // Console command execution endpoint
         else if (path.equals("/api/console") && method == HttpMethod.POST) {
@@ -677,6 +717,186 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     }
 
     /**
+     * POST /api/players/{uuid}/ban - Ban a player.
+     *
+     * <p>Uses the console sentinel as operator (bypasses permission checks in
+     * {@link BanManager}). Mirrors {@code handleMutePlayer}.
+     * Body: {channelId?, durationMs, reason}
+     */
+    private void handleBanPlayer(ChannelHandlerContext ctx, FullHttpRequest request, String playerId) {
+        if (banManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Ban system not enabled");
+            return;
+        }
+
+        UUID targetUuid;
+        try {
+            targetUuid = UUID.fromString(playerId);
+        } catch (IllegalArgumentException e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid UUID format");
+            return;
+        }
+
+        String channelId = null;
+        long durationMs = 0;
+        String reason = null;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            if (!body.isBlank()) {
+                JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+                if (json.has("channelId") && !json.get("channelId").isJsonNull()) {
+                    channelId = json.get("channelId").getAsString();
+                }
+                if (json.has("durationMs") && !json.get("durationMs").isJsonNull()) {
+                    durationMs = json.get("durationMs").getAsLong();
+                }
+                if (json.has("reason") && !json.get("reason").isJsonNull()) {
+                    reason = json.get("reason").getAsString();
+                }
+            }
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+
+        if (channelId != null && !channelManager.channelExists(channelId)) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
+            return;
+        }
+
+        BanResult result = banManager.banPlayer(CONSOLE_SENTINEL, targetUuid, channelId, durationMs, reason, null);
+        if (!result.isSuccess()) {
+            HttpResponseStatus status = "NC-404".equals(result.getErrorCode())
+                    ? HttpResponseStatus.NOT_FOUND
+                    : ("NC-403".equals(result.getErrorCode())
+                        ? HttpResponseStatus.FORBIDDEN
+                        : HttpResponseStatus.BAD_REQUEST);
+            sendJsonError(ctx, request, status,
+                    result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
+                            : result.getMessage());
+            return;
+        }
+
+        JsonObject response = new JsonObject();
+        response.addProperty("success", true);
+        response.addProperty("message", "Player banned successfully");
+        response.addProperty("playerId", targetUuid.toString());
+        if (channelId != null) {
+            response.addProperty("channelId", channelId);
+        }
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * POST /api/players/{uuid}/unban - Unban a player.
+     *
+     * <p>Uses the console sentinel as operator. Mirrors {@code handleUnmutePlayer}.
+     * Body: {channelId?}
+     */
+    private void handleUnbanPlayer(ChannelHandlerContext ctx, FullHttpRequest request, String playerId) {
+        if (banManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Ban system not enabled");
+            return;
+        }
+
+        UUID targetUuid;
+        try {
+            targetUuid = UUID.fromString(playerId);
+        } catch (IllegalArgumentException e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid UUID format");
+            return;
+        }
+
+        String channelId = null;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            if (!body.isBlank()) {
+                JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+                if (json.has("channelId") && !json.get("channelId").isJsonNull()) {
+                    channelId = json.get("channelId").getAsString();
+                }
+            }
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+
+        BanResult result = banManager.unbanPlayer(CONSOLE_SENTINEL, targetUuid, channelId, null);
+        if (!result.isSuccess()) {
+            HttpResponseStatus status = "NC-404".equals(result.getErrorCode())
+                    ? HttpResponseStatus.NOT_FOUND
+                    : ("NC-403".equals(result.getErrorCode())
+                        ? HttpResponseStatus.FORBIDDEN
+                        : HttpResponseStatus.BAD_REQUEST);
+            sendJsonError(ctx, request, status,
+                    result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
+                            : result.getMessage());
+            return;
+        }
+
+        JsonObject response = new JsonObject();
+        response.addProperty("success", true);
+        response.addProperty("message", "Player unbanned successfully");
+        response.addProperty("playerId", targetUuid.toString());
+        if (channelId != null) {
+            response.addProperty("channelId", channelId);
+        }
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * GET /api/bans - List all active bans across online players.
+     *
+     * <p>Returns a DIRECT JSON array (not wrapped in {bans:...}) to match the
+     * frontend contract: the panel checks {@code Array.isArray(bansRes)} and
+     * would render an empty list if this were wrapped. Each entry groups a
+     * player's bans into a nested {@code bans} array.
+     */
+    private void handleGetBans(ChannelHandlerContext ctx, FullHttpRequest request) {
+        if (banManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Ban system not enabled");
+            return;
+        }
+
+        JsonArray bans = new JsonArray();
+        for (PlayerState state : playerStateManager.getAllPlayerStates()) {
+            List<BanInfo> playerBans = banManager.getActiveBans(state.getPlayerId());
+            if (playerBans.isEmpty()) {
+                continue;
+            }
+            JsonObject entry = new JsonObject();
+            entry.addProperty("playerId", state.getPlayerId().toString());
+            if (state.getPlayerName() != null) {
+                entry.addProperty("name", state.getPlayerName());
+            }
+            JsonArray playerBanList = new JsonArray();
+            for (BanInfo b : playerBans) {
+                JsonObject banObj = new JsonObject();
+                // channelId literal null means a global ban — emit JSON null.
+                if (b.getChannelId() != null) {
+                    banObj.addProperty("channelId", b.getChannelId());
+                } else {
+                    banObj.add("channelId", com.google.gson.JsonNull.INSTANCE);
+                }
+                banObj.addProperty("expireTime", b.getExpireTime());
+                banObj.addProperty("reason", b.getReason());
+                if (b.getOperatorId() != null) {
+                    banObj.addProperty("operatorId", b.getOperatorId().toString());
+                } else {
+                    banObj.add("operatorId", com.google.gson.JsonNull.INSTANCE);
+                }
+                banObj.addProperty("createdAt", b.getCreatedAt());
+                playerBanList.add(banObj);
+            }
+            entry.add("bans", playerBanList);
+            bans.add(entry);
+        }
+
+        // Direct array — no outer wrapper. Matches frontend contract.
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, bans);
+    }
+
+    /**
      * POST /api/players/{uuid}/kick - Kick a player from a channel.
      *
      * <p>Mirrors {@code ChannelActionHandler.handleKick}: remove member + update
@@ -728,6 +948,17 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             playerStateManager.leaveChannel(targetUuid, channelId);
         } catch (Exception e) {
             logger.debug("Failed to update player state after kick for {}: {}", targetUuid, e.getMessage());
+        }
+
+        if (notificationStore != null) {
+            try {
+                notificationStore.createNotification(
+                        "Player Kicked",
+                        "Player " + targetUuid + " kicked from " + channelId,
+                        "warning");
+            } catch (Exception e) {
+                logger.debug("Failed to create kick notification: {}", e.getMessage());
+            }
         }
 
         JsonObject response = new JsonObject();
@@ -791,6 +1022,206 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
                     "NC-500: Reload failed: " + e.getMessage());
         }
+    }
+
+    /**
+     * GET /api/settings - Returns the FeatureConfig switches.
+     *
+     * <p>Returns {filterEnabled, messageLogEnabled, crossServerChatEnabled}.
+     */
+    private void handleGetSettings(ChannelHandlerContext ctx, FullHttpRequest request) {
+        if (configManager == null || configManager.getConfig() == null
+                || configManager.getConfig().getFeatures() == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Settings not available");
+            return;
+        }
+        com.nova.link.config.FeatureConfig features = configManager.getConfig().getFeatures();
+        JsonObject response = new JsonObject();
+        response.addProperty("filterEnabled", features.isFilterEnabled());
+        response.addProperty("messageLogEnabled", features.isMessageLogEnabled());
+        response.addProperty("crossServerChatEnabled", features.isCrossServerChatEnabled());
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * PUT /api/settings - Updates the FeatureConfig switches.
+     *
+     * <p>Body: {filterEnabled?, messageLogEnabled?, crossServerChatEnabled?}.
+     * Only present fields are applied. Persists via configManager.save() and
+     * applies to runtime immediately so the panel toggle is effective without
+     * a full reload.
+     */
+    private void handleUpdateSettings(ChannelHandlerContext ctx, FullHttpRequest request) {
+        if (configManager == null || configManager.getConfig() == null
+                || configManager.getConfig().getFeatures() == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Settings not available");
+            return;
+        }
+
+        com.nova.link.config.FeatureConfig features = configManager.getConfig().getFeatures();
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            if (body != null && !body.isBlank()) {
+                JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+                if (json.has("filterEnabled") && !json.get("filterEnabled").isJsonNull()) {
+                    features.setFilterEnabled(json.get("filterEnabled").getAsBoolean());
+                }
+                if (json.has("messageLogEnabled") && !json.get("messageLogEnabled").isJsonNull()) {
+                    features.setMessageLogEnabled(json.get("messageLogEnabled").getAsBoolean());
+                }
+                if (json.has("crossServerChatEnabled") && !json.get("crossServerChatEnabled").isJsonNull()) {
+                    features.setCrossServerChatEnabled(json.get("crossServerChatEnabled").getAsBoolean());
+                }
+            }
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+
+        // Apply to runtime immediately.
+        applyFeatureConfig(features);
+
+        // Persist to disk.
+        try {
+            configManager.save();
+        } catch (Exception e) {
+            logger.error("Error persisting settings via API", e);
+            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                    "NC-500: Settings apply succeeded but persist failed: " + e.getMessage());
+            return;
+        }
+
+        JsonObject response = new JsonObject();
+        response.addProperty("success", true);
+        response.addProperty("filterEnabled", features.isFilterEnabled());
+        response.addProperty("messageLogEnabled", features.isMessageLogEnabled());
+        response.addProperty("crossServerChatEnabled", features.isCrossServerChatEnabled());
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * Applies the FeatureConfig switches to the live runtime managers.
+     */
+    private void applyFeatureConfig(com.nova.link.config.FeatureConfig features) {
+        // The pipeline + filter are owned by the message router; the REST layer
+        // reaches them indirectly. Since RestApiHandler doesn't hold a direct
+        // reference to the filter/pipeline, trigger a reload so the reload
+        // listener (NovaLinkMain) applies the switches. This keeps a single
+        // source of truth for hot-apply logic.
+        if (configManager != null) {
+            try {
+                configManager.triggerReload();
+            } catch (Exception e) {
+                logger.debug("Settings reload trigger failed: {}", e.getMessage());
+            }
+        }
+    }
+
+    // ==================== Notification Endpoints ====================
+
+    /**
+     * GET /api/notifications - List notifications with pagination.
+     *
+     * <p>Query params: page (1-based, default 1), size (default 20), unreadOnly
+     * (true/false, default false).
+     * Returns {items:[...], total, unreadCount}.
+     */
+    private void handleGetNotifications(ChannelHandlerContext ctx, FullHttpRequest request) {
+        if (notificationStore == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Notifications not enabled");
+            return;
+        }
+
+        String uri = request.uri();
+        int page = 1;
+        int size = 20;
+        boolean unreadOnly = false;
+        int q = uri.indexOf('?');
+        if (q >= 0) {
+            String query = uri.substring(q + 1);
+            for (String pair : query.split("&")) {
+                String[] kv = pair.split("=", 2);
+                if (kv.length != 2) continue;
+                String key = kv[0];
+                String value = kv[1];
+                try {
+                    switch (key) {
+                        case "page" -> page = Math.max(1, Integer.parseInt(value));
+                        case "size" -> size = Math.max(1, Integer.parseInt(value));
+                        case "unreadOnly" -> unreadOnly = Boolean.parseBoolean(value);
+                    }
+                } catch (NumberFormatException ignored) {
+                    // keep defaults
+                }
+            }
+        }
+        int offset = (page - 1) * size;
+
+        List<Notification> notifications = notificationStore.getNotifications(offset, size, unreadOnly);
+        int unreadCount = notificationStore.getUnreadCount();
+
+        JsonArray items = new JsonArray();
+        for (Notification n : notifications) {
+            JsonObject item = new JsonObject();
+            item.addProperty("id", n.getId());
+            item.addProperty("title", n.getTitle());
+            item.addProperty("message", n.getMessage());
+            item.addProperty("level", n.getLevel());
+            item.addProperty("createdAt", n.getCreatedAt());
+            item.addProperty("read", n.isRead());
+            items.add(item);
+        }
+
+        JsonObject response = new JsonObject();
+        response.add("items", items);
+        response.addProperty("total", items.size());
+        response.addProperty("unreadCount", unreadCount);
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * POST /api/notifications/{id}/read - Mark a single notification as read.
+     */
+    private void handleMarkNotificationRead(ChannelHandlerContext ctx, FullHttpRequest request, String idStr) {
+        if (notificationStore == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Notifications not enabled");
+            return;
+        }
+        long id;
+        try {
+            id = Long.parseLong(idStr);
+        } catch (NumberFormatException e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid notification id");
+            return;
+        }
+        notificationStore.markRead(id);
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, new JsonObject());
+    }
+
+    /**
+     * POST /api/notifications/read-all - Mark all notifications as read.
+     */
+    private void handleMarkAllNotificationsRead(ChannelHandlerContext ctx, FullHttpRequest request) {
+        if (notificationStore == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Notifications not enabled");
+            return;
+        }
+        notificationStore.markAllRead();
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, new JsonObject());
+    }
+
+    /**
+     * DELETE /api/notifications - Clear all notifications.
+     */
+    private void handleClearNotifications(ChannelHandlerContext ctx, FullHttpRequest request) {
+        if (notificationStore == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Notifications not enabled");
+            return;
+        }
+        int cleared = notificationStore.clearAll();
+        JsonObject response = new JsonObject();
+        response.addProperty("cleared", cleared);
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
     }
 
     /**
@@ -1126,18 +1557,27 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     /**
      * Sends a JSON response.
      */
-    private void sendJsonResponse(ChannelHandlerContext ctx, FullHttpRequest request, 
+    private void sendJsonResponse(ChannelHandlerContext ctx, FullHttpRequest request,
                                   HttpResponseStatus status, JsonObject json) {
+        sendJsonResponse(ctx, request, status, (com.google.gson.JsonElement) json);
+    }
+
+    /**
+     * Sends a JSON response for any JsonElement (object or array). Used by
+     * endpoints whose contract requires a bare top-level array (e.g. GET /api/bans).
+     */
+    private void sendJsonResponse(ChannelHandlerContext ctx, FullHttpRequest request,
+                                  HttpResponseStatus status, com.google.gson.JsonElement json) {
         String content = gson.toJson(json);
         ByteBuf buf = Unpooled.copiedBuffer(content, CharsetUtil.UTF_8);
-        
+
         FullHttpResponse response = new DefaultFullHttpResponse(
                 HttpVersion.HTTP_1_1, status, buf);
-        
+
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json; charset=UTF-8");
         response.headers().set(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
         addCorsHeaders(response);
-        
+
         boolean keepAlive = HttpUtil.isKeepAlive(request);
         if (keepAlive) {
             response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);

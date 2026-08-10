@@ -21,6 +21,8 @@ public class MemoryProvider implements DatabaseProvider {
     private final Map<UUID, PlayerState> playerStates = new ConcurrentHashMap<>();
     private final Map<String, Channel> channels = new ConcurrentHashMap<>();
     private final Map<UUID, Map<String, MuteInfo>> mutes = new ConcurrentHashMap<>();
+    private final Map<UUID, Map<String, BanInfo>> bans = new ConcurrentHashMap<>();
+    private final List<Notification> notifications = Collections.synchronizedList(new ArrayList<>());
     private final Map<String, Invitation> invitations = new ConcurrentHashMap<>();
 
     private volatile boolean connected = false;
@@ -37,6 +39,8 @@ public class MemoryProvider implements DatabaseProvider {
         playerStates.clear();
         channels.clear();
         mutes.clear();
+        bans.clear();
+        notifications.clear();
         invitations.clear();
         logger.info("MemoryProvider shutdown - all data cleared");
     }
@@ -76,6 +80,7 @@ public class MemoryProvider implements DatabaseProvider {
         if (playerId != null) {
             playerStates.remove(playerId);
             mutes.remove(playerId);
+            bans.remove(playerId);
             logger.debug("Deleted player state for: {}", playerId);
         }
     }
@@ -180,6 +185,183 @@ public class MemoryProvider implements DatabaseProvider {
         }
         if (count > 0) {
             logger.debug("Cleaned up {} expired mutes", count);
+        }
+        return count;
+    }
+
+    // ==================== Ban Operations ====================
+
+    @Override
+    public void saveBan(UUID playerId, BanInfo banInfo) throws DatabaseException {
+        checkConnection();
+        if (playerId == null || banInfo == null) {
+            throw new DatabaseException("Player ID and ban info cannot be null");
+        }
+        bans.computeIfAbsent(playerId, k -> new ConcurrentHashMap<>())
+                .put(banInfo.getChannelId() != null ? banInfo.getChannelId() : "__global__", banInfo);
+        logger.debug("Saved ban for player {} in channel {}", playerId, banInfo.getChannelId());
+    }
+
+    @Override
+    public List<BanInfo> loadBans(UUID playerId) throws DatabaseException {
+        checkConnection();
+        if (playerId == null) {
+            return Collections.emptyList();
+        }
+        Map<String, BanInfo> playerBans = bans.get(playerId);
+        if (playerBans == null) {
+            return Collections.emptyList();
+        }
+        return new ArrayList<>(playerBans.values());
+    }
+
+    @Override
+    public void deleteBan(UUID playerId, String channelId) throws DatabaseException {
+        checkConnection();
+        if (playerId == null) {
+            return;
+        }
+        Map<String, BanInfo> playerBans = bans.get(playerId);
+        if (playerBans != null) {
+            playerBans.remove(channelId != null ? channelId : "__global__");
+            logger.debug("Deleted ban for player {} in channel {}", playerId, channelId);
+        }
+    }
+
+    @Override
+    public int cleanupExpiredBans() throws DatabaseException {
+        checkConnection();
+        int count = 0;
+        long now = System.currentTimeMillis();
+        for (Map<String, BanInfo> playerBans : bans.values()) {
+            Iterator<BanInfo> iterator = playerBans.values().iterator();
+            while (iterator.hasNext()) {
+                BanInfo ban = iterator.next();
+                if (ban.getExpireTime() > 0 && now > ban.getExpireTime()) {
+                    iterator.remove();
+                    count++;
+                }
+            }
+        }
+        if (count > 0) {
+            logger.debug("Cleaned up {} expired bans", count);
+        }
+        return count;
+    }
+
+    // ==================== Notification Operations ====================
+
+    private long notificationIdSeq = 0;
+
+    @Override
+    public void saveNotification(Notification notification) throws DatabaseException {
+        checkConnection();
+        if (notification == null) {
+            throw new DatabaseException("Notification cannot be null");
+        }
+        synchronized (notifications) {
+            long id = ++notificationIdSeq;
+            try {
+                java.lang.reflect.Field f = Notification.class.getDeclaredField("id");
+                f.setAccessible(true);
+                f.setLong(notification, id);
+            } catch (ReflectiveOperationException e) {
+                logger.debug("Could not stamp notification id: {}", e.getMessage());
+            }
+            notifications.add(notification);
+        }
+        logger.debug("Saved notification: {}", notification.getTitle());
+    }
+
+    @Override
+    public List<Notification> getNotifications(int offset, int limit, boolean unreadOnly) throws DatabaseException {
+        checkConnection();
+        List<Notification> result = new ArrayList<>();
+        synchronized (notifications) {
+            // Build a descending-by-createdAt view.
+            List<Notification> sorted = new ArrayList<>(notifications);
+            sorted.sort((a, b) -> Long.compare(b.getCreatedAt(), a.getCreatedAt()));
+            int start = Math.max(0, offset);
+            int end = Math.min(sorted.size(), start + Math.max(0, limit));
+            for (Notification n : sorted.subList(start, end)) {
+                if (!unreadOnly || !n.isRead()) {
+                    result.add(n);
+                }
+            }
+            // When unreadOnly is set we cannot simply subList before filtering,
+            // so re-filter the full descending list to honor the limit.
+            if (unreadOnly) {
+                result.clear();
+                int collected = 0;
+                for (Notification n : sorted) {
+                    if (!n.isRead()) {
+                        if (collected >= limit) {
+                            break;
+                        }
+                        result.add(n);
+                        collected++;
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public void markNotificationRead(long id) throws DatabaseException {
+        checkConnection();
+        synchronized (notifications) {
+            for (Notification n : notifications) {
+                if (n.getId() == id) {
+                    n.setRead(true);
+                    logger.debug("Marked notification {} as read", id);
+                    return;
+                }
+            }
+        }
+    }
+
+    @Override
+    public void markAllNotificationsRead() throws DatabaseException {
+        checkConnection();
+        int count = 0;
+        synchronized (notifications) {
+            for (Notification n : notifications) {
+                if (!n.isRead()) {
+                    n.setRead(true);
+                    count++;
+                }
+            }
+        }
+        if (count > 0) {
+            logger.debug("Marked {} notifications as read", count);
+        }
+    }
+
+    @Override
+    public int clearNotifications() throws DatabaseException {
+        checkConnection();
+        int count;
+        synchronized (notifications) {
+            count = notifications.size();
+            notifications.clear();
+        }
+        if (count > 0) {
+            logger.debug("Cleared {} notifications", count);
+        }
+        return count;
+    }
+
+    @Override
+    public int getUnreadCount() throws DatabaseException {
+        checkConnection();
+        int count = 0;
+        synchronized (notifications) {
+            for (Notification n : notifications) {
+                if (!n.isRead()) {
+                    count++;
+                }
+            }
         }
         return count;
     }

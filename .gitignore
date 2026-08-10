@@ -41,3 +41,8 @@ logs/
 # Prevent runtime logs from being committed
 *.log
 novalink-core/logs/
+
+# Agent / tooling working directories
+.playwright-mcp/
+.jqwik-database
+.jqwik-database/

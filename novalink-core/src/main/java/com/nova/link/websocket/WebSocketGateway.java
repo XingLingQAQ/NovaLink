@@ -3,6 +3,7 @@ package com.nova.link.websocket;
 import com.nova.link.api.RestApiHandler;
 import com.nova.link.api.WebhookManager;
 import com.nova.link.auth.AuthManager;
+import com.nova.link.ban.BanManager;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.InvitationManager;
 import com.nova.link.channel.MessageRouter;
@@ -11,6 +12,7 @@ import com.nova.link.console.ConsoleCommandHandler;
 import com.nova.link.database.PlayerStateManager;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.network.ServerNetworkHandler;
+import com.nova.link.notification.NotificationStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,8 +62,10 @@ public class WebSocketGateway {
                             PlayerStateManager playerStateManager, MessageRouter messageRouter,
                             WebhookManager webhookManager,
                             ServerNetworkHandler networkHandler,
-                            MuteManager muteManager, InvitationManager invitationManager,
-                            ConfigManager configManager, ConsoleCommandHandler consoleCommandHandler) {
+                            MuteManager muteManager, BanManager banManager,
+                            InvitationManager invitationManager,
+                            ConfigManager configManager, ConsoleCommandHandler consoleCommandHandler,
+                            NotificationStore notificationStore) {
         this.bindAddress = bindAddress;
         this.port = port;
         this.secretKey = secretKey;
@@ -85,10 +89,12 @@ public class WebSocketGateway {
                 messageRouter,
                 webhookManager,
                 muteManager,
+                banManager,
                 invitationManager,
                 configManager,
                 networkHandler,
-                consoleCommandHandler
+                consoleCommandHandler,
+                notificationStore
         );
 
         // Initialize WebSocket server

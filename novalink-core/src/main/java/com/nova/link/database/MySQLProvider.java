@@ -184,7 +184,13 @@ public class MySQLProvider implements DatabaseProvider {
                 stmt.setString(1, playerId.toString());
                 stmt.executeUpdate();
             }
-            
+
+            // Delete bans
+            try (PreparedStatement stmt = conn.prepareStatement("DELETE FROM bans WHERE player_id = ?")) {
+                stmt.setString(1, playerId.toString());
+                stmt.executeUpdate();
+            }
+
             // Delete player
             try (PreparedStatement stmt = conn.prepareStatement("DELETE FROM players WHERE player_id = ?")) {
                 stmt.setString(1, playerId.toString());
@@ -450,6 +456,254 @@ public class MySQLProvider implements DatabaseProvider {
             return count;
         } catch (SQLException e) {
             throw new DatabaseException("Failed to cleanup expired mutes", e);
+        }
+    }
+
+    // ==================== Ban Operations ====================
+
+    @Override
+    public void saveBan(UUID playerId, BanInfo banInfo) throws DatabaseException {
+        if (playerId == null || banInfo == null) {
+            throw new DatabaseException("Player ID and ban info cannot be null");
+        }
+
+        // First delete any existing ban for this player/channel combination
+        deleteBan(playerId, banInfo.getChannelId());
+
+        String sql = "INSERT INTO bans (player_id, channel_id, expire_time, reason, operator_id, created_at) VALUES (?, ?, ?, ?, ?, ?)";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, playerId.toString());
+            stmt.setString(2, banInfo.getChannelId());
+            stmt.setLong(3, banInfo.getExpireTime());
+            stmt.setString(4, banInfo.getReason());
+            stmt.setString(5, banInfo.getOperatorId() != null ? banInfo.getOperatorId().toString() : null);
+            stmt.setLong(6, banInfo.getCreatedAt());
+
+            stmt.executeUpdate();
+            logger.debug("Saved ban for player {} in channel {}", playerId, banInfo.getChannelId());
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to save ban", e);
+        }
+    }
+
+    @Override
+    public List<BanInfo> loadBans(UUID playerId) throws DatabaseException {
+        if (playerId == null) {
+            return Collections.emptyList();
+        }
+
+        List<BanInfo> bans = new ArrayList<>();
+        String sql = "SELECT * FROM bans WHERE player_id = ?";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, playerId.toString());
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    String operatorIdStr = rs.getString("operator_id");
+                    UUID operatorId = operatorIdStr != null ? UUID.fromString(operatorIdStr) : null;
+
+                    BanInfo ban = new BanInfo(
+                            rs.getString("channel_id"),
+                            rs.getLong("expire_time"),
+                            rs.getString("reason"),
+                            operatorId,
+                            rs.getLong("created_at")
+                    );
+                    bans.add(ban);
+                }
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load bans", e);
+        }
+
+        return bans;
+    }
+
+    @Override
+    public void deleteBan(UUID playerId, String channelId) throws DatabaseException {
+        if (playerId == null) {
+            return;
+        }
+
+        String sql = channelId != null
+                ? "DELETE FROM bans WHERE player_id = ? AND channel_id = ?"
+                : "DELETE FROM bans WHERE player_id = ? AND channel_id IS NULL";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, playerId.toString());
+            if (channelId != null) {
+                stmt.setString(2, channelId);
+            }
+
+            stmt.executeUpdate();
+            logger.debug("Deleted ban for player {} in channel {}", playerId, channelId);
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to delete ban", e);
+        }
+    }
+
+    @Override
+    public int cleanupExpiredBans() throws DatabaseException {
+        String sql = "DELETE FROM bans WHERE expire_time > 0 AND expire_time < ?";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setLong(1, System.currentTimeMillis());
+            int count = stmt.executeUpdate();
+
+            if (count > 0) {
+                logger.debug("Cleaned up {} expired bans", count);
+            }
+            return count;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to cleanup expired bans", e);
+        }
+    }
+
+    // ==================== Notification Operations ====================
+
+    @Override
+    public void saveNotification(Notification notification) throws DatabaseException {
+        if (notification == null) {
+            throw new DatabaseException("Notification cannot be null");
+        }
+
+        String sql = "INSERT INTO notifications (title, message, level, created_at, read) VALUES (?, ?, ?, ?, ?)";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql, java.sql.Statement.RETURN_GENERATED_KEYS)) {
+
+            stmt.setString(1, notification.getTitle());
+            stmt.setString(2, notification.getMessage());
+            stmt.setString(3, notification.getLevel());
+            stmt.setLong(4, notification.getCreatedAt());
+            stmt.setBoolean(5, notification.isRead());
+
+            stmt.executeUpdate();
+
+            try (ResultSet rs = stmt.getGeneratedKeys()) {
+                if (rs.next()) {
+                    // Reflect the generated id back onto the object so callers
+                    // can reference the persisted row (e.g. mark-read by id).
+                    long generatedId = rs.getLong(1);
+                    try {
+                    java.lang.reflect.Field f = Notification.class.getDeclaredField("id");
+                    f.setAccessible(true);
+                    f.setLong(notification, generatedId);
+                    } catch (ReflectiveOperationException e) {
+                        logger.debug("Could not stamp generated notification id: {}", e.getMessage());
+                    }
+                }
+            }
+            logger.debug("Saved notification: {}", notification.getTitle());
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to save notification", e);
+        }
+    }
+
+    @Override
+    public List<Notification> getNotifications(int offset, int limit, boolean unreadOnly) throws DatabaseException {
+        List<Notification> notifications = new ArrayList<>();
+        String sql = unreadOnly
+                ? "SELECT * FROM notifications WHERE read = FALSE ORDER BY created_at DESC LIMIT ? OFFSET ?"
+                : "SELECT * FROM notifications ORDER BY created_at DESC LIMIT ? OFFSET ?";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setInt(1, Math.max(0, limit));
+            stmt.setInt(2, Math.max(0, offset));
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    notifications.add(new Notification(
+                            rs.getLong("id"),
+                            rs.getString("title"),
+                            rs.getString("message"),
+                            rs.getString("level"),
+                            rs.getLong("created_at"),
+                            rs.getBoolean("read")
+                    ));
+                }
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load notifications", e);
+        }
+
+        return notifications;
+    }
+
+    @Override
+    public void markNotificationRead(long id) throws DatabaseException {
+        String sql = "UPDATE notifications SET read = TRUE WHERE id = ?";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setLong(1, id);
+            stmt.executeUpdate();
+            logger.debug("Marked notification {} as read", id);
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to mark notification as read", e);
+        }
+    }
+
+    @Override
+    public void markAllNotificationsRead() throws DatabaseException {
+        String sql = "UPDATE notifications SET read = TRUE WHERE read = FALSE";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            int count = stmt.executeUpdate();
+            if (count > 0) {
+                logger.debug("Marked {} notifications as read", count);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to mark all notifications as read", e);
+        }
+    }
+
+    @Override
+    public int clearNotifications() throws DatabaseException {
+        String sql = "DELETE FROM notifications";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            int count = stmt.executeUpdate();
+            if (count > 0) {
+                logger.debug("Cleared {} notifications", count);
+            }
+            return count;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to clear notifications", e);
+        }
+    }
+
+    @Override
+    public int getUnreadCount() throws DatabaseException {
+        String sql = "SELECT COUNT(*) FROM notifications WHERE read = FALSE";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql);
+             ResultSet rs = stmt.executeQuery()) {
+
+            if (rs.next()) {
+                return rs.getInt(1);
+            }
+            return 0;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to get unread notification count", e);
         }
     }
 

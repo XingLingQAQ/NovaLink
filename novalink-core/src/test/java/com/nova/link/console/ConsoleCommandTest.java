@@ -8,6 +8,7 @@ import com.nova.link.auth.ClientPermissionRegistry;
 import com.nova.link.auth.AuthManager;
 import com.nova.link.auth.IpBanManager;
 import com.nova.link.auth.PermissionManager;
+import com.nova.link.ban.BanManager;
 import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
@@ -25,6 +26,7 @@ import com.nova.link.mute.MuteManager;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.NettyServer;
 import com.nova.link.network.ServerNetworkHandler;
+import com.nova.link.notification.NotificationStore;
 import com.nova.link.spy.SpyManager;
 import com.nova.link.websocket.WebSocketGateway;
 import org.jline.reader.Candidate;
@@ -90,6 +92,8 @@ class ConsoleCommandTest {
         InvitationManager invitationManager = new InvitationManager(db, channelManager);
         permissionManager = new PermissionManager();
         muteManager = new MuteManager(db, permissionManager, channelManager);
+        BanManager banManager = new BanManager(db, permissionManager, channelManager);
+        NotificationStore notificationStore = new NotificationStore(db);
         SensitiveWordFilter sensitiveWordFilter = new SensitiveWordFilter();
 
         // Seed a GLOBAL channel + a SERVER channel.
@@ -143,6 +147,8 @@ class ConsoleCommandTest {
                 privateChannelManager,
                 invitationManager,
                 muteManager,
+                banManager,
+                notificationStore,
                 sensitiveWordFilter,
                 networkHandler,
                 messageRouter,

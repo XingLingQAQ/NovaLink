@@ -177,6 +177,27 @@ export const api = {
   getMutes: () => apiFetch('/mutes'),
   kickPlayer: (uuid, body) => apiFetch(`/players/${encodeURIComponent(uuid)}/kick`, { method: 'POST', body: JSON.stringify(body || {}) }),
 
+  // --- Player ban / unban (batch 3) ---
+  // body: { channelId?, durationMs, reason } — durationMs 0 = permanent;
+  // channelId omitted/empty = global ban.
+  banPlayer: (uuid, body) => apiFetch(`/players/${encodeURIComponent(uuid)}/ban`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  unbanPlayer: (uuid, body) => apiFetch(`/players/${encodeURIComponent(uuid)}/unban`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  getBans: () => apiFetch('/bans'),
+
+  // --- Notifications (batch 3) ---
+  // GET /api/notifications?page=&size=&unreadOnly= -> { items, total, unreadCount }
+  getNotifications: (page = 0, size = 20, unreadOnly = false) =>
+    apiFetch(`/notifications?page=${page}&size=${size}&unreadOnly=${unreadOnly}`),
+  markNotificationRead: (id) => apiFetch(`/notifications/${encodeURIComponent(id)}/read`, { method: 'POST' }),
+  markAllNotificationsRead: () => apiFetch('/notifications/read-all', { method: 'POST' }),
+  clearNotifications: () => apiFetch('/notifications', { method: 'DELETE' }),
+  createNotification: (body) => apiFetch('/notifications', { method: 'POST', body: JSON.stringify(body) }),
+
+  // --- Settings (batch 3) ---
+  // GET/PUT /api/settings -> { filterEnabled, messageLogEnabled, crossServerChatEnabled }
+  getSettings: () => apiFetch('/settings'),
+  updateSettings: (body) => apiFetch('/settings', { method: 'PUT', body: JSON.stringify(body) }),
+
   // --- Server / config / console (batch 2) ---
   reloadConfig: () => apiFetch('/reload', { method: 'POST' }),
   disconnectClient: (clientId) => apiFetch(`/clients/${encodeURIComponent(clientId)}`, { method: 'DELETE' }),

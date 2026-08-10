@@ -2,8 +2,10 @@ package com.nova.link.channel;
 
 import com.nova.chat.common.NovaConstants;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.link.ban.BanManager;
 import com.nova.link.filter.FilterResult;
 import com.nova.link.filter.SensitiveWordFilter;
+import com.nova.link.log.ChatLogger;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.ServerNetworkHandler;
@@ -42,9 +44,15 @@ public class MessagePipeline {
 
     private BiPredicate<String, String> permissionChecker = (clientId, permission) -> true;
     private MuteManager muteManager;
+    private BanManager banManager;
     private SensitiveWordFilter sensitiveWordFilter;
     private SpyManager spyManager;
     private MessageRouter.WebSocketBroadcaster webSocketBroadcaster;
+    private ChatLogger chatLogger;
+
+    // Feature switches (FeatureConfig §3.5) — volatile for hot-reload visibility.
+    private volatile boolean crossServerChatEnabled = true;
+    private volatile boolean messageLogEnabled = false;
 
     public MessagePipeline(ChannelManager channelManager, ServerNetworkHandler networkHandler) {
         this.channelManager = Objects.requireNonNull(channelManager, "channelManager");
@@ -59,6 +67,10 @@ public class MessagePipeline {
         this.muteManager = muteManager;
     }
 
+    public void setBanManager(BanManager banManager) {
+        this.banManager = banManager;
+    }
+
     public void setSensitiveWordFilter(SensitiveWordFilter sensitiveWordFilter) {
         this.sensitiveWordFilter = sensitiveWordFilter;
     }
@@ -69,6 +81,18 @@ public class MessagePipeline {
 
     public void setWebSocketBroadcaster(MessageRouter.WebSocketBroadcaster webSocketBroadcaster) {
         this.webSocketBroadcaster = webSocketBroadcaster;
+    }
+
+    public void setChatLogger(ChatLogger chatLogger) {
+        this.chatLogger = chatLogger;
+    }
+
+    public void setCrossServerChatEnabled(boolean crossServerChatEnabled) {
+        this.crossServerChatEnabled = crossServerChatEnabled;
+    }
+
+    public void setMessageLogEnabled(boolean messageLogEnabled) {
+        this.messageLogEnabled = messageLogEnabled;
     }
 
     /**
@@ -151,10 +175,18 @@ public class MessagePipeline {
                     MessagePipelineResult.DropReason.SENDER_MUTED, message, channel);
         }
 
+        // --- Stage 4b: ban ---
+        if (isSenderBanned(message.getSenderId(), channel.getId())) {
+            logger.debug("Pipeline drop SENDER_BANNED player={} channel={}",
+                    message.getSenderId(), channel.getId());
+            return MessagePipelineResult.dropped(
+                    MessagePipelineResult.DropReason.SENDER_BANNED, message, channel);
+        }
+
         // --- Stage 5: sensitive-word filter (mutates content in place) ---
         int filterMatches = 0;
         boolean filtered = false;
-        if (sensitiveWordFilter != null) {
+        if (sensitiveWordFilter != null && sensitiveWordFilter.isEnabled()) {
             FilterResult result = sensitiveWordFilter.filter(message.getContent());
             if (result != null && result.isFiltered()) {
                 message.setContent(result.getFilteredMessage());
@@ -172,6 +204,19 @@ public class MessagePipeline {
             logger.debug("Pipeline NO_RECIPIENTS channel={} scope={}",
                     channel.getId(), channel.getScope());
             // Spy/WS only when we actually attempted delivery to game clients with content.
+        }
+
+        // Optional chat logging (FeatureConfig.messageLogEnabled) — records
+        // delivered messages via the injected ChatLogger. Does not affect delivery.
+        if (messageLogEnabled && chatLogger != null) {
+            try {
+                chatLogger.log(message.getChannelId(),
+                        message.getSenderId() != null ? message.getSenderId().toString() : null,
+                        message.getSenderName(),
+                        message.getContent());
+            } catch (Exception e) {
+                logger.debug("ChatLogger failed: {}", e.getMessage());
+            }
         }
 
         // --- Stage 7: spy + websocket (side channels; do not affect drop reason) ---
@@ -197,6 +242,10 @@ public class MessagePipeline {
         return muteManager != null && senderId != null && muteManager.isMuted(senderId, channelId);
     }
 
+    private boolean isSenderBanned(UUID senderId, String channelId) {
+        return banManager != null && senderId != null && banManager.isBanned(senderId, channelId);
+    }
+
     private Set<String> fanOut(Channel channel, ChatMessagePacket message) {
         switch (channel.getScope()) {
             case GLOBAL:
@@ -210,6 +259,14 @@ public class MessagePipeline {
     }
 
     private Set<String> fanOutGlobal(Channel channel, ChatMessagePacket message) {
+        // FeatureConfig.crossServerChatEnabled: when disabled, GLOBAL fan-out is
+        // suppressed so chat does not cross servers. Returns empty so the caller
+        // records a NO_RECIPIENTS drop — the message is intentionally not delivered.
+        if (!crossServerChatEnabled) {
+            logger.debug("GLOBAL fan-out suppressed (crossServerChatEnabled=false) channel={}",
+                    channel.getId());
+            return Collections.emptySet();
+        }
         Set<String> recipients = new HashSet<>();
         String requiredPermission = channel.getPermission();
 

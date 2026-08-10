@@ -268,6 +268,7 @@ class MessagePipelineResultDetailedTest {
                             MessagePipelineResult.DropReason.MISSING_CHANNEL_ID,
                             MessagePipelineResult.DropReason.CHANNEL_NOT_FOUND,
                             MessagePipelineResult.DropReason.SENDER_MUTED,
+                            MessagePipelineResult.DropReason.SENDER_BANNED,
                             MessagePipelineResult.DropReason.CROSS_CLIENT_DENIED,
                             MessagePipelineResult.DropReason.NO_RECIPIENTS
                     );

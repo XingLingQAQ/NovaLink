@@ -246,6 +246,20 @@ clients:
         max_capacity: 50
 
 # ==========================================
+# Feature Toggles / 功能开关 (Settings Page)
+# ==========================================
+# These switches are exposed on the web panel Settings page and
+# hot-apply to the runtime without a full restart.
+# 这些开关在 Web 面板的设置页暴露，热应用到运行时无需完整重启。
+features:
+  # Enable sensitive-word filtering / 启用敏感词过滤
+  filter-enabled: true
+  # Log chat messages to the chat log / 记录聊天消息到日志
+  message-log-enabled: false
+  # Enable cross-server chat fan-out / 启用跨服聊天分发
+  cross-server-chat-enabled: true
+
+# ==========================================
 # Webhook Configuration / Webhook 配置
 # ==========================================
 # Send notifications to external services

@@ -6,6 +6,7 @@ import com.nova.chat.common.protocol.packets.*;
 import com.nova.link.auth.*;
 import com.nova.link.auth.ClientPermissionRegistry;
 import com.nova.link.api.WebhookManager;
+import com.nova.link.ban.BanManager;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
@@ -21,12 +22,14 @@ import com.nova.link.database.*;
 import com.nova.link.filter.SensitiveWordFilter;
 import com.nova.link.i18n.I18n;
 import com.nova.link.i18n.LocaleResolver;
+import com.nova.link.log.ChatLogger;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.network.NettyServer;
 import com.nova.link.network.ServerNetworkHandler;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.AdminActionHandler;
 import com.nova.link.network.ChannelActionHandler;
+import com.nova.link.notification.NotificationStore;
 import com.nova.link.spy.SpyManager;
 import com.nova.link.websocket.WebSocketGateway;
 import org.slf4j.Logger;
@@ -182,7 +185,10 @@ public class NovaLinkMain {
         InvitationManager invitationManager = new InvitationManager(databaseProvider, channelManager);
         MuteManager muteManager = new MuteManager(databaseProvider, permissionManager, channelManager);
         muteManager.initialize();
+        BanManager banManager = new BanManager(databaseProvider, permissionManager, channelManager);
+        banManager.initialize();
         SensitiveWordFilter sensitiveWordFilter = new SensitiveWordFilter();
+        ChatLogger chatLogger = new ChatLogger();
 
         loadConfiguredChannels(channelManager, config);
         loadPersistedChannels(channelManager, databaseProvider);
@@ -193,17 +199,14 @@ public class NovaLinkMain {
         ServerNetworkHandler networkHandler = new ServerNetworkHandler(workerThreads);
         MessageRouter messageRouter = new MessageRouter(channelManager, networkHandler);
         messageRouter.setMuteManager(muteManager);
+        messageRouter.setBanManager(banManager);
         messageRouter.setSensitiveWordFilter(sensitiveWordFilter);
+        messageRouter.setChatLogger(chatLogger);
         messageRouter.setPermissionChecker(clientPermissionRegistry.asChecker());
 
         // Clear grants when a game server disconnects so reconnect gets a fresh bootstrap.
-        networkHandler.setDisconnectListener(connection -> {
-            String clientId = connection != null ? connection.getClientId() : null;
-            if (clientId != null && !clientId.isBlank()) {
-                clientPermissionRegistry.clearClient(clientId);
-                logger.debug("Cleared permission grants for disconnected client '{}'", clientId);
-            }
-        });
+        // The full listener (permission cleanup + disconnect notification) is wired after
+        // the NotificationStore is created further below.
 
         // Enable config hot-reload broadcasting via the network layer
         configManager.setNetworkHandler(networkHandler);
@@ -211,6 +214,12 @@ public class NovaLinkMain {
         configManager.addReloadListener(newConfig -> {
             applyConfiguredChannels(channelManager, newConfig);
             bootstrapPrivateChannelAdmins(permissionManager, channelManager);
+            // Apply FeatureConfig switches (§3.7) so config changes hot-apply to runtime.
+            if (newConfig.getFeatures() != null) {
+                sensitiveWordFilter.setEnabled(newConfig.getFeatures().isFilterEnabled());
+                messageRouter.getPipeline().setCrossServerChatEnabled(newConfig.getFeatures().isCrossServerChatEnabled());
+                messageRouter.getPipeline().setMessageLogEnabled(newConfig.getFeatures().isMessageLogEnabled());
+            }
         });
 
         SpyManager spyManager = new SpyManager(permissionManager, channelManager, networkHandler);
@@ -230,7 +239,8 @@ public class NovaLinkMain {
                 privateChannelManager,
                 invitationManager,
                 permissionManager,
-                muteManager
+                muteManager,
+                banManager
         );
 
         // Servers
@@ -250,9 +260,43 @@ public class NovaLinkMain {
         BackendContext restConsoleContext = new BackendContext(
                 configManager, authManager, permissionManager, clientPermissionRegistry,
                 databaseProvider, channelManager, playerStateManager, webhookManager,
-                privateChannelManager, invitationManager, muteManager, sensitiveWordFilter,
+                privateChannelManager, invitationManager, muteManager, banManager, null,
+                sensitiveWordFilter,
                 networkHandler, messageRouter, spyManager, null, null);
         ConsoleCommandHandler consoleCommandHandler = new ConsoleCommandHandler(restConsoleContext);
+
+        // Notification store — created before the gateway so it can be passed
+        // into RestApiHandler (via the gateway ctor). The gateway reference is
+        // back-linked after construction to break the cycle.
+        NotificationStore notificationStore = new NotificationStore(databaseProvider);
+
+        // Wire notification triggers into the moderation managers (ban/mute)
+        // and the channel action handler (kick).
+        banManager.setNotificationStore(notificationStore);
+        muteManager.setNotificationStore(notificationStore);
+        channelActionHandler.setNotificationStore(notificationStore);
+
+        // Disconnect listener: clear permission grants AND surface a panel
+        // notification. Wired here (after notificationStore is created) so the
+        // notification side-channel is available. The permission cleanup is the
+        // original behavior; the notification is the new trigger.
+        networkHandler.setDisconnectListener(connection -> {
+            String clientId = connection != null ? connection.getClientId() : null;
+            if (clientId != null && !clientId.isBlank()) {
+                clientPermissionRegistry.clearClient(clientId);
+                logger.debug("Cleared permission grants for disconnected client '{}'", clientId);
+                if (notificationStore != null) {
+                    try {
+                        notificationStore.createNotification(
+                                "Client Disconnected",
+                                clientId + " has disconnected",
+                                "warning");
+                    } catch (Exception ignored) {
+                        // non-fatal
+                    }
+                }
+            }
+        });
 
         WebSocketGateway webSocketGateway = new WebSocketGateway(
                 config.getServer().getBindAddress(),
@@ -265,10 +309,14 @@ public class NovaLinkMain {
                 webhookManager,
                 networkHandler,
                 muteManager,
+                banManager,
                 invitationManager,
                 configManager,
-                consoleCommandHandler
+                consoleCommandHandler,
+                notificationStore
         );
+        // Back-link the gateway so notifications broadcast live.
+        notificationStore.setWebSocketGateway(webSocketGateway);
         messageRouter.setWebSocketBroadcaster(webSocketGateway.createBroadcaster());
 
         registerPacketHandlers(
@@ -281,7 +329,8 @@ public class NovaLinkMain {
                 channelActionHandler,
                 clientPermissionRegistry,
                 clientPermissionBootstrap,
-                playerStateManager
+                playerStateManager,
+                notificationStore
         );
 
         CompletableFuture<Void> startFuture = CompletableFuture.allOf(
@@ -297,7 +346,8 @@ public class NovaLinkMain {
             this.context = new BackendContext(
                     configManager, authManager, permissionManager, clientPermissionRegistry,
                     databaseProvider, channelManager, playerStateManager, webhookManager,
-                    privateChannelManager, invitationManager, muteManager, sensitiveWordFilter,
+                    privateChannelManager, invitationManager, muteManager, banManager,
+                    notificationStore, sensitiveWordFilter,
                     networkHandler, messageRouter, spyManager, tcpServer, webSocketGateway);
             safeShutdown();
             return;
@@ -311,7 +361,8 @@ public class NovaLinkMain {
         this.context = new BackendContext(
                 configManager, authManager, permissionManager, clientPermissionRegistry,
                 databaseProvider, channelManager, playerStateManager, webhookManager,
-                privateChannelManager, invitationManager, muteManager, sensitiveWordFilter,
+                privateChannelManager, invitationManager, muteManager, banManager,
+                notificationStore, sensitiveWordFilter,
                 networkHandler, messageRouter, spyManager, tcpServer, webSocketGateway);
 
         // JVM shutdown hook: Ctrl+C / SIGTERM -> same safeShutdown the 'stop'
@@ -737,7 +788,8 @@ public class NovaLinkMain {
                                                ChannelActionHandler channelActionHandler,
                                                ClientPermissionRegistry clientPermissionRegistry,
                                                Map<String, List<String>> clientPermissionBootstrap,
-                                               PlayerStateManager playerStateManager) {
+                                               PlayerStateManager playerStateManager,
+                                               NotificationStore notificationStore) {
         // Handshake handler (auth + version check)
         networkHandler.registerHandler(HandshakePacket.class, (connection, packet) -> {
             int clientProtocolVersion = packet.getProtocolVersion();
@@ -777,6 +829,17 @@ public class NovaLinkMain {
                 grantBootstrapPermissions(clientPermissionRegistry, clientPermissionBootstrap, packet.getClientId());
                 response = HandshakeResponsePacket.success("Authentication successful");
                 logger.info("Client authenticated: {} from {}", packet.getClientId(), connection.getRemoteAddress());
+                // Surface the client connect to the web panel notification feed.
+                if (notificationStore != null) {
+                    try {
+                        notificationStore.createNotification(
+                                "Client Connected",
+                                packet.getClientId() + " has connected",
+                                "info");
+                    } catch (Exception ignored) {
+                        // non-fatal
+                    }
+                }
             } else {
                 response = HandshakeResponsePacket.failure(
                         authResult.getErrorCode() != null ? authResult.getErrorCode() : "NC-401",
@@ -825,7 +888,8 @@ public class NovaLinkMain {
             // receives a successful KICK/MUTE response carrying a targetId extra.
             if (response.isSuccess()
                     && (response.getAction() == ChannelAction.KICK
-                        || response.getAction() == ChannelAction.MUTE)) {
+                        || response.getAction() == ChannelAction.MUTE
+                        || response.getAction() == ChannelAction.BAN)) {
                 forwardKickMuteToTarget(response, networkHandler, playerStateManager);
             }
         });
@@ -994,6 +1058,14 @@ public class NovaLinkMain {
             }
         } catch (Exception e) {
             logger.debug("Error shutting down MuteManager: {}", e.getMessage());
+        }
+
+        try {
+            if (ctx.getBanManager() != null) {
+                ctx.getBanManager().shutdown();
+            }
+        } catch (Exception e) {
+            logger.debug("Error shutting down BanManager: {}", e.getMessage());
         }
 
         try {

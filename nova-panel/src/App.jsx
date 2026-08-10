@@ -37,6 +37,7 @@ import {
   adaptChatMessage,
   adaptNotification,
   adaptMute,
+  adaptBan,
   buildDashboardStats,
 } from './utils/adapters';
 
@@ -46,6 +47,7 @@ import Button from './components/ui/Button';
 import Switch from './components/ui/Switch';
 import Modal from './components/ui/Modal';
 import NotificationDropdown from './components/dashboard/NotificationDropdown';
+import NotificationListModal from './components/dashboard/NotificationListModal';
 
 // Dashboard View Components
 import DashboardView from './components/dashboard/DashboardView';
@@ -59,6 +61,14 @@ import WebhookManagement from './components/dashboard/WebhookManagement';
 import LoginScreen from './components/auth/LoginScreen';
 
 const THEME_STORAGE_KEY = 'nova-panel-theme';
+
+// Settings UI key -> backend key map (module-level so handleSettingToggle's
+// useCallback deps don't need to reference it).
+const SETTINGS_KEY_MAP = {
+  enableFilter: 'filterEnabled',
+  logMessages: 'messageLogEnabled',
+  crossServerChat: 'crossServerChatEnabled',
+};
 
 // Lucide icon lookup for dashboard stat cards (built dynamically from string names).
 const STAT_ICON_MAP = {
@@ -142,6 +152,7 @@ function Dashboard({ currentUser, onLogout }) {
   const [webhooks, setWebhooks] = useState([]);
   const [webhooksLoading, setWebhooksLoading] = useState(false);
   const [mutedPlayers, setMutedPlayers] = useState([]);
+  const [bannedPlayers, setBannedPlayers] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [toasts, setToasts] = useState([]);
@@ -155,18 +166,25 @@ function Dashboard({ currentUser, onLogout }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [consoleAutoScroll, setConsoleAutoScroll] = useState(true);
 
-  // Settings State (local UI preferences only — no backend path for these).
+  // Settings State — persisted to the backend via GET/PUT /api/settings.
+  // Backend keys: { filterEnabled, messageLogEnabled, crossServerChatEnabled }.
+  // UI keys: enableFilter / logMessages / crossServerChat (kept for the
+  // existing Switch wiring). Defaults to enabled until the first GET resolves.
   const [settings, setSettings] = useState({
     enableFilter: true,
     logMessages: true,
     crossServerChat: true,
   });
+  const [settingsLoading, setSettingsLoading] = useState(false);
 
   // WS connection state (for showing a small indicator).
   const [wsState, setWsState] = useState(websocketService.getState());
 
   // UI State
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showNotificationList, setShowNotificationList] = useState(false);
+  // Unread count sourced from GET /api/notifications for the bell badge.
+  const [apiUnreadCount, setApiUnreadCount] = useState(0);
   const notificationRef = useRef(null);
   const chatContainerRef = useRef(null);
   const wsHandlersRef = useRef({});
@@ -198,11 +216,12 @@ function Dashboard({ currentUser, onLogout }) {
   const fetchAllData = useCallback(async () => {
     setFetchError(null);
     try {
-      const [statusRes, channelsRes, playersRes, mutesRes] = await Promise.all([
+      const [statusRes, channelsRes, playersRes, mutesRes, bansRes] = await Promise.all([
         api.status().catch((e) => { console.warn('[fetch] /api/status failed:', e); return null; }),
         api.getChannels().catch((e) => { console.warn('[fetch] /api/channels failed:', e); return null; }),
         api.getPlayers().catch((e) => { console.warn('[fetch] /api/players failed:', e); return null; }),
         api.getMutes().catch((e) => { console.warn('[fetch] /api/mutes failed:', e); return null; }),
+        api.getBans().catch((e) => { console.warn('[fetch] /api/bans failed:', e); return null; }),
       ]);
 
       if (statusRes) setStatusData(statusRes);
@@ -218,6 +237,26 @@ function Dashboard({ currentUser, onLogout }) {
       if (mutesRes && Array.isArray(mutesRes.mutes)) {
         setMutedPlayers(mutesRes.mutes.map(adaptMute).filter(Boolean));
       }
+
+      if (bansRes && Array.isArray(bansRes)) {
+        // GET /api/bans -> [{ playerId, name?, bans: [...] }, ...]; flatten into
+        // one row per ban sub-entry via adaptBan (which returns an array).
+        const flat = bansRes.flatMap((b) => adaptBan(b)).filter(Boolean);
+        setBannedPlayers(flat);
+      }
+
+      // Fetch notification unread count for the bell badge (best-effort).
+      try {
+        const notifRes = await api.getNotifications(0, 1, true);
+        if (notifRes && typeof notifRes.unreadCount === 'number') {
+          setApiUnreadCount(notifRes.unreadCount);
+        }
+      } catch (e) {
+        console.warn('[fetch] /api/notifications unread failed:', e);
+      }
+
+      // Fetch backend settings (best-effort; defaults stay enabled on error).
+      fetchSettings().catch((e) => console.warn('[fetch] settings failed:', e));
 
       // Webhooks loaded lazily when the tab is opened; not part of initial fetch.
       setInitialLoading(false);
@@ -262,6 +301,40 @@ function Dashboard({ currentUser, onLogout }) {
     } catch (err) {
       console.warn('[fetchMutes] failed:', err);
       addToast(t('players.toast_mutes_failed', { error: err.message }), 'error');
+    }
+  }, [addToast, t]);
+
+  // Refresh only the bans list (used after ban/unban).
+  const fetchBans = useCallback(async () => {
+    try {
+      const bansRes = await api.getBans();
+      if (bansRes && Array.isArray(bansRes)) {
+        const flat = bansRes.flatMap((b) => adaptBan(b)).filter(Boolean);
+        setBannedPlayers(flat);
+      }
+    } catch (err) {
+      console.warn('[fetchBans] failed:', err);
+      addToast(t('players.toast_bans_failed', { error: err.message }), 'error');
+    }
+  }, [addToast, t]);
+
+  // Fetch backend settings (GET /api/settings) and map to UI keys.
+  const fetchSettings = useCallback(async () => {
+    setSettingsLoading(true);
+    try {
+      const res = await api.getSettings();
+      if (res) {
+        setSettings({
+          enableFilter: res.filterEnabled !== false,
+          logMessages: res.messageLogEnabled !== false,
+          crossServerChat: res.crossServerChatEnabled !== false,
+        });
+      }
+    } catch (err) {
+      console.warn('[fetchSettings] failed:', err);
+      addToast(t('common.settings_load_failed', { error: err.message }), 'error');
+    } finally {
+      setSettingsLoading(false);
     }
   }, [addToast, t]);
 
@@ -516,6 +589,45 @@ function Dashboard({ currentUser, onLogout }) {
     }
   }, [addToast, t, fetchPlayers]);
 
+  // Ban a player via REST POST /api/players/{uuid}/ban.
+  // body: { channelId?, durationMs, reason } — durationMs 0 = permanent;
+  // channelId omitted/empty = global ban.
+  const handleBanPlayer = useCallback(async (payload) => {
+    if (!payload || !payload.uuid) {
+      addToast(t('players.toast_ban_failed', { error: 'uuid' }), 'error');
+      return;
+    }
+    const body = { durationMs: payload.durationMs != null ? payload.durationMs : 0 };
+    if (payload.channelId) body.channelId = payload.channelId;
+    if (payload.reason) body.reason = payload.reason;
+    try {
+      await api.banPlayer(payload.uuid, body);
+      addToast(t('players.toast_ban_success', { name: payload.name || payload.uuid }), 'success');
+      await fetchBans();
+    } catch (err) {
+      addToast(t('players.toast_ban_failed', { error: err.message }), 'error');
+    }
+  }, [addToast, t, fetchBans]);
+
+  // Unban a player via REST POST /api/players/{uuid}/unban.
+  // body: { channelId? } — omit for a global unban.
+  const handleUnbanPlayer = useCallback(async (payload) => {
+    const uuid = typeof payload === 'string' ? payload : (payload && payload.uuid);
+    if (!uuid) {
+      addToast(t('players.toast_unban_failed', { error: 'uuid' }), 'error');
+      return;
+    }
+    const body = {};
+    if (typeof payload === 'object' && payload.channelId) body.channelId = payload.channelId;
+    try {
+      await api.unbanPlayer(uuid, body);
+      addToast(t('players.toast_unban_success', { name: (payload && payload.name) || uuid }), 'success');
+      await fetchBans();
+    } catch (err) {
+      addToast(t('players.toast_unban_failed', { error: err.message }), 'error');
+    }
+  }, [addToast, t, fetchBans]);
+
   // Reload config via REST POST /api/reload.
   const handleReloadConfig = useCallback(async () => {
     try {
@@ -645,20 +757,52 @@ function Dashboard({ currentUser, onLogout }) {
   // Notifications.
   const handleMarkAllRead = useCallback(() => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    setApiUnreadCount(0);
     addToast(t('notifications.toast_all_read'), 'success');
   }, [addToast, t]);
 
   const handleClearNotifications = useCallback(() => {
     setNotifications([]);
     setShowNotifications(false);
+    setApiUnreadCount(0);
     addToast(t('notifications.toast_cleared'), 'success');
   }, [addToast, t]);
 
-  // Settings toggles (local UI only).
-  const handleSettingToggle = useCallback((key) => {
-    setSettings((prev) => ({ ...prev, [key]: !prev[key] }));
-    if (navigator.vibrate) navigator.vibrate(5);
+  // Open the full notification list modal (from the dropdown "view all").
+  const handleOpenNotificationList = useCallback(() => {
+    setShowNotifications(false);
+    setShowNotificationList(true);
   }, []);
+
+  // Keep the bell badge's unread count in sync with the API-sourced count
+  // reported by the NotificationListModal after each fetch/action.
+  const handleUnreadCountChange = useCallback((count) => {
+    setApiUnreadCount(count);
+  }, []);
+
+  // Settings toggles — optimistic update + PUT /api/settings persist.
+  const handleSettingToggle = useCallback((key) => {
+    if (!SETTINGS_KEY_MAP[key]) return;
+    // Optimistic flip.
+    setSettings((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      // Build the full backend body from the new state.
+      const body = {
+        filterEnabled: next.enableFilter,
+        messageLogEnabled: next.logMessages,
+        crossServerChatEnabled: next.crossServerChat,
+      };
+      // Persist; roll back on failure.
+      api.updateSettings(body).then(() => {
+        addToast(t('common.settings_save_success'), 'success');
+      }).catch((err) => {
+        addToast(t('common.settings_save_failed', { error: err.message }), 'error');
+        setSettings((p) => ({ ...p, [key]: prev[key] }));
+      });
+      return next;
+    });
+    if (navigator.vibrate) navigator.vibrate(5);
+  }, [addToast, t]);
 
   const handleTabChange = useCallback((tab) => {
     setTabLoading(true);
@@ -777,9 +921,13 @@ function Dashboard({ currentUser, onLogout }) {
               <div className="relative" ref={notificationRef}>
                 <button onClick={() => setShowNotifications(!showNotifications)} className="relative rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" title={t('notifications.title')}>
                   <Bell size={18} />
-                  {notifications.some((n) => !n.read) && (
+                  {apiUnreadCount > 0 ? (
+                    <span className="absolute top-0.5 right-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-destructive-foreground">
+                      {apiUnreadCount > 99 ? '99+' : apiUnreadCount}
+                    </span>
+                  ) : notifications.some((n) => !n.read) ? (
                     <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-destructive rounded-full" />
-                  )}
+                  ) : null}
                 </button>
                 <NotificationDropdown
                   isOpen={showNotifications}
@@ -789,6 +937,7 @@ function Dashboard({ currentUser, onLogout }) {
                   notifications={notifications}
                   onMarkAllRead={handleMarkAllRead}
                   onClearAll={handleClearNotifications}
+                  onOpenList={handleOpenNotificationList}
                 />
               </div>
               {/* Language switcher */}
@@ -917,9 +1066,12 @@ function Dashboard({ currentUser, onLogout }) {
                       players={filteredPlayers}
                       channels={channels}
                       mutedPlayers={mutedPlayers}
+                      bannedPlayers={bannedPlayers}
                       onMutePlayer={handleMutePlayer}
                       onUnmutePlayer={handleUnmutePlayer}
                       onKickPlayer={handleKickPlayer}
+                      onBanPlayer={handleBanPlayer}
+                      onUnbanPlayer={handleUnbanPlayer}
                     />
                   )}
 
@@ -942,6 +1094,7 @@ function Dashboard({ currentUser, onLogout }) {
                     <SettingsView
                       theme="clean" mode={mode} txtMain={txtMain} txtSec={txtSec}
                       settings={settings} onToggle={handleSettingToggle}
+                      settingsLoading={settingsLoading}
                       setMode={setMode}
                       modeState={mode}
                       wsState={wsState}
@@ -1009,6 +1162,16 @@ function Dashboard({ currentUser, onLogout }) {
               </Button>
             </div>
           </Modal>
+
+          {/* Notification List Modal (full paginated history) */}
+          <NotificationListModal
+            isOpen={showNotificationList}
+            onClose={() => setShowNotificationList(false)}
+            theme="clean"
+            mode={mode}
+            onUnreadCountChange={handleUnreadCountChange}
+            onToast={addToast}
+          />
         </main>
       </div>
     </div>
@@ -1087,7 +1250,7 @@ function ServerDetailsContent({ server }) {
 }
 
 // ==================== Settings View ====================
-function SettingsView({ theme, mode, txtMain: _txtMain, txtSec: _txtSec, settings, onToggle, setMode, modeState, wsState, apiUrl, wsUrl }) {
+function SettingsView({ theme, mode, txtMain: _txtMain, txtSec: _txtSec, settings, onToggle, settingsLoading, setMode, modeState, wsState, apiUrl, wsUrl }) {
   void _txtMain; void _txtSec;
   const { t } = useTranslation();
   const wsLabel = (() => {
@@ -1146,28 +1309,36 @@ function SettingsView({ theme, mode, txtMain: _txtMain, txtSec: _txtSec, setting
         </div>
 
         <div className="pt-6 border-t border-border">
-          <h3 className="text-sm font-medium mb-3 text-foreground">{t('common.settings_chat_features')}</h3>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-medium text-foreground">{t('common.settings_chat_features')}</h3>
+            {settingsLoading && (
+              <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Loader2 size={11} className="animate-spin" />
+                {t('common.settings_loading')}
+              </span>
+            )}
+          </div>
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <div>
                 <span className="text-sm text-foreground">{t('common.settings_filter')}</span>
-                <p className="text-xs text-muted-foreground mt-0.5">{t('common.settings_local_only')}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('common.settings_filter_desc')}</p>
               </div>
-              <Switch checked={settings.enableFilter} onChange={() => onToggle('enableFilter')} theme={theme} mode={mode} />
+              <Switch checked={settings.enableFilter} onChange={() => onToggle('enableFilter')} theme={theme} mode={mode} disabled={settingsLoading} />
             </div>
             <div className="flex items-center justify-between">
               <div>
                 <span className="text-sm text-foreground">{t('common.settings_log')}</span>
-                <p className="text-xs text-muted-foreground mt-0.5">{t('common.settings_local_only')}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('common.settings_log_desc')}</p>
               </div>
-              <Switch checked={settings.logMessages} onChange={() => onToggle('logMessages')} theme={theme} mode={mode} />
+              <Switch checked={settings.logMessages} onChange={() => onToggle('logMessages')} theme={theme} mode={mode} disabled={settingsLoading} />
             </div>
             <div className="flex items-center justify-between">
               <div>
                 <span className="text-sm text-foreground">{t('common.settings_cross_server')}</span>
-                <p className="text-xs text-muted-foreground mt-0.5">{t('common.settings_local_only')}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('common.settings_cross_server_desc')}</p>
               </div>
-              <Switch checked={settings.crossServerChat} onChange={() => onToggle('crossServerChat')} theme={theme} mode={mode} />
+              <Switch checked={settings.crossServerChat} onChange={() => onToggle('crossServerChat')} theme={theme} mode={mode} disabled={settingsLoading} />
             </div>
           </div>
         </div>

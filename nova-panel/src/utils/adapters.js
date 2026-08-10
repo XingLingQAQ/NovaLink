@@ -257,6 +257,104 @@ export function adaptNotification(notifJson) {
 }
 
 /**
+ * Adapt a REST /api/bans ban JSON object to the component banned-player shape.
+ * Backend GET /api/bans returns a list of entries, each shaped:
+ *   { playerId, name?, bans: [ { channelId, expireTime, reason, operatorId, createdAt } ] }
+ * - channelId is null for a global ban (across all channels).
+ * - expireTime is 0 for a permanent ban.
+ * - createdAt is the ban's creation epoch millis.
+ * We flatten the bans array into one component row per ban, carrying the
+ * playerId/name down so the unban call can target the right player. The
+ * caller may pass a single ban entry (with a .bans array) or a pre-flattened
+ * row (with a single .channelId/.expireTime/...); both resolve to the same
+ * component shape.
+ * Component prop shape (bannedPlayers entry):
+ *   { uuid, name, reason, channelId, channelLabel, expireTime, permanent,
+ *     remainingMs, operatorId, createdAt }
+ */
+export function adaptBan(banJson) {
+  if (!banJson) return null;
+  const playerId = banJson.playerId || '';
+  const name = banJson.name || banJson.playerName || playerId;
+  const banEntries = Array.isArray(banJson.bans) && banJson.bans.length > 0
+    ? banJson.bans
+    : [banJson];
+  // Flatten each ban sub-entry into its own component row.
+  return banEntries.map((b) => {
+    const expireTime = b.expireTime || 0;
+    const permanent = !expireTime || expireTime <= 0;
+    const channelId = b.channelId || '';
+    const isGlobal = !channelId || channelId === '(global)';
+    const now = Date.now();
+    let remainingMs;
+    if (permanent) {
+      remainingMs = -1;
+    } else {
+      const num = typeof expireTime === 'number' ? expireTime : Number(expireTime);
+      remainingMs = Number.isNaN(num) ? 0 : num - now;
+      if (remainingMs < 0) remainingMs = 0;
+    }
+    return {
+      uuid: playerId,
+      name,
+      reason: b.reason || '',
+      channelId: isGlobal ? '' : channelId,
+      channelLabel: isGlobal ? '' : channelId,
+      expireTime: permanent ? null : (typeof expireTime === 'number' ? expireTime : Number(expireTime)),
+      permanent,
+      remainingMs,
+      operatorId: b.operatorId || '',
+      createdAt: b.createdAt || 0,
+    };
+  }).filter(Boolean);
+}
+
+/**
+ * Adapt a REST /api/notifications page item to the component notification shape.
+ * Backend notification item: { id, title, message, level, createdAt, read }
+ * level is "info" | "warning" | "error" — map to component type + icon. read
+ * is a boolean preserved for unread highlighting. createdAt is epoch millis.
+ */
+export function adaptNotificationItem(itemJson) {
+  if (!itemJson) return null;
+  const level = itemJson.level || itemJson.type || 'info';
+  let type = 'info';
+  let icon = Info;
+  if (level === 'warning' || level === 'warn') {
+    type = 'warning';
+    icon = AlertTriangle;
+  } else if (level === 'error' || level === 'danger') {
+    type = 'error';
+    icon = AlertTriangle;
+  } else if (level === 'success') {
+    type = 'success';
+    icon = CheckCircle;
+  } else if (level === 'mute' || level === 'kick') {
+    type = 'info';
+    icon = UserX;
+  }
+  let time = i18n.t('notifications.default_time');
+  if (itemJson.createdAt) {
+    try {
+      const num = typeof itemJson.createdAt === 'number' ? itemJson.createdAt : Number(itemJson.createdAt);
+      if (!Number.isNaN(num)) time = new Date(num).toLocaleString();
+    } catch {
+      time = i18n.t('notifications.default_time');
+    }
+  }
+  return {
+    id: itemJson.id,
+    title: itemJson.title || i18n.t('notifications.default_title'),
+    desc: itemJson.message || itemJson.desc || itemJson.description || '',
+    time,
+    type,
+    icon,
+    read: !!itemJson.read,
+    createdAt: itemJson.createdAt || 0,
+  };
+}
+
+/**
  * Build the dashboard stats array from REST /api/status + live data.
  * Only uses real backend-provided fields; no fabricated numbers.
  */
@@ -310,4 +408,30 @@ export function buildDashboardStats(statusJson, servers, channels, chatMessages)
       icon: 'MessageSquare',
     },
   ];
+}
+
+/**
+ * Format a remaining-millis duration into a compact human string.
+ * -1 / negative -> permanent label; 0 -> expired label.
+ * Used by the mute/ban lists for the "remaining time" column.
+ * @param {number} remainingMs
+ * @param {object} opts - { permanentLabel, expiredLabel } i18n strings
+ * @returns {string}
+ */
+export function formatRemainingMs(remainingMs, opts = {}) {
+  const permanentLabel = opts.permanentLabel || i18n.t('players.expire_permanent');
+  const expiredLabel = opts.expiredLabel || i18n.t('players.expire_permanent');
+  if (remainingMs == null) return permanentLabel;
+  if (remainingMs === -1) return permanentLabel;
+  if (remainingMs <= 0) return expiredLabel;
+  const ms = Number(remainingMs);
+  if (Number.isNaN(ms)) return expiredLabel;
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `${days}d ${hours % 24}h`;
+  if (hours > 0) return `${hours}h ${minutes % 60}m`;
+  if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+  return `${seconds}s`;
 }

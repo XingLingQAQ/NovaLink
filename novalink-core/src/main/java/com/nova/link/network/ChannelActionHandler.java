@@ -5,6 +5,8 @@ import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.link.auth.PermissionLevel;
 import com.nova.link.auth.PermissionManager;
+import com.nova.link.ban.BanManager;
+import com.nova.link.ban.BanResult;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
@@ -17,6 +19,7 @@ import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.mute.MuteResult;
+import com.nova.link.notification.NotificationStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,6 +43,8 @@ public class ChannelActionHandler {
     private final InvitationManager invitationManager;
     private final PermissionManager permissionManager;
     private final MuteManager muteManager;
+    private final BanManager banManager;
+    private NotificationStore notificationStore;
 
     public ChannelActionHandler(ChannelManager channelManager,
                                 PlayerStateManager playerStateManager,
@@ -48,7 +53,7 @@ public class ChannelActionHandler {
                                 InvitationManager invitationManager,
                                 PermissionManager permissionManager) {
         this(channelManager, playerStateManager, databaseProvider, privateChannelManager,
-                invitationManager, permissionManager, null);
+                invitationManager, permissionManager, null, null);
     }
 
     public ChannelActionHandler(ChannelManager channelManager,
@@ -58,6 +63,18 @@ public class ChannelActionHandler {
                                 InvitationManager invitationManager,
                                 PermissionManager permissionManager,
                                 MuteManager muteManager) {
+        this(channelManager, playerStateManager, databaseProvider, privateChannelManager,
+                invitationManager, permissionManager, muteManager, null);
+    }
+
+    public ChannelActionHandler(ChannelManager channelManager,
+                                PlayerStateManager playerStateManager,
+                                DatabaseProvider databaseProvider,
+                                PrivateChannelManager privateChannelManager,
+                                InvitationManager invitationManager,
+                                PermissionManager permissionManager,
+                                MuteManager muteManager,
+                                BanManager banManager) {
         this.channelManager = Objects.requireNonNull(channelManager, "channelManager");
         this.playerStateManager = Objects.requireNonNull(playerStateManager, "playerStateManager");
         this.databaseProvider = Objects.requireNonNull(databaseProvider, "databaseProvider");
@@ -65,6 +82,16 @@ public class ChannelActionHandler {
         this.invitationManager = Objects.requireNonNull(invitationManager, "invitationManager");
         this.permissionManager = Objects.requireNonNull(permissionManager, "permissionManager");
         this.muteManager = muteManager;
+        this.banManager = banManager;
+    }
+
+    /**
+     * Late-binds the notification store so moderation actions can surface
+     * notifications to the web panel. Optional — if never set, moderation
+     * actions still work, just without notifications.
+     */
+    public void setNotificationStore(NotificationStore notificationStore) {
+        this.notificationStore = notificationStore;
     }
 
     public ChannelActionResponsePacket handle(ClientConnection connection, ChannelActionPacket packet) {
@@ -93,6 +120,10 @@ public class ChannelActionHandler {
                     return handleMute(connection, packet);
                 case UNMUTE:
                     return handleUnmute(connection, packet);
+                case BAN:
+                    return handleBan(connection, packet);
+                case UNBAN:
+                    return handleUnban(connection, packet);
                 case DELETE:
                     return handleDelete(connection, packet);
                 default:
@@ -397,6 +428,22 @@ public class ChannelActionHandler {
         if (kickOperatorName != null && !kickOperatorName.isEmpty()) {
             response.addExtra("operatorName", kickOperatorName);
         }
+
+        // Surface the kick to the web panel notification feed.
+        if (notificationStore != null) {
+            try {
+                PlayerState ps = playerStateManager.getPlayerState(targetId);
+                String targetName = ps != null && ps.getPlayerName() != null ? ps.getPlayerName() : targetId.toString();
+                String opLabel = kickOperatorName != null && !kickOperatorName.isEmpty()
+                        ? kickOperatorName : operatorId.toString();
+                notificationStore.createNotification(
+                        "Player Kicked",
+                        opLabel + " kicked " + targetName + " from " + channelId,
+                        "warning");
+            } catch (Exception e) {
+                logger.debug("Failed to emit kick notification: {}", e.getMessage());
+            }
+        }
         return response;
     }
 
@@ -503,6 +550,111 @@ public class ChannelActionHandler {
         }
 
         return new ChannelActionResponsePacket(true, ChannelAction.UNMUTE, channelId, "", "Player unmuted");
+    }
+
+    private ChannelActionResponsePacket handleBan(ClientConnection connection, ChannelActionPacket packet) {
+        if (banManager == null) {
+            return new ChannelActionResponsePacket(false, ChannelAction.BAN, packet.getChannelId(),
+                    "NC-503", "Ban system is not available");
+        }
+
+        UUID operatorId = resolveOperatorId(packet);
+        UUID targetId = resolveTargetId(packet);
+        String channelId = packet.getChannelId();
+        if (operatorId == null) {
+            return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId, "NC-400", "Operator ID is required");
+        }
+        if (targetId == null) {
+            return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId, "NC-400", "Target player ID is required");
+        }
+        // channelId may be null/blank for a global ban — do not reject here.
+
+        // Validate channel exists when a channel-scoped ban is requested.
+        if (channelId != null && !channelId.isBlank()) {
+            Channel channel = channelManager.getChannel(channelId);
+            if (channel == null) {
+                return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId, "NC-404", "Channel not found");
+            }
+            ChannelActionResponsePacket permissionError = requireModerationPermission(
+                    ChannelAction.BAN, operatorId, channel, connection.getClientId());
+            if (permissionError != null) {
+                return permissionError;
+            }
+        }
+
+        long durationMs = parseDurationMs(packet);
+        String reason = firstNonBlank(packet.getExtra("reason"), packet.getExtra("banReason"), "Banned by admin");
+
+        BanResult result = banManager.banPlayer(
+                operatorId,
+                targetId,
+                (channelId == null || channelId.isBlank()) ? null : channelId,
+                durationMs,
+                reason,
+                connection.getClientId()
+        );
+
+        if (!result.isSuccess()) {
+            return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId,
+                    result.getErrorCode() != null ? result.getErrorCode() : "NC-400",
+                    result.getMessage() != null ? result.getMessage() : "Ban failed");
+        }
+
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(true, ChannelAction.BAN, channelId, "", "Player banned");
+        response.addExtra("targetId", targetId.toString());
+        response.addExtra("durationMs", String.valueOf(durationMs));
+        String operatorName = firstNonBlank(packet.getExtra("operatorName"), packet.getExtra("operator_name"));
+        if (operatorName != null && !operatorName.isEmpty()) {
+            response.addExtra("operatorName", operatorName);
+        }
+        String durationSeconds = firstNonBlank(packet.getExtra("duration"), packet.getExtra("durationSeconds"));
+        if (durationSeconds != null && !durationSeconds.isEmpty()) {
+            response.addExtra("duration", durationSeconds);
+        }
+        return response;
+    }
+
+    private ChannelActionResponsePacket handleUnban(ClientConnection connection, ChannelActionPacket packet) {
+        if (banManager == null) {
+            return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, packet.getChannelId(),
+                    "NC-503", "Ban system is not available");
+        }
+
+        UUID operatorId = resolveOperatorId(packet);
+        UUID targetId = resolveTargetId(packet);
+        String channelId = packet.getChannelId();
+        if (operatorId == null) {
+            return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, channelId, "NC-400", "Operator ID is required");
+        }
+        if (targetId == null) {
+            return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, channelId, "NC-400", "Target player ID is required");
+        }
+
+        if (channelId != null && !channelId.isBlank()) {
+            Channel channel = channelManager.getChannel(channelId);
+            if (channel == null) {
+                return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, channelId, "NC-404", "Channel not found");
+            }
+            ChannelActionResponsePacket permissionError = requireModerationPermission(
+                    ChannelAction.UNBAN, operatorId, channel, connection.getClientId());
+            if (permissionError != null) {
+                return permissionError;
+            }
+        }
+
+        BanResult result = banManager.unbanPlayer(
+                operatorId, targetId,
+                (channelId == null || channelId.isBlank()) ? null : channelId,
+                connection.getClientId());
+        if (!result.isSuccess()) {
+            return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, channelId,
+                    result.getErrorCode() != null ? result.getErrorCode() : "NC-400",
+                    result.getMessage() != null ? result.getMessage() : "Unban failed");
+        }
+
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(true, ChannelAction.UNBAN, channelId, "", "Player unbanned");
+        response.addExtra("targetId", targetId.toString());
+        return response;
     }
 
     private ChannelActionResponsePacket handleDelete(ClientConnection connection, ChannelActionPacket packet) {

@@ -6,6 +6,7 @@ import com.google.gson.JsonParser;
 import com.nova.link.auth.AuthManager;
 import com.nova.link.auth.IpBanManager;
 import com.nova.link.auth.PermissionManager;
+import com.nova.link.ban.BanManager;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
@@ -23,6 +24,7 @@ import com.nova.link.mute.MuteManager;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.NettyServer;
 import com.nova.link.network.ServerNetworkHandler;
+import com.nova.link.notification.NotificationStore;
 import com.nova.link.spy.SpyManager;
 import com.nova.link.websocket.JwtService;
 import com.nova.link.websocket.WebSocketGateway;
@@ -64,6 +66,8 @@ class RestApiHandlerTest {
     private ChannelManager channelManager;
     private PlayerStateManager playerStateManager;
     private MuteManager muteManager;
+    private BanManager banManager;
+    private NotificationStore notificationStore;
     private InvitationManager invitationManager;
     private ConfigManager configManager;
     private ServerNetworkHandler networkHandler;
@@ -84,6 +88,8 @@ class RestApiHandlerTest {
         WebhookManager webhookManager = new WebhookManager();
         PermissionManager permissionManager = new PermissionManager();
         muteManager = new MuteManager(db, permissionManager, channelManager);
+        banManager = new BanManager(db, permissionManager, channelManager);
+        notificationStore = new NotificationStore(db);
         invitationManager = new InvitationManager(db, channelManager);
         SensitiveWordFilter sensitiveWordFilter = new SensitiveWordFilter();
         configManager = new ConfigManager(java.nio.file.Path.of("novalink-test.yml"));
@@ -131,6 +137,8 @@ class RestApiHandlerTest {
                 new com.nova.link.channel.PrivateChannelManager(channelManager),
                 invitationManager,
                 muteManager,
+                banManager,
+                notificationStore,
                 sensitiveWordsFilter(),
                 networkHandler,
                 messageRouter,
@@ -149,10 +157,12 @@ class RestApiHandlerTest {
                 messageRouter,
                 webhookManager,
                 muteManager,
+                banManager,
                 invitationManager,
                 configManager,
                 networkHandler,
-                consoleCommandHandler
+                consoleCommandHandler,
+                notificationStore
         );
 
         // Generate a valid JWT token for auth
@@ -173,6 +183,7 @@ class RestApiHandlerTest {
     @AfterEach
     void tearDown() {
         muteManager.shutdown();
+        banManager.shutdown();
     }
 
     // ====================== helper: dispatch a request ======================
