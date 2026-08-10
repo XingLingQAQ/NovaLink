@@ -210,6 +210,23 @@ public class NettyServer {
     }
 
     /**
+     * Gets the actually bound port.
+     *
+     * <p>When the server is constructed with port {@code 0}, the OS assigns
+     * an ephemeral free port; this returns that real port by reading it from
+     * the bound server channel. Returns the configured port (which may be 0)
+     * if the server is not yet running or the channel has no local address.
+     *
+     * @return the actually bound port, or the configured port if not bound
+     */
+    public int getBoundPort() {
+        if (serverChannel != null && serverChannel.localAddress() instanceof InetSocketAddress addr) {
+            return addr.getPort();
+        }
+        return port;
+    }
+
+    /**
      * Gets the packet registry.
      *
      * @return the packet registry
