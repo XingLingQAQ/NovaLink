@@ -11,9 +11,9 @@
         "NovaChat Team"
       ],
       "contact": {
-        "homepage": "https://github.com/nova-chat/novachat",
-        "issues": "https://github.com/nova-chat/novachat/issues",
-        "sources": "https://github.com/nova-chat/novachat"
+        "homepage": "https://github.com/nova/novachat",
+        "issues": "https://github.com/nova/novachat/issues",
+        "sources": "https://github.com/nova/novachat"
       },
       "license": "MIT",
       "icon": "assets/novachat/icon.png"

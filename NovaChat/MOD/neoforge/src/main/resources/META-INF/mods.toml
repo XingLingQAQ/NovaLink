@@ -9,13 +9,13 @@
 modLoader="javafml"
 loaderVersion="[2,)"
 license="MIT"
-issueTrackerURL="https://github.com/novachat/novachat-mod/issues"
+issueTrackerURL="https://github.com/nova/novachat/issues"
 
 [[mods]]
 modId="novachat"
 version="${file.jarVersion}"
 displayName="NovaChat"
-displayURL="https://github.com/novachat/novachat-mod"
+displayURL="https://github.com/nova/novachat"
 logoFile="novachat_logo.png"
 credits="NovaChat Team"
 authors="NovaChat Team"
