@@ -123,7 +123,8 @@ class NovaChatPlugin:
                 self._config_manager.backend_host,
                 self._config_manager.backend_port,
                 self._config_manager.backend_username,
-                self._config_manager.backend_password
+                self._config_manager.backend_password,
+                server_version=self._config_manager.server_version,
             )
             self._logger.info("Network client initialized")
             

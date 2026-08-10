@@ -16,10 +16,15 @@ from typing import TYPE_CHECKING, Dict, Optional, Any
 
 from novachat_endstone.protocol.packet import (
     PacketIds,
+    ChannelAction,
     ChatMessagePacket,
     AnnouncementPacket,
     TitleMessagePacket,
     ChannelActionPacket,
+    ChannelActionResponsePacket,
+    ConfigSyncPacket,
+    MentionPacket,
+    ItemDisplayPacket,
 )
 
 if TYPE_CHECKING:
@@ -49,7 +54,7 @@ class ChatHandler:
     ):
         """
         Initialize the chat handler.
-        
+
         Args:
             plugin: The parent plugin instance
             network_client: The network client for backend communication
@@ -59,11 +64,22 @@ class ChatHandler:
         self._network_client = network_client
         self._config_manager = config_manager
         self._logger = logging.getLogger("NovaChat.Chat")
-        
+
         # Player state tracking
         self._player_channels: Dict[str, str] = {}  # player_uuid -> channel_id
         self._chat_enabled: Dict[str, bool] = {}  # player_uuid -> enabled
-        
+        self._player_locales: Dict[str, str] = {}  # player_uuid -> locale (zh_CN/en_US)
+
+        # Known channel registry (populated by ConfigSync from backend)
+        self._known_channels: list = []  # list of channel ids known from backend
+
+        # Pending channel action requests awaiting async response (request_id -> player_uuid)
+        self._pending_actions: Dict[str, str] = {}
+
+        # i18n message provider
+        from novachat_endstone.i18n.messages import I18n
+        self._i18n = I18n()
+
         # Register packet handlers
         self._register_packet_handlers()
     
@@ -80,6 +96,22 @@ class ChatHandler:
         self._network_client.register_handler(
             PacketIds.TITLE,
             self._handle_title_message
+        )
+        self._network_client.register_handler(
+            PacketIds.CHANNEL_ACTION_RESPONSE,
+            self._handle_channel_action_response
+        )
+        self._network_client.register_handler(
+            PacketIds.CONFIG_SYNC,
+            self._handle_config_sync
+        )
+        self._network_client.register_handler(
+            PacketIds.MENTION,
+            self._handle_mention
+        )
+        self._network_client.register_handler(
+            PacketIds.ITEM_DISPLAY,
+            self._handle_item_display
         )
     
     def on_player_chat(self, event: Any) -> None:
@@ -271,7 +303,7 @@ class ChatHandler:
     def _send_title_to_player(self, player: Any, packet: TitleMessagePacket) -> None:
         """
         Send a title to a specific player.
-        
+
         Args:
             player: The target player
             packet: The title message packet
@@ -286,6 +318,113 @@ class ChatHandler:
             )
         except Exception as e:
             self._logger.error(f"Failed to send title to {player.name}: {e}")
+
+    def _handle_channel_action_response(self, packet: ChannelActionResponsePacket) -> None:
+        """
+        Route a ChannelActionResponse to the requesting player.
+
+        JOIN/LEAVE/WHO async responses are routed by request_id -> player.
+        On failure, the error code is translated via i18n.
+        """
+        try:
+            request_id = str(getattr(packet, "request_id", ""))
+            player_uuid = self._pending_actions.pop(request_id, None)
+            if not player_uuid:
+                self._logger.debug(
+                    f"ChannelActionResponse with no pending request: action={packet.action}"
+                )
+                return
+
+            locale = self._player_locales.get(player_uuid, "zh_CN")
+            if packet.success:
+                # Optimistic state update already happened on send; just ack.
+                msg = self._i18n.get("chat.action.success", locale)
+            else:
+                msg = self._i18n.error_message(packet.error_code, locale)
+
+            self._send_to_player_by_uuid(player_uuid, f"§e{msg}")
+        except Exception as e:
+            self._logger.error(f"Error handling channel action response: {e}")
+
+    def _handle_config_sync(self, packet: ConfigSyncPacket) -> None:
+        """
+        Receive backend channel config sync -> update local known channel registry.
+
+        The configJson contains the channel list the backend wants this client to know.
+        """
+        try:
+            import json
+            data = json.loads(packet.config_json or "{}")
+            channels = data.get("channels", [])
+            self._known_channels = [
+                (c.get("id", c) if isinstance(c, dict) else str(c))
+                for c in channels
+            ]
+            self._logger.debug(
+                f"ConfigSync: updated known channels ({len(self._known_channels)})"
+            )
+        except Exception as e:
+            self._logger.error(f"Error handling config sync: {e}")
+
+    def _handle_mention(self, packet: MentionPacket) -> None:
+        """
+        @mention highlight: show title + play sound to the mentioned player.
+        """
+        try:
+            mentioned_uuid = str(packet.mentioned_id)
+            locale = self._player_locales.get(mentioned_uuid, "zh_CN")
+            subtitle = self._i18n.get(
+                "chat.mention.subtitle", locale, packet.channel_id
+            )
+            player = self._find_player_by_uuid(mentioned_uuid)
+            if player:
+                try:
+                    player.send_title("§b§l@", subtitle, 10, 40, 20)
+                except Exception:
+                    pass
+                # Best-effort sound notification
+                try:
+                    player.play_sound("random.orb", 1.0, 1.0)
+                except Exception:
+                    pass
+        except Exception as e:
+            self._logger.error(f"Error handling mention: {e}")
+
+    def _handle_item_display(self, packet: ItemDisplayPacket) -> None:
+        """
+        [item]/[i] tag display from another server -> render to channel recipients.
+        Bedrock has no hover, so inline text is used.
+        """
+        try:
+            recipients = self._get_channel_recipients(packet.channel_id)
+            for player in recipients:
+                try:
+                    player.send_message(
+                        f"§7{packet.sender_name} §f[§bitem§f]§7: {packet.item_json}"
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            self._logger.error(f"Error handling item display: {e}")
+
+    def _send_to_player_by_uuid(self, player_uuid: str, message: str) -> None:
+        """Send a message to a player by UUID (best-effort)."""
+        player = self._find_player_by_uuid(player_uuid)
+        if player:
+            try:
+                player.send_message(message)
+            except Exception as e:
+                self._logger.error(f"Failed to send message to {player_uuid}: {e}")
+
+    def _find_player_by_uuid(self, player_uuid: str) -> Any:
+        """Find an online player by UUID string."""
+        try:
+            for player in self._plugin.server.online_players:
+                if str(player.unique_id) == player_uuid:
+                    return player
+        except Exception:
+            pass
+        return None
     
     def _format_message(
         self,
@@ -370,39 +509,43 @@ class ChatHandler:
     async def join_channel(self, player_uuid: str, channel_id: str, password: str = "") -> bool:
         """
         Request to join a channel via the backend.
-        
+
+        Tracks the request_id so the async ChannelActionResponse can be routed back.
+
         Args:
             player_uuid: The player's UUID
             channel_id: The channel to join
             password: Optional channel password
-            
+
         Returns:
             True if the request was sent successfully
         """
         try:
             packet = ChannelActionPacket(
-                action=ChannelActionPacket.ACTION_JOIN,
+                action=ChannelAction.JOIN,
                 channel_id=channel_id,
                 password=password,
                 extra={"playerId": player_uuid}
             )
             await self._network_client.send_packet(packet)
-            
+            request_id = str(getattr(packet, "request_id", ""))
+            self._pending_actions[request_id] = player_uuid
+
             # Optimistically update local state
             self._player_channels[player_uuid] = channel_id
             return True
-            
+
         except Exception as e:
             self._logger.error(f"Failed to join channel: {e}")
             return False
-    
+
     async def leave_channel(self, player_uuid: str) -> bool:
         """
         Request to leave the current channel.
-        
+
         Args:
             player_uuid: The player's UUID
-            
+
         Returns:
             True if the request was sent successfully
         """
@@ -410,49 +553,163 @@ class ChatHandler:
             current_channel = self._player_channels.get(player_uuid)
             if not current_channel:
                 return True
-            
+
             packet = ChannelActionPacket(
-                action=ChannelActionPacket.ACTION_LEAVE,
+                action=ChannelAction.LEAVE,
                 channel_id=current_channel,
                 password="",
                 extra={"playerId": player_uuid}
             )
             await self._network_client.send_packet(packet)
-            
+            request_id = str(getattr(packet, "request_id", ""))
+            self._pending_actions[request_id] = player_uuid
+
             # Reset to default channel
             self._player_channels[player_uuid] = self._config_manager.default_channel
             return True
-            
+
         except Exception as e:
             self._logger.error(f"Failed to leave channel: {e}")
             return False
+
+    async def who_channel(self, player_uuid: str, channel_id: str = "") -> bool:
+        """
+        Request the online member list of a channel (WHO action).
+
+        Args:
+            player_uuid: The requesting player's UUID
+            channel_id: The channel to query; empty = current channel
+
+        Returns:
+            True if the request was sent successfully
+        """
+        try:
+            if not channel_id:
+                channel_id = self._player_channels.get(
+                    player_uuid, self._config_manager.default_channel
+                )
+            packet = ChannelActionPacket(
+                action=ChannelAction.WHO,
+                channel_id=channel_id,
+                password="",
+                extra={"playerId": player_uuid}
+            )
+            await self._network_client.send_packet(packet)
+            request_id = str(getattr(packet, "request_id", ""))
+            self._pending_actions[request_id] = player_uuid
+            return True
+        except Exception as e:
+            self._logger.error(f"Failed to query who: {e}")
+            return False
+
+    def notify_kick_target(self, player_uuid: str, operator: str, channel_id: str) -> None:
+        """
+        Send a kick target-side notification (title + action bar) to a player.
+
+        Args:
+            player_uuid: The kicked player's UUID
+            operator: The operator name (or fallback "admin")
+            channel_id: The channel the player was kicked from
+        """
+        locale = self._player_locales.get(player_uuid, "zh_CN")
+        title = self._i18n.get("chat.notice.kick_title", locale)
+        subtitle = self._i18n.get(
+            "chat.notice.kick_subtitle", locale, operator, channel_id
+        )
+        actionbar = self._i18n.get(
+            "chat.notice.kick_actionbar", locale, operator, channel_id
+        )
+        player = self._find_player_by_uuid(player_uuid)
+        if player:
+            try:
+                player.send_title(title, subtitle, 10, 70, 20)
+            except Exception:
+                pass
+            try:
+                player.send_tip(actionbar)
+            except Exception:
+                pass
+
+    def notify_mute_target(
+        self, player_uuid: str, channel_id: str, duration: str
+    ) -> None:
+        """
+        Send a mute target-side notification (title + action bar) to a player.
+
+        Args:
+            player_uuid: The muted player's UUID
+            channel_id: The channel the player was muted in
+            duration: Human-readable duration string
+        """
+        locale = self._player_locales.get(player_uuid, "zh_CN")
+        title = self._i18n.get("chat.notice.mute_title", locale)
+        subtitle = self._i18n.get(
+            "chat.notice.mute_subtitle", locale, channel_id, duration
+        )
+        actionbar = self._i18n.get(
+            "chat.notice.mute_actionbar", locale, duration, channel_id
+        )
+        player = self._find_player_by_uuid(player_uuid)
+        if player:
+            try:
+                player.send_title(title, subtitle, 10, 70, 20)
+            except Exception:
+                pass
+            try:
+                player.send_tip(actionbar)
+            except Exception:
+                pass
     
     def on_player_join(self, player: Any) -> None:
         """
         Handle player join event.
-        
+
         Args:
             player: The player who joined
         """
         player_uuid = str(player.unique_id)
-        
+
         # Set default channel
         self._player_channels[player_uuid] = self._config_manager.default_channel
         self._chat_enabled[player_uuid] = True
-        
-        self._logger.debug(f"Player {player.name} joined, set to default channel")
-    
+
+        # Detect player locale (zh_CN default; en_US if client locale starts with en)
+        locale = "zh_CN"
+        try:
+            client_locale = getattr(player, "locale", None) or ""
+            if str(client_locale).lower().startswith("en"):
+                locale = "en_US"
+        except Exception:
+            pass
+        self._player_locales[player_uuid] = locale
+
+        self._logger.debug(f"Player {player.name} joined, set to default channel, locale={locale}")
+
     def on_player_quit(self, player: Any) -> None:
         """
         Handle player quit event.
-        
+
         Args:
             player: The player who quit
         """
         player_uuid = str(player.unique_id)
-        
+
         # Clean up player state
         self._player_channels.pop(player_uuid, None)
         self._chat_enabled.pop(player_uuid, None)
-        
+        self._player_locales.pop(player_uuid, None)
+
         self._logger.debug(f"Player {player.name} quit, cleaned up state")
+
+    def get_player_locale(self, player_uuid: str) -> str:
+        """Get a player's locale (zh_CN or en_US)."""
+        return self._player_locales.get(player_uuid, "zh_CN")
+
+    def set_player_locale(self, player_uuid: str, locale: str) -> None:
+        """Set a player's locale."""
+        if locale in ("zh_CN", "en_US"):
+            self._player_locales[player_uuid] = locale
+
+    def get_known_channels(self) -> list:
+        """Get the known channel list (from backend ConfigSync)."""
+        return list(self._known_channels)

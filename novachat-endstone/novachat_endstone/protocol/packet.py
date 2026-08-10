@@ -16,8 +16,55 @@ from typing import Optional, Dict, Any
 from novachat_endstone.protocol.buffer import PacketBuffer
 
 
+class ChannelAction:
+    """Channel action wire IDs (must match Java ChannelAction enum)."""
+
+    JOIN = 0
+    LEAVE = 1
+    CREATE = 2
+    DELETE = 3
+    INVITE = 4
+    ACCEPT = 5
+    KICK = 6
+    MUTE = 7
+    UNMUTE = 8
+    BAN = 9
+    UNBAN = 10
+    WHO = 11
+
+
+class AdminAction:
+    """Admin action wire IDs (must match Java AdminAction enum)."""
+
+    AUTH = 0
+    LOGOUT = 1
+    SPY_START = 2
+    SPY_STOP = 3
+    RELOAD = 4
+    STATUS = 5
+
+
+class PlatformType:
+    """Platform type wire IDs (must match Java PlatformType enum)."""
+
+    BUKKIT = 0
+    VELOCITY = 1
+    BUNGEECORD = 2
+    NUKKIT = 3
+    LEVILAMINA = 4
+    FABRIC = 5
+    NEOFORGE = 6
+    QUILT = 7
+    FORGE = 8
+    POCKETMINE = 9
+    ENDSTONE = 10
+    POWERNUKKITX = 11
+    FOLIA = 13
+    SPONGE = 14
+
+
 class PacketIds(IntEnum):
-    """Packet ID constants."""
+    """Packet ID constants (must match Java PacketIds)."""
     HANDSHAKE = 0x01
     HANDSHAKE_RESPONSE = 0x02
     CHAT_MESSAGE = 0x03
@@ -25,11 +72,14 @@ class PacketIds(IntEnum):
     CHANNEL_ACTION_RESPONSE = 0x05
     CONFIG_SYNC = 0x06
     KEEP_ALIVE = 0x07
+    PLAYER_STATE = 0x08  # reserved
     TITLE = 0x09
-    ANNOUNCEMENT = 0x0A  # optional (Java backend currently prefers ChatMessage + placeholder)
+    ANNOUNCEMENT = 0x0A  # optional (no Java class yet)
     ADMIN_ACTION = 0x0B
     ADMIN_ACTION_RESPONSE = 0x0C
-    CHANNEL_UPDATE = 0x0D  # optional
+    CHANNEL_UPDATE = 0x0D  # optional (no Java class yet)
+    ITEM_DISPLAY = 0x10
+    MENTION = 0x12
 
 
 class Packet(ABC):
@@ -55,30 +105,44 @@ class Packet(ABC):
 
 @dataclass
 class HandshakePacket(Packet):
-    """Handshake packet sent by client to authenticate."""
-    
+    """Handshake packet sent by client to authenticate (protocol v2)."""
+
     protocol_version: int
     client_id: str
     password_hash: str
     platform: int  # Platform identifier byte
-    
+    server_version: str = ""
+
     @property
     def packet_id(self) -> int:
         return PacketIds.HANDSHAKE
-    
+
     def encode(self, buffer: PacketBuffer) -> None:
         buffer.write_varint(self.protocol_version)
-        buffer.write_string(self.client_id)
-        buffer.write_string(self.password_hash)
+        buffer.write_string(self.client_id or "")
+        buffer.write_string(self.password_hash or "")
         buffer.write_byte(self.platform)
-    
+        buffer.write_string(self.server_version or "")
+
     @classmethod
     def decode(cls, buffer: PacketBuffer) -> "HandshakePacket":
+        protocol_version = buffer.read_varint()
+        client_id = buffer.read_string()
+        password_hash = buffer.read_string()
+        platform = buffer.read_byte()
+        # Optional trailing serverVersion field (protocol v2+).
+        server_version = ""
+        if buffer.remaining() > 0:
+            try:
+                server_version = buffer.read_string()
+            except Exception:
+                server_version = ""
         return cls(
-            protocol_version=buffer.read_varint(),
-            client_id=buffer.read_string(),
-            password_hash=buffer.read_string(),
-            platform=buffer.read_byte()
+            protocol_version=protocol_version,
+            client_id=client_id,
+            password_hash=password_hash,
+            platform=platform,
+            server_version=server_version,
         )
 
 
@@ -154,24 +218,17 @@ class ChatMessagePacket(Packet):
 
 @dataclass
 class ChannelActionPacket(Packet):
-    """Channel action packet for join/leave/create operations."""
-    
-    action: int  # Action type byte
+    """Channel action packet for join/leave/create/kick/mute/who operations."""
+
+    action: int  # Action type byte (see ChannelAction)
     channel_id: str
     password: str
     extra: Dict[str, str]
-    
-    # Action constants
-    ACTION_JOIN = 0
-    ACTION_LEAVE = 1
-    ACTION_CREATE = 2
-    ACTION_DELETE = 3
-    ACTION_INVITE = 4
-    
+
     @property
     def packet_id(self) -> int:
         return PacketIds.CHANNEL_ACTION
-    
+
     def encode(self, buffer: PacketBuffer) -> None:
         buffer.write_byte(self.action)
         buffer.write_string(self.channel_id)
@@ -180,7 +237,7 @@ class ChannelActionPacket(Packet):
         for k, v in self.extra.items():
             buffer.write_string(k)
             buffer.write_string(v)
-    
+
     @classmethod
     def decode(cls, buffer: PacketBuffer) -> "ChannelActionPacket":
         action = buffer.read_byte()
@@ -472,6 +529,79 @@ class AdminActionResponsePacket(Packet):
 
 
 @dataclass
+class ItemDisplayPacket(Packet):
+    """Item display packet for [item]/[i] tag display across servers.
+
+    Packet ID: 0x10, Direction: Bidirectional.
+    """
+
+    sender_id: uuid.UUID
+    sender_name: str
+    channel_id: str
+    item_json: str
+    timestamp: int
+
+    @property
+    def packet_id(self) -> int:
+        return PacketIds.ITEM_DISPLAY
+
+    def encode(self, buffer: PacketBuffer) -> None:
+        buffer.write_uuid(self.sender_id)
+        buffer.write_string(self.sender_name or "")
+        buffer.write_string(self.channel_id or "")
+        buffer.write_string(self.item_json or "")
+        buffer.write_long(self.timestamp)
+
+    @classmethod
+    def decode(cls, buffer: PacketBuffer) -> "ItemDisplayPacket":
+        return cls(
+            sender_id=buffer.read_uuid(),
+            sender_name=buffer.read_string(),
+            channel_id=buffer.read_string(),
+            item_json=buffer.read_string(),
+            timestamp=buffer.read_long(),
+        )
+
+
+@dataclass
+class MentionPacket(Packet):
+    """Mention notification packet for @mention highlight + sound/title.
+
+    Packet ID: 0x12, Direction: Server -> Client.
+    """
+
+    mentioner_id: uuid.UUID
+    mentioner_name: str
+    mentioned_id: uuid.UUID
+    channel_id: str
+    message_preview: str
+    timestamp: int
+
+    @property
+    def packet_id(self) -> int:
+        return PacketIds.MENTION
+
+    def encode(self, buffer: PacketBuffer) -> None:
+        buffer.write_uuid(self.mentioner_id)
+        buffer.write_string(self.mentioner_name or "")
+        buffer.write_uuid(self.mentioned_id)
+        buffer.write_string(self.channel_id or "")
+        buffer.write_string(self.message_preview or "")
+        buffer.write_long(self.timestamp)
+
+    @classmethod
+    def decode(cls, buffer: PacketBuffer) -> "MentionPacket":
+        return cls(
+            mentioner_id=buffer.read_uuid(),
+            mentioner_name=buffer.read_string(),
+            mentioned_id=buffer.read_uuid(),
+            channel_id=buffer.read_string(),
+            message_preview=buffer.read_string(),
+            timestamp=buffer.read_long(),
+        )
+
+
+@dataclass
 class UnknownPacket(Packet):
     """Represents an unknown/unsupported packet type."""
 
@@ -503,6 +633,8 @@ PACKET_REGISTRY: Dict[int, type] = {
     PacketIds.ADMIN_ACTION: AdminActionPacket,
     PacketIds.ADMIN_ACTION_RESPONSE: AdminActionResponsePacket,
     PacketIds.CHANNEL_UPDATE: ChannelUpdatePacket,
+    PacketIds.ITEM_DISPLAY: ItemDisplayPacket,
+    PacketIds.MENTION: MentionPacket,
 }
 
 

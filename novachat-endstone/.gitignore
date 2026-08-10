@@ -58,6 +58,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.novachat_venv/
 
 # IDE
 .idea/

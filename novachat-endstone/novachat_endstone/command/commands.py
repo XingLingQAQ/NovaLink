@@ -2,9 +2,10 @@
 NovaChat command implementation.
 
 This module contains the command handler for all NovaChat commands
-including help, join, leave, toggle, reload, and debug.
-
-Requirements: 10.1 - THE NovaChat-Endstone SHALL 使用 Python 3.10+ 编写
+including help, join, leave, list, who, toggle, reload, and debug.
+The 7 subcommand set (help/join/leave/list/who/toggle/reload) is aligned
+with the Java server-side platforms, with i18n message copy keyed on the
+same client-core bundle keys.
 """
 
 from __future__ import annotations
@@ -20,33 +21,33 @@ if TYPE_CHECKING:
 class NovaChatCommand:
     """
     Handler for NovaChat commands.
-    
-    This class implements the command system for the Endstone plugin,
-    providing all standard NovaChat commands:
+
+    Implements the 7 standard NovaChat subcommands aligned with the Java
+    server-side platforms:
     - help: Show command help
     - join: Join a channel
     - leave: Leave current channel
+    - list: List available channels (from backend ConfigSync)
+    - who: Query online members of a channel (WHO action)
     - toggle: Toggle chat mode
     - reload: Reload configuration (admin)
     - debug: Toggle debug mode (admin)
-    
-    Validates: Requirements 10.1
     """
-    
-    # Available subcommands
-    SUBCOMMANDS = ["help", "join", "leave", "toggle", "reload", "debug"]
+
+    # The 7 core subcommands aligned with the Java platforms.
+    SUBCOMMANDS = ["help", "join", "leave", "list", "who", "toggle", "reload"]
     ADMIN_SUBCOMMANDS = ["reload", "debug"]
-    
+
     def __init__(self, plugin: "NovaChatPlugin"):
         """
         Initialize the command handler.
-        
+
         Args:
             plugin: The parent plugin instance
         """
         self._plugin = plugin
         self._logger = logging.getLogger("NovaChat.Command")
-    
+
     def on_command(
         self,
         sender: Any,
@@ -56,46 +57,42 @@ class NovaChatCommand:
     ) -> bool:
         """
         Handle NovaChat commands.
-        
-        This is the main entry point for command execution, called by
-        the Endstone command system when a player or console executes
-        the /novachat or /nc command.
-        
+
         Args:
             sender: The command sender (player or console)
             command: The command object
             label: The command label used (novachat or nc)
             args: Command arguments
-            
+
         Returns:
             True if command was handled successfully
         """
         try:
             if not args:
                 return self._cmd_help(sender)
-            
+
             subcommand = args[0].lower()
             sub_args = args[1:]
-            
+
             # Map subcommands to handlers
             handlers = {
                 "help": lambda: self._cmd_help(sender),
                 "join": lambda: self._cmd_join(sender, sub_args),
                 "leave": lambda: self._cmd_leave(sender),
+                "list": lambda: self._cmd_list(sender),
+                "who": lambda: self._cmd_who(sender, sub_args),
                 "toggle": lambda: self._cmd_toggle(sender),
                 "reload": lambda: self._cmd_reload(sender),
                 "debug": lambda: self._cmd_debug(sender),
-                "status": lambda: self._cmd_status(sender),
-                "channel": lambda: self._cmd_channel(sender),
             }
-            
+
             handler = handlers.get(subcommand)
             if handler:
                 return handler()
             else:
-                self._send_message(sender, "§c未知的子命令。使用 /nc help 查看帮助。")
+                self._i18n_send(sender, "chat.command.unknown", subcommand)
                 return True
-                
+
         except Exception as e:
             self._logger.error(f"Error executing command: {e}")
             self._send_message(sender, "§c执行命令时发生错误。")
@@ -104,7 +101,7 @@ class NovaChatCommand:
     def _send_message(self, sender: Any, message: str) -> None:
         """
         Send a message to a command sender.
-        
+
         Args:
             sender: The command sender
             message: The message to send
@@ -113,6 +110,23 @@ class NovaChatCommand:
             sender.send_message(message)
         except Exception as e:
             self._logger.error(f"Failed to send message: {e}")
+
+    def _get_locale(self, sender: Any) -> str:
+        """Resolve the sender's locale (zh_CN default; en_US if player locale starts with en)."""
+        chat_handler = self._plugin.chat_handler
+        if chat_handler and self._is_player(sender):
+            try:
+                return chat_handler.get_player_locale(str(sender.unique_id))
+            except Exception:
+                pass
+        return "zh_CN"
+
+    def _i18n_send(self, sender: Any, key: str, *args) -> None:
+        """Send an i18n-localized message to a command sender."""
+        from novachat_endstone.i18n.messages import I18n
+        locale = self._get_locale(sender)
+        i18n = I18n()
+        self._send_message(sender, i18n.get(key, locale, *args))
     
     def _is_player(self, sender: Any) -> bool:
         """
@@ -148,50 +162,50 @@ class NovaChatCommand:
     
     def _cmd_help(self, sender: Any) -> bool:
         """
-        Show help message.
-        
+        Show help message (i18n).
+
         Args:
             sender: The command sender
-            
+
         Returns:
             True
         """
-        self._send_message(sender, "§6=== NovaChat 帮助 ===")
-        self._send_message(sender, "§e/nc help §7- 显示此帮助")
-        self._send_message(sender, "§e/nc join <频道> §7- 加入频道")
-        self._send_message(sender, "§e/nc leave §7- 离开当前频道")
-        self._send_message(sender, "§e/nc toggle §7- 切换聊天模式")
-        self._send_message(sender, "§e/nc status §7- 查看连接状态")
-        self._send_message(sender, "§e/nc channel §7- 查看当前频道")
-        
+        self._i18n_send(sender, "chat.command.help.title")
+        self._i18n_send(sender, "chat.command.help.line_help")
+        self._i18n_send(sender, "chat.command.help.line_join")
+        self._i18n_send(sender, "chat.command.help.line_leave")
+        self._i18n_send(sender, "chat.command.help.line_list")
+        self._i18n_send(sender, "chat.command.help.line_who")
+        self._i18n_send(sender, "chat.command.help.line_toggle")
+
         if self._has_permission(sender, "novachat.admin"):
-            self._send_message(sender, "§c/nc reload §7- 重新加载配置")
-            self._send_message(sender, "§c/nc debug §7- 切换调试模式")
-        
+            self._i18n_send(sender, "chat.command.help.line_reload")
+            self._i18n_send(sender, "chat.command.help.line_debug")
+
         return True
-    
+
     def _cmd_join(self, sender: Any, args: List[str]) -> bool:
         """
         Join a channel.
-        
+
         Args:
             sender: The command sender
             args: Command arguments [channel_id, optional_password]
-            
+
         Returns:
             True
         """
         if not self._is_player(sender):
-            self._send_message(sender, "§c此命令只能由玩家执行。")
+            self._i18n_send(sender, "chat.command.player_only")
             return True
-        
+
         if not args:
-            self._send_message(sender, "§c用法: /nc join <频道> [密码]")
+            self._i18n_send(sender, "chat.command.usage.join")
             return True
-        
+
         channel_id = args[0]
         password = args[1] if len(args) > 1 else ""
-        
+
         # Update player's channel
         chat_handler = self._plugin.chat_handler
         if chat_handler:
@@ -200,172 +214,190 @@ class NovaChatCommand:
                 asyncio.create_task(
                     chat_handler.join_channel(str(sender.unique_id), channel_id, password)
                 )
+                self._i18n_send(sender, "chat.join.joining", channel_id)
             else:
                 # Fallback to local channel switch
                 chat_handler.set_player_channel(str(sender.unique_id), channel_id)
-            
-            self._send_message(sender, f"§a已加入频道: {channel_id}")
+                self._i18n_send(sender, "chat.join.joined", channel_id)
         else:
             self._send_message(sender, "§c聊天系统未初始化。")
-        
+
         return True
-    
+
     def _cmd_leave(self, sender: Any) -> bool:
         """
         Leave current channel and return to default.
-        
+
         Args:
             sender: The command sender
-            
+
         Returns:
             True
         """
         if not self._is_player(sender):
-            self._send_message(sender, "§c此命令只能由玩家执行。")
+            self._i18n_send(sender, "chat.command.player_only")
             return True
-        
+
         chat_handler = self._plugin.chat_handler
         config_manager = self._plugin.config_manager
-        
+
         if chat_handler and config_manager:
             # Get current channel before leaving
             current_channel = chat_handler.get_player_channel(str(sender.unique_id))
             default_channel = config_manager.default_channel
-            
+
             if current_channel == default_channel:
-                self._send_message(sender, "§e你已经在默认频道中。")
+                self._i18n_send(sender, "chat.action.already_default")
                 return True
-            
+
             # Use async leave if connected to backend
             if self._plugin.network_client and self._plugin.network_client.is_connected:
                 asyncio.create_task(
                     chat_handler.leave_channel(str(sender.unique_id))
                 )
+                self._i18n_send(sender, "chat.leave.leaving", current_channel)
             else:
                 # Fallback to local channel switch
                 chat_handler.set_player_channel(str(sender.unique_id), default_channel)
-            
-            self._send_message(sender, f"§a已返回默认频道: {default_channel}")
+                self._i18n_send(sender, "chat.leave.left", current_channel, default_channel)
         else:
             self._send_message(sender, "§c聊天系统未初始化。")
-        
+
+        return True
+
+    def _cmd_list(self, sender: Any) -> bool:
+        """
+        List available channels (from backend ConfigSync known channel registry).
+
+        Args:
+            sender: The command sender
+
+        Returns:
+            True
+        """
+        chat_handler = self._plugin.chat_handler
+        if not chat_handler:
+            return True
+
+        known = chat_handler.get_known_channels()
+        if not known:
+            self._i18n_send(sender, "chat.list.empty")
+            return True
+
+        self._i18n_send(sender, "chat.command.list.title")
+        for channel_id in known:
+            self._send_message(sender, f"§7- §e{channel_id}")
+        self._i18n_send(sender, "chat.command.list.tail")
+        return True
+
+    def _cmd_who(self, sender: Any, args: List[str]) -> bool:
+        """
+        Query the online members of a channel (WHO action).
+
+        Args:
+            sender: The command sender
+            args: Command arguments [optional channel_id]
+
+        Returns:
+            True
+        """
+        if not self._is_player(sender):
+            self._i18n_send(sender, "chat.command.player_only")
+            return True
+
+        channel_id = args[0] if args else ""
+        if not channel_id:
+            # Use current channel if available
+            chat_handler = self._plugin.chat_handler
+            if chat_handler:
+                channel_id = chat_handler.get_player_channel(str(sender.unique_id))
+            if not channel_id:
+                self._i18n_send(sender, "chat.who.no_channel")
+                return True
+
+        if self._plugin.network_client and self._plugin.network_client.is_connected:
+            chat_handler = self._plugin.chat_handler
+            if chat_handler:
+                asyncio.create_task(
+                    chat_handler.who_channel(str(sender.unique_id), channel_id)
+                )
+                self._i18n_send(sender, "chat.who.fetching", channel_id)
+        else:
+            self._i18n_send(sender, "chat.network.not_connected_retry")
         return True
     
     def _cmd_toggle(self, sender: Any) -> bool:
         """
         Toggle NovaChat for the player.
-        
+
         Args:
             sender: The command sender
-            
+
         Returns:
             True
         """
         if not self._is_player(sender):
-            self._send_message(sender, "§c此命令只能由玩家执行。")
+            self._i18n_send(sender, "chat.command.player_only")
             return True
-        
+
         chat_handler = self._plugin.chat_handler
         if chat_handler:
             enabled = chat_handler.toggle_chat(str(sender.unique_id))
-            status = "§a启用" if enabled else "§c禁用"
-            self._send_message(sender, f"§eNovaChat 已{status}")
+            self._i18n_send(
+                sender,
+                "chat.command.toggle.switched",
+                "on" if enabled else "off",
+            )
         else:
             self._send_message(sender, "§c聊天系统未初始化。")
-        
+
         return True
-    
-    def _cmd_status(self, sender: Any) -> bool:
-        """
-        Show connection status.
-        
-        Args:
-            sender: The command sender
-            
-        Returns:
-            True
-        """
-        network_client = self._plugin.network_client
-        
-        if network_client:
-            if network_client.is_connected:
-                self._send_message(sender, "§a连接状态: 已连接")
-            else:
-                self._send_message(sender, "§c连接状态: 未连接")
-        else:
-            self._send_message(sender, "§c网络客户端未初始化。")
-        
-        return True
-    
-    def _cmd_channel(self, sender: Any) -> bool:
-        """
-        Show current channel.
-        
-        Args:
-            sender: The command sender
-            
-        Returns:
-            True
-        """
-        if not self._is_player(sender):
-            self._send_message(sender, "§c此命令只能由玩家执行。")
-            return True
-        
-        chat_handler = self._plugin.chat_handler
-        if chat_handler:
-            channel = chat_handler.get_player_channel(str(sender.unique_id))
-            enabled = chat_handler.is_chat_enabled(str(sender.unique_id))
-            status = "§a启用" if enabled else "§c禁用"
-            self._send_message(sender, f"§e当前频道: §f{channel}")
-            self._send_message(sender, f"§e聊天状态: {status}")
-        else:
-            self._send_message(sender, "§c聊天系统未初始化。")
-        
-        return True
-    
+
     def _cmd_reload(self, sender: Any) -> bool:
         """
         Reload configuration.
-        
+
         Args:
             sender: The command sender
-            
+
         Returns:
             True
         """
         if not self._has_permission(sender, "novachat.admin"):
-            self._send_message(sender, "§c你没有权限执行此命令。")
+            self._i18n_send(sender, "chat.command.no_permission_code")
             return True
-        
+
         try:
             self._plugin.reload_config()
-            self._send_message(sender, "§a配置已重新加载。")
+            self._i18n_send(sender, "chat.command.reload.success")
         except Exception as e:
             self._logger.error(f"Failed to reload config: {e}")
             self._send_message(sender, "§c重新加载配置失败。")
-        
+
         return True
     
     def _cmd_debug(self, sender: Any) -> bool:
         """
         Toggle debug mode.
-        
+
         Args:
             sender: The command sender
-            
+
         Returns:
             True
         """
         if not self._has_permission(sender, "novachat.admin"):
-            self._send_message(sender, "§c你没有权限执行此命令。")
+            self._i18n_send(sender, "chat.command.no_permission_code")
             return True
-        
+
         config_manager = self._plugin.config_manager
         if config_manager:
             config_manager.debug = not config_manager.debug
-            status = "§a启用" if config_manager.debug else "§c禁用"
-            self._send_message(sender, f"§e调试模式已{status}")
-            
+            if config_manager.debug:
+                self._i18n_send(sender, "chat.debug.enabled")
+            else:
+                self._i18n_send(sender, "chat.debug.disabled")
+
             # Update logging level
             if config_manager.debug:
                 logging.getLogger("NovaChat").setLevel(logging.DEBUG)
@@ -373,9 +405,9 @@ class NovaChatCommand:
                 logging.getLogger("NovaChat").setLevel(logging.INFO)
         else:
             self._send_message(sender, "§c配置系统未初始化。")
-        
+
         return True
-    
+
     def on_tab_complete(
         self,
         sender: Any,
@@ -385,33 +417,45 @@ class NovaChatCommand:
     ) -> Optional[List[str]]:
         """
         Handle tab completion for NovaChat commands.
-        
+
+        Completes the 7 subcommands at arg[0], and channel names from the
+        backend ConfigSync known channel registry at arg[1] for join/who/leave.
+
         Args:
             sender: The command sender
             command: The command object
             alias: The command alias used
             args: Current arguments
-            
+
         Returns:
             List of completions or None
         """
         try:
             if len(args) == 1:
                 # Complete subcommand
-                subcommands = ["help", "join", "leave", "toggle", "status", "channel"]
+                subcommands = list(self.SUBCOMMANDS)
                 if self._has_permission(sender, "novachat.admin"):
-                    subcommands.extend(["reload", "debug"])
-                
+                    subcommands.extend(self.ADMIN_SUBCOMMANDS)
+
                 prefix = args[0].lower()
                 return [s for s in subcommands if s.startswith(prefix)]
-            
-            elif len(args) == 2 and args[0].lower() == "join":
-                # Could provide channel suggestions here
-                # For now, return empty list
-                return []
-            
+
+            elif len(args) == 2 and args[0].lower() in ("join", "who", "leave"):
+                # Complete channel names from the known channel registry
+                chat_handler = self._plugin.chat_handler
+                channels = []
+                if chat_handler:
+                    channels = chat_handler.get_known_channels()
+                # Also include the current channel as a convenience
+                if self._is_player(sender) and chat_handler:
+                    current = chat_handler.get_player_channel(str(sender.unique_id))
+                    if current and current not in channels:
+                        channels.append(current)
+                prefix = args[1].lower()
+                return [c for c in channels if c.lower().startswith(prefix)]
+
             return None
-            
+
         except Exception as e:
             self._logger.error(f"Error in tab completion: {e}")
             return None

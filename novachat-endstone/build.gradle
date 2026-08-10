@@ -1,0 +1,86 @@
+// NovaChat-Endstone Gradle wrapper.
+//
+// Endstone is a Python plugin, so this project does NOT apply the java plugin.
+// Instead it uses the base plugin (lifecycle clean/build) and delegates the
+// real work to the native Python toolchain via Exec tasks:
+//   - pythonEnv : create a venv and `pip install -e .`
+//   - pytest    : run `python -m pytest tests/`
+//   - build     : depends on pythonEnv + pytest
+//   - clean     : remove venv + __pycache__
+//
+// Run independently with:  gradle :endstone:build   (once included in settings.gradle)
+// or directly from this dir: gradle -p novachat-endstone build
+
+plugins {
+    id 'base'
+}
+
+// The Python command to use. `python` is on PATH via scoop on this machine;
+// fall back to `py` (Windows launcher) if python is missing.
+ext.pythonCmd = {
+    def cmd = 'python'
+    try {
+        def proc = ['python', '--version'].execute((List) null, projectDir)
+        proc.waitFor()
+        if (proc.exitValue() == 0) return 'python'
+    } catch (Exception ignored) {
+    }
+    return 'py'
+}()
+
+ext.venvDir = layout.projectDirectory.dir('.novachat_venv')
+
+// Windows venv python path; non-Windows uses bin/python
+ext.venvPython = System.getProperty('os.name').toLowerCase().contains('windows')
+    ? layout.projectDirectory.file('.novachat_venv/Scripts/python.exe').asFile
+    : layout.projectDirectory.file('.novachat_venv/bin/python').asFile
+
+tasks.register('pythonEnv', Exec) {
+    group = 'build'
+    description = 'Creates a virtualenv and installs the package in editable mode.'
+    outputs.dir ext.venvDir
+
+    def venv = ext.venvDir.asFile
+    def venvPy = ext.venvPython
+
+    // Use a single command sequence so the venv exists before pip runs.
+    if (System.getProperty('os.name').toLowerCase().contains('windows')) {
+        commandLine 'cmd', '/c', "${ext.pythonCmd} -m venv \"${venv}\" && \"${venvPy}\" -m pip install --upgrade pip && \"${venvPy}\" -m pip install -e \".[dev]\""
+    } else {
+        commandLine 'sh', '-c', "${ext.pythonCmd} -m venv \"${venv}\" && \"${venvPy}\" -m pip install --upgrade pip && \"${venvPy}\" -m pip install -e \".[dev]\""
+    }
+    workingDir projectDir
+
+    // Re-create if the venv marker is missing.
+    onlyIf { !venv.exists() || !venvPy.exists() }
+}
+
+tasks.register('pytest', Exec) {
+    group = 'verification'
+    description = 'Runs the pytest test suite inside the virtualenv.'
+    dependsOn tasks.named('pythonEnv')
+
+    def venvPy = ext.venvPython
+    commandLine venvPy, '-m', 'pytest', 'tests/'
+    workingDir projectDir
+    // Tests are not hermetic, but the venv is the key input.
+    inputs.dir layout.projectDirectory.dir('tests')
+    inputs.dir layout.projectDirectory.dir('novachat_endstone')
+}
+
+tasks.register('build') {
+    group = 'build'
+    description = 'Builds the Endstone plugin (env + tests).'
+    dependsOn tasks.named('pythonEnv'), tasks.named('pytest')
+}
+
+tasks.named('clean') {
+    doLast {
+        def venv = ext.venvDir.asFile
+        if (venv.exists()) {
+            venv.deleteDir()
+        }
+        // Remove __pycache__ dirs under the package and tests.
+        delete fileTree(dir: projectDir, includes: ['**/__pycache__/**', '**/.pytest_cache/**'])
+    }
+}

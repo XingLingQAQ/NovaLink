@@ -27,7 +27,7 @@ class ConfigManager:
     DEFAULT_CONFIG = {
         "backend": {
             "host": "127.0.0.1",
-            "port": 8888,
+            "port": 18888,
             "username": "EndstoneServer",
             "password": "change-me",
             "reconnect-delay": 5,
@@ -51,6 +51,7 @@ class ConfigManager:
                 "the_end": "end",
             },
         },
+        "server-version": "",
         "debug": False,
     }
     
@@ -151,7 +152,7 @@ class ConfigManager:
     @property
     def backend_port(self) -> int:
         """Get backend server port."""
-        return self._config.get("backend", {}).get("port", 8888)
+        return self._config.get("backend", {}).get("port", 18888)
     
     @property
     def backend_username(self) -> str:
@@ -167,6 +168,11 @@ class ConfigManager:
     def reconnect_delay(self) -> int:
         """Get reconnect delay in seconds."""
         return self._config.get("backend", {}).get("reconnect-delay", 5)
+
+    @property
+    def server_version(self) -> str:
+        """Get the Minecraft server version reported in the handshake (v2)."""
+        return self._config.get("server-version", "") or ""
     
     # Chat settings
     

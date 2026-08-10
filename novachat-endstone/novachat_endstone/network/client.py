@@ -19,6 +19,7 @@ from novachat_endstone.protocol.buffer import PacketBuffer
 from novachat_endstone.protocol.packet import (
     Packet,
     PacketIds,
+    PlatformType,
     HandshakePacket,
     HandshakeResponsePacket,
     KeepAlivePacket,
@@ -31,9 +32,9 @@ if TYPE_CHECKING:
 
 class NetworkClient:
     """Asyncio-based network client for NovaLink communication."""
-    
+
     PROTOCOL_VERSION = 2
-    PLATFORM_ENDSTONE = 10  # Platform identifier (must match Java PlatformType.ENDSTONE)
+    PLATFORM_ENDSTONE = PlatformType.ENDSTONE  # 10 (must match Java PlatformType.ENDSTONE)
     KEEPALIVE_INTERVAL = 15  # seconds
     MAX_FRAME_LENGTH = 4 * 1024 * 1024  # 4 MiB (must match server-side limits)
     
@@ -43,23 +44,26 @@ class NetworkClient:
         host: str,
         port: int,
         username: str,
-        password: str
+        password: str,
+        server_version: str = "",
     ):
         """
         Initialize the network client.
-        
+
         Args:
             plugin: The parent plugin instance
             host: Backend server host
             port: Backend server port
             username: Client username for authentication
             password: Client password for authentication
+            server_version: Minecraft server version reported in handshake (v2)
         """
         self._plugin = plugin
         self._host = host
         self._port = port
         self._username = username
         self._password = password
+        self._server_version = server_version or ""
         
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
@@ -167,12 +171,13 @@ class NetworkClient:
         # Hash the password
         password_hash = hashlib.sha256(self._password.encode()).hexdigest()
         
-        # Send handshake packet
+        # Send handshake packet (protocol v2: includes server_version)
         handshake = HandshakePacket(
             protocol_version=self.PROTOCOL_VERSION,
             client_id=self._username,
             password_hash=password_hash,
-            platform=self.PLATFORM_ENDSTONE
+            platform=self.PLATFORM_ENDSTONE,
+            server_version=self._server_version,
         )
         
         await self.send_packet(handshake)
