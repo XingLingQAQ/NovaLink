@@ -36,7 +36,7 @@ locale = "zh_CN"  # 默认语言（zh_CN / en_US）；玩家客户端语言优�
 prefix = "&8[&bNovaChat&8]&r "
 error = "&c错误: {message}"
 success = "&a成功: {message}"
-default = "&7[{channel_name}] {player}&f: {message}"
+default = "&7[{channel_color}{channel_name}] {player}&f: {message}"
 
 # 频道消息格式 (按频道ID配置)
 [format.channels]

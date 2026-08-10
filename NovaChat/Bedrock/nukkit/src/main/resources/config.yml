@@ -15,7 +15,7 @@ backend:
 chat:
   replace_vanilla: false  # 是否替换原版聊天 / Replace vanilla chat
   default_channel: "local"  # 默认频道 / Default channel
-  locale: "zh_CN"  # 默认语言（玩家未上报时使用）/ Default locale (when player hasn't reported one)
+  locale: "zh_CN"  # 默认语言（玩家未上报时使用；可选 zh_CN / en_US）/ Default locale (when player hasn't reported one)
 
 # ==========================================
 # 消息格式 / Message Format
