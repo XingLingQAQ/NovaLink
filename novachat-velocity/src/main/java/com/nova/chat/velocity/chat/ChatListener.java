@@ -47,7 +47,8 @@ public class ChatListener {
     private final MentionNotifier mentionNotifier = new MentionNotifier();
     
     /** Player chat states indexed by UUID */
-    private final Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
+    private final com.nova.chat.client.state.PlayerStateStore playerStates =
+            new com.nova.chat.client.state.PlayerStateStore();
 
     /** Shared response dispatcher (DUP-3); created in {@link #registerIncomingMessageHandler()}. */
     private ChannelResponseDispatcher dispatcher;
@@ -433,10 +434,10 @@ public class ChatListener {
      * @return the player's chat state
      */
     public PlayerChannelState getOrCreateState(Player player) {
-        return playerStates.computeIfAbsent(player.getUniqueId(), 
-            uuid -> new PlayerChannelState(uuid, config.getDefaultChannel(), globalMode));
+        return playerStates.getOrCreate(player.getUniqueId(),
+            config.getDefaultChannel(), globalMode);
     }
-    
+
     /**
      * Gets a player's chat state if it exists.
      *
@@ -446,7 +447,7 @@ public class ChatListener {
     public PlayerChannelState getState(UUID playerId) {
         return playerStates.get(playerId);
     }
-    
+
     /**
      * Gets a player's chat state if it exists.
      * Alias for getState() for command compatibility.
@@ -455,9 +456,9 @@ public class ChatListener {
      * @return the player's chat state, or null if not found
      */
     public PlayerChannelState getPlayerState(UUID playerId) {
-        return playerStates.get(playerId);
+        return playerStates.getPlayer(playerId);
     }
-    
+
     /**
      * Sets a player's chat state.
      *
@@ -465,7 +466,7 @@ public class ChatListener {
      * @param state the chat state to set
      */
     public void setPlayerState(UUID playerId, PlayerChannelState state) {
-        playerStates.put(playerId, state);
+        playerStates.set(playerId, state);
     }
     
     /**

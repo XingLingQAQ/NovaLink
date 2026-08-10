@@ -19,7 +19,6 @@ import org.bukkit.event.player.PlayerQuitEvent;
 
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Intercepts player chat events and forwards messages to the NovaLink backend.
@@ -34,9 +33,10 @@ public class ChatInterceptor implements Listener {
     
     /** Message formatter for color codes and placeholders */
     private final MessageFormatter messageFormatter;
-    
-    /** Player chat states indexed by UUID */
-    private final Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
+
+    /** Player chat states indexed by UUID (shared store). */
+    private final com.nova.chat.client.state.PlayerStateStore playerStates =
+            new com.nova.chat.client.state.PlayerStateStore();
     
     /** Global chat mode from configuration */
     private ChatMode globalMode;
@@ -177,8 +177,7 @@ public class ChatInterceptor implements Listener {
         UUID playerId = event.getPlayer().getUniqueId();
         playerStates.remove(playerId);
         plugin.debug("Removed chat state for " + event.getPlayer().getName());
-    }
-    
+    }    
     /**
      * Sends a message to a specific channel.
      *
@@ -216,10 +215,10 @@ public class ChatInterceptor implements Listener {
      * @return the player's chat state
      */
     public PlayerChannelState getOrCreateState(Player player) {
-        return playerStates.computeIfAbsent(player.getUniqueId(), 
-            uuid -> new PlayerChannelState(uuid, config.getDefaultChannel(), globalMode));
+        return playerStates.getOrCreate(player.getUniqueId(),
+            config.getDefaultChannel(), globalMode);
     }
-    
+
     /**
      * Gets a player's chat state if it exists.
      *
@@ -229,7 +228,7 @@ public class ChatInterceptor implements Listener {
     public PlayerChannelState getState(UUID playerId) {
         return playerStates.get(playerId);
     }
-    
+
     /**
      * Gets a player's chat state if it exists.
      * Alias for getState() for command compatibility.
@@ -238,9 +237,9 @@ public class ChatInterceptor implements Listener {
      * @return the player's chat state, or null if not found
      */
     public PlayerChannelState getPlayerState(UUID playerId) {
-        return playerStates.get(playerId);
+        return playerStates.getPlayer(playerId);
     }
-    
+
     /**
      * Sets a player's chat state.
      *
@@ -248,7 +247,7 @@ public class ChatInterceptor implements Listener {
      * @param state the chat state to set
      */
     public void setPlayerState(UUID playerId, PlayerChannelState state) {
-        playerStates.put(playerId, state);
+        playerStates.set(playerId, state);
     }
     
     /**

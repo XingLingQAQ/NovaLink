@@ -67,10 +67,11 @@ public class AsyncChatInterceptor implements Listener {
     
     /**
      * Player chat states indexed by UUID.
-     * Uses ConcurrentHashMap for thread-safe access from multiple region threads.
-     * All operations on this map are atomic and thread-safe.
+     * Uses the shared PlayerStateStore for thread-safe access from multiple
+     * region threads. All operations are atomic and thread-safe.
      */
-    private final Map<UUID, PlayerChannelState> playerStates = new ConcurrentHashMap<>();
+    private final com.nova.chat.client.state.PlayerStateStore playerStates =
+            new com.nova.chat.client.state.PlayerStateStore();
 
     /** Shared response dispatcher (DUP-3); created in {@link #registerIncomingMessageHandler()}. */
     private ChannelResponseDispatcher dispatcher;
@@ -584,14 +585,14 @@ public class AsyncChatInterceptor implements Listener {
     public PlayerChannelState getOrCreateState(Player player) {
         // Read volatile field once for consistency
         ChatMode currentGlobalMode = globalMode;
-        return playerStates.computeIfAbsent(player.getUniqueId(),
-            uuid -> new PlayerChannelState(uuid, config.getDefaultChannel(), currentGlobalMode));
+        return playerStates.getOrCreate(player.getUniqueId(),
+            config.getDefaultChannel(), currentGlobalMode);
     }
 
     /**
      * Gets a player's chat state if it exists.
      *
-     * <p>Thread Safety: This is a simple read from ConcurrentHashMap, which is thread-safe.</p>
+     * <p>Thread Safety: This is a simple read from the shared store, which is thread-safe.</p>
      *
      * @param playerId the player's UUID
      * @return the player's chat state, or null if not found
@@ -603,27 +604,25 @@ public class AsyncChatInterceptor implements Listener {
     /**
      * Gets a player's chat state if it exists.
      *
-     * <p>Thread Safety: This is a simple read from ConcurrentHashMap, which is thread-safe.</p>
+     * <p>Thread Safety: This is a simple read from the shared store, which is thread-safe.</p>
      *
      * @param playerId the player's UUID
      * @return the player's chat state, or null if not found
      */
     public PlayerChannelState getPlayerState(UUID playerId) {
-        return playerStates.get(playerId);
+        return playerStates.getPlayer(playerId);
     }
 
     /**
      * Sets a player's chat state.
      *
-     * <p>Thread Safety: This is a simple write to ConcurrentHashMap, which is thread-safe.</p>
+     * <p>Thread Safety: this is a simple write to the shared store, which is thread-safe.</p>
      *
      * @param playerId the player's UUID
      * @param state the chat state to set
      */
     public void setPlayerState(UUID playerId, PlayerChannelState state) {
-        if (state != null) {
-            playerStates.put(playerId, state);
-        }
+        playerStates.set(playerId, state);
     }
     
     /**
@@ -727,7 +726,7 @@ public class AsyncChatInterceptor implements Listener {
     public int getPlayerStateCount() {
         return playerStates.size();
     }
-    
+
     /**
      * Clears all player states.
      * Should only be called during plugin disable or reload.
