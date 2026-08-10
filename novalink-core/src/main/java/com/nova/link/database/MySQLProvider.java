@@ -2,6 +2,7 @@ package com.nova.link.database;
 
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelScope;
+import com.nova.link.database.dialect.MySQLDialect;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
@@ -63,7 +64,7 @@ public class MySQLProvider implements DatabaseProvider {
             dataSource = new HikariDataSource(config);
             
             // Run migrations
-            DatabaseMigration migration = new DatabaseMigration(dataSource);
+            DatabaseMigration migration = new DatabaseMigration(dataSource, new MySQLDialect());
             migration.migrate();
             
             logger.info("MySQLProvider initialized with pool size: {}", poolSize);
