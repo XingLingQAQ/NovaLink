@@ -39,9 +39,13 @@ public class ExtensionManager {
      * Extension lifecycle states.
      */
     public enum ExtensionState {
+        /** Extension class loaded and instantiated, but not yet enabled. */
         LOADED,
+        /** Extension {@code onEnable} has completed successfully. */
         ENABLED,
+        /** Extension has been disabled (via {@code onDisable} or shutdown). */
         DISABLED,
+        /** Extension failed to load or enable; isolated from other extensions. */
         FAILED
     }
     

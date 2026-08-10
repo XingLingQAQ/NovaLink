@@ -50,6 +50,18 @@ public enum ChannelAction {
         return id;
     }
 
+    /**
+     * Resolves a channel action by its numeric wire ID.
+     *
+     * <p>As a backward-compatibility fallback, if no exact match is found this
+     * method retries with {@code id - 1}, accommodating legacy implementations
+     * that used 1-based IDs. Callers should be aware that a legacy ID may
+     * therefore map to a different action than intended.
+     *
+     * @param id the wire ID
+     * @return the matching channel action
+     * @throws IllegalArgumentException if no action matches either {@code id} or {@code id - 1}
+     */
     public static ChannelAction fromId(int id) {
         for (ChannelAction action : values()) {
             if (action.id == id) {

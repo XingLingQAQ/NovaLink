@@ -120,6 +120,11 @@ public class ItemData {
         this.lore = lore != null ? new ArrayList<>(lore) : new ArrayList<>();
     }
 
+    /**
+     * Appends a lore line, lazily initializing the lore list if it has been set to null.
+     *
+     * @param line the lore line to add (may include color codes)
+     */
     public void addLore(String line) {
         if (this.lore == null) {
             this.lore = new ArrayList<>();
@@ -135,6 +140,12 @@ public class ItemData {
         this.enchantments = enchantments != null ? new HashMap<>(enchantments) : new HashMap<>();
     }
 
+    /**
+     * Adds an enchantment at the given level, lazily initializing the enchantment map if it has been set to null.
+     *
+     * @param enchantment the enchantment ID
+     * @param level the enchantment level
+     */
     public void addEnchantment(String enchantment, int level) {
         if (this.enchantments == null) {
             this.enchantments = new HashMap<>();

@@ -41,6 +41,13 @@ public class DefaultExtensionLoader implements ExtensionLoader {
         this.classLoaders = new ConcurrentHashMap<>();
     }
     
+    /**
+     * {@inheritDoc}
+     *
+     * <p>If the extensions directory does not exist it is created (best-effort)
+     * and an empty list is returned. Each successfully loaded extension is also
+     * registered in this loader's internal loaded-extensions map.
+     */
     @Override
     public List<NovaChatExtension> loadExtensions(Path extensionsDir) {
         List<NovaChatExtension> extensions = new ArrayList<>();
@@ -182,6 +189,14 @@ public class DefaultExtensionLoader implements ExtensionLoader {
         }
     }
     
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Unlike {@code enableExtension}, exceptions thrown by the extension's
+     * {@code onDisable} are caught and logged rather than rethrown, so disabling
+     * always proceeds. The extension's class loader is then closed and the
+     * extension is removed from this loader's internal loaded-extensions map.
+     */
     @Override
     public void disableExtension(NovaChatExtension extension) {
         try {

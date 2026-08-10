@@ -203,6 +203,16 @@ public class ExtensionMeta {
             return this;
         }
         
+        /**
+         * Builds the {@link ExtensionMeta} from the configured values.
+         *
+         * <p>No validation is performed here: required fields ({@code id},
+         * {@code name}, {@code version}, {@code main}) are only null-checked
+         * inside the {@link ExtensionMeta} constructor, so leaving them unset
+         * will raise a {@code NullPointerException} at build time.
+         *
+         * @return a new ExtensionMeta instance
+         */
         public ExtensionMeta build() {
             return new ExtensionMeta(id, name, version, author, description, main, dependencies);
         }
