@@ -1,1 +1,0 @@
-{"id":"novachat","name":"NovaChat","version":"1.0.0-SNAPSHOT","description":"Cross-server chat channel system","authors":["Nova Team"],"dependencies":[],"main":"com.nova.chat.velocity.NovaChatVelocity"}

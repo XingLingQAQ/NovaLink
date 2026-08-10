@@ -12,6 +12,17 @@
 **/*.ipr
 **/*.iws
 
+# Maven-style build output (some modules still produce target/ via legacy/shade steps)
+target/
+# maven-shade reduced POM artifact (regenerated on each build)
+dependency-reduced-pom.xml
+
+# ForgeGradle root-level extraction droppings (META-INF/, net/, _EMPTY_ can appear
+# at the repo root when a NeoForge/Forge setup task unpacks into the working dir)
+/META-INF/
+/net/
+/_EMPTY_
+
 # IntelliJ / VSCode
 .idea/
 .vscode/
