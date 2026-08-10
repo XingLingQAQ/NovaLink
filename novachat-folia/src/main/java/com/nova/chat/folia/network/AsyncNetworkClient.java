@@ -1,11 +1,11 @@
 package com.nova.chat.folia.network;
 
-import com.nova.chat.client.network.ChannelResponseTracker;
+import com.nova.chat.client.network.AbstractPlatformNetworkClient;
+import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.client.network.ClientLogger;
 import com.nova.chat.client.network.CoreNetworkClient;
 import com.nova.chat.client.network.SchedulerBridge;
 import com.nova.chat.common.protocol.Packet;
-import com.nova.chat.common.protocol.PacketRegistry;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.folia.NovaChatFolia;
 import com.nova.chat.folia.config.NovaChatConfig;
@@ -36,9 +36,8 @@ import java.util.function.Function;
  * <p>Threading: public methods are safe to call from any thread, including Folia
  * region threads.
  */
-public class AsyncNetworkClient {
+public class AsyncNetworkClient extends AbstractPlatformNetworkClient {
 
-    private final CoreNetworkClient core;
     private final FoliaSchedulerAdapter scheduler;
 
     /**
@@ -53,7 +52,7 @@ public class AsyncNetworkClient {
         SchedulerBridge bridge = new FoliaSchedulerBridge(scheduler);
         ClientLogger logger = new FoliaClientLogger(plugin);
         String serverVersion = plugin.getServer().getVersion();
-        this.core = new CoreNetworkClient(
+        initCore(
                 config.toClientConnectionConfig(),
                 PlatformType.FOLIA,
                 bridge,
@@ -75,6 +74,7 @@ public class AsyncNetworkClient {
      * @param port the backend port
      * @return a future that completes with true if connection and authentication succeed
      */
+    @Override
     public CompletableFuture<Boolean> connect(String host, int port) {
         // CoreNetworkClient.connect (client-core line 130) runs the Netty bootstrap
         // on the caller thread. Hop to the async scheduler so a region thread never
@@ -83,7 +83,7 @@ public class AsyncNetworkClient {
         CompletableFuture<Boolean> result = new CompletableFuture<>();
         scheduler.runAsync(() -> {
             try {
-                core.connect(host, port).whenComplete((v, t) -> {
+                core().connect(host, port).whenComplete((v, t) -> {
                     if (t != null) {
                         result.completeExceptionally(t);
                     } else {
@@ -98,31 +98,6 @@ public class AsyncNetworkClient {
     }
 
     /**
-     * Disconnects from the backend.
-     */
-    public void disconnect() {
-        core.disconnect();
-    }
-
-    /**
-     * Sends a packet to the backend. Channel-action correlation tracking is
-     * handled inside {@link CoreNetworkClient#sendPacket} (single-entry contract).
-     *
-     * @param packet the packet to send
-     */
-    public void sendPacket(Packet packet) {
-        core.sendPacket(packet);
-    }
-
-    /**
-     * @return the tracker mapping in-flight channel-action request ids to players,
-     *         used by the platform's {@code ChannelActionResponsePacket} handler
-     */
-    public ChannelResponseTracker getChannelResponseTracker() {
-        return core.getChannelResponseTracker();
-    }
-
-    /**
      * Registers a packet handler. The handler is dispatched off the Netty event
      * loop via Folia's async scheduler to keep region threads safe.
      *
@@ -131,35 +106,9 @@ public class AsyncNetworkClient {
      * @param <T> the packet type
      */
     @SuppressWarnings("unchecked")
+    @Override
     public <T extends Packet> void registerHandler(Class<T> packetClass, Consumer<T> handler) {
-        core.registerHandler(packetClass, packet -> scheduler.runAsync(() -> handler.accept((T) packet)));
-    }
-
-    /**
-     * Checks if the client is connected.
-     *
-     * @return true if connected
-     */
-    public boolean isConnected() {
-        return core.isConnected();
-    }
-
-    /**
-     * Checks if the client is authenticated.
-     *
-     * @return true if authenticated
-     */
-    public boolean isAuthenticated() {
-        return core.isAuthenticated();
-    }
-
-    /**
-     * Gets the packet registry.
-     *
-     * @return the packet registry
-     */
-    public PacketRegistry getPacketRegistry() {
-        return core.getPacketRegistry();
+        core().registerHandler(packetClass, packet -> scheduler.runAsync(() -> handler.accept((T) packet)));
     }
 
     /**

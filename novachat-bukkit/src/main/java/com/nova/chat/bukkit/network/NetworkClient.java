@@ -7,6 +7,7 @@ import com.google.gson.JsonParser;
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.bukkit.config.NovaChatConfig;
 import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.network.AbstractPlatformNetworkClient;
 import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.client.network.ClientLogger;
 import com.nova.chat.client.network.CoreNetworkClient;
@@ -33,7 +34,6 @@ import net.md_5.bungee.api.chat.TextComponent;
 
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -43,18 +43,18 @@ import java.util.logging.Level;
  * Bukkit NetworkClient facade over {@link CoreNetworkClient}.
  *
  * <p>Netty bootstrap, handshake/keepalive defaults, handler map, and reconnect
- * policy live in client-core. This class only keeps Bukkit-specific UX local:
- * the pending-request correlation tracker, ConfigSync parsing (world-restricted
- * channels + known channel IDs for tab complete), Title rendering on the main
- * thread, and Channel/Admin action-response correlation. Those are registered
- * as handlers on the core so dispatch still flows through the shared transport.
+ * policy live in client-core (inherited via {@link AbstractPlatformNetworkClient}).
+ * This class only keeps Bukkit-specific UX local: the pending-request correlation
+ * tracker, ConfigSync parsing (world-restricted channels + known channel IDs for
+ * tab complete), Title rendering on the main thread, and Channel/Admin
+ * action-response correlation. Those are registered as handlers on the core so
+ * dispatch still flows through the shared transport.
  *
  * <p>Requirements: 1.1, 1.4
  */
-public class NetworkClient {
+public class NetworkClient extends AbstractPlatformNetworkClient {
 
     private final NovaChatBukkit plugin;
-    private final CoreNetworkClient core;
     private final MentionNotifier mentionNotifier = new MentionNotifier();
 
     /**
@@ -126,7 +126,7 @@ public class NetworkClient {
         SchedulerBridge scheduler = new BukkitSchedulerBridge(plugin);
         ClientLogger logger = new BukkitClientLogger(plugin);
         String serverVersion = plugin.getServer().getVersion();
-        this.core = new CoreNetworkClient(
+        initCore(
                 connectionConfig,
                 PlatformType.BUKKIT,
                 scheduler,
@@ -138,29 +138,11 @@ public class NetworkClient {
 
         // Register Bukkit-specific (non-default) handlers on the core.
         // HandshakeResponse and KeepAlive are registered by the core itself.
-        core.registerHandler(TitlePacket.class, this::handleTitle);
-        core.registerHandler(ConfigSyncPacket.class, this::handleConfigSync);
-        core.registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
-        core.registerHandler(AdminActionResponsePacket.class, this::handleAdminActionResponse);
-        core.registerHandler(MentionPacket.class, this::handleMention);
-    }
-
-    /**
-     * Connects to the NovaLink backend.
-     *
-     * @param host the backend host
-     * @param port the backend port
-     * @return a future that completes with true if connection and authentication succeed
-     */
-    public CompletableFuture<Boolean> connect(String host, int port) {
-        return core.connect(host, port);
-    }
-
-    /**
-     * Disconnects from the backend.
-     */
-    public void disconnect() {
-        core.disconnect();
+        core().registerHandler(TitlePacket.class, this::handleTitle);
+        core().registerHandler(ConfigSyncPacket.class, this::handleConfigSync);
+        core().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
+        core().registerHandler(AdminActionResponsePacket.class, this::handleAdminActionResponse);
+        core().registerHandler(MentionPacket.class, this::handleMention);
     }
 
     /**
@@ -169,47 +151,10 @@ public class NetworkClient {
      *
      * @param packet the packet to send
      */
+    @Override
     public void sendPacket(Packet packet) {
         trackPendingRequest(packet);
-        core.sendPacket(packet);
-    }
-
-    /**
-     * Registers a packet handler.
-     *
-     * @param packetClass the packet class to handle
-     * @param handler the handler function
-     * @param <T> the packet type
-     */
-    public <T extends Packet> void registerHandler(Class<T> packetClass, Consumer<T> handler) {
-        core.registerHandler(packetClass, handler);
-    }
-
-    /**
-     * Checks if the client is connected.
-     *
-     * @return true if connected
-     */
-    public boolean isConnected() {
-        return core.isConnected();
-    }
-
-    /**
-     * Checks if the client is authenticated.
-     *
-     * @return true if authenticated
-     */
-    public boolean isAuthenticated() {
-        return core.isAuthenticated();
-    }
-
-    /**
-     * Gets the packet registry.
-     *
-     * @return the packet registry
-     */
-    public PacketRegistry getPacketRegistry() {
-        return core.getPacketRegistry();
+        super.sendPacket(packet);
     }
 
     /**

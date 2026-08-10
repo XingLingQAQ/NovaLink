@@ -3,6 +3,7 @@ package com.nova.chat.pnx.network;
 import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.network.AbstractPlatformNetworkClient;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.network.ClientConnectionConfig;
@@ -13,7 +14,6 @@ import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
-import com.nova.chat.common.protocol.PacketRegistry;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
@@ -23,24 +23,23 @@ import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.pnx.NovaChatPNX;
 import com.nova.chat.pnx.config.NovaChatConfig;
 
-import java.util.concurrent.CompletableFuture;
-import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * PNX NetworkClient facade over {@link CoreNetworkClient}.
  *
  * <p>Preserves the historical public API used by the rest of the PNX plugin. Netty
  * bootstrap, handshake, keepalive, handler map, and reconnect policy live in
- * client-core; this class only supplies PNX scheduler/logger adapters and registers
- * PNX-specific chat/title inbound handlers that historically lived in the
- * hard-coded {@code ClientChannelHandler}.
+ * client-core (inherited via {@link AbstractPlatformNetworkClient}); this class
+ * only supplies PNX scheduler/logger adapters and registers PNX-specific
+ * chat/title inbound handlers that historically lived in the hard-coded
+ * {@code ClientChannelHandler}.
  *
  * <p>Architecture B: plugin-only. No backend changes.
  */
-public class NetworkClient {
+public class NetworkClient extends AbstractPlatformNetworkClient {
 
     private final NovaChatPNX plugin;
-    private final CoreNetworkClient core;
 
     /** Shared response dispatcher (DUP-3); created in the constructor. */
     private final ChannelResponseDispatcher dispatcher;
@@ -57,103 +56,22 @@ public class NetworkClient {
         SchedulerBridge scheduler = new PNXSchedulerBridge(plugin);
         ClientLogger logger = new PNXClientLogger(plugin);
         String serverVersion = plugin.getServer().getVersion();
-        this.core = new CoreNetworkClient(
+        initCore(
                 connectionConfig,
                 PlatformType.POWERNUKKITX,
                 scheduler,
                 logger,
                 "config.yml",
-                java.util.function.Function.identity(),
+                Function.identity(),
                 serverVersion
         );
 
         // Preserve PNX chat/title handling that previously lived hard-coded in
         // ClientChannelHandler. CoreNetworkClient owns HandshakeResponse/KeepAlive.
         this.dispatcher = new ChannelResponseDispatcher(
-                core.getChannelResponseTracker(),
+                getChannelResponseTracker(),
                 new PNXChannelResponseAdapter());
         registerPnxHandlers();
-    }
-
-    /**
-     * Connects to the NovaLink backend.
-     *
-     * @param host the backend host
-     * @param port the backend port
-     * @return a future that completes with true if connection and authentication succeed
-     */
-    public CompletableFuture<Boolean> connect(String host, int port) {
-        return core.connect(host, port);
-    }
-
-    /**
-     * Disconnects from the backend.
-     */
-    public void disconnect() {
-        core.disconnect();
-    }
-
-    /**
-     * Sends a packet to the backend. Channel-action correlation tracking is
-     * handled inside {@link CoreNetworkClient#sendPacket} (single-entry contract).
-     *
-     * @param packet the packet to send
-     */
-    public void sendPacket(Packet packet) {
-        core.sendPacket(packet);
-    }
-
-    /**
-     * @return the tracker mapping in-flight channel-action request ids to players,
-     *         used by the platform's {@code ChannelActionResponsePacket} handler
-     */
-    public ChannelResponseTracker getChannelResponseTracker() {
-        return core.getChannelResponseTracker();
-    }
-
-    /**
-     * Registers a packet handler.
-     *
-     * @param packetClass the packet class to handle
-     * @param handler the handler function
-     * @param <T> the packet type
-     */
-    public <T extends Packet> void registerHandler(Class<T> packetClass, Consumer<T> handler) {
-        core.registerHandler(packetClass, handler);
-    }
-
-    /**
-     * Checks if the client is connected.
-     *
-     * @return true if connected
-     */
-    public boolean isConnected() {
-        return core.isConnected();
-    }
-
-    /**
-     * Checks if the client is authenticated.
-     *
-     * @return true if authenticated
-     */
-    public boolean isAuthenticated() {
-        return core.isAuthenticated();
-    }
-
-    /**
-     * Gets the packet registry.
-     *
-     * @return the packet registry
-     */
-    public PacketRegistry getPacketRegistry() {
-        return core.getPacketRegistry();
-    }
-
-    /**
-     * Package-visible for tests / advanced adapters.
-     */
-    CoreNetworkClient core() {
-        return core;
     }
 
     /**

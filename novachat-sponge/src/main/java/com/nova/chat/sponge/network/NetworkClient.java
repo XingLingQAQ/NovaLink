@@ -1,20 +1,17 @@
 package com.nova.chat.sponge.network;
 
-import com.nova.chat.client.network.ChannelResponseTracker;
+import com.nova.chat.client.network.AbstractPlatformNetworkClient;
 import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.client.network.ClientLogger;
 import com.nova.chat.client.network.CoreNetworkClient;
 import com.nova.chat.client.network.SchedulerBridge;
-import com.nova.chat.common.protocol.Packet;
-import com.nova.chat.common.protocol.PacketRegistry;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.sponge.NovaChatSponge;
 import com.nova.chat.sponge.config.NovaChatConfig;
 import org.spongepowered.api.Sponge;
 
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * Sponge NetworkClient facade over {@link CoreNetworkClient}.
@@ -23,9 +20,7 @@ import java.util.function.Consumer;
  * Netty bootstrap, handshake, keepalive, handler map, and reconnect policy live in
  * client-core; this class only supplies Sponge scheduler/logger adapters.
  */
-public class NetworkClient {
-
-    private final CoreNetworkClient core;
+public class NetworkClient extends AbstractPlatformNetworkClient {
 
     /**
      * Creates a new NetworkClient.
@@ -43,96 +38,15 @@ public class NetworkClient {
         } catch (Throwable t) {
             serverVersion = "";
         }
-        this.core = new CoreNetworkClient(
+        initCore(
                 connectionConfig,
                 PlatformType.SPONGE,
                 scheduler,
                 logger,
                 "config.yml",
-                java.util.function.Function.identity(),
+                Function.identity(),
                 serverVersion
         );
-    }
-
-    /**
-     * Connects to the NovaLink backend.
-     *
-     * @param host the backend host
-     * @param port the backend port
-     * @return a future that completes with true if connection and authentication succeed
-     */
-    public CompletableFuture<Boolean> connect(String host, int port) {
-        return core.connect(host, port);
-    }
-
-    /**
-     * Disconnects from the backend.
-     */
-    public void disconnect() {
-        core.disconnect();
-    }
-
-    /**
-     * Sends a packet to the backend. Channel-action correlation tracking is
-     * handled inside {@link CoreNetworkClient#sendPacket} (single-entry contract).
-     *
-     * @param packet the packet to send
-     */
-    public void sendPacket(Packet packet) {
-        core.sendPacket(packet);
-    }
-
-    /**
-     * @return the tracker mapping in-flight channel-action request ids to players,
-     *         used by the platform's {@code ChannelActionResponsePacket} handler
-     */
-    public ChannelResponseTracker getChannelResponseTracker() {
-        return core.getChannelResponseTracker();
-    }
-
-    /**
-     * Registers a packet handler.
-     *
-     * @param packetClass the packet class to handle
-     * @param handler the handler function
-     * @param <T> the packet type
-     */
-    public <T extends Packet> void registerHandler(Class<T> packetClass, Consumer<T> handler) {
-        core.registerHandler(packetClass, handler);
-    }
-
-    /**
-     * Checks if the client is connected.
-     *
-     * @return true if connected
-     */
-    public boolean isConnected() {
-        return core.isConnected();
-    }
-
-    /**
-     * Checks if the client is authenticated.
-     *
-     * @return true if authenticated
-     */
-    public boolean isAuthenticated() {
-        return core.isAuthenticated();
-    }
-
-    /**
-     * Gets the packet registry.
-     *
-     * @return the packet registry
-     */
-    public PacketRegistry getPacketRegistry() {
-        return core.getPacketRegistry();
-    }
-
-    /**
-     * Package-visible for tests / advanced adapters.
-     */
-    CoreNetworkClient core() {
-        return core;
     }
 
     /**
