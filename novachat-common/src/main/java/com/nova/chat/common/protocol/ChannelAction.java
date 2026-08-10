@@ -35,7 +35,10 @@ public enum ChannelAction {
     BAN(9),
 
     /** Unban a player from a channel */
-    UNBAN(10);
+    UNBAN(10),
+
+    /** List the online members of a channel (read-only query; no state change) */
+    WHO(11);
 
     private final int id;
 
