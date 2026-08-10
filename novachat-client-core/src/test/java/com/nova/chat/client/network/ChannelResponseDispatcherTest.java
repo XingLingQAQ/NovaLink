@@ -47,10 +47,52 @@ class ChannelResponseDispatcherTest {
         assertThat(adapter.leaveStatusBarPlayerId).isEqualTo(playerId);
     }
 
+    @Test
+    @DisplayName("successful WHO routes members/count/displayName to the requesting player")
+    void successfulWhoRoutesMembersToRequester() {
+        UUID playerId = UUID.randomUUID();
+        ChannelResponseTracker tracker = new ChannelResponseTracker();
+        ChannelActionPacket request = trackedWhoRequest(tracker, playerId, "local");
+        RecordingAdapter adapter = new RecordingAdapter();
+        ChannelResponseDispatcher dispatcher = new ChannelResponseDispatcher(tracker, adapter);
+
+        dispatcher.handle(whoResponseFor(request, "local", "Local Chat", "Alice, Bob", "2"));
+
+        assertThat(adapter.whoPlayerId).isEqualTo(playerId);
+        assertThat(adapter.whoChannelId).isEqualTo("local");
+        assertThat(adapter.whoDisplayName).isEqualTo("Local Chat");
+        assertThat(adapter.whoMembers).isEqualTo("Alice, Bob");
+        assertThat(adapter.whoCount).isEqualTo("2");
+        assertThat(tracker.size()).isZero();
+    }
+
+    @Test
+    @DisplayName("successful WHO falls back to the tracked channel when response channel is blank")
+    void successfulWhoUsesTrackedChannelFallback() {
+        UUID playerId = UUID.randomUUID();
+        ChannelResponseTracker tracker = new ChannelResponseTracker();
+        ChannelActionPacket request = trackedWhoRequest(tracker, playerId, "trade");
+        RecordingAdapter adapter = new RecordingAdapter();
+        ChannelResponseDispatcher dispatcher = new ChannelResponseDispatcher(tracker, adapter);
+
+        dispatcher.handle(whoResponseFor(request, "", "Trade", "", "0"));
+
+        assertThat(adapter.whoChannelId).isEqualTo("trade");
+    }
+
     private static ChannelActionPacket trackedRequest(ChannelResponseTracker tracker,
                                                        UUID playerId,
                                                        String channelId) {
         ChannelActionPacket request = new ChannelActionPacket(ChannelAction.LEAVE, channelId);
+        request.addExtra("playerId", playerId.toString());
+        tracker.track(request);
+        return request;
+    }
+
+    private static ChannelActionPacket trackedWhoRequest(ChannelResponseTracker tracker,
+                                                        UUID playerId,
+                                                        String channelId) {
+        ChannelActionPacket request = new ChannelActionPacket(ChannelAction.WHO, channelId);
         request.addExtra("playerId", playerId.toString());
         tracker.track(request);
         return request;
@@ -63,10 +105,29 @@ class ChannelResponseDispatcherTest {
         return response;
     }
 
+    private static ChannelActionResponsePacket whoResponseFor(ChannelActionPacket request,
+                                                              String channelId,
+                                                              String displayName,
+                                                              String members,
+                                                              String memberCount) {
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(
+                true, ChannelAction.WHO, channelId, "", "Channel members");
+        response.setRequestId(request.getRequestId());
+        response.addExtra("displayName", displayName);
+        response.addExtra("members", members);
+        response.addExtra("memberCount", memberCount);
+        return response;
+    }
+
     private static final class RecordingAdapter implements ChannelResponseDispatcher.ChannelResponseAdapter {
         private UUID leavePlayerId;
         private String leftChannel;
         private UUID leaveStatusBarPlayerId;
+        private UUID whoPlayerId;
+        private String whoChannelId;
+        private String whoDisplayName;
+        private String whoMembers;
+        private String whoCount;
 
         @Override
         public void setActiveChannel(UUID playerId, String channelId) {
@@ -101,6 +162,16 @@ class ChannelResponseDispatcherTest {
 
         @Override
         public void notifyKickMuteTarget(ChannelResponseDispatcher.KickMuteNotice notice) {
+        }
+
+        @Override
+        public void sendWhoResult(UUID playerId, String channelId, String displayName,
+                                  String membersCsv, String memberCount) {
+            this.whoPlayerId = playerId;
+            this.whoChannelId = channelId;
+            this.whoDisplayName = displayName;
+            this.whoMembers = membersCsv;
+            this.whoCount = memberCount;
         }
     }
 }

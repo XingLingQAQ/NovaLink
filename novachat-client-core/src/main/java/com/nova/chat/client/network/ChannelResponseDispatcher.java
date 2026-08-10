@@ -101,6 +101,19 @@ public final class ChannelResponseDispatcher {
                 // active-channel read is state-sensitive on region/main-thread
                 // platforms) and flashes the status bar.
                 adapter.sendLeaveChannelStatusBar(playerId);
+            } else if (packet.getAction() == ChannelAction.WHO) {
+                // /nc who result: the backend packed members / memberCount /
+                // displayName into the response extras. Route the formatted list
+                // to the requesting player (playerId from the pending context).
+                String channelId = (packet.getChannelId() != null && !packet.getChannelId().isEmpty())
+                        ? packet.getChannelId()
+                        : pending.getChannelId();
+                adapter.sendWhoResult(
+                        playerId,
+                        channelId,
+                        packet.getExtra("displayName"),
+                        packet.getExtra("members"),
+                        packet.getExtra("memberCount"));
             }
             return;
         }
@@ -238,6 +251,24 @@ public final class ChannelResponseDispatcher {
          * hops to the correct thread before sending.
          */
         void sendErrorMessage(UUID playerId, String text);
+
+        /**
+         * Renders the asynchronous {@code /nc who} result (UX-DESIGN §8.2) to
+         * the requesting player. The dispatcher resolves the formatted text via
+         * {@link com.nova.chat.client.command.WhoCommandService#formatMemberList}
+         * is intentionally <em>not</em> done here so each platform can format in
+         * its own locale view and color-code style; the adapter receives the raw
+         * backend extras and owns rendering. The platform hops to the correct
+         * thread before sending. {@code channelId} is non-blank.
+         *
+         * @param playerId    the requesting player
+         * @param channelId   the channel that was queried
+         * @param displayName channel display name (may be blank → use channelId)
+         * @param membersCsv  comma-separated member names (may be blank when empty)
+         * @param memberCount online member count string (may be blank → 0)
+         */
+        void sendWhoResult(UUID playerId, String channelId, String displayName,
+                           String membersCsv, String memberCount);
 
         /**
          * Renders the target-side KICK/MUTE notice (UX-DESIGN §5). The text is
