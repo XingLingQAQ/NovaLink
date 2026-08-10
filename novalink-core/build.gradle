@@ -18,6 +18,7 @@ dependencies {
     implementation "com.zaxxer:HikariCP:${hikariCpVersion}"
     implementation "com.mysql:mysql-connector-j:${mysqlVersion}"
     implementation "redis.clients:jedis:${jedisVersion}"
+    runtimeOnly "org.postgresql:postgresql:${postgresVersion}"
 
     // Configuration
     implementation "org.yaml:snakeyaml:${snakeYamlVersion}"
@@ -51,6 +52,7 @@ dependencies {
     testImplementation "org.testcontainers:testcontainers:${testcontainersVersion}"
     testImplementation "org.testcontainers:junit-jupiter:${testcontainersVersion}"
     testImplementation "org.testcontainers:mysql:${testcontainersVersion}"
+    testImplementation "org.testcontainers:postgresql:${testcontainersVersion}"
 }
 
 tasks.named('test') {

@@ -40,6 +40,8 @@ subprojects {
         nettyVersion = '4.1.100.Final'
         hikariCpVersion = '5.1.0'
         mysqlVersion = '8.0.33'
+        postgresVersion = '42.7.4'
+        sqliteVersion = '3.45.1.0'
         jedisVersion = '5.1.0'
         snakeYamlVersion = '2.2'
         gsonVersion = '2.10.1'
