@@ -1,0 +1,183 @@
+# Non-Java Bedrock client CI: Endstone (Python), LeviLamina (C++/xmake), PMMP (PHP).
+#
+# These three modules do not use the Gradle Java plugin (they are Gradle `base`
+# wrappers that delegate to native toolchains). This workflow drives each native
+# toolchain directly so CI validates them without going through Gradle.
+#
+# Job layout:
+#   endstone     - ubuntu-24.04, Python 3.12, pip install -e .[dev], pytest
+#   levilamina   - windows-2025, MSVC + xmake, runs BOTH the pure-protocol test
+#                  target (--sdk=n) and the SDK-integrated build (levilamina pkg)
+#   pmmp         - ubuntu-24.04, PHP 8.2, composer install + phpunit, with an
+#                  explicit composer check-platform-reqs gate (composer.json has
+#                  platform-check:false so `install` skips it -- we re-enable it
+#                  as an explicit verification step).
+name: Bedrock Non-Java Build & Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bedrock-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  endstone:
+    name: Endstone (Python)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: NovaChat/Bedrock/endstone
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-endstone-${{ runner.os }}-${{ hashFiles('NovaChat/Bedrock/endstone/pyproject.toml') }}
+          restore-keys: |
+            pip-endstone-${{ runner.os }}-
+
+      - name: Install package (editable + dev extras)
+        # pyproject.toml dev extras: pytest, pytest-asyncio, hypothesis.
+        # The endstone>=0.5.0 runtime dep is a pure-Python wheel; the unit tests
+        # only import novachat_endstone.protocol/i18n (no endstone runtime needed).
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run pytest
+        run: pytest tests/ -v
+
+  levilamina:
+    name: LeviLamina (C++/xmake)
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: NovaChat/Bedrock/levilamina
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC (VS 2022)
+        uses: microsoft/setup-msbuild@v2
+        # windows-2025 ships VS 2022 + MSVC 19.3x (C++20 capable). This action
+        # puts cl.exe/link.exe on PATH for xmake's msvc toolchain detection.
+
+      - name: Install xmake
+        # windows-2025 runners have scoop; xmake is also available via the
+        # official installer. Prefer scoop for a cached, idempotent install.
+        run: |
+          if (-not (Get-Command xmake -ErrorAction SilentlyContinue)) {
+            scoop install xmake
+          }
+          xmake --version
+
+      - name: Cache xmake packages (LeviLamina SDK)
+        uses: actions/cache@v4
+        with:
+          path: ~/.xmake/packages
+          # xmake.lua pulls levilamina from liteldev-repo; key on the xmake.lua
+          # hash so a version bump invalidates the cache and re-fetches.
+          key: xmake-pkg-${{ runner.os }}-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua') }}
+          restore-keys: |
+            xmake-pkg-${{ runner.os }}-
+
+      - name: Cache xmake build directory
+        uses: actions/cache@v4
+        with:
+          path: NovaChat/Bedrock/levilamina/build
+          key: xmake-build-${{ runner.os }}-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua', 'NovaChat/Bedrock/levilamina/src/**', 'NovaChat/Bedrock/levilamina/tests/**') }}
+          restore-keys: |
+            xmake-build-${{ runner.os }}-
+
+      # ------------------------------------------------------------------
+      # Step 1: pure-protocol tests (no LeviLamina SDK).
+      # --sdk=n skips the levilamina package pull; compiles only the pure-C++
+      # protocol/util/i18n sources. This is the baseline that must always pass.
+      # ------------------------------------------------------------------
+      - name: Build & run pure-protocol tests (--sdk=n)
+        shell: pwsh
+        working-directory: NovaChat/Bedrock/levilamina
+        run: |
+          xmake f --sdk=n -m debug
+          xmake build novachat-levilamina-tests
+          xmake run novachat-levilamina-tests
+
+      # ------------------------------------------------------------------
+      # Step 2: SDK-integrated build (with LeviLamina SDK).
+      # Reconfigures WITHOUT --sdk=n so xmake pulls levilamina from liteldev-repo
+      # (github) and links it into the novachat-levilamina shared library + the
+      # tests target. The .dll cannot `xmake run`, but a successful compile +
+      # link proves the SDK integration is sound. Set continue-on-error so a
+      # flaky upstream levilamina package / MSVC mismatch does not mask the
+      # baseline result above; the step output still records the failure.
+      # ------------------------------------------------------------------
+      - name: Build SDK-integrated target (levilamina pkg)
+        shell: pwsh
+        working-directory: NovaChat/Bedrock/levilamina
+        continue-on-error: true
+        run: |
+          xmake f -m debug
+          xmake build novachat-levilamina
+          xmake build novachat-levilamina-tests
+
+  pmmp:
+    name: PMMP (PHP)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: NovaChat/Bedrock/pmmp
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: sockets, mbstring, openssl
+          coverage: none
+
+      - name: Cache composer vendor
+        uses: actions/cache@v4
+        with:
+          path: NovaChat/Bedrock/pmmp/vendor
+          key: composer-${{ runner.os }}-${{ hashFiles('NovaChat/Bedrock/pmmp/composer.lock') }}
+          restore-keys: |
+            composer-${{ runner.os }}-
+
+      - name: Verify required PHP extensions (platform-reqs gate)
+        # composer.json has "platform-check": false, which makes `composer install`
+        # silently skip extension checks. We run `composer check-platform-reqs`
+        # explicitly -- it is an independent command that inspects the require
+        # + config.platform entries and exits non-zero if any ext-* is missing.
+        # This guarantees ext-sockets (and any future ext-* additions) are truly
+        # loaded instead of being silently absent at runtime.
+        run: composer check-platform-reqs --working-dir=NovaChat/Bedrock/pmmp
+
+      - name: Composer install
+        # Pulls pocketmine/pocketmine-mp ^5.0 (~100MB) + phpunit + eris.
+        # The lock file is committed, so this is deterministic.
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Run PHPUnit
+        run: composer test --working-dir=NovaChat/Bedrock/pmmp
