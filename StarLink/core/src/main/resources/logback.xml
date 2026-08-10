@@ -1,15 +1,28 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+    NovaLink 后端日志配置 (Logback)
+
+    - CONSOLE: 控制台输出，短时间格式，便于实时查看
+    - FILE   : 滚动文件输出到 logs/novalink.log，按天滚动，保留 30 天
+    - com.nova  : DEBUG（便于排障）；io.netty: WARN（屏蔽 Netty 噪音）
+
+    运行时日志目录已加入 .gitignore（logs/、*.log）。
+-->
 <configuration>
+    <!-- 控制台输出 -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
             <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
         </encoder>
     </appender>
 
+    <!-- 滚动文件输出 -->
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>logs/novalink.log</file>
         <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <!-- 按天滚动，历史日志命名为 novalink.yyyy-MM-dd.log -->
             <fileNamePattern>logs/novalink.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <!-- 历史日志最大保留天数 -->
             <maxHistory>30</maxHistory>
         </rollingPolicy>
         <encoder>
@@ -17,11 +30,13 @@
         </encoder>
     </appender>
 
+    <!-- 根日志级别 -->
     <root level="INFO">
         <appender-ref ref="CONSOLE" />
         <appender-ref ref="FILE" />
     </root>
 
+    <!-- 包级别覆盖 -->
     <logger name="com.nova" level="DEBUG" />
     <logger name="io.netty" level="WARN" />
 </configuration>

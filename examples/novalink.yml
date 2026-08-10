@@ -82,8 +82,6 @@ database:
     host: 127.0.0.1
     port: 6379
     password: ""
-    # Database index / 数据库索引
-    database: 0
 
 # ==========================================
 # Security Settings / 安全设置
@@ -99,10 +97,6 @@ security:
   # Duration (seconds) to ban IP after consecutive auth failures
   # 连续认证失败后封禁 IP 的时长（秒）
   ip-ban-duration: 300
-  
-  # Number of consecutive failures before IP ban
-  # 触发 IP 封禁的连续失败次数
-  max-auth-failures: 3
 
 # ==========================================
 # Super Admins / 超级管理员
@@ -286,8 +280,17 @@ features:
   cross-server-chat-enabled: true
 
 # ==========================================
-# Webhook Configuration / Webhook 配置
+# Webhook Configuration / Webhook 配置 (Optional / 规划中)
 # ==========================================
+# NOTE: This section is a forward-looking example. The backend ConfigLoader
+#       currently parses: server, database, security, super-admins, debug,
+#       global_channels, templates, clients, features. Webhook/filter/
+#       announcements sections below are NOT yet read by the backend and are
+#       kept here as reference templates for future implementation.
+# 注意：以下 Webhook / filter / announcements 段落为规划中的示例，
+#       后端 ConfigLoader 当前不解析这些段（仅解析 server/database/security/
+#       super-admins/debug/global_channels/templates/clients/features），
+#       保留作未来实现的参考模板。
 # Send notifications to external services
 # 向外部服务发送通知
 webhooks:
