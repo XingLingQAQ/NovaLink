@@ -159,6 +159,22 @@ public class AsyncMessageFormatter {
 
     // ==================== Async Rendering Methods for Folia ====================
 
+    /**
+     * Formats a chat message and sends it to the player on the player's region
+     * thread.
+     *
+     * <p>PlaceholderAPI reads player state and is only safe on the player's
+     * own thread, so the format + send is wrapped in
+     * {@link FoliaSchedulerAdapter#runForPlayer(Player, Runnable)}; the online
+     * check is repeated inside the callback because the player may disconnect
+     * between scheduling and execution.
+     *
+     * @param player      the recipient, ignored if {@code null} or offline
+     * @param channelId   the channel id the message is being sent to
+     * @param channelName the display name of the channel (falls back to {@code channelId})
+     * @param senderName  the sender name used for template substitution
+     * @param message     the raw message body
+     */
     public void formatAndSendOnPlayerThread(Player player, String channelId, String channelName,
                                             String senderName, String message) {
         if (player == null || !player.isOnline()) {
@@ -173,6 +189,21 @@ public class AsyncMessageFormatter {
         });
     }
 
+    /**
+     * Formats a chat message with extra placeholders and sends it to the player
+     * on the player's region thread.
+     *
+     * <p>Same threading contract as
+     * {@link #formatAndSendOnPlayerThread(Player, String, String, String, String)};
+     * the {@code placeholders} map is merged on top of the built-in keys.
+     *
+     * @param player       the recipient, ignored if {@code null} or offline
+     * @param channelId    the channel id the message is being sent to
+     * @param channelName  the display name of the channel (falls back to {@code channelId})
+     * @param senderName   the sender name used for template substitution
+     * @param message      the raw message body
+     * @param placeholders additional template values; {@code null}/empty keys are skipped
+     */
     public void formatAndSendOnPlayerThread(Player player, String channelId, String channelName,
                                             String senderName, String message,
                                             Map<String, String> placeholders) {
@@ -189,6 +220,21 @@ public class AsyncMessageFormatter {
         });
     }
 
+    /**
+     * Formats a chat message and sends it to the player as an Adventure
+     * {@link Component} on the player's region thread.
+     *
+     * <p>Unlike {@link #formatAndSendOnPlayerThread(Player, String, String, String, String)}
+     * the final string is re-parsed into a {@link Component} via
+     * {@link #formatAsComponent(String)} so hover/click decorations survive. The
+     * Component send must still happen on the player's thread.
+     *
+     * @param player      the recipient, ignored if {@code null} or offline
+     * @param channelId   the channel id the message is being sent to
+     * @param channelName the display name of the channel (falls back to {@code channelId})
+     * @param senderName  the sender name used for template substitution
+     * @param message     the raw message body
+     */
     public void formatAndSendComponentOnPlayerThread(Player player, String channelId, String channelName,
                                                      String senderName, String message) {
         if (player == null || !player.isOnline()) {
@@ -204,6 +250,22 @@ public class AsyncMessageFormatter {
         });
     }
 
+    /**
+     * Formats a chat message asynchronously, returning the rendered string via
+     * a {@link CompletableFuture}.
+     *
+     * <p>When PlaceholderAPI is available and the player is online the work is
+     * scheduled on the player's region thread (PAPI reads player state and is
+     * only safe there); otherwise it runs on a generic async thread. The future
+     * completes exceptionally if formatting throws.
+     *
+     * @param player      the player whose state feeds PAPI; may be {@code null}
+     * @param channelId   the channel id the message is being sent to
+     * @param channelName the display name of the channel (falls back to {@code channelId})
+     * @param senderName  the sender name used for template substitution
+     * @param message     the raw message body
+     * @return a future that resolves to the formatted legacy-coded string
+     */
     public CompletableFuture<String> formatChatMessageAsync(Player player, String channelId,
                                                             String channelName, String senderName,
                                                             String message) {
@@ -228,6 +290,22 @@ public class AsyncMessageFormatter {
         return future;
     }
 
+    /**
+     * Formats a chat message with extra placeholders asynchronously, returning
+     * the rendered string via a {@link CompletableFuture}.
+     *
+     * <p>Same threading contract as
+     * {@link #formatChatMessageAsync(Player, String, String, String, String)};
+     * the {@code placeholders} map is merged on top of the built-in keys.
+     *
+     * @param player       the player whose state feeds PAPI; may be {@code null}
+     * @param channelId    the channel id the message is being sent to
+     * @param channelName  the display name of the channel (falls back to {@code channelId})
+     * @param senderName   the sender name used for template substitution
+     * @param message      the raw message body
+     * @param placeholders additional template values; {@code null}/empty keys are skipped
+     * @return a future that resolves to the formatted legacy-coded string
+     */
     public CompletableFuture<String> formatChatMessageAsync(Player player, String channelId,
                                                             String channelName, String senderName,
                                                             String message, Map<String, String> placeholders) {
@@ -254,6 +332,22 @@ public class AsyncMessageFormatter {
         return future;
     }
 
+    /**
+     * Formats a chat message on the player's region thread and hands the result
+     * to {@code callback}.
+     *
+     * <p>Used when the caller does not send the message itself but needs the
+     * formatted string (e.g. to wrap it further); the callback runs on the
+     * player's thread so any downstream player-API use is safe. No-op if the
+     * player is {@code null} or has logged off before the callback fires.
+     *
+     * @param player      the player whose state feeds PAPI
+     * @param channelId   the channel id the message is being sent to
+     * @param channelName the display name of the channel (falls back to {@code channelId})
+     * @param senderName  the sender name used for template substitution
+     * @param message     the raw message body
+     * @param callback    receives the formatted string on the player's thread
+     */
     public void formatOnPlayerThread(Player player, String channelId, String channelName,
                                      String senderName, String message, Consumer<String> callback) {
         if (player == null || !player.isOnline()) {
@@ -268,6 +362,19 @@ public class AsyncMessageFormatter {
         });
     }
 
+    /**
+     * Formats a typed system message and sends it to the player on the player's
+     * region thread.
+     *
+     * <p>{@code type} selects the shared {@code buildTypedSystem} styling
+     * ({@code "error"} / {@code "success"} / etc.). The send is scheduled via
+     * {@link FoliaSchedulerAdapter#runForPlayer(Player, Runnable)} with an
+     * online re-check inside the callback.
+     *
+     * @param player  the recipient, ignored if {@code null} or offline
+     * @param type    the message category passed to the shared system builder
+     * @param message the raw message body
+     */
     public void sendSystemMessageOnPlayerThread(Player player, String type, String message) {
         if (player == null || !player.isOnline()) {
             return;
@@ -281,14 +388,27 @@ public class AsyncMessageFormatter {
         });
     }
 
+    /** Convenience for {@link #sendSystemMessageOnPlayerThread(Player, String, String)} with type {@code "error"}. */
     public void sendErrorOnPlayerThread(Player player, String message) {
         sendSystemMessageOnPlayerThread(player, "error", message);
     }
 
+    /** Convenience for {@link #sendSystemMessageOnPlayerThread(Player, String, String)} with type {@code "success"}. */
     public void sendSuccessOnPlayerThread(Player player, String message) {
         sendSystemMessageOnPlayerThread(player, "success", message);
     }
 
+    /**
+     * Parses a legacy-coded message into an Adventure {@link Component} on a
+     * generic async thread.
+     *
+     * <p>Unlike the player-thread variants this does not touch PlaceholderAPI,
+     * so it is safe off the player's thread. The future completes exceptionally
+     * if parsing throws.
+     *
+     * @param message the legacy-coded message (with {@code &}/hex codes)
+     * @return a future that resolves to the parsed {@link Component}
+     */
     public CompletableFuture<Component> formatAsComponentAsync(String message) {
         CompletableFuture<Component> future = new CompletableFuture<>();
         scheduler.runAsync(() -> {
@@ -301,6 +421,16 @@ public class AsyncMessageFormatter {
         return future;
     }
 
+    /**
+     * Sends a pre-built {@link Component} to the player on the player's region
+     * thread.
+     *
+     * <p>The component is assumed already rendered; this only performs the
+     * thread hop + online check required for any player send on Folia.
+     *
+     * @param player    the recipient, ignored if {@code null} or offline
+     * @param component the component to send
+     */
     public void sendComponentOnPlayerThread(Player player, Component component) {
         if (player == null || !player.isOnline()) {
             return;
