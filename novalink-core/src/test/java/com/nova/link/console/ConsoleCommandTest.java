@@ -3,6 +3,7 @@ package com.nova.link.console;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.TitlePacket;
+import com.nova.link.announcement.AnnouncementManager;
 import com.nova.link.api.WebhookManager;
 import com.nova.link.auth.ClientPermissionRegistry;
 import com.nova.link.auth.AuthManager;
@@ -72,6 +73,7 @@ class ConsoleCommandTest {
     private ServerNetworkHandler networkHandler;
     private MessageRouter messageRouter;
     private ConsoleCommandHandler handler;
+    private AnnouncementManager announcementManager;
 
     private UUID targetId;
     private ClientConnection capturedClient;
@@ -132,6 +134,19 @@ class ConsoleCommandTest {
         spyManager = new SpyManager(permissionManager, channelManager, networkHandler);
         messageRouter.setSpyManager(spyManager);
 
+        // Announcement manager: sender callback trusted-routes via the real
+        // MessageRouter so announceRoutes can assert the routed ChatMessagePacket.
+        announcementManager = new AnnouncementManager(permissionManager, channelManager);
+        announcementManager.initialize();
+        announcementManager.setNotificationStore(notificationStore);
+        announcementManager.setAnnouncementSender((channelId, content) -> {
+            java.util.Map<String, String> placeholders = new java.util.HashMap<>();
+            placeholders.put("_announcement", "true");
+            placeholders.put("_operator", ConsoleSentinel.CONSOLE_NAME);
+            messageRouter.routeMessage(channelId, ConsoleSentinel.CONSOLE_SENTINEL,
+                    ConsoleSentinel.CONSOLE_NAME, content, placeholders);
+        });
+
         // Build a minimal context; netty server / ws gateway / config manager
         // are not exercised by these commands (reload uses a real ConfigManager
         // created lazily per-test where needed).
@@ -149,6 +164,7 @@ class ConsoleCommandTest {
                 muteManager,
                 banManager,
                 notificationStore,
+                announcementManager,
                 sensitiveWordFilter,
                 networkHandler,
                 messageRouter,
@@ -170,6 +186,9 @@ class ConsoleCommandTest {
     void tearDown() {
         // Restore the backend default locale so tests don't leak into others.
         I18n.setDefaultLocale(LocaleResolver.ROOT_LOCALE);
+        if (announcementManager != null) {
+            announcementManager.shutdown();
+        }
     }
 
     // ====================== locale-aware output ======================

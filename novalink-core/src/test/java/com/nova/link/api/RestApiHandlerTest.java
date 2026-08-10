@@ -139,6 +139,7 @@ class RestApiHandlerTest {
                 muteManager,
                 banManager,
                 notificationStore,
+                new com.nova.link.announcement.AnnouncementManager(permissionManager, channelManager),
                 sensitiveWordsFilter(),
                 networkHandler,
                 messageRouter,

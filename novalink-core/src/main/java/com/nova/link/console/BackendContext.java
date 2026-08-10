@@ -4,6 +4,7 @@ import com.nova.link.api.WebhookManager;
 import com.nova.link.auth.AuthManager;
 import com.nova.link.auth.ClientPermissionRegistry;
 import com.nova.link.auth.PermissionManager;
+import com.nova.link.announcement.AnnouncementManager;
 import com.nova.link.ban.BanManager;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.InvitationManager;
@@ -44,6 +45,7 @@ public final class BackendContext {
     private final MuteManager muteManager;
     private final BanManager banManager;
     private final NotificationStore notificationStore;
+    private final AnnouncementManager announcementManager;
     private final SensitiveWordFilter sensitiveWordFilter;
     private final ServerNetworkHandler networkHandler;
     private final MessageRouter messageRouter;
@@ -64,6 +66,7 @@ public final class BackendContext {
                           MuteManager muteManager,
                           BanManager banManager,
                           NotificationStore notificationStore,
+                          AnnouncementManager announcementManager,
                           SensitiveWordFilter sensitiveWordFilter,
                           ServerNetworkHandler networkHandler,
                           MessageRouter messageRouter,
@@ -83,6 +86,7 @@ public final class BackendContext {
         this.muteManager = muteManager;
         this.banManager = banManager;
         this.notificationStore = notificationStore;
+        this.announcementManager = announcementManager;
         this.sensitiveWordFilter = sensitiveWordFilter;
         this.networkHandler = networkHandler;
         this.messageRouter = messageRouter;
@@ -104,6 +108,7 @@ public final class BackendContext {
     public MuteManager getMuteManager() { return muteManager; }
     public BanManager getBanManager() { return banManager; }
     public NotificationStore getNotificationStore() { return notificationStore; }
+    public AnnouncementManager getAnnouncementManager() { return announcementManager; }
     public SensitiveWordFilter getSensitiveWordFilter() { return sensitiveWordFilter; }
     public ServerNetworkHandler getNetworkHandler() { return networkHandler; }
     public MessageRouter getMessageRouter() { return messageRouter; }

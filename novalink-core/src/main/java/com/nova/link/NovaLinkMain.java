@@ -6,6 +6,7 @@ import com.nova.chat.common.protocol.packets.*;
 import com.nova.link.auth.*;
 import com.nova.link.auth.ClientPermissionRegistry;
 import com.nova.link.api.WebhookManager;
+import com.nova.link.announcement.AnnouncementManager;
 import com.nova.link.ban.BanManager;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelConfig;
@@ -17,6 +18,7 @@ import com.nova.link.channel.InvitationManager;
 import com.nova.link.console.BackendConsole;
 import com.nova.link.console.BackendContext;
 import com.nova.link.console.ConsoleCommandHandler;
+import com.nova.link.console.ConsoleSentinel;
 import com.nova.link.config.*;
 import com.nova.link.database.*;
 import com.nova.link.filter.SensitiveWordFilter;
@@ -190,6 +192,14 @@ public class NovaLinkMain {
         SensitiveWordFilter sensitiveWordFilter = new SensitiveWordFilter();
         ChatLogger chatLogger = new ChatLogger();
 
+        // Announcement manager (requirement 14.x): immediate / join-triggered /
+        // cron-scheduled announcements. The sender callback publishes via the
+        // message router's trusted path so announcements reach channel members
+        // across all connected game servers. notificationStore is wired later
+        // (after it is created); the scheduler is started here.
+        AnnouncementManager announcementManager = new AnnouncementManager(permissionManager, channelManager);
+        announcementManager.initialize();
+
         loadConfiguredChannels(channelManager, config);
         loadPersistedChannels(channelManager, databaseProvider);
         bootstrapPrivateChannelAdmins(permissionManager, channelManager);
@@ -261,6 +271,7 @@ public class NovaLinkMain {
                 configManager, authManager, permissionManager, clientPermissionRegistry,
                 databaseProvider, channelManager, playerStateManager, webhookManager,
                 privateChannelManager, invitationManager, muteManager, banManager, null,
+                announcementManager,
                 sensitiveWordFilter,
                 networkHandler, messageRouter, spyManager, null, null);
         ConsoleCommandHandler consoleCommandHandler = new ConsoleCommandHandler(restConsoleContext);
@@ -276,6 +287,19 @@ public class NovaLinkMain {
         muteManager.setNotificationStore(notificationStore);
         channelActionHandler.setNotificationStore(notificationStore);
         adminActionHandler.setNotificationStore(notificationStore);
+
+        // Wire the announcement manager: trusted-route sender callback (so
+        // announcements fan out to channel members across all connected game
+        // servers) + notification store (panel feed). The sentinel is the
+        // operator for console-originated announcements; in-game operators go
+        // through AdminActionHandler which calls the manager directly.
+        announcementManager.setNotificationStore(notificationStore);
+        announcementManager.setAnnouncementSender((channelId, content) -> {
+            Map<String, String> placeholders = new HashMap<>();
+            placeholders.put("_announcement", "true");
+            messageRouter.routeMessage(channelId, ConsoleSentinel.CONSOLE_SENTINEL,
+                    ConsoleSentinel.CONSOLE_NAME, content, placeholders);
+        });
 
         // Disconnect listener: clear permission grants AND surface a panel
         // notification. Wired here (after notificationStore is created) so the
@@ -348,7 +372,7 @@ public class NovaLinkMain {
                     configManager, authManager, permissionManager, clientPermissionRegistry,
                     databaseProvider, channelManager, playerStateManager, webhookManager,
                     privateChannelManager, invitationManager, muteManager, banManager,
-                    notificationStore, sensitiveWordFilter,
+                    notificationStore, announcementManager, sensitiveWordFilter,
                     networkHandler, messageRouter, spyManager, tcpServer, webSocketGateway);
             safeShutdown();
             return;
@@ -363,7 +387,7 @@ public class NovaLinkMain {
                 configManager, authManager, permissionManager, clientPermissionRegistry,
                 databaseProvider, channelManager, playerStateManager, webhookManager,
                 privateChannelManager, invitationManager, muteManager, banManager,
-                notificationStore, sensitiveWordFilter,
+                notificationStore, announcementManager, sensitiveWordFilter,
                 networkHandler, messageRouter, spyManager, tcpServer, webSocketGateway);
 
         // JVM shutdown hook: Ctrl+C / SIGTERM -> same safeShutdown the 'stop'
@@ -1085,6 +1109,14 @@ public class NovaLinkMain {
             }
         } catch (Exception e) {
             logger.debug("Error shutting down BanManager: {}", e.getMessage());
+        }
+
+        try {
+            if (ctx.getAnnouncementManager() != null) {
+                ctx.getAnnouncementManager().shutdown();
+            }
+        } catch (Exception e) {
+            logger.debug("Error shutting down AnnouncementManager: {}", e.getMessage());
         }
 
         try {

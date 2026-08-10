@@ -1,6 +1,8 @@
 package com.nova.link.console;
 
 import com.nova.chat.common.protocol.packets.TitlePacket;
+import com.nova.link.announcement.AnnouncementManager;
+import com.nova.link.announcement.AnnouncementResult;
 import com.nova.link.ban.BanManager;
 import com.nova.link.ban.BanResult;
 import com.nova.link.channel.Channel;
@@ -551,24 +553,36 @@ public class ConsoleCommandHandler {
         if (ch == null) {
             return nl(I18n.tr("console.announce.channel_not_found", channel));
         }
-        String message = I18n.tr("console.announce.prefix", content);
-        Map<String, String> placeholders = new HashMap<>();
-        placeholders.put("_announcement", "true");
-        placeholders.put("_operator", ConsoleSentinel.CONSOLE_NAME);
-        // Mirror AdminActionHandler.handleAnnounce: trusted routeMessage by id.
-        Set<String> recipients = ctx.getMessageRouter().routeMessage(
-                channel, ConsoleSentinel.CONSOLE_SENTINEL, ConsoleSentinel.CONSOLE_NAME, message, placeholders);
-        // Surface the announcement to the web panel notification feed.
-        if (ctx.getNotificationStore() != null) {
-            try {
-                ctx.getNotificationStore().createNotification(
-                        "Announcement",
-                        "Announcement sent to channel " + channel + ": " + content,
-                        "info");
-            } catch (Exception ignored) {
-                // non-fatal
-            }
+        // The announcement manager is the canonical path (requirement 14.x):
+        // it validates operator permission, applies the sender callback (which
+        // trusted-routes the message to channel members across all connected
+        // game servers), and surfaces the event to the web panel notification
+        // feed. The console sentinel needs a super-admin session to pass the
+        // manager's permission check.
+        AnnouncementManager announcementManager = ctx.getAnnouncementManager();
+        if (announcementManager == null) {
+            // Defensive fallback: manager not wired (e.g. partial init) —
+            // route directly so the command still works.
+            String message = I18n.tr("console.announce.prefix", content);
+            Map<String, String> placeholders = new HashMap<>();
+            placeholders.put("_announcement", "true");
+            placeholders.put("_operator", ConsoleSentinel.CONSOLE_NAME);
+            Set<String> recipients = ctx.getMessageRouter().routeMessage(
+                    channel, ConsoleSentinel.CONSOLE_SENTINEL, ConsoleSentinel.CONSOLE_NAME,
+                    message, placeholders);
+            return nl(I18n.tr("console.announce.success", channel, recipients.size()));
         }
+        ensureConsoleSuperAdminSession();
+        String message = I18n.tr("console.announce.prefix", content);
+        AnnouncementResult result = announcementManager.sendImmediateAnnouncement(
+                ConsoleSentinel.CONSOLE_SENTINEL, channel, message, null);
+        if (!result.isSuccess()) {
+            return nl(I18n.tr("console.announce.failed", result.getMessage(), result.getErrorCode()));
+        }
+        // Recipient count: the manager's sender callback routes via
+        // MessageRouter; calculate the recipient client set (pure, no send) so
+        // the success line reports the same fan-out the manager produced.
+        Set<String> recipients = ctx.getMessageRouter().calculateRecipients(ch, null);
         return nl(I18n.tr("console.announce.success", channel, recipients.size()));
     }
 
