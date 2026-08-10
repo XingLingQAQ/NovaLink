@@ -117,6 +117,7 @@ public class ConfigManager {
         ModConfig.ChatConfig chat = new ModConfig.ChatConfig();
         chat.setReplaceVanilla(false);
         chat.setDefaultChannel("local");
+        chat.setLocale("zh_CN");
         config.setChat(chat);
         
         // Format templates
@@ -155,6 +156,7 @@ public class ConfigManager {
             ModConfig.ChatConfig chat = new ModConfig.ChatConfig();
             chat.setReplaceVanilla((Boolean) chatData.getOrDefault("replace_vanilla", false));
             chat.setDefaultChannel((String) chatData.getOrDefault("default_channel", "local"));
+            chat.setLocale((String) chatData.getOrDefault("locale", "zh_CN"));
             config.setChat(chat);
         }
         
@@ -192,6 +194,7 @@ public class ConfigManager {
         Map<String, Object> chat = new HashMap<>();
         chat.put("replace_vanilla", config.getChat().isReplaceVanilla());
         chat.put("default_channel", config.getChat().getDefaultChannel());
+        chat.put("locale", config.getChat().getLocale());
         data.put("chat", chat);
         
         // Format

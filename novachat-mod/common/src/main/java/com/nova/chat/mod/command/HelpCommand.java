@@ -1,38 +1,38 @@
 package com.nova.chat.mod.command;
 
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.mod.platform.CommandContext;
 import com.nova.chat.mod.platform.CommandHandler;
-import com.nova.chat.mod.platform.CommandManager;
+
+import java.util.UUID;
 
 /**
- * Help command - displays available commands
+ * Help command — displays available commands in the player's locale.
  */
 public class HelpCommand implements CommandHandler {
-    private final CommandManager commandManager;
-    
-    public HelpCommand(CommandManager commandManager) {
-        this.commandManager = commandManager;
-    }
-    
+
     @Override
     public boolean execute(String[] args, CommandContext context) {
-        context.sendMessage("=== NovaChat Commands ===");
-        context.sendMessage("/nc help - Show this help message");
-        context.sendMessage("/nc join <channel> - Join a channel");
-        context.sendMessage("/nc leave - Leave current channel");
-        context.sendMessage("/nc toggle - Toggle chat on/off");
+        UUID playerId = context.getPlayerId();
+        context.sendMessage(I18n.tr(playerId, "chat.command.help.title"));
+        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_help"));
+        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_join"));
+        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_leave"));
+        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_list"));
+        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_who"));
+        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_toggle"));
+        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_msg"));
         if (context.isAdmin()) {
-            context.sendMessage("/nc reload - Reload configuration");
-            context.sendMessage("/nc debug - Show debug information");
+            context.sendMessage(I18n.tr(playerId, "chat.command.help.line_reload"));
         }
         return true;
     }
-    
+
     @Override
     public String getDescription() {
         return "Display help information";
     }
-    
+
     @Override
     public String getUsage() {
         return "/nc help";

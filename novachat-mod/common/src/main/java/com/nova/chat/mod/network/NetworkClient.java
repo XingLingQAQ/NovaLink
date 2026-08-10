@@ -1,50 +1,121 @@
 package com.nova.chat.mod.network;
 
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
+import com.nova.chat.client.network.AbstractPlatformNetworkClient;
+import com.nova.chat.client.network.ClientConnectionConfig;
+import com.nova.chat.client.network.ClientLogger;
+import com.nova.chat.client.network.SchedulerBridge;
+import com.nova.chat.common.protocol.PlatformType;
+import com.nova.chat.mod.config.ModConfig;
+import com.nova.chat.mod.platform.Platform;
+
+import java.util.Objects;
+import java.util.function.Function;
 
 /**
- * Interface for network communication with the backend
+ * Mod NetworkClient facade over the shared {@code CoreNetworkClient} (Architecture B).
+ *
+ * <p>Mirrors the velocity/bungee/nukkit/folia/pnx/sponge facades: the Netty transport,
+ * handshake, keepalive, handler map and reconnect policy live in client-core; this
+ * class only supplies a {@link SchedulerBridge} and {@link ClientLogger} backed by the
+ * mod {@link Platform} abstraction so the same facade works across all four mod
+ * loaders (fabric / forge / neoforge / quilt) without per-loader network code.
+ *
+ * <p>Public surface is the {@link AbstractPlatformNetworkClient} API
+ * (connect / disconnect / sendPacket / registerHandler / isConnected /
+ * isAuthenticated / getChannelResponseTracker / getPacketRegistry).
  */
-public interface NetworkClient {
-    
+public class NetworkClient extends AbstractPlatformNetworkClient {
+
+    private final Platform platform;
+
     /**
-     * Connect to the backend server
-     * @param host the server host
-     * @param port the server port
-     * @return a future that completes when connection is established
+     * Creates a NetworkClient for the mod common layer.
+     *
+     * @param platform the mod platform abstraction (scheduler + logger + version)
+     * @param config   the mod configuration (backend host/port/credentials)
      */
-    CompletableFuture<Boolean> connect(String host, int port);
-    
+    public NetworkClient(Platform platform, ModConfig config) {
+        this.platform = Objects.requireNonNull(platform, "platform");
+        Objects.requireNonNull(config, "config");
+        ClientConnectionConfig connectionConfig = config.toClientConnectionConfig();
+        SchedulerBridge scheduler = new PlatformSchedulerBridge(platform);
+        ClientLogger logger = new PlatformClientLogger(platform);
+        String serverVersion = platform.getServerVersion();
+        initCore(
+                connectionConfig,
+                platform.getPlatformType().toCommon(),
+                scheduler,
+                logger,
+                "config/novachat.yml",
+                Function.identity(),
+                serverVersion != null ? serverVersion : ""
+        );
+    }
+
     /**
-     * Disconnect from the backend server
+     * @return the platform this client is bridging
      */
-    void disconnect();
-    
+    public Platform getPlatform() {
+        return platform;
+    }
+
     /**
-     * Send a chat message to the backend
-     * @param playerId the player UUID
-     * @param playerName the player name
-     * @param channelId the channel ID
-     * @param message the message content
+     * Scheduler adapter that delegates async/delayed execution to the platform
+     * (each mod loader implements {@link Platform#runAsync} / {@link Platform#runLater}
+     * against its own thread model).
      */
-    void sendChatMessage(UUID playerId, String playerName, String channelId, String message);
-    
+    static final class PlatformSchedulerBridge implements SchedulerBridge {
+        private final Platform platform;
+
+        PlatformSchedulerBridge(Platform platform) {
+            this.platform = platform;
+        }
+
+        @Override
+        public void runAsync(Runnable task) {
+            platform.runAsync(task);
+        }
+
+        @Override
+        public void runLater(Runnable task, long delaySeconds) {
+            platform.runLater(task, delaySeconds);
+        }
+    }
+
     /**
-     * Check if connected to the backend
-     * @return true if connected
+     * Logger adapter that routes shared-client log lines through the platform logger
+     * so each mod loader's SLF4J/log4j setup captures them.
      */
-    boolean isConnected();
-    
-    /**
-     * Get the connection status
-     * @return the connection status
-     */
-    ConnectionStatus getStatus();
-    
-    /**
-     * Register a packet handler
-     * @param handler the packet handler
-     */
-    void registerPacketHandler(PacketHandler handler);
+    static final class PlatformClientLogger implements ClientLogger {
+        private final Platform platform;
+
+        PlatformClientLogger(Platform platform) {
+            this.platform = platform;
+        }
+
+        @Override
+        public void info(String message) {
+            platform.logInfo(message);
+        }
+
+        @Override
+        public void warn(String message) {
+            platform.logWarn(message);
+        }
+
+        @Override
+        public void debug(String message) {
+            platform.logDebug(message);
+        }
+
+        @Override
+        public void error(String message) {
+            platform.logError(message);
+        }
+
+        @Override
+        public void error(String message, Throwable cause) {
+            platform.logError(message, cause);
+        }
+    }
 }

@@ -31,6 +31,11 @@ dependencies {
     
     // Protocol (novachat-common) - from parent project
     implementation project(':novachat-common')
+
+    // Shared client runtime (Architecture B — same layer as the 7 server platforms).
+    // Provides AbstractPlatformNetworkClient, PlayerStateStore, ChannelCommandService,
+    // I18n, MentionNotifier, ChannelResponseDispatcher, ConfigSyncHandlerRegistrar, etc.
+    implementation project(':novachat-client-core')
     
     // Testing
     testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
