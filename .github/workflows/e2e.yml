@@ -83,14 +83,13 @@ jobs:
       - name: Run E2E orchestrator (${{ matrix.platform }})
         shell: pwsh
         env:
-          # JAVA_HOME points at JDK 21 (setup-java puts 21 first); velocity's
-          # JDK 25 toolchain is only needed at build time, which Gradle resolves
-          # via the toolchain auto-detection + the installations.paths override.
-          JAVA_HOME: ${{ env.JAVA_HOME_21_X64 }}
           # For workflow_dispatch, prefer the user's platform selection; otherwise
           # fall back to the matrix platform. schedule runs use the matrix value.
           E2E_PLATFORMS: ${{ github.event.inputs.platforms || matrix.platform }}
         run: |
+          # setup-java puts JDK 21 first, so JAVA_HOME already points at it.
+          # Velocity's JDK 25 toolchain is resolved by Gradle at build time via
+          # toolchain auto-detection + the installations.paths override below.
           powershell -NoProfile -ExecutionPolicy Bypass `
             -File e2e/bin/run-e2e-orchestrator.ps1 `
             -Platforms $env:E2E_PLATFORMS `
