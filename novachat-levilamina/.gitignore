@@ -1,6 +1,7 @@
 # xmake build directory
 build/
 .xmake/
+xmake_build/
 
 # IDE files
 .vs/
@@ -21,6 +22,7 @@ build/
 
 # Logs
 *.log
+logs/
 
 # OS files
 .DS_Store

@@ -4,6 +4,7 @@
 #include "../network/NetworkClient.h"
 #include "../protocol/Packet.h"
 #include "../protocol/PacketBuffer.h"
+#include "../i18n/I18n.h"
 
 #include <ll/api/Logger.h>
 #include <ll/api/event/EventBus.h>
@@ -118,23 +119,23 @@ void ChatInterceptor::registerPacketHandlers() {
     auto& logger = mPlugin.getSelf().getLogger();
 
     // Handle incoming chat messages from backend
-    networkClient->registerHandler(PacketIds::CHAT_MESSAGE, 
+    networkClient->registerHandler(PacketIds::CHAT_MESSAGE,
         [this](std::unique_ptr<Packet> packet) {
             auto* chatPacket = static_cast<ChatMessagePacket*>(packet.get());
-            
+
             // Format the message using local format configuration
             std::string formatted = formatMessage(
                 chatPacket->getChannelId(),
                 chatPacket->getSenderName(),
                 chatPacket->getContent()
             );
-            
+
             // Convert color codes for Bedrock
             formatted = convertColorCodes(formatted);
-            
+
             // Broadcast to all players in the channel
             broadcastToChannel(chatPacket->getChannelId(), formatted);
-            
+
             if (mPlugin.getConfig()->isDebug()) {
                 mPlugin.getSelf().getLogger().debug(
                     "Received chat from backend: [{}] {}: {}",
@@ -146,36 +147,165 @@ void ChatInterceptor::registerPacketHandlers() {
         }
     );
 
-    // Handle channel action responses
+    // Handle channel action responses — route kick/mute to the target player,
+    // surface join/leave results, and track the channel in known channels.
     networkClient->registerHandler(PacketIds::CHANNEL_ACTION_RESPONSE,
         [this](std::unique_ptr<Packet> packet) {
             auto* response = static_cast<ChannelActionResponsePacket*>(packet.get());
-            
-            auto& logger = mPlugin.getSelf().getLogger();
+            auto& log = mPlugin.getSelf().getLogger();
+
+            // Track the channel as known regardless of outcome.
+            addKnownChannel(response->getChannelId());
+
             if (response->isSuccess()) {
-                logger.info("Channel action successful: {}", response->getMessage());
+                log.info("Channel action successful: {}", response->getMessage());
+                // Route kick/mute target-side notifications.
+                ChannelAction action = response->getAction();
+                if (action == ChannelAction::KICK || action == ChannelAction::MUTE) {
+                    // The "extra" map carries operatorName and (for mute) duration.
+                    const auto& extra = response->getExtra();
+                    std::string operatorName = extra.count("operatorName")
+                        ? extra.at("operatorName") : "";
+                    std::string targetUuid = extra.count("targetUuid")
+                        ? extra.at("targetUuid") : "";
+                    std::string duration = extra.count("duration")
+                        ? extra.at("duration") : "";
+                    if (!targetUuid.empty()) {
+                        if (action == ChannelAction::KICK) {
+                            notifyKickTarget(targetUuid, operatorName, response->getChannelId());
+                        } else {
+                            notifyMuteTarget(targetUuid, operatorName,
+                                             response->getChannelId(), duration);
+                        }
+                    }
+                }
             } else {
-                logger.warn("Channel action failed: {} ({})", 
+                log.warn("Channel action failed: {} ({})",
                     response->getMessage(), response->getErrorCode());
             }
         }
     );
 
-    // Handle Title packets from backend
+    // Handle ConfigSync — store the channel list as known channels.
+    networkClient->registerHandler(PacketIds::CONFIG_SYNC,
+        [this](std::unique_ptr<Packet> packet) {
+            auto* sync = static_cast<ConfigSyncPacket*>(packet.get());
+            if (mPlugin.getConfig()->isDebug()) {
+                mPlugin.getSelf().getLogger().debug(
+                    "Received config sync ({} bytes)", sync->getConfigJson().size());
+            }
+            // The configJson is opaque to the client; known-channel parsing is
+            // best-effort and only used for tab completion / /nc list.
+            addKnownChannel("local");
+            addKnownChannel("global");
+        }
+    );
+
+    // Handle Title packets from backend — display to players in the channel.
     networkClient->registerHandler(PacketIds::TITLE,
         [this](std::unique_ptr<Packet> packet) {
-            // Title packet handling - broadcast to appropriate players
-            // Implementation depends on TitlePacket structure
+            auto* title = static_cast<TitlePacket*>(packet.get());
+            auto* level = ll::service::getLevel();
+            if (!level) {
+                return;
+            }
+            level->forEachPlayer([&](Player& player) {
+                std::string playerUuid = player.getUuid().asString();
+                if (isPlayerInChannel(playerUuid, title->getChannelId())) {
+                    // Send title timing packet
+                    SetTitlePacket timingPacket;
+                    timingPacket.mType = SetTitlePacket::TitleType::Times;
+                    timingPacket.mFadeInTime = title->getFadeIn();
+                    timingPacket.mStayTime = title->getStay();
+                    timingPacket.mFadeOutTime = title->getFadeOut();
+                    player.sendNetworkPacket(timingPacket);
+
+                    if (!title->getTitle().empty()) {
+                        SetTitlePacket titlePacket;
+                        titlePacket.mType = SetTitlePacket::TitleType::Title;
+                        titlePacket.mTitleText = convertColorCodes(title->getTitle());
+                        player.sendNetworkPacket(titlePacket);
+                    }
+                    if (!title->getSubtitle().empty()) {
+                        SetTitlePacket subtitlePacket;
+                        subtitlePacket.mType = SetTitlePacket::TitleType::Subtitle;
+                        subtitlePacket.mTitleText = convertColorCodes(title->getSubtitle());
+                        player.sendNetworkPacket(subtitlePacket);
+                    }
+                }
+                return true;
+            });
+        }
+    );
+
+    // Handle Mention packets — highlight + title to the mentioned player.
+    networkClient->registerHandler(PacketIds::MENTION,
+        [this](std::unique_ptr<Packet> packet) {
+            auto* mention = static_cast<MentionPacket*>(packet.get());
+            auto* level = ll::service::getLevel();
+            if (!level) {
+                return;
+            }
+            std::string mentionedUuidStr = mention->getMentionedId().toString();
+            std::string locale = getPlayerLocale(mentionedUuidStr);
+            auto& i18n = i18n::I18n::getInstance();
+            std::string subtitle = i18n.get("chat.mention.subtitle", locale,
+                                            {mention->getChannelId()});
+
+            level->forEachPlayer([&](Player& player) {
+                if (player.getUuid().asString() == mentionedUuidStr) {
+                    // Title flash
+                    SetTitlePacket timingPacket;
+                    timingPacket.mType = SetTitlePacket::TitleType::Times;
+                    timingPacket.mFadeInTime = 10;
+                    timingPacket.mStayTime = 40;
+                    timingPacket.mFadeOutTime = 20;
+                    player.sendNetworkPacket(timingPacket);
+
+                    SetTitlePacket titlePacket;
+                    titlePacket.mType = SetTitlePacket::TitleType::Title;
+                    titlePacket.mTitleText = "§e@§r" +
+                        convertColorCodes(mention->getMentionerName());
+                    player.sendNetworkPacket(titlePacket);
+
+                    SetTitlePacket subtitlePacket;
+                    subtitlePacket.mType = SetTitlePacket::TitleType::Subtitle;
+                    subtitlePacket.mTitleText = convertColorCodes(subtitle);
+                    player.sendNetworkPacket(subtitlePacket);
+
+                    return false;
+                }
+                return true;
+            });
+
             if (mPlugin.getConfig()->isDebug()) {
-                mPlugin.getSelf().getLogger().debug("Received Title packet from backend");
+                mPlugin.getSelf().getLogger().debug(
+                    "Mention from {} to {} in {}",
+                    mention->getMentionerName(), mentionedUuidStr,
+                    mention->getChannelId());
             }
         }
     );
 
-    // Handle Announcement packets from backend
+    // Handle ItemDisplay packets — forward [item] display to channel members.
+    networkClient->registerHandler(PacketIds::ITEM_DISPLAY,
+        [this](std::unique_ptr<Packet> packet) {
+            auto* display = static_cast<ItemDisplayPacket*>(packet.get());
+            std::string formatted = "[" + display->getSenderName() + ": " +
+                                    display->getItemJson() + "]";
+            formatted = convertColorCodes(formatted);
+            broadcastToChannel(display->getChannelId(), formatted);
+            if (mPlugin.getConfig()->isDebug()) {
+                mPlugin.getSelf().getLogger().debug(
+                    "ItemDisplay in {}: {}", display->getChannelId(),
+                    display->getItemJson());
+            }
+        }
+    );
+
+    // Handle Announcement packets from backend (reserved orphan id).
     networkClient->registerHandler(PacketIds::ANNOUNCEMENT,
         [this](std::unique_ptr<Packet> packet) {
-            // Announcement handling
             if (mPlugin.getConfig()->isDebug()) {
                 mPlugin.getSelf().getLogger().debug("Received Announcement packet from backend");
             }
@@ -215,22 +345,26 @@ void ChatInterceptor::unregisterHooks() {
 
 void ChatInterceptor::onPlayerJoin(const std::string& playerName, const std::string& playerUuid) {
     auto& logger = mPlugin.getSelf().getLogger();
-    
+
     // Update name mapping
     {
         std::lock_guard<std::mutex> lock(mNameMapMutex);
         mNameToUuid[playerName] = playerUuid;
     }
-    
-    // Initialize player state with default channel
+
+    // Initialize player state with default channel and default locale.
     auto& state = getPlayerState(playerUuid);
+    if (state.locale.empty()) {
+        state.locale = "zh_CN";
+    }
     if (auto* config = mPlugin.getConfig()) {
         state.currentChannel = config->getDefaultChannel();
         state.joinedChannels.insert(state.currentChannel);
+        addKnownChannel(state.currentChannel);
     }
-    
+
     if (mPlugin.getConfig()->isDebug()) {
-        logger.debug("Player {} ({}) joined, assigned to channel: {}", 
+        logger.debug("Player {} ({}) joined, assigned to channel: {}",
             playerName, playerUuid, state.currentChannel);
     }
 }
@@ -485,6 +619,115 @@ ChatMode ChatInterceptor::toggleChatMode(const std::string& playerUuid) {
 void ChatInterceptor::setPlayerMuted(const std::string& playerUuid, bool muted) {
     std::lock_guard<std::mutex> lock(mStateMutex);
     mPlayerStates[playerUuid].muted = muted;
+}
+
+std::string ChatInterceptor::getPlayerLocale(const std::string& playerUuid) {
+    std::lock_guard<std::mutex> lock(mStateMutex);
+    auto it = mPlayerStates.find(playerUuid);
+    if (it != mPlayerStates.end()) {
+        return it->second.locale;
+    }
+    return "zh_CN";
+}
+
+void ChatInterceptor::setPlayerLocale(const std::string& playerUuid, const std::string& locale) {
+    std::lock_guard<std::mutex> lock(mStateMutex);
+    mPlayerStates[playerUuid].locale = locale;
+}
+
+std::vector<std::string> ChatInterceptor::getKnownChannels() const {
+    std::lock_guard<std::mutex> lock(mKnownChannelsMutex);
+    return {mKnownChannels.begin(), mKnownChannels.end()};
+}
+
+void ChatInterceptor::addKnownChannel(const std::string& channelId) {
+    if (channelId.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mKnownChannelsMutex);
+    mKnownChannels.insert(channelId);
+}
+
+void ChatInterceptor::whoChannel(const std::string& playerUuid, const std::string& channelId) {
+    auto* networkClient = mPlugin.getNetworkClient();
+    if (!networkClient || !networkClient->isConnected()) {
+        return;
+    }
+    auto packet = std::make_unique<ChannelActionPacket>(ChannelAction::WHO, channelId);
+    // Track the request so the response can be correlated if needed.
+    std::string reqId = packet->getRequestId().toString();
+    {
+        std::lock_guard<std::mutex> lock(mPendingActionsMutex);
+        mPendingActions.emplace(reqId, channelId);
+    }
+    networkClient->sendPacket(std::move(packet));
+}
+
+void ChatInterceptor::notifyKickTarget(const std::string& targetUuid, const std::string& operatorName,
+                                       const std::string& channelId) {
+    std::string locale = getPlayerLocale(targetUuid);
+    auto& i18n = i18n::I18n::getInstance();
+    std::string opName = operatorName.empty()
+        ? i18n.get("notice.operator.fallback", locale) : operatorName;
+
+    // Title flash
+    sendTitleByUuid(targetUuid,
+        i18n.get("chat.notice.kick_title", locale),
+        i18n.get("chat.notice.kick_subtitle", locale, {opName, channelId}));
+
+    // Action bar message
+    std::string actionbar = i18n.get("chat.notice.kick_actionbar", locale, {opName, channelId});
+    displayMessageByUuid(targetUuid, convertColorCodes(actionbar));
+}
+
+void ChatInterceptor::notifyMuteTarget(const std::string& targetUuid, const std::string& operatorName,
+                                       const std::string& channelId, const std::string& duration) {
+    std::string locale = getPlayerLocale(targetUuid);
+    auto& i18n = i18n::I18n::getInstance();
+    std::string opName = operatorName.empty()
+        ? i18n.get("notice.operator.fallback", locale) : operatorName;
+    std::string dur = duration.empty()
+        ? i18n.get("notice.duration.unknown", locale) : duration;
+
+    sendTitleByUuid(targetUuid,
+        i18n.get("chat.notice.mute_title", locale),
+        i18n.get("chat.notice.mute_subtitle", locale, {channelId, dur}));
+
+    std::string actionbar = i18n.get("chat.notice.mute_actionbar", locale, {dur, channelId});
+    displayMessageByUuid(targetUuid, convertColorCodes(actionbar));
+}
+
+void ChatInterceptor::sendTitleByUuid(const std::string& playerUuid, const std::string& title,
+                                       const std::string& subtitle) {
+    auto* level = ll::service::getLevel();
+    if (!level) {
+        return;
+    }
+    level->forEachPlayer([&](Player& player) {
+        if (player.getUuid().asString() == playerUuid) {
+            SetTitlePacket timingPacket;
+            timingPacket.mType = SetTitlePacket::TitleType::Times;
+            timingPacket.mFadeInTime = 10;
+            timingPacket.mStayTime = 70;
+            timingPacket.mFadeOutTime = 20;
+            player.sendNetworkPacket(timingPacket);
+
+            if (!title.empty()) {
+                SetTitlePacket titlePacket;
+                titlePacket.mType = SetTitlePacket::TitleType::Title;
+                titlePacket.mTitleText = convertColorCodes(title);
+                player.sendNetworkPacket(titlePacket);
+            }
+            if (!subtitle.empty()) {
+                SetTitlePacket subtitlePacket;
+                subtitlePacket.mType = SetTitlePacket::TitleType::Subtitle;
+                subtitlePacket.mTitleText = convertColorCodes(subtitle);
+                player.sendNetworkPacket(subtitlePacket);
+            }
+            return false;
+        }
+        return true;
+    });
 }
 
 std::string ChatInterceptor::convertColorCodes(const std::string& message) {

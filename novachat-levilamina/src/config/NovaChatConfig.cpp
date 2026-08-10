@@ -14,9 +14,10 @@ NovaChatConfig::NovaChatConfig(const std::filesystem::path& dataDir)
 
 void NovaChatConfig::setDefaults() {
     mBackendHost = "127.0.0.1";
-    mBackendPort = 8888;
+    mBackendPort = 18888;
     mUsername = "LeviLamina_Server";
     mPassword = "";
+    mServerVersion = "1.21.0";
     mReconnectDelay = 5;
     mReplaceVanilla = false;
     mDefaultChannel = "local";
@@ -25,7 +26,7 @@ void NovaChatConfig::setDefaults() {
     mSuccessFormat = "§a成功: {message}";
     mDefaultFormat = "§7[{channel_name}] {player}§f: {message}";
     mDebug = false;
-    
+
     // Default channel formats
     mChannelFormats["global"] = "§c[全服] §7{player}§f: {message}";
     mChannelFormats["local"] = "§e[本地] §7{player}§f: {message}";
@@ -59,6 +60,7 @@ bool NovaChatConfig::load() {
             if (backend.contains("port")) mBackendPort = backend["port"].get<uint16_t>();
             if (backend.contains("username")) mUsername = backend["username"].get<std::string>();
             if (backend.contains("password")) mPassword = backend["password"].get<std::string>();
+            if (backend.contains("server_version")) mServerVersion = backend["server_version"].get<std::string>();
             if (backend.contains("reconnect_delay")) mReconnectDelay = backend["reconnect_delay"].get<int>();
         }
         
@@ -105,6 +107,7 @@ bool NovaChatConfig::save() {
         json["backend"]["port"] = mBackendPort;
         json["backend"]["username"] = mUsername;
         json["backend"]["password"] = mPassword;
+        json["backend"]["server_version"] = mServerVersion;
         json["backend"]["reconnect_delay"] = mReconnectDelay;
         
         // Chat settings

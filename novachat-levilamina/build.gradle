@@ -1,0 +1,70 @@
+// NovaChat-LeviLamina Gradle wrapper.
+//
+// LeviLamina (BDS) plugins are C++20 shared libraries built with xmake.
+// This project does NOT apply the java plugin; it uses the base plugin
+// (lifecycle clean/build) and delegates the real work to xmake via Exec
+// tasks:
+//   - xmakeConfigure : `xmake f -m <mode>`
+//   - xmakeBuild     : `xmake build`
+//   - test           : placeholder for gtest once a test target exists
+//   - build          : depends on xmakeConfigure + xmakeBuild
+//   - clean          : `xmake clean` + remove build/.xmake
+//
+// Run independently with:  gradle :levilamina:build  (once included in settings.gradle)
+// or directly from this dir: gradle -p novachat-levilamina build
+
+plugins {
+    id 'base'
+}
+
+ext.buildMode = project.findProperty('mode') ?: 'release'
+
+tasks.register('xmakeConfigure', Exec) {
+    group = 'build'
+    description = "Configures the xmake project (mode=${ext.buildMode})."
+    commandLine 'xmake', 'f', '-m', ext.buildMode.toString()
+    workingDir projectDir
+    // Re-configure only if the build directory is missing.
+    onlyIf { !layout.projectDirectory.dir('.xmake').asFile.exists() }
+}
+
+tasks.register('xmakeBuild', Exec) {
+    group = 'build'
+    description = 'Builds the LeviLamina plugin shared library with xmake.'
+    dependsOn tasks.named('xmakeConfigure')
+    commandLine 'xmake', 'build'
+    workingDir projectDir
+    inputs.dir layout.projectDirectory.dir('src')
+    inputs.file layout.projectDirectory.file('xmake.lua').asFile
+    outputs.dir layout.projectDirectory.dir('build').asFile
+}
+
+tasks.register('test', Exec) {
+    group = 'verification'
+    description = 'Runs the xmake test target (gtest) if configured.'
+    dependsOn tasks.named('xmakeBuild')
+    // xmake test runs the `test` target defined in xmake.lua if present.
+    commandLine 'xmake', 'test'
+    workingDir projectDir
+    // Non-fatal: the test target may not exist yet.
+    ignoreExitValue = true
+}
+
+tasks.register('build') {
+    group = 'build'
+    description = 'Builds the LeviLamina plugin (configure + build).'
+    dependsOn tasks.named('xmakeBuild')
+}
+
+tasks.named('clean') {
+    doLast {
+        // xmake clean, then remove generated directories.
+        exec {
+            commandLine 'xmake', 'clean'
+            workingDir projectDir
+            ignoreExitValue = true
+        }
+        delete layout.projectDirectory.dir('build').asFile
+        delete layout.projectDirectory.dir('.xmake').asFile
+    }
+}

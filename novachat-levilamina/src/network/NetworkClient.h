@@ -45,7 +45,8 @@ public:
     using PacketHandler = std::function<void(std::unique_ptr<Packet>)>;
 
     NetworkClient(const std::string& host, uint16_t port,
-                  const std::string& username, const std::string& password);
+                  const std::string& username, const std::string& password,
+                  const std::string& serverVersion = "");
     ~NetworkClient();
 
     // Non-copyable
@@ -126,6 +127,7 @@ private:
     uint16_t mPort;
     std::string mUsername;
     std::string mPassword;
+    std::string mServerVersion;
     int mReconnectDelay = 5;
 
     // Socket

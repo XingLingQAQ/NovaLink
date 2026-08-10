@@ -50,7 +50,8 @@ bool NovaChatPlugin::enable() {
         mConfig->getBackendHost(),
         mConfig->getBackendPort(),
         mConfig->getUsername(),
-        mConfig->getPassword()
+        mConfig->getPassword(),
+        mConfig->getServerVersion()
     );
     
     // Initialize chat interceptor

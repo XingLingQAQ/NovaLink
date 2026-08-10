@@ -1,11 +1,11 @@
 #include "NetworkClient.h"
 #include "../protocol/VarInt.h"
+#include "../util/Sha256.h"
 
 #include <ll/api/Logger.h>
 #include <chrono>
 #include <cstring>
 
-// SHA-256 implementation (simplified - in production use a proper crypto library)
 #include <sstream>
 #include <iomanip>
 
@@ -27,11 +27,13 @@ void NetworkClient::initWsa() {
 #endif
 
 NetworkClient::NetworkClient(const std::string& host, uint16_t port,
-                             const std::string& username, const std::string& password)
+                             const std::string& username, const std::string& password,
+                             const std::string& serverVersion)
     : mHost(host)
     , mPort(port)
     , mUsername(username)
-    , mPassword(password) {
+    , mPassword(password)
+    , mServerVersion(serverVersion) {
 #ifdef _WIN32
     initWsa();
 #endif
@@ -304,6 +306,21 @@ std::unique_ptr<Packet> NetworkClient::decodePacket(PacketBuffer& buffer) {
         case PacketIds::CHANNEL_ACTION_RESPONSE:
             packet = std::make_unique<ChannelActionResponsePacket>();
             break;
+        case PacketIds::CONFIG_SYNC:
+            packet = std::make_unique<ConfigSyncPacket>();
+            break;
+        case PacketIds::TITLE:
+            packet = std::make_unique<TitlePacket>();
+            break;
+        case PacketIds::ADMIN_ACTION_RESPONSE:
+            packet = std::make_unique<AdminActionResponsePacket>();
+            break;
+        case PacketIds::ITEM_DISPLAY:
+            packet = std::make_unique<ItemDisplayPacket>();
+            break;
+        case PacketIds::MENTION:
+            packet = std::make_unique<MentionPacket>();
+            break;
         default:
             return nullptr;
     }
@@ -342,11 +359,19 @@ void NetworkClient::encodePacket(const Packet& packet, std::vector<uint8_t>& out
 }
 
 void NetworkClient::sendHandshake() {
+    // SHA-256 hash the password (lowercase hex), matching Java's
+    // MessageDigest.getInstance("SHA-256") behaviour. Empty password stays empty.
+    std::string passwordHash;
+    if (!mPassword.empty()) {
+        passwordHash = novachat::util::Sha256::hex(mPassword);
+    }
+
     auto packet = std::make_unique<HandshakePacket>(
-        1, // Protocol version
+        PROTOCOL_VERSION, // Protocol version 2 (v2 adds trailing serverVersion)
         mUsername,
-        mPassword, // In production, this should be SHA-256 hashed
-        PlatformType::LEVILAMINA
+        passwordHash,
+        PlatformType::LEVILAMINA,
+        mServerVersion
     );
     sendPacket(std::move(packet));
 }

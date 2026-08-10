@@ -4,6 +4,7 @@
 #include "../chat/ChatInterceptor.h"
 #include "../network/NetworkClient.h"
 #include "../protocol/Packet.h"
+#include "../i18n/I18n.h"
 
 #include <ll/api/Logger.h>
 #include <ll/api/command/Command.h>
@@ -15,6 +16,8 @@
 #include <mc/server/commands/CommandOutput.h>
 #include <mc/server/commands/CommandPermissionLevel.h>
 #include <mc/network/packet/TextPacket.h>
+
+#include <algorithm>
 
 namespace novachat {
 
@@ -31,11 +34,13 @@ struct JoinParams {
 
 struct LeaveParams {};
 
-struct ToggleParams {};
+struct ListParams {};
 
-struct DebugParams {
-    bool enable;
+struct WhoParams {
+    std::string channelId;
 };
+
+struct ToggleParams {};
 
 struct ReloadParams {};
 
@@ -81,7 +86,7 @@ void CommandHandler::registerCommands() {
         .execute([this](CommandOrigin const& origin, CommandOutput& output, JoinParams const& params) {
             if (auto* player = origin.getEntity(); player && player->isPlayer()) {
                 auto* p = static_cast<Player*>(player);
-                handleJoin(p->getName(), p->getUuid().asString(), 
+                handleJoin(p->getName(), p->getUuid().asString(),
                     {params.channelId, params.password});
             }
             output.success();
@@ -98,6 +103,30 @@ void CommandHandler::registerCommands() {
             output.success();
         });
 
+    // /nc list
+    ncCommand.overload<ListParams>()
+        .text("list")
+        .execute([this](CommandOrigin const& origin, CommandOutput& output, ListParams const&) {
+            if (auto* player = origin.getEntity(); player && player->isPlayer()) {
+                handleList(static_cast<Player*>(player)->getName(), {});
+            }
+            output.success();
+        });
+
+    // /nc who [channel]
+    ncCommand.overload<WhoParams>()
+        .text("who")
+        .optional("channelId")
+        .execute([this](CommandOrigin const& origin, CommandOutput& output, WhoParams const& params) {
+            if (auto* player = origin.getEntity(); player && player->isPlayer()) {
+                auto* p = static_cast<Player*>(player);
+                handleWho(p->getName(), p->getUuid().asString(),
+                          params.channelId.empty() ? std::vector<std::string>{} :
+                          std::vector<std::string>{params.channelId});
+            }
+            output.success();
+        });
+
     // /nc toggle
     ncCommand.overload<ToggleParams>()
         .text("toggle")
@@ -105,18 +134,6 @@ void CommandHandler::registerCommands() {
             if (auto* player = origin.getEntity(); player && player->isPlayer()) {
                 auto* p = static_cast<Player*>(player);
                 handleToggle(p->getName(), p->getUuid().asString(), {});
-            }
-            output.success();
-        });
-
-    // /nc debug <on|off> (admin only)
-    ncCommand.overload<DebugParams>()
-        .text("debug")
-        .required("enable")
-        .execute([this](CommandOrigin const& origin, CommandOutput& output, DebugParams const& params) {
-            if (auto* player = origin.getEntity(); player && player->isPlayer()) {
-                handleDebug(static_cast<Player*>(player)->getName(), 
-                    {params.enable ? "on" : "off"});
             }
             output.success();
         });
@@ -144,20 +161,46 @@ void CommandHandler::unregisterCommands() {
     mCommandsRegistered = false;
 }
 
+std::vector<std::string> CommandHandler::completeChannel(const std::string& partial) const {
+    std::vector<std::string> result;
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        auto known = interceptor->getKnownChannels();
+        for (const auto& ch : known) {
+            if (ch.rfind(partial, 0) == 0) {
+                result.push_back(ch);
+            }
+        }
+    }
+    return result;
+}
+
 void CommandHandler::handleHelp(const std::string& playerName, const std::vector<std::string>& args) {
+    auto& i18n = i18n::I18n::getInstance();
+    // Use the server default locale for help (per-player locale lookup needs uuid).
+    std::string locale = "zh_CN";
     std::string prefix = mPlugin.getConfig()->getPrefix();
-    
-    sendMessage(playerName, prefix + "§e=== NovaChat 帮助 ===");
-    sendMessage(playerName, "§7/nc help §f- 显示此帮助");
-    sendMessage(playerName, "§7/nc join <频道> [密码] §f- 加入频道");
-    sendMessage(playerName, "§7/nc leave §f- 离开当前频道");
-    sendMessage(playerName, "§7/nc toggle §f- 切换聊天模式");
+
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix + i18n.get("chat.command.help.title", locale)));
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_help", locale)));
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_join", locale)));
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_leave", locale)));
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_list", locale)));
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_who", locale)));
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_toggle", locale)));
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_reload", locale)));
 }
 
 void CommandHandler::handleJoin(const std::string& playerName, const std::string& playerUuid,
                                  const std::vector<std::string>& args) {
+    auto& i18n = i18n::I18n::getInstance();
+    std::string locale = "zh_CN";
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        locale = interceptor->getPlayerLocale(playerUuid);
+    }
+    std::string prefix = mPlugin.getConfig()->getPrefix();
+
     if (args.empty()) {
-        sendMessage(playerName, mPlugin.getConfig()->getPrefix() + "§c用法: /nc join <频道> [密码]");
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix + i18n.get("chat.command.usage.join", locale)));
         return;
     }
 
@@ -171,23 +214,27 @@ void CommandHandler::handleJoin(const std::string& playerName, const std::string
             ChannelAction::JOIN, channelId, password
         );
         networkClient->sendPacket(std::move(packet));
-        
+
         // Update local state
         if (auto* interceptor = mPlugin.getChatInterceptor()) {
             interceptor->setPlayerChannel(playerUuid, channelId);
         }
-        
-        sendMessage(playerName, mPlugin.getConfig()->getPrefix() + 
-            "§a正在加入频道: " + channelId);
+
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.join.joined", locale, {channelId})));
     } else {
-        sendMessage(playerName, mPlugin.getConfig()->getPrefix() + 
-            "§c无法连接到后端服务器");
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.network.not_connected", locale)));
     }
 }
 
 void CommandHandler::handleLeave(const std::string& playerName, const std::string& playerUuid,
                                   const std::vector<std::string>& args) {
     auto* interceptor = mPlugin.getChatInterceptor();
+    auto& i18n = i18n::I18n::getInstance();
+    std::string locale = interceptor ? interceptor->getPlayerLocale(playerUuid) : "zh_CN";
+    std::string prefix = mPlugin.getConfig()->getPrefix();
+
     if (!interceptor) {
         return;
     }
@@ -197,8 +244,9 @@ void CommandHandler::handleLeave(const std::string& playerName, const std::strin
     std::string defaultChannel = mPlugin.getConfig()->getDefaultChannel();
 
     if (currentChannel == defaultChannel) {
-        sendMessage(playerName, mPlugin.getConfig()->getPrefix() + 
-            "§c你已经在默认频道中");
+        // Already on the default channel; nothing to leave.
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.action.leave_simple", locale, {currentChannel})));
         return;
     }
 
@@ -213,52 +261,115 @@ void CommandHandler::handleLeave(const std::string& playerName, const std::strin
 
     // Update local state
     interceptor->setPlayerChannel(playerUuid, defaultChannel);
-    
-    sendMessage(playerName, mPlugin.getConfig()->getPrefix() + 
-        "§a已离开频道: " + currentChannel);
+
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+        i18n.get("chat.leave.left", locale, {currentChannel, defaultChannel})));
+}
+
+void CommandHandler::handleList(const std::string& playerName, const std::vector<std::string>& args) {
+    auto& i18n = i18n::I18n::getInstance();
+    std::string locale = "zh_CN";
+    std::string prefix = mPlugin.getConfig()->getPrefix();
+
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix + i18n.get("chat.command.list.title", locale)));
+
+    auto* interceptor = mPlugin.getChatInterceptor();
+    if (!interceptor) {
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.list.empty", locale)));
+        return;
+    }
+
+    auto known = interceptor->getKnownChannels();
+    if (known.empty()) {
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.list.empty", locale)));
+    } else {
+        // Sort for stable output.
+        std::sort(known.begin(), known.end());
+        for (const auto& ch : known) {
+            sendMessage(playerName, ChatInterceptor::convertColorCodes("&7- &b" + ch));
+        }
+    }
+
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.list.tail", locale)));
+}
+
+void CommandHandler::handleWho(const std::string& playerName, const std::string& playerUuid,
+                                const std::vector<std::string>& args) {
+    auto* interceptor = mPlugin.getChatInterceptor();
+    auto& i18n = i18n::I18n::getInstance();
+    std::string locale = interceptor ? interceptor->getPlayerLocale(playerUuid) : "zh_CN";
+    std::string prefix = mPlugin.getConfig()->getPrefix();
+
+    std::string channelId;
+    if (!args.empty()) {
+        channelId = args[0];
+    } else if (interceptor) {
+        channelId = interceptor->getPlayerState(playerUuid).currentChannel;
+    }
+
+    if (channelId.empty()) {
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.who.specify_channel", locale)));
+        return;
+    }
+
+    auto* networkClient = mPlugin.getNetworkClient();
+    if (!networkClient || !networkClient->isConnected()) {
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.who.unavailable", locale)));
+        return;
+    }
+
+    // Fire a WHO channel action; the backend replies with a
+    // ChannelActionResponse whose extra carries the member list.
+    if (interceptor) {
+        interceptor->whoChannel(playerUuid, channelId);
+    }
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+        i18n.get("chat.who.fetching", locale, {channelId})));
 }
 
 void CommandHandler::handleToggle(const std::string& playerName, const std::string& playerUuid,
                                    const std::vector<std::string>& args) {
     auto* interceptor = mPlugin.getChatInterceptor();
+    auto& i18n = i18n::I18n::getInstance();
+    std::string locale = interceptor ? interceptor->getPlayerLocale(playerUuid) : "zh_CN";
+    std::string prefix = mPlugin.getConfig()->getPrefix();
+
     if (!interceptor) {
         return;
     }
 
     ChatMode newMode = interceptor->toggleChatMode(playerUuid);
-    
-    std::string modeStr = (newMode == ChatMode::REPLACE) ? "NovaChat模式" : "混合模式";
-    sendMessage(playerName, mPlugin.getConfig()->getPrefix() + 
-        "§a聊天模式已切换为: §e" + modeStr);
-}
 
-void CommandHandler::handleDebug(const std::string& playerName, const std::vector<std::string>& args) {
-    // TODO: Add permission check
-    
-    if (args.empty()) {
-        bool current = mPlugin.getConfig()->isDebug();
-        sendMessage(playerName, mPlugin.getConfig()->getPrefix() + 
-            "§7调试模式: " + (current ? "§a开启" : "§c关闭"));
-        return;
-    }
-
-    bool enable = (args[0] == "on" || args[0] == "true" || args[0] == "1");
-    mPlugin.getConfig()->setDebug(enable);
-    
-    sendMessage(playerName, mPlugin.getConfig()->getPrefix() + 
-        "§a调试模式已" + (enable ? "开启" : "关闭"));
+    std::string modeStr = (newMode == ChatMode::REPLACE) ? "NovaChat" : "Hybrid";
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+        i18n.get("chat.command.toggle.switched", locale, {modeStr})));
 }
 
 void CommandHandler::handleReload(const std::string& playerName, const std::vector<std::string>& args) {
-    // TODO: Add permission check
-    
+    // TODO: Add permission check (admin only)
+    auto& i18n = i18n::I18n::getInstance();
+    std::string locale = "zh_CN";
+    std::string prefix = mPlugin.getConfig()->getPrefix();
+
     if (mPlugin.getConfig()->reload()) {
-        sendMessage(playerName, mPlugin.getConfig()->getPrefix() + 
-            "§a配置已重新加载");
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.command.reload.success", locale)));
     } else {
-        sendMessage(playerName, mPlugin.getConfig()->getPrefix() + 
-            "§c配置重载失败");
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.action.failed", locale)));
     }
+}
+
+void CommandHandler::sendLocalized(const std::string& playerName, const std::string& playerUuid,
+                                    const std::string& key, const std::vector<std::string>& args) {
+    auto& i18n = i18n::I18n::getInstance();
+    std::string locale = "zh_CN";
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        locale = interceptor->getPlayerLocale(playerUuid);
+    }
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get(key, locale, args)));
 }
 
 void CommandHandler::sendMessage(const std::string& playerName, const std::string& message) {

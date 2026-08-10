@@ -26,6 +26,7 @@ public:
     [[nodiscard]] uint16_t getBackendPort() const { return mBackendPort; }
     [[nodiscard]] const std::string& getUsername() const { return mUsername; }
     [[nodiscard]] const std::string& getPassword() const { return mPassword; }
+    [[nodiscard]] const std::string& getServerVersion() const { return mServerVersion; }
     [[nodiscard]] int getReconnectDelay() const { return mReconnectDelay; }
 
     // Chat settings
@@ -51,9 +52,10 @@ private:
 
     // Backend settings
     std::string mBackendHost = "127.0.0.1";
-    uint16_t mBackendPort = 8888;
+    uint16_t mBackendPort = 18888;
     std::string mUsername = "LeviLamina_Server";
     std::string mPassword = "";
+    std::string mServerVersion = "1.21.0";
     int mReconnectDelay = 5;
 
     // Chat settings

@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <functional>
+#include <vector>
 
 namespace novachat {
 
@@ -13,6 +14,7 @@ class NovaChatPlugin;
 
 namespace protocol {
     struct UUID;
+    class ChannelActionResponsePacket;
 }
 
 /**
@@ -30,6 +32,7 @@ struct PlayerChatState {
     std::string currentChannel = "local";
     ChatMode chatMode = ChatMode::HYBRID;
     bool muted = false;
+    std::string locale = "zh_CN";
     std::unordered_set<std::string> joinedChannels;
 };
 
@@ -181,6 +184,43 @@ public:
     void setPlayerMuted(const std::string& playerUuid, bool muted);
 
     /**
+     * Get a player's locale (default zh_CN).
+     */
+    std::string getPlayerLocale(const std::string& playerUuid);
+
+    /**
+     * Set a player's locale.
+     */
+    void setPlayerLocale(const std::string& playerUuid, const std::string& locale);
+
+    /**
+     * Get the set of known channels (populated from ConfigSync).
+     */
+    std::vector<std::string> getKnownChannels() const;
+
+    /**
+     * Add a channel to the known channels set.
+     */
+    void addKnownChannel(const std::string& channelId);
+
+    /**
+     * Send a WHO channel action for a player.
+     */
+    void whoChannel(const std::string& playerUuid, const std::string& channelId);
+
+    /**
+     * Notify a target player that they were kicked from a channel.
+     */
+    void notifyKickTarget(const std::string& targetUuid, const std::string& operatorName,
+                          const std::string& channelId);
+
+    /**
+     * Notify a target player that they were muted in a channel.
+     */
+    void notifyMuteTarget(const std::string& targetUuid, const std::string& operatorName,
+                          const std::string& channelId, const std::string& duration);
+
+    /**
      * Check if replace vanilla mode is enabled globally.
      * @return true if vanilla chat should be replaced
      */
@@ -224,6 +264,10 @@ private:
     // Handle player leave event
     void onPlayerLeave(const std::string& playerUuid);
 
+    // Send a title (with timing) to a single player by UUID.
+    void sendTitleByUuid(const std::string& playerUuid, const std::string& title,
+                         const std::string& subtitle);
+
     NovaChatPlugin& mPlugin;
     bool mReplaceVanilla = false;
     bool mHooksRegistered = false;
@@ -235,6 +279,14 @@ private:
     // Player name to UUID mapping for quick lookups
     std::unordered_map<std::string, std::string> mNameToUuid;
     mutable std::mutex mNameMapMutex;
+
+    // Known channels (populated from ConfigSync / channel action responses)
+    std::unordered_set<std::string> mKnownChannels;
+    mutable std::mutex mKnownChannelsMutex;
+
+    // Pending channel action request tracking: request UUID -> channel id
+    std::unordered_map<std::string, std::string> mPendingActions;
+    mutable std::mutex mPendingActionsMutex;
 };
 
 } // namespace novachat
