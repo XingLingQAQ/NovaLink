@@ -12,12 +12,35 @@
 //
 // Run independently with:  gradle :NovaChat:Bedrock:levilamina:build
 // or directly from this dir: gradle -p NovaChat/Bedrock/levilamina build
+//
+// Toolchain guard: xmake is Windows-only and is NOT installed on the
+// ubuntu java-ci runner. The dedicated bedrock-ci workflow installs xmake
+// on a windows-2025 runner and runs the real build there. So every xmake
+// task self-skips (with a clear log line) when xmake is not on PATH -- this
+// keeps `gradle build` green on toolchain-less hosts while running the real
+// build where the toolchain is present.
 
 plugins {
     id 'base'
 }
 
 def buildMode = project.findProperty('mode') ?: 'release'
+
+// True when the xmake executable is resolvable on PATH (config-time check).
+def xmakeAvailable = {
+    try {
+        def proc = ['xmake', '--version'].execute((List) null, projectDir)
+        proc.waitFor()
+        return proc.exitValue() == 0
+    } catch (Exception ignored) {
+        return false
+    }
+}()
+
+// Shared skip reason emitted by every guarded task so a `gradle build` log
+// on a toolchain-less host explains WHY the native build did not run.
+def skipReason = '[levilamina] xmake not found on PATH -- skipping native build. ' +
+    'Run via the bedrock-ci workflow (windows-2025) or install xmake locally.'
 
 tasks.register('xmakeConfigure', Exec) {
     group = 'build'
@@ -26,6 +49,9 @@ tasks.register('xmakeConfigure', Exec) {
     workingDir projectDir
     // Re-configure only if the build directory is missing.
     onlyIf { !layout.projectDirectory.dir('.xmake').asFile.exists() }
+    // Self-skip when xmake is not installed (e.g. ubuntu java-ci runner).
+    onlyIf { xmakeAvailable }
+    doFirst { logger.lifecycle(skipReason) }
 }
 
 tasks.register('xmakeBuild', Exec) {
@@ -37,6 +63,8 @@ tasks.register('xmakeBuild', Exec) {
     inputs.dir layout.projectDirectory.dir('src')
     inputs.file layout.projectDirectory.file('xmake.lua').asFile
     outputs.dir layout.projectDirectory.dir('build').asFile
+    onlyIf { xmakeAvailable }
+    doFirst { logger.lifecycle(skipReason) }
 }
 
 tasks.register('test', Exec) {
@@ -48,21 +76,29 @@ tasks.register('test', Exec) {
     workingDir projectDir
     // Non-fatal: the test target may not exist yet.
     ignoreExitValue = true
+    onlyIf { xmakeAvailable }
 }
 
 tasks.named('build') {
     group = 'build'
     description = 'Builds the LeviLamina plugin (configure + build).'
     dependsOn tasks.named('xmakeBuild')
+    // If xmake is absent, emit the skip reason at build time so the
+    // aggregate `gradle build` log is self-explanatory.
+    doFirst {
+        if (!xmakeAvailable) logger.lifecycle(skipReason)
+    }
 }
 
 tasks.named('clean') {
     doLast {
         // xmake clean, then remove generated directories.
-        exec {
-            commandLine 'xmake', 'clean'
-            workingDir projectDir
-            ignoreExitValue = true
+        if (xmakeAvailable) {
+            exec {
+                commandLine 'xmake', 'clean'
+                workingDir projectDir
+                ignoreExitValue = true
+            }
         }
         delete layout.projectDirectory.dir('build').asFile
         delete layout.projectDirectory.dir('.xmake').asFile

@@ -18,10 +18,36 @@
 //
 // Run independently with:  gradle :NovaChat:Bedrock:pmmp:build
 // or directly from this dir: gradle -p NovaChat/Bedrock/pmmp build
+//
+// Toolchain guard: PHP (and the PowerShell used by testEnv to download the
+// phpunit phar) are NOT installed on the ubuntu java-ci runner. The dedicated
+// bedrock-ci workflow sets up PHP via shivammathur/setup-php and runs the
+// real test there (`composer test`, which uses composer-installed phpunit --
+// a different, non-phar path). So every PHP/powershell task self-skips
+// (with a clear log line) when its toolchain is not on PATH, keeping
+// `gradle build` green on toolchain-less hosts while running the real build
+// where the toolchain is present.
 
 plugins {
     id 'base'
 }
+
+// True when the given executable is resolvable on PATH (config-time check).
+def onPath = { String exe ->
+    try {
+        def proc = [exe, '--version'].execute((List) null, projectDir)
+        proc.waitFor()
+        return proc.exitValue() == 0
+    } catch (Exception ignored) {
+        return false
+    }
+}
+
+def phpAvailable = onPath('php')
+def powershellAvailable = onPath('powershell')
+
+def skipReason = '[pmmp] PHP toolchain not found on PATH -- skipping native build. ' +
+    'Run via the bedrock-ci workflow (ubuntu + shivammathur/setup-php) or install PHP locally.'
 
 tasks.register('testEnv') {
     group = 'build'
@@ -30,6 +56,13 @@ tasks.register('testEnv') {
     def erisDir = layout.projectDirectory.dir('vendor/giorgiosironi/eris').asFile
     outputs.file phpunitPhar
     outputs.dir erisDir
+    // Self-skip when the toolchains testEnv relies on are absent. testEnv
+    // downloads the phpunit phar via powershell (Windows-only here) -- on a
+    // non-Windows toolchain-less host there is nothing it can do.
+    onlyIf { powershellAvailable }
+    doFirst {
+        if (!powershellAvailable) logger.lifecycle(skipReason)
+    }
     doLast {
         def vendorBin = layout.projectDirectory.dir('vendor/bin').asFile
         if (!vendorBin.exists()) vendorBin.mkdirs()
@@ -65,12 +98,19 @@ tasks.register('phpunit', Exec) {
     inputs.dir layout.projectDirectory.dir('tests')
     inputs.dir layout.projectDirectory.dir('src')
     inputs.file layout.projectDirectory.file('phpunit.xml').asFile
+    onlyIf { phpAvailable }
+    doFirst {
+        if (!phpAvailable) logger.lifecycle(skipReason)
+    }
 }
 
 tasks.named('build') {
     group = 'build'
     description = 'Builds the PMMP plugin (test env + phpunit).'
     dependsOn tasks.named('testEnv'), tasks.named('phpunit')
+    doFirst {
+        if (!phpAvailable) logger.lifecycle(skipReason)
+    }
 }
 
 tasks.named('clean') {
