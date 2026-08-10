@@ -1,18 +1,27 @@
 package com.nova.chat.nukkit.command;
 
+import cn.nukkit.Player;
 import cn.nukkit.command.CommandSender;
 import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.nukkit.NovaChatNukkit;
+import com.nova.chat.nukkit.network.NetworkClient;
+
+import java.util.Collections;
+import java.util.List;
 
 /**
  * {@code /nc who [频道]} — lists the online members of a channel
  * (UX-DESIGN §8.2).
  *
- * <p>The current backend protocol does not deliver channel-member data, so
- * {@link WhoCommandService#isMemberListingSupported()} is {@code false} and
- * the command degrades to the shared explanatory prompt instead of
- * fabricating a list. No permission requirement.
+ * <p>Sends a {@link ChannelAction#WHO} request to the backend and shows an
+ * interim {@code chat.who.fetching} prompt. The asynchronous response is
+ * rendered by the {@code ChatInterceptor}'s {@code ChannelResponseDispatcher}
+ * adapter, which calls {@link WhoCommandService#formatMemberList} and sends
+ * the result to the requesting player. No permission requirement.
  */
 public class WhoCommand extends AbstractSubCommand {
 
@@ -47,7 +56,61 @@ public class WhoCommand extends AbstractSubCommand {
 
     @Override
     public boolean execute(CommandSender sender, String[] args) {
-        messageHelper.sendMessage(sender, WhoCommandService.getUnavailablePrompt());
+        if (!WhoCommandService.isMemberListingSupported()) {
+            sendMessage(sender, WhoCommandService.getUnavailablePrompt());
+            return true;
+        }
+        NetworkClient client = plugin.getNetworkClient();
+        if (client == null || !client.isConnected() || !client.isAuthenticated()) {
+            sendError(sender, I18n.tr("chat.network.not_connected"));
+            return true;
+        }
+
+        Player player = getPlayer(sender);
+        java.util.UUID requesterId = player != null ? player.getUniqueId() : null;
+        String channelId = resolveChannelId(sender, args, player, requesterId);
+        if (channelId == null) {
+            return true;
+        }
+
+        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.WHO, channelId);
+        packet.addExtra("playerId", requesterId != null ? requesterId.toString() : "");
+        if (player != null) {
+            packet.addExtra("requesterName", player.getName());
+        }
+        if (requesterId != null) {
+            packet.addExtra("requesterId", requesterId.toString());
+        }
+
+        client.sendPacket(packet);
+        sendMessage(sender, WhoCommandService.getFetchingPrompt(channelId));
         return true;
+    }
+
+    private String resolveChannelId(CommandSender sender, String[] args, Player player, java.util.UUID requesterId) {
+        if (args != null && args.length > 0 && !args[0].isBlank()) {
+            return args[0];
+        }
+        if (player != null) {
+            PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
+            String active = state != null ? state.getActiveChannel() : null;
+            if (active != null && !active.isBlank()) {
+                return active;
+            }
+        }
+        sendMessage(sender, I18n.tr(requesterId, "chat.who.no_channel"));
+        return null;
+    }
+
+    @Override
+    public List<String> tabComplete(CommandSender sender, String[] args) {
+        if (args.length == 1) {
+            List<String> known = getKnownChannelIds(args[0]);
+            if (!known.isEmpty()) {
+                return known;
+            }
+            return java.util.Arrays.asList("global", "local");
+        }
+        return Collections.emptyList();
     }
 }

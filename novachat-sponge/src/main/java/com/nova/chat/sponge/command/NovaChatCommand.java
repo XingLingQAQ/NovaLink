@@ -151,17 +151,57 @@ public class NovaChatCommand {
         return Command.builder()
             .shortDescription(Component.text(I18n.tr("chat.command.desc.who")))
             .addParameter(channelParam)
-            .executor(this::executeWho)
+            .executor(ctx -> executeWho(ctx, channelParam))
             .build();
     }
 
     /**
-     * Executes the who command - degrades to the shared unavailable prompt
-     * until the backend protocol delivers channel-member data (UX-DESIGN §8.2).
+     * Executes the who command — sends a {@link com.nova.chat.common.protocol.ChannelAction#WHO}
+     * request to the backend and shows an interim {@code chat.who.fetching}
+     * prompt (UX-DESIGN §8.2). The asynchronous response is rendered by the
+     * {@code ChatListener}'s {@code ChannelResponseDispatcher} adapter, which
+     * calls {@link WhoCommandService#formatMemberList} and sends the result to
+     * the requesting player.
      */
-    private org.spongepowered.api.command.CommandResult executeWho(CommandContext ctx) throws org.spongepowered.api.command.exception.CommandException {
-        sendMessage(ctx.subject(),
-                com.nova.chat.client.command.WhoCommandService.getUnavailablePrompt());
+    private org.spongepowered.api.command.CommandResult executeWho(CommandContext ctx,
+            Parameter.Value<String> channelParam) throws org.spongepowered.api.command.exception.CommandException {
+        if (!com.nova.chat.client.command.WhoCommandService.isMemberListingSupported()) {
+            sendMessage(ctx.subject(),
+                    com.nova.chat.client.command.WhoCommandService.getUnavailablePrompt());
+            return org.spongepowered.api.command.CommandResult.success();
+        }
+        if (!checkConnection(ctx.subject())) {
+            return org.spongepowered.api.command.CommandResult.success();
+        }
+
+        java.util.UUID requesterId = playerIdOf(ctx.subject());
+        String channelId = ctx.one(channelParam).orElse(null);
+        if (channelId == null || channelId.isBlank()) {
+            if (ctx.cause().root() instanceof ServerPlayer player) {
+                PlayerChannelState state = plugin.getChatListener().getOrCreateState(player);
+                String active = state != null ? state.getActiveChannel() : null;
+                if (active != null && !active.isBlank()) {
+                    channelId = active;
+                }
+            }
+        }
+        if (channelId == null || channelId.isBlank()) {
+            sendError(ctx.subject(), I18n.tr(requesterId, "chat.who.no_channel"));
+            return org.spongepowered.api.command.CommandResult.success();
+        }
+
+        com.nova.chat.common.protocol.packets.ChannelActionPacket packet =
+                new com.nova.chat.common.protocol.packets.ChannelActionPacket(
+                        com.nova.chat.common.protocol.ChannelAction.WHO, channelId);
+        packet.addExtra("playerId", requesterId != null ? requesterId.toString() : "");
+        if (ctx.cause().root() instanceof ServerPlayer player) {
+            packet.addExtra("requesterName", player.name());
+        }
+        if (requesterId != null) {
+            packet.addExtra("requesterId", requesterId.toString());
+        }
+        plugin.getNetworkClient().sendPacket(packet);
+        sendMessage(ctx.subject(), com.nova.chat.client.command.WhoCommandService.getFetchingPrompt(channelId));
         return org.spongepowered.api.command.CommandResult.success();
     }
 

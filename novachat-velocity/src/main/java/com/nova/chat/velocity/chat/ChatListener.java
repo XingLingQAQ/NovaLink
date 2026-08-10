@@ -1,6 +1,7 @@
 package com.nova.chat.velocity.chat;
 
 import com.nova.chat.client.command.PlayerMessages;
+import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
@@ -185,6 +186,24 @@ public class ChatListener {
         public void sendErrorMessage(UUID playerId, String text) {
             plugin.getServer().getPlayer(playerId).ifPresent(player ->
                     player.sendMessage(messageFormatter.formatError(text)));
+        }
+
+        @Override
+        public void sendWhoResult(UUID playerId, String channelId, String displayName,
+                                  String membersCsv, String memberCount) {
+            plugin.getServer().getPlayer(playerId).ifPresent(player -> {
+                String text = WhoCommandService.formatMemberList(
+                        playerId, channelId, displayName, membersCsv, memberCount);
+                // Render each line independently so color codes per line are
+                // parsed by the shared Adventure parser (Velocity has no native
+                // multi-line chat component; splitting keeps the header/body
+                // color codes intact).
+                for (String line : text.split("\n")) {
+                    if (!line.isEmpty()) {
+                        player.sendMessage(messageFormatter.parseColors(line));
+                    }
+                }
+            });
         }
 
         @Override

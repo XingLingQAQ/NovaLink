@@ -1,6 +1,7 @@
 package com.nova.chat.pnx.network;
 
 import com.nova.chat.client.command.PlayerMessages;
+import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
@@ -343,6 +344,24 @@ public class NetworkClient {
                 NovaChatConfig cfg = plugin.getNovaChatConfig();
                 String full = cfg.getFormatPrefix() + cfg.getFormatError().replace("{message}", text);
                 player.sendMessage(cn.nukkit.utils.TextFormat.colorize('&', full));
+            });
+        }
+
+        @Override
+        public void sendWhoResult(java.util.UUID playerId, String channelId, String displayName,
+                                  String membersCsv, String memberCount) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                if (player == null) {
+                    return;
+                }
+                String text = WhoCommandService.formatMemberList(
+                        playerId, channelId, displayName, membersCsv, memberCount);
+                for (String line : text.split("\n")) {
+                    if (!line.isEmpty()) {
+                        player.sendMessage(plugin.getMessageFormatter().colorize(line));
+                    }
+                }
             });
         }
 

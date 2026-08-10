@@ -1,6 +1,7 @@
 package com.nova.chat.folia.chat;
 
 import com.nova.chat.client.command.PlayerMessages;
+import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
@@ -212,6 +213,27 @@ public class AsyncChatInterceptor implements Listener {
                 return;
             }
             scheduler.runForPlayer(player, () -> plugin.getMessageHelper().sendError(player, text));
+        }
+
+        @Override
+        public void sendWhoResult(UUID playerId, String channelId, String displayName,
+                                  String membersCsv, String memberCount) {
+            Player player = plugin.getServer().getPlayer(playerId);
+            if (player == null) {
+                return;
+            }
+            scheduler.runForPlayer(player, () -> {
+                if (!player.isOnline()) {
+                    return;
+                }
+                String text = WhoCommandService.formatMemberList(
+                        playerId, channelId, displayName, membersCsv, memberCount);
+                for (String line : text.split("\n")) {
+                    if (!line.isEmpty()) {
+                        player.sendMessage(MessageHelper.colorize(line));
+                    }
+                }
+            });
         }
 
         @Override

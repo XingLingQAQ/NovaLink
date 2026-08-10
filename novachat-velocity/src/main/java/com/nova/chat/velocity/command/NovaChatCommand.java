@@ -79,7 +79,7 @@ public class NovaChatCommand implements SimpleCommand {
                 handleList(invocation);
                 break;
             case "who":
-                handleWho(invocation);
+                handleWho(invocation, subArgs);
                 break;
             case "toggle":
                 handleToggle(invocation);
@@ -228,13 +228,56 @@ public class NovaChatCommand implements SimpleCommand {
     }
 
     /**
-     * Handles the who subcommand - degrades to the shared unavailable prompt
-     * until the backend protocol delivers channel-member data (UX-DESIGN §8.2).
-     * No permission requirement; any player may run it.
+     * Handles the who subcommand — sends a {@link com.nova.chat.common.protocol.ChannelAction#WHO}
+     * request to the backend and shows an interim {@code chat.who.fetching}
+     * prompt (UX-DESIGN §8.2). The asynchronous response is rendered by the
+     * {@code ChatListener}'s {@code ChannelResponseDispatcher} adapter, which
+     * calls {@link WhoCommandService#formatMemberList} and sends the result to
+     * the requesting player. No permission requirement; any player may run it.
      */
-    private void handleWho(Invocation invocation) {
-        invocation.source().sendMessage(
-                messageFormatter.formatSystemMessage(WhoCommandService.getUnavailablePrompt()));
+    private void handleWho(Invocation invocation, String[] args) {
+        if (!WhoCommandService.isMemberListingSupported()) {
+            invocation.source().sendMessage(
+                    messageFormatter.formatSystemMessage(WhoCommandService.getUnavailablePrompt()));
+            return;
+        }
+        com.nova.chat.velocity.network.NetworkClient client = plugin.getNetworkClient();
+        if (client == null || !client.isConnected() || !client.isAuthenticated()) {
+            invocation.source().sendMessage(messageFormatter.formatError(
+                    I18n.tr("chat.network.not_connected")));
+            return;
+        }
+
+        java.util.UUID requesterId = (invocation.source() instanceof Player p) ? p.getUniqueId() : null;
+        String channelId = null;
+        if (args != null && args.length > 0 && !args[0].isBlank()) {
+            channelId = args[0];
+        } else if (invocation.source() instanceof Player player) {
+            PlayerChannelState state = plugin.getChatListener().getOrCreateState(player);
+            String active = state != null ? state.getActiveChannel() : null;
+            if (active != null && !active.isBlank()) {
+                channelId = active;
+            }
+        }
+        if (channelId == null || channelId.isBlank()) {
+            invocation.source().sendMessage(messageFormatter.formatError(
+                    I18n.tr(requesterId, "chat.who.no_channel")));
+            return;
+        }
+
+        com.nova.chat.common.protocol.packets.ChannelActionPacket packet =
+                new com.nova.chat.common.protocol.packets.ChannelActionPacket(
+                        com.nova.chat.common.protocol.ChannelAction.WHO, channelId);
+        packet.addExtra("playerId", requesterId != null ? requesterId.toString() : "");
+        if (invocation.source() instanceof Player player) {
+            packet.addExtra("requesterName", player.getUsername());
+        }
+        if (requesterId != null) {
+            packet.addExtra("requesterId", requesterId.toString());
+        }
+        client.sendPacket(packet);
+        invocation.source().sendMessage(messageFormatter.formatSystemMessage(
+                WhoCommandService.getFetchingPrompt(channelId)));
     }
 
     /**

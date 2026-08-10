@@ -522,6 +522,28 @@ public class NetworkClient {
             }
 
             if (response.isSuccess()) {
+                // /nc who result: render the member list directly (no "操作成功"
+                // ack). The backend packed members / memberCount / displayName
+                // into the response extras.
+                if (response.getAction() == ChannelAction.WHO) {
+                    String channelId = (response.getChannelId() != null && !response.getChannelId().isEmpty())
+                            ? response.getChannelId()
+                            : pending.channelId;
+                    String text = com.nova.chat.client.command.WhoCommandService.formatMemberList(
+                            pending.playerId,
+                            channelId,
+                            response.getExtra("displayName"),
+                            response.getExtra("members"),
+                            response.getExtra("memberCount"));
+                    for (String line : text.split("\n")) {
+                        if (!line.isEmpty()) {
+                            plugin.getMessageHelper().sendMessage(player,
+                                    com.nova.chat.bukkit.command.MessageHelper.colorize(line));
+                        }
+                    }
+                    return;
+                }
+
                 String message = formatChannelActionSuccess(response, pending);
                 plugin.getMessageHelper().sendSuccess(player, message);
 

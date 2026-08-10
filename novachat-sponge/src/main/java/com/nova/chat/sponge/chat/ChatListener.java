@@ -1,6 +1,7 @@
 package com.nova.chat.sponge.chat;
 
 import com.nova.chat.client.command.PlayerMessages;
+import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
@@ -194,6 +195,25 @@ public class ChatListener {
                     return;
                 }
                 opt.get().sendMessage(plugin.getMessageFormatter().formatError(text));
+            });
+        }
+
+        @Override
+        public void sendWhoResult(UUID playerId, String channelId, String displayName,
+                                  String membersCsv, String memberCount) {
+            Sponge.server().scheduler().executor(plugin.getContainer()).execute(() -> {
+                Optional<ServerPlayer> opt = Sponge.server().player(playerId);
+                if (opt.isEmpty()) {
+                    return;
+                }
+                ServerPlayer player = opt.get();
+                String text = WhoCommandService.formatMemberList(
+                        playerId, channelId, displayName, membersCsv, memberCount);
+                for (String line : text.split("\n")) {
+                    if (!line.isEmpty()) {
+                        player.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(line));
+                    }
+                }
             });
         }
 
