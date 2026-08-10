@@ -1,0 +1,108 @@
+# Real-server E2E CI for NovaChat.
+#
+# This workflow is OPT-IN: it only runs on manual dispatch (workflow_dispatch)
+# or nightly schedule. It never runs on push/PR because E2E depends on external
+# server downloads (Purpur, etc.) whose availability is flaky and would
+# intermittently redden PRs.
+#
+# Platform coverage:
+#   bukkit   -- REQUIRED, fully implemented (run-bukkit-e2e.ps1, L1 complete).
+#   folia, velocity, bungee, nukkit, pnx, sponge -- continue-on-error TODO stubs
+#   (run-e2e-orchestrator.ps1 dispatches them as "not yet ported" no-ops).
+#
+# Runner: windows-2025 (E2E scripts are PowerShell + Windows process-tree
+# management). JDK 21 (primary) + 25 (velocity toolchain) + Node 18 (mineflayer
+# bot). The Mojang EULA is silently accepted per CI policy (see e2e/README.md).
+name: E2E (Real Server)
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Comma-separated platforms (default: bukkit only)'
+        required: false
+        default: 'bukkit'
+  schedule:
+    # Nightly at 03:30 UTC -- only runs on the default branch.
+    - cron: '30 3 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: E2E ${{ matrix.platform }}
+    runs-on: windows-2025
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [bukkit, folia, velocity, bungee, nukkit, pnx, sponge]
+    # bukkit is the only fully-implemented platform; the rest are TODO stubs
+    # that exit 0 with a "not yet ported" message. continue-on-error keeps the
+    # workflow green while surfacing the real per-platform status in the log.
+    continue-on-error: ${{ matrix.platform != 'bukkit' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (primary) and JDK 25 (velocity toolchain)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            25
+
+      - name: Set up Node 18 (mineflayer bot)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: e2e/bot/package.json
+
+      - name: Cache E2E server jars (dist)
+        uses: actions/cache@v4
+        with:
+          path: .e2e-artifacts/dist
+          key: e2e-dist-${{ runner.os }}-${{ hashFiles('e2e/versions.lock.ps1') }}
+          restore-keys: |
+            e2e-dist-${{ runner.os }}-
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper/dists
+          key: gradle-e2e-${{ runner.os }}-${{ hashFiles('**/*.gradle', '**/gradle.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-e2e-${{ runner.os }}-
+
+      - name: Run E2E orchestrator (${{ matrix.platform }})
+        shell: pwsh
+        env:
+          # JAVA_HOME points at JDK 21 (setup-java puts 21 first); velocity's
+          # JDK 25 toolchain is only needed at build time, which Gradle resolves
+          # via the toolchain auto-detection + the installations.paths override.
+          JAVA_HOME: ${{ env.JAVA_HOME_21_X64 }}
+          # For workflow_dispatch, prefer the user's platform selection; otherwise
+          # fall back to the matrix platform. schedule runs use the matrix value.
+          E2E_PLATFORMS: ${{ github.event.inputs.platforms || matrix.platform }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File e2e/bin/run-e2e-orchestrator.ps1 `
+            -Platforms $env:E2E_PLATFORMS `
+            -RepoRoot $env:GITHUB_WORKSPACE
+
+      - name: Upload E2E artifacts on failure
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            .e2e-artifacts/runs/
+            .e2e-artifacts/novalink-core.classpath.txt
+          if-no-files-found: ignore
+          retention-days: 7

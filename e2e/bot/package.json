@@ -1,0 +1,14 @@
+{
+  "name": "novachat-e2e-bot",
+  "version": "1.0.0",
+  "description": "NovaChat real-server E2E Layer-1 bot (mineflayer, offline auth).",
+  "main": "run-e2e.js",
+  "scripts": {
+    "start": "node run-e2e.js"
+  },
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "mineflayer": "^4.37.1"
+  }
+}

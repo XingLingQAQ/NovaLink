@@ -1,0 +1,27 @@
+// Temporary init script for E2E: write StarLink:core runtime classpath to a file.
+// Not part of the project build; invoked via `gradlew --init-script`.
+//
+// StarLink:core has no shadow plugin (it is a thin jar with Main-Class), so it
+// cannot be launched with `java -jar`. We export its full runtime classpath
+// (core jar + runtimeClasspath dependencies) so the E2E backend can start with
+// `java -cp <classpath> com.nova.link.NovaLinkMain <config>`.
+import org.gradle.jvm.tasks.Jar
+
+allprojects {
+    afterEvaluate { p ->
+        if (p.path == ':StarLink:core') {
+            def cpTask = p.tasks.register('writeRuntimeClasspath') {
+                doLast {
+                    def cfg = p.configurations.findByName('runtimeClasspath')
+                    def files = cfg.resolve()
+                    def coreJar = p.tasks.named('jar', Jar).get().archiveFile.get().asFile
+                    def cp = ([coreJar] + files).collect { it.absolutePath }.join(File.pathSeparator)
+                    def out = new File(rootProject.projectDir, '.e2e-artifacts/novalink-core.classpath.txt')
+                    out.parentFile.mkdirs()
+                    out.text = cp
+                    println "WROTE_CLASSPATH:" + out.absolutePath
+                }
+            }
+        }
+    }
+}

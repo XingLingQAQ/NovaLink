@@ -46,6 +46,8 @@ dependency-reduced-pom.xml
 
 # Real-server E2E harness workspace (downloaded server jars, worlds, runtime logs/configs)
 .e2e/
+# Committed e2e/ harness runtime artifacts (CI downloads + per-run logs/worlds)
+.e2e-artifacts/
 logs/
 
 

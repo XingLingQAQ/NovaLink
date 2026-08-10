@@ -1,0 +1,31 @@
+# NovaLink backend config template for E2E.
+# gen-config.ps1 instantiates this into a run directory with random ports + a
+# generated secret-key. Placeholders use {{TOKEN}} syntax.
+server:
+  bind-address: 127.0.0.1
+  port: {{NOVA_PORT}}
+  websocket-port: {{NOVA_WS_PORT}}
+  secret-key: "{{SECRET_KEY}}"
+  worker-threads: 2
+  locale: en_US
+
+database:
+  type: memory
+
+security:
+  allowed-ips:
+    - 127.0.0.1
+  ip-ban-duration: 300
+
+debug: true
+
+global_channels:
+  global:
+    display_name: "Global"
+    permission: "novachat.channel.global"
+    max_capacity: 0
+
+clients:
+  - username: "E2E_Client"
+    password: "{{CLIENT_PASSWORD}}"
+    display_name: "E2E"
