@@ -243,6 +243,20 @@ public final class CoreNetworkClient {
         logger.debug("Disconnected from NovaLink backend");
     }
 
+    /**
+     * Sends a packet to the backend on the active channel. Before any
+     * {@link ChannelActionPacket} hits the wire, records it with the shared
+     * {@link ChannelResponseTracker} (after an opportunistic expired-entry
+     * cleanup) so the asynchronous {@code ChannelActionResponsePacket} can be
+     * correlated back to its originating player. If the channel is inactive the
+     * packet is dropped with a debug log and no exception is raised.
+     *
+     * <p>This is the single entry point for outgoing channel-action correlation
+     * (coupling #3); platform facades that delegate here must not replicate the
+     * track/cleanup shell.
+     *
+     * @param packet the packet to send (not null)
+     */
     public void sendPacket(Packet packet) {
         // Coupling #3 single-entry contract: every outgoing ChannelActionPacket
         // is recorded for asynchronous response correlation before it hits the

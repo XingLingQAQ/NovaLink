@@ -25,10 +25,26 @@ public final class CommandResult {
         this.errorCode = errorCode;
     }
 
+    /**
+     * Creates a success result with no error code.
+     *
+     * @param intent  originating intent
+     * @param message human-readable message (may be null → "")
+     * @return a success result
+     */
     public static CommandResult success(CommandIntent intent, String message) {
         return new CommandResult(true, intent, message, null);
     }
 
+    /**
+     * Creates a failure result carrying no NC-XXX error code. Use
+     * {@link #failure(CommandIntent, String, String)} instead when the failure
+     * maps to a known backend error code so platforms can render actionable text.
+     *
+     * @param intent  originating intent
+     * @param message human-readable message (may be null → "")
+     * @return a failure result with a null error code
+     */
     public static CommandResult failure(CommandIntent intent, String message) {
         return new CommandResult(false, intent, message, null);
     }

@@ -16,10 +16,24 @@ public interface ReconnectPolicy {
      * @param attemptNumber the 1-based attempt number this decision applies to
      */
     record Decision(boolean shouldRetry, int delaySeconds, int attemptNumber) {
+        /**
+         * Terminal decision: stop retrying. The delay is always 0.
+         *
+         * @param attemptNumber the 1-based attempt number this decision applies to
+         * @return a no-retry decision
+         */
         public static Decision stop(int attemptNumber) {
             return new Decision(false, 0, attemptNumber);
         }
 
+        /**
+         * Retry decision: keep reconnecting after the given delay.
+         *
+         * @param delaySeconds  non-negative delay before the next attempt
+         * @param attemptNumber the 1-based attempt number this decision applies to
+         * @return a retry decision
+         * @throws IllegalArgumentException if {@code delaySeconds < 0}
+         */
         public static Decision retry(int delaySeconds, int attemptNumber) {
             if (delaySeconds < 0) {
                 throw new IllegalArgumentException("delaySeconds must be >= 0");

@@ -190,6 +190,15 @@ public final class ClientConnectionConfig {
             return this;
         }
 
+        /**
+         * Builds the immutable config. Validates that {@code host} is non-blank
+         * and {@code maxReconnectDelaySeconds >= initialReconnectDelaySeconds}.
+         *
+         * @return a new {@link ClientConnectionConfig}
+         * @throws NullPointerException     if {@code host} is null
+         * @throws IllegalArgumentException if {@code host} is blank or the delay
+         *                                  cap is below the initial delay
+         */
         public ClientConnectionConfig build() {
             Objects.requireNonNull(host, "host");
             if (host.isBlank()) {
