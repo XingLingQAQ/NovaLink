@@ -1,0 +1,22 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven { url 'https://maven.fabricmc.net/' }
+        maven { url 'https://maven.neoforged.net/releases' }
+        maven { url 'https://maven.quiltmc.org/repository/release' }
+        maven { url 'https://files.minecraftforge.net/maven' }
+    }
+}
+
+rootProject.name = 'NovaChat-MOD'
+
+include 'mod-common'
+include 'fabric'
+include 'neoforge'
+include 'quilt'
+
+// The mod shared layer lives in ./common on disk, but its Gradle project name
+// must differ from a sibling "common" -- Gradle disambiguates project
+// dependencies by leaf name, so two projects named "common" make project(':common')
+// resolve onto :mod-common itself (compileJava->jar->classes cycle).
+project(':mod-common').projectDir = file('common')

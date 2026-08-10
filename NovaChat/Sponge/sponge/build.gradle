@@ -1,0 +1,93 @@
+plugins {
+    id 'java'
+    id 'com.gradleup.shadow' version '9.6.1'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+repositories {
+    maven { url 'https://repo.spongepowered.org/repository/maven-public/' }
+}
+
+dependencies {
+    // Common Module
+    implementation project(':NovaChat:common')
+    // Shared client runtime (Architecture B — not used by StarLink:core)
+    implementation project(':client-core')
+
+    // Netty
+    implementation "io.netty:netty-all:${nettyVersion}"
+
+    // Utilities
+    compileOnly "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+    implementation "com.google.code.gson:gson:${gsonVersion}"
+
+    // Logging
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+
+    // Sponge API 8.x (Minecraft 1.16.5 - 1.20.x) / API 12+ for newer
+    // Keep API 8.2.0 as the broadest compile target; runtime supports newer Sponge servers
+    compileOnly 'org.spongepowered:spongeapi:8.2.0'
+
+    // Testing
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+    testImplementation "net.jqwik:jqwik:${jqwikVersion}"
+    testImplementation "org.assertj:assertj-core:${assertjVersion}"
+    testImplementation "org.mockito:mockito-core:${mockitoVersion}"
+    testImplementation "org.mockito:mockito-junit-jupiter:${mockitoVersion}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform {
+        includeEngines 'junit-jupiter', 'jqwik'
+    }
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
+}
+
+// Shadow JAR configuration for fat jar packaging
+shadowJar {
+    archiveClassifier.set('')
+    archiveBaseName.set('NovaChat-Sponge')
+    
+    // Relocate dependencies to avoid conflicts
+    relocate 'io.netty', 'com.nova.chat.sponge.libs.netty'
+    relocate 'com.google.gson', 'com.nova.chat.sponge.libs.gson'
+    
+    // Exclude unnecessary files
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+    
+    dependencies {
+        // Include common
+        include(project(':NovaChat:common'))
+        include(project(':client-core'))
+        // Include runtime dependencies
+        include(dependency('io.netty:.*'))
+        include(dependency('com.google.code.gson:gson'))
+    }
+}
+
+// Make build depend on shadowJar
+build.dependsOn shadowJar
+
+// shadowJar uses archiveClassifier.set('') so it writes the same output path
+// as the plain `jar` task (NovaChat-Sponge-<ver>.jar). Running both in parallel
+// during `build` corrupts the ZIP ("Could not add META-INF to ZIP"). The fat
+// jar is the intended artifact, so disable the thin plain jar.
+jar.enabled = false
+
+// Process resources to replace version placeholder
+processResources {
+    filesMatching('META-INF/sponge_plugins.json') {
+        expand(
+            'version': project.version
+        )
+    }
+}

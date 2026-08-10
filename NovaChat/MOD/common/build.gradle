@@ -1,0 +1,63 @@
+plugins {
+    id 'java'
+}
+
+// Distinct artifact name so this module's jar coordinate
+// (com.nova:NovaChat-mod-common) does NOT collide with :NovaChat:common
+// (com.nova:common). Both projects share the leaf name "common", so Gradle's
+// project-dependency resolution would otherwise substitute project(':NovaChat:common')
+// onto :NovaChat:MOD:common itself, creating a compileJava->jar->classes cycle.
+base {
+    archivesName = 'NovaChat-mod-common'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+repositories {
+    mavenCentral()
+    maven { url 'https://maven.fabricmc.net/' }
+    maven { url 'https://maven.neoforged.net/releases' }
+    maven { url 'https://maven.quiltmc.org/repository/release' }
+    maven { url 'https://files.minecraftforge.net/maven' }
+}
+
+dependencies {
+    // Logging
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+    implementation "ch.qos.logback:logback-classic:${logbackVersion}"
+    
+    // YAML Configuration
+    implementation "org.yaml:snakeyaml:${snakeYamlVersion}"
+    
+    // JSON
+    implementation "com.google.code.gson:gson:${gsonVersion}"
+    
+    // Networking
+    implementation "io.netty:netty-all:${nettyVersion}"
+    
+    // Protocol (common) - from parent project
+    implementation project(':NovaChat:common')
+
+    // Shared client runtime (Architecture B — same layer as the 7 server platforms).
+    // Provides AbstractPlatformNetworkClient, PlayerStateStore, ChannelCommandService,
+    // I18n, MentionNotifier, ChannelResponseDispatcher, ConfigSyncHandlerRegistrar, etc.
+    implementation project(':client-core')
+    
+    // Testing
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+    testImplementation "net.jqwik:jqwik:${jqwikVersion}"
+    testImplementation "org.assertj:assertj-core:${assertjVersion}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform {
+        includeEngines 'junit-jupiter', 'jqwik'
+    }
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
+}

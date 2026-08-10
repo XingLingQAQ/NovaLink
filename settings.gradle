@@ -9,23 +9,28 @@ pluginManagement {
 
 rootProject.name = 'nova-parent'
 
-include 'novachat-common'
-include 'novachat-client-core'
-include 'novalink-core'
-include 'novachat-bukkit'
-include 'novachat-velocity'
-include 'novachat-bungee'
-include 'novachat-nukkit'
+include 'NovaChat:common'
+include 'client-core'
+include 'StarLink:core'
+include 'NovaChat:Plugin:bukkit'
+include 'NovaChat:Proxy:velocity'
+include 'NovaChat:Proxy:bungee'
+include 'NovaChat:Bedrock:nukkit'
 // Shared mod sources (version detection, common networking).
-include 'novachat-mod'
-include 'novachat-mod:common'
+include 'NovaChat:MOD'
+include 'NovaChat:MOD:mod-common'
+// The mod shared layer lives in NovaChat/MOD/common on disk, but its Gradle
+// project name must differ from :NovaChat:common -- Gradle disambiguates project
+// dependencies by leaf name, so two projects named "common" make project(':NovaChat:common')
+// resolve onto :NovaChat:MOD:common itself (compileJava->jar->classes cycle).
+project(':NovaChat:MOD:mod-common').projectDir = file('NovaChat/MOD/common')
 // Loader subprojects pull Minecraft jars at configuration time
 // (fabric-loom 1.17.x for fabric/quilt, neoforged.gradle.userdev 7.1.x for
 // neoforge). They build against the shared client-core-backed common layer
 // alongside the seven server-side platforms.
-include 'novachat-mod:fabric'
-include 'novachat-mod:neoforge'
-include 'novachat-mod:quilt'
-include 'novachat-pnx'
-include 'novachat-folia'
-include 'novachat-sponge'
+include 'NovaChat:MOD:fabric'
+include 'NovaChat:MOD:neoforge'
+include 'NovaChat:MOD:quilt'
+include 'NovaChat:Bedrock:pnx'
+include 'NovaChat:Plugin:folia'
+include 'NovaChat:Sponge:sponge'

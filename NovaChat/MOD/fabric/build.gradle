@@ -1,0 +1,57 @@
+plugins {
+    id 'fabric-loom' version '1.17.17'
+    id 'maven-publish'
+}
+
+java {
+    // MC 1.21+ requires Java 21
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+    maven { url 'https://maven.fabricmc.net/' }
+    maven { url 'https://maven.architectury.dev/' }
+}
+
+dependencies {
+    // Minecraft (default target: 1.21.11 as of 2026-07)
+    minecraft "com.mojang:minecraft:1.21.11"
+    mappings loom.officialMojangMappings()
+
+    // Fabric
+    modImplementation "net.fabricmc:fabric-loader:0.19.3"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:0.141.6+1.21.11"
+
+    // Architectury (shared abstractions)
+    modImplementation "dev.architectury:architectury-fabric:13.0.8"
+
+    // Common mod logic
+    implementation project(':NovaChat:MOD:mod-common')
+
+    // Shared client-core + protocol — common depends on these via `implementation`
+    // (non-transitive), so fabric must declare them directly to compile against
+    // AbstractPlatformNetworkClient / KnownChannelRegistry / ChannelCommandService.
+    implementation project(':client-core')
+    implementation project(':NovaChat:common')
+}
+
+processResources {
+    inputs.property "version", project.version
+    inputs.property "minecraft_version", "1.21.11"
+    inputs.property "loader_version", "0.19.3"
+
+    filesMatching("fabric.mod.json") {
+        expand(
+            "version": project.version,
+            "minecraft_version": "1.21.11",
+            "loader_version": "0.19.3"
+        )
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+    options.release = 21
+}
