@@ -17,6 +17,10 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Unit tests for {@link PendingRequestTracker}, covering pending future
+ * registration, timeout-based expiry, and completion handling.
+ */
 @DisplayName("PendingRequestTracker")
 class PendingRequestTrackerTest {
 

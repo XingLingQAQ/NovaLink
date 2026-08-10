@@ -26,6 +26,11 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+/**
+ * Unit tests for {@link ChannelCommandService}, covering join/leave/toggle/reload
+ * intents, optimistic state updates, send-failure rollback, packet extras, and
+ * {@link CommandResult}/{@link CommandIntent} value semantics.
+ */
 @DisplayName("ChannelCommandService")
 @ExtendWith(MockitoExtension.class)
 class ChannelCommandServiceTest {

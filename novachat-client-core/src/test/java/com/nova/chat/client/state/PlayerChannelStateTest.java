@@ -14,6 +14,11 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Unit tests for {@link PlayerChannelState} and {@link ChatMode}, covering
+ * construction defaults, channel membership, active-channel switching, mode
+ * toggling, and validation.
+ */
 @DisplayName("PlayerChannelState and ChatMode")
 class PlayerChannelStateTest {
 

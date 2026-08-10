@@ -13,6 +13,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for {@link CoreNetworkClient} pure helper methods, using a recording
+ * {@link ClientLogger} to assert logging behavior without a live connection.
+ */
 @DisplayName("CoreNetworkClient pure helpers")
 class CoreNetworkClientTest {
 

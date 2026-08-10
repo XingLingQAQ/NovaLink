@@ -11,6 +11,11 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for {@link ListCommandService#formatChannelList}, covering empty
+ * registries, sorted known-channel listing with join markers, joined-but-unknown
+ * channels, and null-joined handling.
+ */
 @DisplayName("ListCommandService")
 class ListCommandServiceTest {
 

@@ -9,6 +9,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for the {@code SchedulerBridge} and {@code ClientLogger} port
+ * contracts shared across platform network clients.
+ */
 @DisplayName("SchedulerBridge / ClientLogger contracts")
 class ClientPortsTest {
 

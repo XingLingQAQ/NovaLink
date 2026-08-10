@@ -10,6 +10,10 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for {@link ChannelResponseDispatcher}, covering LEAVE success
+ * confirmation, status-bar callback preservation, and rollback on rejection.
+ */
 @DisplayName("ChannelResponseDispatcher")
 class ChannelResponseDispatcherTest {
 

@@ -15,6 +15,10 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
+/**
+ * Unit tests for {@link FormatTemplateEngine}, covering template variable
+ * substitution, null/blank handling, and placeholder formatting.
+ */
 @DisplayName("FormatTemplateEngine")
 class FormatTemplateEngineTest {
 

@@ -6,6 +6,10 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Unit tests for {@link ChatModeDescriptions}, covering HYBRID/REPLACE
+ * description mapping and null rejection.
+ */
 @DisplayName("ChatModeDescriptions")
 class ChatModeDescriptionsTest {
 

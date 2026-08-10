@@ -12,6 +12,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for {@link KnownChannelRegistry}, covering mutation
+ * (replaceAll/addAll), prefix queries, unmodifiable views, and concurrent
+ * access safety.
+ */
 @DisplayName("KnownChannelRegistry")
 class KnownChannelRegistryTest {
 

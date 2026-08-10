@@ -6,6 +6,11 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Unit tests for {@link PasswordHasher#sha256Hex}, verifying against known
+ * NIST/FIPS SHA-256 vectors, determinism, hex format, UTF-8 handling, and
+ * null rejection.
+ */
 @DisplayName("PasswordHasher")
 class PasswordHasherTest {
 

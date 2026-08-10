@@ -9,6 +9,10 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for {@link ChannelResponseTracker}, covering pending channel-action
+ * tracking and consumption by request id.
+ */
 @DisplayName("ChannelResponseTracker")
 class ChannelResponseTrackerTest {
 

@@ -5,6 +5,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for {@link DurationFormatter}, covering seconds/minutes/hours/days
+ * formatting, string parsing, and UNKNOWN fallbacks for bad or non-positive input.
+ */
 @DisplayName("DurationFormatter")
 class DurationFormatterTest {
 

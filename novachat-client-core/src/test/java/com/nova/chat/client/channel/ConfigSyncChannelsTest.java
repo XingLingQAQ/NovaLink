@@ -8,6 +8,11 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for {@link ConfigSyncChannels#extract}, covering null/blank/malformed
+ * JSON handling, global-channel extraction, and per-client channel filtering by
+ * username.
+ */
 @DisplayName("ConfigSyncChannels")
 class ConfigSyncChannelsTest {
 

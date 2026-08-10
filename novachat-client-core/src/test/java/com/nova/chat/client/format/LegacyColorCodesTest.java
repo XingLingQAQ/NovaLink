@@ -11,6 +11,10 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
+/**
+ * Unit tests for {@link LegacyColorCodes}, covering {@code &}/{@code §} code
+ * conversion, hex expansion, and null/blank handling.
+ */
 @DisplayName("LegacyColorCodes")
 class LegacyColorCodesTest {
 

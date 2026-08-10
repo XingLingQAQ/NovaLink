@@ -9,6 +9,11 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for {@link FormatTemplateEngine} focused on the
+ * {@code {channel_color}} placeholder, covering auto-resolution from
+ * {@code {channel}} and explicit overrides.
+ */
 @DisplayName("FormatTemplateEngine {channel_color}")
 class FormatTemplateEngineChannelColorTest {
 

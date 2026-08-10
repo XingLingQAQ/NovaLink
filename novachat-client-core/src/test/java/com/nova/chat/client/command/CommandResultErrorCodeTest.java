@@ -5,6 +5,11 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for {@link CommandResult} error-code handling: success has no
+ * code, plain failure has no code (backward compat), and coded failure carries
+ * the code through equality, {@code toString}, and accessors.
+ */
 @DisplayName("CommandResult errorCode")
 class CommandResultErrorCodeTest {
 

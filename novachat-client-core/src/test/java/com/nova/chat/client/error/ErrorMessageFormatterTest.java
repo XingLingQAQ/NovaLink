@@ -10,6 +10,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for {@link ErrorMessageFormatter}, covering locale-aware error
+ * message formatting and default-locale save/restore around each test.
+ */
 @DisplayName("ErrorMessageFormatter")
 class ErrorMessageFormatterTest {
 

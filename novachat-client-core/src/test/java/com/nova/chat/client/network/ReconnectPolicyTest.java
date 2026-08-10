@@ -10,6 +10,11 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Unit tests for {@link ReconnectPolicy} and
+ * {@code ExponentialBackoffReconnectPolicy}, covering default parameters,
+ * backoff progression, and bound clamping.
+ */
 @DisplayName("ReconnectPolicy / ExponentialBackoffReconnectPolicy")
 class ReconnectPolicyTest {
 

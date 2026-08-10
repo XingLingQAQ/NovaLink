@@ -8,6 +8,11 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Unit tests for {@link PlayerMessages}, asserting exact colored rendering of
+ * join/leave acknowledgements, the current-channel bar, chat-toggle text, and
+ * argument validation.
+ */
 @DisplayName("PlayerMessages")
 class PlayerMessagesTest {
 

@@ -12,6 +12,10 @@ import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for {@link ErrorCode}, covering i18n message resolution and
+ * locale-aware formatting.
+ */
 @DisplayName("ErrorCode")
 class ErrorCodeTest {
 
