@@ -150,17 +150,9 @@ public class NovaChatFolia extends JavaPlugin {
         // pushes a roster. If the backend never pushes, the registry stays empty
         // and consumers degrade gracefully (no crash). AsyncNetworkClient wraps
         // the handler to hop to an async scheduler thread.
-        networkClient.registerHandler(
-                com.nova.chat.common.protocol.packets.ConfigSyncPacket.class,
-                packet -> {
-                    String json = packet.getConfigJson();
-                    if (json == null || json.isBlank()) {
-                        return;
-                    }
-                    String username = novaChatConfig != null ? novaChatConfig.getUsername() : null;
-                    knownChannelRegistry.replaceAll(
-                            com.nova.chat.client.channel.ConfigSyncChannels.extract(json, username));
-                });
+        com.nova.chat.client.channel.ConfigSyncHandlerRegistrar.register(
+                networkClient, knownChannelRegistry,
+                novaChatConfig != null ? novaChatConfig.getUsername() : null);
         
         // Connect asynchronously using Folia scheduler
         scheduler.runAsync(() -> {
@@ -189,14 +181,8 @@ public class NovaChatFolia extends JavaPlugin {
      * does not add any extra thread hop.
      */
     private void initializeChannelCommandService() {
-        channelCommandService = new ChannelCommandService(packet -> {
-            AsyncNetworkClient client = networkClient;
-            if (client == null || !client.isAuthenticated()) {
-                return false;
-            }
-            client.sendPacket(packet);
-            return true;
-        }, PlatformType.FOLIA.name());
+        channelCommandService = ChannelCommandService.forPlatform(
+                () -> networkClient, PlatformType.FOLIA);
     }
 
     /**

@@ -1,12 +1,15 @@
 package com.nova.chat.client.command;
 
+import com.nova.chat.client.network.AbstractPlatformNetworkClient;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * Platform-agnostic command intent service for channel membership and chat mode.
@@ -50,6 +53,41 @@ public final class ChannelCommandService {
     public ChannelCommandService(PacketSender packetSender, String platform) {
         this.packetSender = Objects.requireNonNull(packetSender, "packetSender");
         this.platform = platform;
+    }
+
+    /**
+     * Builds a {@link ChannelCommandService} wired to a live platform network
+     * client supplied on each send. The {@link PacketSender} accepts a send only
+     * when the client is non-null and authenticated, then delegates to
+     * {@link AbstractPlatformNetworkClient#sendPacket}. The supplier is read on
+     * every send so a reload/reconnect that swaps the client field is picked up
+     * without re-wiring the service.
+     *
+     * <p>This absorbs the identical {@code client == null || !isAuthenticated()}
+     * guard + {@code sendPacket} lambda duplicated across the bungee, velocity,
+     * nukkit, folia, pnx and sponge bootstraps. Bukkit keeps its own inline
+     * construction because it additionally gates on {@code isConnected()}.
+     *
+     * @param clientSupplier supplies the current platform network client
+     *                       (null-tolerant; a null client refuses the send)
+     * @param platform       platform type whose name is injected into packet
+     *                       extras; null/blank omits the extra
+     * @return a wired service
+     */
+    public static ChannelCommandService forPlatform(
+            Supplier<? extends AbstractPlatformNetworkClient> clientSupplier,
+            PlatformType platform
+    ) {
+        Objects.requireNonNull(clientSupplier, "clientSupplier");
+        String platformName = platform != null ? platform.name() : null;
+        return new ChannelCommandService(packet -> {
+            AbstractPlatformNetworkClient client = clientSupplier.get();
+            if (client == null || !client.isAuthenticated()) {
+                return false;
+            }
+            client.sendPacket(packet);
+            return true;
+        }, platformName);
     }
 
     /**

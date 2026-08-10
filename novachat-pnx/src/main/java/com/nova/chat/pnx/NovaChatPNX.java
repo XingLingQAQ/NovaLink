@@ -248,17 +248,9 @@ public class NovaChatPNX extends PluginBase implements Listener {
         // shared registry so /nc list and join <Tab> have data when the backend
         // pushes a roster. If the backend never pushes, the registry stays empty
         // and consumers degrade gracefully (no crash).
-        networkClient.registerHandler(
-                com.nova.chat.common.protocol.packets.ConfigSyncPacket.class,
-                packet -> {
-                    String json = packet.getConfigJson();
-                    if (json == null || json.isBlank()) {
-                        return;
-                    }
-                    String username = novaChatConfig != null ? novaChatConfig.getBackendUsername() : null;
-                    knownChannelRegistry.replaceAll(
-                            com.nova.chat.client.channel.ConfigSyncChannels.extract(json, username));
-                });
+        com.nova.chat.client.channel.ConfigSyncHandlerRegistrar.register(
+                networkClient, knownChannelRegistry,
+                novaChatConfig != null ? novaChatConfig.getBackendUsername() : null);
         
         // Connect asynchronously to avoid blocking the main thread
         getServer().getScheduler().scheduleAsyncTask(this, new AsyncTask() {
@@ -286,14 +278,8 @@ public class NovaChatPNX extends PluginBase implements Listener {
      * reload/reconnect does not leave a stale client reference.
      */
     private void initializeChannelCommandService() {
-        channelCommandService = new ChannelCommandService(packet -> {
-            NetworkClient client = networkClient;
-            if (client == null || !client.isAuthenticated()) {
-                return false;
-            }
-            client.sendPacket(packet);
-            return true;
-        }, PlatformType.POWERNUKKITX.name());
+        channelCommandService = ChannelCommandService.forPlatform(
+                () -> networkClient, PlatformType.POWERNUKKITX);
     }
 
     /**

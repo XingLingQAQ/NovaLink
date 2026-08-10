@@ -252,17 +252,9 @@ public class NovaChatNukkit extends PluginBase implements Listener {
         if (networkClient == null || knownChannelRegistry == null) {
             return;
         }
-        networkClient.registerHandler(
-                com.nova.chat.common.protocol.packets.ConfigSyncPacket.class,
-                packet -> {
-                    String json = packet.getConfigJson();
-                    if (json == null || json.isBlank()) {
-                        return;
-                    }
-                    String username = novaChatConfig != null ? novaChatConfig.getUsername() : null;
-                    knownChannelRegistry.replaceAll(
-                            com.nova.chat.client.channel.ConfigSyncChannels.extract(json, username));
-                });
+        com.nova.chat.client.channel.ConfigSyncHandlerRegistrar.register(
+                networkClient, knownChannelRegistry,
+                novaChatConfig != null ? novaChatConfig.getUsername() : null);
     }
 
     /**
@@ -270,14 +262,8 @@ public class NovaChatNukkit extends PluginBase implements Listener {
      * the live {@link NetworkClient}. Send is accepted only when authenticated.
      */
     private void initializeChannelCommandService() {
-        channelCommandService = new ChannelCommandService(packet -> {
-            NetworkClient client = networkClient;
-            if (client == null || !client.isAuthenticated()) {
-                return false;
-            }
-            client.sendPacket(packet);
-            return true;
-        }, PlatformType.NUKKIT.name());
+        channelCommandService = ChannelCommandService.forPlatform(
+                () -> networkClient, PlatformType.NUKKIT);
     }
 
     /**
