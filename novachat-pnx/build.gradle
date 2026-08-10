@@ -1,6 +1,6 @@
 plugins {
     id 'java'
-    id 'com.github.johnrengelman.shadow' version '8.1.1'
+    id 'com.gradleup.shadow' version '9.6.1'
 }
 
 java {
@@ -85,6 +85,12 @@ shadowJar {
 
 // Make build depend on shadowJar
 build.dependsOn shadowJar
+
+// shadowJar uses archiveClassifier.set('') so it writes the same output path
+// as the plain `jar` task (NovaChat-PNX-<ver>.jar). Running both in parallel
+// during `build` corrupts the ZIP ("Could not add META-INF to ZIP"). The fat
+// jar is the intended artifact, so disable the thin plain jar.
+jar.enabled = false
 
 // Process resources to replace version placeholder
 processResources {

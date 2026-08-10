@@ -21,8 +21,11 @@ include 'novachat-nukkit'
 include 'novachat-mod'
 include 'novachat-mod:common'
 // Loader subprojects require fabric-loom 1.17.x which needs Gradle 9.5+
-// (plugin api-version 9.5.0). Root wrapper is still Gradle 8.8 so they are
-// excluded until the wrapper is upgraded; uncomment after upgrading Gradle.
+// (plugin api-version 9.5.0). The root wrapper is Gradle 9.6.1 so the
+// version requirement is met, but these subprojects pull Minecraft jars
+// via fabric-loom at configuration time and are kept disabled by default
+// to avoid that heavyweight dependency in a normal build. Uncomment to
+// build the mod loaders locally.
 // include 'novachat-mod:fabric'
 // include 'novachat-mod:neoforge'
 // include 'novachat-mod:quilt'
