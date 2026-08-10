@@ -58,20 +58,41 @@ class ModConfigParsingRoundTripPropertyTest {
     void configurationRoundTripPreservesChatSettings(
             @ForAll boolean replaceVanilla,
             @ForAll @StringLength(min = 1, max = 50) String defaultChannel) {
-        
+
         // Create original config
         ModConfig original = new ModConfig();
         ModConfig.ChatConfig chat = new ModConfig.ChatConfig();
         chat.setReplaceVanilla(replaceVanilla);
         chat.setDefaultChannel(defaultChannel);
         original.setChat(chat);
-        
+
         // Serialize and deserialize
         ModConfig restored = roundTripConfig(original);
-        
+
         // Verify chat settings are preserved
         assertThat(restored.getChat().isReplaceVanilla()).isEqualTo(replaceVanilla);
         assertThat(restored.getChat().getDefaultChannel()).isEqualTo(defaultChannel);
+    }
+
+    @Property
+    @Report(Reporting.GENERATED)
+    void configurationRoundTripPreservesLocale(
+            @ForAll("validLocale") String locale) {
+
+        // Create original config with the given locale
+        ModConfig original = new ModConfig();
+        original.getChat().setLocale(locale);
+
+        // Serialize and deserialize
+        ModConfig restored = roundTripConfig(original);
+
+        // Verify locale is preserved
+        assertThat(restored.getChat().getLocale()).isEqualTo(locale);
+    }
+
+    @Provide
+    Arbitrary<String> validLocale() {
+        return Arbitraries.of("zh_CN", "en_US", "ja_JP", "de_DE", "fr_FR", "ko_KR");
     }
     
     @Property
@@ -186,6 +207,7 @@ class ModConfigParsingRoundTripPropertyTest {
         Map<String, Object> chat = new HashMap<>();
         chat.put("replace_vanilla", config.getChat().isReplaceVanilla());
         chat.put("default_channel", config.getChat().getDefaultChannel());
+        chat.put("locale", config.getChat().getLocale());
         data.put("chat", chat);
         
         // Format
@@ -238,6 +260,8 @@ class ModConfigParsingRoundTripPropertyTest {
                     chat.setReplaceVanilla(replaceObj instanceof Boolean ? (Boolean) replaceObj : false);
                     Object channelObj = chatData.get("default_channel");
                     chat.setDefaultChannel(channelObj != null ? String.valueOf(channelObj) : "local");
+                    Object localeObj = chatData.get("locale");
+                    chat.setLocale(localeObj != null ? String.valueOf(localeObj) : "zh_CN");
                     config.setChat(chat);
                 }
             }
