@@ -18,30 +18,36 @@ repositories {
 
 dependencies {
     // Minecraft (default target: 1.21.11 as of 2026-07)
-    minecraft "com.mojang:minecraft:${project(':novachat-mod').ext.minecraftVersion}"
+    minecraft "com.mojang:minecraft:1.21.11"
     mappings loom.officialMojangMappings()
 
     // Quilt Loader
-    modImplementation "org.quiltmc:quilt-loader:${project(':novachat-mod').ext.quiltLoaderVersion}"
+    modImplementation "org.quiltmc:quilt-loader:0.30.0"
 
     // Fabric API - Quilt is compatible with Fabric API
-    modImplementation "net.fabricmc.fabric-api:fabric-api:${project(':novachat-mod').ext.fabricApiVersion}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:0.141.6+1.21.11"
 
     // Architectury (Fabric version works with Quilt)
-    modImplementation "dev.architectury:architectury-fabric:${project(':novachat-mod').ext.architecturyVersion}"
+    modImplementation "dev.architectury:architectury-fabric:13.0.8"
 
     // Common mod logic
     implementation project(':novachat-mod:common')
+
+    // Shared client-core + protocol — common depends on these via `implementation`
+    // (non-transitive), so quilt must declare them directly to compile against
+    // AbstractPlatformNetworkClient / KnownChannelRegistry / ChannelCommandService.
+    implementation project(':novachat-client-core')
+    implementation project(':novachat-common')
 }
 
 processResources {
     inputs.property "version", project.version
-    inputs.property "minecraft_version", project(':novachat-mod').ext.minecraftVersion
+    inputs.property "minecraft_version", "1.21.11"
 
     filesMatching("quilt.mod.json") {
         expand(
             "version": project.version,
-            "minecraft_version": project(':novachat-mod').ext.minecraftVersion
+            "minecraft_version": "1.21.11"
         )
     }
 }

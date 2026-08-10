@@ -92,7 +92,7 @@ public class ModernVersionAdapter implements VersionAdapter {
         }
         
         // In 1.20+, level().dimension() returns the dimension key
-        return serverPlayer.level().dimension().location().toString();
+        return serverPlayer.level().dimension().identifier().toString();
     }
     
     @Override

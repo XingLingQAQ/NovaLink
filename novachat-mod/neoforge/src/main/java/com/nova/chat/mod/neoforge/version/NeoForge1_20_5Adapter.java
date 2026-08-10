@@ -83,7 +83,7 @@ public class NeoForge1_20_5Adapter implements NeoForgeVersionAdapter {
         if (!(player instanceof ServerPlayer serverPlayer)) {
             return null;
         }
-        return serverPlayer.level().dimension().location().toString();
+        return serverPlayer.level().dimension().identifier().toString();
     }
     
     @Override

@@ -93,7 +93,7 @@ public class LegacyVersionAdapter implements VersionAdapter {
         
         // In 1.14-1.19, dimension access varies slightly
         // Using level().dimension() which works across these versions
-        return serverPlayer.level().dimension().location().toString();
+        return serverPlayer.level().dimension().identifier().toString();
     }
     
     @Override

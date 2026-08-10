@@ -5,7 +5,6 @@ import com.nova.chat.mod.version.VersionDetector;
 import com.nova.chat.mod.version.VersionRange;
 import com.nova.chat.mod.version.UnsupportedVersionException;
 import net.neoforged.fml.ModList;
-import net.neoforged.fml.loading.FMLLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -87,19 +86,10 @@ public class NeoForgeVersionHelper {
      * @return the Minecraft version string
      */
     public static String detectMinecraftVersion() {
+        // NeoForge's FMLLoader.versionInfo() was removed in recent FML versions.
+        // Detect the Minecraft version from the loaded mod container instead,
+        // which is stable across NeoForge 1.20.2+ / 26.x.
         try {
-            // Try to get version from FMLLoader
-            String mcVersion = FMLLoader.versionInfo().mcVersion();
-            if (mcVersion != null && !mcVersion.isEmpty()) {
-                LOGGER.debug("Found Minecraft version from FMLLoader: {}", mcVersion);
-                return mcVersion;
-            }
-        } catch (Exception e) {
-            LOGGER.debug("Could not get version from FMLLoader: {}", e.getMessage());
-        }
-        
-        try {
-            // Fallback: try ModList
             return ModList.get().getModContainerById(MINECRAFT_MOD_ID)
                     .map(container -> container.getModInfo().getVersion().toString())
                     .orElse("1.21.11");

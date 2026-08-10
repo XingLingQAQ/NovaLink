@@ -11,6 +11,8 @@ import net.minecraft.server.level.ServerPlayer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.UUID;
 
 /**
@@ -134,7 +136,7 @@ public class FabricPlatform implements Platform {
         
         ServerPlayer player = server.getPlayerList().getPlayer(playerId);
         if (player != null) {
-            return player.level().dimension().location().toString();
+            return player.level().dimension().identifier().toString();
         }
         return null;
     }
@@ -157,10 +159,93 @@ public class FabricPlatform implements Platform {
         if (server == null) {
             return false;
         }
-        
+
         return server.getPlayerList().getPlayer(playerId) != null;
     }
-    
+
+    @Override
+    public Collection<UUID> getOnlinePlayerIds() {
+        if (server == null) {
+            return java.util.Collections.emptyList();
+        }
+        java.util.List<UUID> ids = new ArrayList<>();
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            ids.add(player.getUUID());
+        }
+        return ids;
+    }
+
+    @Override
+    public void runAsync(Runnable task) {
+        if (server == null) {
+            new Thread(task, "NovaChat-mod-async").start();
+            return;
+        }
+        server.execute(task);
+    }
+
+    @Override
+    public void runLater(Runnable task, long delaySeconds) {
+        long delayMs = Math.max(0L, delaySeconds) * 1000L;
+        if (server == null) {
+            new Thread(task, "NovaChat-mod-delayed").start();
+            return;
+        }
+        // Schedule on the server tick thread via a sleep + main-thread execute.
+        // MinecraftServer has no direct delayed-task API in the Fabric mapping; the
+        // shared reconnect policy keeps delays bounded (<= 30s).
+        new Thread(() -> {
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            server.execute(task);
+        }, "NovaChat-mod-delayed").start();
+    }
+
+    @Override
+    public void logInfo(String message) {
+        LOGGER.info(message);
+    }
+
+    @Override
+    public void logWarn(String message) {
+        LOGGER.warn(message);
+    }
+
+    @Override
+    public void logDebug(String message) {
+        LOGGER.debug(message);
+    }
+
+    @Override
+    public void logError(String message) {
+        LOGGER.error(message);
+    }
+
+    @Override
+    public void logError(String message, Throwable cause) {
+        if (cause == null) {
+            LOGGER.error(message);
+        } else {
+            LOGGER.error(message, cause);
+        }
+    }
+
+    @Override
+    public String getServerVersion() {
+        if (server == null) {
+            return "";
+        }
+        try {
+            return server.getServerVersion();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     @Override
     public PlatformType getPlatformType() {
         return PlatformType.FABRIC;

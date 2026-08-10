@@ -96,7 +96,7 @@ public class NeoForgeModernVersionAdapter implements VersionAdapter {
         }
         
         // In NeoForge 1.20.2+, level().dimension() returns the dimension key
-        return serverPlayer.level().dimension().location().toString();
+        return serverPlayer.level().dimension().identifier().toString();
     }
     
     @Override
