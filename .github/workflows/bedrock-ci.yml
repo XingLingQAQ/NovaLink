@@ -81,13 +81,50 @@ jobs:
         # puts cl.exe/link.exe on PATH for xmake's msvc toolchain detection.
 
       - name: Install xmake
-        # windows-2025 runners do NOT ship scoop. Use the official xmake setup
-        # action (xmake-io/setup-xmake), which downloads the xmake release,
-        # installs it, and prepends it to PATH. Idempotent and cached by the
-        # action itself, so no manual scoop dance needed.
-        uses: xmake-io/setup-xmake@v3
-        with:
-          xmake-version: latest
+        # windows-2025 runners do NOT ship scoop, and there is no official
+        # xmake setup action (xmake-io/setup-xmake does not exist -- the
+        # correct org is xmake-io/xmake, which publishes release assets, not
+        # an action). So we install xmake directly from its GitHub release:
+        #   1. Query the latest release API for the win64 NSIS installer URL.
+        #   2. Download xmake-v<ver>.win64.exe (~4MB).
+        #   3. Run it with NSIS silent flags (/S + /D=<dir>) -- no UAC, no UI.
+        #   4. Prepend the install dir to PATH so later steps find xmake.
+        # Pinned to v3.1.0 via the asset-name glob below; bump when a new
+        # xmake major is released. Idempotent: if xmake is already on PATH
+        # (e.g. from a restored cache) the install is skipped.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Get-Command xmake -ErrorAction SilentlyContinue) {
+            Write-Host "xmake already on PATH, skipping install"
+            xmake --version
+            return
+          }
+          $installDir = Join-Path $env:RUNNER_TEMP 'xmake'
+          $api = 'https://api.github.com/repos/xmake-io/xmake/releases/latest'
+          $rel = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'novalink-ci' }
+          Write-Host "Latest xmake release: $($rel.tag_name)"
+          $asset = $rel.assets | Where-Object { $_.name -eq 'xmake-v3.1.0.win64.exe' } |
+                   Select-Object -First 1
+          if (-not $asset) {
+            throw "xmake-v3.1.0.win64.exe not found in release $($rel.tag_name); available: $($rel.assets.name -join ', ')"
+          }
+          $installer = Join-Path $env:RUNNER_TEMP 'xmake-setup.exe'
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installer -UseBasicParsing
+          Write-Host "Installing xmake silently to $installDir"
+          & $installer /S "/D=$installDir"
+          # NSIS /D install returns before files are fully flushed; wait briefly.
+          Start-Sleep -Seconds 2
+          if (-not (Test-Path (Join-Path $installDir 'xmake.exe'))) {
+            throw "xmake.exe not found at $installDir after silent install"
+          }
+          # Prepend to PATH for this step AND persist for subsequent steps via
+          # $GITHUB_PATH (one path per line, UTF-8 *without* BOM -- PowerShell
+          # 5.1's Out-File -Encoding utf8 emits a BOM that corrupts the first
+          # path, so use the .NET API which is BOM-free by default here).
+          [System.IO.File]::AppendAllText($env:GITHUB_PATH, "$installDir`n")
+          $env:PATH = "$installDir;$env:PATH"
+          xmake --version
 
       - name: Show xmake version
         shell: pwsh
@@ -165,28 +202,40 @@ jobs:
         uses: actions/cache@v4
         with:
           path: NovaChat/Bedrock/pmmp/vendor
-          key: composer-${{ runner.os }}-${{ hashFiles('NovaChat/Bedrock/pmmp/composer.lock') }}
+          # composer.lock is gitignored, so key on composer.json's hash instead.
+          # A dependency change in composer.json invalidates the cache; otherwise
+          # the vendor dir is reused and `composer install` only tops it up.
+          key: composer-${{ runner.os }}-${{ hashFiles('NovaChat/Bedrock/pmmp/composer.json') }}
           restore-keys: |
             composer-${{ runner.os }}-
 
       - name: Verify required PHP extensions (platform-reqs gate)
-        # composer.json has "platform-check": false, which makes `composer install`
-        # silently skip extension checks. We run `composer check-platform-reqs`
-        # explicitly -- it is an independent command that inspects the require
-        # + config.platform entries and exits non-zero if any ext-* is missing.
-        # This guarantees ext-sockets (and any future ext-* additions) are truly
-        # loaded instead of being silently absent at runtime.
-        #
-        # NOTE: do NOT pass --working-dir here. The job sets
-        # defaults.run.working-directory: NovaChat/Bedrock/pmmp, so the step's
-        # cwd is already the pmmp dir. Adding --working-dir would make composer
-        # look for <cwd>/<--working-dir> = .../pmmp/NovaChat/Bedrock/pmmp, which
-        # does not exist ("Invalid working directory specified").
-        run: composer check-platform-reqs
+        # composer.json has "platform-check": false, and composer.lock is
+        # gitignored (pocketmine-plugin convention -- the pocketmine-mp host
+        # version must not be pinned by a committed lock). So we CANNOT use
+        # `composer check-platform-reqs`: with no lock it dies with
+        # "[LogicException] No lockfile found", and with --lock it would read
+        # the absent lock too. Instead, assert each ext-* from composer.json's
+        # `require` is actually loaded via `php -m`. This is the real guarantee
+        # we wanted (extensions truly present, not silently absent at runtime)
+        # without depending on a lockfile that is deliberately not committed.
+        run: |
+          set -e
+          for ext in sockets mbstring openssl; do
+            if ! php -m | grep -i "^$ext$" > /dev/null; then
+              echo "ERROR: required PHP extension '$ext' is NOT loaded"
+              php -m
+              exit 1
+            fi
+            echo "OK: ext-$ext loaded"
+          done
 
       - name: Composer install
         # Pulls pocketmine/pocketmine-mp ^5.0 (~100MB) + phpunit + eris.
-        # The lock file is committed, so this is deterministic.
+        # composer.lock is deliberately gitignored (pocketmine-plugin
+        # convention -- do not pin the host pocketmine-mp version), so this
+        # resolves the ^5.0 constraint fresh each run rather than reading a
+        # committed lock. The constraint is narrow enough that this is stable.
         run: composer install --prefer-dist --no-interaction --no-progress
 
       - name: Run PHPUnit
