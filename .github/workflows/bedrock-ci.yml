@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -73,7 +73,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up MSVC (VS 2022)
         uses: microsoft/setup-msbuild@v2
@@ -81,13 +81,17 @@ jobs:
         # puts cl.exe/link.exe on PATH for xmake's msvc toolchain detection.
 
       - name: Install xmake
-        # windows-2025 runners have scoop; xmake is also available via the
-        # official installer. Prefer scoop for a cached, idempotent install.
-        run: |
-          if (-not (Get-Command xmake -ErrorAction SilentlyContinue)) {
-            scoop install xmake
-          }
-          xmake --version
+        # windows-2025 runners do NOT ship scoop. Use the official xmake setup
+        # action (xmake-io/setup-xmake), which downloads the xmake release,
+        # installs it, and prepends it to PATH. Idempotent and cached by the
+        # action itself, so no manual scoop dance needed.
+        uses: xmake-io/setup-xmake@v3
+        with:
+          xmake-version: latest
+
+      - name: Show xmake version
+        shell: pwsh
+        run: xmake --version
 
       - name: Cache xmake packages (LeviLamina SDK)
         uses: actions/cache@v4
@@ -148,7 +152,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up PHP 8.2
         uses: shivammathur/setup-php@v2
@@ -172,7 +176,13 @@ jobs:
         # + config.platform entries and exits non-zero if any ext-* is missing.
         # This guarantees ext-sockets (and any future ext-* additions) are truly
         # loaded instead of being silently absent at runtime.
-        run: composer check-platform-reqs --working-dir=NovaChat/Bedrock/pmmp
+        #
+        # NOTE: do NOT pass --working-dir here. The job sets
+        # defaults.run.working-directory: NovaChat/Bedrock/pmmp, so the step's
+        # cwd is already the pmmp dir. Adding --working-dir would make composer
+        # look for <cwd>/<--working-dir> = .../pmmp/NovaChat/Bedrock/pmmp, which
+        # does not exist ("Invalid working directory specified").
+        run: composer check-platform-reqs
 
       - name: Composer install
         # Pulls pocketmine/pocketmine-mp ^5.0 (~100MB) + phpunit + eris.
@@ -180,4 +190,4 @@ jobs:
         run: composer install --prefer-dist --no-interaction --no-progress
 
       - name: Run PHPUnit
-        run: composer test --working-dir=NovaChat/Bedrock/pmmp
+        run: composer test
