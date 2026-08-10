@@ -149,10 +149,11 @@ public class NovaChatCommand extends Command implements TabExecutor {
         ChatListener chatListener = plugin.getChatListener();
         PlayerChannelState state = chatListener.getOrCreateState(player);
 
-        // Proxy platforms have no game-world concept; world-restricted channels (NC-435)
-        // are not applicable to a forwarding proxy, so world is passed as null.
-        // TODO: if world-scoped filtering is needed for proxy clients, consider the
-        // connected downstream server name as the "world" value.
+        // Proxy platforms have no game-world concept; world-restricted channels
+        // (NC-435) are not applicable to a forwarding proxy, so world is passed
+        // as null by design. If world-scoped filtering ever becomes a proxy
+        // requirement, the connected downstream server name is the natural
+        // "world" value to forward here.
         CommandResult result = channelCommands.join(state, channelId, password, player.getName(), null);
         if (result.isSuccess()) {
             // §7: optimistic "joining…" receipt; the async ChannelActionResponsePacket
