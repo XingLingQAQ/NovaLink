@@ -6,12 +6,17 @@
 #
 # Job layout:
 #   endstone     - ubuntu-24.04, Python 3.12, pip install -e .[dev], pytest
-#   levilamina   - windows-2025, MSVC + xmake, runs BOTH the pure-protocol test
-#                  target (--sdk=n) and the SDK-integrated build (levilamina pkg)
-#   pmmp         - ubuntu-24.04, PHP 8.2, composer install + phpunit, with an
-#                  explicit composer check-platform-reqs gate (composer.json has
-#                  platform-check:false so `install` skips it -- we re-enable it
-#                  as an explicit verification step).
+#   levilamina   - windows-2025, MSVC + xmake, full SDK-integrated build + test
+#                  (pulls levilamina from liteldev-repo, builds the .dll + tests
+#                  binary, runs the tests; -y auto-confirms package installs)
+#   pmmp         - ubuntu-24.04, PHP 8.2, composer install + phpunit. pocketmine-mp
+#                  5.x requires PocketMine-private PHP extensions (ext-chunkutils2,
+#                  ext-leveldb, ...) that standard PHP cannot install, so
+#                  `composer install` uses --ignore-platform-reqs; the unit tests
+#                  only exercise NovaChat\Protocol\* via a custom bootstrap and
+#                  never touch those runtime exts. A `php -m` gate still asserts
+#                  the three exts NovaChat itself needs (sockets/mbstring/openssl)
+#                  are genuinely loaded.
 name: Bedrock Non-Java Build & Test
 
 on:
@@ -66,7 +71,7 @@ jobs:
   levilamina:
     name: LeviLamina (C++/xmake)
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: NovaChat/Bedrock/levilamina
@@ -149,35 +154,29 @@ jobs:
             xmake-build-${{ runner.os }}-
 
       # ------------------------------------------------------------------
-      # Step 1: pure-protocol tests (no LeviLamina SDK).
-      # --sdk=n skips the levilamina package pull; compiles only the pure-C++
-      # protocol/util/i18n sources. This is the baseline that must always pass.
+      # Full SDK-integrated build + test (with LeviLamina SDK).
+      # xmake pulls levilamina (+ transitive deps: entt, fmt, leveldb, ...) from
+      # liteldev-repo on github, links them into the novachat-levilamina shared
+      # library AND the novachat-levilamina-tests binary, then runs the tests.
+      # This is the real, complete test -- no --sdk=n shortcut.
+      #
+      # -y: xmake prompts "please input: y (y/n/m)" to confirm package installs;
+      #   in a non-TTY CI shell this hangs and fails ("must be installed!").
+      #   -y auto-confirms so package install proceeds non-interactively.
+      #
+      # The .dll (novachat-levilamina) is built to prove the SDK integration
+      # links cleanly; the tests binary is then built and RUN -- a successful
+      # compile + link + test run is the gate. No continue-on-error: a real
+      # failure must redden the job.
       # ------------------------------------------------------------------
-      - name: Build & run pure-protocol tests (--sdk=n)
+      - name: Build & run SDK-integrated tests (levilamina pkg)
         shell: pwsh
         working-directory: NovaChat/Bedrock/levilamina
         run: |
-          xmake f --sdk=n -m debug
-          xmake build novachat-levilamina-tests
+          xmake f -m debug -y
+          xmake build novachat-levilamina -y
+          xmake build novachat-levilamina-tests -y
           xmake run novachat-levilamina-tests
-
-      # ------------------------------------------------------------------
-      # Step 2: SDK-integrated build (with LeviLamina SDK).
-      # Reconfigures WITHOUT --sdk=n so xmake pulls levilamina from liteldev-repo
-      # (github) and links it into the novachat-levilamina shared library + the
-      # tests target. The .dll cannot `xmake run`, but a successful compile +
-      # link proves the SDK integration is sound. Set continue-on-error so a
-      # flaky upstream levilamina package / MSVC mismatch does not mask the
-      # baseline result above; the step output still records the failure.
-      # ------------------------------------------------------------------
-      - name: Build SDK-integrated target (levilamina pkg)
-        shell: pwsh
-        working-directory: NovaChat/Bedrock/levilamina
-        continue-on-error: true
-        run: |
-          xmake f -m debug
-          xmake build novachat-levilamina
-          xmake build novachat-levilamina-tests
 
   pmmp:
     name: PMMP (PHP)
@@ -236,7 +235,22 @@ jobs:
         # convention -- do not pin the host pocketmine-mp version), so this
         # resolves the ^5.0 constraint fresh each run rather than reading a
         # committed lock. The constraint is narrow enough that this is stable.
-        run: composer install --prefer-dist --no-interaction --no-progress
+        #
+        # --ignore-platform-reqs: pocketmine-mp 5.x requires PocketMine-private
+        # PHP extensions (ext-chunkutils2, ext-crypto, ext-leveldb, ext-pmmpthread,
+        # ...) that ship ONLY in the PocketMine binary distribution -- standard
+        # PHP (shivammathur/setup-php) cannot install them, so a plain
+        # `composer install` dies on ext-chunkutils2. That is fine for CI: the
+        # unit tests only exercise NovaChat\Protocol\* (VarInt, packet
+        # serialization) via a custom PSR-4 bootstrap (tests/bootstrap.php) and
+        # never instantiate pocketmine runtime classes, so the missing exts
+        # are never touched at test time. Ignoring platform reqs lets the
+        # type-stub pocketmine-mp source download so phpunit's autoloader can
+        # resolve `pocketmine\*` symbols referenced in NovaChat source, without
+        # requiring the runtime extensions. The `php -m` gate above still
+        # asserts the three exts NovaChat itself needs (sockets/mbstring/
+        # openssl) are genuinely loaded.
+        run: composer install --prefer-dist --no-interaction --no-progress --ignore-platform-reqs
 
       - name: Run PHPUnit
         run: composer test
