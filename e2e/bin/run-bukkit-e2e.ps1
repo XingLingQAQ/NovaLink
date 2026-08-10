@@ -146,7 +146,9 @@ $cp = (Get-Content $classpathFile -Raw).Trim()
 $novaStdout = Join-Path $novaDir "stdout.log"
 $novaStderr = Join-Path $novaDir "stderr.log"
 $novaPidFile = Join-Path $novaDir "backend.pid"
-$java = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME "bin/java" } else { "java" }
+# Resolve the java executable. On Windows it is java.exe; on Unix just java.
+$javaExe = if ($isWin) { "java.exe" } else { "java" }
+$java = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME "bin/$javaExe" } else { "java" }
 $novaProc = Start-Process -FilePath $java -ArgumentList @("-cp", $cp, "com.nova.link.NovaLinkMain", $novaYml) `
     -WorkingDirectory $novaDir -RedirectStandardOutput $novaStdout -RedirectStandardError $novaStderr -PassThru -NoNewWindow
 Track-Pid $novaProc.Id
