@@ -5,50 +5,39 @@ import com.nova.link.channel.ChannelScope;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.utility.DockerImageName;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Integration test for {@link PostgreSQLProvider} using Testcontainers PostgreSQL.
+ * Unit/integration test for {@link SQLiteProvider} against a real on-disk
+ * SQLite database file.
  *
- * <p>Spins up a real PostgreSQL container, runs migrations, and exercises the
- * full CRUD surface (player state, channel, mute, ban, notification,
- * invitation). The test is skipped automatically when Docker is not available
- * on the host, so it never fails a Docker-less CI/dev box.
+ * <p>SQLite is embedded, so this needs no Docker/Testcontainers — the xerial
+ * JDBC driver creates the database file on first connect. The test exercises
+ * migration (all 4 versions) plus the full CRUD surface: player state upsert,
+ * channel upsert, mute/ban, notification with generated-id stamping, and
+ * invitation lifecycle.
  *
  * <p>Requirements: 22.1, 22.5
  */
-class PostgreSQLIntegrationTest {
+class SQLiteProviderTest {
 
-    private PostgreSQLProvider provider;
-    private PostgreSQLContainer<?> postgres;
+    @TempDir
+    Path tempDir;
+
+    private SQLiteProvider provider;
+    private Path dbFile;
 
     @BeforeEach
     void setUp() throws DatabaseException {
-        // Skip gracefully when Docker is unavailable (dev boxes without Docker).
-        assumeTrue(isDockerAvailable(), "Docker not available — skipping PostgreSQL integration test");
-
-        postgres = new PostgreSQLContainer<>(DockerImageName.parse("postgres:16-alpine"))
-                .withDatabaseName("novalink_test")
-                .withUsername("novalink")
-                .withPassword("novalink_test_password");
-        postgres.start();
-
-        provider = new PostgreSQLProvider(
-                postgres.getHost(),
-                postgres.getMappedPort(5432),
-                postgres.getDatabaseName(),
-                postgres.getUsername(),
-                postgres.getPassword(),
-                5
-        );
+        dbFile = tempDir.resolve("novalink-test.db");
+        provider = new SQLiteProvider(dbFile.toString(), 5);
         provider.initialize();
     }
 
@@ -57,18 +46,27 @@ class PostgreSQLIntegrationTest {
         if (provider != null) {
             provider.shutdown();
         }
-        if (postgres != null) {
-            postgres.stop();
-        }
     }
 
     @Test
-    void migrationCreatesAllTables() throws DatabaseException {
-        // The migration should have run during initialize(); verify by using
-        // the provider's surface — if tables were missing, CRUD would throw.
+    void migrationCreatesAllTablesAndIsConnected() throws DatabaseException {
         assertThat(provider.isConnected()).isTrue();
+        // Empty after fresh migration
         assertThat(provider.getAllChannels()).isEmpty();
         assertThat(provider.getAllPlayerStates()).isEmpty();
+        assertThat(provider.getUnreadCount()).isZero();
+    }
+
+    @Test
+    void migrationReachesVersion4OnReinit() throws DatabaseException {
+        // Shut down and reopen the same file — migrations should be up to date.
+        provider.shutdown();
+        provider = new SQLiteProvider(dbFile.toString(), 5);
+        provider.initialize();
+
+        // Still connected and empty (no data inserted between runs).
+        assertThat(provider.isConnected()).isTrue();
+        assertThat(provider.getAllChannels()).isEmpty();
     }
 
     @Test
@@ -79,7 +77,7 @@ class PostgreSQLIntegrationTest {
         state.setCurrentWorld("world");
         state.setJoinedChannels(java.util.Set.of("global", "staff"));
         state.setActiveChannel("global");
-        state.setPlatform("BUKKIT");
+        state.setPlatform("NUKKIT");
         state.setLastSeen(1234567890L);
 
         provider.savePlayerState(state);
@@ -91,7 +89,7 @@ class PostgreSQLIntegrationTest {
         assertThat(loaded.get().getCurrentWorld()).isEqualTo("world");
         assertThat(loaded.get().getJoinedChannels()).containsExactlyInAnyOrder("global", "staff");
         assertThat(loaded.get().getActiveChannel()).isEqualTo("global");
-        assertThat(loaded.get().getPlatform()).isEqualTo("BUKKIT");
+        assertThat(loaded.get().getPlatform()).isEqualTo("NUKKIT");
         assertThat(loaded.get().getLastSeen()).isEqualTo(1234567890L);
     }
 
@@ -110,6 +108,22 @@ class PostgreSQLIntegrationTest {
         assertThat(loaded).isPresent();
         assertThat(loaded.get().getPlayerName()).isEqualTo("Name2");
         assertThat(loaded.get().getCurrentWorld()).isEqualTo("w2");
+    }
+
+    @Test
+    void deletePlayerStateRemovesMutesAndBans() throws DatabaseException {
+        UUID playerId = UUID.randomUUID();
+        PlayerState state = new PlayerState(playerId, "P");
+        provider.savePlayerState(state);
+
+        provider.saveMute(playerId, new MuteInfo("ch-1", 0, "r", UUID.randomUUID()));
+        provider.saveBan(playerId, new BanInfo("ch-1", 0, "r", UUID.randomUUID()));
+
+        provider.deletePlayerState(playerId);
+
+        assertThat(provider.loadPlayerState(playerId)).isEmpty();
+        assertThat(provider.loadMutes(playerId)).isEmpty();
+        assertThat(provider.loadBans(playerId)).isEmpty();
     }
 
     @Test
@@ -146,7 +160,7 @@ class PostgreSQLIntegrationTest {
     }
 
     @Test
-    void muteRoundTrip() throws DatabaseException {
+    void muteRoundTripAndDelete() throws DatabaseException {
         UUID playerId = UUID.randomUUID();
         UUID operatorId = UUID.randomUUID();
         MuteInfo mute = new MuteInfo("ch-1", 9999999999L, "spam", operatorId, 1000L);
@@ -158,49 +172,76 @@ class PostgreSQLIntegrationTest {
         assertThat(mutes.get(0).getChannelId()).isEqualTo("ch-1");
         assertThat(mutes.get(0).getReason()).isEqualTo("spam");
         assertThat(mutes.get(0).getOperatorId()).isEqualTo(operatorId);
+
+        // Delete by channel
+        provider.deleteMute(playerId, "ch-1");
+        assertThat(provider.loadMutes(playerId)).isEmpty();
+    }
+
+    @Test
+    void globalMuteWithNullChannelRoundTrip() throws DatabaseException {
+        UUID playerId = UUID.randomUUID();
+        MuteInfo globalMute = new MuteInfo(null, 0, "global", UUID.randomUUID(), 1000L);
+
+        provider.saveMute(playerId, globalMute);
+
+        List<MuteInfo> mutes = provider.loadMutes(playerId);
+        assertThat(mutes).hasSize(1);
+        assertThat(mutes.get(0).getChannelId()).isNull();
+
+        // Delete the global mute specifically
+        provider.deleteMute(playerId, null);
+        assertThat(provider.loadMutes(playerId)).isEmpty();
     }
 
     @Test
     void banRoundTrip() throws DatabaseException {
         UUID playerId = UUID.randomUUID();
         UUID operatorId = UUID.randomUUID();
-        BanInfo ban = new BanInfo(null, 0L, "toxic", operatorId, 1000L);
+        BanInfo ban = new BanInfo("ch-1", 0, "toxic", operatorId, 1000L);
 
         provider.saveBan(playerId, ban);
 
         List<BanInfo> bans = provider.loadBans(playerId);
         assertThat(bans).hasSize(1);
-        assertThat(bans.get(0).getChannelId()).isNull();
+        assertThat(bans.get(0).getChannelId()).isEqualTo("ch-1");
         assertThat(bans.get(0).getReason()).isEqualTo("toxic");
+        assertThat(bans.get(0).getOperatorId()).isEqualTo(operatorId);
     }
 
     @Test
     void notificationRoundTripWithGeneratedId() throws DatabaseException {
-        Notification n = new Notification("Title", "Body", Notification.LEVEL_WARNING);
+        Notification n = new Notification("Title", "Body", Notification.LEVEL_ERROR);
         provider.saveNotification(n);
 
-        // The generated id should be stamped back onto the object.
+        // Generated id stamped back onto the object.
         assertThat(n.getId()).isGreaterThan(0);
 
         List<Notification> loaded = provider.getNotifications(0, 10, false);
         assertThat(loaded).hasSize(1);
         assertThat(loaded.get(0).getTitle()).isEqualTo("Title");
-        assertThat(loaded.get(0).getLevel()).isEqualTo(Notification.LEVEL_WARNING);
+        assertThat(loaded.get(0).getLevel()).isEqualTo(Notification.LEVEL_ERROR);
         assertThat(loaded.get(0).isRead()).isFalse();
 
-        // Unread count
         assertThat(provider.getUnreadCount()).isEqualTo(1);
 
-        // Mark read
         provider.markNotificationRead(n.getId());
         assertThat(provider.getUnreadCount()).isZero();
-
-        // Unread-only query returns nothing now
         assertThat(provider.getNotifications(0, 10, true)).isEmpty();
+
+        // Mark-all + clear
+        Notification n2 = new Notification("T2", "B2", Notification.LEVEL_INFO);
+        provider.saveNotification(n2);
+        provider.markAllNotificationsRead();
+        assertThat(provider.getUnreadCount()).isZero();
+
+        int cleared = provider.clearNotifications();
+        assertThat(cleared).isEqualTo(2);
+        assertThat(provider.getNotifications(0, 10, false)).isEmpty();
     }
 
     @Test
-    void invitationRoundTrip() throws DatabaseException {
+    void invitationLifecycle() throws DatabaseException {
         UUID inviter = UUID.randomUUID();
         Invitation invitation = new Invitation("CODE123", "ch-1", inviter, 9999999999L);
         provider.saveInvitation(invitation);
@@ -218,10 +259,14 @@ class PostgreSQLIntegrationTest {
         assertThat(used).isPresent();
         assertThat(used.get().isUsed()).isTrue();
         assertThat(used.get().getUsedBy()).isEqualTo(usedBy);
+        assertThat(used.get().getUsedAt()).isGreaterThan(0L);
+
+        provider.deleteInvitation("CODE123");
+        assertThat(provider.loadInvitation("CODE123")).isEmpty();
     }
 
     @Test
-    void cleanupExpiredMutesAndBans() throws DatabaseException {
+    void cleanupExpiredMutes() throws DatabaseException {
         UUID playerId = UUID.randomUUID();
         long past = System.currentTimeMillis() - 10000;
         MuteInfo expired = new MuteInfo("ch-1", past, "x", UUID.randomUUID(), 1000L);
@@ -232,20 +277,42 @@ class PostgreSQLIntegrationTest {
         assertThat(provider.loadMutes(playerId)).isEmpty();
     }
 
-    /**
-     * Best-effort Docker availability probe. Testcontainers itself checks for
-     * Docker, but probing first lets us skip with a clear assumption rather
-     * than failing the test with a container startup error.
-     */
-    private boolean isDockerAvailable() {
-        try {
-            ProcessBuilder pb = new ProcessBuilder("docker", "info");
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-            boolean finished = process.waitFor(15, java.util.concurrent.TimeUnit.SECONDS);
-            return finished && process.exitValue() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+    @Test
+    void cleanupExpiredInvitations() throws DatabaseException {
+        UUID inviter = UUID.randomUUID();
+        long past = System.currentTimeMillis() - 10000;
+        Invitation expired = new Invitation("EXP1", "ch-1", inviter, past);
+        provider.saveInvitation(expired);
+
+        int deleted = provider.cleanupExpiredInvitations();
+        assertThat(deleted).isGreaterThanOrEqualTo(1);
+        assertThat(provider.loadInvitation("EXP1")).isEmpty();
+    }
+
+    @Test
+    void getAllChannelsReturnsAll() throws DatabaseException {
+        provider.saveChannel(new Channel("a", "A", ChannelScope.GLOBAL, null));
+        provider.saveChannel(new Channel("b", "B", ChannelScope.GLOBAL, null));
+
+        List<Channel> all = provider.getAllChannels();
+        assertThat(all).hasSize(2);
+        assertThat(all).extracting(Channel::getId).containsExactlyInAnyOrder("a", "b");
+    }
+
+    @Test
+    void getAllPlayerStatesReturnsAll() throws DatabaseException {
+        UUID p1 = UUID.randomUUID();
+        UUID p2 = UUID.randomUUID();
+        provider.savePlayerState(new PlayerState(p1, "P1"));
+        provider.savePlayerState(new PlayerState(p2, "P2"));
+
+        List<PlayerState> all = provider.getAllPlayerStates();
+        assertThat(all).hasSize(2);
+        assertThat(all).extracting(PlayerState::getPlayerId).containsExactlyInAnyOrder(p1, p2);
+    }
+
+    @Test
+    void providerTypeIsSQLite() {
+        assertThat(provider.getProviderType()).isEqualTo("SQLite");
     }
 }

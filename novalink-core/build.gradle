@@ -19,6 +19,7 @@ dependencies {
     implementation "com.mysql:mysql-connector-j:${mysqlVersion}"
     implementation "redis.clients:jedis:${jedisVersion}"
     runtimeOnly "org.postgresql:postgresql:${postgresVersion}"
+    runtimeOnly "org.xerial:sqlite-jdbc:${sqliteVersion}"
 
     // Configuration
     implementation "org.yaml:snakeyaml:${snakeYamlVersion}"
