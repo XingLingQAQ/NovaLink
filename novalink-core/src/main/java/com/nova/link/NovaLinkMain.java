@@ -271,10 +271,11 @@ public class NovaLinkMain {
         NotificationStore notificationStore = new NotificationStore(databaseProvider);
 
         // Wire notification triggers into the moderation managers (ban/mute)
-        // and the channel action handler (kick).
+        // and the channel action handler (kick) + admin action handler (announce).
         banManager.setNotificationStore(notificationStore);
         muteManager.setNotificationStore(notificationStore);
         channelActionHandler.setNotificationStore(notificationStore);
+        adminActionHandler.setNotificationStore(notificationStore);
 
         // Disconnect listener: clear permission grants AND surface a panel
         // notification. Wired here (after notificationStore is created) so the

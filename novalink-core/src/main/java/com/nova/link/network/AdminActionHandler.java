@@ -15,6 +15,7 @@ import com.nova.link.config.ConfigException;
 import com.nova.link.config.ConfigManager;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.ServerNetworkHandler;
+import com.nova.link.notification.NotificationStore;
 import com.nova.link.spy.SpyManager;
 import com.nova.link.spy.SpyResult;
 import com.nova.link.spy.SpySession;
@@ -48,6 +49,7 @@ public class AdminActionHandler {
     private volatile ServerNetworkHandler networkHandler;
     private volatile MessageRouter messageRouter;
     private volatile ConfigManager configManager;
+    private volatile NotificationStore notificationStore;
 
     public AdminActionHandler(PermissionManager permissionManager) {
         this.permissionManager = permissionManager;
@@ -88,6 +90,14 @@ public class AdminActionHandler {
      */
     public void setConfigManager(ConfigManager configManager) {
         this.configManager = configManager;
+    }
+
+    /**
+     * Sets the optional notification store so admin announcements are surfaced
+     * to the web panel notification feed.
+     */
+    public void setNotificationStore(NotificationStore notificationStore) {
+        this.notificationStore = notificationStore;
     }
 
     /**
@@ -383,6 +393,17 @@ public class AdminActionHandler {
 
         messageRouter.routeMessage(channelId, packet.getPlayerId(), senderName, message, placeholders);
         logger.info("Announcement sent to channel {} by {}", channelId, senderName);
+        // Surface the announcement to the web panel notification feed.
+        if (notificationStore != null) {
+            try {
+                notificationStore.createNotification(
+                        "Announcement",
+                        "Announcement sent to channel " + channelId + ": " + content,
+                        "info");
+            } catch (Exception ignored) {
+                // non-fatal
+            }
+        }
         return AdminActionResponsePacket.success(AdminAction.STATUS, "Announcement sent");
     }
 

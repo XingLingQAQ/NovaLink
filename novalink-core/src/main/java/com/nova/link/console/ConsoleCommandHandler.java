@@ -558,6 +558,17 @@ public class ConsoleCommandHandler {
         // Mirror AdminActionHandler.handleAnnounce: trusted routeMessage by id.
         Set<String> recipients = ctx.getMessageRouter().routeMessage(
                 channel, ConsoleSentinel.CONSOLE_SENTINEL, ConsoleSentinel.CONSOLE_NAME, message, placeholders);
+        // Surface the announcement to the web panel notification feed.
+        if (ctx.getNotificationStore() != null) {
+            try {
+                ctx.getNotificationStore().createNotification(
+                        "Announcement",
+                        "Announcement sent to channel " + channel + ": " + content,
+                        "info");
+            } catch (Exception ignored) {
+                // non-fatal
+            }
+        }
         return nl(I18n.tr("console.announce.success", channel, recipients.size()));
     }
 
