@@ -2,7 +2,7 @@ package com.nova.chat.nukkit.chat;
 
 import cn.nukkit.Player;
 import cn.nukkit.Server;
-import cn.nukkit.scheduler.NukkitScheduler;
+import cn.nukkit.scheduler.ServerScheduler;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.common.protocol.ChannelAction;
@@ -32,7 +32,6 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -63,7 +62,7 @@ class ChatInterceptorNotifyTest {
     @Mock
     private Server server;
     @Mock
-    private NukkitScheduler scheduler;
+    private ServerScheduler scheduler;
     @Mock
     private Player target;
     @Mock
@@ -110,13 +109,22 @@ class ChatInterceptorNotifyTest {
             verify(scheduler).scheduleTask(eq(plugin), task.capture());
             task.getValue().run();
 
-            // The adapter calls translateColorCodes for title, subtitle and actionbar.
-            verify(interceptor.getMessageFormatter(), times(3)).translateColorCodes(anyString());
-            verify(target).sendTitle(anyString(), anyString(),
+            // Capture the title, subtitle and action-bar rendered to the target.
+            ArgumentCaptor<String> title = ArgumentCaptor.forClass(String.class);
+            ArgumentCaptor<String> subtitle = ArgumentCaptor.forClass(String.class);
+            verify(target).sendTitle(title.capture(), subtitle.capture(),
                     eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN),
                     eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY),
                     eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT));
-            verify(target).sendActionBar(anyString());
+            ArgumentCaptor<String> actionbar = ArgumentCaptor.forClass(String.class);
+            verify(target).sendActionBar(actionbar.capture());
+
+            // The resolved text must carry the operator + channel and be color-translated
+            // (& -> §) by the real MessageFormatter bound to the interceptor.
+            assertThat(title.getValue()).contains("踢出");
+            assertThat(subtitle.getValue()).contains("Admin", "trade");
+            assertThat(subtitle.getValue()).contains("§");
+            assertThat(actionbar.getValue()).contains("Admin", "trade");
         }
     }
 
@@ -139,12 +147,18 @@ class ChatInterceptorNotifyTest {
             verify(scheduler).scheduleTask(eq(plugin), task.capture());
             task.getValue().run();
 
-            verify(interceptor.getMessageFormatter(), times(3)).translateColorCodes(anyString());
-            verify(target).sendTitle(anyString(), anyString(),
+            ArgumentCaptor<String> title = ArgumentCaptor.forClass(String.class);
+            ArgumentCaptor<String> subtitle = ArgumentCaptor.forClass(String.class);
+            verify(target).sendTitle(title.capture(), subtitle.capture(),
                     eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN),
                     eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY),
                     eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT));
-            verify(target).sendActionBar(anyString());
+            ArgumentCaptor<String> actionbar = ArgumentCaptor.forClass(String.class);
+            verify(target).sendActionBar(actionbar.capture());
+
+            assertThat(title.getValue()).contains("禁言");
+            assertThat(subtitle.getValue()).contains("global", "5 minutes");
+            assertThat(actionbar.getValue()).contains("5 minutes", "global");
         }
     }
 

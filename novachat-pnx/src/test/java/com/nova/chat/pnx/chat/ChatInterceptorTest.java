@@ -4,12 +4,12 @@ import cn.nukkit.Player;
 import cn.nukkit.Server;
 import cn.nukkit.event.player.PlayerChatEvent;
 import cn.nukkit.level.Level;
-import cn.nukkit.scheduler.NukkitScheduler;
+import cn.nukkit.scheduler.ServerScheduler;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
+import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.common.protocol.ChannelAction;
-import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.pnx.NovaChatPNX;
 import com.nova.chat.pnx.config.NovaChatConfig;
@@ -24,9 +24,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,6 +34,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -44,9 +45,10 @@ import static org.mockito.Mockito.when;
  *
  * <p>Covers the bedrock-specific chat interception ({@code onPlayerChat}) and the
  * target-side KICK/MUTE notice rendering ({@code PNXChannelResponseAdapter.notifyKickMuteTarget})
- * that was added in UX §5. Platform API ({@code cn.nukkit.*}) is mocked with
- * Mockito; the private adapter is reached via reflection so we exercise the real
- * main-thread hop + title/action-bar rendering without a live server.
+ * added in UX §5. Platform API ({@code cn.nukkit.*}) is mocked with Mockito; the
+ * private adapter is reached via reflection bound to a real {@link NetworkClient}
+ * outer instance so the adapter's {@code plugin} field reads resolve against the
+ * mocked plugin.
  */
 @DisplayName("PNX ChatInterceptor")
 @ExtendWith(MockitoExtension.class)
@@ -66,7 +68,7 @@ class ChatInterceptorTest {
     @Mock
     private Server server;
     @Mock
-    private NukkitScheduler scheduler;
+    private ServerScheduler scheduler;
     @Mock
     private Player player;
     @Mock
@@ -85,11 +87,10 @@ class ChatInterceptorTest {
         lenient().when(plugin.getNovaChatConfig()).thenReturn(config);
         lenient().when(plugin.getNetworkClient()).thenReturn(networkClient);
         lenient().when(plugin.getMessageFormatter()).thenReturn(messageFormatter);
-        lenient().when(plugin.getServer()).thenReturn(server);
-        lenient().when(server.getScheduler()).thenReturn(scheduler);
         lenient().when(config.getDefaultChannel()).thenReturn("global");
         lenient().when(player.getUniqueId()).thenReturn(PLAYER_ID);
         lenient().when(player.getName()).thenReturn("Steve");
+        lenient().when(player.getDisplayName()).thenReturn("Steve");
         lenient().when(player.getLevel()).thenReturn(level);
         lenient().when(level.getName()).thenReturn("world");
         lenient().when(target.getUniqueId()).thenReturn(TARGET_ID);
@@ -119,7 +120,6 @@ class ChatInterceptorTest {
             when(chatEvent.getPlayer()).thenReturn(player);
             when(chatEvent.getMessage()).thenReturn("hi");
             when(messageFormatter.formatError(anyString())).thenReturn("err");
-            // Disable chat on the player's state
             interceptor.getOrCreateState(player).setChatEnabled(false);
 
             interceptor.onPlayerChat(chatEvent);
@@ -208,14 +208,48 @@ class ChatInterceptorTest {
     @DisplayName("PNXChannelResponseAdapter.notifyKickMuteTarget")
     class NotifyKickMuteTarget {
 
+        // A separate plugin mock used to build a REAL NetworkClient (the private
+        // PNXChannelResponseAdapter is an inner class of NetworkClient and reads
+        // the outer instance's `plugin` field, so the outer instance must be a
+        // real NetworkClient — a Mockito mock would leave that field null).
+        private NovaChatPNX adapterPlugin;
+        private NovaChatConfig adapterConfig;
+        private Server adapterServer;
+        private ServerScheduler adapterScheduler;
+        private com.nova.chat.pnx.chat.MessageFormatter adapterFormatter;
+        private ChatInterceptor adapterChatInterceptor;
+        private Player adapterTarget;
+        private NetworkClient realClient;
         private ChannelResponseDispatcher.ChannelResponseAdapter adapter;
 
         @BeforeEach
         void setUpAdapter() throws Exception {
-            // The PNXChannelResponseAdapter is a private inner class of NetworkClient.
-            // Instantiate it via reflection so we exercise the real rendering + thread hop
-            // without standing up a full NetworkClient (which would require a live Netty core).
-            adapter = instantiatePnxAdapter();
+            adapterPlugin = mock(NovaChatPNX.class);
+            adapterConfig = mock(NovaChatConfig.class);
+            adapterServer = mock(Server.class);
+            adapterScheduler = mock(ServerScheduler.class);
+            adapterFormatter = mock(com.nova.chat.pnx.chat.MessageFormatter.class);
+            adapterChatInterceptor = mock(ChatInterceptor.class);
+            adapterTarget = mock(Player.class);
+
+            ClientConnectionConfig connConfig = ClientConnectionConfig.builder()
+                    .host("127.0.0.1").port(8888).username("u").password("p")
+                    .build();
+
+            // CoreNetworkClient's constructor only stores fields (no I/O / threads),
+            // so a real NetworkClient is safe to build with mocked platform deps.
+            lenient().when(adapterPlugin.getNovaChatConfig()).thenReturn(adapterConfig);
+            lenient().when(adapterPlugin.getServer()).thenReturn(adapterServer);
+            lenient().when(adapterServer.getScheduler()).thenReturn(adapterScheduler);
+            lenient().when(adapterServer.getVersion()).thenReturn("1.0");
+            lenient().when(adapterConfig.toClientConnectionConfig()).thenReturn(connConfig);
+            lenient().when(adapterPlugin.getMessageFormatter()).thenReturn(adapterFormatter);
+            lenient().when(adapterPlugin.getChatInterceptor()).thenReturn(adapterChatInterceptor);
+            lenient().when(adapterTarget.getUniqueId()).thenReturn(TARGET_ID);
+            lenient().when(adapterFormatter.colorize(anyString())).thenAnswer(inv -> inv.getArgument(0));
+
+            realClient = new NetworkClient(adapterPlugin, adapterConfig);
+            adapter = instantiatePnxAdapter(realClient);
         }
 
         @Test
@@ -226,25 +260,22 @@ class ChatInterceptorTest {
                             TARGET_ID, ChannelAction.KICK, "trade", "Admin", "0");
 
             Map<UUID, Player> online = new HashMap<>();
-            online.put(TARGET_ID, target);
-            when(server.getOnlinePlayers()).thenReturn(online);
-            when(messageFormatter.colorize(anyString())).thenAnswer(inv -> inv.getArgument(0));
+            online.put(TARGET_ID, adapterTarget);
+            when(adapterServer.getOnlinePlayers()).thenReturn(online);
 
             adapter.notifyKickMuteTarget(notice);
 
-            // The adapter must hop to the main thread via the scheduler.
             ArgumentCaptor<Runnable> task = ArgumentCaptor.forClass(Runnable.class);
-            verify(scheduler).scheduleTask(eq(plugin), task.capture());
-            // Execute the captured hop synchronously.
+            verify(adapterScheduler).scheduleTask(eq(adapterPlugin), task.capture());
             task.getValue().run();
 
-            // KICK renders a title, subtitle and action-bar — three colorize calls total.
-            verify(messageFormatter, times(3)).colorize(anyString());
-            verify(target).sendTitle(anyString(), anyString(),
+            // KICK renders title, subtitle and action-bar — three colorize calls.
+            verify(adapterFormatter, times(3)).colorize(anyString());
+            verify(adapterTarget).sendTitle(anyString(), anyString(),
                     eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN),
                     eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY),
                     eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT));
-            verify(target).sendActionBar(anyString());
+            verify(adapterTarget).sendActionBar(anyString());
         }
 
         @Test
@@ -255,22 +286,21 @@ class ChatInterceptorTest {
                             TARGET_ID, ChannelAction.MUTE, "global", "Mod", "5 minutes");
 
             Map<UUID, Player> online = new HashMap<>();
-            online.put(TARGET_ID, target);
-            when(server.getOnlinePlayers()).thenReturn(online);
-            when(messageFormatter.colorize(anyString())).thenAnswer(inv -> inv.getArgument(0));
+            online.put(TARGET_ID, adapterTarget);
+            when(adapterServer.getOnlinePlayers()).thenReturn(online);
 
             adapter.notifyKickMuteTarget(notice);
 
             ArgumentCaptor<Runnable> task = ArgumentCaptor.forClass(Runnable.class);
-            verify(scheduler).scheduleTask(eq(plugin), task.capture());
+            verify(adapterScheduler).scheduleTask(eq(adapterPlugin), task.capture());
             task.getValue().run();
 
-            verify(messageFormatter, times(3)).colorize(anyString());
-            verify(target).sendTitle(anyString(), anyString(),
+            verify(adapterFormatter, times(3)).colorize(anyString());
+            verify(adapterTarget).sendTitle(anyString(), anyString(),
                     eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN),
                     eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY),
                     eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT));
-            verify(target).sendActionBar(anyString());
+            verify(adapterTarget).sendActionBar(anyString());
         }
 
         @Test
@@ -280,30 +310,30 @@ class ChatInterceptorTest {
                     new ChannelResponseDispatcher.KickMuteNotice(
                             TARGET_ID, ChannelAction.KICK, "trade", "Admin", "0");
 
-            when(server.getOnlinePlayers()).thenReturn(new HashMap<>());
+            when(adapterServer.getOnlinePlayers()).thenReturn(new HashMap<>());
 
             adapter.notifyKickMuteTarget(notice);
 
             ArgumentCaptor<Runnable> task = ArgumentCaptor.forClass(Runnable.class);
-            verify(scheduler).scheduleTask(eq(plugin), task.capture());
+            verify(adapterScheduler).scheduleTask(eq(adapterPlugin), task.capture());
             task.getValue().run();
 
-            verify(target, never()).sendTitle(anyString(), anyString(), any(int.class), any(int.class), any(int.class));
-            verify(target, never()).sendActionBar(anyString());
+            verify(adapterTarget, never()).sendTitle(anyString(), anyString(),
+                    any(int.class), any(int.class), any(int.class));
+            verify(adapterTarget, never()).sendActionBar(anyString());
         }
 
         /**
          * Reflectively instantiates the private {@code PNXChannelResponseAdapter}
-         * inner class of {@link NetworkClient}, binding it to the mocked plugin.
+         * inner class, bound to the real {@link NetworkClient} outer instance so
+         * the adapter's {@code plugin} field reads resolve correctly.
          */
-        private ChannelResponseDispatcher.ChannelResponseAdapter instantiatePnxAdapter() throws Exception {
+        private ChannelResponseDispatcher.ChannelResponseAdapter instantiatePnxAdapter(
+                NetworkClient outer) throws Exception {
             Class<?> adapterClass = Class.forName(
                     "com.nova.chat.pnx.network.NetworkClient$PNXChannelResponseAdapter");
             Constructor<?> ctor = adapterClass.getDeclaredConstructor(NetworkClient.class);
             ctor.setAccessible(true);
-            // The adapter only uses the outer plugin reference, so we can pass a mocked
-            // NetworkClient whose own fields are never touched by notifyKickMuteTarget.
-            NetworkClient outer = networkClient;
             return (ChannelResponseDispatcher.ChannelResponseAdapter) ctor.newInstance(outer);
         }
     }
