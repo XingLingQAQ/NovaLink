@@ -13,7 +13,7 @@ issueTrackerURL="https://github.com/nova/novachat/issues"
 
 [[mods]]
 modId="novachat"
-version="${file.jarVersion}"
+version="${version}"
 displayName="NovaChat"
 displayURL="https://github.com/nova/novachat"
 logoFile="novachat_logo.png"
