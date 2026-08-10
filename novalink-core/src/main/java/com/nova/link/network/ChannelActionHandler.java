@@ -23,7 +23,11 @@ import com.nova.link.notification.NotificationStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Objects;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -126,6 +130,8 @@ public class ChannelActionHandler {
                     return handleUnban(connection, packet);
                 case DELETE:
                     return handleDelete(connection, packet);
+                case WHO:
+                    return handleWho(connection, packet);
                 default:
                     return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(),
                             "NC-400", "Unsupported channel action");
@@ -709,6 +715,82 @@ public class ChannelActionHandler {
         }
 
         return new ChannelActionResponsePacket(true, ChannelAction.DELETE, channelId, "", "Channel deleted");
+    }
+
+    /**
+     * Handles {@link ChannelAction#WHO}: lists the online members of a channel.
+     *
+     * <p>Read-only query — no state change. The response {@code extra} map is
+     * populated with:
+     * <ul>
+     *   <li>{@code members} — comma-separated display names (UUID fallback when
+     *       a cached name is unavailable), case-insensitively sorted</li>
+     *   <li>{@code memberCount} — number of online members returned</li>
+     *   <li>{@code displayName} — channel display name (for client header rendering)</li>
+     * </ul>
+     * The requesting player's identity ({@code requesterId} / {@code requesterName}
+     * from the request extra) is echoed back so the client can route the
+     * asynchronous response to the player who ran {@code /nc who}.
+     */
+    private ChannelActionResponsePacket handleWho(ClientConnection connection, ChannelActionPacket packet) {
+        String channelId = packet.getChannelId();
+        if (channelId == null || channelId.isBlank()) {
+            return new ChannelActionResponsePacket(false, ChannelAction.WHO, "", "NC-400", "Channel ID is required");
+        }
+
+        Channel channel = channelManager.getChannel(channelId);
+        if (channel == null) {
+            return new ChannelActionResponsePacket(false, ChannelAction.WHO, channelId, "NC-404", "Channel not found");
+        }
+
+        // Enforce client boundary for SERVER/PRIVATE channels — WHO is a read on
+        // channel membership, so the same cross-client rule as JOIN applies.
+        if (channel.getScope() != ChannelScope.GLOBAL) {
+            String clientId = connection.getClientId();
+            if (clientId == null || !clientId.equals(channel.getClientId())) {
+                return new ChannelActionResponsePacket(false, ChannelAction.WHO, channelId, "NC-403",
+                        "Cross-client channel access denied");
+            }
+        }
+
+        // Resolve display names for each member UUID, preferring the cached
+        // player name; fall back to the UUID string when no state is cached
+        // (e.g. a member who joined but whose state has not propagated yet).
+        Collection<UUID> memberIds = channel.getMembers();
+        TreeSet<String> names = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        List<String> unknownIds = new ArrayList<>();
+        for (UUID memberId : memberIds) {
+            PlayerState state = playerStateManager.getPlayerState(memberId);
+            if (state != null && state.getPlayerName() != null && !state.getPlayerName().isBlank()) {
+                names.add(state.getPlayerName());
+            } else {
+                unknownIds.add(memberId.toString());
+            }
+        }
+        // Append UUID fallbacks after named entries, preserving sort stability.
+        names.addAll(unknownIds);
+
+        String membersCsv = String.join(", ", names);
+        String memberCount = String.valueOf(names.size());
+
+        ChannelActionResponsePacket response =
+                new ChannelActionResponsePacket(true, ChannelAction.WHO, channelId, "", "Channel members");
+        response.addExtra("members", membersCsv);
+        response.addExtra("memberCount", memberCount);
+        response.addExtra("displayName",
+                channel.getDisplayName() != null ? channel.getDisplayName() : channelId);
+        // Echo requester identity so the client can deliver the async response
+        // to the player who ran /nc who (the response travels over a server-
+        // scoped connection, not a per-player channel).
+        String requesterId = firstNonBlank(packet.getExtra("requesterId"), packet.getExtra("requester_id"));
+        if (requesterId != null && !requesterId.isBlank()) {
+            response.addExtra("requesterId", requesterId);
+        }
+        String requesterName = firstNonBlank(packet.getExtra("requesterName"), packet.getExtra("requester_name"));
+        if (requesterName != null && !requesterName.isBlank()) {
+            response.addExtra("requesterName", requesterName);
+        }
+        return response;
     }
 
     /**
