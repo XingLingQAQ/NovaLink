@@ -199,12 +199,12 @@ jobs:
         working-directory: NovaChat/Bedrock/levilamina
         run: |
           $ErrorActionPreference = 'Continue'
-          function Invoke-Xmake([string[]]$Args) {
-            Write-Host "==> xmake $($Args -join ' ')"
-            & xmake @Args
+          function Invoke-Xmake([string[]]$XmakeArgs) {
+            Write-Host "==> xmake $($XmakeArgs -join ' ')"
+            & xmake @XmakeArgs
             $code = $LASTEXITCODE
             if ($code -ne 0) {
-              Write-Host "::error::xmake $($Args -join ' ') failed with exit $code"
+              Write-Host "::error::xmake $($XmakeArgs -join ' ') failed with exit $code"
               Write-Host '----- dumping all xmake install.txt logs (compiler errors) -----'
               $cacheRoot = Join-Path $env:LOCALAPPDATA '.xmake\cache'
               if (Test-Path $cacheRoot) {
