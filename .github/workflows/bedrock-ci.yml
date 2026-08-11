@@ -11,7 +11,10 @@
 #                  .dll + tests binary, runs the tests; -y auto-confirms package
 #                  installs). Pinned to windows-2022 because windows-2025 ships
 #                  only VS 2026 (MSVC 14.44), which levilamina 26.20.7 does not
-#                  compile under.
+#                  compile under. Built in RELEASE mode (not debug) because the
+#                  levilamina package always compiles its own sources as MD
+#                  (release runtime) while `-m debug` only flips deps to MDd,
+#                  which then mismatches at link (LNK2038 MDd vs MD).
 #   pmmp         - ubuntu-24.04, PHP 8.2, composer install + phpunit. pocketmine-mp
 #                  5.x requires PocketMine-private PHP extensions (ext-chunkutils2,
 #                  ext-leveldb, ...) that standard PHP cannot install, so
@@ -152,22 +155,28 @@ jobs:
         with:
           path: ~/.xmake/packages
           # xmake.lua pulls levilamina from liteldev-repo; key on the xmake.lua
-          # hash so a version bump invalidates the cache and re-fetches. Include
-          # the runner image tag (win2022) because levilamina ships MSVC-built
-          # static libs whose ABI differs between VS 2022 (v143) and VS 2026
-          # (v144) -- a cache populated on one toolchain MUST NOT be restored on
-          # the other, or link/compile fails with mismatched-runtime errors.
-          key: xmake-pkg-win2022-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua') }}
+          # hash so a version bump invalidates the cache and re-fetches. The key
+          # is scoped on THREE axes that each change the built .lib ABI:
+          #   win2022  -- VS 2022 (v143) vs VS 2026 (v144) toolchain.
+          #   rel      -- release (MD) vs debug (MDd) runtime. The levilamina
+          #              package ALWAYS builds itself in release (MD); asking
+          #              xmake for -m debug only flips the DEPS to MDd, which
+          #              then mismatches levilamina's MD at link time
+          #              (LNK2038 RuntimeLibrary MDd vs MD). So we build release
+          #              and key the cache on `rel` to keep MDd artifacts out.
+          # A cache populated under one toolchain/runtime MUST NOT restore under
+          # another, or compile/link fails with mismatched-runtime errors.
+          key: xmake-pkg-win2022-rel-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua') }}
           restore-keys: |
-            xmake-pkg-win2022-
+            xmake-pkg-win2022-rel-
 
       - name: Cache xmake build directory
         uses: actions/cache@v4
         with:
           path: NovaChat/Bedrock/levilamina/build
-          key: xmake-build-win2022-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua', 'NovaChat/Bedrock/levilamina/src/**', 'NovaChat/Bedrock/levilamina/tests/**') }}
+          key: xmake-build-win2022-rel-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua', 'NovaChat/Bedrock/levilamina/src/**', 'NovaChat/Bedrock/levilamina/tests/**') }}
           restore-keys: |
-            xmake-build-win2022-
+            xmake-build-win2022-rel-
 
       # ------------------------------------------------------------------
       # Full SDK-integrated build + test (with LeviLamina SDK).
@@ -184,15 +193,24 @@ jobs:
       #   --verbose surfaces them in the job log directly; the catch below also
       #   dumps every install.txt it can find as a fallback.
       #
+      # MODE = release (NOT debug): the levilamina package ALWAYS compiles its
+      # own sources in release (MD runtime, _ITERATOR_DEBUG_LEVEL=0) regardless
+      # of the mode we pass -- `xmake f -m debug` only flips the TRANSITIVE
+      # deps (fmt/leveldb/entt) to MDd (_ITERATOR_DEBUG_LEVEL=2). Linking MDd
+      # deps against levilamina's MD objects blows up with:
+      #   error LNK2038: mismatch detected for 'RuntimeLibrary':
+      #     value 'MDd_DynamicDebug' doesn't match value 'MD_DynamicRelease'
+      #   error LNK2038: mismatch detected for '_ITERATOR_DEBUG_LEVEL':
+      #     value '2' doesn't match value '0'
+      #   + LNK2019 __imp__calloc_dbg / LNK2001 __imp__CrtDbgReport (MDd refs
+      #     debug-CRT symbols that MD levilamina does not link).
+      # So we build in release so deps are MD too -> consistent runtime. CI does
+      # not need debug symbols; the tests binary still runs under release/MD.
+      #
       # The .dll (novachat-levilamina) is built to prove the SDK integration
       # links cleanly; the tests binary is then built and RUN -- a successful
       # compile + link + test run is the gate. No continue-on-error: a real
       # failure must redden the job.
-      #
-      # Toolchain note: windows-2025 ships ONLY Visual Studio Enterprise 2026
-      # (MSVC 14.44 / v144 toolset) -- it no longer carries VS 2022 / v143.
-      # If levilamina 26.20.7 fails to compile under MSVC 14.44, the
-      # install.txt dump below is what tells us the real compiler error.
       # ------------------------------------------------------------------
       - name: Build & run SDK-integrated tests (levilamina pkg)
         shell: pwsh
@@ -219,7 +237,7 @@ jobs:
               exit $code
             }
           }
-          Invoke-Xmake 'f', '-m', 'debug', '-y', '--verbose'
+          Invoke-Xmake 'f', '-m', 'release', '-y', '--verbose'
           Invoke-Xmake 'build', 'novachat-levilamina', '-y', '--verbose'
           Invoke-Xmake 'build', 'novachat-levilamina-tests', '-y', '--verbose'
           Invoke-Xmake 'run', 'novachat-levilamina-tests'
