@@ -6,9 +6,12 @@
 #
 # Job layout:
 #   endstone     - ubuntu-24.04, Python 3.12, pip install -e .[dev], pytest
-#   levilamina   - windows-2025, MSVC + xmake, full SDK-integrated build + test
-#                  (pulls levilamina from liteldev-repo, builds the .dll + tests
-#                  binary, runs the tests; -y auto-confirms package installs)
+#   levilamina   - windows-2022 (VS 2022 / MSVC 14.43), xmake, full SDK-integrated
+#                  build + test (pulls levilamina from liteldev-repo, builds the
+#                  .dll + tests binary, runs the tests; -y auto-confirms package
+#                  installs). Pinned to windows-2022 because windows-2025 ships
+#                  only VS 2026 (MSVC 14.44), which levilamina 26.20.7 does not
+#                  compile under.
 #   pmmp         - ubuntu-24.04, PHP 8.2, composer install + phpunit. pocketmine-mp
 #                  5.x requires PocketMine-private PHP extensions (ext-chunkutils2,
 #                  ext-leveldb, ...) that standard PHP cannot install, so
@@ -70,7 +73,7 @@ jobs:
 
   levilamina:
     name: LeviLamina (C++/xmake)
-    runs-on: windows-2025
+    runs-on: windows-2022
     timeout-minutes: 60
     defaults:
       run:
@@ -82,14 +85,23 @@ jobs:
 
       - name: Set up MSVC (VS 2022)
         uses: microsoft/setup-msbuild@v2
-        # windows-2025 ships VS 2022 + MSVC 19.3x (C++20 capable). This action
-        # puts cl.exe/link.exe on PATH for xmake's msvc toolchain detection.
+        # windows-2022 ships VS 2022 Enterprise (MSVC 14.43 / v143 toolset).
+        # We pin to windows-2022 (NOT windows-2025) because windows-2025 now
+        # ships ONLY Visual Studio 2026 (MSVC 14.44 / v144), and levilamina
+        # 26.20.7 -- a C++20 BDS plugin framework that embeds compiler-specific
+        # intrinsics and matches a specific BDS/MSVC toolchain -- fails to
+        # compile its own sources under MSVC 14.44 (xmake hides the real
+        # compiler error behind install.txt; the build step below dumps it).
+        # VS 2022 is the toolchain levilamina targets, so windows-2022 is the
+        # correct runner. This action puts cl.exe/link.exe on PATH for xmake's
+        # msvc toolchain detection.
 
       - name: Install xmake
-        # windows-2025 runners do NOT ship scoop, and there is no official
-        # xmake setup action (xmake-io/setup-xmake does not exist -- the
-        # correct org is xmake-io/xmake, which publishes release assets, not
-        # an action). So we install xmake directly from its GitHub release:
+        # GitHub Windows runners (windows-2022 included) do NOT ship scoop,
+        # and there is no official xmake setup action (xmake-io/setup-xmake
+        # does not exist -- the correct org is xmake-io/xmake, which publishes
+        # release assets, not an action). So we install xmake directly from
+        # its GitHub release:
         #   1. Query the latest release API for the win64 NSIS installer URL.
         #   2. Download xmake-v<ver>.win64.exe (~4MB).
         #   3. Run it with NSIS silent flags (/S + /D=<dir>) -- no UAC, no UI.
@@ -140,18 +152,22 @@ jobs:
         with:
           path: ~/.xmake/packages
           # xmake.lua pulls levilamina from liteldev-repo; key on the xmake.lua
-          # hash so a version bump invalidates the cache and re-fetches.
-          key: xmake-pkg-${{ runner.os }}-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua') }}
+          # hash so a version bump invalidates the cache and re-fetches. Include
+          # the runner image tag (win2022) because levilamina ships MSVC-built
+          # static libs whose ABI differs between VS 2022 (v143) and VS 2026
+          # (v144) -- a cache populated on one toolchain MUST NOT be restored on
+          # the other, or link/compile fails with mismatched-runtime errors.
+          key: xmake-pkg-win2022-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua') }}
           restore-keys: |
-            xmake-pkg-${{ runner.os }}-
+            xmake-pkg-win2022-
 
       - name: Cache xmake build directory
         uses: actions/cache@v4
         with:
           path: NovaChat/Bedrock/levilamina/build
-          key: xmake-build-${{ runner.os }}-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua', 'NovaChat/Bedrock/levilamina/src/**', 'NovaChat/Bedrock/levilamina/tests/**') }}
+          key: xmake-build-win2022-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua', 'NovaChat/Bedrock/levilamina/src/**', 'NovaChat/Bedrock/levilamina/tests/**') }}
           restore-keys: |
-            xmake-build-${{ runner.os }}-
+            xmake-build-win2022-
 
       # ------------------------------------------------------------------
       # Full SDK-integrated build + test (with LeviLamina SDK).
@@ -163,20 +179,50 @@ jobs:
       # -y: xmake prompts "please input: y (y/n/m)" to confirm package installs;
       #   in a non-TTY CI shell this hangs and fails ("must be installed!").
       #   -y auto-confirms so package install proceeds non-interactively.
+      # --verbose: xmake hides package-build compiler errors behind an
+      #   install.txt log under .xmake/cache/.../<pkg>/installdir.failed/logs.
+      #   --verbose surfaces them in the job log directly; the catch below also
+      #   dumps every install.txt it can find as a fallback.
       #
       # The .dll (novachat-levilamina) is built to prove the SDK integration
       # links cleanly; the tests binary is then built and RUN -- a successful
       # compile + link + test run is the gate. No continue-on-error: a real
       # failure must redden the job.
+      #
+      # Toolchain note: windows-2025 ships ONLY Visual Studio Enterprise 2026
+      # (MSVC 14.44 / v144 toolset) -- it no longer carries VS 2022 / v143.
+      # If levilamina 26.20.7 fails to compile under MSVC 14.44, the
+      # install.txt dump below is what tells us the real compiler error.
       # ------------------------------------------------------------------
       - name: Build & run SDK-integrated tests (levilamina pkg)
         shell: pwsh
         working-directory: NovaChat/Bedrock/levilamina
         run: |
-          xmake f -m debug -y
-          xmake build novachat-levilamina -y
-          xmake build novachat-levilamina-tests -y
-          xmake run novachat-levilamina-tests
+          $ErrorActionPreference = 'Continue'
+          function Invoke-Xmake([string[]]$Args) {
+            Write-Host "==> xmake $($Args -join ' ')"
+            & xmake @Args
+            $code = $LASTEXITCODE
+            if ($code -ne 0) {
+              Write-Host "::error::xmake $($Args -join ' ') failed with exit $code"
+              Write-Host '----- dumping all xmake install.txt logs (compiler errors) -----'
+              $cacheRoot = Join-Path $env:LOCALAPPDATA '.xmake\cache'
+              if (Test-Path $cacheRoot) {
+                Get-ChildItem -Path $cacheRoot -Recurse -Filter 'install.txt' -ErrorAction SilentlyContinue |
+                  ForEach-Object {
+                    Write-Host "----- $($_.FullName) -----"
+                    Get-Content $_.FullName -Tail 80
+                  }
+              } else {
+                Write-Host "(no .xmake cache root at $cacheRoot)"
+              }
+              exit $code
+            }
+          }
+          Invoke-Xmake 'f', '-m', 'debug', '-y', '--verbose'
+          Invoke-Xmake 'build', 'novachat-levilamina', '-y', '--verbose'
+          Invoke-Xmake 'build', 'novachat-levilamina-tests', '-y', '--verbose'
+          Invoke-Xmake 'run', 'novachat-levilamina-tests'
 
   pmmp:
     name: PMMP (PHP)
