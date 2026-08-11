@@ -115,11 +115,24 @@ jobs:
         # maintained by an xmake core member (OpportunityLiu); the official
         # LeviLamina mod template's own CI uses exactly this action. It handles
         # xmake download + PATH + optional xmake/package/build caching in one
-        # step. We pin xmake-version to latest (action downloads a recent
-        # release); the repo -u step below refreshes the package index after.
+        # step.
+        #
+        # xmake-version is PINNED to 3.0.9 (NOT `latest`) because:
+        # - 3.0.9 is the exact version the levilamina migration was validated
+        #   against locally (dll builds+links, 83/83 tests pass) -- see the
+        #   -v build-subcommand note below which is 3.0.9-specific behavior.
+        # - 3.1.0 (the current `latest` as of 2026-08) breaks this action's own
+        #   cache-key step: the action runs `xmake l utils.ci.packageskey`
+        #   internally to compute the package-cache key, and under 3.1.0 that
+        #   script exits -1 (4294967295) -- the script exists at
+        #   modules/utils/ci/packageskey.lua in 3.0.9 and returns a hash, but
+        #   3.1.0's version fails under this action's invocation. Pinning avoids
+        #   the `latest` floating-version footgun. Bump deliberately when a newer
+        #   xmake release is verified to keep utils.ci.packageskey + the build
+        #   subcommand -v behavior working.
         uses: xmake-io/github-action-setup-xmake@v1
         with:
-          xmake-version: latest
+          xmake-version: '3.0.9'
           # Package cache = the levilamina SDK + deps (fmt/leveldb/entt/...).
           # Build cache = incremental object files. Both are keyed on xmake.lua
           # below via the action's own cache keys; enabling them here lets the
