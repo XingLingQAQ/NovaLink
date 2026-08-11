@@ -153,19 +153,77 @@ jobs:
       # validated against locally (dll builds+links, 83/83 tests). Bump
       # deliberately only after verifying packageskey + the build-subcommand
       # -v behavior still work.
+      #
+      # We do NOT use the action's built-in package-cache/build-cache: those
+      # run `xmake l utils.ci.packageskey` internally to compute the cache
+      # key, and that script reads the xmake.lua in the CURRENT working dir.
+      # The action runs in GITHUB_WORKSPACE (repo root), which has NO
+      # xmake.lua -> packageskey exits -1 (4294967295) and the action fails
+      # the step. Reproduced locally: `xmake l utils.ci.packageskey` in the
+      # levilamina dir returns a hash (exit 0); in the repo root it exits -1.
+      # The action exposes no working-directory input to redirect it, and
+      # nova-ci is a single-job workflow (no per-job defaults.working-directory
+      # we can set just for this one `uses:` step -- defaults.run only affects
+      # `run:` steps, not `uses:`). So we disable the action's cache features
+      # and cache the xmake package store + levilamina build dir explicitly
+      # via actions/cache@v4 below, keyed on xmake.lua + src/tests.
       # ---------------------------------------------------------------------
       - name: Set up xmake
         uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: '3.0.9'
-          # Package cache = levilamina SDK + deps (fmt/leveldb/entt/...).
-          # Build cache = incremental object files. Both keyed on xmake.lua
-          # (and src/tests for build cache) so a toolchain/config change
-          # invalidates correctly.
-          package-cache: true
-          package-cache-key: xmake-pkg-win2022-md-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua') }}
-          build-cache: true
-          build-cache-key: xmake-build-win2022-md-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua', 'NovaChat/Bedrock/levilamina/src/**', 'NovaChat/Bedrock/levilamina/tests/**') }}
+        # continue-on-error: even with package-cache/build-cache DISABLED,
+        # some versions of this action still run `xmake l utils.ci.packageskey`
+        # internally, which exits -1 in the repo root (no xmake.lua here --
+        # see the comment block above). xmake itself is installed + PATH'd
+        # BEFORE that packageskey step, so a packageskey failure does NOT
+        # leave xmake broken -- the subsequent ./gradlew :...:levilamina:build
+        # (which runs xmake in NovaChat/Bedrock/levilamina, where packageskey
+        # WOULD work) still succeeds. We tolerate the action's cache-step
+        # failure rather than let it redden the whole job. The next step
+        # asserts xmake is actually on PATH so a real install failure is
+        # still caught.
+        continue-on-error: true
+
+      - name: Verify xmake is on PATH
+        # Belt-and-suspenders: if setup-xmake failed mid-way (e.g. the
+        # packageskey exit -1 above), this catches a genuinely missing xmake
+        # with a clear message instead of letting the gradle build fail later
+        # with an opaque "xmake not found".
+        shell: pwsh
+        run: |
+          if (-not (Get-Command xmake -ErrorAction SilentlyContinue)) {
+            Write-Error "xmake is not on PATH after setup-xmake step"
+            exit 1
+          }
+          xmake --version
+
+      - name: Cache xmake packages (levilamina SDK + deps)
+        # xmake stores installed packages under %LOCALAPPDATA%\.xmake\packages
+        # on Windows (fmt/leveldb/entt/levilamina/...). Caching them avoids
+        # recompiling the levilamina SDK from source every run (~minutes).
+        # Keyed on xmake.lua so an add_requires/set_runtimes change invalidates.
+        uses: actions/cache@v4
+        with:
+          # LOCALAPPDATA on windows-2022 is C:\Users\runneradmin\AppData\Local.
+          # xmake's package store lives at %LOCALAPPDATA%\.xmake\packages.
+          # We cache the whole .xmake dir (packages + repos index) for simplicity.
+          path: C:\Users\runneradmin\AppData\Local\.xmake
+          key: xmake-pkgs-win2022-md-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua') }}
+          restore-keys: |
+            xmake-pkgs-win2022-md-
+
+      - name: Cache levilamina build dir
+        # Incremental object files for the novachat-levilamina dll + tests.
+        # Keyed on xmake.lua + src + tests so a source/config change invalidates.
+        uses: actions/cache@v4
+        with:
+          path: |
+            NovaChat/Bedrock/levilamina/build
+            NovaChat/Bedrock/levilamina/.xmake
+          key: xmake-build-win2022-md-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua', 'NovaChat/Bedrock/levilamina/src/**', 'NovaChat/Bedrock/levilamina/tests/**') }}
+          restore-keys: |
+            xmake-build-win2022-md-
 
       # ---------------------------------------------------------------------
       # Gradle + MOD loom caches (carried over from the old java-ci). The MOD
