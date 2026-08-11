@@ -67,6 +67,20 @@ jobs:
       # UTF-8 hardening -- see the comment block above.
       JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8 -Dconsole.encoding=UTF-8
       PYTHONUTF8: '1'
+      # Testcontainers on Windows GitHub Actions runners: disable the Ryuk
+      # reaper container. windows-2022 runners ship Docker Desktop (Linux
+      # engine) so postgres:16-alpine (linux/amd64) DOES run, but Testcontainers'
+      # Ryuk container frequently fails to start on Windows Docker Desktop
+      # (volume-mount permission quirk), which makes EVERY @Testcontainers
+      # test time out in container-startup with a misleading "startup failed"
+      # -- this was CI failure #3's StarLink:core 10 failed (the 10
+      # PostgreSQLIntegrationTest methods: locally Docker is absent so
+      # assumeTrue skips them = 627/0/10skipped; on CI Docker IS present so
+      # assumeTrue passes and the tests run, but Ryuk fails and the postgres
+      # container start hangs -> 10 failed). Ryuk is only a cleanup helper;
+      # GitHub Actions destroys the whole runner after the job, so disabling
+      # it loses nothing here while letting the real postgres container start.
+      TESTCONTAINERS_RYUK_DISABLED: 'true'
       # Gradle daemon JVM args (in addition to JAVA_TOOL_OPTIONS). The root
       # gradle.properties sets -Xmx2048m; we keep that and rely on
       # JAVA_TOOL_OPTIONS for the encoding flags.

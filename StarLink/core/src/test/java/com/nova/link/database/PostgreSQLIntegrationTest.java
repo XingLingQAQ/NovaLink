@@ -38,7 +38,13 @@ class PostgreSQLIntegrationTest {
         postgres = new PostgreSQLContainer<>(DockerImageName.parse("postgres:16-alpine"))
                 .withDatabaseName("novalink_test")
                 .withUsername("novalink")
-                .withPassword("novalink_test_password");
+                .withPassword("novalink_test_password")
+                // CI runners may be pulling postgres:16-alpine for the first
+                // time (no Docker layer cache); the default 60s startup timeout
+                // can be too tight under that pull + cold engine load. Give it
+                // 3 minutes so the test fails on a real postgres problem, not on
+                // a slow image pull under CI load.
+                .withStartupTimeout(java.time.Duration.ofMinutes(3));
         postgres.start();
 
         provider = new PostgreSQLProvider(

@@ -65,7 +65,26 @@ tasks.register('xmakeConfigure', Exec) {
     group = 'build'
     description = "Configures the xmake project (mode=${buildMode})."
     dependsOn tasks.named('xmakeRepoUpdate')
-    commandLine 'xmake', 'f', '-m', buildMode.toString()
+    // -a x64 -p windows: explicit arch + plat so xmake does not depend on
+    //   host auto-detection (mirrors the official LeviLamina template CI).
+    // -y: auto-confirms package installs. On a fresh CI runner the levilamina
+    //   SDK + deps are NOT cached, so `xmake f` prompts "please input: y
+    //   (y/n/m)" to confirm installing them. Non-TTY CI cannot answer -> the
+    //   configure step hangs / exits -1 (this was CI failure #3's root cause:
+    //   the original command had no -y, so a fresh-runner configure prompted
+    //   and exited -1, which surfaced as `:levilamina:xmakeBuild` failing with
+    //   "xmake finished with non-zero exit value -1"). -y is a CONFIGURE/require
+    //   option only (NOT a build-subcommand option -- `xmake build -y` rejects
+    //   it as "'-y' is not a valid target name"), so it is safe here. Locally
+    //   this is a no-op when packages are already installed.
+    // -v/--verbose: surfaces package download + compile progress/errors
+    //   directly in the job log. levilamina is a SOURCE xmake package (no
+    //   prebuilt binary), so `xmake f` compiles the whole SDK (fmt/leveldb/
+    //   entt/levilamina/...) from source; without -v those compiler errors are
+    //   hidden inside .xmake/cache/<pkg>/install.txt and the only visible
+    //   symptom is a bare exit -1. Mirrors the old bedrock-ci.yml configure
+    //   command `xmake f -a x64 -p windows -m release -y -v`.
+    commandLine 'xmake', 'f', '-a', 'x64', '-p', 'windows', '-m', buildMode.toString(), '-y', '-v'
     workingDir projectDir
     // Re-configure only if the build directory is missing.
     onlyIf { !layout.projectDirectory.dir('.xmake').asFile.exists() }
@@ -78,13 +97,27 @@ tasks.register('xmakeBuild', Exec) {
     group = 'build'
     description = 'Builds the LeviLamina plugin shared library with xmake.'
     dependsOn tasks.named('xmakeConfigure')
+    // NOTE: `xmake build` is run WITHOUT -v. In xmake v3.0.9 the build
+    // subcommand rejects -v entirely -- both `xmake build <target> -v` and
+    // `xmake -v build <target>` fail with "error: invalid argument" (only
+    // bare `xmake -v` with no build subcommand + no target accepts -v). We
+    // name targets explicitly to control build order, so -v cannot be used
+    // here. Package compile errors are instead surfaced by xmakeConfigure's
+    // -v (the SDK installs during configure, not build) -- see comment below.
     commandLine 'xmake', 'build'
     workingDir projectDir
     inputs.dir layout.projectDirectory.dir('src')
     inputs.file layout.projectDirectory.file('xmake.lua').asFile
     outputs.dir layout.projectDirectory.dir('build').asFile
     onlyIf { xmakeAvailable }
-    doFirst { logger.lifecycle(skipReason) }
+    doFirst { if (!xmakeAvailable) logger.lifecycle(skipReason) }
+    // Standard Exec behavior: a non-zero `xmake build` exit fails this task.
+    // Package-build compiler errors are surfaced by xmakeConfigure's -v (the
+    // SDK installs during configure, not build) -- the `xmake build` subcommand
+    // itself rejects -v in v3.0.9 (see comment above), so this task cannot add
+    // -v. On a configure success + build failure the configure -v log already
+    // contains the package errors; an install.txt dump (old bedrock-ci fallback)
+    // is intentionally NOT reimplemented here to avoid Gradle-9 Exec API churn.
 }
 
 tasks.register('test', Exec) {
