@@ -6,11 +6,12 @@
 #include "../protocol/Packet.h"
 #include "../i18n/I18n.h"
 
-#include <ll/api/Logger.h>
+#include <ll/api/io/Logger.h>
 #include <ll/api/command/Command.h>
 #include <ll/api/command/CommandHandle.h>
 #include <ll/api/command/CommandRegistrar.h>
 #include <ll/api/service/Bedrock.h>
+#include <mc/world/level/Level.h>
 #include <mc/world/actor/player/Player.h>
 #include <mc/server/commands/CommandOrigin.h>
 #include <mc/server/commands/CommandOutput.h>
@@ -59,7 +60,7 @@ void CommandHandler::registerCommands() {
     auto& logger = mPlugin.getSelf().getLogger();
     logger.info("Registering commands...");
 
-    auto& registrar = ll::command::CommandRegistrar::getInstance();
+    auto& registrar = ll::command::CommandRegistrar::getServerInstance();
 
     // Register /nc command
     auto& ncCommand = registrar.getOrCreateCommand(
@@ -373,16 +374,14 @@ void CommandHandler::sendLocalized(const std::string& playerName, const std::str
 }
 
 void CommandHandler::sendMessage(const std::string& playerName, const std::string& message) {
-    auto* level = ll::service::getLevel();
+    auto level = ll::service::getLevel();
     if (!level) {
         return;
     }
 
     level->forEachPlayer([&](Player& player) {
         if (player.getName() == playerName) {
-            TextPacket packet;
-            packet.mType = TextPacketType::Raw;
-            packet.mMessage = message;
+            TextPacket packet = TextPacket::createRawMessage(message);
             player.sendNetworkPacket(packet);
             return false;
         }

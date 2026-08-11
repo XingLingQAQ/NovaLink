@@ -7,14 +7,21 @@
 # Job layout:
 #   endstone     - ubuntu-24.04, Python 3.12, pip install -e .[dev], pytest
 #   levilamina   - windows-2022 (VS 2022 / MSVC 14.43), xmake, full SDK-integrated
-#                  build + test (pulls levilamina from liteldev-repo, builds the
-#                  .dll + tests binary, runs the tests; -y auto-confirms package
-#                  installs). Pinned to windows-2022 because windows-2025 ships
-#                  only VS 2026 (MSVC 14.44), which levilamina 26.20.7 does not
-#                  compile under. Built in RELEASE mode (not debug) because the
-#                  levilamina package always compiles its own sources as MD
-#                  (release runtime) while `-m debug` only flips deps to MDd,
-#                  which then mismatches at link (LNK2038 MDd vs MD).
+#                  build + test (pulls levilamina from LiteLDev/xmake-repo, builds
+#                  the .dll + tests binary, runs the tests). Pinned to
+#                  windows-2022 because windows-2025 ships only VS 2026
+#                  (MSVC 14.44), which levilamina 26.20.7 does not compile under.
+#                  Aligns with the official LeviLamina mod template: xmake is
+#                  set up via xmake-io/github-action-setup-xmake@v1 (which also
+#                  caches xmake packages + build dir), `xmake repo -u` refreshes
+#                  the package index, and the build uses the template's command
+#                  form (xmake f -a x64 -p windows -m release --target_type=server -y
+#                  then xmake build <target>). xmake.lua has set_runtimes("MD")
+#                  + levibuildscript link/modpack rules so the whole toolchain
+#                  is MD-consistent (no LNK2038 MDd-vs-MD mismatch). levilamina
+#                  is a SOURCE xmake package (no prebuilt binary), so compiling
+#                  it from source with MSVC is unavoidable -- the package +
+#                  build caches make it a one-time cost per xmake.lua change.
 #   pmmp         - ubuntu-24.04, PHP 8.2, composer install + phpunit. pocketmine-mp
 #                  5.x requires PocketMine-private PHP extensions (ext-chunkutils2,
 #                  ext-leveldb, ...) that standard PHP cannot install, so
@@ -99,119 +106,101 @@ jobs:
         # correct runner. This action puts cl.exe/link.exe on PATH for xmake's
         # msvc toolchain detection.
 
-      - name: Install xmake
-        # GitHub Windows runners (windows-2022 included) do NOT ship scoop,
-        # and there is no official xmake setup action (xmake-io/setup-xmake
-        # does not exist -- the correct org is xmake-io/xmake, which publishes
-        # release assets, not an action). So we install xmake directly from
-        # its GitHub release:
-        #   1. Query the latest release API for the win64 NSIS installer URL.
-        #   2. Download xmake-v<ver>.win64.exe (~4MB).
-        #   3. Run it with NSIS silent flags (/S + /D=<dir>) -- no UAC, no UI.
-        #   4. Prepend the install dir to PATH so later steps find xmake.
-        # Pinned to v3.1.0 via the asset-name glob below; bump when a new
-        # xmake major is released. Idempotent: if xmake is already on PATH
-        # (e.g. from a restored cache) the install is skipped.
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if (Get-Command xmake -ErrorAction SilentlyContinue) {
-            Write-Host "xmake already on PATH, skipping install"
-            xmake --version
-            return
-          }
-          $installDir = Join-Path $env:RUNNER_TEMP 'xmake'
-          $api = 'https://api.github.com/repos/xmake-io/xmake/releases/latest'
-          $rel = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'novalink-ci' }
-          Write-Host "Latest xmake release: $($rel.tag_name)"
-          $asset = $rel.assets | Where-Object { $_.name -eq 'xmake-v3.1.0.win64.exe' } |
-                   Select-Object -First 1
-          if (-not $asset) {
-            throw "xmake-v3.1.0.win64.exe not found in release $($rel.tag_name); available: $($rel.assets.name -join ', ')"
-          }
-          $installer = Join-Path $env:RUNNER_TEMP 'xmake-setup.exe'
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installer -UseBasicParsing
-          Write-Host "Installing xmake silently to $installDir"
-          & $installer /S "/D=$installDir"
-          # NSIS /D install returns before files are fully flushed; wait briefly.
-          Start-Sleep -Seconds 2
-          if (-not (Test-Path (Join-Path $installDir 'xmake.exe'))) {
-            throw "xmake.exe not found at $installDir after silent install"
-          }
-          # Prepend to PATH for this step AND persist for subsequent steps via
-          # $GITHUB_PATH (one path per line, UTF-8 *without* BOM -- PowerShell
-          # 5.1's Out-File -Encoding utf8 emits a BOM that corrupts the first
-          # path, so use the .NET API which is BOM-free by default here).
-          [System.IO.File]::AppendAllText($env:GITHUB_PATH, "$installDir`n")
-          $env:PATH = "$installDir;$env:PATH"
-          xmake --version
+      - name: Set up xmake
+        # Official xmake setup action (xmake-io/github-action-setup-xmake). This
+        # replaces a hand-rolled NSIS installer we used earlier -- the hand-rolled
+        # version existed only because I (wrongly) probed `xmake-io/setup-xmake`
+        # (missing the `github-action-` infix) and concluded no official action
+        # existed. The real coordinate is `xmake-io/github-action-setup-xmake@v1`,
+        # maintained by an xmake core member (OpportunityLiu); the official
+        # LeviLamina mod template's own CI uses exactly this action. It handles
+        # xmake download + PATH + optional xmake/package/build caching in one
+        # step. We pin xmake-version to latest (action downloads a recent
+        # release); the repo -u step below refreshes the package index after.
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+          # Package cache = the levilamina SDK + deps (fmt/leveldb/entt/...).
+          # Build cache = incremental object files. Both are keyed on xmake.lua
+          # below via the action's own cache keys; enabling them here lets the
+          # action manage cache restore/save so we can drop our separate
+          # actions/cache@v4 steps.
+          package-cache: true
+          package-cache-key: xmake-pkg-win2022-md-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua') }}
+          build-cache: true
+          build-cache-key: xmake-build-win2022-md-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua', 'NovaChat/Bedrock/levilamina/src/**', 'NovaChat/Bedrock/levilamina/tests/**') }}
 
       - name: Show xmake version
         shell: pwsh
         run: xmake --version
 
-      - name: Cache xmake packages (LeviLamina SDK)
-        uses: actions/cache@v4
-        with:
-          path: ~/.xmake/packages
-          # xmake.lua pulls levilamina from liteldev-repo; key on the xmake.lua
-          # hash so a version bump invalidates the cache and re-fetches. The key
-          # is scoped on THREE axes that each change the built .lib ABI:
-          #   win2022  -- VS 2022 (v143) vs VS 2026 (v144) toolchain.
-          #   rel      -- release (MD) vs debug (MDd) runtime. The levilamina
-          #              package ALWAYS builds itself in release (MD); asking
-          #              xmake for -m debug only flips the DEPS to MDd, which
-          #              then mismatches levilamina's MD at link time
-          #              (LNK2038 RuntimeLibrary MDd vs MD). So we build release
-          #              and key the cache on `rel` to keep MDd artifacts out.
-          # A cache populated under one toolchain/runtime MUST NOT restore under
-          # another, or compile/link fails with mismatched-runtime errors.
-          key: xmake-pkg-win2022-rel-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua') }}
-          restore-keys: |
-            xmake-pkg-win2022-rel-
-
-      - name: Cache xmake build directory
-        uses: actions/cache@v4
-        with:
-          path: NovaChat/Bedrock/levilamina/build
-          key: xmake-build-win2022-rel-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua', 'NovaChat/Bedrock/levilamina/src/**', 'NovaChat/Bedrock/levilamina/tests/**') }}
-          restore-keys: |
-            xmake-build-win2022-rel-
+      - name: Refresh xmake package index
+        # `xmake repo -u` updates the levimc-repo (LiteLDev/xmake-repo) package
+        # manifest so add_requires("levilamina") resolves the latest published
+        # version. Without this, a stale local repo index can fail to find a
+        # version that exists upstream. (Official LeviLamina template CI runs
+        # this before `xmake f`.)
+        shell: pwsh
+        working-directory: NovaChat/Bedrock/levilamina
+        run: xmake repo -u
 
       # ------------------------------------------------------------------
       # Full SDK-integrated build + test (with LeviLamina SDK).
       # xmake pulls levilamina (+ transitive deps: entt, fmt, leveldb, ...) from
-      # liteldev-repo on github, links them into the novachat-levilamina shared
-      # library AND the novachat-levilamina-tests binary, then runs the tests.
-      # This is the real, complete test -- no --sdk=n shortcut.
+      # levimc-repo (LiteLDev/xmake-repo) on github, links them into the
+      # novachat-levilamina shared library AND the novachat-levilamina-tests
+      # binary, then runs the tests. This is the real, complete test -- no
+      # --sdk=n shortcut. Command form mirrors the official LeviLamina mod
+      # template CI (LiteLDev/levilamina-mod-template/.github/workflows/build.yml):
+      #   xmake f -a x64 -m release -p windows -v --target_type=server -y
+      #   xmake -v -y
       #
-      # -y (only on `xmake f`): xmake prompts "please input: y (y/n/m)" to
-      #   confirm package INSTALLS during configure; in a non-TTY CI shell
-      #   that hangs and fails ("must be installed!"). `-y` auto-confirms so
-      #   package install proceeds non-interactively. IMPORTANT: `-y` is a
-      #   CONFIGURE/require option, NOT a build-subcommand option -- `xmake
-      #   build -y <target>` rejects it as "'-y' is not a valid target name".
-      #   Packages are already installed after `xmake f`, so `build` never
-      #   prompts and must NOT pass `-y`.
-      # --verbose (-v): valid on both `xmake f` and `xmake build`. xmake hides
-      #   package-build compiler errors behind an install.txt log under
-      #   .xmake/cache/.../<pkg>/installdir.failed/logs; --verbose surfaces
-      #   them in the job log directly, and the catch below also dumps every
-      #   install.txt it can find as a fallback.
+      # We pass -a x64 -p windows explicitly (template does too) so xmake does
+      # not depend on host auto-detection.
       #
-      # MODE = release (NOT debug): the levilamina package ALWAYS compiles its
-      # own sources in release (MD runtime, _ITERATOR_DEBUG_LEVEL=0) regardless
-      # of the mode we pass -- `xmake f -m debug` only flips the TRANSITIVE
-      # deps (fmt/leveldb/entt) to MDd (_ITERATOR_DEBUG_LEVEL=2). Linking MDd
-      # deps against levilamina's MD objects blows up with:
-      #   error LNK2038: mismatch detected for 'RuntimeLibrary':
-      #     value 'MDd_DynamicDebug' doesn't match value 'MD_DynamicRelease'
-      #   error LNK2038: mismatch detected for '_ITERATOR_DEBUG_LEVEL':
-      #     value '2' doesn't match value '0'
-      #   + LNK2019 __imp__calloc_dbg / LNK2001 __imp__CrtDbgReport (MDd refs
-      #     debug-CRT symbols that MD levilamina does not link).
-      # So we build in release so deps are MD too -> consistent runtime. CI does
-      # not need debug symbols; the tests binary still runs under release/MD.
+      # NOTE: we do NOT pass --target_type=server on the command line, even
+      # though the official template does. The template defines a project-level
+      # option("target_type") in its xmake.lua so --target_type is a valid CLI
+      # option there; our xmake.lua does NOT define that option (we are not the
+      # mod template supporting server/client switching), so passing it here
+      # would fail with `error: Invalid option: --target_type=server`. Our
+      # xmake.lua instead hard-codes target_type="server" in the
+      # add_requires("levilamina", {configs = {target_type = "server"}}) call,
+      # which is the correct way to set it without a project option.
+      #
+      # MODE = release: the xmake.lua now has `set_runtimes("MD")`, which forces
+      # the WHOLE toolchain (levilamina + deps + our targets) to the MD runtime
+      # regardless of mode -- so debug would ALSO link cleanly now. We keep
+      # -m release to match the official template and because CI does not need
+      # debug symbols. (Before set_runtimes was added, -m debug flipped deps to
+      # MDd while levilamina stayed MD -> LNK2038; that root cause is now fixed
+      # in xmake.lua, not papered over by the mode choice here.)
+      #
+      # -y (only on `xmake f`): auto-confirms package installs (xmake prompts
+      #   "please input: y (y/n/m)" in configure; non-TTY CI would hang without
+      #   it). `-y` is a CONFIGURE/require option, NOT a build-subcommand option
+      #   -- `xmake build -y <target>` rejects it as "'-y' is not a valid target
+      #   name". Packages are installed after `xmake f -y`, so build never
+      #   prompts and must NOT pass -y. (The template's `xmake -v -y` works only
+      #   because it does NOT name a target -- bare `xmake` builds the default
+      #   goal, so -y is not parsed as a target name. We name targets explicitly
+      #   to control build order, so we omit -y on build.)
+      # -v/--verbose: surfaces package-build compiler errors in the job log
+      #   (xmake otherwise hides them in install.txt under .xmake/cache/...);
+      #   the catch below also dumps every install.txt it can find as a fallback.
+      #   -v is passed ONLY on `xmake f` (configure), NOT on `xmake build`. The
+      #   build subcommand in xmake v3.0.9 rejects -v entirely -- both
+      #   `xmake build <target> -v` (target then -v) and `xmake -v build <target>`
+      #   (-v then target) fail with "error: invalid argument" (it prints the
+      #   build-subcommand help and exits -1). The official LeviLamina template
+      #   avoids this by using bare `xmake -v -y` (no build subcommand, no target
+      #   name -- builds the default goal with -v as a global option). We name
+      #   targets explicitly to control build order, so we simply omit -v on
+      #   build: configure's -v already surfaces package compiler errors (the
+      #   expensive part -- levilamina compiles its own sources from source),
+      #   and our own target sources are small so build is non-verbose. The
+      #   install.txt dump fallback below catches any build-stage compiler error
+      #   that configure's -v missed.
       #
       # The .dll (novachat-levilamina) is built to prove the SDK integration
       # links cleanly; the tests binary is then built and RUN -- a successful
@@ -243,9 +232,9 @@ jobs:
               exit $code
             }
           }
-          Invoke-Xmake 'f', '-m', 'release', '-y', '--verbose'
-          Invoke-Xmake 'build', 'novachat-levilamina', '--verbose'
-          Invoke-Xmake 'build', 'novachat-levilamina-tests', '--verbose'
+          Invoke-Xmake 'f', '-a', 'x64', '-p', 'windows', '-m', 'release', '-y', '-v'
+          Invoke-Xmake 'build', 'novachat-levilamina'
+          Invoke-Xmake 'build', 'novachat-levilamina-tests'
           Invoke-Xmake 'run', 'novachat-levilamina-tests'
 
   pmmp:

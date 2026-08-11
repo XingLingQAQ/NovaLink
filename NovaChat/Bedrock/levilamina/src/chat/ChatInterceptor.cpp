@@ -6,11 +6,11 @@
 #include "../protocol/PacketBuffer.h"
 #include "../i18n/I18n.h"
 
-#include <ll/api/Logger.h>
+#include <ll/api/io/Logger.h>
 #include <ll/api/event/EventBus.h>
 #include <ll/api/event/player/PlayerChatEvent.h>
 #include <ll/api/event/player/PlayerJoinEvent.h>
-#include <ll/api/event/player/PlayerLeaveEvent.h>
+#include <ll/api/event/player/PlayerDisconnectEvent.h>
 #include <ll/api/service/Bedrock.h>
 #include <mc/world/level/Level.h>
 #include <mc/world/actor/player/Player.h>
@@ -93,12 +93,13 @@ void ChatInterceptor::registerHooks() {
         }
     );
 
-    // Register player leave event - cleanup player state
-    sLeaveListener = eventBus.emplaceListener<ll::event::player::PlayerLeaveEvent>(
-        [this](ll::event::player::PlayerLeaveEvent& event) {
+    // Register player leave event - cleanup player state.
+    // levilamina 26.20.7 renamed PlayerLeaveEvent -> PlayerDisconnectEvent.
+    sLeaveListener = eventBus.emplaceListener<ll::event::player::PlayerDisconnectEvent>(
+        [this](ll::event::player::PlayerDisconnectEvent& event) {
             auto& player = event.self();
             std::string playerUuid = player.getUuid().asString();
-            
+
             onPlayerLeave(playerUuid);
         }
     );
@@ -205,7 +206,7 @@ void ChatInterceptor::registerPacketHandlers() {
     networkClient->registerHandler(PacketIds::TITLE,
         [this](std::unique_ptr<Packet> packet) {
             auto* title = static_cast<TitlePacket*>(packet.get());
-            auto* level = ll::service::getLevel();
+            auto level = ll::service::getLevel();
             if (!level) {
                 return;
             }
@@ -214,7 +215,7 @@ void ChatInterceptor::registerPacketHandlers() {
                 if (isPlayerInChannel(playerUuid, title->getChannelId())) {
                     // Send title timing packet
                     SetTitlePacket timingPacket;
-                    timingPacket.mType = SetTitlePacket::TitleType::Times;
+                    timingPacket.mType = SetTitlePacketPayload::TitleType::Times;
                     timingPacket.mFadeInTime = title->getFadeIn();
                     timingPacket.mStayTime = title->getStay();
                     timingPacket.mFadeOutTime = title->getFadeOut();
@@ -222,13 +223,13 @@ void ChatInterceptor::registerPacketHandlers() {
 
                     if (!title->getTitle().empty()) {
                         SetTitlePacket titlePacket;
-                        titlePacket.mType = SetTitlePacket::TitleType::Title;
+                        titlePacket.mType = SetTitlePacketPayload::TitleType::Title;
                         titlePacket.mTitleText = convertColorCodes(title->getTitle());
                         player.sendNetworkPacket(titlePacket);
                     }
                     if (!title->getSubtitle().empty()) {
                         SetTitlePacket subtitlePacket;
-                        subtitlePacket.mType = SetTitlePacket::TitleType::Subtitle;
+                        subtitlePacket.mType = SetTitlePacketPayload::TitleType::Subtitle;
                         subtitlePacket.mTitleText = convertColorCodes(title->getSubtitle());
                         player.sendNetworkPacket(subtitlePacket);
                     }
@@ -242,7 +243,7 @@ void ChatInterceptor::registerPacketHandlers() {
     networkClient->registerHandler(PacketIds::MENTION,
         [this](std::unique_ptr<Packet> packet) {
             auto* mention = static_cast<MentionPacket*>(packet.get());
-            auto* level = ll::service::getLevel();
+            auto level = ll::service::getLevel();
             if (!level) {
                 return;
             }
@@ -256,20 +257,20 @@ void ChatInterceptor::registerPacketHandlers() {
                 if (player.getUuid().asString() == mentionedUuidStr) {
                     // Title flash
                     SetTitlePacket timingPacket;
-                    timingPacket.mType = SetTitlePacket::TitleType::Times;
+                    timingPacket.mType = SetTitlePacketPayload::TitleType::Times;
                     timingPacket.mFadeInTime = 10;
                     timingPacket.mStayTime = 40;
                     timingPacket.mFadeOutTime = 20;
                     player.sendNetworkPacket(timingPacket);
 
                     SetTitlePacket titlePacket;
-                    titlePacket.mType = SetTitlePacket::TitleType::Title;
+                    titlePacket.mType = SetTitlePacketPayload::TitleType::Title;
                     titlePacket.mTitleText = "§e@§r" +
                         convertColorCodes(mention->getMentionerName());
                     player.sendNetworkPacket(titlePacket);
 
                     SetTitlePacket subtitlePacket;
-                    subtitlePacket.mType = SetTitlePacket::TitleType::Subtitle;
+                    subtitlePacket.mType = SetTitlePacketPayload::TitleType::Subtitle;
                     subtitlePacket.mTitleText = convertColorCodes(subtitle);
                     player.sendNetworkPacket(subtitlePacket);
 
@@ -422,7 +423,7 @@ bool ChatInterceptor::handleTextPacket(const std::string& playerName, const std:
 }
 
 void ChatInterceptor::displayMessage(const std::string& playerName, const std::string& formattedMessage) {
-    auto* level = ll::service::getLevel();
+    auto level = ll::service::getLevel();
     if (!level) {
         return;
     }
@@ -430,9 +431,7 @@ void ChatInterceptor::displayMessage(const std::string& playerName, const std::s
     // Find player by name and send TextPacket
     level->forEachPlayer([&](Player& player) {
         if (player.getName() == playerName) {
-            TextPacket packet;
-            packet.mType = TextPacketType::Raw;
-            packet.mMessage = formattedMessage;
+            TextPacket packet = TextPacket::createRawMessage(formattedMessage);
             player.sendNetworkPacket(packet);
             return false; // Stop iteration
         }
@@ -441,16 +440,14 @@ void ChatInterceptor::displayMessage(const std::string& playerName, const std::s
 }
 
 void ChatInterceptor::displayMessageByUuid(const std::string& playerUuid, const std::string& formattedMessage) {
-    auto* level = ll::service::getLevel();
+    auto level = ll::service::getLevel();
     if (!level) {
         return;
     }
 
     level->forEachPlayer([&](Player& player) {
         if (player.getUuid().asString() == playerUuid) {
-            TextPacket packet;
-            packet.mType = TextPacketType::Raw;
-            packet.mMessage = formattedMessage;
+            TextPacket packet = TextPacket::createRawMessage(formattedMessage);
             player.sendNetworkPacket(packet);
             return false;
         }
@@ -459,7 +456,7 @@ void ChatInterceptor::displayMessageByUuid(const std::string& playerUuid, const 
 }
 
 void ChatInterceptor::broadcastToChannel(const std::string& channelId, const std::string& formattedMessage) {
-    auto* level = ll::service::getLevel();
+    auto level = ll::service::getLevel();
     if (!level) {
         return;
     }
@@ -470,9 +467,7 @@ void ChatInterceptor::broadcastToChannel(const std::string& channelId, const std
         
         // Check if player is in this channel
         if (isPlayerInChannel(playerUuid, channelId)) {
-            TextPacket packet;
-            packet.mType = TextPacketType::Raw;
-            packet.mMessage = formattedMessage;
+            TextPacket packet = TextPacket::createRawMessage(formattedMessage);
             player.sendNetworkPacket(packet);
         }
         return true; // Continue iteration
@@ -480,15 +475,13 @@ void ChatInterceptor::broadcastToChannel(const std::string& channelId, const std
 }
 
 void ChatInterceptor::broadcastToAll(const std::string& formattedMessage) {
-    auto* level = ll::service::getLevel();
+    auto level = ll::service::getLevel();
     if (!level) {
         return;
     }
 
     level->forEachPlayer([&](Player& player) {
-        TextPacket packet;
-        packet.mType = TextPacketType::Raw;
-        packet.mMessage = formattedMessage;
+        TextPacket packet = TextPacket::createRawMessage(formattedMessage);
         player.sendNetworkPacket(packet);
         return true;
     });
@@ -496,7 +489,7 @@ void ChatInterceptor::broadcastToAll(const std::string& formattedMessage) {
 
 void ChatInterceptor::sendTitle(const std::string& playerName, const std::string& title,
                                  const std::string& subtitle, int fadeIn, int stay, int fadeOut) {
-    auto* level = ll::service::getLevel();
+    auto level = ll::service::getLevel();
     if (!level) {
         return;
     }
@@ -505,7 +498,7 @@ void ChatInterceptor::sendTitle(const std::string& playerName, const std::string
         if (player.getName() == playerName) {
             // Send title timing packet
             SetTitlePacket timingPacket;
-            timingPacket.mType = SetTitlePacket::TitleType::Times;
+            timingPacket.mType = SetTitlePacketPayload::TitleType::Times;
             timingPacket.mFadeInTime = fadeIn;
             timingPacket.mStayTime = stay;
             timingPacket.mFadeOutTime = fadeOut;
@@ -514,7 +507,7 @@ void ChatInterceptor::sendTitle(const std::string& playerName, const std::string
             // Send main title
             if (!title.empty()) {
                 SetTitlePacket titlePacket;
-                titlePacket.mType = SetTitlePacket::TitleType::Title;
+                titlePacket.mType = SetTitlePacketPayload::TitleType::Title;
                 titlePacket.mTitleText = convertColorCodes(title);
                 player.sendNetworkPacket(titlePacket);
             }
@@ -522,7 +515,7 @@ void ChatInterceptor::sendTitle(const std::string& playerName, const std::string
             // Send subtitle
             if (!subtitle.empty()) {
                 SetTitlePacket subtitlePacket;
-                subtitlePacket.mType = SetTitlePacket::TitleType::Subtitle;
+                subtitlePacket.mType = SetTitlePacketPayload::TitleType::Subtitle;
                 subtitlePacket.mTitleText = convertColorCodes(subtitle);
                 player.sendNetworkPacket(subtitlePacket);
             }
@@ -699,14 +692,14 @@ void ChatInterceptor::notifyMuteTarget(const std::string& targetUuid, const std:
 
 void ChatInterceptor::sendTitleByUuid(const std::string& playerUuid, const std::string& title,
                                        const std::string& subtitle) {
-    auto* level = ll::service::getLevel();
+    auto level = ll::service::getLevel();
     if (!level) {
         return;
     }
     level->forEachPlayer([&](Player& player) {
         if (player.getUuid().asString() == playerUuid) {
             SetTitlePacket timingPacket;
-            timingPacket.mType = SetTitlePacket::TitleType::Times;
+            timingPacket.mType = SetTitlePacketPayload::TitleType::Times;
             timingPacket.mFadeInTime = 10;
             timingPacket.mStayTime = 70;
             timingPacket.mFadeOutTime = 20;
@@ -714,13 +707,13 @@ void ChatInterceptor::sendTitleByUuid(const std::string& playerUuid, const std::
 
             if (!title.empty()) {
                 SetTitlePacket titlePacket;
-                titlePacket.mType = SetTitlePacket::TitleType::Title;
+                titlePacket.mType = SetTitlePacketPayload::TitleType::Title;
                 titlePacket.mTitleText = convertColorCodes(title);
                 player.sendNetworkPacket(titlePacket);
             }
             if (!subtitle.empty()) {
                 SetTitlePacket subtitlePacket;
-                subtitlePacket.mType = SetTitlePacket::TitleType::Subtitle;
+                subtitlePacket.mType = SetTitlePacketPayload::TitleType::Subtitle;
                 subtitlePacket.mTitleText = convertColorCodes(subtitle);
                 player.sendNetworkPacket(subtitlePacket);
             }

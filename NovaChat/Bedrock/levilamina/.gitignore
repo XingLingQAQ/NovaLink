@@ -2,6 +2,8 @@
 build/
 .xmake/
 xmake_build/
+# Mod Packer output (xmake levibuildscript target_type="server" emits to bin/)
+bin/
 
 # IDE files
 .vs/

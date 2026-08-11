@@ -1,6 +1,5 @@
 #include "NovaChatConfig.h"
 
-#include <ll/api/Config.h>
 #include <nlohmann/json.hpp>
 #include <fstream>
 
