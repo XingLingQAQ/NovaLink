@@ -13,10 +13,12 @@
 // Run independently with:  gradle :NovaChat:Bedrock:levilamina:build
 // or directly from this dir: gradle -p NovaChat/Bedrock/levilamina build
 //
-// Toolchain guard: xmake is Windows-only and is NOT installed on the
-// ubuntu java-ci runner. The dedicated bedrock-ci workflow installs xmake
-// on a windows-2025 runner and runs the real build there. So every xmake
-// task self-skips (with a clear log line) when xmake is not on PATH -- this
+// Toolchain guard: xmake is Windows-only and is NOT installed on a
+// toolchain-less host. The merged nova-ci workflow installs xmake + MSVC on a
+// windows-2022 runner (pinned to windows-2022 because levilamina 26.20.7
+// requires MSVC 14.43 / v143, which windows-2025's VS 2026 / MSVC 14.44 no
+// longer ships) and runs the real build there. So every xmake task
+// self-skips (with a clear log line) when xmake is not on PATH -- this
 // keeps `gradle build` green on toolchain-less hosts while running the real
 // build where the toolchain is present.
 
@@ -27,9 +29,16 @@ plugins {
 def buildMode = project.findProperty('mode') ?: 'release'
 
 // True when the xmake executable is resolvable on PATH (config-time check).
+// We drain the process's stdout/stderr before waitFor() -- a bare waitFor()
+// deadlocks if the child writes more than the OS pipe buffer (xmake --version
+// under a vcvarsall/MSVC env prints extra env-detection lines that can fill
+// the pipe, leaving xmake blocked on write while we block on waitFor).
 def xmakeAvailable = {
     try {
         def proc = ['xmake', '--version'].execute((List) null, projectDir)
+        // Consume stdout+stderr so the child never blocks on a full pipe.
+        proc.in.eachLine {}
+        proc.err.eachLine {}
         proc.waitFor()
         return proc.exitValue() == 0
     } catch (Exception ignored) {
@@ -40,18 +49,29 @@ def xmakeAvailable = {
 // Shared skip reason emitted by every guarded task so a `gradle build` log
 // on a toolchain-less host explains WHY the native build did not run.
 def skipReason = '[levilamina] xmake not found on PATH -- skipping native build. ' +
-    'Run via the bedrock-ci workflow (windows-2025) or install xmake locally.'
+    'Run via the nova-ci workflow (windows-2022) or install xmake + MSVC locally.'
+
+tasks.register('xmakeRepoUpdate', Exec) {
+    group = 'build'
+    description = 'Refreshes the xmake package index so add_requires("levilamina") resolves the latest published version.'
+    commandLine 'xmake', 'repo', '-u'
+    workingDir projectDir
+    // Self-skip when xmake is not installed (toolchain-less host).
+    onlyIf { xmakeAvailable }
+    doFirst { if (!xmakeAvailable) logger.lifecycle(skipReason) }
+}
 
 tasks.register('xmakeConfigure', Exec) {
     group = 'build'
     description = "Configures the xmake project (mode=${buildMode})."
+    dependsOn tasks.named('xmakeRepoUpdate')
     commandLine 'xmake', 'f', '-m', buildMode.toString()
     workingDir projectDir
     // Re-configure only if the build directory is missing.
     onlyIf { !layout.projectDirectory.dir('.xmake').asFile.exists() }
     // Self-skip when xmake is not installed (e.g. ubuntu java-ci runner).
     onlyIf { xmakeAvailable }
-    doFirst { logger.lifecycle(skipReason) }
+    doFirst { if (!xmakeAvailable) logger.lifecycle(skipReason) }
 }
 
 tasks.register('xmakeBuild', Exec) {
@@ -69,14 +89,41 @@ tasks.register('xmakeBuild', Exec) {
 
 tasks.register('test', Exec) {
     group = 'verification'
-    description = 'Runs the xmake test target (gtest) if configured.'
+    description = 'Builds and runs the novachat-levilamina-tests target (gtest-style).'
     dependsOn tasks.named('xmakeBuild')
-    // xmake test runs the `test` target defined in xmake.lua if present.
-    commandLine 'xmake', 'test'
+    // The tests live in an ordinary xmake binary target named
+    // `novachat-levilamina-tests` (see xmake.lua), NOT in xmake's built-in
+    // `test` target -- so `xmake test` prints "nothing to test". Build the
+    // target explicitly then run it, mirroring bedrock-ci's
+    //   xmake build novachat-levilamina-tests
+    //   xmake run  novachat-levilamina-tests
+    // We chain both in one `xmake` invocation so a compile failure fails the
+    // task before the (possibly stale) run. `-y` is NOT passed: it is a
+    // configure/require option, and `xmake build <target> -y` rejects it as
+    // "'-y' is not a valid target name" (xmake v3.0.9). Packages are already
+    // installed by xmakeConfigure, so build never prompts.
+    commandLine 'xmake', 'build', 'novachat-levilamina-tests'
     workingDir projectDir
-    // Non-fatal: the test target may not exist yet.
+    // Non-fatal: xmake test target may not exist yet (legacy). Kept as
+    // ignoreExitValue so a toolchain-less host where xmakeBuild self-skipped
+    // does not redden `gradle test` -- but when xmake IS present (nova-ci
+    // windows runner), the tests build + run for real.
     ignoreExitValue = true
     onlyIf { xmakeAvailable }
+    // After the tests target builds, run it. We do this in doLast (a second
+    // xmake invocation) so the build + run are separate steps in the log and
+    // a run failure is clearly distinguishable from a build failure.
+    doLast {
+        if (xmakeAvailable) {
+            def runProc = ['xmake', 'run', 'novachat-levilamina-tests'].execute((List) null, projectDir)
+            runProc.in.eachLine { logger.lifecycle('[levilamina] ' + it) }
+            runProc.err.eachLine { logger.lifecycle('[levilamina] ' + it) }
+            int code = runProc.waitFor()
+            if (code != 0) {
+                throw new GradleException("[levilamina] tests failed (exit ${code})")
+            }
+        }
+    }
 }
 
 tasks.named('build') {

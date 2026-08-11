@@ -1,0 +1,237 @@
+# NovaLink unified CI -- build + test the ENTIRE monorepo with one Gradle command.
+#
+# One job, one runner (windows-2022), one command: `./gradlew build test`.
+# This drives every language stack in the repo through Gradle:
+#   - Java:   all 16 Gradle Java modules (NovaChat:common, client-core,
+#             StarLink:core, 7 server platforms, MOD fabric/neoforge/quilt)
+#   - Python: NovaChat:Bedrock:endstone (base-plugin wrapper -> pythonEnv +
+#             pytest tasks)
+#   - PHP:    NovaChat:Bedrock:pmmp (base-plugin wrapper -> testEnv + phpunit
+#             tasks)
+#   - C++:    NovaChat:Bedrock:levilamina (base-plugin wrapper -> xmakeConfigure
+#             + xmakeBuild + test tasks)
+#
+# WHY A SINGLE WINDOWS RUNNER:
+#   levilamina is Windows-only. Its xmake.lua builds a BDS (Bedrock Dedicated
+#   Server) C++20 shared library with MSVC intrinsics + Windows ABI, and
+#   levilamina 26.20.7 specifically requires MSVC 14.43 / v143 (the VS 2022
+#   toolset). windows-2025 ships only VS 2026 (MSVC 14.44 / v144), which
+#   levilamina 26.20.7 does not compile under -- hence the pin to windows-2022
+#   (which ships VS 2022 Enterprise). Java/Python/PHP all run fine on Windows,
+#   so a single windows-2022 runner can cover the whole monorepo with one
+#   `./gradlew build test`. This is the only way to get "one Gradle command
+#   builds and tests every platform" -- levilamina cannot cross to ubuntu.
+#
+# WHY THE NON-JAVA MODULES RUN VIA GRADLE (not native toolchains directly):
+#   The user asked for ONE Gradle command. Each non-Java Bedrock module has a
+#   build.gradle that wraps its native toolchain (Python venv+pytest, PHP
+#   phar+phpunit, xmake build+test) as Gradle base-plugin tasks, with
+#   toolchain guards that self-skip when the native tool is absent. On this
+#   runner every toolchain IS present, so all three run for real under
+#   `./gradlew build test`.
+#
+# UTF-8 HARDENING (the main Windows-runner risk):
+#   windows-2022's default system locale is NOT UTF-8, which would corrupt
+#   the Chinese-asserting Java tests (ConsoleCommandTest, BackendI18nTest) and
+#   any non-ASCII source. We defend at three layers:
+#     1. PowerShell session: `chcp 65001` + `$OutputEncoding = [Text.Encoding]::UTF8`
+#        so gradle's stdout is decoded UTF-8.
+#     2. JVM:  `JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8 -Dconsole.encoding=UTF-8`
+#        so every Gradle/Java test JVM reads/writes UTF-8 regardless of the
+#        OS locale. (build.gradle already sets options.encoding=UTF-8 on
+#        JavaCompile; this covers the runtime side.)
+#     3. Python: `PYTHONUTF8=1` so endstone's pytest uses UTF-8 stdio.
+#   PHP is unaffected (phpunit.xml + sources are UTF-8 by default and the
+#   pmmp tests are ASCII-only protocol assertions).
+name: NovaLink Build & Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Gradle build + test (all platforms)
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    env:
+      # UTF-8 hardening -- see the comment block above.
+      JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8 -Dconsole.encoding=UTF-8
+      PYTHONUTF8: '1'
+      # Gradle daemon JVM args (in addition to JAVA_TOOL_OPTIONS). The root
+      # gradle.properties sets -Xmx2048m; we keep that and rely on
+      # JAVA_TOOL_OPTIONS for the encoding flags.
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dfile.encoding=UTF-8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # ---------------------------------------------------------------------
+      # JDK: 21 (primary) + 25 (velocity toolchain). setup-java registers both
+      # as Gradle toolchain candidates. The build command below overrides
+      # org.gradle.java.installations.paths to empty so Gradle's toolchain
+      # auto-detection finds these setup-java installs instead of the Windows
+      # scoop path baked into gradle.properties (which only exists on the
+      # dev's machine, not the runner).
+      # ---------------------------------------------------------------------
+      - name: Set up JDK 21 (primary) and JDK 25 (velocity toolchain)
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            25
+
+      # ---------------------------------------------------------------------
+      # Python (endstone). endstone's build.gradle pythonEnv task creates a
+      # venv and `pip install -e .[dev]`; pytest runs inside it. PYTHONUTF8=1
+      # above keeps stdio UTF-8.
+      # ---------------------------------------------------------------------
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-endstone-${{ runner.os }}-${{ hashFiles('NovaChat/Bedrock/endstone/pyproject.toml') }}
+          restore-keys: |
+            pip-endstone-${{ runner.os }}-
+
+      # ---------------------------------------------------------------------
+      # PHP (pmmp). pmmp's build.gradle testEnv task downloads the PHPUnit
+      # phar (via powershell on Windows) and clones Eris; phpunit runs the
+      # suite via the phar + tests/bootstrap.php. shivammathur/setup-php
+      # installs PHP 8.2 + the three exts NovaChat itself needs (sockets,
+      # mbstring, openssl). The pmmp unit tests only exercise
+      # NovaChat\Protocol\* and never touch pocketmine-mp's private runtime
+      # exts, so standard PHP is sufficient.
+      # ---------------------------------------------------------------------
+      - name: Set up PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: sockets, mbstring, openssl
+          coverage: none
+
+      - name: Cache composer vendor
+        uses: actions/cache@v4
+        with:
+          path: NovaChat/Bedrock/pmmp/vendor
+          # composer.lock is gitignored (pocketmine-plugin convention), so key
+          # on composer.json's hash. A dep change invalidates; otherwise the
+          # vendor dir is reused and testEnv only tops up the phar/Eris.
+          key: composer-${{ runner.os }}-${{ hashFiles('NovaChat/Bedrock/pmmp/composer.json') }}
+          restore-keys: |
+            composer-${{ runner.os }}-
+
+      # ---------------------------------------------------------------------
+      # MSVC (levilamina). microsoft/setup-msbuild puts cl.exe/link.exe on
+      # PATH so xmake's msvc toolchain detection finds them. windows-2022
+      # ships VS 2022 Enterprise (MSVC 14.43 / v143) -- the exact toolchain
+      # levilamina 26.20.7 targets.
+      # ---------------------------------------------------------------------
+      - name: Set up MSVC (VS 2022)
+        uses: microsoft/setup-msbuild@v2
+
+      # ---------------------------------------------------------------------
+      # xmake (levilamina). Pinned to 3.0.9 (NOT `latest`): 3.1.0 breaks this
+      # action's own cache-key step (`xmake l utils.ci.packageskey` exits -1
+      # under 3.1.0). 3.0.9 is the version the levilamina migration was
+      # validated against locally (dll builds+links, 83/83 tests). Bump
+      # deliberately only after verifying packageskey + the build-subcommand
+      # -v behavior still work.
+      # ---------------------------------------------------------------------
+      - name: Set up xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.0.9'
+          # Package cache = levilamina SDK + deps (fmt/leveldb/entt/...).
+          # Build cache = incremental object files. Both keyed on xmake.lua
+          # (and src/tests for build cache) so a toolchain/config change
+          # invalidates correctly.
+          package-cache: true
+          package-cache-key: xmake-pkg-win2022-md-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua') }}
+          build-cache: true
+          build-cache-key: xmake-build-win2022-md-${{ hashFiles('NovaChat/Bedrock/levilamina/xmake.lua', 'NovaChat/Bedrock/levilamina/src/**', 'NovaChat/Bedrock/levilamina/tests/**') }}
+
+      # ---------------------------------------------------------------------
+      # Gradle + MOD loom caches (carried over from the old java-ci). The MOD
+      # loom/NeoForm cache is keyed on the pinned MC + neoforge + loom versions
+      # so a bump invalidates it.
+      # ---------------------------------------------------------------------
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper/dists
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle', '**/gradle.properties', 'gradle/wrapper/gradle-wrapper.properties', 'settings.gradle') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Cache MOD loom / NeoForm workspaces
+        uses: actions/cache@v4
+        with:
+          path: |
+            NovaChat/MOD/neoforge/build/neoForm
+            NovaChat/MOD/fabric/build/loom-cache
+            NovaChat/MOD/quilt/build/loom-cache
+            NovaChat/MOD/fabric/.gradle/remappedMods
+            NovaChat/MOD/quilt/.gradle/remappedMods
+          # MC 1.21.11 + neoforge 21.11.44 + fabric-loom 1.17.17 are pinned in
+          # the mod build.gradle files; bump the key when those pins change.
+          key: mod-loom-${{ runner.os }}-mc1.21.11-neoforge21.11.44-loom1.17.17-${{ hashFiles('NovaChat/MOD/**/build.gradle', 'NovaChat/MOD/**/gradle.properties') }}
+          restore-keys: |
+            mod-loom-${{ runner.os }}-
+
+      # ---------------------------------------------------------------------
+      # THE ONE COMMAND. `./gradlew build test` drives every module:
+      #   - 16 Java modules: compile + jar + junit/jqwik tests
+      #   - endstone: pythonEnv + pytest
+      #   - pmmp: testEnv (download phar + clone Eris) + phpunit
+      #   - levilamina: xmakeConfigure + xmakeBuild + xmake test
+      # The -P/-D org.gradle.java.installations.paths= override clears the
+      # Windows scoop path from gradle.properties so Gradle's toolchain
+      # auto-detection finds the setup-java JDK 21 + 25 installs.
+      #
+      # UTF-8: `chcp 65001` switches the console codepage to UTF-8 and
+      # $OutputEncoding makes PowerShell decode gradle's stdout as UTF-8.
+      # JAVA_TOOL_OPTIONS (env) makes every JVM use UTF-8 for file.encoding.
+      # ---------------------------------------------------------------------
+      - name: Build and test all platforms
+        shell: pwsh
+        run: |
+          chcp 65001
+          $OutputEncoding = [System.Text.Encoding]::UTF8
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          ./gradlew build test --console=plain `
+            -Dfile.encoding=UTF-8 `
+            -Dconsole.encoding=UTF-8 `
+            -Porg.gradle.java.installations.paths= `
+            -Dorg.gradle.java.installations.paths=
+
+      - name: Upload build reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-build-reports-${{ github.run_id }}
+          path: |
+            **/build/reports/
+            **/build/test-results/
+            NovaChat/Bedrock/levilamina/build/
+            NovaChat/Bedrock/levilamina/.xmake/
+          if-no-files-found: ignore
+          retention-days: 7

@@ -19,23 +19,39 @@
 // Run independently with:  gradle :NovaChat:Bedrock:pmmp:build
 // or directly from this dir: gradle -p NovaChat/Bedrock/pmmp build
 //
-// Toolchain guard: PHP (and the PowerShell used by testEnv to download the
-// phpunit phar) are NOT installed on the ubuntu java-ci runner. The dedicated
-// bedrock-ci workflow sets up PHP via shivammathur/setup-php and runs the
-// real test there (`composer test`, which uses composer-installed phpunit --
-// a different, non-phar path). So every PHP/powershell task self-skips
-// (with a clear log line) when its toolchain is not on PATH, keeping
-// `gradle build` green on toolchain-less hosts while running the real build
-// where the toolchain is present.
+// Toolchain guard: PHP is NOT installed on a toolchain-less host. Every PHP
+// task self-skips (with a clear log line) when php is not on PATH, keeping
+// `gradle build` green on toolchain-less hosts while running the real tests
+// where PHP is present. The merged nova-ci workflow runs this on a windows
+// runner with PHP set up via shivammathur/setup-php, so phpunit runs for real.
+//
+// Cross-platform phar download: testEnv fetches the PHPUnit phar via
+// powershell on Windows and curl on Linux/macOS, so the same task works
+// regardless of which runner/host drives `gradle build`. (The original
+// powershell-only download broke on ubuntu, where testEnv silently skipped,
+// leaving the phar missing while phpunit still tried to run `php <missing
+// phar>` → exit 1.)
 
 plugins {
     id 'base'
 }
 
 // True when the given executable is resolvable on PATH (config-time check).
-def onPath = { String exe ->
+// `probeArgs` is the arg list used to make the exe print-and-exit so we can
+// judge presence by exit code; it defaults to ['--version']. Some tools need
+// a different probe: powershell's `--version` is NOT a valid flag (it is
+// parsed as a PS expression and exits 1), so we probe it with
+// `-Command "exit 0"` instead. curl's `--version`/`-V` both work.
+//
+// We DRAIN stdout+stderr before waitFor() -- a bare waitFor() deadlocks if
+// the child writes more than the OS pipe buffer (e.g. powershell -Command
+// under some envs prints banner lines that fill the pipe, leaving the child
+// blocked on write while we block on waitFor).
+def onPath = { String exe, List<String> probeArgs = ['--version'] ->
     try {
-        def proc = [exe, '--version'].execute((List) null, projectDir)
+        def proc = ([exe] + probeArgs).execute((List) null, projectDir)
+        proc.in.eachLine {}
+        proc.err.eachLine {}
         proc.waitFor()
         return proc.exitValue() == 0
     } catch (Exception ignored) {
@@ -44,10 +60,18 @@ def onPath = { String exe ->
 }
 
 def phpAvailable = onPath('php')
-def powershellAvailable = onPath('powershell')
+// Cross-platform phar downloader: Windows uses powershell (Invoke-WebRequest),
+// non-Windows uses curl. Both are preinstalled on their respective OS images.
+// powershell is probed with `-Command "exit 0"` (NOT --version, which PS 5.1
+// rejects as a parser error -> exit 1). curl is probed with -V.
+def isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
+def downloadAvailable = isWindows
+    ? onPath('powershell', ['-Command', 'exit 0'])
+    : onPath('curl', ['-V'])
 
 def skipReason = '[pmmp] PHP toolchain not found on PATH -- skipping native build. ' +
-    'Run via the bedrock-ci workflow (ubuntu + shivammathur/setup-php) or install PHP locally.'
+    'Run on a host with PHP installed (e.g. the nova-ci windows runner with ' +
+    'shivammathur/setup-php) or install PHP locally.'
 
 tasks.register('testEnv') {
     group = 'build'
@@ -56,34 +80,63 @@ tasks.register('testEnv') {
     def erisDir = layout.projectDirectory.dir('vendor/giorgiosironi/eris').asFile
     outputs.file phpunitPhar
     outputs.dir erisDir
-    // Self-skip when the toolchains testEnv relies on are absent. testEnv
-    // downloads the phpunit phar via powershell (Windows-only here) -- on a
-    // non-Windows toolchain-less host there is nothing it can do.
-    onlyIf { powershellAvailable }
+    // Self-skip only when PHP itself is absent — without PHP there is nothing
+    // to test. The phar downloader (powershell on Windows, curl on Linux) is
+    // preinstalled on every OS image nova-ci runs on, so downloadAvailable is
+    // true in practice; the guard is defensive.
+    onlyIf { phpAvailable }
     doFirst {
-        if (!powershellAvailable) logger.lifecycle(skipReason)
+        if (!phpAvailable) logger.lifecycle(skipReason)
     }
     doLast {
         def vendorBin = layout.projectDirectory.dir('vendor/bin').asFile
         if (!vendorBin.exists()) vendorBin.mkdirs()
-        // Download PHPUnit phar if missing.
+        // Download PHPUnit phar if missing (cross-platform). We shell out via
+        // ProcessBuilder (not Gradle's exec {} API) because this doLast runs on
+        // a DefaultTask whose closure delegate has no exec() method, and the
+        // download is a one-shot command -- a plain process with exit-code
+        // check is enough and avoids the exec-resolution ambiguity.
         if (!phpunitPhar.exists()) {
-            exec {
-                commandLine 'powershell', '-Command',
-                    "Invoke-WebRequest -Uri 'https://phar.phpunit.de/phpunit-10.5.phar' -OutFile '${phpunitPhar.absolutePath}' -TimeoutSec 120"
-                workingDir projectDir
+            if (!downloadAvailable) {
+                throw new GradleException(
+                    "[pmmp] Cannot download PHPUnit phar: neither powershell " +
+                    "(Windows) nor curl (Linux) is on PATH. Preinstall " +
+                    "vendor/bin/phpunit.phar manually or run on a host with " +
+                    "one of them.")
             }
+            def pharUrl = 'https://phar.phpunit.de/phpunit-10.5.phar'
+            // ProcessBuilder needs List<String> -- Groovy list literals mix
+            // String and GString (interpolated), so coerce each element to
+            // String to avoid "arraycopy: element type mismatch" at start().
+            List<String> cmd = isWindows
+                ? ['powershell', '-Command',
+                   "Invoke-WebRequest -Uri '${pharUrl}' -OutFile '${phpunitPhar.absolutePath}' -TimeoutSec 120"]
+                : ['curl', '-fsSL', '--retry', '3', '-o', phpunitPhar.absolutePath, pharUrl]
+            cmd = cmd*.toString()
+            def pb = new ProcessBuilder(cmd).directory(projectDir).redirectErrorStream(true)
+            def proc = pb.start()
+            proc.inputStream.eachLine { logger.lifecycle('[pmmp] ' + it) }
+            int code = proc.waitFor()
+            if (code != 0) {
+                throw new GradleException("[pmmp] phar download failed (exit ${code}): ${cmd.join(' ')}")
+            }
+            logger.lifecycle("[pmmp] Downloaded phpunit.phar -> ${phpunitPhar.absolutePath}")
         }
-        // Clone Eris if missing.
+        // Clone Eris if missing (git is cross-platform + preinstalled everywhere).
         if (!erisDir.exists() || !erisDir.listFiles()) {
             def parent = erisDir.parentFile
             if (!parent.exists()) parent.mkdirs()
-            exec {
-                commandLine 'git', 'clone', '--depth', '1',
-                    'https://github.com/giorgiosironi/eris.git',
-                    erisDir.absolutePath
-                workingDir projectDir
+            List<String> gitCmd = ['git', 'clone', '--depth', '1',
+                'https://github.com/giorgiosironi/eris.git',
+                erisDir.absolutePath]*.toString()
+            def pb = new ProcessBuilder(gitCmd).directory(projectDir).redirectErrorStream(true)
+            def proc = pb.start()
+            proc.inputStream.eachLine { logger.lifecycle('[pmmp] ' + it) }
+            int code = proc.waitFor()
+            if (code != 0) {
+                throw new GradleException("[pmmp] eris clone failed (exit ${code})")
             }
+            logger.lifecycle("[pmmp] Cloned Eris -> ${erisDir.absolutePath}")
         }
     }
 }
@@ -98,9 +151,20 @@ tasks.register('phpunit', Exec) {
     inputs.dir layout.projectDirectory.dir('tests')
     inputs.dir layout.projectDirectory.dir('src')
     inputs.file layout.projectDirectory.file('phpunit.xml').asFile
-    onlyIf { phpAvailable }
+    // Run only when PHP is present AND the phar actually exists (testEnv is
+    // responsible for downloading it). The phar-exists guard means a
+    // toolchain-less host where testEnv self-skipped does NOT crash phpunit
+    // with `Could not open input file` -- it self-skips too. When PHP is
+    // present (the normal nova-ci path), testEnv runs first and produces the
+    // phar, so this task runs the real suite.
+    onlyIf { phpAvailable && phpunitPhar.exists() }
     doFirst {
-        if (!phpAvailable) logger.lifecycle(skipReason)
+        if (!phpAvailable) {
+            logger.lifecycle(skipReason)
+        } else if (!phpunitPhar.exists()) {
+            logger.lifecycle('[pmmp] phpunit.phar not present after testEnv ' +
+                '(toolchain incomplete) -- skipping phpunit.')
+        }
     }
 }
 
