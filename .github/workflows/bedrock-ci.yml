@@ -185,13 +185,19 @@ jobs:
       # library AND the novachat-levilamina-tests binary, then runs the tests.
       # This is the real, complete test -- no --sdk=n shortcut.
       #
-      # -y: xmake prompts "please input: y (y/n/m)" to confirm package installs;
-      #   in a non-TTY CI shell this hangs and fails ("must be installed!").
-      #   -y auto-confirms so package install proceeds non-interactively.
-      # --verbose: xmake hides package-build compiler errors behind an
-      #   install.txt log under .xmake/cache/.../<pkg>/installdir.failed/logs.
-      #   --verbose surfaces them in the job log directly; the catch below also
-      #   dumps every install.txt it can find as a fallback.
+      # -y (only on `xmake f`): xmake prompts "please input: y (y/n/m)" to
+      #   confirm package INSTALLS during configure; in a non-TTY CI shell
+      #   that hangs and fails ("must be installed!"). `-y` auto-confirms so
+      #   package install proceeds non-interactively. IMPORTANT: `-y` is a
+      #   CONFIGURE/require option, NOT a build-subcommand option -- `xmake
+      #   build -y <target>` rejects it as "'-y' is not a valid target name".
+      #   Packages are already installed after `xmake f`, so `build` never
+      #   prompts and must NOT pass `-y`.
+      # --verbose (-v): valid on both `xmake f` and `xmake build`. xmake hides
+      #   package-build compiler errors behind an install.txt log under
+      #   .xmake/cache/.../<pkg>/installdir.failed/logs; --verbose surfaces
+      #   them in the job log directly, and the catch below also dumps every
+      #   install.txt it can find as a fallback.
       #
       # MODE = release (NOT debug): the levilamina package ALWAYS compiles its
       # own sources in release (MD runtime, _ITERATOR_DEBUG_LEVEL=0) regardless
@@ -238,8 +244,8 @@ jobs:
             }
           }
           Invoke-Xmake 'f', '-m', 'release', '-y', '--verbose'
-          Invoke-Xmake 'build', 'novachat-levilamina', '-y', '--verbose'
-          Invoke-Xmake 'build', 'novachat-levilamina-tests', '-y', '--verbose'
+          Invoke-Xmake 'build', 'novachat-levilamina', '--verbose'
+          Invoke-Xmake 'build', 'novachat-levilamina-tests', '--verbose'
           Invoke-Xmake 'run', 'novachat-levilamina-tests'
 
   pmmp:
