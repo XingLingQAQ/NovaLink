@@ -86,8 +86,17 @@ tasks.register('xmakeConfigure', Exec) {
     //   command `xmake f -a x64 -p windows -m release -y -v`.
     commandLine 'xmake', 'f', '-a', 'x64', '-p', 'windows', '-m', buildMode.toString(), '-y', '-v'
     workingDir projectDir
-    // Re-configure only if the build directory is missing.
-    onlyIf { !layout.projectDirectory.dir('.xmake').asFile.exists() }
+    // Always run configure (do NOT gate on `.xmake` existing). A previous CI
+    // failure can leave a STALE `.xmake` dir behind; if we skip configure when
+    // `.xmake` exists, the -y that auto-confirms package installs never runs,
+    // packages end up not installed, and `xmake build` (which CANNOT take -y)
+    // prompts "please input: y" and exits -1 under non-TTY CI. This was CI
+    // failure #4's root cause: the build-dir cache restored a stale `.xmake`
+    // from a prior failed run, configure self-skipped, -y never ran, build
+    // prompted and failed with "xmake finished with non-zero exit value -1".
+    // Running configure every time is cheap when packages are already cached
+    // (the heavy install result lives in %LOCALAPPDATA%\.xmake\packages, cached
+    // separately); -y is a no-op when packages are already installed.
     // Self-skip when xmake is not installed (e.g. ubuntu java-ci runner).
     onlyIf { xmakeAvailable }
     doFirst { if (!xmakeAvailable) logger.lifecycle(skipReason) }

@@ -62,6 +62,17 @@ tasks.named('test') {
     }
     testLogging {
         events "passed", "skipped", "failed"
+        // Show full stack traces + captured stdout/stderr for FAILED tests only.
+        // Without exceptionFormat, a CI failure only logs "10 failed" with NO
+        // error text -- you then have to download the test-results artifact to
+        // see why. `full` prints the exception chain; showStandardStreams dumps
+        // the test's own println/log output for failed tests (Testcontainers
+        // logs its container startup errors here, which is what we need to
+        // diagnose the PostgreSQLIntegrationTest failures on windows CI).
+        exceptionFormat 'full'
+        showStandardStreams true
+        showCauses true
+        showStackTraces true
     }
 }
 

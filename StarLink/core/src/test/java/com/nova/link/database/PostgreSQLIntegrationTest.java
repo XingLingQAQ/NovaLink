@@ -242,6 +242,15 @@ class PostgreSQLIntegrationTest {
      * Best-effort Docker availability probe. Testcontainers itself checks for
      * Docker, but probing first lets us skip with a clear assumption rather
      * than failing the test with a container startup error.
+     *
+     * <p>Beyond a plain exit-code check, this also confirms the Docker daemon
+     * is running in <b>Linux mode</b>: the {@code postgres:16-alpine} image we
+     * use is a linux/amd64 image and CANNOT run under a Windows-container-mode
+     * daemon. On a GitHub Actions windows-2022 runner, {@code docker info} can
+     * exit 0 even when the daemon is in Windows-container mode (no Linux engine
+     * / WSL2), which previously caused the postgres container startup to fail
+     * with a misleading error rather than skipping. Parsing {@code OSType} from
+     * {@code docker info} makes us skip in that case instead.
      */
     private boolean isDockerAvailable() {
         try {
@@ -249,7 +258,13 @@ class PostgreSQLIntegrationTest {
             pb.redirectErrorStream(true);
             Process process = pb.start();
             boolean finished = process.waitFor(15, java.util.concurrent.TimeUnit.SECONDS);
-            return finished && process.exitValue() == 0;
+            if (!finished || process.exitValue() != 0) {
+                return false;
+            }
+            // Verify the daemon can actually run linux containers (postgres is
+            // linux/amd64). docker info prints "OSType: linux" or "OSType: windows".
+            String output = new String(process.getInputStream().readAllBytes());
+            return output.contains("OSType: linux");
         } catch (Exception e) {
             return false;
         }
