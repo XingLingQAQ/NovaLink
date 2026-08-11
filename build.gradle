@@ -60,7 +60,7 @@ subprojects {
         junitVersion = '5.10.1'
         jqwikVersion = '1.8.2'
         assertjVersion = '3.24.2'
-        mockitoVersion = '5.8.0'
+        mockitoVersion = '5.18.0'
         jjwtVersion = '0.12.3'
         // Minecraft Java platform compile targets (as of 2026-07)
         // Latest stable classic line: 1.21.11; calendar line: 26.2 (Paper/Spigot also publish 26.x coords)
