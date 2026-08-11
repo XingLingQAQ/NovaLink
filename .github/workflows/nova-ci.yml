@@ -268,6 +268,15 @@ jobs:
       # UTF-8: `chcp 65001` switches the console codepage to UTF-8 and
       # $OutputEncoding makes PowerShell decode gradle's stdout as UTF-8.
       # JAVA_TOOL_OPTIONS (env) makes every JVM use UTF-8 for file.encoding.
+      #
+      # WHY every -D/-P arg is single-quoted: PowerShell's native-arg parser
+      # splits `-Dfile.encoding=UTF-8` on the `.` and passes `.encoding=UTF-8`
+      # to gradle as a SEPARATE token, which gradle then interprets as a task
+      # selector -> "Task '.encoding=UTF-8' not found". Quoting
+      # '-Dfile.encoding=UTF-8' keeps it one token. (This bit us on CI even
+      # with backtick line-continuation -- the split is in arg parsing, not
+      # line parsing.) Verified locally: quoted form runs, unquoted fails
+      # with exactly that "Task '.encoding=UTF-8' not found" error.
       # ---------------------------------------------------------------------
       - name: Build and test all platforms
         shell: pwsh
@@ -276,10 +285,10 @@ jobs:
           $OutputEncoding = [System.Text.Encoding]::UTF8
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           ./gradlew build test --console=plain `
-            -Dfile.encoding=UTF-8 `
-            -Dconsole.encoding=UTF-8 `
-            -Porg.gradle.java.installations.paths= `
-            -Dorg.gradle.java.installations.paths=
+            '-Dfile.encoding=UTF-8' `
+            '-Dconsole.encoding=UTF-8' `
+            '-Porg.gradle.java.installations.paths=' `
+            '-Dorg.gradle.java.installations.paths='
 
       - name: Upload build reports on failure
         if: failure()
