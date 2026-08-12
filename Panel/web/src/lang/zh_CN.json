@@ -19,6 +19,20 @@
   "dashboard": {
     "title": "仪表盘",
     "subtitle": "NovaLink 系统状态概览",
+    "kpi": {
+      "online_servers": "在线服务器",
+      "no_connection": "无连接",
+      "all_online": "全部在线",
+      "offline_count": "{{count}} 离线",
+      "online_players": "在线玩家",
+      "realtime": "实时",
+      "no_players": "无玩家",
+      "channel_total": "频道总数",
+      "registered": "已注册",
+      "session_messages": "会话消息",
+      "this_session": "本会话",
+      "none": "暂无"
+    },
     "online_servers": "在线服务器",
     "online_players": "在线玩家",
     "session_messages": "会话消息",

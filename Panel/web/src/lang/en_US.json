@@ -19,6 +19,20 @@
   "dashboard": {
     "title": "Dashboard",
     "subtitle": "NovaLink system status overview",
+    "kpi": {
+      "online_servers": "Online Servers",
+      "no_connection": "No Connection",
+      "all_online": "All Online",
+      "offline_count": "{{count}} Offline",
+      "online_players": "Online Players",
+      "realtime": "Realtime",
+      "no_players": "No Players",
+      "channel_total": "Total Channels",
+      "registered": "Registered",
+      "session_messages": "Session Messages",
+      "this_session": "This Session",
+      "none": "None"
+    },
     "online_servers": "Online Servers",
     "online_players": "Online Players",
     "session_messages": "Session Messages",
