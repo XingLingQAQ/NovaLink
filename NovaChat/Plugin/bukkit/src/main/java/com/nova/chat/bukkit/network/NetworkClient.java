@@ -5,25 +5,22 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.bukkit.command.MessageHelper;
 import com.nova.chat.bukkit.config.NovaChatConfig;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.network.AbstractPlatformNetworkClient;
+import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.client.network.ClientLogger;
 import com.nova.chat.client.network.CoreNetworkClient;
-import com.nova.chat.client.format.DurationFormatter;
 import com.nova.chat.client.network.SchedulerBridge;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
-import com.nova.chat.common.NovaConstants;
 import com.nova.chat.common.chat.MentionNotifier;
-import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
-import com.nova.chat.common.protocol.PacketRegistry;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.protocol.packets.AdminActionPacket;
 import com.nova.chat.common.protocol.packets.AdminActionResponsePacket;
-import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ConfigSyncPacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
@@ -32,29 +29,39 @@ import com.nova.chat.common.protocol.packets.TitlePacket;
 import net.md_5.bungee.api.ChatMessageType;
 import net.md_5.bungee.api.chat.TextComponent;
 
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
  * Bukkit NetworkClient facade over {@link CoreNetworkClient}.
  *
- * <p>Netty bootstrap, handshake/keepalive defaults, handler map, and reconnect
- * policy live in client-core (inherited via {@link AbstractPlatformNetworkClient}).
- * This class only keeps Bukkit-specific UX local: the pending-request correlation
- * tracker, ConfigSync parsing (world-restricted channels + known channel IDs for
- * tab complete), Title rendering on the main thread, and Channel/Admin
- * action-response correlation. Those are registered as handlers on the core so
- * dispatch still flows through the shared transport.
+ * <p>Netty bootstrap, handshake/keepalive defaults, handler map, reconnect policy,
+ * and the in-flight channel-action correlation tracker all live in client-core
+ * (inherited via {@link AbstractPlatformNetworkClient}). The shared
+ * {@link ChannelResponseDispatcher} owns the "consume pending → judge
+ * success/failure → route to adapter" skeleton for channel-action responses; this
+ * class supplies the {@link BukkitChannelResponseAdapter} that renders the shared
+ * outcomes on the Bukkit main thread.
+ *
+ * <p>What stays genuinely bukkit-only:
+ * <ul>
+ *   <li>Title / Mention / ConfigSync inbound handlers (main-thread rendering +
+ *       world-restricted channel + known-channel-id extraction for tab complete).</li>
+ *   <li>{@link #handleAdminActionResponse} — admin responses are not in the
+ *       dispatcher's current scope (audit §5.2 note; folding them in is a separate,
+ *       optional widening).</li>
+ * </ul>
+ *
+ * <p>Architecture B: plugin-only. Never imported by {@code novalink-core}.
  *
  * <p>Requirements: 1.1, 1.4
  */
 public class NetworkClient extends AbstractPlatformNetworkClient {
 
-    private final NovaChatBukkit plugin;
+    /** Package-visible so the adapter can reach the plugin + bukkit helpers. */
+    final NovaChatBukkit plugin;
+
     private final MentionNotifier mentionNotifier = new MentionNotifier();
 
     /**
@@ -63,60 +70,37 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * value, there is no online Bukkit Player to render the outcome to, so the
      * result is logged to the server console instead of being silently dropped.
      */
-    private static final UUID CONSOLE_SENTINEL_UUID =
+    static final UUID CONSOLE_SENTINEL_UUID =
             java.util.UUID.fromString("00000000-0000-0000-0000-000000000000");
-
-    /** Pending request contexts for mapping responses back to players (Bukkit UX). */
-    private final Map<UUID, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
-    private static final long REQUEST_TIMEOUT_MS = NovaConstants.PENDING_REQUEST_TIMEOUT_MS;
 
     /** Shared known-channel registry (populated from ConfigSync, UX-DESIGN §2.1). */
     private final com.nova.chat.client.channel.KnownChannelRegistry knownChannelRegistry;
 
-    private static final class PendingRequest {
-        private final UUID playerId;
-        private final String kind; // "channel" | "admin"
-        private final String action;
-        private final String channelId;
-        private final String previousChannel;
-        private final long createdAt;
-        // UX-DESIGN §5: target-side notification correlation for KICK/MUTE.
-        // The backend's ChannelActionResponsePacket does not echo these, so we
-        // stash them from the outgoing request to render a personalized notice to
-        // the kicked/muted player once the response comes back.
-        private final UUID targetId;
-        private final String operatorName;
-        private final String durationSeconds;
-        // True when the outgoing LEAVE targets the player's current active channel.
-        // Only such a leave optimistically resets the active channel to the default,
-        // so the rollback must key off this flag rather than guessing from the
-        // post-leave active channel value (BUG-H5/M7).
-        private final boolean leavingCurrent;
+    /** Shared response dispatcher (DUP-3); created in the constructor. */
+    private final ChannelResponseDispatcher dispatcher;
 
-        private PendingRequest(UUID playerId, String kind, String action, String channelId, String previousChannel,
-                               UUID targetId, String operatorName, String durationSeconds, boolean leavingCurrent) {
-            this.playerId = playerId;
-            this.kind = kind;
-            this.action = action;
-            this.channelId = channelId;
-            this.previousChannel = previousChannel;
-            this.createdAt = System.currentTimeMillis();
-            this.targetId = targetId;
-            this.operatorName = operatorName;
-            this.durationSeconds = durationSeconds;
-            this.leavingCurrent = leavingCurrent;
-        }
+    /** Shared adapter that renders dispatcher outcomes on the Bukkit main thread. */
+    final BukkitChannelResponseAdapter adapter;
 
-        private boolean isLeavingCurrent() {
-            return leavingCurrent;
-        }
-    }
+    /**
+     * Bukkit-only admin-action correlation: maps an in-flight
+     * {@code AdminActionPacket}'s request id to the originating player id so the
+     * asynchronous {@link AdminActionResponsePacket} can be rendered. Admin
+     * actions are NOT in the shared {@link ChannelResponseTracker} (it only tracks
+     * {@code ChannelActionPacket}s, which {@code CoreNetworkClient.sendPacket}
+     * records automatically), so the admin path stays local here. Audit §5.2 note:
+     * folding admin actions into the shared dispatcher is a separate, optional
+     * widening and out of scope for this migration.
+     */
+    private final java.util.concurrent.ConcurrentMap<UUID, UUID> pendingAdminRequests =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
      * Creates a new NetworkClient.
      *
      * @param plugin the plugin instance
      * @param config the plugin configuration
+     * @param knownChannelRegistry the shared known-channel registry (ConfigSync-fed)
      */
     public NetworkClient(NovaChatBukkit plugin, NovaChatConfig config,
                          com.nova.chat.client.channel.KnownChannelRegistry knownChannelRegistry) {
@@ -136,24 +120,42 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 serverVersion
         );
 
+        // Shared dispatcher + adapter. handleChannelActionResponse is a thin
+        // delegate to dispatcher.handle, matching the other 6 platforms' shape;
+        // the adapter owns the Bukkit main-thread hops and rendering for the
+        // shared JOIN/LEAVE/WHO success, JOIN rollback, error routing, and
+        // KICK/MUTE target notice paths.
+        this.adapter = new BukkitChannelResponseAdapter(this);
+        this.dispatcher = new ChannelResponseDispatcher(getChannelResponseTracker(), adapter);
+
         // Register Bukkit-specific (non-default) handlers on the core.
         // HandshakeResponse and KeepAlive are registered by the core itself.
-        core().registerHandler(TitlePacket.class, this::handleTitle);
-        core().registerHandler(ConfigSyncPacket.class, this::handleConfigSync);
-        core().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
-        core().registerHandler(AdminActionResponsePacket.class, this::handleAdminActionResponse);
-        core().registerHandler(MentionPacket.class, this::handleMention);
+        registerHandler(TitlePacket.class, this::handleTitle);
+        registerHandler(ConfigSyncPacket.class, this::handleConfigSync);
+        registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
+        registerHandler(AdminActionResponsePacket.class, this::handleAdminActionResponse);
+        registerHandler(MentionPacket.class, this::handleMention);
     }
 
     /**
-     * Sends a packet to the backend, first recording any pending request context
-     * needed to correlate the eventual response back to a player.
+     * Sends a packet to the backend. For {@link AdminActionPacket}s this records
+     * the {@code requestId -> playerId} correlation locally so the asynchronous
+     * {@link AdminActionResponsePacket} can be routed back to the originating
+     * player (admin actions are not tracked by the shared
+     * {@link ChannelResponseTracker}, which only handles channel actions). For
+     * all other packets — including {@code ChannelActionPacket}s, which the core
+     * tracks automatically — this delegates straight to the core's single-entry
+     * {@code sendPacket}.
      *
      * @param packet the packet to send
      */
     @Override
     public void sendPacket(Packet packet) {
-        trackPendingRequest(packet);
+        if (packet instanceof AdminActionPacket adminActionPacket) {
+            if (adminActionPacket.getPlayerId() != null && adminActionPacket.getRequestId() != null) {
+                pendingAdminRequests.put(adminActionPacket.getRequestId(), adminActionPacket.getPlayerId());
+            }
+        }
         super.sendPacket(packet);
     }
 
@@ -425,271 +427,70 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         return result;
     }
 
-    private void handleChannelActionResponse(ChannelActionResponsePacket response) {
-        PendingRequest pending = pendingRequests.remove(response.getRequestId());
-
-        plugin.getServer().getScheduler().runTask(plugin, () -> {
-            if (pending == null) {
-                plugin.debug("Received ChannelActionResponsePacket with no pending request: " + response);
-                return;
-            }
-            if (pending.playerId == null) {
-                // Likely invoked by console or missing context; log so it isn't silently lost.
-                plugin.getLogger().info("ChannelActionResponse (no player context): " + response);
-                return;
-            }
-
-            org.bukkit.entity.Player player = plugin.getServer().getPlayer(pending.playerId);
-            if (player == null) {
-                // Console/RCON-originated action: the operator is the all-zeros
-                // sentinel UUID and is not an online Player. Log the backend's
-                // outcome to the server console so the RCON/console operator sees
-                // success or the mapped error, instead of silently dropping it.
-                // Still attempt the target-side kick/mute notice (no-ops when the
-                // target is on another server).
-                if (CONSOLE_SENTINEL_UUID.equals(pending.playerId)) {
-                    if (response.isSuccess()) {
-                        String msg = formatChannelActionSuccess(response, pending);
-                        plugin.getLogger().info("[NovaChat console] " + msg);
-                    } else {
-                        String errorCode = response.getErrorCode();
-                        String errorMessage = response.getMessage();
-                        String text = (errorCode != null && !errorCode.isEmpty())
-                                ? errorCode + " | " + (errorMessage != null ? errorMessage : "操作失败")
-                                : (errorMessage != null ? errorMessage : "操作失败");
-                        plugin.getLogger().warning("[NovaChat console] " + text);
-                    }
-                    notifyKickMuteTarget(response, pending);
-                    return;
-                }
-                plugin.debug("ChannelActionResponsePacket target player not online: " + pending.playerId);
-                return;
-            }
-
-            if (response.isSuccess()) {
-                // /nc who result: render the member list directly (no "操作成功"
-                // ack). The backend packed members / memberCount / displayName
-                // into the response extras.
-                if (response.getAction() == ChannelAction.WHO) {
-                    String channelId = (response.getChannelId() != null && !response.getChannelId().isEmpty())
-                            ? response.getChannelId()
-                            : pending.channelId;
-                    String text = com.nova.chat.client.command.WhoCommandService.formatMemberList(
-                            pending.playerId,
-                            channelId,
-                            response.getExtra("displayName"),
-                            response.getExtra("members"),
-                            response.getExtra("memberCount"));
-                    for (String line : text.split("\n")) {
-                        if (!line.isEmpty()) {
-                            plugin.getMessageHelper().sendMessage(player,
-                                    com.nova.chat.bukkit.command.MessageHelper.colorize(line));
-                        }
-                    }
-                    return;
-                }
-
-                String message = formatChannelActionSuccess(response, pending);
-                plugin.getMessageHelper().sendSuccess(player, message);
-
-                // Apply local side-effects for actions that should change active channel or display extra info
-                applyChannelActionSuccessSideEffects(player, response);
-
-                // UX-DESIGN §5: KICK/MUTE target-side notification. The operator's
-                // "踢出/禁言请求已处理" confirmation stays untouched above; this only
-                // adds a personalized notice to the kicked/muted player themselves.
-                notifyKickMuteTarget(response, pending);
-                return;
-            }
-
-            // Failed: show mapped error code if available
-            String errorCode = response.getErrorCode();
-            String errorMessage = response.getMessage();
-            if (errorCode != null && !errorCode.isEmpty()) {
-                plugin.getErrorHandler().sendErrorFromCode(player, errorCode, errorMessage);
-            } else {
-                plugin.getMessageHelper().sendError(player,
-                        errorMessage != null ? errorMessage : I18n.tr(pending.playerId, "chat.action.failed"));
-            }
-
-            // Rollback optimistic local channel switch if applicable and still relevant
-            rollbackActiveChannelIfNeeded(player, response, pending);
-        });
-    }
-
-    private void applyChannelActionSuccessSideEffects(org.bukkit.entity.Player player,
-                                                      ChannelActionResponsePacket response) {
-        if (response.getAction() == null) {
-            return;
-        }
-
-        switch (response.getAction()) {
-            case JOIN: {
-                // §7: flash the active channel + current mode on the action bar.
-                sendChannelActionBar(player);
-                break;
-            }
-            case LEAVE: {
-                // §7: after a successful leave the active channel is the default;
-                // flash the action bar so the player sees where they landed.
-                sendChannelActionBar(player);
-                break;
-            }
-            case CREATE: {
-                String channelId = response.getChannelId();
-                if (channelId != null && !channelId.isEmpty()) {
-                    plugin.getChatInterceptor().setPlayerChannel(player, channelId);
-                }
-
-                String password = response.getExtra("password");
-                String passwordGenerated = response.getExtra("passwordGenerated");
-                if (password != null && !password.isEmpty()) {
-                    plugin.getMessageHelper().sendMessage(player,
-                            I18n.tr(player.getUniqueId(), "chat.create.result", channelId, password));
-                    if ("true".equalsIgnoreCase(passwordGenerated)) {
-                        plugin.getMessageHelper().sendSuggestion(player,
-                                I18n.tr(player.getUniqueId(), "chat.create.password_saved"));
-                    }
-                }
-                break;
-            }
-            case INVITE: {
-                String code = response.getExtra("code");
-                if (code != null && !code.isEmpty()) {
-                    String upper = code.toUpperCase();
-                    plugin.getMessageHelper().sendMessage(player,
-                            I18n.tr(player.getUniqueId(), "chat.invite.code", upper));
-                }
-                break;
-            }
-            case ACCEPT: {
-                String channelId = response.getChannelId();
-                if (channelId != null && !channelId.isEmpty()) {
-                    plugin.getChatInterceptor().setPlayerChannel(player, channelId);
-                }
-                break;
-            }
-            default:
-                break;
-        }
-    }
+    // --- Channel-action response routing ---
 
     /**
-     * Notifies the kicked/muted player directly (UX-DESIGN §5).
-     *
-     * <p>Must run on the main thread (the caller already hops there). If the target
-     * is offline or on another server there is nothing to do here; the backend is
-     * expected to route the notice to the server hosting the target. Falls back to
-     * the request's tracked {@code operatorName}/{@code duration} since the response
-     * packet does not echo them.
+     * Routes an asynchronous channel-action response through the shared
+     * {@link ChannelResponseDispatcher} (DUP-3), which owns the "consume pending →
+     * judge success/failure → route to adapter" skeleton: JOIN/LEAVE/WHO success,
+     * JOIN-rejection rollback, error-code routing, and the KICK/MUTE target-side
+     * notice. The {@link BukkitChannelResponseAdapter} owns the Bukkit main-thread
+     * hops, rendering, and the §7 action-bar flash. Thin delegate, matching the
+     * other 6 platforms' shape.
      */
-    private void notifyKickMuteTarget(ChannelActionResponsePacket response, PendingRequest pending) {
-        if (response.getAction() == null) {
-            return;
-        }
-        if (response.getAction() != ChannelAction.KICK && response.getAction() != ChannelAction.MUTE) {
-            return;
-        }
-        if (pending.targetId == null) {
-            return;
-        }
-        org.bukkit.entity.Player target = plugin.getServer().getPlayer(pending.targetId);
-        if (target == null) {
-            return; // not on this server
-        }
-
-        String channelId = response.getChannelId() != null && !response.getChannelId().isEmpty()
-                ? response.getChannelId()
-                : pending.channelId;
-        String operator = pending.operatorName != null && !pending.operatorName.isEmpty()
-                ? pending.operatorName
-                : I18n.tr(pending.targetId, "notice.operator.fallback");
-
-        if (response.getAction() == ChannelAction.KICK) {
-            String title = com.nova.chat.bukkit.command.MessageHelper.colorize(
-                    I18n.tr(pending.targetId, "chat.notice.kick_title"));
-            String subtitle = com.nova.chat.bukkit.command.MessageHelper.colorize(
-                    I18n.tr(pending.targetId, "chat.notice.kick_subtitle", operator, channelId));
-            target.sendTitle(title, subtitle,
-                    com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN,
-                    com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY,
-                    com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT);
-            target.spigot().sendMessage(ChatMessageType.ACTION_BAR,
-                    new TextComponent(com.nova.chat.bukkit.command.MessageHelper.colorize(
-                            I18n.tr(pending.targetId, "chat.notice.kick_actionbar", operator, channelId))));
-            return;
-        }
-
-        // MUTE
-        String durationText = formatTrackedDuration(pending.durationSeconds);
-        String title = com.nova.chat.bukkit.command.MessageHelper.colorize(
-                I18n.tr(pending.targetId, "chat.notice.mute_title"));
-        String subtitle = com.nova.chat.bukkit.command.MessageHelper.colorize(
-                I18n.tr(pending.targetId, "chat.notice.mute_subtitle", channelId, durationText));
-        target.sendTitle(title, subtitle,
-                com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN,
-                com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY,
-                com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT);
-        target.spigot().sendMessage(ChatMessageType.ACTION_BAR,
-                new TextComponent(com.nova.chat.bukkit.command.MessageHelper.colorize(
-                        I18n.tr(pending.targetId, "chat.notice.mute_actionbar", durationText, channelId))));
-    }
-
-    /** Formats a duration given as a seconds string, or "一段时间" if unknown. */
-    private String formatTrackedDuration(String durationSeconds) {
-        return DurationFormatter.formatSeconds(durationSeconds);
+    private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
+        dispatcher.handle(packet);
     }
 
     /**
      * Flashes a one-shot action bar with the player's current channel and chat
      * mode after a successful join/leave (UX-DESIGN §7). Vanilla action-bar
-     * fade handles the ~3s dismissal; no polling.
+     * fade handles the ~3s dismissal; no polling. Called by
+     * {@link BukkitChannelResponseAdapter} on the main thread.
      */
-    private void sendChannelActionBar(org.bukkit.entity.Player player) {
-        PlayerChannelState state = plugin.getChatInterceptor().getState(player.getUniqueId());
-        String channelId = (state != null) ? state.getActiveChannel() : null;
+    void sendChannelStatusBar(org.bukkit.entity.Player player, String channelId) {
         if (channelId == null || channelId.isEmpty()) {
             return;
         }
-        ChatMode mode = (state != null) ? state.getChatMode() : null;
-        String text = com.nova.chat.bukkit.command.MessageHelper.colorize(
+        PlayerChannelState state = plugin.getChatInterceptor().getState(player.getUniqueId());
+        ChatMode mode = state != null ? state.getChatMode() : null;
+        if (mode == null) {
+            mode = ChatMode.HYBRID;
+        }
+        String text = MessageHelper.colorize(
                 com.nova.chat.client.command.PlayerMessages.currentChannelBar(player.getUniqueId(), channelId, mode));
         player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(text));
     }
 
     private void handleAdminActionResponse(AdminActionResponsePacket response) {
-        PendingRequest pending = pendingRequests.remove(response.getRequestId());
+        UUID playerId = pendingAdminRequests.remove(response.getRequestId());
 
         plugin.getServer().getScheduler().runTask(plugin, () -> {
-            if (pending == null) {
+            if (playerId == null) {
                 plugin.debug("Received AdminActionResponsePacket with no pending request: " + response);
                 return;
             }
-            if (pending.playerId == null) {
-                plugin.getLogger().info("AdminActionResponse (no player context): " + response);
-                return;
-            }
 
-            org.bukkit.entity.Player player = plugin.getServer().getPlayer(pending.playerId);
+            org.bukkit.entity.Player player = plugin.getServer().getPlayer(playerId);
             if (player == null) {
                 // Console/RCON-originated admin action: log the outcome to the
                 // server console so the operator sees it, instead of dropping it.
-                if (CONSOLE_SENTINEL_UUID.equals(pending.playerId)) {
+                if (CONSOLE_SENTINEL_UUID.equals(playerId)) {
                     if (response.isSuccess()) {
                         plugin.getLogger().info("[NovaChat console] " +
                                 (response.getMessage() != null && !response.getMessage().isEmpty()
-                                        ? response.getMessage() : "操作成功"));
+                                        ? response.getMessage() : I18n.tr((UUID) null, "chat.action.success")));
                     } else {
                         String code = response.getErrorCode();
                         String msg = response.getMessage();
                         String text = (code != null && !code.isEmpty())
-                                ? code + " | " + (msg != null ? msg : "操作失败")
-                                : (msg != null ? msg : "操作失败");
+                                ? code + " | " + (msg != null ? msg : I18n.tr((UUID) null, "chat.action.failed"))
+                                : (msg != null ? msg : I18n.tr((UUID) null, "chat.action.failed"));
                         plugin.getLogger().warning("[NovaChat console] " + text);
                     }
                     return;
                 }
-                plugin.debug("AdminActionResponsePacket target player not online: " + pending.playerId);
+                plugin.debug("AdminActionResponsePacket target player not online: " + playerId);
                 return;
             }
 
@@ -697,7 +498,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 plugin.getMessageHelper().sendSuccess(player,
                         response.getMessage() != null && !response.getMessage().isEmpty()
                                 ? response.getMessage()
-                                : I18n.tr(pending.playerId, "chat.action.success"));
+                                : I18n.tr(playerId, "chat.action.success"));
             } else {
                 String code = response.getErrorCode();
                 String msg = response.getMessage();
@@ -705,171 +506,10 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                     plugin.getErrorHandler().sendErrorFromCode(player, code, msg);
                 } else {
                     plugin.getMessageHelper().sendError(player,
-                            msg != null ? msg : I18n.tr(pending.playerId, "chat.action.failed"));
+                            msg != null ? msg : I18n.tr(playerId, "chat.action.failed"));
                 }
             }
         });
-    }
-
-    private String formatChannelActionSuccess(ChannelActionResponsePacket response, PendingRequest pending) {
-        String msg = response.getMessage();
-        if (msg != null && !msg.isEmpty() && !"Action accepted".equalsIgnoreCase(msg)) {
-            return msg;
-        }
-
-        String channelId = response.getChannelId() != null && !response.getChannelId().isEmpty()
-                ? response.getChannelId()
-                : pending.channelId;
-
-        if (response.getAction() == null) {
-            return I18n.tr(pending.playerId, "chat.action.success");
-        }
-
-        switch (response.getAction()) {
-            case JOIN:
-                return I18n.tr(pending.playerId, "chat.join.joined", channelId);
-            case LEAVE:
-                return I18n.tr(pending.playerId, "chat.action.leave_simple", channelId);
-            case CREATE:
-                return I18n.tr(pending.playerId, "chat.action.create_processed");
-            case DELETE:
-                return I18n.tr(pending.playerId, "chat.action.delete_processed");
-            case INVITE:
-                return I18n.tr(pending.playerId, "chat.action.invite_processed");
-            case ACCEPT:
-                return I18n.tr(pending.playerId, "chat.action.accepted");
-            case KICK:
-                return I18n.tr(pending.playerId, "chat.action.kick_processed");
-            case MUTE:
-                return I18n.tr(pending.playerId, "chat.action.mute_processed");
-            case UNMUTE:
-                return I18n.tr(pending.playerId, "chat.action.unmute_processed");
-            default:
-                return I18n.tr(pending.playerId, "chat.action.success");
-        }
-    }
-
-    private void rollbackActiveChannelIfNeeded(org.bukkit.entity.Player player,
-                                               ChannelActionResponsePacket response,
-                                               PendingRequest pending) {
-        if (pending.previousChannel == null || pending.previousChannel.isEmpty()) {
-            return;
-        }
-
-        // Only rollback if the player's current channel is still the optimistic one
-        var state = plugin.getChatInterceptor().getState(player.getUniqueId());
-        String current = state != null ? state.getActiveChannel() : null;
-
-        if (response.getAction() == null) {
-            return;
-        }
-
-        switch (response.getAction()) {
-            case JOIN:
-            case ACCEPT:
-                if (current != null && pending.channelId != null && current.equals(pending.channelId)) {
-                    plugin.getChatInterceptor().setPlayerChannel(player, pending.previousChannel);
-                }
-                break;
-            case LEAVE:
-                // Only a leave of the current channel optimistically resets the
-                // active channel to default, so only such a pending request can
-                // roll back. Key off the explicit flag (set by LeaveCommand) rather
-                // than guessing from current.equals(defaultChannel), which would
-                // spuriously trigger when a non-current leave fails (BUG-H5/M7).
-                if (pending.isLeavingCurrent()) {
-                    plugin.getChatInterceptor().setPlayerChannel(player, pending.previousChannel);
-                }
-                break;
-            default:
-                break;
-        }
-    }
-
-    // --- Pending-request tracker (Bukkit UX correlation) ---
-
-    private void trackPendingRequest(Packet packet) {
-        cleanupExpiredRequests();
-
-        if (packet instanceof ChannelActionPacket channelActionPacket) {
-            UUID playerId = extractUuid(channelActionPacket.getExtra("playerId"));
-            if (playerId == null) {
-                playerId = extractUuid(channelActionPacket.getExtra("player_id"));
-            }
-            if (playerId == null) {
-                // Some actions use operatorId/targetId instead of playerId
-                playerId = extractUuid(channelActionPacket.getExtra("operatorId"));
-            }
-
-            String previousChannel = null;
-            if (playerId != null) {
-                var state = plugin.getChatInterceptor().getState(playerId);
-                if (state != null) {
-                    previousChannel = state.getActiveChannel();
-                }
-            }
-
-            // UX-DESIGN §5: KICK/MUTE target-side notification needs target id +
-            // operator display name + mute duration. These travel on the request
-            // packet's extras (set by KickCommand/MuteCommand), not on the response.
-            UUID targetId = extractUuid(channelActionPacket.getExtra("targetId"));
-            String operatorName = channelActionPacket.getExtra("operatorName");
-            String durationSeconds = channelActionPacket.getExtra("duration");
-
-            // BUG-H5/M7: a LEAVE only optimistically resets the active channel to
-            // the default when it targets the player's current channel. LeaveCommand
-            // calls the shared service with channelId == active channel in that case,
-            // and the service sends before clearing membership, so at track time the
-            // state's active channel still equals the leave target. Derive the flag
-            // from that equality rather than a separate extra so we don't have to
-            // thread a new field through the shared client-core service.
-            boolean leavingCurrent = ChannelAction.LEAVE.equals(channelActionPacket.getAction())
-                    && previousChannel != null
-                    && previousChannel.equals(channelActionPacket.getChannelId());
-
-            pendingRequests.put(packet.getRequestId(), new PendingRequest(
-                    playerId,
-                    "channel",
-                    channelActionPacket.getAction() != null ? channelActionPacket.getAction().name() : "UNKNOWN",
-                    channelActionPacket.getChannelId(),
-                    previousChannel,
-                    targetId,
-                    operatorName,
-                    durationSeconds,
-                    leavingCurrent
-            ));
-            return;
-        }
-
-        if (packet instanceof AdminActionPacket adminActionPacket) {
-            pendingRequests.put(packet.getRequestId(), new PendingRequest(
-                    adminActionPacket.getPlayerId(),
-                    "admin",
-                    adminActionPacket.getAction() != null ? adminActionPacket.getAction().name() : "UNKNOWN",
-                    adminActionPacket.getTarget(),
-                    null,
-                    null,
-                    null,
-                    null,
-                    false
-            ));
-        }
-    }
-
-    private void cleanupExpiredRequests() {
-        long now = System.currentTimeMillis();
-        pendingRequests.entrySet().removeIf(e -> now - e.getValue().createdAt > REQUEST_TIMEOUT_MS);
-    }
-
-    private UUID extractUuid(String raw) {
-        if (raw == null || raw.isEmpty()) {
-            return null;
-        }
-        try {
-            return UUID.fromString(raw);
-        } catch (IllegalArgumentException e) {
-            return null;
-        }
     }
 
     /**
