@@ -10,11 +10,11 @@
 </p>
 
 <p align="center">
-  <a href="#从一条消息到整个网络">架构</a> ·
-  <a href="#三步接入">快速开始</a> ·
-  <a href="#模块地图">模块</a> ·
-  <a href="#部署与运营">部署</a> ·
-  <a href="#开发与验证">开发</a>
+  <a href="#architecture">架构</a> ·
+  <a href="#get-started">快速开始</a> ·
+  <a href="#system-map">模块</a> ·
+  <a href="#operations">部署</a> ·
+  <a href="#build-verify">开发</a>
 </p>
 
 <p align="center">
@@ -39,7 +39,10 @@ Minecraft 网络通常同时运行 Java 服务端、代理、Bedrock 服务端�
 | --- | --- | --- |
 | 将认证、转发、禁言、持久化和访问控制集中到 NovaLink 后端。 | `GLOBAL`、`SERVER`、`WORLD` 与 `PRIVATE` 覆盖公共、局部、世界与私密会话。 | React 管理面板通过 REST 与 WebSocket 查看运行状态并进行操作。 |
 
-## 从一条消息到整个网络
+<a id="architecture"></a>
+<p align="center">
+  <img src="assets/readme/sections/section-01-architecture.png" alt="章节 01：从一条消息到整个网络" width="100%" />
+</p>
 
 ```mermaid
 flowchart LR
@@ -78,7 +81,10 @@ flowchart LR
 
 依赖关系同样保持单向：共享协议层供所有端复用；平台客户端在其之上复用连接运行时；中心后端只依赖共享协议层，不把平台插件逻辑带入核心服务。
 
-## 三步接入
+<a id="get-started"></a>
+<p align="center">
+  <img src="assets/readme/sections/section-02-get-started.png" alt="章节 02：三步接入" width="100%" />
+</p>
 
 ### 01 — 构建中心后端
 
@@ -136,7 +142,10 @@ java -jar StarLink/core/build/libs/*-all.jar /opt/novalink/novalink.yml
 > [!IMPORTANT]
 > 示例配置仅用于起步。不要将示例中的密码、JWT 密钥、数据库账号或 Webhook 地址直接用于生产环境。
 
-## 模块地图
+<a id="system-map"></a>
+<p align="center">
+  <img src="assets/readme/sections/section-03-system-map.png" alt="章节 03：模块地图" width="100%" />
+</p>
 
 | 层级 | 路径 | 负责什么 |
 | --- | --- | --- |
@@ -160,7 +169,10 @@ java -jar StarLink/core/build/libs/*-all.jar /opt/novalink/novalink.yml
 > [!NOTE]
 > Minecraft、Loader、JDK 和上游 API 的组合会随平台发布节奏变化。部署前请以对应模块的 `build.gradle`、`plugin.yml` 或平台文档为准，并在目标环境完成验证。
 
-## 频道，就是你的网络分区
+<a id="channels"></a>
+<p align="center">
+  <img src="assets/readme/sections/section-04-channels.png" alt="章节 04：频道，就是你的网络分区" width="100%" />
+</p>
 
 | 频道范围 | 最适合的场景 | 路由边界 |
 | --- | --- | --- |
@@ -171,7 +183,10 @@ java -jar StarLink/core/build/libs/*-all.jar /opt/novalink/novalink.yml
 
 频道、模板、客户端与全局权限均由 `novalink.yml` 定义。完整字段、数据库选项、功能开关与参考配置位于 [`examples/novalink.yml`](examples/novalink.yml)。
 
-## 部署与运营
+<a id="operations"></a>
+<p align="center">
+  <img src="assets/readme/sections/section-05-operations.png" alt="章节 05：部署与运营" width="100%" />
+</p>
 
 ### 后端与数据层
 
@@ -196,7 +211,10 @@ npm run build
 
 登录页默认向同源 `/api` 发起 REST 请求，并使用当前主机的 `8889` 端口建立 WebSocket 连接。**Advanced Settings** 可在当前会话中覆盖这两个地址。生产部署时，请显式配置反向代理的 API 与 WebSocket 转发，并避免将认证端点暴露在不可信网络中。
 
-## 开发与验证
+<a id="build-verify"></a>
+<p align="center">
+  <img src="assets/readme/sections/section-06-build-verify.png" alt="章节 06：开发与验证" width="100%" />
+</p>
 
 | 目标 | 命令 |
 | --- | --- |
