@@ -5,8 +5,8 @@
 <h1 align="center">NovaLink</h1>
 
 <p align="center">
-  <strong>一个网络。每一台服务器。</strong><br />
-  为多端 Minecraft 社区准备的聊天路由、频道治理与运营控制基础设施。
+  <strong>多端 Minecraft 社区的聊天路由、频道治理与运营控制基础设施。</strong><br />
+  提供中心后端与多平台 NovaChat 接入模块。
 </p>
 
 <p align="center">
@@ -29,13 +29,16 @@
 </p>
 
 > [!TIP]
-> **NovaLink 是网络中心，NovaChat 是平台侧的接入层。** 你不需要让每一种服务端、代理或模组各自维护一套聊天逻辑；把它们接到同一个路由核心，协议、认证、频道、消息与运营边界就有了统一的归宿。
+> **NovaLink 后端负责认证、频道、路由、持久化和管理控制；NovaChat 负责各平台的接入。** 接入端通过 NovaProtocol 连接后端，使不同平台使用同一套网络规则。
 
-## 为多端服务器网络而生
+<a id="overview"></a>
+<p align="center">
+  <img src="assets/readme/sections/section-00-overview.png" alt="项目概览" width="100%" />
+</p>
 
-当一个社区同时有 Java 服务端、代理、Bedrock 服务端和模组环境时，聊天往往最先失控：同一条公告要复制好几遍，权限规则散在不同配置里，频道状态跟着平台走，排查问题时也没人说得清消息到底经过了哪里。
+当一个社区同时运行 Java 服务端、代理、Bedrock 服务端和模组环境时，聊天公告、权限规则和频道状态通常分散在多个平台配置中。这样会增加重复配置、跨服路由和问题排查的成本。
 
-NovaLink 的目标很直接：**把平台差异留在边缘，把网络规则留在中心。** 所有 NovaChat 客户端通过 **NovaProtocol v1** 接入同一个后端；一条消息只需要知道自己来自哪里、属于哪个频道、谁有资格收到它，剩下的由路由核心处理。
+NovaLink 将平台接入与中心路由分离。所有 NovaChat 客户端通过 **NovaProtocol v1** 接入同一个后端；后端根据消息来源、频道和权限处理路由与运营规则。
 
 ### 你会得到什么
 
@@ -47,10 +50,10 @@ NovaLink 的目标很直接：**把平台差异留在边缘，把网络规则留
 
 <a id="architecture"></a>
 <p align="center">
-  <img src="assets/readme/sections/section-01-architecture.png" alt="章节 01：从一条消息到整个网络" width="100%" />
+  <img src="assets/readme/sections/section-01-architecture.png" alt="系统架构" width="100%" />
 </p>
 
-从平台看，NovaChat 只是一个熟悉的插件、模组或扩展；从网络看，它们都在说同一种协议。这样做不是为了把每个端做得一模一样，而是为了让它们在接入后遵守同一套网络规则。
+NovaChat 以插件、模组或扩展的形式运行在目标平台中，并通过共享的 NovaProtocol 与后端通信。平台保留各自的生命周期与玩家 API，后端统一处理网络级规则。
 
 ```mermaid
 flowchart LR
@@ -87,20 +90,20 @@ flowchart LR
     class W,D ops;
 ```
 
-依赖方向也保持克制：共享协议层给后端和客户端共同使用；客户端运行时只服务于插件与模组；中心后端只依赖共享协议层，不把任何平台 API 带进核心服务。这样一来，平台可以继续演进，网络边界却不会被拖散。
+共享协议层由后端和客户端共同使用；客户端运行时服务于插件与模组；中心后端只依赖共享协议层，不引入平台 API。该依赖方向用于保持平台适配与核心服务解耦。
 
-### 后端短暂离线，不该让每个端都靠人盯着
+### 连接恢复与重连
 
 接入端的运行时会处理握手、KeepAlive、连接状态和重连策略。意外断开时，它会按指数退避等待后再次连接，延迟从 1 秒逐步增长并封顶在 30 秒；连续多次失败后停止重试并留下明确日志。显式停止则不会偷偷重连——这是一次真正的关闭，而不是一次事故。
 
-这套机制不取代你的监控系统，但能让网络恢复时不必逐个服务端手动“救火”。详细的连接生命周期、平台边界与重连约定见 [`NovaChat/client-core/DESIGN.md`](NovaChat/client-core/DESIGN.md)。
+该机制不替代监控系统。详细的连接生命周期、平台边界与重连约定见 [`NovaChat/client-core/DESIGN.md`](NovaChat/client-core/DESIGN.md)。
 
 <a id="get-started"></a>
 <p align="center">
-  <img src="assets/readme/sections/section-02-get-started.png" alt="章节 02：三步接入" width="100%" />
+  <img src="assets/readme/sections/section-02-get-started.png" alt="快速开始" width="100%" />
 </p>
 
-第一次接入不需要先理解所有模块。先让中心后端跑起来，再把平台客户端对准它；其余能力可以随着你的网络逐步打开。
+最小接入验证只需要启动中心后端，并接入一个平台客户端。完成身份、频道和消息路径验证后，再逐步启用其他能力。
 
 ### 01 — 构建中心后端
 
@@ -117,13 +120,13 @@ cd NovaLink
 
 构建完成后，可直接运行的 fat JAR 位于 `StarLink/core/build/libs/*-all.jar`。它包含 NovaLink 后端所需依赖，因此不需要额外拼装运行时。
 
-### 02 — 先定义你的网络边界
+### 02 — 创建并配置 `novalink.yml`
 
 ```bash
 cp examples/novalink.yml novalink.yml
 ```
 
-先从示例配置开始，再替换 `server.secret-key`、数据库凭据与 `clients` 中的客户端凭据。小型或本地环境可以使用 `sqlite` 或 `memory`；当网络开始承载真实玩家时，请换成持久化存储、限制允许访问的 IP/CIDR，并把密钥交给受控配置管理系统。
+从示例配置开始，替换 `server.secret-key`、数据库凭据与 `clients` 中的客户端凭据。小型或本地环境可以使用 `sqlite` 或 `memory`；生产环境应使用持久化存储、限制允许访问的 IP/CIDR，并通过受控配置管理系统管理密钥。
 
 ```yaml
 server:
@@ -143,7 +146,7 @@ clients:
     display_name: "Survival"
 ```
 
-### 03 — 启动后端，再接入平台客户端
+### 03 — 启动后端并配置平台客户端
 
 ```bash
 # 默认读取当前工作目录中的 novalink.yml
@@ -160,10 +163,10 @@ java -jar StarLink/core/build/libs/*-all.jar /opt/novalink/novalink.yml
 
 <a id="system-map"></a>
 <p align="center">
-  <img src="assets/readme/sections/section-03-system-map.png" alt="章节 03：模块地图" width="100%" />
+  <img src="assets/readme/sections/section-03-system-map.png" alt="模块结构" width="100%" />
 </p>
 
-仓库并不只有一个后端 JAR。下面这张地图的作用不是让你记住目录，而是帮你在需要改动时更快找到“应该改在哪里”。
+仓库包含后端、共享协议、平台接入端、管理面板和真实环境验证模块。下表列出各模块的主要职责与常见修改入口。
 
 | 当你想处理…… | 先看这里 | 它负责什么 |
 | --- | --- | --- |
@@ -173,7 +176,7 @@ java -jar StarLink/core/build/libs/*-all.jar /opt/novalink/novalink.yml
 | 管理控制面 | [`Panel/web`](Panel/web) | React + Vite 管理面板，用于登录、观测和日常运营操作。 |
 | 真实环境验证 | [`e2e`](e2e) | 可选的真实服务器、机器人与多平台端到端验证编排。 |
 
-### 已覆盖的平台边缘
+### 平台适配目录
 
 | 平台族 | 目录 | 接入形态 |
 | --- | --- | --- |
@@ -189,10 +192,10 @@ java -jar StarLink/core/build/libs/*-all.jar /opt/novalink/novalink.yml
 
 <a id="channels"></a>
 <p align="center">
-  <img src="assets/readme/sections/section-04-channels.png" alt="章节 04：频道，就是你的网络分区" width="100%" />
+  <img src="assets/readme/sections/section-04-channels.png" alt="频道与路由" width="100%" />
 </p>
 
-频道不只是聊天窗口的名字。在 NovaLink 里，频道就是消息该走到哪里、谁能看到、谁能管理的边界。先把范围说清楚，后续的权限、禁言、世界限制和私密会话才有稳定的落点。
+频道定义消息的路由范围、可见范围和管理边界。频道作用域确定后，权限、禁言、世界限制和私密会话才能按一致规则处理。
 
 | 频道范围 | 适合放什么 | 路由边界 |
 | --- | --- | --- |
@@ -203,16 +206,16 @@ java -jar StarLink/core/build/libs/*-all.jar /opt/novalink/novalink.yml
 
 当运营需要介入时，中心后端可以在同一条边界上处理认证、权限、禁言、踢出和路由决定，而不必先判断消息来自哪一种服务端。频道、模板、客户端与全局权限都由 `novalink.yml` 定义；完整字段、数据库选项与功能开关见 [`examples/novalink.yml`](examples/novalink.yml)。
 
-### 聊天不止是“把一段文字发出去”
+### 消息扩展与呈现
 
-共享协议层已经为提及、物品展示、格式模板和扩展留好了位置。它们的共同目标是让不同平台收到同一条消息时，仍能保留一致的语义，而不是只剩下一段被降级的纯文本。具体的展示方式依然应由各平台自己决定——毕竟玩家看到的是平台 UI，而不是网络协议。
+共享协议层支持提及、物品展示、格式模板和扩展。不同平台可以基于自身 UI 实现相应呈现方式，同时保留消息的通用语义。
 
 <a id="operations"></a>
 <p align="center">
-  <img src="assets/readme/sections/section-05-operations.png" alt="章节 05：部署与运营" width="100%" />
+  <img src="assets/readme/sections/section-05-operations.png" alt="部署与运营" width="100%" />
 </p>
 
-NovaLink 可以从一台本地服务器开始，也可以随着社区规模把数据、反向代理和控制面拆开。关键不是一开始就把部署做得复杂，而是让每一步都有清晰的边界。
+NovaLink 可从单台本地服务器开始部署，也可根据社区规模拆分数据层、反向代理和控制面。部署时应明确数据面、控制面、存储和管理入口的网络边界。
 
 ### 后端与数据层
 
@@ -239,10 +242,10 @@ npm run build
 
 <a id="build-verify"></a>
 <p align="center">
-  <img src="assets/readme/sections/section-06-build-verify.png" alt="章节 06：开发与验证" width="100%" />
+  <img src="assets/readme/sections/section-06-build-verify.png" alt="开发与验证" width="100%" />
 </p>
 
-如果你准备改协议、路由或平台适配，先把最接近改动的验证跑起来。下面的命令按从日常构建到真实环境验证的顺序排列；不需要为了改一处文案就启动一套真实 Minecraft 集群。
+修改协议、路由或平台适配时，应选择与改动范围相符的验证方式。下列命令按日常构建到真实环境验证的范围排列；文档或小范围修改通常不需要启动真实 Minecraft 集群。
 
 | 你要确认什么 | 命令 |
 | --- | --- |
@@ -255,7 +258,10 @@ npm run build
 
 项目同时维护单元、属性、集成和真实服务端 E2E 的分层验证路径。真实 E2E 是显式选择的任务，需要真实 Minecraft 服务端文件、机器人进程、Node.js、匹配的 JDK 与平台运行环境；它很有价值，但不应被当作每次本地修改都必须执行的脚本。环境前提和编排方式见 [`e2e/README.md`](e2e/README.md) 与 [`docs/REAL-SERVER-E2E.md`](docs/REAL-SERVER-E2E.md)。
 
-## 项目资源与协作
+<a id="resources"></a>
+<p align="center">
+  <img src="assets/readme/sections/section-07-resources.png" alt="项目资源与协作" width="100%" />
+</p>
 
 | 如果你正在…… | 从这里开始 |
 | --- | --- |
@@ -267,8 +273,11 @@ npm run build
 | 从快速接入、部署、运维或 API 文档开始 | [`docs/README.md`](docs/README.md) |
 | 查阅架构、测试、国际化与 UX 记录 | [`docs`](docs) |
 
-贡献前，先在 [Issues](https://github.com/XingLingQAQ/NovaLink/issues) 中看看是否已有类似需求、缺陷或平台兼容性讨论。提交 PR 时，说明你影响了哪些平台、改了哪些配置、跑过什么验证，以及还有哪些已知限制。也请不要把真实密码、JWT 密钥、数据库凭据、私有 IP 或生产 Webhook 放进 Issue、示例配置或测试日志。
+提交贡献前，请在 [Issues](https://github.com/XingLingQAQ/NovaLink/issues) 中确认是否已有类似需求、缺陷或平台兼容性讨论。提交 PR 时应说明受影响的平台、配置或接口、已执行的验证以及仍未验证的限制。不要在 Issue、示例配置或测试日志中提交真实密码、JWT 密钥、数据库凭据、私有 IP 或生产 Webhook。
 
-## 许可证
+<a id="license"></a>
+<p align="center">
+  <img src="assets/readme/sections/section-08-license.png" alt="许可证" width="100%" />
+</p>
 
-NovaLink 以 [MIT License](LICENSE) 发布。你可以在遵守许可证的前提下使用、修改和分发它；如果它帮你的服务器网络少踩了一点坑，也欢迎把改进带回来。
+NovaLink 以 [MIT License](LICENSE) 发布。你可以在遵守许可证的前提下使用、修改和分发本项目。
