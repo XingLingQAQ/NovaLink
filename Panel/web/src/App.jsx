@@ -60,6 +60,8 @@ import WebhookManagement from './components/dashboard/WebhookManagement';
 
 import LoginScreen from './components/auth/LoginScreen';
 
+import { SUPPORTED_LANGS } from './i18n';
+
 const THEME_STORAGE_KEY = 'nova-panel-theme';
 
 // Settings UI key -> backend key map (module-level so handleSettingToggle's
@@ -940,20 +942,22 @@ function Dashboard({ currentUser, onLogout }) {
                   onOpenList={handleOpenNotificationList}
                 />
               </div>
-              {/* Language switcher */}
+              {/* Language switcher — driven by SUPPORTED_LANGS (auto-detected from src/lang/*.json) */}
               <div className="flex items-center p-0.5 rounded-full gap-0.5 border border-border bg-muted/60" title={t('language.switch_title')}>
-                <button
-                  onClick={() => i18n.changeLanguage('zh_CN')}
-                  className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-colors ${i18n.language === 'zh_CN' || i18n.language === 'zh' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                >
-                  {t('language.zh')}
-                </button>
-                <button
-                  onClick={() => i18n.changeLanguage('en_US')}
-                  className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-colors ${i18n.language === 'en_US' || i18n.language === 'en' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                >
-                  {t('language.en')}
-                </button>
+                {SUPPORTED_LANGS.map((lang) => {
+                  const store = i18n.store?.()?.data ?? {};
+                  const label = store[lang]?.translation?.language?.self ?? lang;
+                  const isActive = i18n.language === lang || i18n.language?.split('_')[0] === lang.split('_')[0];
+                  return (
+                    <button
+                      key={lang}
+                      onClick={() => i18n.changeLanguage(lang)}
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition-colors ${isActive ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
               <div className="flex items-center p-0.5 rounded-full gap-0.5 border border-border bg-muted/60">
                 <button onClick={() => setMode('light')} className={`p-1 rounded-full transition-colors ${mode === 'light' ? 'bg-background shadow-sm text-amber-500' : 'text-muted-foreground hover:text-foreground'}`} title="Light"><Sun size={14} /></button>

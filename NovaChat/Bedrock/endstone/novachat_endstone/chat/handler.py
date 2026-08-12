@@ -77,7 +77,7 @@ class ChatHandler:
         self._pending_actions: Dict[str, str] = {}
 
         # i18n message provider
-        from novachat_endstone.i18n.messages import I18n
+        from novachat_endstone.i18n import I18n
         self._i18n = I18n()
 
         # Register packet handlers

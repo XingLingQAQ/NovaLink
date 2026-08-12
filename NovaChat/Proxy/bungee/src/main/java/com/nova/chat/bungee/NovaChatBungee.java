@@ -13,6 +13,11 @@ import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
 import net.md_5.bungee.api.plugin.Plugin;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -70,9 +75,20 @@ public class NovaChatBungee extends Plugin {
     public void onEnable() {
         instance = this;
         getLogger().info("NovaChat BungeeCord plugin initializing...");
-        
+
+        // Extract default lang/ bundles to plugins/NovaChat/lang/ (template for
+        // user edits / drop-in new languages). I18n reads external overrides on
+        // top of the classpath bundles (external wins per-key).
+        File langDir = new File(getDataFolder(), "lang");
+        I18n.setExternalLangDir(getDataFolder());
+        extractDefaultLang(langDir, "zh_CN");
+        extractDefaultLang(langDir, "en_US");
+
         // Load configuration
         loadConfiguration();
+
+        // Drop the cached bundles so a reload re-reads external overrides.
+        I18n.invalidate();
         
         // Initialize network client
         initializeNetworkClient();
@@ -104,6 +120,33 @@ public class NovaChatBungee extends Plugin {
     }
     
     /**
+     * Extracts a default lang bundle from the jar to {@code <langDir>/<locale>.properties}
+     * only when it does not already exist (so user customizations win). The
+     * classpath resource path is {@code lang/<locale>.properties}. Errors are
+     * logged but never fatal.
+     */
+    private void extractDefaultLang(File langDir, String locale) {
+        if (langDir == null || locale == null) {
+            return;
+        }
+        File target = new File(langDir, locale + ".properties");
+        if (target.isFile()) {
+            return;
+        }
+        String resourcePath = "lang/" + locale + ".properties";
+        try (InputStream in = getResourceAsStream(resourcePath)) {
+            if (in == null) {
+                return;
+            }
+            //noinspection ResultOfMethodCallIgnored
+            langDir.mkdirs();
+            Files.copy(in, target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            getLogger().warning("Failed to extract default lang bundle " + locale + ": " + e.getMessage());
+        }
+    }
+
+    /**
      * Loads or reloads the plugin configuration.
      */
     public void loadConfiguration() {
@@ -114,6 +157,8 @@ public class NovaChatBungee extends Plugin {
         // any player-facing text is rendered. Falls back to zh_CN (ROOT_LOCALE)
         // when the configured value is blank or unparseable.
         I18n.setDefaultLocale(LocaleResolver.parseOrDefault(config.getLocale(), LocaleResolver.ROOT_LOCALE));
+        // Re-read external lang overrides so edited/added lang/*.properties take effect.
+        I18n.invalidate();
 
         if (debugMode) {
             getLogger().info("[Debug] Configuration loaded successfully");

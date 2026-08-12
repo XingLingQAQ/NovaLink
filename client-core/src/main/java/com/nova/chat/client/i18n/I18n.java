@@ -1,8 +1,18 @@
 package com.nova.chat.client.i18n;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.text.MessageFormat;
+import java.util.Collections;
+import java.util.Enumeration;
 import java.util.Locale;
 import java.util.MissingResourceException;
+import java.util.PropertyResourceBundle;
 import java.util.ResourceBundle;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,12 +39,36 @@ import java.util.function.Supplier;
  * <p>For console / sender-agnostic calls (no player id), the configured
  * default locale is used directly.
  *
- * <p>Bundles are loaded from {@code messages_<lang>_<country>.properties} on
- * the classpath via a UTF-8 {@link ResourceBundle.Control} (see
- * {@link Utf8Control}). Java 9+ already loads {@code PropertyResourceBundle}
- * from an {@code InputStreamReader} as UTF-8, but the explicit control
- * guarantees correct behavior regardless of the default charset and keeps
- * the bundle cache under our control.
+ * <p>Bundles are loaded from {@code lang/<lang>_<country>.properties} on the
+ * classpath via a UTF-8 {@link ResourceBundle.Control} (see
+ * {@link Utf8Control}). The dotted base name {@code "lang.messages"} resolves to
+ * the classpath path {@code lang/messages_<locale>.properties} (Java treats
+ * {@code .} as {@code /} in bundle names), so all translation files live under
+ * one {@code lang/} package — adding a new language is just dropping one file.
+ * Java 9+ already loads {@code PropertyResourceBundle} from an
+ * {@code InputStreamReader} as UTF-8, but the explicit control guarantees
+ * correct behavior regardless of the default charset and keeps the bundle
+ * cache under our control.
+ *
+ * <h2>Adding a new language</h2>
+ * <ul>
+ *   <li><b>Classpath (built-in):</b> add
+ *       {@code lang/<locale>.properties} (e.g. {@code lang/fr_FR.properties})
+ *       to {@code client-core/src/main/resources/lang/}. It ships inside the
+ *       jar.</li>
+ *   <li><b>External (drop-in, no rebuild):</b> create
+ *       {@code <externalLangDir>/lang/<locale>.properties}
+ *       (e.g. {@code plugins/NovaChat/lang/fr_FR.properties}) where
+ *       {@code externalLangDir} is the directory registered at startup via
+ *       {@link #setExternalLangDir(File)}. The file is read at load time; no
+ *       restart beyond the first lookup is needed.</li>
+ * </ul>
+ * <p><b>Override semantics:</b> when an external file exists for a locale, its
+ * entries are merged on top of the classpath bundle for that locale — external
+ * values win per-key, so a user can override individual strings without
+ * forking the whole bundle. When a locale exists ONLY externally (no classpath
+ * bundle), it is loaded entirely from the external file — a brand-new language
+ * works via a single external file.
  *
  * <p>Color codes ({@code &e}, {@code §c}, …) stay <em>inside</em> the
  * property values; i18n swaps only natural-language text.
@@ -49,8 +83,13 @@ import java.util.function.Supplier;
  */
 public final class I18n {
 
-    /** Base name of the .properties bundles on the classpath. */
-    static final String BASE_NAME = "messages";
+    /**
+     * Base name of the .properties bundles on the classpath. The dotted form
+     * {@code "lang.messages"} makes {@link ResourceBundle#getBundle} resolve to
+     * classpath path {@code lang/messages_<locale>.properties} (the {@code .}
+     * is treated as a path separator).
+     */
+    static final String BASE_NAME = "lang.messages";
 
     private static final Logger LOG = new Logger();
 
@@ -65,6 +104,20 @@ public final class I18n {
 
     /** Configured default locale; volatile so reads from any thread see the latest set. */
     private static volatile Locale defaultLocale = FALLBACK_LOCALE;
+
+    /**
+     * External lang override directory (may be null). When set, files under
+     * {@code <dir>/lang/<locale>.properties} are merged on top of the classpath
+     * bundles (external entries win per-key) and brand-new locales can be
+     * loaded from external files alone. Volatile so the bundle loader sees the
+     * latest directory across threads.
+     *
+     * <p>Layout: the external dir is the plugin's data folder (e.g.
+     * {@code plugins/NovaChat/}); translation files go in a {@code lang/}
+     * subdirectory inside it, mirroring the classpath {@code lang/} package:
+     * {@code <externalLangDir>/lang/<locale>.properties}.
+     */
+    private static volatile File externalLangDir;
 
     private I18n() {
         // Utility class — no instances.
@@ -88,6 +141,52 @@ public final class I18n {
      */
     public static void setDefaultLocale(Locale locale) {
         defaultLocale = (locale != null) ? locale : FALLBACK_LOCALE;
+    }
+
+    // ============================ external lang dir ============================
+
+    /**
+     * Registers an external lang override directory. When set, translation
+     * files under {@code <dir>/lang/<locale>.properties} are merged on top of
+     * the classpath bundles at load time — external entries win per-key for an
+     * existing locale, and a locale present only externally is loaded entirely
+     * from the external file (so a brand-new language works via one drop-in
+     * file).
+     *
+     * <p>Pass {@code null} to clear the override (reverts to classpath-only).
+     * The directory does NOT need to exist; a non-existent or empty dir is
+     * treated as "no external overrides". Changing the dir does NOT clear the
+     * bundle cache — call {@link #invalidate()} if previously-loaded bundles
+     * should be discarded (e.g. a reload).
+     *
+     * @param dir the external lang directory (plugin data folder), or null to clear
+     */
+    public static void setExternalLangDir(File dir) {
+        externalLangDir = dir;
+    }
+
+    /**
+     * Convenience overload accepting a {@link Path}.
+     *
+     * @param dir the external lang directory, or null to clear
+     */
+    public static void setExternalLangDir(Path dir) {
+        externalLangDir = (dir != null) ? dir.toFile() : null;
+    }
+
+    /**
+     * @return the registered external lang override dir, or null if none set
+     */
+    public static File getExternalLangDir() {
+        return externalLangDir;
+    }
+
+    /**
+     * Clears the bundle cache so subsequent {@link #tr} calls reload from the
+     * current classpath + external dir. Intended for hot-reload flows.
+     */
+    public static void invalidate() {
+        BUNDLES.clear();
     }
 
     // ============================ player locales ============================
@@ -234,15 +333,59 @@ public final class I18n {
     }
 
     private static ResourceBundle loadBundle(Locale locale) {
+        // 1. Classpath bundle (lang/messages_<locale>.properties via Utf8Control).
+        ResourceBundle classpathBundle = null;
         try {
-            return ResourceBundle.getBundle(BASE_NAME, locale, new Utf8Control());
+            classpathBundle = ResourceBundle.getBundle(BASE_NAME, locale, new Utf8Control());
         } catch (MissingResourceException e) {
-            if (!locale.equals(FALLBACK_LOCALE)) {
-                return bundleFor(FALLBACK_LOCALE);
-            }
-            // No fallback bundle on the classpath at all — return an empty
-            // bundle so every key echoes itself rather than throwing.
-            return new EmptyBundle();
+            // No classpath bundle for this locale — external-only may still work.
+        }
+
+        // 2. External override file: <externalLangDir>/lang/<locale>.properties.
+        ResourceBundle externalBundle = loadExternalBundle(locale);
+
+        if (externalBundle != null) {
+            // External wins per-key: merge external on top of classpath (if any).
+            // When there is no classpath bundle, the external file alone forms the
+            // bundle — a brand-new language works via a single drop-in file.
+            return new MergedBundle(
+                    classpathBundle != null ? classpathBundle : new EmptyBundle(),
+                    externalBundle);
+        }
+
+        if (classpathBundle != null) {
+            return classpathBundle;
+        }
+
+        // No bundle at all for this locale — fall back to zh_CN, then EmptyBundle.
+        if (!locale.equals(FALLBACK_LOCALE)) {
+            return bundleFor(FALLBACK_LOCALE);
+        }
+        return new EmptyBundle();
+    }
+
+    /**
+     * Loads an external override bundle for the locale from
+     * {@code <externalLangDir>/lang/<locale>.properties} (UTF-8). Returns null
+     * when the external dir is unset, does not exist, or has no file for the
+     * locale.
+     */
+    private static ResourceBundle loadExternalBundle(Locale locale) {
+        File dir = externalLangDir;
+        if (dir == null) {
+            return null;
+        }
+        String fileName = "lang/" + locale.toString() + ".properties";
+        File file = new File(dir, fileName);
+        if (!file.isFile()) {
+            return null;
+        }
+        try (InputStream in = java.nio.file.Files.newInputStream(file.toPath());
+             Reader reader = new InputStreamReader(in, StandardCharsets.UTF_8)) {
+            return new PropertyResourceBundle(reader);
+        } catch (IOException e) {
+            LOG.warn("Failed to load external lang file " + file + ": " + e.getMessage());
+            return null;
         }
     }
 
@@ -273,6 +416,58 @@ public final class I18n {
         @Override
         public java.util.Enumeration<String> getKeys() {
             return java.util.Collections.emptyEnumeration();
+        }
+    }
+
+    /**
+     * Bundle that layers an external override bundle on top of a base bundle
+     * (the classpath bundle). External entries win per-key; keys absent from
+     * the external file delegate to the base. This is what makes user
+     * customizations override built-in strings without forking the bundle.
+     */
+    private static final class MergedBundle extends ResourceBundle {
+        private final ResourceBundle base;
+        private final ResourceBundle overrides;
+
+        MergedBundle(ResourceBundle base, ResourceBundle overrides) {
+            this.base = base;
+            this.overrides = overrides;
+        }
+
+        @Override
+        protected Object handleGetObject(String key) {
+            // External overrides win per-key. ResourceBundle.handleGetObject is
+            // protected, so we cannot call it on another bundle instance; use the
+            // public getString-with-fallback path instead (it throws on a miss,
+            // which we treat as "key not in that bundle").
+            if (overrides != null && overrides.containsKey(key)) {
+                try {
+                    return overrides.getString(key);
+                } catch (MissingResourceException ignored) {
+                    // containsKey said yes but getString threw (parent chain miss);
+                    // fall through to base.
+                }
+            }
+            if (base.containsKey(key)) {
+                try {
+                    return base.getString(key);
+                } catch (MissingResourceException ignored) {
+                    // fall through to null (resolvePattern will handle the miss)
+                }
+            }
+            return null;
+        }
+
+        @Override
+        public Enumeration<String> getKeys() {
+            // Union of both bundles' keys; base alone is insufficient because
+            // external-only keys must also be enumerable.
+            java.util.Set<String> keys = new java.util.HashSet<>();
+            if (overrides != null) {
+                keys.addAll(Collections.list(overrides.getKeys()));
+            }
+            keys.addAll(Collections.list(base.getKeys()));
+            return Collections.enumeration(keys);
         }
     }
 

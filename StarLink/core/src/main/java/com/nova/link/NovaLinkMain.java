@@ -118,6 +118,15 @@ public class NovaLinkMain {
         Path configPath = resolveConfigPath(args);
         ConfigManager configManager = new ConfigManager(configPath);
 
+        // External lang override dir: the folder containing novalink.yml. Users
+        // drop <workdir>/lang/<locale>.properties to add/override languages
+        // without rebuilding the jar. I18n merges external on top of classpath
+        // bundles (external wins per-key).
+        java.io.File workDir = configPath.toAbsolutePath().getParent() != null
+                ? configPath.toAbsolutePath().getParent().toFile()
+                : new java.io.File(".").getAbsoluteFile();
+        I18n.setExternalLangDir(workDir);
+
         NovaLinkConfig config;
         try {
             config = configManager.load();

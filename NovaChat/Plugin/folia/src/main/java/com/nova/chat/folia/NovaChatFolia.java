@@ -16,6 +16,11 @@ import com.nova.chat.folia.welcome.WelcomeListener;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.logging.Level;
 
 /**
@@ -68,16 +73,26 @@ public class NovaChatFolia extends JavaPlugin {
     @Override
     public void onEnable() {
         instance = this;
-        
+
         // Save default config if not exists
         saveDefaultConfig();
-        
+
+        // Extract default lang/ bundles to plugins/NovaChat/lang/ (template for
+        // user edits / drop-in new languages). I18n reads external overrides on
+        // top of the classpath bundles (external wins per-key).
+        File langDir = new File(getDataFolder(), "lang");
+        I18n.setExternalLangDir(getDataFolder());
+        extractDefaultLang(langDir, "zh_CN");
+        extractDefaultLang(langDir, "en_US");
+
         // Load configuration
         loadConfiguration();
 
         // Initialize the shared i18n default locale from chat.locale (zh_CN fallback).
         I18n.setDefaultLocale(LocaleResolver.parseOrDefault(
                 novaChatConfig.getLocale(), LocaleResolver.ROOT_LOCALE));
+        // Drop the cached bundles so a reload re-reads external overrides.
+        I18n.invalidate();
 
         // Initialize message helper
         messageHelper = new MessageHelper(this);
@@ -120,6 +135,32 @@ public class NovaChatFolia extends JavaPlugin {
         getLogger().info("NovaChat Folia plugin disabled!");
     }
     
+    /**
+     * Extracts a default lang bundle from the jar to {@code <langDir>/<locale>.properties}
+     * only when it does not already exist (so user customizations win). The
+     * classpath resource path is {@code lang/<locale>.properties}. Errors are
+     * logged but never fatal.
+     */
+    private void extractDefaultLang(File langDir, String locale) {
+        if (langDir == null || locale == null) {
+            return;
+        }
+        File target = new File(langDir, locale + ".properties");
+        if (target.isFile()) {
+            return;
+        }
+        String resourcePath = "lang/" + locale + ".properties";
+        try (InputStream in = getResource(resourcePath)) {
+            if (in == null) {
+                return;
+            }
+            langDir.mkdirs();
+            Files.copy(in, target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            getLogger().log(Level.WARNING, "Failed to extract default lang bundle " + locale, e);
+        }
+    }
+
     /**
      * Loads or reloads the plugin configuration.
      */
@@ -239,6 +280,8 @@ public class NovaChatFolia extends JavaPlugin {
         // Re-apply the configured default locale so a /nc reload picks up locale changes.
         I18n.setDefaultLocale(LocaleResolver.parseOrDefault(
                 novaChatConfig.getLocale(), LocaleResolver.ROOT_LOCALE));
+        // Re-read external lang overrides so edited/added lang/*.properties take effect.
+        I18n.invalidate();
 
         // Reload chat interceptor settings
         if (chatInterceptor != null) {

@@ -109,6 +109,11 @@ public class NovaChatSponge {
         // Player-specific locales are registered later on join (ChatListener).
         I18n.setDefaultLocale(
                 LocaleResolver.parseOrDefault(novaChatConfig.getLocale(), LocaleResolver.ROOT_LOCALE));
+        // TODO(i18n): wire I18n.setExternalLangDir(configDir) here and extract
+        // default lang/{zh_CN,en_US}.properties bundles into configDir/lang/ so
+        // users can drop in / override languages without a rebuild. The bukkit/
+        // folia/velocity/bungee platforms do this in onEnable; follow the same
+        // pattern (see NovaChatBukkit#extractDefaultLang).
     }
     
     @Listener

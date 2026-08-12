@@ -22,7 +22,11 @@ import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.ProxyServer;
 import org.slf4j.Logger;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -98,9 +102,19 @@ public class NovaChatVelocity {
     @Subscribe
     public void onProxyInitialize(ProxyInitializeEvent event) {
         logger.info("NovaChat Velocity plugin initializing...");
-        
+
+        // Extract default lang/ bundles to <dataDirectory>/lang/ (template for
+        // user edits / drop-in new languages). I18n reads external overrides on
+        // top of the classpath bundles (external wins per-key).
+        I18n.setExternalLangDir(dataDirectory);
+        extractDefaultLang("zh_CN");
+        extractDefaultLang("en_US");
+
         // Load configuration
         loadConfiguration();
+
+        // Drop the cached bundles so a reload re-reads external overrides.
+        I18n.invalidate();
         
         // Initialize network client
         initializeNetworkClient();
@@ -132,6 +146,33 @@ public class NovaChatVelocity {
     }
     
     /**
+     * Extracts a default lang bundle from the jar to
+     * {@code <dataDirectory>/lang/<locale>.properties} only when it does not
+     * already exist (so user customizations win). The classpath resource path
+     * is {@code lang/<locale>.properties}. Errors are logged but never fatal.
+     */
+    private void extractDefaultLang(String locale) {
+        if (locale == null) {
+            return;
+        }
+        Path langDir = dataDirectory.resolve("lang");
+        Path target = langDir.resolve(locale + ".properties");
+        if (Files.isRegularFile(target)) {
+            return;
+        }
+        String resourcePath = "/lang/" + locale + ".properties";
+        try (InputStream in = NovaChatVelocity.class.getResourceAsStream(resourcePath)) {
+            if (in == null) {
+                return;
+            }
+            Files.createDirectories(langDir);
+            Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            logger.warn("Failed to extract default lang bundle " + locale, e);
+        }
+    }
+
+    /**
      * Loads or reloads the plugin configuration.
      */
     public void loadConfiguration() {
@@ -142,6 +183,8 @@ public class NovaChatVelocity {
         // any player-facing text is rendered. Falls back to zh_CN (ROOT_LOCALE)
         // when the configured value is blank or unparseable.
         I18n.setDefaultLocale(LocaleResolver.parseOrDefault(config.getLocale(), LocaleResolver.ROOT_LOCALE));
+        // Re-read external lang overrides so edited/added lang/*.properties take effect.
+        I18n.invalidate();
 
         if (debugMode) {
             logger.info("[Debug] Configuration loaded successfully");

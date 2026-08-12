@@ -18,6 +18,11 @@ import com.nova.chat.common.protocol.PlatformType;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.logging.Level;
 
 /**
@@ -79,16 +84,27 @@ public class NovaChatBukkit extends JavaPlugin {
     @Override
     public void onEnable() {
         instance = this;
-        
+
         // Save default config if not exists
         saveDefaultConfig();
-        
+
+        // Extract default lang/ bundles to plugins/NovaChat/lang/ so users have
+        // a template to copy/edit and can drop in new languages without a rebuild.
+        // I18n reads <externalLangDir>/lang/<locale>.properties on top of the
+        // classpath bundles (external overrides win per-key).
+        File langDir = new File(getDataFolder(), "lang");
+        I18n.setExternalLangDir(getDataFolder());
+        extractDefaultLang(langDir, "zh_CN");
+        extractDefaultLang(langDir, "en_US");
+
         // Load configuration
         loadConfiguration();
 
         // Initialize the shared i18n default locale from chat.locale (zh_CN fallback).
         I18n.setDefaultLocale(LocaleResolver.parseOrDefault(
                 novaChatConfig.getLocale(), LocaleResolver.ROOT_LOCALE));
+        // Drop the cached bundles so a reload re-reads external overrides.
+        I18n.invalidate();
 
         // Initialize message helper and error handler
         initializeMessageHandlers();
@@ -129,6 +145,38 @@ public class NovaChatBukkit extends JavaPlugin {
         getLogger().info("NovaChat Bukkit plugin disabled!");
     }
     
+    /**
+     * Extracts a default lang bundle from the jar to {@code <langDir>/<locale>.properties}
+     * only when it does not already exist (so user customizations win). The
+     * classpath resource path is {@code lang/<locale>.properties} (the new
+     * lang/-directory layout). Errors are logged but never fatal — i18n still
+     * reads the classpath copy when the external file is absent.
+     *
+     * @param langDir the plugins/NovaChat/lang/ target directory
+     * @param locale the locale code (e.g. {@code "zh_CN"})
+     */
+    private void extractDefaultLang(File langDir, String locale) {
+        if (langDir == null || locale == null) {
+            return;
+        }
+        File target = new File(langDir, locale + ".properties");
+        if (target.isFile()) {
+            // Preserve user customizations.
+            return;
+        }
+        String resourcePath = "lang/" + locale + ".properties";
+        try (InputStream in = getResource(resourcePath)) {
+            if (in == null) {
+                // Resource not packaged in this jar — skip silently.
+                return;
+            }
+            langDir.mkdirs();
+            Files.copy(in, target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            getLogger().log(Level.WARNING, "Failed to extract default lang bundle " + locale, e);
+        }
+    }
+
     /**
      * Loads or reloads the plugin configuration.
      */
@@ -263,6 +311,8 @@ public class NovaChatBukkit extends JavaPlugin {
         // Re-apply the configured default locale so a /nc reload picks up locale changes.
         I18n.setDefaultLocale(LocaleResolver.parseOrDefault(
                 novaChatConfig.getLocale(), LocaleResolver.ROOT_LOCALE));
+        // Re-read external lang overrides so edited/added lang/*.properties take effect.
+        I18n.invalidate();
 
         // Reload chat interceptor settings
         if (chatInterceptor != null) {

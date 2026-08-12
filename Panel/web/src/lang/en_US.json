@@ -389,6 +389,7 @@
     "command_label": "Command"
   },
   "language": {
+    "self": "EN",
     "zh": "中文",
     "en": "EN",
     "switch_title": "Switch language"

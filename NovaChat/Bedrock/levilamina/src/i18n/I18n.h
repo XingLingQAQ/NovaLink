@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -9,10 +10,16 @@ namespace novachat::i18n {
 /**
  * I18n message lookup for NovaChat-LeviLamina.
  *
- * Mirrors the Java client-core message bundles
- * (messages_zh_CN.properties / messages_en_US.properties). Keys and color
- * codes (&e, §c) stay inside the values; only natural language swaps
- * between locales.
+ * Translations live as external ``lang/<locale>.json`` files (one file per
+ * locale, keyed by filename stem). At construction the singleton scans the
+ * lang directory and loads every ``*.json`` file it finds, so adding a new
+ * language is just dropping a new ``lang/<locale>.json`` next to the
+ * built module -- no code change required.
+ *
+ * Keys and color codes (&e, §c) stay inside the values; only natural language
+ * swaps between locales. Keys mirror the Java client-core message bundles
+ * (messages_zh_CN.properties / messages_en_US.properties) for cross-platform
+ * parity.
  *
  * Fallback chain: requested locale -> zh_CN (hard default) -> key itself,
  * matching the Java Utf8Control fallback behaviour.
@@ -36,9 +43,16 @@ public:
 private:
     I18n();
 
-    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> mBundles;
+    /** Load every <locale>.json from the first candidate dir that exists. */
+    void loadLangDir(const std::filesystem::path& dir);
+
+    /** Parse a flat JSON object of string->string into a bundle. */
+    static bool parseLangJson(const std::string& text,
+                              std::unordered_map<std::string, std::string>& out);
 
     static std::string format(const std::string& template_, const std::vector<std::string>& args);
+
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> mBundles;
 };
 
 } // namespace novachat::i18n

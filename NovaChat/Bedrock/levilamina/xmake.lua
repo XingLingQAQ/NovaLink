@@ -81,11 +81,14 @@ target("novachat-levilamina")
         add_syslinks("ws2_32", "mswsock", "advapi32")
     end
 
-    -- After build: copy manifest (fallback modpacker; harmless if modpacker
-    -- already packed it -- os.cp just overwrites with the same file).
+    -- After build: copy manifest + lang resources (fallback modpacker; harmless
+    -- if modpacker already packed them -- os.cp just overwrites with the same
+    -- files). The lang/ directory ships next to the .dll so the I18n loader
+    -- (which scans <module-dir>/lang/*.json) finds translations at runtime.
     after_build(function (target)
         local targetdir = target:targetdir()
         os.cp("manifest.json", targetdir)
+        os.cp("src/i18n/lang", targetdir .. "/lang")
     end)
 target_end()
 
@@ -129,4 +132,13 @@ target("novachat-levilamina-tests")
         add_defines("NOMINMAX", "UNICODE", "_UNICODE", "WIN32", "_WIN32", "_WINDOWS")
         add_syslinks("ws2_32", "advapi32")
     end
+
+    -- Copy the lang/ resource directory next to the test binary so the I18n
+    -- loader (which scans <exe-dir>/lang/*.json) finds the translations
+    -- regardless of the current working directory. Mirrors how the real BDS
+    -- plugin ships lang/ next to its .dll at runtime.
+    after_build(function (target)
+        local targetdir = target:targetdir()
+        os.cp("src/i18n/lang", targetdir .. "/lang")
+    end)
 target_end()

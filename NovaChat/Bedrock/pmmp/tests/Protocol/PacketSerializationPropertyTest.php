@@ -466,4 +466,43 @@ class PacketSerializationPropertyTest extends TestCase {
         $this->assertStringContainsString("kicked", strtolower($i18n->get("chat.notice.kick_title", "en_US")));
         $this->assertStringContainsString("muted", strtolower($i18n->get("chat.notice.mute_title", "en_US")));
     }
+
+    /**
+     * I18n loads a brand-new locale (fr_FR) from an external lang file dropped
+     * into resources/lang/, with {0} placeholder substitution and fallback to
+     * zh_CN for keys absent from the external file.
+     *
+     * The I18n class has no constructor param or setter for the lang dir, so
+     * this test writes a fr_FR.json into the on-disk resources/lang/ directory
+     * the constructor scans, then deletes it in a finally block. The file is
+     * namespaced with a test marker so a crash never leaves a stray locale.
+     */
+    public function testI18nExternalLocaleFileLoading(): void {
+        // __DIR__ = .../pmmp/tests/Protocol -> up 2 = .../pmmp (plugin root).
+        $langDir = dirname(__DIR__, 2) . "/resources/lang";
+        $frFile = $langDir . "/fr_FR.test.json";
+        // Write a fr_FR locale file (the .json stem becomes the locale key).
+        if (!is_dir($langDir)) {
+            @mkdir($langDir, 0777, true);
+        }
+        $data = [
+            "chat.test.french" => "Bonjour {0}",
+        ];
+        try {
+            file_put_contents($frFile, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+            // Re-instantiate so the new file is scanned at construction.
+            $i18n = new I18n();
+            // The external locale resolves from the dropped file.
+            $msg = $i18n->get("chat.test.french", "fr_FR.test", ["Monde"]);
+            $this->assertStringContainsString("Bonjour", $msg);
+            $this->assertStringContainsString("Monde", $msg);
+            // A key absent from fr_FR but present in zh_CN falls back.
+            $fallback = $i18n->get("chat.toggle.on", "fr_FR.test");
+            $this->assertStringContainsString("聊天已开启", $fallback);
+        } finally {
+            if (file_exists($frFile)) {
+                @unlink($frFile);
+            }
+        }
+    }
 }

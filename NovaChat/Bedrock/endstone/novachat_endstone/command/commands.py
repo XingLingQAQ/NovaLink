@@ -123,7 +123,7 @@ class NovaChatCommand:
 
     def _i18n_send(self, sender: Any, key: str, *args) -> None:
         """Send an i18n-localized message to a command sender."""
-        from novachat_endstone.i18n.messages import I18n
+        from novachat_endstone.i18n import I18n
         locale = self._get_locale(sender)
         i18n = I18n()
         self._send_message(sender, i18n.get(key, locale, *args))
