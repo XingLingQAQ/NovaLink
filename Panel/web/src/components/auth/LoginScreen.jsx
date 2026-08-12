@@ -9,7 +9,7 @@
  */
 
 import React, { useState } from 'react';
-import { Loader2, Zap } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import authService from '../../services/auth';
 import { getApiBaseUrl, getWsUrl, setConnectionUrls } from '../../services/api';
@@ -52,9 +52,7 @@ export default function LoginScreen({ onLoginSuccess }) {
       {/* Header */}
       <header className="mx-auto flex h-16 w-full max-w-[960px] items-center justify-between px-5 sm:px-8 lg:px-0">
         <span className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <Zap size={16} />
-          </span>
+          <img src="/novalink-logo.svg" alt="NovaLink" className="size-7 shrink-0 object-contain" />
           {t('appName')}
         </span>
       </header>

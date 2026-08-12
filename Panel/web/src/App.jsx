@@ -16,7 +16,6 @@ import {
   ChevronLeft,
   ChevronRight,
   RefreshCw,
-  Zap,
   Loader2,
   AlertCircle,
   Terminal,
@@ -866,9 +865,7 @@ function Dashboard({ currentUser, onLogout }) {
         <aside className={`fixed lg:relative z-50 h-full flex flex-col transition-all duration-300 bg-sidebar text-sidebar-foreground border-r border-sidebar-border ${isMobile ? (sidebarOpen ? 'translate-x-0 w-60' : '-translate-x-full w-60') : (sidebarOpen ? 'w-60 translate-x-0' : 'w-16 translate-x-0')}`}>
           <div className="flex-1 flex flex-col p-3 overflow-hidden">
             <div className={`flex items-center mb-6 h-10 shrink-0 transition-all duration-300 ${!isMobile && !sidebarOpen ? 'justify-center px-0' : 'gap-2 px-2'}`}>
-              <div className="flex size-8 items-center justify-center shrink-0 rounded-md bg-primary text-primary-foreground">
-                <Zap size={16} />
-              </div>
+              <img src="/novalink-logo.svg" alt="NovaLink" className="size-8 shrink-0 object-contain" />
               <div className={`overflow-hidden whitespace-nowrap transition-all duration-300 ${!isMobile && !sidebarOpen ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>
                 <h1 className="text-sm font-semibold text-foreground">NovaPanel</h1>
               </div>
