@@ -1,5 +1,11 @@
 plugins {
     id 'java'
+    // Shadow/fat-jar plugin (GradleUp fork). The legacy com.github.johnrengelman.shadow
+    // 8.1.1 is INCOMPATIBLE with Gradle 9.x -- it fails with
+    // `No such property: mode for StubbedFileCopyDetails` during the jar transform.
+    // The GradleUp fork fixes this and publishes 8.3.x+ for Gradle 9 compatibility.
+    // Verified working: 8.3.6 on Gradle 9.6.1 (JDK 21 toolchain).
+    id 'com.gradleup.shadow' version '8.3.6'
 }
 
 java {
@@ -76,8 +82,40 @@ tasks.named('test') {
     }
 }
 
-jar {
+// Fat-jar (shadow) configuration.
+//
+// Produces TWO artifacts:
+//   - `jar`          : thin jar, classifier ''        -> NovaLink-core-1.0.0-SNAPSHOT.jar
+//   - `shadowJar`    : fat  jar, classifier 'all'      -> NovaLink-core-1.0.0-SNAPSHOT-all.jar
+//
+// We keep the thin jar as the default published artifact (classifier '') so:
+//   * existing CI / downstream Gradle project dependencies (`implementation project(':StarLink:core')`)
+//     keep working unchanged -- they consume the thin jar and resolve transitive
+//     deps via the normal POM/variant metadata.
+//   * `java -jar` users run the fat jar explicitly: `java -jar StarLink-core/build/libs/*-all.jar`.
+//
+// The fat jar bundles every runtime dependency (netty, HikariCP, mysql/postgres/sqlite
+// drivers, jedis, snakeyaml, gson, slf4j+logback, guava, jjwt, jline-reader, plus the
+// :NovaChat:common project dep) so `java -jar` no longer throws NoClassDefFoundError.
+// Main-Class is preserved on both jars.
+shadowJar {
+    // mergeServiceFiles() prevents ServiceLoader breakage (slf4j, jline, jdbc
+    // drivers register via META-INF/services/* -- without merging only one
+    // fragment survives and runtime SPI lookups silently lose providers).
+    mergeServiceFiles()
     manifest {
         attributes 'Main-Class': 'com.nova.link.NovaLinkMain'
     }
+    // 'all' keeps the thin jar as the default lib artifact; the fat jar is
+    // the explicit `-all` one. This avoids surprising downstream consumers
+    // that depend on :StarLink:core with a giant shaded blob.
+    archiveClassifier = 'all'
+}
+
+// Make `shadowJar` part of the normal `assemble`/`build` output so it is
+// produced by `./gradlew build` without an extra explicit task invocation.
+// (It is NOT wired into `check`/`test` -- building the fat jar is cheap but
+// there's no reason to rebuild it on every test run.)
+tasks.named('assemble') {
+    dependsOn tasks.named('shadowJar')
 }

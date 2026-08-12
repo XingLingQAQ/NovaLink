@@ -1,14 +1,16 @@
 {
   "name": "novachat-e2e-bot",
   "version": "1.0.0",
-  "description": "NovaChat real-server E2E Layer-1 bot (mineflayer, offline auth).",
+  "description": "NovaChat real-server E2E Layer-1 bot. Java editions use mineflayer (run-e2e.js); Bedrock editions use bedrock-protocol (run-e2e-bedrock.js).",
   "main": "run-e2e.js",
   "scripts": {
-    "start": "node run-e2e.js"
+    "start": "node run-e2e.js",
+    "start:bedrock": "node run-e2e-bedrock.js"
   },
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
+    "bedrock-protocol": "3.58.1",
     "mineflayer": "^4.37.1"
   }
 }

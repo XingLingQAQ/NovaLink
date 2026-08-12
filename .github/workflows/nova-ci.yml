@@ -304,6 +304,28 @@ jobs:
             '-Porg.gradle.java.installations.paths=' `
             '-Dorg.gradle.java.installations.paths='
 
+      # ---------------------------------------------------------------------
+      # Upload the StarLink/core fat (shadow) jar as a CI artifact. This is
+      # "e2e 的服务器端" -- the runnable NovaLink backend. StarLink/core's
+      # build.gradle applies com.gradleup.shadow; `./gradlew build` runs
+      # shadowJar which produces core-<ver>-all.jar under
+      # StarLink/core/build/libs/. The fat jar is self-contained (runnable via
+      # `java -jar <fat-jar> novalink.yml`) so downstream E2E/ops workflows can
+      # fetch a known-good backend without rebuilding.
+      #
+      # if-no-files-found: warn (NOT error) -- if shadowJar hasn't produced the
+      # fat jar yet (e.g. shadow task skipped on a partial build), the step
+      # warns but does NOT redden the main build. The normal core-<ver>.jar
+      # (non-fat) is NOT uploaded here -- only the -all.jar is the runnable one.
+      # ---------------------------------------------------------------------
+      - name: Upload novalink-core fat jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: novalink-core-fat-jar-${{ github.run_id }}
+          path: StarLink/core/build/libs/*-all.jar
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload build reports on failure
         if: failure()
         uses: actions/upload-artifact@v4

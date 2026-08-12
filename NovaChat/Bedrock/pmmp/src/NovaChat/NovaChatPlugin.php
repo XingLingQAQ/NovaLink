@@ -51,7 +51,7 @@ class NovaChatPlugin extends PluginBase {
         self::$instance = $this;
         
         // Save default config if not exists
-        $this->saveDefaultConfig();
+        $this->savePluginDefaultConfig();
         
         // Initialize configuration manager
         $this->configManager = new ConfigManager($this);
@@ -99,8 +99,15 @@ class NovaChatPlugin extends PluginBase {
     
     /**
      * Saves the default configuration file if it doesn't exist.
+     *
+     * Renamed from saveDefaultConfig() because PluginBase::saveDefaultConfig()
+     * is declared public in pocketmine\plugin\PluginBase; a private override in
+     * a subclass narrows visibility, which PHP rejects as a fatal error at
+     * class load time ("Access level to NovaChat\NovaChatPlugin::saveDefaultConfig()
+     * must be public"). This only surfaces on a REAL PocketMine-MP server (the
+     * unit tests never load the PocketMine runtime), found by pmmp E2E 2026-08-11.
      */
-    private function saveDefaultConfig(): void {
+    private function savePluginDefaultConfig(): void {
         $this->saveResource("config.yml", false);
     }
     
@@ -123,10 +130,35 @@ class NovaChatPlugin extends PluginBase {
     
     /**
      * Registers plugin commands.
+     *
+     * PocketMine's PluginManager::parseYamlCommands pre-registers a PluginCommand
+     * for every entry under `commands:` in plugin.yml (here `novachat` with
+     * alias `nc`). That descriptor PluginCommand OWNS the "novachat"/"nc"
+     * command slots. A plain `$commandMap->register("novachat", new ...)` here
+     * SILENTLY returns false (no log, no exception) because the slot is already
+     * taken -- so every `/nc <sub>` echoed the plugin.yml `usage:` string
+     * ("Usage: /novachat <subcommand> [args]") instead of dispatching.
+     *
+     * Fix (mirrors the nukkit/pnx registerCommands fix,
+     * real-e2e-product-findings-2026-08 Finding B2): look up the descriptor's
+     * pre-registered PluginCommand via getCommand() and call setExecutor() on
+     * it. NovaChatCommand implements CommandExecutor, so PMMP dispatches
+     * /novachat (and /nc alias) by calling PluginCommand::execute() which
+     * delegates to NovaChatCommand::onCommand() -> execute() (the full
+     * subcommand match dispatch).
      */
     private function registerCommands(): void {
-        $commandMap = $this->getServer()->getCommandMap();
-        $commandMap->register("novachat", new NovaChatCommand($this));
+        $commandHandler = new NovaChatCommand($this);
+        $preRegistered = $this->getCommand("novachat");
+        if ($preRegistered !== null) {
+            // Attach our executor to the descriptor-pre-registered PluginCommand
+            // so /novachat + /nc dispatch through onCommand().
+            $preRegistered->setExecutor($commandHandler);
+        } else {
+            // Fallback: no descriptor command (plugin.yml changed to remove it).
+            // Register a plain command so /novachat still works.
+            $this->getServer()->getCommandMap()->register("novachat", $commandHandler);
+        }
     }
     
     /**

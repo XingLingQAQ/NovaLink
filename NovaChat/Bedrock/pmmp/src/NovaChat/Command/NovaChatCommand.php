@@ -8,6 +8,7 @@ use NovaChat\Chat\MessageRenderer;
 use NovaChat\NovaChatPlugin;
 use NovaChat\Protocol\ChannelActionPacket;
 use pocketmine\command\Command;
+use pocketmine\command\CommandExecutor;
 use pocketmine\command\CommandSender;
 use pocketmine\player\Player;
 use pocketmine\plugin\PluginOwned;
@@ -33,7 +34,7 @@ use pocketmine\utils\TextFormat;
  * - reload: Reload configuration (admin)
  * - debug: Toggle debug mode (admin)
  */
-class NovaChatCommand extends Command implements PluginOwned {
+class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
     
     /** @var NovaChatPlugin Plugin instance */
     private NovaChatPlugin $plugin;
@@ -96,6 +97,38 @@ class NovaChatCommand extends Command implements PluginOwned {
             "status" => $this->handleStatus($sender),
             default => $this->handleUnknown($sender, $subCommand),
         };
+    }
+
+    /**
+     * CommandExecutor bridge for the descriptor-pre-registered PluginCommand.
+     *
+     * PocketMine's PluginManager::parseYamlCommands pre-registers a PluginCommand
+     * for every entry under `commands:` in plugin.yml (here: `novachat` with
+     * alias `nc`). That pre-registered PluginCommand OWNS the "novachat"/"nc"
+     * command slots. registerCommands() in NovaChatPlugin used to call
+     * `$commandMap->register("novachat", new NovaChatCommand($this))`, which
+     * SILENTLY returned false (no log, no exception) because the alias slot was
+     * already taken by the descriptor's PluginCommand. The pre-registered
+     * PluginCommand had no executor, so its execute() returned false and PMMP
+     * echoed the plugin.yml `usage:` string ("Usage: /novachat <subcommand>
+     * [args]") instead of dispatching -- every `/nc help|join|toggle|...` from
+     * the E2E bot got the usage echo, never the real handler.
+     *
+     * The fix (mirrors the nukkit/pnx registerCommands fix, see
+     * real-e2e-product-findings-2026-08 Finding B2): instead of register()-ing
+     * a new command, NovaChatPlugin::registerCommands() now looks up the
+     * descriptor's pre-registered PluginCommand via getCommand("novachat") and
+     * calls setExecutor($this NovaChatCommand). PocketMine then dispatches
+     * /novachat (and /nc alias) by calling PluginCommand::execute(), which
+     * delegates to this onCommand() (the CommandExecutor contract).
+     *
+     * onCommand bridges to the existing execute() (which has the full subcommand
+     * match dispatch). Returning false from onCommand makes PMMP show the
+     * usage, so we return true for "handled" (even unknown subcommands are
+     * handled via handleUnknown, which sends its own message).
+     */
+    public function onCommand(CommandSender $sender, Command $command, string $label, array $args): bool {
+        return $this->execute($sender, $label, $args);
     }
     
     /**

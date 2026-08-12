@@ -1,27 +1,49 @@
-# Real-server E2E CI for NovaChat.
+# NovaLink real-server E2E CI -- OPT-IN.
 #
 # This workflow is OPT-IN: it only runs on manual dispatch (workflow_dispatch)
-# or nightly schedule. It never runs on push/PR because E2E depends on external
-# server downloads (Purpur, etc.) whose availability is flaky and would
-# intermittently redden PRs.
+# or nightly schedule. It NEVER runs on push/PR, because E2E depends on external
+# server downloads (Purpur, PaperMC, Cloudburst maven, pmmp, minecraft.net BDS)
+# whose availability is flaky and would intermittently redden PRs. The main
+# build+test CI lives in nova-ci.yml.
 #
-# Platform coverage:
-#   bukkit   -- REQUIRED, fully implemented (run-bukkit-e2e.ps1, L1 complete).
-#   folia, velocity, bungee, nukkit, pnx, sponge -- continue-on-error TODO stubs
-#   (run-e2e-orchestrator.ps1 dispatches them as "not yet ported" no-ops).
+# What it does:
+#   1. Restores the committed e2e/ harness (scripts + versions.lock.ps1).
+#   2. Restores the server-binary cache keyed on versions.lock.ps1 (so a lock
+#      bump invalidates and forces a fresh verified download).
+#   3. Sets up EVERY toolchain the E2E matrix can reach: JDK 17 (sponge) +
+#      JDK 21 (most platforms) + JDK 25 (velocity toolchain) + Node (mineflayer
+#      + bedrock-protocol bots) + PHP (pmmp) + Python (endstone) + MSVC +
+#      xmake (levilamina dll build).
+#   4. Runs `./gradlew realE2E -PenableRealE2E=true` which dispatches to
+#      e2e/bin/run-e2e-orchestrator.ps1 for the requested platform subset.
+#   5. On failure, uploads e2e artifacts (logs, results.json, bot-results.json)
+#      for post-mortem.
 #
-# Runner: windows-2025 (E2E scripts are PowerShell + Windows process-tree
-# management). JDK 21 (primary) + 25 (velocity toolchain) + Node 18 (mineflayer
-# bot). The Mojang EULA is silently accepted per CI policy (see e2e/README.md).
+# Coverage notes:
+#   - bukkit/endstone/levilamina/pmmp are IMPLEMENTED in the committed harness.
+#   - folia/velocity/bungee/nukkit/pnx/sponge are TODO stubs in the committed
+#     orchestrator (they exit 0 with a "not yet ported" message). The matrix
+#     includes them with continue-on-error so the real per-platform signal is
+#     visible in the log without reddening the whole workflow.
+#   - levilamina + endstone E2E need BDS (Bedrock Dedicated Server). BDS is
+#     download-blocked from some environments (minecraft.net pocketbedlinks
+#     drops the connection). fetch-server.ps1 -Name bds -Auto logs the
+#     detection approach and skips live download in that case, so those two
+#     platforms may report SKIP -- that is expected and documented, NOT a
+#     regression.
+#
+# Runner: windows-2022 (E2E scripts are PowerShell + Windows process-tree
+# management; levilamina needs VS 2022 / MSVC v143 which windows-2022 ships).
+# This mirrors nova-ci.yml's runner choice.
 name: E2E (Real Server)
 
 on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: 'Comma-separated platforms (default: bukkit only)'
+        description: 'Comma-separated platforms (default: implemented set bukkit,endstone,levilamina,pmmp)'
         required: false
-        default: 'bukkit'
+        default: 'bukkit,endstone,levilamina,pmmp'
   schedule:
     # Nightly at 03:30 UTC -- only runs on the default branch.
     - cron: '30 3 * * *'
@@ -29,43 +51,134 @@ on:
 permissions:
   contents: read
 
+# One E2E run at a time per ref (nightly + manual dispatch don't pile up).
+# Per-platform matrix jobs still fan out within a single run.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   e2e:
     name: E2E ${{ matrix.platform }}
-    runs-on: windows-2025
+    runs-on: windows-2022
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        platform: [bukkit, folia, velocity, bungee, nukkit, pnx, sponge]
-    # bukkit is the only fully-implemented platform; the rest are TODO stubs
-    # that exit 0 with a "not yet ported" message. continue-on-error keeps the
-    # workflow green while surfacing the real per-platform status in the log.
-    continue-on-error: ${{ matrix.platform != 'bukkit' }}
+        # The full declared platform set. Implemented platforms run for real;
+        # TODO stubs exit 0 with a "not yet ported" marker. continue-on-error
+        # below keeps the workflow green on stub failures while the per-platform
+        # log line carries the real signal.
+        platform: [bukkit, folia, velocity, bungee, nukkit, pnx, sponge, endstone, levilamina, pmmp]
+    # Implemented platforms: bukkit, endstone, levilamina, pmmp. The rest are
+    # committed TODO stubs OR depend on BDS (levilamina/endstone) which may be
+    # download-blocked. continue-on-error only for the known-stub platforms so
+    # a real regression on an implemented platform still reds the job.
+    continue-on-error: ${{ !contains(fromJson('["bukkit","endstone","levilamina","pmmp"]'), matrix.platform) }}
+
+    env:
+      # UTF-8 hardening (mirrors nova-ci.yml -- the E2E scripts emit Chinese +
+      # non-ASCII server log lines).
+      JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8 -Dconsole.encoding=UTF-8
+      PYTHONUTF8: '1'
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dfile.encoding=UTF-8
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Set up JDK 21 (primary) and JDK 25 (velocity toolchain)
+      # ---------------------------------------------------------------------
+      # JDK: 17 (sponge) + 21 (primary, most platforms) + 25 (velocity
+      # toolchain). setup-java registers all three as Gradle toolchain
+      # candidates. This mirrors nova-ci.yml and adds JDK 17 for sponge.
+      # ---------------------------------------------------------------------
+      - name: Set up JDK 17 (sponge) + 21 (primary) + 25 (velocity toolchain)
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: |
+            17
             21
             25
 
-      - name: Set up Node 18 (mineflayer bot)
+      # ---------------------------------------------------------------------
+      # Node 18+ for the bots: Java platforms use mineflayer (run-e2e.js),
+      # Bedrock platforms use bedrock-protocol (run-e2e-bedrock.js). Both are
+      # npm-installed from e2e/bot/package.json.
+      # ---------------------------------------------------------------------
+      - name: Set up Node 18 (mineflayer + bedrock-protocol bots)
         uses: actions/setup-node@v4
         with:
           node-version: '18'
           cache: 'npm'
           cache-dependency-path: e2e/bot/package.json
 
-      - name: Cache E2E server jars (dist)
+      - name: Install bot npm deps
+        # The orchestrator scripts run the bots via `node e2e/bot/run-e2e*.js`.
+        # Install once up front so the platform scripts don't each repeat it.
+        shell: pwsh
+        run: |
+          if (Test-Path e2e/bot/package.json) {
+            npm --prefix e2e/bot ci --no-audit --no-fund
+          } else {
+            Write-Host "[e2e] e2e/bot/package.json not found -- bots may fail to start"
+          }
+
+      # ---------------------------------------------------------------------
+      # PHP 8.2 (pmmp). shivammathur/setup-php with sockets+mbstring+openssl
+      # -- same as nova-ci.yml. Only the pmmp platform actually invokes PHP,
+      # but setup is cheap and keeps the matrix uniform.
+      # ---------------------------------------------------------------------
+      - name: Set up PHP 8.2 (pmmp)
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: sockets, mbstring, openssl
+          coverage: none
+
+      # ---------------------------------------------------------------------
+      # Python 3.12 (endstone). endstone's BDS host loads a python plugin;
+      # setup-python keeps stdio UTF-8 via PYTHONUTF8 above. Same as nova-ci.
+      # ---------------------------------------------------------------------
+      - name: Set up Python 3.12 (endstone)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ---------------------------------------------------------------------
+      # MSVC + xmake (levilamina). levilamina E2E builds a C++20 BDS dll with
+      # MSVC v143 (windows-2022 = VS 2022) + xmake. xmake is pinned to 3.0.9
+      # exactly as in nova-ci.yml (3.1.0 breaks the action's packageskey step).
+      # ---------------------------------------------------------------------
+      - name: Set up MSVC (VS 2022)
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Set up xmake (levilamina)
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.0.9'
+        continue-on-error: true
+
+      - name: Verify xmake is on PATH
+        shell: pwsh
+        run: |
+          if (-not (Get-Command xmake -ErrorAction SilentlyContinue)) {
+            Write-Error "xmake is not on PATH after setup-xmake step"
+            exit 1
+          }
+          xmake --version
+
+      # ---------------------------------------------------------------------
+      # Server-binary cache. fetch-server.ps1 downloads real server jars/zip/
+      # phar to e2e/artifacts/dist/ and SHA-256-verifies them. Keying on
+      # e2e/versions.lock.ps1 means a lock bump invalidates and forces a fresh
+      # verified download; an unchanged lock reuses the cached binaries
+      # (minutes saved per platform). Path matches docs/REAL-SERVER-E2E.md §8.2.
+      # ---------------------------------------------------------------------
+      - name: Cache E2E server binaries (dist)
         uses: actions/cache@v4
         with:
-          path: .e2e-artifacts/dist
+          path: e2e/artifacts/dist
           key: e2e-dist-${{ runner.os }}-${{ hashFiles('e2e/versions.lock.ps1') }}
           restore-keys: |
             e2e-dist-${{ runner.os }}-
@@ -80,28 +193,49 @@ jobs:
           restore-keys: |
             gradle-e2e-${{ runner.os }}-
 
-      - name: Run E2E orchestrator (${{ matrix.platform }})
+      # ---------------------------------------------------------------------
+      # THE E2E RUN. `./gradlew realE2E` (root build.gradle) dispatches to the
+      # committed e2e/bin/run-e2e-orchestrator.ps1 with -Platforms set to this
+      # matrix platform (or the workflow_dispatch input on manual runs).
+      # -PenableRealE2E=true is what gates realE2E into `check`; passing it
+      # explicitly here also documents intent. The installations.paths=
+      # override clears the dev scoop path from gradle.properties so Gradle
+      # toolchain auto-detection finds the setup-java JDKs.
+      #
+      # The realE2E task is a no-op if e2e/ is absent (it never is on CI --
+      # e2e/ is committed), so this can't fail the job on harness absence.
+      # A platform failure (orchestrator exit 1) DOES fail this step.
+      # ---------------------------------------------------------------------
+      - name: Run E2E (${{ matrix.platform }})
         shell: pwsh
         env:
-          # For workflow_dispatch, prefer the user's platform selection; otherwise
-          # fall back to the matrix platform. schedule runs use the matrix value.
+          # workflow_dispatch: prefer the user's platform selection. schedule:
+          # use the matrix platform value.
           E2E_PLATFORMS: ${{ github.event.inputs.platforms || matrix.platform }}
         run: |
-          # setup-java puts JDK 21 first, so JAVA_HOME already points at it.
-          # Velocity's JDK 25 toolchain is resolved by Gradle at build time via
-          # toolchain auto-detection + the installations.paths override below.
-          powershell -NoProfile -ExecutionPolicy Bypass `
-            -File e2e/bin/run-e2e-orchestrator.ps1 `
-            -Platforms $env:E2E_PLATFORMS `
-            -RepoRoot $env:GITHUB_WORKSPACE
+          chcp 65001
+          $OutputEncoding = [System.Text.Encoding]::UTF8
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          ./gradlew realE2E --console=plain `
+            '-PenableRealE2E=true' `
+            "-Pe2ePlatforms=$env:E2E_PLATFORMS" `
+            '-Porg.gradle.java.installations.paths=' `
+            '-Dorg.gradle.java.installations.paths='
 
+      # ---------------------------------------------------------------------
+      # On failure (or cancellation), upload the E2E artifacts for post-mortem:
+      # server logs, bot results, run summary, and the novalink-core classpath.
+      # if-no-files-found: ignore so a job that died before writing anything
+      # doesn't double-fail on the upload step.
+      # ---------------------------------------------------------------------
       - name: Upload E2E artifacts on failure
         if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-${{ matrix.platform }}-${{ github.run_id }}
           path: |
-            .e2e-artifacts/runs/
-            .e2e-artifacts/novalink-core.classpath.txt
+            e2e/artifacts/
+            **/bot-results.json
+            **/runs/
           if-no-files-found: ignore
           retention-days: 7
