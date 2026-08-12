@@ -264,6 +264,7 @@ npm run build
 | 理解客户端运行时的设计边界 | [`NovaChat/client-core/DESIGN.md`](NovaChat/client-core/DESIGN.md) |
 | 修改或部署管理面板 | [`Panel/web`](Panel/web) |
 | 准备真实服务器验证 | [`e2e/README.md`](e2e/README.md) |
+| 从快速接入、部署、运维或 API 文档开始 | [`docs/README.md`](docs/README.md) |
 | 查阅架构、测试、国际化与 UX 记录 | [`docs`](docs) |
 
 贡献前，先在 [Issues](https://github.com/XingLingQAQ/NovaLink/issues) 中看看是否已有类似需求、缺陷或平台兼容性讨论。提交 PR 时，说明你影响了哪些平台、改了哪些配置、跑过什么验证，以及还有哪些已知限制。也请不要把真实密码、JWT 密钥、数据库凭据、私有 IP 或生产 Webhook 放进 Issue、示例配置或测试日志。
