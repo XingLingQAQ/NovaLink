@@ -1,671 +1,231 @@
-# NovaChat & NovaLink
-
-<div align="center">
-
-![NovaChat Logo](https://img.shields.io/badge/NovaChat-v1.0.0-blue?style=for-the-badge)
-![NovaLink Logo](https://img.shields.io/badge/NovaLink-v1.0.0-green?style=for-the-badge)
-![Java](https://img.shields.io/badge/Java-17+-orange?style=for-the-badge)
-![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)
-
-**A distributed cross-platform Minecraft chat infrastructure system**
-
-**分布式跨平台 Minecraft 聊天基础设施系统**
-
-[English](#english) | [中文](#中文)
-
-</div>
-
----
-
-# English
-
-## Overview
-
-NovaChat & NovaLink is a distributed cross-platform Minecraft chat infrastructure system using a star topology architecture. NovaChat serves as the frontend plugin deployed on various Minecraft servers (Bukkit/Spigot, Velocity/BungeeCord, Nukkit, LeviLamina), while NovaLink operates as an independent Java backend responsible for message routing, permission management, and data persistence.
-
-### Key Features
-
-- 🌐 **Cross-Platform Support**: Bukkit, Velocity, BungeeCord, Nukkit, LeviLamina, Fabric, NeoForge, Quilt, Forge, PocketMine-MP, Endstone, PowerNukkitX
-- 🔗 **Unified Protocol**: Custom NovaProtocol v1 for efficient communication
-- 📢 **Flexible Channels**: Global, Server, World, and Private channels
-- 🔐 **Permission System**: Four-tier hierarchy (SuperAdmin > ClientAdmin > ChannelAdmin > Player)
-- 💾 **Data Persistence**: MySQL, Redis, or in-memory storage
-- 🌍 **World Filtering**: Auto-routing based on player world
-- 🎨 **Rich Formatting**: PlaceholderAPI and color code support
-- 🖥️ **Web Panel**: Real-time monitoring and management
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      NovaLink Backend                        │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────────────┐   │
-│  │ Channel │ │  Auth   │ │  Mute   │ │    Database     │   │
-│  │ Manager │ │ Manager │ │ Manager │ │ (MySQL/Redis)   │   │
-│  └─────────┘ └─────────┘ └─────────┘ └─────────────────┘   │
-└─────────────────────────┬───────────────────────────────────┘
-                          │ NovaProtocol (TCP)
-        ┌─────────────────┼─────────────────┐
-        │                 │                 │
-┌───────▼───────┐ ┌───────▼───────┐ ┌───────▼───────┐
-│ NovaChat      │ │ NovaChat      │ │ NovaChat      │
-│ Bukkit/Spigot │ │ Velocity      │ │ Nukkit        │
-└───────────────┘ └───────────────┘ └───────────────┘
-```
-
-### Core modules (three layers)
-
-| Module | Layer | Purpose |
-|--------|-------|---------|
-| **`novachat-common`** | Shared protocol | NovaProtocol packets, codecs, mentions, extensions — used by **backend and all clients** |
-| **`novachat-client-core`** | Plugin runtime | Connection lifecycle helpers, reconnect policy, client state — **plugins/mods only; not used by `novalink-core`** |
-| **`novalink-core`** | Production backend | Canonical Java NovaLink server (routing, auth, persistence, REST/WS) |
-
-Dependency direction: `novalink-core` → `novachat-common` only; platform plugins → `novachat-client-core` → `novachat-common`. See [`novachat-client-core/DESIGN.md`](NovaChat/client-core/DESIGN.md).
-
-## Platform Compatibility Matrix
-
-### Backend Servers
-
-| Backend | Language | Protocol Version | Status |
-|---------|----------|------------------|--------|
-| NovaLink-Java | Java 17+ | v1 | ✅ **Production (canonical)** |
-
-### Java Edition Clients
-
-| Platform | Language | Minecraft Version | Protocol | Status |
-|----------|----------|-------------------|----------|--------|
-| Bukkit/Spigot/Paper | Java 17+ | 1.8 – 1.21.11 / 26.2 | v1 | ✅ Stable |
-| Folia | Java 17+ | 1.19 – 1.21.11 / 26.2 (stable 26.1.2; 26.2 experimental) | v1 | ✅ Stable |
-| Velocity | Java 25+ | Proxy (API 4.1.0+) | v1 | ✅ Stable |
-| BungeeCord | Java 8+ | Proxy (API 1.21-R0.4; Waterfall EOL) | v1 | ✅ Stable |
-| Fabric | Java 21+ | 1.21.x / 26.x (default 1.21.11; loader 0.19.3) | v1 | ⛔ Not built (needs Gradle 9.5+) |
-| NeoForge | Java 25+ | 1.20.2 – 26.1 (NeoForge 26.1.0.x; MC 26.2 pending) | v1 | ⛔ Not built (needs Gradle 9.5+) |
-| Quilt | Java 21+ | 1.21.x / 26.x (default 1.21.11; loader 0.30.0) | v1 | ⛔ Not built (needs Gradle 9.5+) |
-| Forge | Java 8+/17+/21+ | 1.12.2 – 26.2 (Forge 65.1.0) | v1 | ⛔ Not built (needs Gradle 9.5+) |
-| Sponge | Java 17+ | 1.16.5 (SpongeAPI 8.2.0) — upstream has SpongeAPI 17.x (MC 1.21.10) / 20.x RC (MC 26.2); project not yet upgraded | v1 | ✅ Stable |
-
-### Bedrock Edition Clients
-
-| Platform | Language | Minecraft Version | Protocol | Status |
-|----------|----------|-------------------|----------|--------|
-| Nukkit | Java 8+ | Bedrock 1.20+ – 26.40 (Cloudburst Nukkit snapshot) | v1 | ✅ Stable |
-| PowerNukkitX | Java 17+ | Bedrock 1.20+ – 26.40 (PNX 3.0.2, protocol 2168) | v1 | ✅ Stable |
-| LeviLamina (BDS) | C++ | Bedrock 1.20+ – 26.40 (LeviLamina 26.20.x) | v1 | ✅ Stable |
-| PocketMine-MP | PHP 8.1+ | Bedrock 1.20+ – 26.30 (protocol ≤1001; PMMP 5.44.3 archived Jul 2026) | v1 | ✅ Stable |
-| Endstone | Python 3.10+ | Bedrock 1.20+ – 26.40 (Endstone 0.11.8, BDS 1.26.40) | v1 | ✅ Stable |
-
-### Protocol Version Compatibility
-
-All clients and backends must use the same protocol version to communicate. The current protocol version is **v1**.
-
-| Protocol Version | Supported Backends | Supported Clients |
-|------------------|-------------------|-------------------|
-| v1 | NovaLink-Java | All platforms listed above |
-
-## Installation
-
-### Requirements
-
-- Java 17+ (for **production** NovaLink backend and modern plugins)
-- Java 21+ (for Fabric/Quilt/Forge/NeoForge targeting 1.20.5+; also the floor for Paper/Folia server builds on MC 1.21.x)
-- Java 25+ (for the **Velocity** proxy module — `novachat-velocity` pins `VERSION_25` and Lombok is disabled under JDK 25; also the floor for Minecraft 26.1+ server platforms)
-- Java 8+ (for legacy Minecraft plugins / BungeeCord)
-- PHP 8.1+ (for PocketMine-MP plugin)
-- Python 3.10+ (for Endstone plugin)
-- MySQL 5.7+ (optional)
-- Redis 6+ (optional)
-
-> Platform versions above reflect the latest releases as of 2026-08-08 (Minecraft Java 26.2, Bedrock 26.42). Mod-loader platforms (Fabric/NeoForge/Quilt/Forge) are **not currently built** — their `novachat-mod:<loader>` subprojects are commented out in `settings.gradle` pending a Gradle wrapper upgrade to 9.5+. See the per-row status in the matrices.
-
-### NovaLink Backend Setup
-
-1. Download `novalink-core.jar` from releases
-2. Create a directory and place the JAR file
-3. Run once to generate configuration:
-   ```bash
-   java -jar novalink-core.jar
-   ```
-4. Edit `novalink.yml` (see [Configuration](#configuration))
-5. Start the backend:
-   ```bash
-   java -jar novalink-core.jar
-   ```
-
-### NovaChat Plugin Setup
-
-1. Download the appropriate plugin for your server:
-
-   **Java Edition:**
-   - `novachat-bukkit.jar` - Bukkit/Spigot/Paper
-   - `novachat-velocity.jar` - Velocity proxy
-   - `novachat-bungee.jar` - BungeeCord proxy
-   - `novachat-mod-fabric.jar` - Fabric 1.20.x+
-   - `novachat-mod-neoforge.jar` - NeoForge 1.20.2+
-   - `novachat-mod-quilt.jar` - Quilt 1.20.x+
-   - `novachat-mod-forge.jar` - Forge 1.20.x
-
-   **Bedrock Edition:**
-   - `novachat-nukkit.jar` - Nukkit
-   - `novachat-pnx.jar` - PowerNukkitX
-   - `novachat-levilamina.dll` - LeviLamina (BDS)
-   - `novachat-pmmp.phar` - PocketMine-MP
-   - `novachat-endstone/` - Endstone (Python package)
-
-2. Place in your server's plugins/mods folder
-3. Start the server to generate configuration
-4. Edit the configuration file (location varies by platform)
-5. Restart the server
-
-## Configuration
-
-### NovaLink Backend (novalink.yml)
-
-See [examples/novalink.yml](examples/novalink.yml) for a complete example.
-
-```yaml
-# Server settings
-server:
-  bind-address: 0.0.0.0
-  port: 8888
-  websocket-port: 8889
-
-# Database settings
-database:
-  type: mysql  # mysql, redis, memory
-  mysql:
-    host: 127.0.0.1
-    port: 3306
-    database: novalink
-    username: root
-    password: password
-
-# Global channels (cross-server)
-global_channels:
-  global:
-    display_name: "Global"
-    permission: "novachat.channel.global"
-
-# Client configurations
-clients:
-  - username: "Survival_Server"
-    password: "your-password-hash"
-    channels:
-      local:
-        display_name: "Local"
-        scope: SERVER
-```
-
-### NovaChat Plugin (config.yml)
-
-See [examples/novachat-config.yml](examples/novachat-config.yml) for a complete example.
-
-```yaml
-# Backend connection
-backend:
-  host: "127.0.0.1"
-  port: 8888
-  username: "Survival_Server"
-  password: "your-password"
-
-# Chat settings
-chat:
-  replace_vanilla: false
-  default_channel: "local"
-
-# Message formats
-format:
-  channels:
-    global: "&c[Global] &7{player}&f: {message}"
-    local: "&e[Local] &7{player}&f: {message}"
-```
-
-## Commands
-
-### Player Commands
-
-| Command | Description | Permission |
-|---------|-------------|------------|
-| `/nc help` | Show available commands | - |
-| `/nc join <channel>` | Join a channel | - |
-| `/nc leave` | Leave current channel | - |
-| `/nc create <name> [password]` | Create private channel | `novachat.create` |
-| `/nc invite <player>` | Invite player to channel | Channel owner |
-| `/nc accept <code>` | Accept invitation | - |
-| `/nc toggle` | Toggle chat mode | - |
-
-### Admin Commands
-
-| Command | Description | Permission |
-|---------|-------------|------------|
-| `/nc mute <player> <time>` | Mute a player | `novachat.admin` |
-| `/nc kick <player>` | Kick from channel | `novachat.admin` |
-| `/nc announce <channel> <msg>` | Send announcement | `novachat.admin` |
-| `/nc title <channel> <title>` | Send title message | `novachat.admin` |
-| `/nc reload` | Reload configuration | `novachat.admin` |
-| `/nc debug [on\|off]` | Toggle debug mode | `novachat.admin` |
-
-### Super Admin Commands
-
-| Command | Description |
-|---------|-------------|
-| `/nc auth <password>` | Authenticate as super admin |
-| `/nc admin spy <server> <channel>` | Monitor remote channel |
-
-## Channel Types
-
-| Type | Scope | Description |
-|------|-------|-------------|
-| **Global** | GLOBAL | Cross-server, all connected clients |
-| **Server** | SERVER | Single server only |
-| **World** | SERVER + `allowed_worlds` | Specific worlds within a server |
-| **Private** | PRIVATE | Player-created, password protected |
-
-## API
-
-### Plugin API (Bukkit)
-
-```java
-// Get API instance
-NovaChatAPI api = NovaChatAPI.getInstance();
-
-// Send message to channel
-api.sendToChannel("global", "Hello from API!");
-
-// Listen to events
-@EventHandler
-public void onChannelMessage(ChannelMessageEvent event) {
-    String channel = event.getChannelId();
-    String message = event.getMessage();
-}
-
-@EventHandler
-public void onChannelSwitch(PlayerChannelSwitchEvent event) {
-    String from = event.getFromChannel();
-    String to = event.getToChannel();
-}
-```
-
-### REST API (NovaLink)
+<p align="center">
+  <img src="Panel/web/public/novalink-logo.svg" width="104" alt="NovaLink logo" />
+</p>
+
+<h1 align="center">NovaLink</h1>
+
+<p align="center">
+  <strong>面向 Minecraft 多端网络的分布式聊天与频道路由基础设施。</strong><br />
+  NovaChat 负责平台侧连接，NovaLink 负责统一协议、路由、权限、持久化与运营控制。
+</p>
+
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#架构">架构</a> ·
+  <a href="#平台与模块">平台与模块</a> ·
+  <a href="#部署与配置">部署与配置</a> ·
+  <a href="#开发与验证">开发与验证</a>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0B6E4F?style=flat-square" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/Java-17%2B-1D4ED8?style=flat-square" alt="Java 17 or later" />
+  <img src="https://img.shields.io/badge/NovaProtocol-v1-16A34A?style=flat-square" alt="NovaProtocol v1" />
+  <img src="https://img.shields.io/badge/Web%20Panel-React%20%2B%20Vite-0EA5E9?style=flat-square" alt="React and Vite web panel" />
+</p>
+
+> **NovaLink is the canonical Java backend.** It is designed to be the routing center for multiple NovaChat clients across Java Edition, Bedrock Edition, proxies, plugins and server-side extensions.
+
+## 为什么是 NovaLink
+
+当一个网络同时运行多个 Java、Bedrock、代理与模组端服务时，聊天通常会分散在各自的插件和平台 API 中。NovaLink 将这些端点收敛到一个星型拓扑：客户端通过 **NovaProtocol v1** 与后端连接，由后端统一处理认证、频道权限、消息路由、禁言状态、持久化与 Web 管理。
+
+| 能力 | 说明 |
+| --- | --- |
+| **跨平台连接** | 覆盖 Java 插件、代理、Bedrock 扩展与原生端工具链，客户端通过统一协议接入。 |
+| **分层频道** | 支持 GLOBAL、SERVER、WORLD 与 PRIVATE 范围；世界过滤和频道权限由配置驱动。 |
+| **集中运营** | Java 后端提供路由、认证、持久化与 REST/WebSocket 能力；React 管理面板用于实时观测和控制。 |
+| **可选持久化** | 支持 MySQL/MariaDB、PostgreSQL、SQLite、Redis 与内存模式，按部署规模选择。 |
+| **可验证交付** | 包含单元测试、属性测试、集成测试，以及可选的真实服务器 E2E 验证基础设施。 |
+
+## 快速开始
+
+下面的路径用于构建并运行 **NovaLink 后端**。默认后端配置文件为工作目录中的 `novalink.yml`；也可以将配置文件路径作为第一个启动参数传入。
+
+### 1. 获取源码并构建后端
 
 ```bash
-# Get channel list
-GET /api/channels
+git clone https://github.com/XingLingQAQ/NovaLink.git
+cd NovaLink
 
-# Send message
-POST /api/channels/{id}/messages
-Content-Type: application/json
-{"content": "Hello World"}
+# Linux / macOS
+./gradlew :StarLink:core:shadowJar
 
-# Get online players
-GET /api/players
+# Windows PowerShell
+.\gradlew.bat :StarLink:core:shadowJar
 ```
 
-### Webhook
+构建会生成可直接运行的 fat JAR，位置为 `StarLink/core/build/libs/*-all.jar`。该产物已包含 NovaLink 运行所需的后端依赖。
 
-Configure webhooks in `novalink.yml`:
+### 2. 创建最小可运行配置
 
-```yaml
-webhooks:
-  - url: "https://your-server.com/webhook"
-    events: ["message", "join", "leave"]
-    secret: "your-webhook-secret"
+```bash
+cp examples/novalink.yml novalink.yml
 ```
 
-## Troubleshooting
+首次部署时，请至少修改 `server.secret-key`、数据库连接信息，以及 `clients` 中的客户端凭据。小型或本地测试环境可先将 `database.type` 设置为 `sqlite` 或 `memory`；生产环境应使用持久化存储并妥善保管密钥。
 
-### Connection Issues
+### 3. 启动 NovaLink
 
-- Verify backend is running and accessible
-- Check firewall settings for port 8888
-- Ensure credentials match between plugin and backend
+```bash
+java -jar StarLink/core/build/libs/*-all.jar
 
-### Permission Issues
+# 使用自定义配置路径
+java -jar StarLink/core/build/libs/*-all.jar /opt/novalink/novalink.yml
+```
 
-- Verify permission nodes are correctly configured
-- Check player has required permissions
-- Use `/nc debug on` to see detailed logs
+默认示例中的 NovaProtocol TCP 端口为 `8888`，WebSocket 端口为 `8889`。请在防火墙、反向代理和客户端配置中按实际部署环境放行并对齐这些端口。
 
-### Error Codes
+### 4. 接入一个 NovaChat 客户端
 
-| Code | Description | Solution |
-|------|-------------|----------|
-| NC-401 | Authentication failed | Check username/password |
-| NC-403 | Permission denied | Verify permissions |
-| NC-404 | Channel not found | Check channel ID |
-| NC-410 | Invitation expired | Request new invitation |
-
----
-
-# 中文
-
-## 概述
-
-NovaChat & NovaLink 是一个分布式跨平台 Minecraft 聊天基础设施系统，采用星型拓扑架构。NovaChat 作为前端插件部署在各类 Minecraft 服务端（Bukkit/Spigot、Velocity/BungeeCord、Nukkit、LeviLamina），NovaLink 作为独立 Java 后端负责消息路由、权限管理、数据持久化等核心逻辑。
-
-### 主要特性
-
-- 🌐 **跨平台支持**: Bukkit、Velocity、BungeeCord、Nukkit、LeviLamina、Fabric、NeoForge、Quilt、Forge、PocketMine-MP、Endstone、PowerNukkitX
-- 🔗 **统一协议**: 自定义 NovaProtocol v1 高效通信
-- 📢 **灵活频道**: 全网、服务器、世界、私有频道
-- 🔐 **权限系统**: 四级权限层级（超级管理员 > 客户端管理员 > 频道管理员 > 玩家）
-- 💾 **数据持久化**: MySQL、Redis 或内存存储
-- 🌍 **世界过滤**: 基于玩家世界的自动路由
-- 🎨 **丰富格式**: PlaceholderAPI 和颜色代码支持
-- 🖥️ **Web 面板**: 实时监控和管理
+选择与目标平台对应的 NovaChat 模块，将构建产物放入目标服务端的插件、模组或扩展目录。客户端连接参数位于各平台配置中；可从 [`examples/novachat-config.yml`](examples/novachat-config.yml) 开始，并确保主机、端口、用户名与密码同 NovaLink 后端配置一致。
 
 ## 架构
 
+```mermaid
+flowchart TB
+    subgraph Clients[平台客户端]
+        J[Java 插件与模组]
+        P[Velocity / BungeeCord 代理]
+        B[Bedrock 扩展]
+    end
+
+    J -->|NovaProtocol v1| N
+    P -->|NovaProtocol v1| N
+    B -->|NovaProtocol v1| N
+
+    subgraph N[NovaLink Java Backend]
+        R[消息路由]
+        A[认证与权限]
+        C[频道与禁言]
+        API[REST / WebSocket]
+    end
+
+    N --> D[(MySQL / PostgreSQL / SQLite / Redis / Memory)]
+    API --> W[NovaLink Admin Console]
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      NovaLink 后端                           │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────────────┐   │
-│  │ 频道    │ │  认证   │ │  禁言   │ │    数据库       │   │
-│  │ 管理器  │ │ 管理器  │ │ 管理器  │ │ (MySQL/Redis)   │   │
-│  └─────────┘ └─────────┘ └─────────┘ └─────────────────┘   │
-└─────────────────────────┬───────────────────────────────────┘
-                          │ NovaProtocol (TCP)
-        ┌─────────────────┼─────────────────┐
-        │                 │                 │
-┌───────▼───────┐ ┌───────▼───────┐ ┌───────▼───────┐
-│ NovaChat      │ │ NovaChat      │ │ NovaChat      │
-│ Bukkit/Spigot │ │ Velocity      │ │ Nukkit        │
-└───────────────┘ └───────────────┘ └───────────────┘
-```
 
-### 核心模块（三层）
+NovaLink 的依赖方向保持清晰：共享协议层被后端与全部客户端复用；平台客户端在其之上复用连接运行时；生产后端只依赖共享协议层，从而避免把平台插件逻辑带入中心服务。
 
-| 模块 | 层级 | 职责 |
-|------|------|------|
-| **`novachat-common`** | 共享协议层 | NovaProtocol 数据包、编解码、提及、扩展 —— **后端与全部客户端共用** |
-| **`novachat-client-core`** | 插件运行时 | 连接生命周期辅助、重连策略、客户端状态 —— **仅插件/模组使用；`novalink-core` 不依赖** |
-| **`novalink-core`** | 生产后端 | 规范 Java NovaLink 服务端（路由、认证、持久化、REST/WS） |
+## 平台与模块
 
-依赖方向：`novalink-core` → 仅 `novachat-common`；各平台插件 → `novachat-client-core` → `novachat-common`。详见 [`novachat-client-core/DESIGN.md`](NovaChat/client-core/DESIGN.md)。
+### 核心模块
 
-## 平台兼容性矩阵
+| 路径 | 角色 | 说明 |
+| --- | --- | --- |
+| [`NovaChat/common`](NovaChat/common) | 协议层 | NovaProtocol 数据包、编解码、提及与共享扩展。 |
+| [`NovaChat/client-core`](NovaChat/client-core) | 客户端运行时 | 连接生命周期、重连策略与客户端状态；供插件/模组侧复用。 |
+| [`StarLink/core`](StarLink/core) | 中心后端 | 规范 Java 后端实现，提供路由、认证、持久化、REST 与 WebSocket。 |
+| [`Panel/web`](Panel/web) | 管理面板 | React + Vite 管理界面，用于连接 NovaLink 并查看运行状态。 |
+| [`e2e`](e2e) | 真实服务器验证 | 可选的多平台真实服务端与机器人测试编排。 |
 
-### 后端服务器
+### 平台覆盖
 
-| 后端 | 语言 | 协议版本 | 状态 |
-|------|------|----------|------|
-| NovaLink-Java | Java 17+ | v1 | ✅ **生产（规范实现）** |
+| 平台族 | 对应模块或目录 | 接入形态 |
+| --- | --- | --- |
+| Bukkit / Spigot / Paper / Folia | `NovaChat/Plugin` | Java 服务端插件。 |
+| Velocity / BungeeCord | `NovaChat/Proxy` | Java 代理端插件。 |
+| Fabric / NeoForge / Quilt | `NovaChat/MOD` | Java 模组端共享层与 Loader 实现。 |
+| Nukkit / PowerNukkitX | `NovaChat/Bedrock` | Java Bedrock 服务端插件。 |
+| LeviLamina / PocketMine-MP / Endstone | `NovaChat/Bedrock` | C++、PHP 与 Python 生态扩展。 |
+| Sponge | `NovaChat/Sponge` | Sponge 平台插件。 |
 
-### Java 版客户端
+> 具体的 Minecraft、Loader、JDK 与上游 API 组合会随平台发布节奏变化。部署前请以对应模块的 `build.gradle`、`plugin.yml` 或平台文档为准，并在目标环境完成验证。
 
-| 平台 | 语言 | Minecraft 版本 | 协议 | 状态 |
-|------|------|----------------|------|------|
-| Bukkit/Spigot/Paper | Java 17+ | 1.8 – 1.21.11 / 26.2 | v1 | ✅ 稳定 |
-| Folia | Java 17+ | 1.19 – 1.21.11 / 26.2（稳定版 26.1.2；26.2 实验中） | v1 | ✅ 稳定 |
-| Velocity | Java 25+ | 代理端 (API 4.1.0+) | v1 | ✅ 稳定 |
-| BungeeCord | Java 8+ | 代理端 (API 1.21-R0.4；Waterfall 已 EOL) | v1 | ✅ 稳定 |
-| Fabric | Java 21+ | 1.21.x / 26.x（默认 1.21.11；loader 0.19.3） | v1 | ⛔ 未构建（需 Gradle 9.5+） |
-| NeoForge | Java 25+ | 1.20.2 – 26.1（NeoForge 26.1.0.x；MC 26.2 待发布） | v1 | ⛔ 未构建（需 Gradle 9.5+） |
-| Quilt | Java 21+ | 1.21.x / 26.x（默认 1.21.11；loader 0.30.0） | v1 | ⛔ 未构建（需 Gradle 9.5+） |
-| Forge | Java 8+/17+/21+ | 1.12.2 – 26.2（Forge 65.1.0） | v1 | ⛔ 未构建（需 Gradle 9.5+） |
-| Sponge | Java 17+ | 1.16.5（SpongeAPI 8.2.0）— 上游已有 SpongeAPI 17.x（MC 1.21.10）/ 20.x RC（MC 26.2），本项目尚未升级 | v1 | ✅ 稳定 |
+## 频道模型
 
-### 基岩版客户端
+| 范围 | 适用场景 | 路由边界 |
+| --- | --- | --- |
+| `GLOBAL` | 全网公告、跨服公共聊天 | 所有已授权并连接的客户端。 |
+| `SERVER` | 单服务端本地频道 | 指定 NovaChat 客户端内。 |
+| `WORLD` | 资源世界、PVP 世界、子世界聊天 | 指定服务端及 `allowed_worlds` 范围。 |
+| `PRIVATE` | 玩家创建或受控的私密会话 | 频道成员与权限边界内。 |
 
-| 平台 | 语言 | Minecraft 版本 | 协议 | 状态 |
-|------|------|----------------|------|------|
-| Nukkit | Java 8+ | 基岩版 1.20+ – 26.40（Cloudburst Nukkit snapshot） | v1 | ✅ 稳定 |
-| PowerNukkitX | Java 17+ | 基岩版 1.20+ – 26.40（PNX 3.0.2，协议 2168） | v1 | ✅ 稳定 |
-| LeviLamina (BDS) | C++ | 基岩版 1.20+ – 26.40（LeviLamina 26.20.x） | v1 | ✅ 稳定 |
-| PocketMine-MP | PHP 8.1+ | 基岩版 1.20+ – 26.30（协议 ≤1001；PMMP 5.44.3 于 2026-07 归档） | v1 | ✅ 稳定 |
-| Endstone | Python 3.10+ | 基岩版 1.20+ – 26.40（Endstone 0.11.8，BDS 1.26.40） | v1 | ✅ 稳定 |
+频道、模板、客户端与全局权限均由 `novalink.yml` 定义。完整字段请直接参考 [`examples/novalink.yml`](examples/novalink.yml)，不要将示例中的密码、JWT 密钥或 Webhook 地址直接用于生产。
 
-### 协议版本兼容性
+## 部署与配置
 
-所有客户端和后端必须使用相同的协议版本才能通信。当前协议版本为 **v1**。
+### 后端运行要求
 
-| 协议版本 | 支持的后端 | 支持的客户端 |
-|----------|-----------|-------------|
-| v1 | NovaLink-Java | 上述所有平台 |
+| 组件 | 最低要求 | 备注 |
+| --- | --- | --- |
+| NovaLink 后端 | Java 17 | `StarLink/core` 的生产后端与 fat JAR 运行路径。 |
+| 数据库 | 可选 | 支持 MySQL/MariaDB、PostgreSQL、SQLite、Redis 与内存模式。 |
+| Web 管理面板 | Node.js 与 npm | 仅在开发、构建或自行托管管理面板时需要。 |
+| 平台客户端 | 因模块而异 | Java、PHP、Python 或原生工具链要求见对应模块。 |
 
-## 安装
-
-### 环境要求
-
-- Java 17+（**生产** NovaLink 后端和现代插件）
-- Java 21+（Fabric/Quilt/Forge/NeoForge 针对 1.20.5+；也是 MC 1.21.x 下 Paper/Folia 服务端构建的下限）
-- Java 25+（**Velocity** 代理模块 —— `novachat-velocity` 固定 `VERSION_25`，JDK25 下禁用 Lombok；也是 MC 26.1+ 服务端平台的下限）
-- Java 8+（旧版 Minecraft 插件）
-- PHP 8.1+（PocketMine-MP 插件）
-- Python 3.10+（Endstone 插件）
-- MySQL 5.7+（可选）
-- Redis 6+（可选）
-
-> 上述平台版本反映 2026-08-08 的最新发布（Minecraft Java 26.2、Bedrock 26.42）。模组加载器平台（Fabric/NeoForge/Quilt/Forge）**当前未构建** —— 其 `novachat-mod:<loader>` 子工程在 `settings.gradle` 中被注释，待 Gradle wrapper 升级到 9.5+ 后启用。见矩阵中各行状态。
-
-### NovaLink 后端安装
-
-1. 从发布页下载 `novalink-core.jar`
-2. 创建目录并放置 JAR 文件
-3. 首次运行生成配置：
-   ```bash
-   java -jar novalink-core.jar
-   ```
-4. 编辑 `novalink.yml`（参见[配置](#配置)）
-5. 启动后端：
-   ```bash
-   java -jar novalink-core.jar
-   ```
-
-### NovaChat 插件安装
-
-1. 下载对应服务端的插件：
-
-   **Java 版：**
-   - `novachat-bukkit.jar` - Bukkit/Spigot/Paper
-   - `novachat-velocity.jar` - Velocity 代理
-   - `novachat-bungee.jar` - BungeeCord 代理
-   - `novachat-mod-fabric.jar` - Fabric 1.20.x+
-   - `novachat-mod-neoforge.jar` - NeoForge 1.20.2+
-   - `novachat-mod-quilt.jar` - Quilt 1.20.x+
-   - `novachat-mod-forge.jar` - Forge 1.20.x
-
-   **基岩版：**
-   - `novachat-nukkit.jar` - Nukkit
-   - `novachat-pnx.jar` - PowerNukkitX
-   - `novachat-levilamina.dll` - LeviLamina (BDS)
-   - `novachat-pmmp.phar` - PocketMine-MP
-   - `novachat-endstone/` - Endstone（Python 包）
-
-2. 放入服务器的 plugins/mods 文件夹
-3. 启动服务器生成配置
-4. 编辑配置文件（位置因平台而异）
-5. 重启服务器
-
-## 配置
-
-### NovaLink 后端 (novalink.yml)
-
-完整示例请参见 [examples/novalink.yml](examples/novalink.yml)。
+### 推荐的最小配置
 
 ```yaml
-# 服务器设置
 server:
   bind-address: 0.0.0.0
   port: 8888
   websocket-port: 8889
+  secret-key: "replace-with-a-long-random-secret"
 
-# 数据库设置
 database:
-  type: mysql  # mysql, redis, memory
-  mysql:
-    host: 127.0.0.1
-    port: 3306
-    database: novalink
-    username: root
-    password: password
+  type: sqlite
+  sqlite:
+    file-path: data/novalink.db
 
-# 全网频道（跨服）
-global_channels:
-  global:
-    display_name: "全服"
-    permission: "novachat.channel.global"
-
-# 客户端配置
 clients:
-  - username: "Survival_Server"
-    password: "your-password-hash"
-    channels:
-      local:
-        display_name: "本地"
-        scope: SERVER
+  - username: "survival"
+    password: "replace-with-a-password-hash"
+    display_name: "Survival"
 ```
 
-### NovaChat 插件 (config.yml)
+示例配置包含 MySQL、PostgreSQL、SQLite、Redis、全局频道、客户端频道模板与功能开关。生产部署建议在上线前完成以下检查：替换所有示例密钥；使用持久化数据库；限制允许访问的 IP/CIDR；仅向可信网络公开管理入口；并为数据库和配置文件建立备份策略。
 
-完整示例请参见 [examples/novachat-config.yml](examples/novachat-config.yml)。
+### Web 管理面板
 
-```yaml
-# 后端连接
-backend:
-  host: "127.0.0.1"
-  port: 8888
-  username: "Survival_Server"
-  password: "your-password"
-
-# 聊天设置
-chat:
-  replace_vanilla: false
-  default_channel: "local"
-
-# 消息格式
-format:
-  channels:
-    global: "&c[全服] &7{player}&f: {message}"
-    local: "&e[本地] &7{player}&f: {message}"
-```
-
-## 命令
-
-### 玩家命令
-
-| 命令 | 描述 | 权限 |
-|------|------|------|
-| `/nc help` | 显示可用命令 | - |
-| `/nc join <频道>` | 加入频道 | - |
-| `/nc leave` | 离开当前频道 | - |
-| `/nc create <名称> [密码]` | 创建私有频道 | `novachat.create` |
-| `/nc invite <玩家>` | 邀请玩家加入频道 | 频道所有者 |
-| `/nc accept <邀请码>` | 接受邀请 | - |
-| `/nc toggle` | 切换聊天模式 | - |
-
-### 管理员命令
-
-| 命令 | 描述 | 权限 |
-|------|------|------|
-| `/nc mute <玩家> <时间>` | 禁言玩家 | `novachat.admin` |
-| `/nc kick <玩家>` | 踢出频道 | `novachat.admin` |
-| `/nc announce <频道> <消息>` | 发送公告 | `novachat.admin` |
-| `/nc title <频道> <标题>` | 发送 Title 消息 | `novachat.admin` |
-| `/nc reload` | 重载配置 | `novachat.admin` |
-| `/nc debug [on\|off]` | 切换调试模式 | `novachat.admin` |
-
-### 超级管理员命令
-
-| 命令 | 描述 |
-|------|------|
-| `/nc auth <密码>` | 超级管理员认证 |
-| `/nc admin spy <服务器> <频道>` | 监听远程频道 |
-
-## 频道类型
-
-| 类型 | 作用域 | 描述 |
-|------|--------|------|
-| **全网频道** | GLOBAL | 跨服互通，所有连接的客户端 |
-| **服务器频道** | SERVER | 仅限单个服务器 |
-| **世界频道** | SERVER + `allowed_worlds` | 服务器内指定世界 |
-| **私有频道** | PRIVATE | 玩家创建，密码保护 |
-
-## API
-
-### 插件 API (Bukkit)
-
-```java
-// 获取 API 实例
-NovaChatAPI api = NovaChatAPI.getInstance();
-
-// 发送消息到频道
-api.sendToChannel("global", "来自 API 的消息！");
-
-// 监听事件
-@EventHandler
-public void onChannelMessage(ChannelMessageEvent event) {
-    String channel = event.getChannelId();
-    String message = event.getMessage();
-}
-
-@EventHandler
-public void onChannelSwitch(PlayerChannelSwitchEvent event) {
-    String from = event.getFromChannel();
-    String to = event.getToChannel();
-}
-```
-
-### REST API (NovaLink)
+管理面板位于 [`Panel/web`](Panel/web)。本地开发与生产构建均使用 npm：
 
 ```bash
-# 获取频道列表
-GET /api/channels
+cd Panel/web
+npm ci
+npm run dev
 
-# 发送消息
-POST /api/channels/{id}/messages
-Content-Type: application/json
-{"content": "Hello World"}
-
-# 获取在线玩家
-GET /api/players
+# 生产构建
+npm run build
 ```
 
-### Webhook
+登录页默认将 REST 请求发送至同源 `/api`，并使用当前主机的 `8889` 端口建立 WebSocket 连接；可在 **Advanced Settings** 中为当前会话覆盖这两个地址。将面板部署到生产环境时，应通过反向代理显式配置 API 与 WebSocket 转发，并避免把认证端点暴露在不可信网络中。
 
-在 `novalink.yml` 中配置 Webhook：
+## 开发与验证
 
-```yaml
-webhooks:
-  - url: "https://your-server.com/webhook"
-    events: ["message", "join", "leave"]
-    secret: "your-webhook-secret"
-```
+### 常用命令
 
-## 故障排除
+| 目标 | 命令 |
+| --- | --- |
+| 构建全部 Gradle 模块 | `./gradlew build` |
+| 执行全部常规检查 | `./gradlew check` |
+| 执行 NovaLink 后端测试 | `./gradlew :StarLink:core:test` |
+| 生成后端 fat JAR | `./gradlew :StarLink:core:shadowJar` |
+| 构建管理面板 | `cd Panel/web && npm run build` |
+| 运行真实服务端 E2E | `./gradlew realE2E` |
 
-### 连接问题
+真实服务端 E2E 为显式选择的验证路径，需要准备真实 Minecraft 服务端文件、机器人进程、Node.js、匹配的 JDK 与平台运行环境。详细的环境、下载校验和平台编排说明见 [`e2e/README.md`](e2e/README.md) 与 [`docs/REAL-SERVER-E2E.md`](docs/REAL-SERVER-E2E.md)。
 
-- 确认后端正在运行且可访问
-- 检查防火墙设置（端口 8888）
-- 确保插件和后端的凭据匹配
+### 贡献方式
 
-### 权限问题
+1. 先在 [Issues](https://github.com/XingLingQAQ/NovaLink/issues) 中检索或讨论需求、缺陷和平台兼容性问题。
+2. 从 `master` 创建聚焦的分支，并为行为变化补充或调整测试。
+3. 在提交 Pull Request 前运行与改动范围相符的 Gradle 或面板构建命令。
+4. 在 PR 描述中说明影响的平台、配置变更、验证命令和已知限制。
 
-- 确认权限节点配置正确
-- 检查玩家是否拥有所需权限
-- 使用 `/nc debug on` 查看详细日志
+请勿在公开 Issue、示例配置或测试日志中提交真实密码、JWT 密钥、数据库凭据、私有 IP 或生产环境 Webhook。
 
-### 错误代码
+## 项目资源
 
-| 代码 | 描述 | 解决方案 |
-|------|------|----------|
-| NC-401 | 认证失败 | 检查用户名/密码 |
-| NC-403 | 权限不足 | 验证权限配置 |
-| NC-404 | 频道不存在 | 检查频道 ID |
-| NC-410 | 邀请码过期 | 请求新的邀请码 |
+| 资源 | 用途 |
+| --- | --- |
+| [`examples/novalink.yml`](examples/novalink.yml) | NovaLink 后端完整配置参考。 |
+| [`examples/novachat-config.yml`](examples/novachat-config.yml) | NovaChat 客户端配置参考。 |
+| [`NovaChat/client-core/DESIGN.md`](NovaChat/client-core/DESIGN.md) | 客户端核心模块的设计与依赖边界。 |
+| [`Panel/web`](Panel/web) | Web 管理面板源码与构建入口。 |
+| [`e2e/README.md`](e2e/README.md) | 真实服务端 E2E 环境与编排说明。 |
+| [`docs`](docs) | 架构、测试、国际化与 UX 审查记录。 |
 
----
+## 许可证
 
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions are welcome! Please read our contributing guidelines before submitting PRs.
-
-## Support
-
-- GitHub Issues: [Report bugs](https://github.com/your-repo/novachat/issues)
-- Discord: [Join our community](https://discord.gg/your-invite)
+本项目依据 [MIT License](LICENSE) 发布。
