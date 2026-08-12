@@ -3,7 +3,7 @@ REM ============================================================
 REM NovaChat/NovaLink - One-Click Build Script for Windows
 REM ============================================================
 REM Builds all platform modules (post-rename #4/#8 layout):
-REM - Java (Gradle): NovaChat:common, client-core, StarLink:core,
+REM - Java (Gradle): NovaChat:common, NovaChat:client-core, StarLink:core,
 REM   NovaChat:Plugin:{bukkit,folia}, NovaChat:Proxy:{velocity,bungee},
 REM   NovaChat:Bedrock:{nukkit,pnx}, NovaChat:Sponge:sponge,
 REM   NovaChat:MOD:{mod-common,fabric,neoforge,quilt}
@@ -40,7 +40,7 @@ if %ERRORLEVEL% NEQ 0 (
     echo [INFO] Skipping MOD loom subprojects (fabric/neoforge/quilt).
 
     call gradlew.bat ^
-        :NovaChat:common:build :client-core:build :StarLink:core:build ^
+        :NovaChat:common:build :NovaChat:client-core:build :StarLink:core:build ^
         :NovaChat:Plugin:bukkit:build :NovaChat:Plugin:folia:build ^
         :NovaChat:Proxy:velocity:build :NovaChat:Proxy:bungee:build ^
         :NovaChat:Bedrock:nukkit:build :NovaChat:Bedrock:pnx:build ^

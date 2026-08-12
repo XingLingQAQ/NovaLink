@@ -6,7 +6,7 @@
 #
 # Java (Gradle):
 #   :NovaChat:common          NovaChat protocol layer
-#   :client-core              shared runtime (Architecture B)
+#   :NovaChat:client-core      shared runtime (Architecture B)
 #   :StarLink:core            NovaLink backend (Main-Class, no shadow)
 #   :NovaChat:Plugin:bukkit   Bukkit/Paper/Purpur plugin
 #   :NovaChat:Plugin:folia    Folia plugin (shadow fat jar -> NovaChat-Folia)
@@ -58,7 +58,7 @@ else
     echo "       MC workspace setup and are the usual culprit on first run."
 
     if ./gradlew \
-        :NovaChat:common:build :client-core:build :StarLink:core:build \
+        :NovaChat:common:build :NovaChat:client-core:build :StarLink:core:build \
         :NovaChat:Plugin:bukkit:build :NovaChat:Plugin:folia:build \
         :NovaChat:Proxy:velocity:build :NovaChat:Proxy:bungee:build \
         :NovaChat:Bedrock:nukkit:build :NovaChat:Bedrock:pnx:build \

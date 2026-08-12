@@ -82,7 +82,7 @@ dependencies {
     // Shared client-core — common depends on it via `implementation`
     // (non-transitive), so neoforge must declare it directly to compile against
     // AbstractPlatformNetworkClient / KnownChannelRegistry / ChannelCommandService.
-    implementation project(':client-core')
+    implementation project(':NovaChat:client-core')
 
     // Netty (for network client)
     implementation "io.netty:netty-all:4.1.100.Final"

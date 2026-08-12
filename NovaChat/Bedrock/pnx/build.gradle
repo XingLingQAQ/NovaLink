@@ -26,7 +26,7 @@ dependencies {
     // Common Module - reuse protocol implementation
     implementation project(':NovaChat:common')
     // Shared client runtime (Architecture B — not used by StarLink:core)
-    implementation project(':client-core')
+    implementation project(':NovaChat:client-core')
 
     // Netty for network communication
     implementation "io.netty:netty-all:${nettyVersion}"
@@ -81,7 +81,7 @@ shadowJar {
         // Include common
         include(project(':NovaChat:common'))
         // Include shared client helpers (PasswordHasher / ClientConnectionConfig)
-        include(project(':client-core'))
+        include(project(':NovaChat:client-core'))
         // Include runtime dependencies
         include(dependency('io.netty:.*'))
         include(dependency('com.google.code.gson:gson'))

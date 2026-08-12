@@ -10,7 +10,7 @@ pluginManagement {
 rootProject.name = 'nova-parent'
 
 include 'NovaChat:common'
-include 'client-core'
+include 'NovaChat:client-core'
 include 'StarLink:core'
 include 'NovaChat:Plugin:bukkit'
 include 'NovaChat:Proxy:velocity'

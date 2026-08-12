@@ -44,7 +44,7 @@ dependencies {
     // Shared client runtime (Architecture B — same layer as the 7 server platforms).
     // Provides AbstractPlatformNetworkClient, PlayerStateStore, ChannelCommandService,
     // I18n, MentionNotifier, ChannelResponseDispatcher, ConfigSyncHandlerRegistrar, etc.
-    implementation project(':client-core')
+    implementation project(':NovaChat:client-core')
     
     // Testing
     testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"

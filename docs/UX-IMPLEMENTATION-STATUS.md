@@ -153,7 +153,7 @@
 - **已知脆弱项**：已在前序会话解决（见 memory `novalink-test-flakiness.md`），本轮 clean run 无 flaky。
 - **编译告警（非缺陷）**：以下为既有的 `@SuppressWarnings("unchecked")` 标注点，属泛型擦除侧的预期告警抑制，非本轮引入：
   - `novachat-folia/src/main/java/com/nova/chat/folia/network/AsyncNetworkClient.java:131`
-  - `novachat-client-core/src/main/java/com/nova/chat/client/network/CoreNetworkClient.java:246`
+  - `NovaChat/client-core/src/main/java/com/nova/chat/client/network/CoreNetworkClient.java:246`
   - `novachat-common/src/main/java/com/nova/chat/common/extension/DefaultExtensionLoader.java:105`
 
 ## 下一轮建议（非本轮范围）

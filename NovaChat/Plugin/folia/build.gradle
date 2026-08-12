@@ -18,7 +18,7 @@ dependencies {
     // Common Module
     implementation project(':NovaChat:common')
     // Shared client runtime (Architecture B — not used by StarLink:core)
-    implementation project(':client-core')
+    implementation project(':NovaChat:client-core')
 
     // Netty
     implementation "io.netty:netty-all:${nettyVersion}"
@@ -73,7 +73,7 @@ shadowJar {
     dependencies {
         // Include common
         include(project(':NovaChat:common'))
-        include(project(':client-core'))
+        include(project(':NovaChat:client-core'))
         // Include runtime dependencies
         include(dependency('io.netty:.*'))
         include(dependency('com.google.code.gson:gson'))

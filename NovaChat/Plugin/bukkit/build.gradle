@@ -11,7 +11,7 @@ dependencies {
     // Common Module (protocol only)
     implementation project(':NovaChat:common')
     // Shared client runtime (Architecture B — not used by StarLink:core)
-    implementation project(':client-core')
+    implementation project(':NovaChat:client-core')
 
     // Netty
     implementation "io.netty:netty-all:${nettyVersion}"

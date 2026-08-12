@@ -240,10 +240,12 @@ public class NovaChatBukkit extends JavaPlugin {
      * the live {@link NetworkClient}. Send is accepted only when the client is
      * connected and authenticated.
      *
-     * <p>The pending-request tracker lives inside {@link NetworkClient#sendPacket}
-     * (it calls {@code trackPendingRequest} for every {@code ChannelActionPacket}
-     * before delegating to the core), so channel-action packets sent via the
-     * service are correlated automatically — no command-side tracker code needed.
+     * <p>Channel-action correlation is owned by
+     * {@link com.nova.chat.client.network.CoreNetworkClient#sendPacket} (it records
+     * every {@code ChannelActionPacket} with the shared
+     * {@code ChannelResponseTracker} before the wire send), so channel-action
+     * packets sent via the service are correlated automatically — no command-side
+     * tracker code needed.
      */
     private void initializeChannelCommandService() {
         channelCommandService = new ChannelCommandService(packet -> {

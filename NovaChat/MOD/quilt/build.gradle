@@ -36,7 +36,7 @@ dependencies {
     // Shared client-core + protocol — common depends on these via `implementation`
     // (non-transitive), so quilt must declare them directly to compile against
     // AbstractPlatformNetworkClient / KnownChannelRegistry / ChannelCommandService.
-    implementation project(':client-core')
+    implementation project(':NovaChat:client-core')
     implementation project(':NovaChat:common')
 }
 

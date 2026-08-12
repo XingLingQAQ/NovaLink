@@ -9,6 +9,8 @@ import cn.nukkit.plugin.PluginBase;
 import cn.nukkit.scheduler.AsyncTask;
 import cn.nukkit.utils.Config;
 import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.i18n.LocaleResolver;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.extension.ExtensionManager;
 import com.nova.chat.nukkit.chat.ChatInterceptor;
@@ -23,8 +25,11 @@ import com.nova.chat.nukkit.world.WorldMonitor;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 
 /**
  * NovaChat Nukkit Plugin - Main class
@@ -88,15 +93,26 @@ public class NovaChatNukkit extends PluginBase implements Listener {
         // Save default config if not exists
         saveDefaultConfigFile();
 
+        // Extract default lang/ bundles to plugins/NovaChat/lang/ so users have
+        // a template to copy/edit and can drop in new languages without a rebuild.
+        // I18n reads <externalLangDir>/lang/<locale>.properties on top of the
+        // classpath bundles (external overrides win per-key).
+        File langDir = new File(getDataFolder(), "lang");
+        I18n.setExternalLangDir(getDataFolder());
+        extractDefaultLang(langDir, "zh_CN");
+        extractDefaultLang(langDir, "en_US");
+
         // Load configuration
         loadConfiguration();
 
         // Seed the shared I18n default locale from config (per-player locales
         // captured by LocaleListener override this per player).
-        com.nova.chat.client.i18n.I18n.setDefaultLocale(
-                com.nova.chat.client.i18n.LocaleResolver.parseOrDefault(
+        I18n.setDefaultLocale(
+                LocaleResolver.parseOrDefault(
                         novaChatConfig.getLocale(),
-                        com.nova.chat.client.i18n.LocaleResolver.ROOT_LOCALE));
+                        LocaleResolver.ROOT_LOCALE));
+        // Drop the cached bundles so a reload re-reads external overrides.
+        I18n.invalidate();
 
         // Initialize message helper
         messageHelper = new MessageHelper(this);
@@ -150,6 +166,39 @@ public class NovaChatNukkit extends PluginBase implements Listener {
         File configFile = new File(getDataFolder(), "config.yml");
         if (!configFile.exists()) {
             saveResource("config.yml", false);
+        }
+    }
+
+    /**
+     * Extracts a default lang bundle from the jar to {@code <langDir>/<locale>.properties}
+     * only when it does not already exist (so user customizations win). The
+     * classpath resource path is {@code lang/<locale>.properties} (the
+     * lang/-directory layout shipped via the bundled client-core resources).
+     * Errors are logged but never fatal — i18n still reads the classpath copy
+     * when the external file is absent.
+     *
+     * @param langDir the plugins/NovaChat/lang/ target directory
+     * @param locale the locale code (e.g. {@code "zh_CN"})
+     */
+    private void extractDefaultLang(File langDir, String locale) {
+        if (langDir == null || locale == null) {
+            return;
+        }
+        File target = new File(langDir, locale + ".properties");
+        if (target.isFile()) {
+            // Preserve user customizations.
+            return;
+        }
+        String resourcePath = "lang/" + locale + ".properties";
+        try (InputStream in = getResource(resourcePath)) {
+            if (in == null) {
+                // Resource not packaged in this jar — skip silently.
+                return;
+            }
+            langDir.mkdirs();
+            Files.copy(in, target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            getLogger().error("Failed to extract default lang bundle " + locale, e);
         }
     }
     

@@ -61,7 +61,7 @@ NovaChat & NovaLink is a distributed cross-platform Minecraft chat infrastructur
 | **`novachat-client-core`** | Plugin runtime | Connection lifecycle helpers, reconnect policy, client state — **plugins/mods only; not used by `novalink-core`** |
 | **`novalink-core`** | Production backend | Canonical Java NovaLink server (routing, auth, persistence, REST/WS) |
 
-Dependency direction: `novalink-core` → `novachat-common` only; platform plugins → `novachat-client-core` → `novachat-common`. See [`novachat-client-core/DESIGN.md`](novachat-client-core/DESIGN.md).
+Dependency direction: `novalink-core` → `novachat-common` only; platform plugins → `novachat-client-core` → `novachat-common`. See [`novachat-client-core/DESIGN.md`](NovaChat/client-core/DESIGN.md).
 
 ## Platform Compatibility Matrix
 
@@ -381,7 +381,7 @@ NovaChat & NovaLink 是一个分布式跨平台 Minecraft 聊天基础设施系�
 | **`novachat-client-core`** | 插件运行时 | 连接生命周期辅助、重连策略、客户端状态 —— **仅插件/模组使用；`novalink-core` 不依赖** |
 | **`novalink-core`** | 生产后端 | 规范 Java NovaLink 服务端（路由、认证、持久化、REST/WS） |
 
-依赖方向：`novalink-core` → 仅 `novachat-common`；各平台插件 → `novachat-client-core` → `novachat-common`。详见 [`novachat-client-core/DESIGN.md`](novachat-client-core/DESIGN.md)。
+依赖方向：`novalink-core` → 仅 `novachat-common`；各平台插件 → `novachat-client-core` → `novachat-common`。详见 [`novachat-client-core/DESIGN.md`](NovaChat/client-core/DESIGN.md)。
 
 ## 平台兼容性矩阵
 

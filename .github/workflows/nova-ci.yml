@@ -2,7 +2,7 @@
 #
 # One job, one runner (windows-2022), one command: `./gradlew build test`.
 # This drives every language stack in the repo through Gradle:
-#   - Java:   all 16 Gradle Java modules (NovaChat:common, client-core,
+#   - Java:   all 16 Gradle Java modules (NovaChat:common, NovaChat:client-core,
 #             StarLink:core, 7 server platforms, MOD fabric/neoforge/quilt)
 #   - Python: NovaChat:Bedrock:endstone (base-plugin wrapper -> pythonEnv +
 #             pytest tasks)

@@ -32,6 +32,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 
 /**
  * NovaChat Sponge Plugin - Main class
@@ -109,11 +110,18 @@ public class NovaChatSponge {
         // Player-specific locales are registered later on join (ChatListener).
         I18n.setDefaultLocale(
                 LocaleResolver.parseOrDefault(novaChatConfig.getLocale(), LocaleResolver.ROOT_LOCALE));
-        // TODO(i18n): wire I18n.setExternalLangDir(configDir) here and extract
-        // default lang/{zh_CN,en_US}.properties bundles into configDir/lang/ so
-        // users can drop in / override languages without a rebuild. The bukkit/
-        // folia/velocity/bungee platforms do this in onEnable; follow the same
-        // pattern (see NovaChatBukkit#extractDefaultLang).
+
+        // Extract default lang/ bundles to <configDir>/lang/ so users have a
+        // template to copy/edit and can drop in new languages without a rebuild.
+        // I18n reads <externalLangDir>/lang/<locale>.properties on top of the
+        // classpath bundles (external overrides win per-key). The bukkit/folia/
+        // velocity/bungee platforms do this in onEnable; sponge does it here
+        // (config dir is available after construction).
+        I18n.setExternalLangDir(configDir);
+        extractDefaultLang("zh_CN");
+        extractDefaultLang("en_US");
+        // Drop the cached bundles so the external overrides are read fresh.
+        I18n.invalidate();
     }
     
     @Listener
@@ -189,6 +197,37 @@ public class NovaChatSponge {
         }
     }
     
+    /**
+     * Extracts a default lang bundle from the jar to
+     * {@code <configDir>/lang/<locale>.properties} only when it does not already
+     * exist (so user customizations win). The classpath resource path is
+     * {@code lang/<locale>.properties} (shipped via the bundled client-core
+     * resources). Errors are logged but never fatal — i18n still reads the
+     * classpath copy when the external file is absent.
+     *
+     * @param locale the locale code (e.g. {@code "zh_CN"})
+     */
+    private void extractDefaultLang(String locale) {
+        if (locale == null) {
+            return;
+        }
+        Path langDir = configDir.resolve("lang");
+        Path target = langDir.resolve(locale + ".properties");
+        if (Files.isRegularFile(target)) {
+            return;
+        }
+        String resourcePath = "/lang/" + locale + ".properties";
+        try (InputStream in = NovaChatSponge.class.getResourceAsStream(resourcePath)) {
+            if (in == null) {
+                return;
+            }
+            Files.createDirectories(langDir);
+            Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            logger.warn("Failed to extract default lang bundle " + locale, e);
+        }
+    }
+
     /**
      * Loads or reloads the plugin configuration.
      */
