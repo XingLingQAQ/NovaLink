@@ -105,10 +105,6 @@ flowchart LR
 
 最小接入验证只需要启动中心后端，并接入一个平台客户端。完成身份、频道和消息路径验证后，再逐步启用其他能力。
 
-<p align="left">
-  <img src="assets/readme/callouts/validation-blue.png" alt="接入验证：最小接入检查" width="190" />
-</p>
-
 ### 01 — 构建中心后端
 
 ```bash
@@ -220,10 +216,6 @@ java -jar StarLink/core/build/libs/*-all.jar /opt/novalink/novalink.yml
 </p>
 
 NovaLink 可从单台本地服务器开始部署，也可根据社区规模拆分数据层、反向代理和控制面。部署时应明确数据面、控制面、存储和管理入口的网络边界。
-
-<p align="left">
-  <img src="assets/readme/callouts/notice-amber.png" alt="安全注意事项：管理接口应通过 HTTPS/WSS 或 VPN 访问" width="270" />
-</p>
 
 ### 后端与数据层
 
