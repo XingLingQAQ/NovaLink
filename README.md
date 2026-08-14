@@ -5,14 +5,16 @@
 <h1 align="center">NovaLink</h1>
 
 <p align="center">
-  <strong>多端 Minecraft 社区的聊天路由、频道治理与运营控制基础设施。</strong><br />
-  提供中心后端与多平台 NovaChat 接入模块。
+  <strong>一套把不同 Minecraft 服务端接入同一个聊天网络的跨服聊天方案。</strong><br />
+  中心后端统一处理认证、频道、权限、禁言与路由；各平台通过 NovaChat 接入端连接。
 </p>
 
 <p align="center">
+  <a href="#overview">项目简介</a> ·
   <a href="#architecture">架构</a> ·
   <a href="#get-started">快速开始</a> ·
   <a href="#system-map">模块</a> ·
+  <a href="#channels">频道</a> ·
   <a href="#operations">部署</a> ·
   <a href="#build-verify">开发</a>
 </p>
@@ -29,31 +31,41 @@
 </p>
 
 > [!TIP]
-> **NovaLink 后端负责认证、频道、路由、持久化和管理控制；NovaChat 负责各平台的接入。** 接入端通过 NovaProtocol 连接后端，使不同平台使用同一套网络规则。
+> **NovaLink 后端负责认证、频道、路由、持久化和权限控制；NovaChat 负责各平台接入。** 接入端统一通过 NovaProtocol 连接后端，让 Java、Bedrock、代理和模组环境使用同一套聊天规则。
+
+---
 
 <a id="overview"></a>
 <p align="center">
   <img src="assets/readme/sections/section-00-overview.png" alt="项目概览" width="100%" />
 </p>
 
-当一个社区同时运行 Java 服务端、代理、Bedrock 服务端和模组环境时，聊天公告、权限规则和频道状态通常分散在多个平台配置中。这样会增加重复配置、跨服路由和问题排查的成本。
+NovaLink 解决的是多服社区的聊天分散问题：社区里同时跑着 Paper、Velocity、Nukkit、LeviLamina 等不同平台时，每个平台的聊天、权限和频道规则各不相同，公告发不出去、禁言管不到其他服、玩家聊天各说各话。
 
-NovaLink 将平台接入与中心路由分离。所有 NovaChat 客户端通过 **NovaProtocol v1** 接入同一个后端；后端根据消息来源、频道和权限处理路由与运营规则。
+NovaLink 把"平台接入"和"中心路由"分开。所有 NovaChat 客户端通过 **NovaProtocol v1** 连接到同一个后端，后端负责：
 
-### 你会得到什么
+- **跨服消息路由** —— 频道消息、私聊、公告统一在后端转发，玩家换服不用重连。
+- **统一权限与治理** —— 认证、禁言、踢出、权限判定集中一处，规则改一次全局生效。
+- **管理控制面** —— REST / WebSocket + Web 管理面板，日常运营不需要写脚本翻日志。
 
-| 你不必再维护的麻烦 | NovaLink 负责的事情 | 对运营意味着什么 |
-| --- | --- | --- |
-| 每个平台一套聊天、权限和频道逻辑 | 认证、转发、禁言、持久化与访问控制集中在后端 | 规则改一次，而不是逐端追着改 |
-| 公告、世界聊天和私聊互相串线 | `GLOBAL`、`SERVER`、`WORLD` 与 `PRIVATE` 明确划分边界 | 聊天范围可解释、可审计、可治理 |
-| 只靠日志猜网络状态 | REST、WebSocket 与管理面板提供统一控制入口 | 日常观测与运营不再依赖临时脚本 |
+### 主要能力
+
+| 能力 | 说明 |
+| --- | --- |
+| 跨服频道 | `GLOBAL`、`SERVER`、`WORLD`、`PRIVATE` 四种作用域，路由边界清晰 |
+| 跨服私聊 | `/msg`、`/reply` 跨服点对点聊天，支持屏蔽（`/nc ignore`） |
+| 权限与禁言 | 基于频道的权限、禁言、踢出、公告、敏感词过滤 |
+| 管理面板 | React + Vite 管理后台：仪表盘、消息监控、频道/玩家管理、Webhook、通知 |
+| 多平台接入 | Java 插件、代理插件、Bedrock 插件、模组、C++/PHP/Python 扩展 |
+
+---
 
 <a id="architecture"></a>
 <p align="center">
   <img src="assets/readme/sections/section-01-architecture.png" alt="系统架构" width="100%" />
 </p>
 
-NovaChat 以插件、模组或扩展的形式运行在目标平台中，并通过共享的 NovaProtocol 与后端通信。平台保留各自的生命周期与玩家 API，后端统一处理网络级规则。
+NovaChat 以插件、模组或扩展的形式运行在各平台中，通过共享的 NovaProtocol 与后端通信。每个平台保留自己的生命周期与玩家 API，后端统一处理网络级规则。
 
 ```mermaid
 flowchart LR
@@ -90,20 +102,22 @@ flowchart LR
     class W,D ops;
 ```
 
-共享协议层由后端和客户端共同使用；客户端运行时服务于插件与模组；中心后端只依赖共享协议层，不引入平台 API。该依赖方向用于保持平台适配与核心服务解耦。
+协议层由后端和客户端共用；客户端运行时服务于插件与模组；中心后端只依赖共享协议层，不引入任何平台 API——这个依赖方向让平台适配与核心服务互不耦合。
 
 ### 连接恢复与重连
 
-接入端的运行时会处理握手、KeepAlive、连接状态和重连策略。意外断开时，它会按指数退避等待后再次连接，延迟从 1 秒逐步增长并封顶在 30 秒；连续多次失败后停止重试并留下明确日志。显式停止则不会偷偷重连——这是一次真正的关闭，而不是一次事故。
+接入端运行时负责握手、KeepAlive、连接状态和重连策略。意外断开时按指数退避重连，延迟从 1 秒逐步增长，封顶 30 秒；连续多次失败后停止重试并留下明确日志。显式停止则不会偷偷重连。
 
-该机制不替代监控系统。详细的连接生命周期、平台边界与重连约定见 [`NovaChat/client-core/DESIGN.md`](NovaChat/client-core/DESIGN.md)。
+完整的连接生命周期、平台边界与重连约定见 [`NovaChat/client-core/DESIGN.md`](NovaChat/client-core/DESIGN.md)。
+
+---
 
 <a id="get-started"></a>
 <p align="center">
   <img src="assets/readme/sections/section-02-get-started.png" alt="快速开始" width="100%" />
 </p>
 
-最小接入验证只需要启动中心后端，并接入一个平台客户端。完成身份、频道和消息路径验证后，再逐步启用其他能力。
+最小接入只需要启动中心后端，再接一个平台客户端。先跑通认证、频道和消息路径，再逐步启用更多能力。
 
 ### 01 — 构建中心后端
 
@@ -118,7 +132,7 @@ cd NovaLink
 .\gradlew.bat :StarLink:core:shadowJar
 ```
 
-构建完成后，可直接运行的 fat JAR 位于 `StarLink/core/build/libs/*-all.jar`。它包含 NovaLink 后端所需依赖，因此不需要额外拼装运行时。
+构建产物是可直接运行的 fat JAR，位于 `StarLink/core/build/libs/*-all.jar`，不依赖额外运行时。
 
 ### 02 — 创建并配置 `novalink.yml`
 
@@ -126,7 +140,7 @@ cd NovaLink
 cp examples/novalink.yml novalink.yml
 ```
 
-从示例配置开始，替换 `server.secret-key`、数据库凭据与 `clients` 中的客户端凭据。小型或本地环境可以使用 `sqlite` 或 `memory`；生产环境应使用持久化存储、限制允许访问的 IP/CIDR，并通过受控配置管理系统管理密钥。
+从示例配置开始，替换 `server.secret-key`、数据库凭据与 `clients` 中的客户端凭据。小型或本地环境可以用 `sqlite` 或 `memory`；生产环境应使用持久化存储，并限制允许访问的 IP/CIDR。
 
 ```yaml
 server:
@@ -146,7 +160,7 @@ clients:
     display_name: "Survival"
 ```
 
-### 03 — 启动后端并配置平台客户端
+### 03 — 启动后端并接入平台客户端
 
 ```bash
 # 默认读取当前工作目录中的 novalink.yml
@@ -156,78 +170,89 @@ java -jar StarLink/core/build/libs/*-all.jar
 java -jar StarLink/core/build/libs/*-all.jar /opt/novalink/novalink.yml
 ```
 
-默认示例使用 `8888` 作为 NovaProtocol TCP 端口、`8889` 作为 WebSocket 端口。选择目标平台的 NovaChat 模块，将其放入插件、模组或扩展目录，然后以 [`examples/novachat-config.yml`](examples/novachat-config.yml) 对齐主机、端口、用户名和密码。
+默认示例用 `8888` 作为 NovaProtocol TCP 端口、`8889` 作为 WebSocket 端口。选择目标平台的 NovaChat 模块，放入插件、模组或扩展目录，然后对照 [`examples/novachat-config.yml`](examples/novachat-config.yml) 填好主机、端口、用户名和密码。
 
 > [!IMPORTANT]
-> 示例里的密码、JWT 密钥、数据库账号和 Webhook 地址都只是占位符。它们能帮助你启动，但不能直接进入生产环境。
+> 示例里的密码、JWT 密钥、数据库账号和 Webhook 地址都只是占位符。它们能帮助你启动，但不能直接用于生产环境。
+
+---
 
 <a id="system-map"></a>
 <p align="center">
   <img src="assets/readme/sections/section-03-system-map.png" alt="模块结构" width="100%" />
 </p>
 
-仓库包含后端、共享协议、平台接入端、管理面板和真实环境验证模块。下表列出各模块的主要职责与常见修改入口。
+仓库包含后端、共享协议层、平台接入端、管理面板和真实环境验证模块。
 
-| 当你想处理…… | 先看这里 | 它负责什么 |
+| 模块 | 路径 | 职责 |
 | --- | --- | --- |
-| 协议、数据包、提及或扩展 | [`NovaChat/common`](NovaChat/common) | NovaProtocol 编解码、提及与物品展示辅助、扩展加载、事件与命令注册。 |
-| 插件端连接、状态与重连 | [`NovaChat/client-core`](NovaChat/client-core) | 连接生命周期、退避重连、请求跟踪、频道状态与格式工具。 |
-| 认证、路由、数据与运营 API | [`StarLink/core`](StarLink/core) | 规范 Java 后端，负责会话认证、频道路由、持久化、REST 与 WebSocket。 |
-| 管理控制面 | [`Panel/web`](Panel/web) | React + Vite 管理面板，用于登录、观测和日常运营操作。 |
-| 真实环境验证 | [`e2e`](e2e) | 可选的真实服务器、机器人与多平台端到端验证编排。 |
+| 共享协议与公共层 | [`NovaChat/common`](NovaChat/common) | NovaProtocol 编解码、提及与物品展示、扩展加载、事件与命令注册 |
+| 客户端运行时 | [`NovaChat/client-core`](NovaChat/client-core) | 连接生命周期、退避重连、请求跟踪、频道状态、格式工具与 i18n |
+| 中心后端 | [`StarLink/core`](StarLink/core) | 会话认证、频道路由、持久化、REST / WebSocket、治理能力 |
+| 管理面板 | [`Panel/web`](Panel/web) | React + Vite 管理后台：登录、观测、频道/玩家/公告/敏感词/Webhook 管理 |
+| 真实环境验证 | [`test/`](test) | 真实服务器、机器人进程与多平台端到端验证编排（`gradlew realE2E`） |
 
-### 平台适配目录
+### 平台适配
 
 | 平台族 | 目录 | 接入形态 |
 | --- | --- | --- |
-| Bukkit / Spigot / Paper / Folia | `NovaChat/Plugin` | Java 服务端插件。 |
-| Velocity / BungeeCord | `NovaChat/Proxy` | Java 代理端插件。 |
-| Fabric / NeoForge / Quilt | `NovaChat/MOD` | 共享模组层与 Loader 实现。 |
-| Nukkit / PowerNukkitX | `NovaChat/Bedrock` | Java Bedrock 服务端插件。 |
-| LeviLamina / PocketMine-MP / Endstone | `NovaChat/Bedrock` | C++、PHP 与 Python 生态扩展。 |
-| Sponge | `NovaChat/Sponge` | Sponge 平台插件。 |
+| Bukkit / Spigot / Paper / Purpur / Folia | `NovaChat/Plugin` | Java 服务端插件 |
+| Velocity / BungeeCord | `NovaChat/Proxy` | Java 代理端插件 |
+| Fabric / NeoForge / Quilt | `NovaChat/MOD` | 共享模组层与 Loader 实现 |
+| Nukkit / PowerNukkitX | `NovaChat/Bedrock` | Java Bedrock 服务端插件 |
+| LeviLamina / PocketMine-MP / Endstone | `NovaChat/Bedrock` | C++、PHP、Python 生态扩展 |
+| Sponge | `NovaChat/Sponge` | Sponge 平台插件 |
 
 > [!NOTE]
-> Minecraft、Loader、JDK 与上游 API 的组合始终在变化。这里列出的是仓库中的接入模块，不等于对每个版本组合做了无条件承诺。部署前请以对应模块的 `build.gradle`、`plugin.yml` 或平台文档为准，并在目标环境完成验证。
+> Minecraft、Loader、JDK 与上游 API 的组合一直在变化。这里列出的是仓库现有的接入模块，不代表对每个版本组合都做了承诺。部署前请以对应模块的 `build.gradle`、`plugin.yml` 或平台文档为准，并在目标环境验证。
+
+---
 
 <a id="channels"></a>
 <p align="center">
   <img src="assets/readme/sections/section-04-channels.png" alt="频道与路由" width="100%" />
 </p>
 
-频道定义消息的路由范围、可见范围和管理边界。频道作用域确定后，权限、禁言、世界限制和私密会话才能按一致规则处理。
+频道定义了消息的路由范围、可见范围和管理边界。作用域确定后，权限、禁言、世界限制和私密会话才能按一致规则处理。
 
-| 频道范围 | 适合放什么 | 路由边界 |
+| 频道作用域 | 适合放什么 | 路由边界 |
 | --- | --- | --- |
-| `GLOBAL` | 全网公告、跨服公共聊天 | 所有已授权且连接的客户端。 |
-| `SERVER` | 单服务端本地频道 | 指定 NovaChat 客户端内。 |
-| `WORLD` | 资源世界、PVP 世界、子世界聊天 | 指定服务端及 `allowed_worlds` 范围。 |
-| `PRIVATE` | 玩家创建或受控的私密会话 | 频道成员与权限边界内。 |
+| `GLOBAL` | 全网公告、跨服公共聊天 | 所有已授权且连接的客户端 |
+| `SERVER` | 单服务端本地频道 | 指定 NovaChat 客户端内 |
+| `WORLD` | 资源世界、PVP 世界、子世界聊天 | 指定服务端及 `allowed_worlds` 范围 |
+| `PRIVATE` | 玩家创建或受控的私密会话 | 频道成员与权限边界内 |
 
-当运营需要介入时，中心后端可以在同一条边界上处理认证、权限、禁言、踢出和路由决定，而不必先判断消息来自哪一种服务端。频道、模板、客户端与全局权限都由 `novalink.yml` 定义；完整字段、数据库选项与功能开关见 [`examples/novalink.yml`](examples/novalink.yml)。
+### 玩法与治理
 
-### 消息扩展与呈现
+- **跨服私聊**：`/msg <玩家> <内容>`、`/reply <内容>` 跨服点对点，后端路由，支持离线目标的处理与私信开关。
+- **屏蔽玩家**：`/nc ignore <玩家>` 屏蔽后不再收到对方聊天、提及和私聊内容。
+- **频道前缀**：支持单字符频道前缀（如 `!`、`#`），快速在频道间切换发言。
+- **慢速模式**：频道级发言间隔限制，也承担了服务端的限流职责。
+- **管理操作**：禁言、踢出、公告、Title 广播等治理命令集中在后端处理，不依赖消息来自哪个平台。
+- **敏感词过滤**：支持自定义词表与正则，配合通知系统可做违规计分与自动处罚。
 
-共享协议层支持提及、物品展示、格式模板和扩展。不同平台可以基于自身 UI 实现相应呈现方式，同时保留消息的通用语义。
+完整字段、数据库选项与功能开关见 [`examples/novalink.yml`](examples/novalink.yml)。
+
+---
 
 <a id="operations"></a>
 <p align="center">
   <img src="assets/readme/sections/section-05-operations.png" alt="部署与运营" width="100%" />
 </p>
 
-NovaLink 可从单台本地服务器开始部署，也可根据社区规模拆分数据层、反向代理和控制面。部署时应明确数据面、控制面、存储和管理入口的网络边界。
+NovaLink 可以从单台本地服务器起步，也可以根据社区规模拆分数据层、反向代理和控制面。部署时请明确数据面、控制面、存储和管理入口的网络边界。
 
 ### 后端与数据层
 
-| 组件 | 你需要知道的事 | 适合的起点 |
+| 组件 | 说明 | 适合的起点 |
 | --- | --- | --- |
-| NovaLink 后端 | Java 17+；`StarLink/core` 会产出可直接运行的 fat JAR | 先在本地或测试环境跑通一条端到端消息。 |
-| 数据存储 | 可按配置选择 MySQL/MariaDB、PostgreSQL、SQLite、Redis 与内存模式 | 本地可从 SQLite 起步；生产环境请选持久化方案。 |
-| 平台客户端 | 不同模块会使用 Java、PHP、Python 或原生工具链 | 先从你网络中最重要的一类服务端开始接入。 |
+| NovaLink 后端 | Java 17+ 运行时（构建需 JDK 21+，Folia/Velocity 平台需 JDK 25）；`StarLink/core` 产出可直接运行的 fat JAR | 先在本地或测试环境跑通一条端到端消息 |
+| 数据存储 | 支持 MySQL/MariaDB、PostgreSQL、SQLite、Redis 与内存模式 | 本地从 SQLite 起步；生产环境选持久化方案 |
+| 平台客户端 | 不同模块使用 Java、PHP、Python 或原生工具链 | 从你网络里最重要的服务端开始接入 |
 
 ### Admin Console
 
-管理面板位于 [`Panel/web`](Panel/web)，用 React + Vite 构建。它是后端控制面的入口，不是另外一套聊天系统：登录后，前端通过 REST 与 WebSocket 连接同一个 NovaLink 网络。
+管理面板位于 [`Panel/web`](Panel/web)，用 React + Vite 构建。它是后端控制面的入口，不是另一套聊天系统：登录后，前端通过 REST 与 WebSocket 连接同一个 NovaLink 网络。
 
 ```bash
 cd Panel/web
@@ -238,25 +263,31 @@ npm run dev
 npm run build
 ```
 
-登录页默认向同源 `/api` 发起 REST 请求，并使用当前主机的 `8889` 端口建立 WebSocket 连接。**Advanced Settings** 可以在当前会话中覆盖这两个地址。生产部署时，请显式配置反向代理的 API 与 WebSocket 转发，并避免将认证端点暴露在不可信网络中。
+登录页默认向同源 `/api` 发起 REST 请求，并用当前主机的 `8889` 端口建立 WebSocket 连接。**Advanced Settings** 可以在当前会话覆盖这两个地址。生产部署时请显式配置反向代理的 API 与 WebSocket 转发，并避免把认证端点暴露在不可信网络中。
+
+面板内置页面：仪表盘、消息监控（支持历史消息检索）、控制台、服务器状态、频道管理、玩家管理、公告管理、敏感词管理、Webhook 与通知。
+
+---
 
 <a id="build-verify"></a>
 <p align="center">
   <img src="assets/readme/sections/section-06-build-verify.png" alt="开发与验证" width="100%" />
 </p>
 
-修改协议、路由或平台适配时，应选择与改动范围相符的验证方式。下列命令按日常构建到真实环境验证的范围排列；文档或小范围修改通常不需要启动真实 Minecraft 集群。
+修改协议、路由或平台适配时，请选择与改动范围相符的验证方式。下面这些命令按日常构建到真实环境验证的范围排列；文档或小范围改动通常不需要启动真实 Minecraft 集群。
 
 | 你要确认什么 | 命令 |
 | --- | --- |
 | 全仓能否正常构建 | `./gradlew build` |
 | 常规静态检查是否通过 | `./gradlew check` |
-| NovaLink 后端行为是否通过测试 | `./gradlew :StarLink:core:test` |
+| 后端行为是否通过测试 | `./gradlew :StarLink:core:test` |
 | 后端 JAR 是否可产出 | `./gradlew :StarLink:core:shadowJar` |
 | Admin Console 是否可生产构建 | `cd Panel/web && npm run build` |
 | 真实服务端链路是否可跑通 | `./gradlew realE2E` |
 
-项目同时维护单元、属性、集成和真实服务端 E2E 的分层验证路径。真实 E2E 是显式选择的任务，需要真实 Minecraft 服务端文件、机器人进程、Node.js、匹配的 JDK 与平台运行环境；它很有价值，但不应被当作每次本地修改都必须执行的脚本。环境前提和编排方式见 [`test/README.md`](test/README.md) 与 [`docs/REAL-SERVER-E2E.md`](docs/REAL-SERVER-E2E.md)。
+项目维护单元、属性、集成和真实服务端 E2E 的分层验证路径。跨语言协议一致性由 golden bytes 测试保证（Java / PHP / Python / C++ 四端对同一批字节样本编解码比对）。真实 E2E 是显式选择的任务，需要真实 Minecraft 服务端文件、机器人进程、Node.js、匹配的 JDK 与平台运行环境；环境前提和编排方式见 [`test/README.md`](test/README.md)。
+
+---
 
 <a id="resources"></a>
 <p align="center">
@@ -270,10 +301,12 @@ npm run build
 | 理解客户端运行时的设计边界 | [`NovaChat/client-core/DESIGN.md`](NovaChat/client-core/DESIGN.md) |
 | 修改或部署管理面板 | [`Panel/web`](Panel/web) |
 | 准备真实服务器验证 | [`test/README.md`](test/README.md) |
-| 从快速接入、部署、运维或 API 文档开始 | [`docs/README.md`](docs/README.md) |
-| 查阅架构、测试、国际化与 UX 记录 | [`docs`](docs) |
+| 从接入、部署、运维或 API 文档开始 | [`docs/README.md`](docs/README.md) |
+| 查阅架构与协议文档 | [`docs`](docs) |
 
-提交贡献前，请在 [Issues](https://github.com/XingLingQAQ/NovaLink/issues) 中确认是否已有类似需求、缺陷或平台兼容性讨论。提交 PR 时应说明受影响的平台、配置或接口、已执行的验证以及仍未验证的限制。不要在 Issue、示例配置或测试日志中提交真实密码、JWT 密钥、数据库凭据、私有 IP 或生产 Webhook。
+提交贡献前，请在 [Issues](https://github.com/XingLingQAQ/NovaLink/issues) 里确认是否已有类似需求、缺陷或平台兼容性讨论。提交 PR 时请说明受影响的平台、配置或接口、已执行的验证以及仍未验证的限制。不要在 Issue、示例配置或测试日志里提交真实密码、JWT 密钥、数据库凭据、私有 IP 或生产 Webhook。
+
+---
 
 <a id="license"></a>
 <p align="center">
