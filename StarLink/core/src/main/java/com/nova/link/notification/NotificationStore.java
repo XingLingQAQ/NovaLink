@@ -144,6 +144,24 @@ public class NotificationStore {
     }
 
     /**
+     * Counts notifications matching the pagination filter.
+     *
+     * @param unreadOnly when true, only unread notifications are counted
+     * @return the total number of matching notifications, or 0 on failure
+     */
+    public int count(boolean unreadOnly) {
+        if (databaseProvider == null) {
+            return 0;
+        }
+        try {
+            return databaseProvider.countNotifications(unreadOnly);
+        } catch (DatabaseException e) {
+            logger.error("Failed to count notifications: {}", e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
      * Gets the count of unread notifications.
      *
      * @return the unread count, or 0 on failure

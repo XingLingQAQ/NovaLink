@@ -25,6 +25,7 @@ public class NovaChatConfig {
     private final boolean replaceVanilla;
     private final String defaultChannel;
     private final String locale;
+    private final Map<String, String> channelPrefixes;
 
     // Format settings
     private final String prefix;
@@ -57,6 +58,7 @@ public class NovaChatConfig {
             this.successFormat = "&a成功: {message}";
             this.defaultFormat = "&7[{channel_color}{channel_name}] {player}&f: {message}";
             this.channelFormats = new HashMap<>();
+            this.channelPrefixes = new HashMap<>();
             this.debug = false;
             return;
         }
@@ -74,6 +76,19 @@ public class NovaChatConfig {
         this.replaceVanilla = chatNode.node("replace_vanilla").getBoolean(false);
         this.defaultChannel = chatNode.node("default_channel").getString("local");
         this.locale = chatNode.node("locale").getString("zh_CN");
+
+        // Channel-prefix routing (prefix string -> channel ID); empty = disabled
+        this.channelPrefixes = new HashMap<>();
+        CommentedConfigurationNode prefixesNode = chatNode.node("channel-prefixes");
+        if (!prefixesNode.virtual()) {
+            for (Map.Entry<Object, CommentedConfigurationNode> entry : prefixesNode.childrenMap().entrySet()) {
+                String key = entry.getKey().toString();
+                String value = entry.getValue().getString();
+                if (!key.isEmpty() && value != null && !value.isEmpty()) {
+                    channelPrefixes.put(key, value);
+                }
+            }
+        }
 
         // Format settings
         CommentedConfigurationNode formatNode = rootNode.node("format");
@@ -156,6 +171,17 @@ public class NovaChatConfig {
 
     public Map<String, String> getChannelFormats() {
         return channelFormats;
+    }
+
+    /**
+     * Gets the configured channel-prefix routing map
+     * ({@code chat.channel-prefixes}: prefix string → channel ID). Empty map
+     * (the default) disables prefix routing.
+     *
+     * @return the prefix→channelId map, never null
+     */
+    public Map<String, String> getChannelPrefixes() {
+        return channelPrefixes;
     }
 
     /**

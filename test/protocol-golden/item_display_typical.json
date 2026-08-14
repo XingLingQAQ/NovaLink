@@ -1,0 +1,17 @@
+{
+  "name": "item_display_typical",
+  "packet": "ItemDisplayPacket",
+  "packetId": 16,
+  "requestId": "00000000-0000-0000-0000-00000000003e",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "物品展示：嵌套 JSON 字符串 + 毫秒时间戳",
+  "fields": {
+    "senderId": "11223344-5566-7788-99aa-bbccddeeff00",
+    "senderName": "Alex",
+    "channelId": "global",
+    "itemJson": "{\"id\":\"minecraft:netherite_sword\",\"count\":1}",
+    "timestamp": 1755057612345
+  },
+  "frameHex": "62100000000000000000000000000000003e112233445566778899aabbccddeeff0004416c657806676c6f62616c2c7b226964223a226d696e6563726166743a6e65746865726974655f73776f7264222c22636f756e74223a317d00000198a195e639"
+}

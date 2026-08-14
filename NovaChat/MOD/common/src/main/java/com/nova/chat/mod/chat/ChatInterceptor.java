@@ -4,6 +4,7 @@ import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.command.WelcomeMessageService;
 import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.itemdisplay.ItemDisplayMessages;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -13,7 +14,9 @@ import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
+import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.mod.config.ModConfig;
 import com.nova.chat.mod.network.NetworkClient;
 import com.nova.chat.mod.platform.ChatHandler;
@@ -49,6 +52,21 @@ public class ChatInterceptor implements ChatHandler {
     private final MessageFormatter messageFormatter;
     private final MentionNotifier mentionNotifier = new MentionNotifier();
 
+    /** Known channels from ConfigSync, for channel-prefix routing; may be null. */
+    private final com.nova.chat.client.channel.KnownChannelRegistry knownChannelRegistry;
+
+    /** Per-player ignore lists (/nc ignore) for inbound filtering; may be null. */
+    private final com.nova.chat.client.ignore.IgnoreListService ignoreListService;
+
+    /**
+     * Shared private-message core (/nc msg, /nc r): send-side packet building,
+     * receive-side role rendering, reply-target tracking and backend error
+     * rendering. Owned here so the receive path and the command handlers share
+     * one reply-target map.
+     */
+    private final com.nova.chat.client.privatemsg.PrivateMessageService privateMessageService =
+            new com.nova.chat.client.privatemsg.PrivateMessageService();
+
     /** Player chat states indexed by UUID (shared client-core store). */
     private final PlayerStateStore playerStates = new PlayerStateStore();
 
@@ -59,10 +77,19 @@ public class ChatInterceptor implements ChatHandler {
 
     public ChatInterceptor(Platform platform, NetworkClient networkClient,
                            ModConfig config, MessageFormatter messageFormatter) {
+        this(platform, networkClient, config, messageFormatter, null, null);
+    }
+
+    public ChatInterceptor(Platform platform, NetworkClient networkClient,
+                           ModConfig config, MessageFormatter messageFormatter,
+                           com.nova.chat.client.channel.KnownChannelRegistry knownChannelRegistry,
+                           com.nova.chat.client.ignore.IgnoreListService ignoreListService) {
         this.platform = platform;
         this.networkClient = networkClient;
         this.config = config;
         this.messageFormatter = messageFormatter;
+        this.knownChannelRegistry = knownChannelRegistry;
+        this.ignoreListService = ignoreListService;
         this.globalMode = config.getChat().isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
         registerIncomingHandlers();
     }
@@ -81,6 +108,97 @@ public class ChatInterceptor implements ChatHandler {
         networkClient.registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
         networkClient.registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
         networkClient.registerHandler(MentionPacket.class, this::handleMention);
+        networkClient.registerHandler(TitlePacket.class, this::handleTitle);
+        networkClient.registerHandler(ItemDisplayPacket.class, this::handleItemDisplay);
+        networkClient.registerHandler(
+                com.nova.chat.common.protocol.packets.PrivateMessagePacket.class,
+                this::handlePrivateMessage);
+    }
+
+    /**
+     * Handles a completed (S→C) private message: the shared
+     * {@link com.nova.chat.client.privatemsg.PrivateMessageService} resolves
+     * which local players render which role (sender echo vs received line,
+     * receiver-side ignore filter, reply tracking); lines are rendered through
+     * {@link Platform#sendMessage} like {@link #handleItemDisplay} (the mod
+     * platform bridge is thread-safe plain-string chat).
+     */
+    private void handlePrivateMessage(com.nova.chat.common.protocol.packets.PrivateMessagePacket packet) {
+        var deliveries = privateMessageService.handleIncoming(
+                packet, platform::isPlayerOnline, ignoreListService);
+        for (com.nova.chat.client.privatemsg.PrivateMessageService.Delivery delivery : deliveries) {
+            platform.sendMessage(delivery.getPlayerId(),
+                    messageFormatter.parseColors(delivery.getLine()));
+        }
+    }
+
+    /**
+     * @return the shared private-message service (/nc msg, /nc r)
+     */
+    public com.nova.chat.client.privatemsg.PrivateMessageService getPrivateMessageService() {
+        return privateMessageService;
+    }
+
+    /**
+     * Handles an inbound item display packet ({@code [item]}/{@code [i]} play,
+     * packet 0x10) by rendering one chat line to every player whose active
+     * channel matches the packet channel.
+     *
+     * <p>Receive-side semantics are "receive = render", matching the Bedrock
+     * clients; the backend currently registers no route for this packet.
+     * Degradation: the mod {@link Platform} abstraction is plain-string chat
+     * (same constraint as {@link #handleTitle}), so the line is color-parsed
+     * text without a hover component. The line is formatted per viewer because
+     * the copy is locale-dependent.
+     *
+     * <p>Send side is intentionally absent on the mod layer: {@link Platform}
+     * exposes no held-item accessor, so {@code [item]} tokens typed here pass
+     * through as plain text.
+     */
+    private void handleItemDisplay(ItemDisplayPacket packet) {
+        String channelId = packet.getChannelId();
+        for (UUID playerId : platform.getOnlinePlayerIds()) {
+            // Skip senders the viewer has ignored (/nc ignore)
+            if (ignoreListService != null
+                    && ignoreListService.isIgnored(playerId, packet.getSenderName())) {
+                continue;
+            }
+            PlayerChannelState state = playerStates.get(playerId);
+            if (state != null && channelId != null && channelId.equals(state.getActiveChannel())) {
+                platform.sendMessage(playerId, messageFormatter.parseColors(
+                        ItemDisplayMessages.formatLine(playerId, packet.getSenderName(), packet.getItemJson())));
+            }
+        }
+    }
+
+    /**
+     * Handles a title packet by rendering it to every player whose active
+     * channel matches the packet channel (Requirements 15.1, 15.5).
+     *
+     * <p>Degradation: the mod {@link Platform} abstraction has no title channel
+     * (title/sound are loader-owned, the same constraint documented on
+     * {@link #handleMention}), so the title and subtitle are rendered as chat
+     * lines via {@link Platform#sendMessage}. A native title path would require
+     * widening {@link Platform} and each loader submodule.
+     */
+    private void handleTitle(TitlePacket packet) {
+        String channelId = packet.getChannelId();
+        String title = packet.getTitle() != null ? packet.getTitle() : "";
+        String subtitle = packet.getSubtitle() != null ? packet.getSubtitle() : "";
+        if (title.isEmpty() && subtitle.isEmpty()) {
+            return;
+        }
+        for (UUID playerId : platform.getOnlinePlayerIds()) {
+            PlayerChannelState state = playerStates.get(playerId);
+            if (state != null && channelId != null && channelId.equals(state.getActiveChannel())) {
+                if (!title.isEmpty()) {
+                    platform.sendMessage(playerId, messageFormatter.parseColors(title));
+                }
+                if (!subtitle.isEmpty()) {
+                    platform.sendMessage(playerId, messageFormatter.parseColors(subtitle));
+                }
+            }
+        }
     }
 
     // ============================ outgoing chat ============================
@@ -108,7 +226,17 @@ public class ChatInterceptor implements ChatHandler {
             return;
         }
 
-        sendToChannel(playerId, playerName, state.getActiveChannel(), message);
+        // Channel-prefix routing (e.g. "!hi" -> global) before the
+        // active-channel send; escape/unknown-prefix cases fall through with
+        // the resolver-produced message (UX: prefix = /nc <channel> shorthand).
+        com.nova.chat.client.channel.ChannelPrefixResolver.Resolution resolution =
+                com.nova.chat.client.channel.ChannelPrefixResolver.resolve(
+                        config.getChat().getChannelPrefixes(), message,
+                        knownChannelRegistry != null ? knownChannelRegistry.getAll() : null);
+        String targetChannel = resolution.isRedirect()
+                ? resolution.getChannelId() : state.getActiveChannel();
+
+        sendToChannel(playerId, playerName, targetChannel, resolution.getMessage());
     }
 
     @Override
@@ -164,6 +292,10 @@ public class ChatInterceptor implements ChatHandler {
 
         String highlighted = MentionNotifier.highlightMentions(content, MENTION_HIGHLIGHT_COLOR);
         for (UUID playerId : platform.getOnlinePlayerIds()) {
+            // Skip senders the viewer has ignored (/nc ignore)
+            if (ignoreListService != null && ignoreListService.isIgnored(playerId, senderName)) {
+                continue;
+            }
             PlayerChannelState state = playerStates.get(playerId);
             if (state != null && channelId != null && channelId.equals(state.getActiveChannel())) {
                 String formatted = messageFormatter.formatMessage(channelName, senderName, highlighted);
@@ -174,8 +306,17 @@ public class ChatInterceptor implements ChatHandler {
 
     /**
      * Routes a channel-action response through the shared dispatcher.
+     * Private-message rejections are unsolicited (no pending context in the
+     * shared tracker); the dispatcher would drop them, so they are routed to
+     * the {@code PrivateMessageService} for player-locale rendering instead.
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
+        if (com.nova.chat.client.privatemsg.PrivateMessageService.isPrivateMessageError(packet)) {
+            privateMessageService.renderError(packet, platform::isPlayerOnline)
+                    .ifPresent(delivery -> platform.sendMessage(delivery.getPlayerId(),
+                            messageFormatter.parseColors(delivery.getLine())));
+            return;
+        }
         dispatcher.handle(packet);
     }
 
@@ -187,6 +328,11 @@ public class ChatInterceptor implements ChatHandler {
         UUID mentionedId = packet.getMentionedId();
         UUID mentionerId = packet.getMentionerId();
         if (mentionedId == null || mentionerId == null) {
+            return;
+        }
+        // Ignored mentioner: no chat-line notification (/nc ignore)
+        if (ignoreListService != null
+                && ignoreListService.isIgnored(mentionedId, packet.getMentionerName())) {
             return;
         }
         mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
@@ -229,6 +375,8 @@ public class ChatInterceptor implements ChatHandler {
 
     public void removePlayerState(UUID playerId) {
         playerStates.remove(playerId);
+        // Reply-target cleanup for /nc r (private messages); thread-safe map.
+        privateMessageService.onPlayerQuit(playerId);
     }
 
     public ChatMode getGlobalMode() {

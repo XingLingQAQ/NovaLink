@@ -1,0 +1,14 @@
+{
+  "name": "config_sync_empty_string",
+  "packet": "ConfigSyncPacket",
+  "packetId": 6,
+  "requestId": "00000000-0000-0000-0000-000000000035",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "配置同步边界：configJson 为空字符串、timestamp=0——校验各语言不得把空串规范化为 {}",
+  "fields": {
+    "configJson": "",
+    "timestamp": 0
+  },
+  "frameHex": "1a0600000000000000000000000000000035000000000000000000"
+}

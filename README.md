@@ -256,7 +256,7 @@ npm run build
 | Admin Console 是否可生产构建 | `cd Panel/web && npm run build` |
 | 真实服务端链路是否可跑通 | `./gradlew realE2E` |
 
-项目同时维护单元、属性、集成和真实服务端 E2E 的分层验证路径。真实 E2E 是显式选择的任务，需要真实 Minecraft 服务端文件、机器人进程、Node.js、匹配的 JDK 与平台运行环境；它很有价值，但不应被当作每次本地修改都必须执行的脚本。环境前提和编排方式见 [`e2e/README.md`](e2e/README.md) 与 [`docs/REAL-SERVER-E2E.md`](docs/REAL-SERVER-E2E.md)。
+项目同时维护单元、属性、集成和真实服务端 E2E 的分层验证路径。真实 E2E 是显式选择的任务，需要真实 Minecraft 服务端文件、机器人进程、Node.js、匹配的 JDK 与平台运行环境；它很有价值，但不应被当作每次本地修改都必须执行的脚本。环境前提和编排方式见 [`test/README.md`](test/README.md) 与 [`docs/REAL-SERVER-E2E.md`](docs/REAL-SERVER-E2E.md)。
 
 <a id="resources"></a>
 <p align="center">
@@ -269,7 +269,7 @@ npm run build
 | 配置某个 NovaChat 接入端 | [`examples/novachat-config.yml`](examples/novachat-config.yml) |
 | 理解客户端运行时的设计边界 | [`NovaChat/client-core/DESIGN.md`](NovaChat/client-core/DESIGN.md) |
 | 修改或部署管理面板 | [`Panel/web`](Panel/web) |
-| 准备真实服务器验证 | [`e2e/README.md`](e2e/README.md) |
+| 准备真实服务器验证 | [`test/README.md`](test/README.md) |
 | 从快速接入、部署、运维或 API 文档开始 | [`docs/README.md`](docs/README.md) |
 | 查阅架构、测试、国际化与 UX 记录 | [`docs`](docs) |
 

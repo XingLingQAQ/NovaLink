@@ -1,0 +1,18 @@
+{
+  "name": "channel_action_response_error",
+  "packet": "ChannelActionResponsePacket",
+  "packetId": 5,
+  "requestId": "00000000-0000-0000-0000-000000000033",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "频道操作失败响应：NC-403 + emoji message + 空 extra",
+  "fields": {
+    "success": false,
+    "action": 6,
+    "channelId": "vip-频道",
+    "errorCode": "NC-403",
+    "message": "No permission 🚫",
+    "extra": {}
+  },
+  "frameHex": "39050000000000000000000000000000003300060a7669702de9a291e98193064e432d343033124e6f207065726d697373696f6e20f09f9aab00"
+}

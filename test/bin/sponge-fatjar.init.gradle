@@ -1,0 +1,61 @@
+// Temporary E2E init script: build a Sponge plugin jar containing only the
+// plugin classes plus NovaChat's common and client-core modules.
+// SpongeVanilla 1.16.5 ships Gson 2.8.0 (inside minecraft_server.jar) which
+// lacks JsonParser.parseString() (added in 2.8.9). Our common/client-core
+// code uses parseString(), so we MUST bundle Gson 2.10.1 in the fat jar.
+// Sponge's plugin classloader is isolated, so the bundled Gson classes take
+// precedence for plugin code without relocation.
+// The shadow plugin (8.1.1) is incompatible with Gradle 9.x, so this init
+// script adds an e2eFatJar task that uses the standard Jar task to merge
+// outputs — bypassing shadowJar entirely. Mirrors the folia/bukkit approach.
+// Invoked with --init-script; repository build files remain untouched.
+
+gradle.projectsLoaded {
+    gradle.afterProject { project ->
+        if (project.path == ':novachat-sponge') {
+            project.tasks.register('e2eFatJar', org.gradle.api.tasks.bundling.Jar) {
+                group = 'e2e'
+                description = 'Build the isolated Sponge E2E plugin jar.'
+                archiveBaseName.set('NovaChat-Sponge')
+                archiveVersion.set(project.provider { project.version.toString() })
+                archiveClassifier.set('e2e-fat')
+                destinationDirectory.set(project.rootProject.layout.projectDirectory.dir('.e2e/artifacts/dist'))
+                duplicatesStrategy = org.gradle.api.file.DuplicatesStrategy.EXCLUDE
+
+                dependsOn project.tasks.named('jar')
+                dependsOn project.rootProject.project(':novachat-common').tasks.named('jar')
+                dependsOn project.rootProject.project(':novachat-client-core').tasks.named('jar')
+
+                from {
+                    project.zipTree(project.tasks.named('jar', org.gradle.jvm.tasks.Jar).flatMap { it.archiveFile }.get().asFile)
+                }
+                from {
+                    project.zipTree(project.rootProject.project(':novachat-common')
+                        .tasks.named('jar', org.gradle.jvm.tasks.Jar).flatMap { it.archiveFile }.get().asFile)
+                }
+                from {
+                    project.zipTree(project.rootProject.project(':novachat-client-core')
+                        .tasks.named('jar', org.gradle.jvm.tasks.Jar).flatMap { it.archiveFile }.get().asFile)
+                }
+                // Bundle Gson 2.10.1 — Sponge 1.16.5 ships Gson 2.8.0 which lacks
+                // JsonParser.parseString() used by our common/client-core code.
+                from {
+                    project.zipTree(project.configurations.runtimeClasspath.files.find {
+                        it.name.startsWith('gson-')
+                    })
+                }
+
+                // Exclude signature files that would conflict
+                exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+
+                doLast {
+                    project.copy {
+                        from archiveFile
+                        into project.rootProject.layout.projectDirectory.dir('.e2e/sponge/plugins')
+                        rename { 'NovaChat-Sponge.jar' }
+                    }
+                }
+            }
+        }
+    }
+}

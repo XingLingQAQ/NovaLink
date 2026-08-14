@@ -1,0 +1,19 @@
+{
+  "name": "private_message_typical",
+  "packet": "PrivateMessagePacket",
+  "packetId": 20,
+  "requestId": "00000000-0000-0000-0000-000000000041",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "私聊消息 S→C 完整形态：后端已填 targetId 与服务器时间戳",
+  "fields": {
+    "senderId": "11223344-5566-7788-99aa-bbccddeeff00",
+    "senderName": "Steve",
+    "senderClientId": "survival-01",
+    "targetName": "Alex",
+    "targetId": "fedcba98-7654-3210-fedc-ba9876543210",
+    "content": "Meet me at spawn",
+    "timestamp": 1755057712345
+  },
+  "frameHex": "611400000000000000000000000000000041112233445566778899aabbccddeeff000553746576650b737572766976616c2d303104416c6578fedcba9876543210fedcba9876543210104d656574206d6520617420737061776e00000198a1976cd9"
+}

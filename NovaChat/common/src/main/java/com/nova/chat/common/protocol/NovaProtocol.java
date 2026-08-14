@@ -11,12 +11,21 @@ public final class NovaProtocol {
     /**
      * Current protocol version.
      * Requirements: 27.5 - Go and Java backends must use the same protocol version.
-     * IMPORTANT: When updating this value, also update:
-     *   - novachat-pmmp/src/NovaChat/Protocol/HandshakePacket.php (PROTOCOL_VERSION)
-     *   - novachat-endstone/novachat_endstone/network/client.py (PROTOCOL_VERSION)
+     * IMPORTANT: When updating this value (or the packet set), also update the
+     * non-JVM protocol implementations:
+     *   - PHP:    NovaChat/Bedrock/pmmp/src/NovaChat/Protocol/ (HandshakePacket.php PROTOCOL_VERSION,
+     *             Packet.php packet-id constants + createPacket registry)
+     *   - Python: NovaChat/Bedrock/endstone/novachat_endstone/network/client.py (PROTOCOL_VERSION),
+     *             novachat_endstone/protocol/packet.py (PacketIds + PACKET_REGISTRY)
+     *   - C++:    NovaChat/Bedrock/levilamina/src/protocol/PacketIds.h (PROTOCOL_VERSION + ids),
+     *             src/protocol/Packet.h (packet classes),
+     *             src/network/NetworkClient.cpp (decodePacket registry)
      *
      * v2 (2026-08): HandshakePacket adds trailing serverVersion field. Old v1
      * clients are rejected with NC-420 to avoid frame-decoder byte drift.
+     * v2 (2026-08, additive): PrivateMessagePacket (0x14) added without a
+     * version bump — old clients skip unknown packet ids safely (PHP/Python/C++
+     * decoders all drop unknown frames without breaking the connection).
      */
     public static final int PROTOCOL_VERSION = 2;
 
@@ -27,9 +36,10 @@ public final class NovaProtocol {
     /**
      * Creates a new PacketRegistry with all core packet types registered.
      *
-     * <p>Core set (12 ids): HANDSHAKE, HANDSHAKE_RESPONSE, CHAT_MESSAGE,
+     * <p>Core set (13 ids): HANDSHAKE, HANDSHAKE_RESPONSE, CHAT_MESSAGE,
      * CHANNEL_ACTION, CHANNEL_ACTION_RESPONSE, CONFIG_SYNC, KEEP_ALIVE, TITLE,
-     * ADMIN_ACTION, ADMIN_ACTION_RESPONSE, ITEM_DISPLAY, MENTION.
+     * ADMIN_ACTION, ADMIN_ACTION_RESPONSE, ITEM_DISPLAY, MENTION,
+     * PRIVATE_MESSAGE.
      *
      * <p>Intentionally unregistered orphan ids (no Java packet class yet):
      * PLAYER_STATE (0x08), ANNOUNCEMENT (0x0A), CHANNEL_UPDATE (0x0D),
@@ -55,6 +65,9 @@ public final class NovaProtocol {
         // Display feature packets (implemented)
         registry.register(PacketIds.ITEM_DISPLAY, ItemDisplayPacket.class, ItemDisplayPacket::new);
         registry.register(PacketIds.MENTION, MentionPacket.class, MentionPacket::new);
+
+        // Private message packet (cross-server /msg + /reply)
+        registry.register(PacketIds.PRIVATE_MESSAGE, PrivateMessagePacket.class, PrivateMessagePacket::new);
 
         // Orphans deliberately omitted: PLAYER_STATE, ANNOUNCEMENT, CHANNEL_UPDATE,
         // INVENTORY_SNAPSHOT, IMAGE_DISPLAY — reserved in PacketIds only.

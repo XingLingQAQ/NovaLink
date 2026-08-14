@@ -14,12 +14,34 @@ server:
   port: 8888
   # WebSocket 连接端口（Web 面板连接用）
   websocket-port: 8889
-  # JWT 令牌生成密钥（生产环境务必改为随机长字符串）
+  # JWT 令牌生成密钥（生产环境务必改为 ≥32 字符的随机长字符串）
+  # 若保持默认值，后端会自动生成随机密钥并持久化到 data/.jwt-secret（并打 WARN）
   secret-key: change-me-in-production
   # 处理连接的工作线程数
   worker-threads: 4
   # 后端控制台 / 面板消息语言（zh_CN / en_US）
   locale: zh_CN
+  # CORS 允许的来源白名单（Web 面板地址）。
+  # 默认 ["*"] 允许所有来源（兼容旧行为，启动时会 WARN 提示收紧）；
+  # 生产环境请改为面板的确切来源，例如:
+  # cors-allowed-origins:
+  #   - "https://panel.example.com"
+  cors-allowed-origins:
+    - "*"
+  # TCP 读空闲超时（秒），超时未收到任何数据则判定死连接并断开（0 = 关闭检测）。
+  # 心跳方向说明：Bedrock 系客户端每 15 秒主动发 KeepAlive；Java 系客户端只回显
+  # 不主动发，因此后端会在写空闲（本值的 1/3，默认 30 秒）时主动发 KeepAlive ping，
+  # 客户端回显即可刷新读空闲计时。默认 90 秒 ≥ 3 倍客户端心跳周期（15s），不会误伤。
+  idle-timeout-seconds: 90
+  # REST 业务专用工作线程池大小（固定）。REST 请求的鉴权/数据库查询/响应写出
+  # 都在该池中执行，避免阻塞 Netty IO 线程；池满时直接返回 503。
+  rest-worker-threads: 4
+  # 每连接消息限流（令牌桶，ChatMessage 与 ItemDisplay 共享同一桶）
+  rate-limit:
+    # 每秒补充令牌数（持续速率）；0 = 关闭限流
+    messages-per-second: 10
+    # 桶容量（允许的瞬时突发条数）
+    burst: 20
 
 # ----------------------------------------------------------------------------
 # 数据库设置 / Database
@@ -80,7 +102,8 @@ security:
 # ----------------------------------------------------------------------------
 # 超级管理员 / Super Admins
 # ----------------------------------------------------------------------------
-# 超级管理员拥有跨所有客户端的完整系统访问权限。
+# 超级管理员拥有跨所有客户端的完整系统访问权限，
+# 登录 Web 面板时角色为 SUPER_ADMIN（全部权限）。
 # 支持两种凭据写法（二选一）：
 #   password       - 明文密码，后端启动时自动做 SHA-256，无需预计算
 #   password-hash  - 预计算的 SHA-256 十六进制哈希（更安全，不留明文）
@@ -89,6 +112,24 @@ super-admins:
   - uuid: "00000000-0000-0000-0000-000000000001"
     username: admin
     password: admin123
+
+# ----------------------------------------------------------------------------
+# 面板用户 / Panel Users
+# ----------------------------------------------------------------------------
+# Web 面板登录账号（与游戏服 clients 凭据完全隔离——游戏服接入密码不能登录面板）。
+# 角色（RBAC，VIEWER < ADMIN < SUPER_ADMIN）：
+#   VIEWER - 只读：所有 GET 查询端点 + WebSocket 实时数据
+#   ADMIN  - VIEWER 全部 + 玩家处罚（禁言/踢出/封禁）+ 频道管理 + 发消息 + 通知管理
+# SUPER_ADMIN 只能通过上方 super-admins 配置。
+# 凭据写法与 super-admins 相同（password 明文 或 password-hash 预计算哈希，二选一）。
+# 本节可省略：省略时仅 super-admins 可登录面板。
+panel-users:
+  - username: moderator
+    password: moderator123
+    role: ADMIN
+  - username: viewer
+    password: viewer123
+    role: VIEWER
 
 # ----------------------------------------------------------------------------
 # 调试模式 / Debug
@@ -107,6 +148,8 @@ global_channels:
     permission: novachat.channel.global
     # 最大成员数（0 = 无限制）
     max_capacity: 1000
+    # 慢速模式：同一玩家两条消息的最小间隔秒数（0 = 关闭；频道管理员及以上豁免）
+    # slow_mode: 5
 
 # ----------------------------------------------------------------------------
 # 频道模板 / Channel Templates
@@ -137,7 +180,23 @@ clients:
 features:
   # 启用敏感词过滤
   filter-enabled: true
-  # 记录聊天消息到日志
+  # 记录聊天消息到日志并持久化到数据库（供面板消息历史查询）
   message-log-enabled: false
   # 启用跨服聊天分发
   cross-server-chat-enabled: true
+  # 启用跨服私聊（/msg /reply；关闭后发送方收到 NC-403 提示）
+  private-messages-enabled: true
+  # 持久化消息保留天数（0 = 永久保留；每小时自动清理过期消息）
+  message-log-retention-days: 30
+
+# ----------------------------------------------------------------------------
+# 敏感词过滤 / Filter（自定义词与正则，面板可管理）
+# ----------------------------------------------------------------------------
+# 自定义敏感词与正则模式（在内置词表基础上追加）。
+# 开关本身由 features.filter-enabled 控制；本节内容可通过面板
+# GET/PUT /api/filter 查看与全量替换，保存后自动落盘到本文件。
+filter:
+  # 自定义敏感词列表（命中后替换为 ***）
+  words: []
+  # 自定义正则模式列表（不区分大小写；非法正则会被跳过并告警）
+  patterns: []

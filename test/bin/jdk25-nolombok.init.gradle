@@ -1,0 +1,16 @@
+// Init script: disable annotation processing for :novachat-common and
+// :novachat-client-core so they compile under JDK25 (Lombok 1.18.x's
+// annotation processor crashes on JDK25 with NoSuchFieldException
+// com.sun.tools.javac.code.TypeTag :: UNKNOWN). Neither module's main
+// sources use Lombok annotations (no `import lombok` in main sources), so
+// -proc:none is safe and produces identical bytecode. Velocity module
+// itself does not declare Lombok at all.
+gradle.projectsLoaded {
+    gradle.afterProject { p ->
+        if (p.path == ':novachat-common' || p.path == ':novachat-client-core') {
+            p.tasks.withType(JavaCompile).configureEach {
+                options.compilerArgs += ['-proc:none']
+            }
+        }
+    }
+}

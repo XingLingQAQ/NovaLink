@@ -1,0 +1,37 @@
+# Send admin-only NovaChat commands via RCON to the bukkit/Purpur E2E server.
+# These exercise /nc announce + /nc title + /nc reload (admin) from the console,
+# so the non-admin E2E bot captures the resulting broadcast/title in its results.json.
+#
+# Usage:
+#   .e2e/bin/start-purpur-rcon.ps1            # waits for bot, then sends all 3 admin cmds
+#   .e2e/bin/start-purpur-rcon.ps1 -Delay 5   # override the pre-send delay
+#
+# Prerequisite: the Purpur server is running with RCON enabled (server.properties:
+# enable-rcon=true, rcon.port=54648, rcon.password=e2e-rcon-secret) AND the E2E
+# bot has already joined the server + /nc join global so it receives the broadcast.
+param(
+  [int]$Delay = 35,
+  [string]$RconHost = "127.0.0.1",
+  [int]$RconPort = 54648,
+  [string]$RconPassword = "e2e-rcon-secret"
+)
+
+$rconScript = Join-Path $PSScriptRoot "rcon.ps1"
+if (-not (Test-Path $rconScript)) { throw "rcon.ps1 not found: $rconScript" }
+
+Write-Output "=== start-purpur-rcon: waiting $Delay s for the E2E bot to join + /nc join global ==="
+Start-Sleep -Seconds $Delay
+
+Write-Output "=== RCON: /nc reload (admin, from console) ==="
+& $rconScript -Host_ $RconHost -Port $RconPort -Password $RconPassword -Command "nc reload"
+Start-Sleep -Seconds 3
+
+Write-Output "=== RCON: /nc announce global E2E ANNOUNCE FROM RCON ==="
+& $rconScript -Host_ $RconHost -Port $RconPort -Password $RconPassword -Command "nc announce global E2E ANNOUNCE FROM RCON"
+Start-Sleep -Seconds 4
+
+Write-Output "=== RCON: /nc title global E2ETitle E2ESubtitle ==="
+& $rconScript -Host_ $RconHost -Port $RconPort -Password $RconPassword -Command "nc title global E2ETitle E2ESubtitle"
+Start-Sleep -Seconds 4
+
+Write-Output "=== start-purpur-rcon: done ==="

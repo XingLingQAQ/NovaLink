@@ -2,20 +2,26 @@ package com.nova.link.api;
 
 /**
  * Represents a webhook configuration for external notifications.
- * 
+ *
+ * <p>Since schema v5 webhooks are persisted; {@code url}/{@code event}/{@code secret}
+ * are mutable to support PUT /api/webhooks/{id}, and {@code active} controls
+ * whether the webhook participates in event distribution (inactive webhooks are
+ * skipped but kept in storage).
+ *
  * Requirements: 25.5 - Webhook support
  */
 public class Webhook {
 
     private final String id;
-    private final String url;
-    private final String event;
-    private final String secret;
+    private String url;
+    private String event;
+    private String secret;
+    private boolean active;
     private final long createdAt;
     private long lastTriggered;
 
     /**
-     * Creates a new Webhook.
+     * Creates a new Webhook (active by default).
      *
      * @param id the unique webhook ID
      * @param url the webhook URL to call
@@ -23,12 +29,29 @@ public class Webhook {
      * @param secret the optional secret for signing payloads
      */
     public Webhook(String id, String url, String event, String secret) {
+        this(id, url, event, secret, true, System.currentTimeMillis(), 0L);
+    }
+
+    /**
+     * Restores a webhook from persistent storage.
+     *
+     * @param id the unique webhook ID
+     * @param url the webhook URL to call
+     * @param event the event type to trigger on
+     * @param secret the optional secret for signing payloads
+     * @param active whether the webhook participates in distribution
+     * @param createdAt original creation timestamp (epoch millis)
+     * @param lastTriggered last successful trigger (epoch millis, 0 = never)
+     */
+    public Webhook(String id, String url, String event, String secret,
+                   boolean active, long createdAt, long lastTriggered) {
         this.id = id;
         this.url = url;
         this.event = event;
         this.secret = secret;
-        this.createdAt = System.currentTimeMillis();
-        this.lastTriggered = 0;
+        this.active = active;
+        this.createdAt = createdAt;
+        this.lastTriggered = lastTriggered;
     }
 
     /**
@@ -50,6 +73,15 @@ public class Webhook {
     }
 
     /**
+     * Sets the webhook URL.
+     *
+     * @param url the new URL
+     */
+    public void setUrl(String url) {
+        this.url = url;
+    }
+
+    /**
      * Gets the event type this webhook listens for.
      *
      * @return the event type
@@ -59,12 +91,48 @@ public class Webhook {
     }
 
     /**
+     * Sets the event type this webhook listens for.
+     *
+     * @param event the new event type
+     */
+    public void setEvent(String event) {
+        this.event = event;
+    }
+
+    /**
      * Gets the secret for signing payloads.
      *
      * @return the secret, or null if not set
      */
     public String getSecret() {
         return secret;
+    }
+
+    /**
+     * Sets the secret for signing payloads.
+     *
+     * @param secret the new secret (null to clear)
+     */
+    public void setSecret(String secret) {
+        this.secret = secret;
+    }
+
+    /**
+     * Checks whether this webhook participates in event distribution.
+     *
+     * @return true when active
+     */
+    public boolean isActive() {
+        return active;
+    }
+
+    /**
+     * Enables or disables this webhook for event distribution.
+     *
+     * @param active the new active flag
+     */
+    public void setActive(boolean active) {
+        this.active = active;
     }
 
     /**

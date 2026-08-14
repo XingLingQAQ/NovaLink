@@ -70,6 +70,29 @@ public class NovaChatMod {
      * @return the shared services holder
      */
     public static ModServices bootstrap(Platform platform, ModConfig config, String clientId) {
+        return bootstrap(platform, config, clientId, null);
+    }
+
+    /**
+     * Builds the shared mod runtime for a loader, with an ignore-list data
+     * directory.
+     *
+     * <p>Same as {@link #bootstrap(Platform, ModConfig, String)}, plus the shared
+     * {@code IgnoreListService} (/nc ignore). When {@code dataDirectory} is
+     * non-null, ignore lists persist to {@code ignore-lists.json} in it; loaders
+     * should pass their config/data dir and call
+     * {@code services.getIgnoreListService().close()} on server shutdown to
+     * flush pending writes.
+     *
+     * @param platform      the mod platform abstraction
+     * @param config        the loaded mod configuration
+     * @param clientId      the backend client id / username (from config)
+     * @param dataDirectory the ignore-list persistence directory, or null for
+     *                      in-memory only
+     * @return the shared services holder
+     */
+    public static ModServices bootstrap(Platform platform, ModConfig config, String clientId,
+                                        java.nio.file.Path dataDirectory) {
         // i18n default locale
         I18n.setDefaultLocale(LocaleResolver.parseOrDefault(
                 config.getChat().getLocale(), LocaleResolver.ROOT_LOCALE));
@@ -81,11 +104,19 @@ public class NovaChatMod {
         KnownChannelRegistry knownChannelRegistry = new KnownChannelRegistry();
         ConfigSyncHandlerRegistrar.register(networkClient, knownChannelRegistry, clientId);
 
+        // Per-player ignore lists (/nc ignore)
+        com.nova.chat.client.ignore.IgnoreListService ignoreListService =
+                new com.nova.chat.client.ignore.IgnoreListService();
+        if (dataDirectory != null) {
+            ignoreListService.setDataDirectory(dataDirectory);
+        }
+
         // Chat interceptor (registers incoming handlers)
         String defaultChannel = config.getChat().getDefaultChannel();
         String defaultFormat = config.getFormats().getOrDefault(defaultChannel, "{player}: {message}");
         MessageFormatter messageFormatter = new MessageFormatter(config.getFormats(), defaultFormat);
-        ChatInterceptor chatInterceptor = new ChatInterceptor(platform, networkClient, config, messageFormatter);
+        ChatInterceptor chatInterceptor = new ChatInterceptor(platform, networkClient, config,
+                messageFormatter, knownChannelRegistry, ignoreListService);
 
         // Shared channel command service
         PlatformType commonPlatformType = platform.getPlatformType().toCommon();
@@ -93,6 +124,6 @@ public class NovaChatMod {
                 () -> networkClient, commonPlatformType);
 
         return new ModServices(config, networkClient, chatInterceptor,
-                channelCommandService, knownChannelRegistry);
+                channelCommandService, knownChannelRegistry, ignoreListService);
     }
 }

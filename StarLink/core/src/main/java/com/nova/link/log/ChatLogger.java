@@ -30,4 +30,24 @@ public class ChatLogger {
         logger.info("[{}] {} ({}): {}", channelId, senderName != null ? senderName : "?",
                 senderId != null ? senderId : "-", content);
     }
+
+    /**
+     * Records a delivered private message with a {@code [DM]} marker on the
+     * same dedicated logger. Privacy boundary: private messages are audited
+     * here only — they are never persisted to the {@code messages} history
+     * table nor mirrored to the web panel.
+     *
+     * @param senderId the sender UUID
+     * @param senderName the sender display name
+     * @param targetId the target UUID
+     * @param targetName the target display name
+     * @param content the message content
+     */
+    public void logPrivateMessage(String senderId, String senderName,
+                                  String targetId, String targetName, String content) {
+        logger.info("[DM] {} ({}) -> {} ({}): {}",
+                senderName != null ? senderName : "?", senderId != null ? senderId : "-",
+                targetName != null ? targetName : "?", targetId != null ? targetId : "-",
+                content);
+    }
 }

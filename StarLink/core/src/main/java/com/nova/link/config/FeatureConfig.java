@@ -25,6 +25,15 @@ public class FeatureConfig {
     /** Whether cross-server chat fan-out is active. Default true. */
     private boolean crossServerChatEnabled = true;
 
+    /** Whether cross-server private messages (/msg, /reply) are active. Default true. */
+    private boolean privateMessagesEnabled = true;
+
+    /**
+     * How many days persisted chat messages are retained; 0 keeps them
+     * forever. Default 30.
+     */
+    private int messageLogRetentionDays = 30;
+
     public FeatureConfig() {}
 
     public boolean isFilterEnabled() {
@@ -51,6 +60,22 @@ public class FeatureConfig {
         this.crossServerChatEnabled = crossServerChatEnabled;
     }
 
+    public boolean isPrivateMessagesEnabled() {
+        return privateMessagesEnabled;
+    }
+
+    public void setPrivateMessagesEnabled(boolean privateMessagesEnabled) {
+        this.privateMessagesEnabled = privateMessagesEnabled;
+    }
+
+    public int getMessageLogRetentionDays() {
+        return messageLogRetentionDays;
+    }
+
+    public void setMessageLogRetentionDays(int messageLogRetentionDays) {
+        this.messageLogRetentionDays = Math.max(0, messageLogRetentionDays);
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -58,11 +83,14 @@ public class FeatureConfig {
         FeatureConfig that = (FeatureConfig) o;
         return filterEnabled == that.filterEnabled &&
                messageLogEnabled == that.messageLogEnabled &&
-               crossServerChatEnabled == that.crossServerChatEnabled;
+               crossServerChatEnabled == that.crossServerChatEnabled &&
+               privateMessagesEnabled == that.privateMessagesEnabled &&
+               messageLogRetentionDays == that.messageLogRetentionDays;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(filterEnabled, messageLogEnabled, crossServerChatEnabled);
+        return Objects.hash(filterEnabled, messageLogEnabled, crossServerChatEnabled,
+                privateMessagesEnabled, messageLogRetentionDays);
     }
 }

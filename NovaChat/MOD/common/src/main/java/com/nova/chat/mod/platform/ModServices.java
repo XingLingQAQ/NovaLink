@@ -22,16 +22,27 @@ public final class ModServices {
     private final ChatInterceptor chatInterceptor;
     private final ChannelCommandService channelCommandService;
     private final KnownChannelRegistry knownChannelRegistry;
+    private final com.nova.chat.client.ignore.IgnoreListService ignoreListService;
 
     public ModServices(ModConfig config, NetworkClient networkClient,
                        ChatInterceptor chatInterceptor,
                        ChannelCommandService channelCommandService,
                        KnownChannelRegistry knownChannelRegistry) {
+        this(config, networkClient, chatInterceptor, channelCommandService,
+                knownChannelRegistry, null);
+    }
+
+    public ModServices(ModConfig config, NetworkClient networkClient,
+                       ChatInterceptor chatInterceptor,
+                       ChannelCommandService channelCommandService,
+                       KnownChannelRegistry knownChannelRegistry,
+                       com.nova.chat.client.ignore.IgnoreListService ignoreListService) {
         this.config = config;
         this.networkClient = networkClient;
         this.chatInterceptor = chatInterceptor;
         this.channelCommandService = channelCommandService;
         this.knownChannelRegistry = knownChannelRegistry;
+        this.ignoreListService = ignoreListService;
     }
 
     public ModConfig getConfig() {
@@ -52,5 +63,22 @@ public final class ModServices {
 
     public KnownChannelRegistry getKnownChannelRegistry() {
         return knownChannelRegistry;
+    }
+
+    /**
+     * @return the shared per-player ignore-list service (/nc ignore), or null
+     *         when the bootstrap ran without one (legacy 3-arg bootstrap)
+     */
+    public com.nova.chat.client.ignore.IgnoreListService getIgnoreListService() {
+        return ignoreListService;
+    }
+
+    /**
+     * @return the shared private-message service (/nc msg, /nc r), owned by the
+     *         {@link ChatInterceptor} so the receive path and command handlers
+     *         share one reply-target map; null when no interceptor was built
+     */
+    public com.nova.chat.client.privatemsg.PrivateMessageService getPrivateMessageService() {
+        return chatInterceptor != null ? chatInterceptor.getPrivateMessageService() : null;
     }
 }

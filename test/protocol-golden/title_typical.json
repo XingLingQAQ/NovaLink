@@ -1,0 +1,19 @@
+{
+  "name": "title_typical",
+  "packet": "TitlePacket",
+  "packetId": 9,
+  "requestId": "00000000-0000-0000-0000-000000000038",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "Title：颜色符号 § + 中文标题 + emoji 副标题 + 默认时序",
+  "fields": {
+    "channelId": "global",
+    "title": "§6服务器公告",
+    "subtitle": "Server restart in 5 min ⏰",
+    "fadeIn": 10,
+    "stay": 70,
+    "fadeOut": 20,
+    "senderId": "11223344-5566-7788-99aa-bbccddeeff00"
+  },
+  "frameHex": "63090000000000000000000000000000003806676c6f62616c12c2a736e69c8de58aa1e599a8e585ace5918a1b536572766572207265737461727420696e2035206d696e20e28fb00000000a0000004600000014112233445566778899aabbccddeeff00"
+}

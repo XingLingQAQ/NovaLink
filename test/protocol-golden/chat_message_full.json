@@ -1,0 +1,20 @@
+{
+  "name": "chat_message_full",
+  "packet": "ChatMessagePacket",
+  "packetId": 3,
+  "requestId": "00000000-0000-0000-0000-00000000002e",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "聊天消息：中文+emoji 内容，placeholders 非空（1 项，保证跨语言 map 序确定）",
+  "fields": {
+    "senderId": "11223344-5566-7788-99aa-bbccddeeff00",
+    "senderName": "Steve",
+    "clientId": "survival-01",
+    "channelId": "global",
+    "content": "Hello, 世界! 🎉",
+    "placeholders": {
+      "player_level": "42"
+    }
+  },
+  "frameHex": "5f030000000000000000000000000000002e112233445566778899aabbccddeeff000553746576650b737572766976616c2d303106676c6f62616c1348656c6c6f2c20e4b896e7958c2120f09f8e89010c706c617965725f6c6576656c023432"
+}

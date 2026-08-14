@@ -38,17 +38,24 @@ public:
 
 private:
     // Command handlers
-    void handleHelp(const std::string& playerName, const std::vector<std::string>& args);
+    /**
+     * @param isAdmin When true, the reload line is appended (mirrors the
+     *                Java/Python platforms' `novachat.admin`-gated help line).
+     */
+    void handleHelp(const std::string& playerName, const std::string& playerUuid,
+                    const std::vector<std::string>& args, bool isAdmin = false);
     void handleJoin(const std::string& playerName, const std::string& playerUuid,
                     const std::vector<std::string>& args);
     void handleLeave(const std::string& playerName, const std::string& playerUuid,
                      const std::vector<std::string>& args);
-    void handleList(const std::string& playerName, const std::vector<std::string>& args);
+    void handleList(const std::string& playerName, const std::string& playerUuid,
+                    const std::vector<std::string>& args);
     void handleWho(const std::string& playerName, const std::string& playerUuid,
                    const std::vector<std::string>& args);
     void handleToggle(const std::string& playerName, const std::string& playerUuid,
                       const std::vector<std::string>& args);
-    void handleReload(const std::string& playerName, const std::vector<std::string>& args);
+    void handleReload(const std::string& playerName, const std::string& playerUuid,
+                      const std::vector<std::string>& args);
 
     // Send a localized message to a player by name.
     void sendLocalized(const std::string& playerName, const std::string& playerUuid,

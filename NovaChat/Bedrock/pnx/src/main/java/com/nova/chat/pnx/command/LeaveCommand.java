@@ -60,7 +60,7 @@ public class LeaveCommand extends AbstractSubCommand {
             return true;
         }
 
-        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         ChannelCommandService channelCommands = plugin.getChannelCommandService();
         CommandResult result = channelCommands.leave(state, currentChannel, player.getName());
 
@@ -89,7 +89,7 @@ public class LeaveCommand extends AbstractSubCommand {
             return List.of();
         }
         Player player = (Player) sender;
-        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         if (state == null) {
             return List.of();
         }

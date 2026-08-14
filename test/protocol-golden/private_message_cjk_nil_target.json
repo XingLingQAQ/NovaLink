@@ -1,0 +1,19 @@
+{
+  "name": "private_message_cjk_nil_target",
+  "packet": "PrivateMessagePacket",
+  "packetId": 20,
+  "requestId": "00000000-0000-0000-0000-000000000042",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "私聊消息 C→S 边界：全零 targetId（后端按名解析）+ 中文名/emoji 内容",
+  "fields": {
+    "senderId": "fedcba98-7654-3210-fedc-ba9876543210",
+    "senderName": "玩家·小明",
+    "senderClientId": "生存服-01",
+    "targetName": "Alex",
+    "targetId": "00000000-0000-0000-0000-000000000000",
+    "content": "晚上一起打末影龙吗？🐉✨",
+    "timestamp": 1755057799999
+  },
+  "frameHex": "80011400000000000000000000000000000042fedcba9876543210fedcba98765432100ee78ea9e5aeb6c2b7e5b08fe6988e0ce7949fe5ad98e69c8d2d303104416c65780000000000000000000000000000000025e6999ae4b88ae4b880e8b5b7e68993e69cabe5bdb1e9be99e59097efbc9ff09f9089e29ca800000198a198c33f"
+}

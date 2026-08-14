@@ -328,7 +328,15 @@ public class WebSocketMessageHandler {
             sendError(session, "Not authenticated");
             return;
         }
-        
+
+        session.send(gson.toJson(buildPlayerUpdate()));
+    }
+
+    /**
+     * Builds the {@code player_update} payload shared by the on-demand
+     * {@code get_players} request and the event-triggered broadcast.
+     */
+    private JsonObject buildPlayerUpdate() {
         // Collect all players from all channels
         Set<UUID> allPlayers = new HashSet<>();
         Map<UUID, Set<String>> playerChannels = new HashMap<>();
@@ -366,13 +374,39 @@ public class WebSocketMessageHandler {
             }
             playerList.add(playerData);
         }
-        
+
         JsonObject response = new JsonObject();
         response.addProperty("type", "player_update");
         response.add("players", gson.toJsonTree(playerList));
         response.addProperty("totalPlayers", allPlayers.size());
         response.addProperty("timestamp", System.currentTimeMillis());
-        session.send(gson.toJson(response));
+        return response;
+    }
+
+    /**
+     * Broadcasts a {@code player_update} to all authenticated sessions.
+     * Triggered on player join/leave so the panel reflects presence changes in
+     * real time instead of waiting for the next {@code get_players} request.
+     * Skips building the payload entirely when no panel session is listening.
+     */
+    public void broadcastPlayerUpdate() {
+        boolean hasListener = false;
+        for (WebSocketSession session : sessions.values()) {
+            if (session.isAuthenticated() && session.isActive()) {
+                hasListener = true;
+                break;
+            }
+        }
+        if (!hasListener) {
+            return;
+        }
+
+        String json = gson.toJson(buildPlayerUpdate());
+        for (WebSocketSession session : sessions.values()) {
+            if (session.isAuthenticated() && session.isActive()) {
+                session.send(json);
+            }
+        }
     }
 
     /**

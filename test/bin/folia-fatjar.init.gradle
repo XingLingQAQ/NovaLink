@@ -1,0 +1,46 @@
+// Temporary E2E init script: build a Folia plugin jar containing only the
+// plugin classes plus NovaChat's common and client-core modules. Folia/Paper,
+// Netty, Gson, SLF4J, Logback and PlaceholderAPI stay on the host boundary.
+// Invoked with --init-script; repository build files remain untouched.
+
+gradle.projectsLoaded {
+    gradle.afterProject { project ->
+        if (project.path == ':novachat-folia') {
+            project.tasks.register('e2eFatJar', Jar) {
+                group = 'e2e'
+                description = 'Build the isolated Folia E2E plugin jar.'
+                archiveBaseName.set('novachat-folia')
+                archiveVersion.set(project.provider { project.version.toString() })
+                archiveClassifier.set('e2e-fat')
+                destinationDirectory.set(project.rootProject.layout.projectDirectory.dir('.e2e/artifacts/dist'))
+                duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+                dependsOn project.tasks.named('jar')
+                dependsOn project.rootProject.project(':novachat-common').tasks.named('jar')
+                dependsOn project.rootProject.project(':novachat-client-core').tasks.named('jar')
+
+                from {
+                    project.zipTree(project.tasks.named('jar', Jar).flatMap { it.archiveFile }.get().asFile)
+                }
+                from {
+                    project.zipTree(project.rootProject.project(':novachat-common')
+                        .tasks.named('jar', Jar).flatMap { it.archiveFile }.get().asFile)
+                }
+                from {
+                    project.zipTree(project.rootProject.project(':novachat-client-core')
+                        .tasks.named('jar', Jar).flatMap { it.archiveFile }.get().asFile)
+                }
+
+                exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+
+                doLast {
+                    project.copy {
+                        from archiveFile
+                        into project.rootProject.layout.projectDirectory.dir('.e2e/folia/plugins')
+                        rename { 'NovaChat-Folia.jar' }
+                    }
+                }
+            }
+        }
+    }
+}

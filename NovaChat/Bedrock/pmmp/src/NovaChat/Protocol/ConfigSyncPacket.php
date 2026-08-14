@@ -21,7 +21,9 @@ class ConfigSyncPacket extends Packet {
     }
 
     public function encode(PacketBuffer $buffer): void {
-        $buffer->writeString($this->configJson === "" ? "{}" : $this->configJson);
+        // Java only normalizes null configJson to "{}" (the property default
+        // here); an explicit empty string must be preserved on the wire.
+        $buffer->writeString($this->configJson);
         $buffer->writeLong($this->timestamp);
     }
 

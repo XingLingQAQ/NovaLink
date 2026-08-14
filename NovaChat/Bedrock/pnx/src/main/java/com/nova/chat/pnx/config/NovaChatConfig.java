@@ -28,6 +28,12 @@ public class NovaChatConfig {
     private String defaultChannel;
     private String locale;
 
+    /**
+     * Channel-prefix routing map ({@code chat.channel-prefixes}: prefix string
+     * → channel ID). Empty map (the default) disables prefix routing.
+     */
+    private Map<String, String> channelPrefixes;
+
     // Format settings
     private String formatPrefix;
     private String formatError;
@@ -46,6 +52,7 @@ public class NovaChatConfig {
         this.plugin = plugin;
         this.channelFormats = new HashMap<>();
         this.worldMappings = new HashMap<>();
+        this.channelPrefixes = new HashMap<>();
     }
 
     /**
@@ -65,6 +72,18 @@ public class NovaChatConfig {
         replaceVanilla = config.getBoolean("chat.replace_vanilla", false);
         defaultChannel = config.getString("chat.default_channel", "local");
         locale = config.getString("chat.locale", "zh_CN");
+
+        // Channel-prefix routing (prefix string -> channel ID); empty = disabled
+        channelPrefixes.clear();
+        if (config.exists("chat.channel-prefixes")) {
+            var prefixesSection = config.getSection("chat.channel-prefixes");
+            for (String key : prefixesSection.getKeys(false)) {
+                String channelId = prefixesSection.getString(key);
+                if (key != null && !key.isEmpty() && channelId != null && !channelId.isEmpty()) {
+                    channelPrefixes.put(key, channelId);
+                }
+            }
+        }
 
         // Format settings
         formatPrefix = config.getString("format.prefix", "§8[§bNovaChat§8]§r ");

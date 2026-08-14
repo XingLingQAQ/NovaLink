@@ -66,6 +66,22 @@ public class WebSocketGateway {
                             InvitationManager invitationManager,
                             ConfigManager configManager, ConsoleCommandHandler consoleCommandHandler,
                             NotificationStore notificationStore) {
+        this(bindAddress, port, secretKey, authManager, channelManager, playerStateManager,
+                messageRouter, webhookManager, networkHandler, muteManager, banManager,
+                invitationManager, configManager, consoleCommandHandler, notificationStore,
+                java.util.List.of("*"));
+    }
+
+    public WebSocketGateway(String bindAddress, int port, String secretKey,
+                            AuthManager authManager, ChannelManager channelManager,
+                            PlayerStateManager playerStateManager, MessageRouter messageRouter,
+                            WebhookManager webhookManager,
+                            ServerNetworkHandler networkHandler,
+                            MuteManager muteManager, BanManager banManager,
+                            InvitationManager invitationManager,
+                            ConfigManager configManager, ConsoleCommandHandler consoleCommandHandler,
+                            NotificationStore notificationStore,
+                            java.util.List<String> corsAllowedOrigins) {
         this.bindAddress = bindAddress;
         this.port = port;
         this.secretKey = secretKey;
@@ -78,7 +94,7 @@ public class WebSocketGateway {
                 jwtService, authManager, channelManager, networkHandler, playerStateManager);
 
         // Initialize HTTP auth handler
-        this.httpAuthHandler = new HttpAuthHandler(jwtService, authManager);
+        this.httpAuthHandler = new HttpAuthHandler(jwtService, authManager, corsAllowedOrigins);
 
         // Initialize REST API handler (optional, but recommended for web panel integrations)
         this.restApiHandler = new RestApiHandler(
@@ -94,12 +110,29 @@ public class WebSocketGateway {
                 configManager,
                 networkHandler,
                 consoleCommandHandler,
-                notificationStore
+                notificationStore,
+                corsAllowedOrigins
         );
 
         // Initialize WebSocket server
         this.webSocketServer = new WebSocketServer(
                 bindAddress, port, messageHandler, httpAuthHandler, restApiHandler);
+    }
+
+    /**
+     * Exposes the REST handler so NovaLinkMain can inject setter-based
+     * dependencies (AnnouncementManager, MessageLogService) after construction.
+     */
+    public RestApiHandler getRestApiHandler() {
+        return restApiHandler;
+    }
+
+    /**
+     * Exposes the auth handler so NovaLinkMain can inject the shared REST
+     * worker executor after construction.
+     */
+    public HttpAuthHandler getHttpAuthHandler() {
+        return httpAuthHandler;
     }
 
     /**
@@ -200,6 +233,16 @@ public class WebSocketGateway {
     public void broadcastChannelUpdate() {
         if (running) {
             messageHandler.broadcastChannelUpdate();
+        }
+    }
+
+    /**
+     * Broadcasts a player update to all authenticated web panel clients.
+     * Triggered on player join/leave for real-time presence in the panel.
+     */
+    public void broadcastPlayerUpdate() {
+        if (running) {
+            messageHandler.broadcastPlayerUpdate();
         }
     }
 

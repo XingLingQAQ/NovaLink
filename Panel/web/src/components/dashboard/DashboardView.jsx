@@ -26,21 +26,15 @@ function DashboardView({ theme: _theme, mode: _mode, txtMain: _txtMain, txtSec: 
   void _theme; void _mode; void _txtMain; void _txtSec;
   const { t } = useTranslation();
   // Use the pre-built stats from real backend data if provided; otherwise fall back to computed.
+  // The adapter supplies i18n keys + interpolation params; translate them here
+  // so KPI cards re-localize when the language changes.
   const stats = dashboardStats && dashboardStats.length > 0
-    ? dashboardStats.map((s) => {
-        let change = s.change;
-        if (s.changeKey) {
-          change = t(s.changeKey, s.changeOfflineCount != null ? { count: s.changeOfflineCount } : undefined);
-        } else if (s.changeOfflineCount != null) {
-          change = t('dashboard.change_offline_count', { count: s.changeOfflineCount });
-        }
-        return {
-          ...s,
-          title: t(s.titleKey || s.title, { defaultValue: s.title }),
-          change,
-          icon: (statIconMap && statIconMap[s.icon]) || Server,
-        };
-      })
+    ? dashboardStats.map((s) => ({
+        ...s,
+        title: t(s.titleKey),
+        change: t(s.changeKey, s.changeParams),
+        icon: (statIconMap && statIconMap[s.icon]) || Server,
+      }))
     : (() => {
         const onlineServers = servers.filter((s) => s.status === 'online').length;
         const totalPlayers = players.length;
@@ -169,7 +163,7 @@ function PlatformDistributionCard({ servers }) {
     <Card className="p-5">
       <h3 className="text-sm font-medium mb-4 text-foreground">{t('dashboard.platform_distribution')}</h3>
       <div className="space-y-3">
-        {rows.map((row, i) => {
+        {rows.map((row) => {
           const percent = total > 0 ? (row.count / total) * 100 : 0;
           return (
             <div key={row.labelKey}>

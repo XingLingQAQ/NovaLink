@@ -1,0 +1,29 @@
+# Start the isolated server for the PNX E2E workspace.
+# PNX standalone jar download was infeasible in-scope, so as the documented
+# fallback this runs the Cloudburst Nukkit 1239 server (PNX extends the Nukkit
+# API, so the PNX plugin jar loads on it). The plugin under test is the real
+# novachat-pnx fat jar — that is what the E2E exercises.
+param(
+  [string]$JavaHome = "C:\Users\XingLingQAQ\scoop\apps\temurin21-jdk\current",
+  [string]$PnxDir = "D:\Project\NovaLink\.e2e\pnx",
+  [string]$Jar = "D:\Project\NovaLink\.e2e\artifacts\dist\nukkit-cloudburst-1.0-20260616.184029-1239.jar",
+  [int]$MemoryMb = 512
+)
+
+$java = Join-Path $JavaHome "bin\java.exe"
+if (-not (Test-Path $java)) { throw "JDK 21 java.exe not found: $java" }
+if (-not (Test-Path $Jar)) { throw "Server jar not found: $Jar" }
+foreach ($required in @("server.properties", "nukkit.yml")) {
+  $path = Join-Path $PnxDir $required
+  if (-not (Test-Path $path)) { throw "Missing PNX E2E file: $path" }
+}
+
+$stdout = Join-Path $PnxDir "pnx.stdout.log"
+$stderr = Join-Path $PnxDir "pnx.stderr.log"
+$pidFile = Join-Path $PnxDir "pnx.pid"
+Remove-Item $stdout, $stderr, $pidFile -ErrorAction SilentlyContinue
+$jvmArgs = @("-Xms${MemoryMb}M", "-Xmx${MemoryMb}M", "-jar", $Jar, "nogui")
+$proc = Start-Process -FilePath $java -ArgumentList $jvmArgs -WorkingDirectory $PnxDir `
+  -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
+$proc.Id | Set-Content -Encoding ascii $pidFile
+Write-Output ("PNX_PID=" + $proc.Id)

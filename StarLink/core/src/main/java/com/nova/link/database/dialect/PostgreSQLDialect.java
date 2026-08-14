@@ -1,7 +1,14 @@
 package com.nova.link.database.dialect;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
+import java.sql.SQLTransientException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * PostgreSQL dialect for schema migrations.
@@ -22,7 +29,8 @@ import java.util.List;
 public class PostgreSQLDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
-    private static final int CURRENT_VERSION = 4;
+    private static final long MIGRATION_LOCK_KEY = 0x4E4F56414C494E4BL;
+    private static final int CURRENT_VERSION = 5;
 
     @Override
     public int getCurrentVersion() {
@@ -39,6 +47,10 @@ public class PostgreSQLDialect implements MigrationDialect {
         return """
             CREATE TABLE IF NOT EXISTS %s (
                 version INT PRIMARY KEY,
+                checksum VARCHAR(64),
+                started_at TIMESTAMP NULL,
+                completed_at TIMESTAMP NULL,
+                status VARCHAR(16),
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 description VARCHAR(255)
             )
@@ -139,7 +151,7 @@ public class PostgreSQLDialect implements MigrationDialect {
                 // Add platform column to players table.
                 // PostgreSQL has no AFTER clause; column is simply appended.
                 statements.add("""
-                    ALTER TABLE players ADD COLUMN platform VARCHAR(32) NULL
+                    ALTER TABLE players ADD COLUMN IF NOT EXISTS platform VARCHAR(32) NULL
                     """);
             }
             case 3 -> {
@@ -176,6 +188,52 @@ public class PostgreSQLDialect implements MigrationDialect {
                 statements.add("CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications (read)");
             }
 
+            case 5 -> {
+                // Messages table — persisted chat history. Epoch-millis column
+                // named created_at to avoid the TIMESTAMP type keyword; webhook
+                // event column named event_type for cross-dialect consistency.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                        channel_id VARCHAR(64),
+                        sender_id VARCHAR(36),
+                        sender_name VARCHAR(64),
+                        client_id VARCHAR(64),
+                        content TEXT,
+                        created_at BIGINT NOT NULL
+                    )
+                    """);
+                statements.add("CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages (created_at)");
+                statements.add("CREATE INDEX IF NOT EXISTS idx_messages_channel_id ON messages (channel_id)");
+                statements.add("CREATE INDEX IF NOT EXISTS idx_messages_sender_name ON messages (sender_name)");
+
+                // Announcements table — persisted JOIN/CRON announcements.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS announcements (
+                        id VARCHAR(64) PRIMARY KEY,
+                        announcement_type VARCHAR(16) NOT NULL,
+                        channel_id VARCHAR(64),
+                        content TEXT NOT NULL,
+                        cron VARCHAR(64),
+                        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at BIGINT NOT NULL
+                    )
+                    """);
+
+                // Webhooks table — persisted webhook registrations.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS webhooks (
+                        id VARCHAR(64) PRIMARY KEY,
+                        url TEXT NOT NULL,
+                        event_type VARCHAR(64),
+                        secret VARCHAR(255),
+                        active BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at BIGINT NOT NULL,
+                        last_triggered BIGINT NOT NULL DEFAULT 0
+                    )
+                    """);
+            }
+
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -189,12 +247,72 @@ public class PostgreSQLDialect implements MigrationDialect {
             case 2 -> "Add platform column to players table";
             case 3 -> "Add bans table for player ban management";
             case 4 -> "Add notifications table for persisted panel notifications";
+            case 5 -> "Add messages, announcements and webhooks tables for persistence";
             default -> "Unknown migration";
         };
     }
 
     @Override
-    public String getRecordMigrationSql() {
-        return "INSERT INTO " + MIGRATION_TABLE + " (version, description) VALUES (?, ?)";
+    public String getMigrationLockAcquireSql() {
+        return "SELECT pg_try_advisory_lock(" + MIGRATION_LOCK_KEY + ")";
+    }
+
+    @Override
+    public String getMigrationLockReleaseSql() {
+        return "SELECT pg_advisory_unlock(" + MIGRATION_LOCK_KEY + ")";
+    }
+
+    @Override
+    public MigrationLock acquireMigrationLock(Connection connection, long timeoutMillis) throws SQLException {
+        long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMillis));
+        long deadline = System.nanoTime() + timeoutNanos;
+        try (PreparedStatement statement = connection.prepareStatement(getMigrationLockAcquireSql())) {
+            while (true) {
+                try (ResultSet result = statement.executeQuery()) {
+                    if (result.next() && result.getBoolean(1)) {
+                        break;
+                    }
+                }
+
+                long remainingNanos = deadline - System.nanoTime();
+                if (remainingNanos <= 0L) {
+                    throw new SQLTimeoutException(
+                            "Timed out after " + timeoutMillis + " ms acquiring PostgreSQL advisory migration lock");
+                }
+                long sleepMillis = Math.max(1L,
+                        Math.min(100L, TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
+                try {
+                    Thread.sleep(sleepMillis);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new SQLTransientException(
+                            "Interrupted while acquiring PostgreSQL advisory migration lock", exception);
+                }
+            }
+        }
+
+        return new MigrationLock() {
+            private boolean held = true;
+
+            @Override
+            public boolean ownsTransaction() {
+                return false;
+            }
+
+            @Override
+            public void release(boolean commitTransaction) throws SQLException {
+                if (!held) {
+                    return;
+                }
+                try (PreparedStatement statement = connection.prepareStatement(getMigrationLockReleaseSql());
+                     ResultSet result = statement.executeQuery()) {
+                    if (!result.next() || !result.getBoolean(1)) {
+                        throw new SQLException("PostgreSQL advisory migration lock was not owned by this connection");
+                    }
+                } finally {
+                    held = false;
+                }
+            }
+        };
     }
 }

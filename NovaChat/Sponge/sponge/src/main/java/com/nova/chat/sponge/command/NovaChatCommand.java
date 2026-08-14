@@ -84,6 +84,10 @@ public class NovaChatCommand {
             .addChild(buildListCommand(), "list")
             .addChild(buildWhoCommand(), "who")
             .addChild(buildToggleCommand(), "toggle", "t")
+            .addChild(buildIgnoreCommand(), "ignore")
+            .addChild(buildUnignoreCommand(), "unignore")
+            .addChild(buildMsgCommand(), "msg")
+            .addChild(buildReplyCommand(), "r")
             .addChild(buildReloadCommand(), "reload")
             .addChild(buildDebugCommand(), "debug")
             .executor(this::executeHelp)
@@ -217,6 +221,223 @@ public class NovaChatCommand {
     }
 
     /**
+     * Builds the ignore subcommand ({@code /nc ignore [<player>|list]}).
+     * Completion offers online player names plus the {@code list} literal.
+     * No permission gate — see buildCommand() comment about SpongeAPI 8
+     * default-deny for undeclared permissions.
+     */
+    private Command.Parameterized buildIgnoreCommand() {
+        // Free-form string (offline names must be accepted); the completer
+        // only suggests the "list" literal plus online player names.
+        Parameter.Value<String> targetParam = Parameter.string().key("target")
+                .completer((ctx, input) -> {
+                    String prefix = input == null ? "" : input.toLowerCase(java.util.Locale.ROOT);
+                    java.util.List<org.spongepowered.api.command.CommandCompletion> completions =
+                            new java.util.ArrayList<>();
+                    String listArg = com.nova.chat.client.command.IgnoreCommandService.LIST_ARG;
+                    if (listArg.startsWith(prefix)) {
+                        completions.add(org.spongepowered.api.command.CommandCompletion.of(listArg));
+                    }
+                    for (ServerPlayer online : org.spongepowered.api.Sponge.server().onlinePlayers()) {
+                        if (online.name().toLowerCase(java.util.Locale.ROOT).startsWith(prefix)) {
+                            completions.add(org.spongepowered.api.command.CommandCompletion.of(online.name()));
+                        }
+                    }
+                    return completions;
+                })
+                .optional().build();
+        return Command.builder()
+            .shortDescription(Component.text(I18n.tr("chat.command.desc.ignore")))
+            .addParameter(targetParam)
+            .executor(ctx -> executeIgnore(ctx, targetParam))
+            .build();
+    }
+
+    /**
+     * Builds the unignore subcommand ({@code /nc unignore <player>}).
+     * Completion offers the invoking player's current ignore list.
+     */
+    private Command.Parameterized buildUnignoreCommand() {
+        Parameter.Value<String> targetParam = Parameter.string().key("target")
+                .completer((ctx, input) -> {
+                    if (!(ctx.cause().root() instanceof ServerPlayer player)
+                            || plugin.getIgnoreListService() == null) {
+                        return java.util.List.of();
+                    }
+                    String prefix = input == null ? "" : input.toLowerCase(java.util.Locale.ROOT);
+                    java.util.List<org.spongepowered.api.command.CommandCompletion> completions =
+                            new java.util.ArrayList<>();
+                    for (String name : plugin.getIgnoreListService().listIgnored(player.uniqueId())) {
+                        if (name.startsWith(prefix)) {
+                            completions.add(org.spongepowered.api.command.CommandCompletion.of(name));
+                        }
+                    }
+                    return completions;
+                })
+                .optional().build();
+        return Command.builder()
+            .shortDescription(Component.text(I18n.tr("chat.command.desc.unignore")))
+            .addParameter(targetParam)
+            .executor(ctx -> executeUnignore(ctx, targetParam))
+            .build();
+    }
+
+    /**
+     * Executes {@code /nc ignore} — validation, service calls and receipt copy
+     * live in the shared {@link com.nova.chat.client.command.IgnoreCommandService};
+     * this shell forwards arguments and renders the returned lines. Local-only.
+     */
+    private org.spongepowered.api.command.CommandResult executeIgnore(CommandContext ctx,
+            Parameter.Value<String> targetParam) throws org.spongepowered.api.command.exception.CommandException {
+        if (!(ctx.cause().root() instanceof ServerPlayer player)) {
+            String playerOnly = I18n.tr("chat.command.player_only");
+            sendError(ctx.subject(), playerOnly);
+            return org.spongepowered.api.command.CommandResult.error(Component.text(playerOnly));
+        }
+        String target = ctx.one(targetParam).orElse(null);
+        java.util.List<String> lines = com.nova.chat.client.command.IgnoreCommandService.ignore(
+                plugin.getIgnoreListService(), player.uniqueId(), player.name(),
+                target != null ? new String[] {target} : new String[0]);
+        for (String line : lines) {
+            sendMessage(ctx.subject(), line);
+        }
+        return org.spongepowered.api.command.CommandResult.success();
+    }
+
+    /**
+     * Executes {@code /nc unignore <player>} (see {@link #executeIgnore}).
+     */
+    private org.spongepowered.api.command.CommandResult executeUnignore(CommandContext ctx,
+            Parameter.Value<String> targetParam) throws org.spongepowered.api.command.exception.CommandException {
+        if (!(ctx.cause().root() instanceof ServerPlayer player)) {
+            String playerOnly = I18n.tr("chat.command.player_only");
+            sendError(ctx.subject(), playerOnly);
+            return org.spongepowered.api.command.CommandResult.error(Component.text(playerOnly));
+        }
+        String target = ctx.one(targetParam).orElse(null);
+        java.util.List<String> lines = com.nova.chat.client.command.IgnoreCommandService.unignore(
+                plugin.getIgnoreListService(), player.uniqueId(),
+                target != null ? new String[] {target} : new String[0]);
+        for (String line : lines) {
+            sendMessage(ctx.subject(), line);
+        }
+        return org.spongepowered.api.command.CommandResult.success();
+    }
+
+    /**
+     * Builds the msg subcommand ({@code /nc msg <player> <message...>}).
+     * Completion offers online player names for the first argument
+     * (UX §2.3). No permission gate — see buildCommand() comment about
+     * SpongeAPI 8 default-deny for undeclared permissions.
+     */
+    private Command.Parameterized buildMsgCommand() {
+        // Free-form string (cross-server targets are not locally online);
+        // the completer only suggests local online player names.
+        Parameter.Value<String> targetParam = Parameter.string().key("target")
+                .completer((ctx, input) -> {
+                    String prefix = input == null ? "" : input.toLowerCase(java.util.Locale.ROOT);
+                    java.util.List<org.spongepowered.api.command.CommandCompletion> completions =
+                            new java.util.ArrayList<>();
+                    for (ServerPlayer online : org.spongepowered.api.Sponge.server().onlinePlayers()) {
+                        if (online.name().toLowerCase(java.util.Locale.ROOT).startsWith(prefix)) {
+                            completions.add(org.spongepowered.api.command.CommandCompletion.of(online.name()));
+                        }
+                    }
+                    return completions;
+                })
+                .build();
+        Parameter.Value<String> messageParam =
+                Parameter.remainingJoinedStrings().key("message").optional().build();
+        return Command.builder()
+            .shortDescription(Component.text(I18n.tr("chat.command.desc.msg")))
+            .addParameter(targetParam)
+            .addParameter(messageParam)
+            .executor(ctx -> executeMsg(ctx, targetParam, messageParam))
+            .build();
+    }
+
+    /**
+     * Builds the reply subcommand ({@code /nc r <message...>}).
+     */
+    private Command.Parameterized buildReplyCommand() {
+        Parameter.Value<String> messageParam =
+                Parameter.remainingJoinedStrings().key("message").optional().build();
+        return Command.builder()
+            .shortDescription(Component.text(I18n.tr("chat.command.desc.reply")))
+            .addParameter(messageParam)
+            .executor(ctx -> executeReply(ctx, messageParam))
+            .build();
+    }
+
+    /**
+     * Executes {@code /nc msg} — validation, packet construction and receipt
+     * copy live in the shared
+     * {@link com.nova.chat.client.command.PrivateMessageCommandService}; this
+     * shell forwards arguments and renders the returned lines. The success
+     * confirmation is rendered from the backend echo (see
+     * {@code ChatListener#handlePrivateMessage}).
+     */
+    private org.spongepowered.api.command.CommandResult executeMsg(CommandContext ctx,
+            Parameter.Value<String> targetParam, Parameter.Value<String> messageParam)
+            throws org.spongepowered.api.command.exception.CommandException {
+        if (!(ctx.cause().root() instanceof ServerPlayer player)) {
+            String playerOnly = I18n.tr("chat.command.player_only");
+            sendError(ctx.subject(), playerOnly);
+            return org.spongepowered.api.command.CommandResult.error(Component.text(playerOnly));
+        }
+        String target = ctx.one(targetParam).orElse(null);
+        String message = ctx.one(messageParam).orElse(null);
+        String[] args = message != null && target != null
+                ? new String[] {target, message}
+                : (target != null ? new String[] {target} : new String[0]);
+        java.util.List<String> lines = com.nova.chat.client.command.PrivateMessageCommandService.msg(
+                this::sendPrivateMessagePacket,
+                player.uniqueId(), player.name(),
+                plugin.getNovaChatConfig() != null ? plugin.getNovaChatConfig().getUsername() : null,
+                args);
+        for (String line : lines) {
+            sendMessage(ctx.subject(), line);
+        }
+        return org.spongepowered.api.command.CommandResult.success();
+    }
+
+    /**
+     * Executes {@code /nc r} — reply to the most recent private-message
+     * partner tracked by the shared
+     * {@link com.nova.chat.client.privatemsg.PrivateMessageService}.
+     */
+    private org.spongepowered.api.command.CommandResult executeReply(CommandContext ctx,
+            Parameter.Value<String> messageParam)
+            throws org.spongepowered.api.command.exception.CommandException {
+        if (!(ctx.cause().root() instanceof ServerPlayer player)) {
+            String playerOnly = I18n.tr("chat.command.player_only");
+            sendError(ctx.subject(), playerOnly);
+            return org.spongepowered.api.command.CommandResult.error(Component.text(playerOnly));
+        }
+        String message = ctx.one(messageParam).orElse(null);
+        java.util.List<String> lines = com.nova.chat.client.command.PrivateMessageCommandService.reply(
+                plugin.getPrivateMessageService(),
+                this::sendPrivateMessagePacket,
+                player.uniqueId(), player.name(),
+                plugin.getNovaChatConfig() != null ? plugin.getNovaChatConfig().getUsername() : null,
+                message != null ? new String[] {message} : new String[0]);
+        for (String line : lines) {
+            sendMessage(ctx.subject(), line);
+        }
+        return org.spongepowered.api.command.CommandResult.success();
+    }
+
+    /** Transmits a private-message packet when the backend link is up. */
+    private boolean sendPrivateMessagePacket(com.nova.chat.common.protocol.packets.PrivateMessagePacket packet) {
+        com.nova.chat.sponge.network.NetworkClient client = plugin.getNetworkClient();
+        if (client == null || !client.isConnected()) {
+            return false;
+        }
+        client.sendPacket(packet);
+        return true;
+    }
+
+    /**
      * Builds the reload subcommand.
      */
     private Command.Parameterized buildReloadCommand() {
@@ -258,6 +479,10 @@ public class NovaChatCommand {
         sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_list"));
         sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_who"));
         sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_toggle"));
+        sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_ignore"));
+        sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_unignore"));
+        sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_pm"));
+        sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_reply"));
         // Admin commands are still gated by their permissions.
         if (hasPermission(subject, "novachat.admin.reload")) {
             sendCommandHelp(subject, I18n.tr(playerId, "chat.command.help.line_reload"));

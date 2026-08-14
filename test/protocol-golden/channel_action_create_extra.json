@@ -1,0 +1,18 @@
+{
+  "name": "channel_action_create_extra",
+  "packet": "ChannelActionPacket",
+  "packetId": 4,
+  "requestId": "00000000-0000-0000-0000-000000000030",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "创建频道：中文 channelId + 密码 + 非空 extra（1 项）",
+  "fields": {
+    "action": 2,
+    "channelId": "vip-频道",
+    "password": "s3cret!",
+    "extra": {
+      "displayName": "VIP 频道 ⭐"
+    }
+  },
+  "frameHex": "410400000000000000000000000000000030020a7669702de9a291e981930773336372657421010b646973706c61794e616d650e56495020e9a291e9819320e2ad90"
+}

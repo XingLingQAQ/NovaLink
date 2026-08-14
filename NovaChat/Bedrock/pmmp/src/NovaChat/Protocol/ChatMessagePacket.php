@@ -13,6 +13,7 @@ namespace NovaChat\Protocol;
  * - clientId (string): Client identifier
  * - channelId (string): Channel identifier
  * - content (string): Message content
+ * - placeholders (map<string,string>): PlaceholderAPI variables
  */
 class ChatMessagePacket extends Packet {
     
@@ -21,6 +22,8 @@ class ChatMessagePacket extends Packet {
     public string $clientId = "";
     public string $channelId = "";
     public string $content = "";
+    /** @var array<string, string> PlaceholderAPI variables (insertion order is preserved on re-encode) */
+    public array $placeholders = [];
     
     public function getId(): int {
         return self::CHAT_MESSAGE;
@@ -32,8 +35,12 @@ class ChatMessagePacket extends Packet {
         $buffer->writeString($this->clientId);
         $buffer->writeString($this->channelId);
         $buffer->writeString($this->content);
-        // Placeholders map (optional). Keep empty for PMMP client.
-        $buffer->writeVarInt(0);
+        // Placeholders map, matching the Java encoder byte-for-byte.
+        $buffer->writeVarInt(count($this->placeholders));
+        foreach ($this->placeholders as $key => $value) {
+            $buffer->writeString((string) $key);
+            $buffer->writeString((string) $value);
+        }
     }
     
     public function decode(PacketBuffer $buffer): void {
@@ -42,17 +49,25 @@ class ChatMessagePacket extends Packet {
         $this->clientId = $buffer->readString();
         $this->channelId = $buffer->readString();
         $this->content = $buffer->readString();
-        // Consume optional placeholders map if present (ignore contents).
-        if ($buffer->remaining() > 0) {
-            try {
-                $size = $buffer->readVarInt();
-                for ($i = 0; $i < $size; $i++) {
-                    $buffer->readString();
-                    $buffer->readString();
-                }
-            } catch (\Throwable $e) {
-                // best-effort
-            }
+
+        // Placeholders map (optional for legacy peers), kept like Java does.
+        $this->placeholders = [];
+        if ($buffer->remaining() <= 0) {
+            return;
+        }
+        try {
+            $size = $buffer->readVarInt();
+        } catch (\Throwable $e) {
+            // Legacy payload ended after content; treat as no placeholders.
+            return;
+        }
+        if ($size < 0 || $size > 1000) {
+            // Defensive: avoid OOM on corrupted frames (mirrors Java).
+            return;
+        }
+        for ($i = 0; $i < $size; $i++) {
+            $key = $buffer->readString();
+            $this->placeholders[$key] = $buffer->readString();
         }
     }
 }

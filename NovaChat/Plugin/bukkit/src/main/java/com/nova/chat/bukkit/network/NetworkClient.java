@@ -17,17 +17,23 @@ import com.nova.chat.client.network.SchedulerBridge;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.chat.MentionNotifier;
+import com.nova.chat.client.itemdisplay.ItemDisplayMessages;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.protocol.packets.AdminActionPacket;
 import com.nova.chat.common.protocol.packets.AdminActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ConfigSyncPacket;
+import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
+import com.nova.chat.common.protocol.packets.PrivateMessagePacket;
 import com.nova.chat.common.protocol.packets.TitlePacket;
+import com.nova.chat.client.privatemsg.PrivateMessageService;
 
 import net.md_5.bungee.api.ChatMessageType;
+import net.md_5.bungee.api.chat.HoverEvent;
 import net.md_5.bungee.api.chat.TextComponent;
+import net.md_5.bungee.api.chat.hover.content.Text;
 
 import java.util.UUID;
 import java.util.function.Function;
@@ -135,6 +141,8 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
         registerHandler(AdminActionResponsePacket.class, this::handleAdminActionResponse);
         registerHandler(MentionPacket.class, this::handleMention);
+        registerHandler(ItemDisplayPacket.class, this::handleItemDisplay);
+        registerHandler(PrivateMessagePacket.class, this::handlePrivateMessage);
     }
 
     /**
@@ -200,6 +208,55 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
     }
 
     /**
+     * Handles an inbound item display packet ({@code [item]}/{@code [i]} play,
+     * packet 0x10) by rendering one hoverable chat line to every player whose
+     * active channel matches the packet channel (Requirements 12.3/12.4).
+     *
+     * <p>Receive-side semantics are "receive = render", matching the Bedrock
+     * clients (pmmp/endstone/levilamina render inbound ItemDisplay directly);
+     * the backend currently registers no route for this packet, so there is no
+     * echo protocol to defer to. Threading and color handling mirror
+     * {@link #handleTitle}; the hover detail is the Bukkit progressive
+     * enhancement allowed by the md_5 chat API (Requirements 12.3).
+     *
+     * <p>Package-visible so the network-package unit test can drive the
+     * handler directly after reflecting the core dispatch.
+     */
+    void handleItemDisplay(ItemDisplayPacket packet) {
+        // Must run on main thread for Bukkit API
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            try {
+                String channelId = packet.getChannelId();
+                var formatter = plugin.getChatInterceptor().getMessageFormatter();
+
+                for (org.bukkit.entity.Player player : plugin.getServer().getOnlinePlayers()) {
+                    var state = plugin.getChatInterceptor().getOrCreateState(player);
+                    if (state == null || channelId == null || !channelId.equals(state.getActiveChannel())) {
+                        continue;
+                    }
+                    UUID viewerId = player.getUniqueId();
+                    // Skip senders the viewer has ignored (/nc ignore)
+                    var ignoreService = plugin.getIgnoreListService();
+                    if (ignoreService != null && ignoreService.isIgnored(viewerId, packet.getSenderName())) {
+                        continue;
+                    }
+                    String line = formatter.translateColorCodes(
+                            ItemDisplayMessages.formatLine(viewerId, packet.getSenderName(), packet.getItemJson()));
+                    String hover = formatter.translateColorCodes(
+                            ItemDisplayMessages.formatHoverDetail(viewerId, packet.getItemJson()));
+
+                    TextComponent component = new TextComponent(TextComponent.fromLegacyText(line));
+                    component.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                            new Text(TextComponent.fromLegacyText(hover))));
+                    player.spigot().sendMessage(component);
+                }
+            } catch (Exception e) {
+                plugin.debug("Failed to handle ItemDisplayPacket: " + e.getMessage(), e);
+            }
+        });
+    }
+
+    /**
      * Handles a mention notification packet by playing a sound and showing a
      * title to the mentioned player (UX-DESIGN §4.1, Requirements 11.2).
      *
@@ -218,6 +275,13 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 org.bukkit.entity.Player player = plugin.getServer().getPlayer(mentionedId);
                 if (player == null) {
                     return; // not on this server
+                }
+
+                // Ignored mentioner: no bell, no title (/nc ignore)
+                var ignoreService = plugin.getIgnoreListService();
+                if (ignoreService != null
+                        && ignoreService.isIgnored(mentionedId, packet.getMentionerName())) {
+                    return;
                 }
 
                 mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
@@ -249,6 +313,36 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         // Sound.valueOf(String) removal API.
         player.playSound(player.getLocation(),
                 org.bukkit.Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+    }
+
+    /**
+     * Handles a completed (S→C) private message: the shared
+     * {@link PrivateMessageService} resolves which local players render which
+     * role (sender echo vs received line, receiver-side ignore filter, reply
+     * tracking) and this handler sends the colorized lines on the main thread.
+     *
+     * <p>Package-visible so the network-package unit test can drive the
+     * handler directly after reflecting the core dispatch.
+     */
+    void handlePrivateMessage(PrivateMessagePacket packet) {
+        // Must run on main thread for Bukkit API
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            try {
+                var deliveries = plugin.getPrivateMessageService().handleIncoming(
+                        packet,
+                        id -> plugin.getServer().getPlayer(id) != null,
+                        plugin.getIgnoreListService());
+                var formatter = plugin.getChatInterceptor().getMessageFormatter();
+                for (PrivateMessageService.Delivery delivery : deliveries) {
+                    org.bukkit.entity.Player player = plugin.getServer().getPlayer(delivery.getPlayerId());
+                    if (player != null) {
+                        player.sendMessage(formatter.translateColorCodes(delivery.getLine()));
+                    }
+                }
+            } catch (Exception e) {
+                plugin.debug("Failed to handle PrivateMessagePacket: " + e.getMessage(), e);
+            }
+        });
     }
 
     private void handleConfigSync(ConfigSyncPacket packet) {
@@ -439,6 +533,22 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * other 6 platforms' shape.
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
+        // Private-message rejections are unsolicited (no pending context in the
+        // shared tracker); the dispatcher would drop them, so route them to the
+        // PrivateMessageService for player-locale rendering instead.
+        if (PrivateMessageService.isPrivateMessageError(packet)) {
+            plugin.getPrivateMessageService()
+                    .renderError(packet, id -> plugin.getServer().getPlayer(id) != null)
+                    .ifPresent(delivery -> plugin.getServer().getScheduler().runTask(plugin, () -> {
+                        org.bukkit.entity.Player player =
+                                plugin.getServer().getPlayer(delivery.getPlayerId());
+                        if (player != null) {
+                            var formatter = plugin.getChatInterceptor().getMessageFormatter();
+                            player.sendMessage(formatter.translateColorCodes(delivery.getLine()));
+                        }
+                    }));
+            return;
+        }
         dispatcher.handle(packet);
     }
 

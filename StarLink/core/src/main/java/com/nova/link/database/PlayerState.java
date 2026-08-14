@@ -34,6 +34,11 @@ public class PlayerState {
     /** Platform the player connects from (e.g. "BUKKIT", "VELOCITY"); null = unknown/Java */
     private String platform;
 
+    /** Per-player DM toggle (P0-5): when false, incoming private messages are
+     *  rejected by PrivateMessageHandler before delivery. Defaults to true so
+     *  existing players keep receiving DMs unless they explicitly opt out. */
+    private boolean dmEnabled = true;
+
     /** Last seen timestamp */
     private long lastSeen;
 
@@ -59,6 +64,7 @@ public class PlayerState {
         this.activeChannel = other.activeChannel;
         this.mutes = new HashMap<>(other.mutes);
         this.platform = other.platform;
+        this.dmEnabled = other.dmEnabled;
         this.lastSeen = other.lastSeen;
     }
 
@@ -173,6 +179,25 @@ public class PlayerState {
         this.platform = platform;
     }
 
+    /**
+     * Per-player DM toggle (P0-5). When {@code false}, incoming private
+     * messages targeting this player are rejected by PrivateMessageHandler
+     * before delivery. Defaults to {@code true}.
+     */
+    public boolean isDmEnabled() {
+        return dmEnabled;
+    }
+
+    /**
+     * Sets the per-player DM toggle (P0-5). Persisted via PlayerStateManager
+     * so the preference survives reconnects/restarts.
+     *
+     * @param dmEnabled {@code false} to reject incoming DMs, {@code true} to allow
+     */
+    public void setDmEnabled(boolean dmEnabled) {
+        this.dmEnabled = dmEnabled;
+    }
+
     public void setLastSeen(long lastSeen) {
         this.lastSeen = lastSeen;
     }
@@ -188,6 +213,7 @@ public class PlayerState {
         if (o == null || getClass() != o.getClass()) return false;
         PlayerState that = (PlayerState) o;
         return lastSeen == that.lastSeen &&
+                dmEnabled == that.dmEnabled &&
                 Objects.equals(playerId, that.playerId) &&
                 Objects.equals(playerName, that.playerName) &&
                 Objects.equals(clientId, that.clientId) &&
@@ -201,7 +227,7 @@ public class PlayerState {
     @Override
     public int hashCode() {
         return Objects.hash(playerId, playerName, clientId, currentWorld,
-                joinedChannels, activeChannel, mutes, platform, lastSeen);
+                joinedChannels, activeChannel, mutes, platform, dmEnabled, lastSeen);
     }
 
     @Override
@@ -215,6 +241,7 @@ public class PlayerState {
                 ", activeChannel='" + activeChannel + '\'' +
                 ", mutesCount=" + mutes.size() +
                 ", platform='" + platform + '\'' +
+                ", dmEnabled=" + dmEnabled +
                 ", lastSeen=" + lastSeen +
                 '}';
     }

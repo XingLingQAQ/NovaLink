@@ -21,6 +21,10 @@ public class HelpCommand implements CommandHandler {
         context.sendMessage(I18n.tr(playerId, "chat.command.help.line_list"));
         context.sendMessage(I18n.tr(playerId, "chat.command.help.line_who"));
         context.sendMessage(I18n.tr(playerId, "chat.command.help.line_toggle"));
+        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_ignore"));
+        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_unignore"));
+        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_pm"));
+        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_reply"));
         context.sendMessage(I18n.tr(playerId, "chat.command.help.line_msg"));
         if (context.isAdmin()) {
             context.sendMessage(I18n.tr(playerId, "chat.command.help.line_reload"));

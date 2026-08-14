@@ -270,7 +270,8 @@ class MessagePipelineResultDetailedTest {
                             MessagePipelineResult.DropReason.SENDER_MUTED,
                             MessagePipelineResult.DropReason.SENDER_BANNED,
                             MessagePipelineResult.DropReason.CROSS_CLIENT_DENIED,
-                            MessagePipelineResult.DropReason.NO_RECIPIENTS
+                            MessagePipelineResult.DropReason.NO_RECIPIENTS,
+                            MessagePipelineResult.DropReason.SLOW_MODE
                     );
         }
     }

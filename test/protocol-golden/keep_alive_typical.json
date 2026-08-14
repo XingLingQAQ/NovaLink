@@ -1,0 +1,13 @@
+{
+  "name": "keep_alive_typical",
+  "packet": "KeepAlivePacket",
+  "packetId": 7,
+  "requestId": "00000000-0000-0000-0000-000000000036",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "心跳：典型毫秒时间戳",
+  "fields": {
+    "timestamp": 1755057600000
+  },
+  "frameHex": "19070000000000000000000000000000003600000198a195b600"
+}

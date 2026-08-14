@@ -25,6 +25,11 @@ public class AuthManager {
     // Client credentials storage: username -> credentials
     private final Map<String, ClientCredentials> clientCredentials = new ConcurrentHashMap<>();
 
+    // Web-panel credentials pool: username -> panel credentials.
+    // Deliberately separate from clientCredentials so game-server accounts can
+    // NEVER log into the web panel (credential pool separation).
+    private final Map<String, PanelUserCredentials> panelCredentials = new ConcurrentHashMap<>();
+
     // IP ban manager for tracking failed attempts
     private final IpBanManager ipBanManager;
 
@@ -249,7 +254,9 @@ public class AuthManager {
     }
 
     /**
-     * Registers a super admin.
+     * Registers a super admin. The account is added to the web-panel pool with
+     * role SUPER_ADMIN (and kept in the legacy client table for backward
+     * compatibility with existing callers of {@link #isSuperAdmin}/{@link #authenticate}).
      *
      * @param username     the super admin username
      * @param passwordHash the password hash
@@ -258,6 +265,77 @@ public class AuthManager {
         ClientCredentials credentials = new ClientCredentials(username, passwordHash);
         credentials.setSuperAdmin(true);
         clientCredentials.put(username, credentials);
+        panelCredentials.put(username, new PanelUserCredentials(username, passwordHash, PanelRole.SUPER_ADMIN));
         logger.info("Registered super admin: {}", username);
+    }
+
+    /**
+     * Registers a web-panel login account (role ADMIN or VIEWER, from the
+     * {@code panel-users} config section).
+     *
+     * @param credentials the panel user credentials
+     */
+    public void registerPanelUser(PanelUserCredentials credentials) {
+        if (credentials == null) {
+            throw new IllegalArgumentException("Panel credentials cannot be null");
+        }
+        panelCredentials.put(credentials.getUsername(), credentials);
+        logger.info("Registered panel user: {} ({})", credentials.getUsername(), credentials.getRole());
+    }
+
+    /**
+     * Gets the panel credentials for a username, or null when the account is
+     * not a panel account.
+     */
+    public PanelUserCredentials getPanelUser(String username) {
+        return username != null ? panelCredentials.get(username) : null;
+    }
+
+    /**
+     * @return the number of registered web-panel accounts
+     */
+    public int getPanelUserCount() {
+        return panelCredentials.size();
+    }
+
+    /**
+     * Authenticates a web-panel login. ONLY consults the panel credentials
+     * pool ({@code super-admins} + {@code panel-users}); game-server client
+     * credentials are rejected. Failed attempts count toward the IP ban.
+     *
+     * @param username  the panel username
+     * @param password  the plain-text password
+     * @param ipAddress the remote IP (for failure tracking / banning)
+     * @return the authentication result carrying the panel role on success
+     */
+    public PanelAuthResult authenticatePanelUser(String username, String password, String ipAddress) {
+        if (ipBanManager.isBanned(ipAddress)) {
+            logger.warn("Panel login attempt from banned IP: {}", ipAddress);
+            return PanelAuthResult.ipBanned();
+        }
+        if (username == null || username.isEmpty() || password == null || password.isEmpty()) {
+            ipBanManager.recordFailure(ipAddress);
+            return PanelAuthResult.unauthorized();
+        }
+
+        PanelUserCredentials credentials = panelCredentials.get(username);
+        if (credentials == null) {
+            // Not a panel account (unknown user OR a game-server client account).
+            ipBanManager.recordFailure(ipAddress);
+            logger.warn("Panel login rejected for non-panel account: {} from IP: {}", username, ipAddress);
+            return PanelAuthResult.unauthorized();
+        }
+
+        String passwordHash = hashPassword(password);
+        if (!constantTimeEqualsIgnoreCase(credentials.getPasswordHash(), passwordHash)) {
+            ipBanManager.recordFailure(ipAddress);
+            logger.warn("Panel login failed for user: {} from IP: {} (password mismatch)", username, ipAddress);
+            return PanelAuthResult.unauthorized();
+        }
+
+        ipBanManager.clearFailures(ipAddress);
+        logger.info("Panel login successful for user: {} ({}) from IP: {}",
+                username, credentials.getRole(), ipAddress);
+        return PanelAuthResult.success(credentials);
     }
 }

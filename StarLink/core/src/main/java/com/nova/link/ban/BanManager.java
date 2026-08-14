@@ -123,6 +123,23 @@ public class BanManager {
      */
     public BanResult banPlayer(UUID operatorId, UUID targetPlayerId, String channelId,
                                long durationMs, String reason, String operatorClientId) {
+        return banPlayer(operatorId, targetPlayerId, channelId, durationMs, reason, operatorClientId, false);
+    }
+
+    /**
+     * Bans a player, optionally treating the operator as already authorized.
+     * {@code trustedOperator=true} is used by the REST layer where the caller's
+     * role was already checked against the panel RBAC matrix but the
+     * (panel-derived) operator UUID is unknown to the PermissionManager. This
+     * keeps operation attribution (the real operator id is recorded) without
+     * requiring the console sentinel bypass.
+     *
+     * @param trustedOperator when true, skip PermissionManager lookup and treat
+     *                        the operator as SUPER_ADMIN (caller pre-authorized)
+     */
+    public BanResult banPlayer(UUID operatorId, UUID targetPlayerId, String channelId,
+                               long durationMs, String reason, String operatorClientId,
+                               boolean trustedOperator) {
         if (operatorId == null) {
             return BanResult.badRequest("Operator ID is required");
         }
@@ -132,8 +149,11 @@ public class BanManager {
 
         // Console-originated actions (UUID 00000000-0000-0000-0000-000000000000)
         // bypass permission validation — console always has full authority.
+        // Trusted operators (panel RBAC pre-authorized) get the same bypass while
+        // keeping their own UUID for attribution.
         PermissionLevel operatorLevel;
-        if (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L) {
+        if (trustedOperator
+                || (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L)) {
             operatorLevel = PermissionLevel.SUPER_ADMIN;
         } else {
             operatorLevel = permissionManager.getPermissionLevel(operatorId, channelId);
@@ -263,6 +283,15 @@ public class BanManager {
      */
     public BanResult unbanPlayer(UUID operatorId, UUID targetPlayerId, String channelId,
                                  String operatorClientId) {
+        return unbanPlayer(operatorId, targetPlayerId, channelId, operatorClientId, false);
+    }
+
+    /**
+     * Unbans a player, optionally treating the operator as already authorized
+     * (see {@link #banPlayer(UUID, UUID, String, long, String, String, boolean)}).
+     */
+    public BanResult unbanPlayer(UUID operatorId, UUID targetPlayerId, String channelId,
+                                 String operatorClientId, boolean trustedOperator) {
         if (operatorId == null) {
             return BanResult.badRequest("Operator ID is required");
         }
@@ -270,9 +299,12 @@ public class BanManager {
             return BanResult.badRequest("Target player ID is required");
         }
 
-        // Console-originated actions bypass permission validation.
+        // Console-originated actions bypass permission validation. Trusted
+        // operators (panel RBAC pre-authorized) get the same bypass while
+        // keeping their own UUID for attribution.
         PermissionLevel operatorLevel;
-        if (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L) {
+        if (trustedOperator
+                || (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L)) {
             operatorLevel = PermissionLevel.SUPER_ADMIN;
         } else {
             operatorLevel = permissionManager.getPermissionLevel(operatorId, channelId);
@@ -416,6 +448,66 @@ public class BanManager {
             }
         }
         return activeBans;
+    }
+
+    /**
+     * Gets all active bans across all players from the in-memory cache.
+     *
+     * <p>Combined with {@link #loadAllBans()} at startup, this gives REST
+     * listings visibility of offline players' bans as well.
+     *
+     * @return map of player UUID to that player's active bans
+     */
+    public Map<UUID, List<BanInfo>> getAllActiveBans() {
+        Map<UUID, List<BanInfo>> result = new HashMap<>();
+        for (Map.Entry<UUID, Map<String, BanInfo>> entry : banCache.entrySet()) {
+            List<BanInfo> active = new ArrayList<>();
+            for (BanInfo ban : entry.getValue().values()) {
+                if (!ban.isExpired()) {
+                    active.add(ban);
+                }
+            }
+            if (!active.isEmpty()) {
+                result.put(entry.getKey(), active);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Loads all active bans from the database into the cache. Called once
+     * during startup so persisted bans stay effective across a backend
+     * restart ({@code isBanned} only consults the cache).
+     *
+     * @return the number of bans loaded
+     */
+    public int loadAllBans() {
+        if (databaseProvider == null) {
+            return 0;
+        }
+
+        int loaded = 0;
+        try {
+            Map<UUID, List<BanInfo>> allBans = databaseProvider.getAllActiveBans();
+            for (Map.Entry<UUID, List<BanInfo>> entry : allBans.entrySet()) {
+                Map<String, BanInfo> playerBans = banCache.computeIfAbsent(
+                        entry.getKey(), k -> new ConcurrentHashMap<>());
+                for (BanInfo ban : entry.getValue()) {
+                    if (!ban.isExpired()) {
+                        String cacheKey = ban.getChannelId() != null ?
+                                ban.getChannelId() : GLOBAL_BAN_KEY;
+                        playerBans.put(cacheKey, ban);
+                        loaded++;
+                    }
+                }
+            }
+            if (loaded > 0) {
+                logger.info("Loaded {} active bans from database", loaded);
+            }
+        } catch (DatabaseException e) {
+            logger.error("Failed to load active bans from database: {}", e.getMessage());
+        }
+        return loaded;
     }
 
     /**

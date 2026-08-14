@@ -226,7 +226,7 @@ class AuthService {
 
       // Check if expired (with 60 second buffer)
       return Date.now() >= (payload.exp * 1000) - 60000;
-    } catch (error) {
+    } catch {
       return true;
     }
   }
@@ -261,7 +261,7 @@ class AuthService {
     if (!this._isTokenExpiringSoon()) return null;
     try {
       return await this.refreshAccessToken(apiUrl);
-    } catch (err) {
+    } catch {
       // Refresh failed — let the next real request's 401 path handle logout.
       return null;
     }

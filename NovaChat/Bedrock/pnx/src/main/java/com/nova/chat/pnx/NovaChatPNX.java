@@ -95,6 +95,21 @@ public class NovaChatPNX extends PluginBase implements Listener {
     @Getter
     private NovaChatCommand commandHandler;
 
+    /**
+     * Per-player ignore lists (/nc ignore). Persisted to
+     * {@code ignore-lists.json} in the plugin data folder.
+     */
+    @Getter
+    private com.nova.chat.client.ignore.IgnoreListService ignoreListService;
+
+    /**
+     * Shared private-message core (client-core): send-side packet building,
+     * receive-side role rendering, reply-target tracking for {@code /nc r}
+     * and backend error rendering.
+     */
+    @Getter
+    private com.nova.chat.client.privatemsg.PrivateMessageService privateMessageService;
+
     /** Debug mode flag */
     private boolean debugMode = false;
 
@@ -131,6 +146,14 @@ public class NovaChatPNX extends PluginBase implements Listener {
                         LocaleResolver.ROOT_LOCALE));
         // Drop the cached bundles so a reload re-reads external overrides.
         I18n.invalidate();
+
+        // Per-player ignore lists, persisted under the plugin data folder
+        // (mirrors the I18n.setExternalLangDir injection precedent).
+        ignoreListService = new com.nova.chat.client.ignore.IgnoreListService();
+        ignoreListService.setDataDirectory(getDataFolder().toPath());
+
+        // Shared private-message core (/nc msg, /nc r).
+        privateMessageService = new com.nova.chat.client.privatemsg.PrivateMessageService();
 
         // Initialize message formatter
         messageFormatter = new MessageFormatter(this);
@@ -187,6 +210,12 @@ public class NovaChatPNX extends PluginBase implements Listener {
         if (networkClient != null) {
             networkClient.disconnect();
             networkClient = null;
+        }
+
+        // Flush pending ignore-list writes to disk
+        if (ignoreListService != null) {
+            ignoreListService.close();
+            ignoreListService = null;
         }
         
         instance = null;
@@ -344,6 +373,11 @@ public class NovaChatPNX extends PluginBase implements Listener {
         // Clean up player chat state
         if (chatInterceptor != null) {
             chatInterceptor.removeState(player);
+        }
+
+        // Reply-target cleanup for /nc r (private messages); thread-safe map.
+        if (privateMessageService != null) {
+            privateMessageService.onPlayerQuit(player.getUniqueId());
         }
         
         // Clean up pending form data

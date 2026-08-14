@@ -440,6 +440,39 @@ public class MySQLProvider extends AbstractJdbcProvider {
         }
     }
 
+    @Override
+    public Map<UUID, List<MuteInfo>> getAllActiveMutes() throws DatabaseException {
+        Map<UUID, List<MuteInfo>> result = new HashMap<>();
+        String sql = "SELECT * FROM mutes WHERE expire_time <= 0 OR expire_time >= ?";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setLong(1, System.currentTimeMillis());
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    UUID playerId = parseUuid(rs.getString("player_id"));
+                    if (playerId == null) {
+                        continue;
+                    }
+                    MuteInfo mute = new MuteInfo(
+                            rs.getString("channel_id"),
+                            rs.getLong("expire_time"),
+                            rs.getString("reason"),
+                            parseUuid(rs.getString("operator_id")),
+                            rs.getLong("created_at")
+                    );
+                    result.computeIfAbsent(playerId, k -> new ArrayList<>()).add(mute);
+                }
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load active mutes", e);
+        }
+
+        return result;
+    }
+
     // ==================== Ban Operations ====================
 
     @Override
@@ -547,6 +580,39 @@ public class MySQLProvider extends AbstractJdbcProvider {
         }
     }
 
+    @Override
+    public Map<UUID, List<BanInfo>> getAllActiveBans() throws DatabaseException {
+        Map<UUID, List<BanInfo>> result = new HashMap<>();
+        String sql = "SELECT * FROM bans WHERE expire_time <= 0 OR expire_time >= ?";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setLong(1, System.currentTimeMillis());
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    UUID playerId = parseUuid(rs.getString("player_id"));
+                    if (playerId == null) {
+                        continue;
+                    }
+                    BanInfo ban = new BanInfo(
+                            rs.getString("channel_id"),
+                            rs.getLong("expire_time"),
+                            rs.getString("reason"),
+                            parseUuid(rs.getString("operator_id")),
+                            rs.getLong("created_at")
+                    );
+                    result.computeIfAbsent(playerId, k -> new ArrayList<>()).add(ban);
+                }
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load active bans", e);
+        }
+
+        return result;
+    }
+
     // ==================== Notification Operations ====================
 
     @Override
@@ -555,7 +621,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
             throw new DatabaseException("Notification cannot be null");
         }
 
-        String sql = "INSERT INTO notifications (title, message, level, created_at, read) VALUES (?, ?, ?, ?, ?)";
+        String sql = "INSERT INTO notifications (title, message, level, created_at, `read`) VALUES (?, ?, ?, ?, ?)";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql, java.sql.Statement.RETURN_GENERATED_KEYS)) {
@@ -581,7 +647,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
     public List<Notification> getNotifications(int offset, int limit, boolean unreadOnly) throws DatabaseException {
         List<Notification> notifications = new ArrayList<>();
         String sql = unreadOnly
-                ? "SELECT * FROM notifications WHERE read = FALSE ORDER BY created_at DESC LIMIT ? OFFSET ?"
+                ? "SELECT * FROM notifications WHERE `read` = FALSE ORDER BY created_at DESC LIMIT ? OFFSET ?"
                 : "SELECT * FROM notifications ORDER BY created_at DESC LIMIT ? OFFSET ?";
 
         try (Connection conn = dataSource.getConnection();
@@ -611,7 +677,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
 
     @Override
     public void markNotificationRead(long id) throws DatabaseException {
-        String sql = "UPDATE notifications SET read = TRUE WHERE id = ?";
+        String sql = "UPDATE notifications SET `read` = TRUE WHERE id = ?";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -626,7 +692,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
 
     @Override
     public void markAllNotificationsRead() throws DatabaseException {
-        String sql = "UPDATE notifications SET read = TRUE WHERE read = FALSE";
+        String sql = "UPDATE notifications SET `read` = TRUE WHERE `read` = FALSE";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -659,7 +725,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
 
     @Override
     public int getUnreadCount() throws DatabaseException {
-        String sql = "SELECT COUNT(*) FROM notifications WHERE read = FALSE";
+        String sql = "SELECT COUNT(*) FROM notifications WHERE `read` = FALSE";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql);
@@ -671,6 +737,25 @@ public class MySQLProvider extends AbstractJdbcProvider {
             return 0;
         } catch (SQLException e) {
             throw new DatabaseException("Failed to get unread notification count", e);
+        }
+    }
+
+    @Override
+    public int countNotifications(boolean unreadOnly) throws DatabaseException {
+        String sql = unreadOnly
+                ? "SELECT COUNT(*) FROM notifications WHERE `read` = FALSE"
+                : "SELECT COUNT(*) FROM notifications";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql);
+             ResultSet rs = stmt.executeQuery()) {
+
+            if (rs.next()) {
+                return rs.getInt(1);
+            }
+            return 0;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to count notifications", e);
         }
     }
 

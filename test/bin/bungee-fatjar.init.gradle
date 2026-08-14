@@ -1,0 +1,41 @@
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.jvm.tasks.Jar
+
+// Gradle 9-compatible E2E-only packaging task. Waterfall supplies Netty and its
+// logging stack, so those modules must never be embedded in the plugin jar.
+allprojects {
+    afterEvaluate { project ->
+        if (project.path == ':novachat-bungee') {
+            def runtimeClasspath = project.configurations.named('runtimeClasspath')
+            def hostGroups = ['io.netty', 'org.slf4j', 'ch.qos.logback'] as Set
+
+            project.tasks.register('e2eBungeeFatJar', Jar) {
+                archiveFileName = 'novachat-bungee-e2e.jar'
+                destinationDirectory = project.rootProject.file('.e2e/artifacts/dist')
+                duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+                dependsOn(
+                    ':novachat-bungee:classes',
+                    ':novachat-common:jar',
+                    ':novachat-client-core:jar'
+                )
+
+                from(project.sourceSets.main.output)
+                from {
+                    runtimeClasspath.get().incoming.artifactView {
+                        componentFilter { componentId ->
+                            !(componentId instanceof ModuleComponentIdentifier) ||
+                                !hostGroups.contains(componentId.group)
+                        }
+                    }.files.collect { file -> file.isDirectory() ? file : project.zipTree(file) }
+                }
+
+                exclude 'io/netty/**'
+                exclude 'org/slf4j/**'
+                exclude 'ch/qos/logback/**'
+                exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA'
+                exclude 'META-INF/versions/**/module-info.class', 'module-info.class'
+            }
+        }
+    }
+}

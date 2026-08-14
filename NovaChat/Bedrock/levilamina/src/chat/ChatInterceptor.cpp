@@ -88,8 +88,20 @@ void ChatInterceptor::registerHooks() {
             auto& player = event.self();
             std::string playerName = player.getName();
             std::string playerUuid = player.getUuid().asString();
-            
-            onPlayerJoin(playerName, playerUuid);
+
+            // Read the player's client locale straight from the Bedrock login
+            // chain (Player::getLocaleCode() returns the language code the
+            // client sent in its login packet, e.g. "zh_CN"/"en_US"/"ja_JP").
+            // Empty string is fine -- onPlayerJoin falls back to zh_CN.
+            std::string localeCode;
+            try {
+                localeCode = player.getLocaleCode();
+            } catch (...) {
+                // getLocaleCode should not throw, but guard anyway: an empty
+                // locale simply triggers the hard-default fallback below.
+            }
+
+            onPlayerJoin(playerName, playerUuid, localeCode);
         }
     );
 
@@ -344,7 +356,8 @@ void ChatInterceptor::unregisterHooks() {
     logger.info("Chat hooks unregistered.");
 }
 
-void ChatInterceptor::onPlayerJoin(const std::string& playerName, const std::string& playerUuid) {
+void ChatInterceptor::onPlayerJoin(const std::string& playerName, const std::string& playerUuid,
+                                   const std::string& localeCode) {
     auto& logger = mPlugin.getSelf().getLogger();
 
     // Update name mapping
@@ -353,9 +366,26 @@ void ChatInterceptor::onPlayerJoin(const std::string& playerName, const std::str
         mNameToUuid[playerName] = playerUuid;
     }
 
-    // Initialize player state with default channel and default locale.
+    // Initialize player state with default channel and the client locale read
+    // from the Bedrock login chain (Player::getLocaleCode()). Fall back to the
+    // hard default (zh_CN) only when the client sent no language code -- this
+    // matches the i18n fallback chain (unknown locale -> zh_CN).
     auto& state = getPlayerState(playerUuid);
-    if (state.locale.empty()) {
+    if (!localeCode.empty()) {
+        // Trim whitespace: a blank-but-non-empty code (e.g. "   ") should not
+        // override the hard default.
+        std::string trimmed = localeCode;
+        auto first = trimmed.find_first_not_of(" \t\r\n");
+        if (first != std::string::npos) {
+            auto last = trimmed.find_last_not_of(" \t\r\n");
+            trimmed = trimmed.substr(first, last - first + 1);
+        }
+        if (!trimmed.empty()) {
+            state.locale = trimmed;
+        } else {
+            state.locale = "zh_CN";
+        }
+    } else if (state.locale.empty()) {
         state.locale = "zh_CN";
     }
     if (auto* config = mPlugin.getConfig()) {

@@ -3,7 +3,9 @@ package com.nova.chat.bukkit.chat;
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.bukkit.api.event.ChannelMessageEvent;
 import com.nova.chat.bukkit.config.NovaChatConfig;
+import com.nova.chat.client.channel.ChannelPrefixResolver;
 import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.itemdisplay.ItemDisplayTokens;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.chat.MentionNotifier;
@@ -37,6 +39,9 @@ public class ChatInterceptor implements Listener {
     /** Player chat states indexed by UUID (shared store). */
     private final com.nova.chat.client.state.PlayerStateStore playerStates =
             new com.nova.chat.client.state.PlayerStateStore();
+
+    /** Shared [item]/[i] token detection + per-player cooldown (client-core). */
+    private final ItemDisplayTokens itemDisplayTokens = new ItemDisplayTokens();
     
     /** Global chat mode from configuration */
     private ChatMode globalMode;
@@ -100,6 +105,11 @@ public class ChatInterceptor implements Listener {
         // Run on main thread for Bukkit API calls
         Bukkit.getScheduler().runTask(plugin, () -> {
             for (Player player : Bukkit.getOnlinePlayers()) {
+                // Skip senders the recipient has ignored (/nc ignore)
+                com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
+                if (ignoreService != null && ignoreService.isIgnored(player.getUniqueId(), senderName)) {
+                    continue;
+                }
                 // Check if player is in this channel
                 PlayerChannelState state = getState(player.getUniqueId());
                 if (state != null && channelId.equals(state.getActiveChannel())) {
@@ -151,8 +161,17 @@ public class ChatInterceptor implements Listener {
             return;
         }
         
+        // Channel-prefix routing (e.g. "!hi" -> global) before the
+        // active-channel send; escape/unknown-prefix cases fall through
+        // with the resolver-produced message (UX: prefix = /nc <channel> shorthand).
+        ChannelPrefixResolver.Resolution resolution = ChannelPrefixResolver.resolve(
+                config.getChannelPrefixes(), event.getMessage(),
+                plugin.getKnownChannelRegistry() != null ? plugin.getKnownChannelRegistry().getAll() : null);
+        String targetChannel = resolution.isRedirect()
+                ? resolution.getChannelId() : state.getActiveChannel();
+
         // Forward message to backend
-        sendToChannel(player, state.getActiveChannel(), event.getMessage());
+        sendToChannel(player, targetChannel, resolution.getMessage());
     }
     
     /**
@@ -176,6 +195,10 @@ public class ChatInterceptor implements Listener {
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID playerId = event.getPlayer().getUniqueId();
         playerStates.remove(playerId);
+        // Reply-target cleanup for /nc r (private messages).
+        if (plugin.getPrivateMessageService() != null) {
+            plugin.getPrivateMessageService().onPlayerQuit(playerId);
+        }
         plugin.debug("Removed chat state for " + event.getPlayer().getName());
     }    
     /**
@@ -206,8 +229,66 @@ public class ChatInterceptor implements Listener {
         
         plugin.getNetworkClient().sendPacket(packet);
         plugin.debug("Sent message to channel " + channelId + ": " + message);
+
+        // [item]/[i] display play: piggybacks on the outbound path (UX spec §4).
+        maybeSendItemDisplay(player, channelId, message);
     }
-    
+
+    /**
+     * Sends an {@link com.nova.chat.common.protocol.packets.ItemDisplayPacket}
+     * when the outbound message carries an {@code [item]}/{@code [i]} token.
+     *
+     * <p>Semantics aligned with the Bedrock reference (pmmp/endstone):
+     * case-insensitive {@code \[(item|i)\]} token, the shared
+     * {@code novachat.feature.item} permission gate (no permission → tokens
+     * stay plain text, Requirements 12.5), and an empty hand still sends the
+     * air payload (Bedrock renders the "Empty" placeholder). The per-player
+     * cooldown lives in the shared {@link ItemDisplayTokens}. Only display
+     * fields (id/count/custom name) are serialized — never full NBT.
+     *
+     * @param player    the sending player
+     * @param channelId the target channel
+     * @param message   the outbound chat message
+     */
+    private void maybeSendItemDisplay(Player player, String channelId, String message) {
+        try {
+            if (!ItemDisplayTokens.hasItemToken(message)) {
+                return;
+            }
+            if (!player.hasPermission(ItemDisplayTokens.PERMISSION_ITEM)) {
+                return; // 12.5: without permission the token stays plain text
+            }
+            if (!itemDisplayTokens.tryAcquire(player.getUniqueId())) {
+                return; // rate-limited: token stays plain text
+            }
+            String itemJson = buildMainHandItemJson(player);
+            plugin.getNetworkClient().sendPacket(ItemDisplayTokens.buildPacket(
+                    player.getUniqueId(), player.getName(), channelId, itemJson));
+            plugin.debug("Sent item display to channel " + channelId + ": " + itemJson);
+        } catch (Exception e) {
+            plugin.debug("Failed to send item display: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Extracts the display fields (id / count / custom name) of the player's
+     * main-hand item. Empty hand → air payload, matching the Bedrock
+     * renderers' "Empty" placeholder behavior.
+     */
+    private String buildMainHandItemJson(Player player) {
+        org.bukkit.inventory.ItemStack hand = player.getInventory().getItemInMainHand();
+        if (hand == null || hand.getType() == org.bukkit.Material.AIR || hand.getAmount() <= 0) {
+            return ItemDisplayTokens.emptyHandJson();
+        }
+        String customName = null;
+        org.bukkit.inventory.meta.ItemMeta meta = hand.getItemMeta();
+        if (meta != null && meta.hasDisplayName()) {
+            customName = meta.getDisplayName();
+        }
+        return ItemDisplayTokens.buildItemJson(
+                hand.getType().getKey().toString(), hand.getAmount(), customName);
+    }
+
     /**
      * Gets or creates a player's chat state.
      *

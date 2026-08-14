@@ -182,6 +182,11 @@ public class ConfigLoader {
             if (data.containsKey("super-admins")) {
                 config.setSuperAdmins(parseSuperAdmins((List<Map<String, Object>>) data.get("super-admins")));
             }
+
+            // Parse panel-users (web-panel ADMIN/VIEWER accounts)
+            if (data.containsKey("panel-users")) {
+                config.setPanelUsers(parsePanelUsers((List<Map<String, Object>>) data.get("panel-users")));
+            }
             
             // Parse debug
             if (data.containsKey("debug")) {
@@ -206,6 +211,11 @@ public class ConfigLoader {
             // Parse features (Settings page)
             if (data.containsKey("features")) {
                 config.setFeatures(parseFeatureConfig((Map<String, Object>) data.get("features")));
+            }
+
+            // Parse custom sensitive-word filter lists
+            if (data.containsKey("filter")) {
+                config.setFilter(parseFilterConfig((Map<String, Object>) data.get("filter")));
             }
 
             return config;
@@ -236,6 +246,35 @@ public class ConfigLoader {
         }
         if (data.containsKey("locale")) {
             config.setLocale((String) data.get("locale"));
+        }
+        if (data.containsKey("cors-allowed-origins")) {
+            Object raw = data.get("cors-allowed-origins");
+            if (raw instanceof List) {
+                List<String> origins = new ArrayList<>();
+                for (Object o : (List<?>) raw) {
+                    if (o != null && !String.valueOf(o).isBlank()) {
+                        origins.add(String.valueOf(o).trim());
+                    }
+                }
+                config.setCorsAllowedOrigins(origins);
+            }
+        }
+        if (data.containsKey("idle-timeout-seconds")) {
+            config.setIdleTimeoutSeconds(((Number) data.get("idle-timeout-seconds")).intValue());
+        }
+        if (data.containsKey("rest-worker-threads")) {
+            config.setRestWorkerThreads(((Number) data.get("rest-worker-threads")).intValue());
+        }
+        if (data.get("rate-limit") instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> rateLimitData = (Map<String, Object>) data.get("rate-limit");
+            if (rateLimitData.containsKey("messages-per-second")) {
+                config.setRateLimitMessagesPerSecond(
+                        ((Number) rateLimitData.get("messages-per-second")).intValue());
+            }
+            if (rateLimitData.containsKey("burst")) {
+                config.setRateLimitBurst(((Number) rateLimitData.get("burst")).intValue());
+            }
         }
 
         return config;
@@ -342,6 +381,48 @@ public class ConfigLoader {
         return admins;
     }
 
+    /**
+     * Parses the {@code panel-users} section: web-panel login accounts with
+     * role ADMIN or VIEWER. Credentials support the same two spellings as
+     * super-admins: {@code password-hash} (precomputed SHA-256 hex, wins when
+     * both are present) or {@code password} (plain, hashed at load time).
+     * Entries with a missing/invalid role (including SUPER_ADMIN, which is
+     * reserved for the {@code super-admins} section) are skipped with a warning.
+     */
+    private List<PanelUserConfig> parsePanelUsers(List<Map<String, Object>> data) {
+        List<PanelUserConfig> users = new ArrayList<>();
+        if (data == null) return users;
+
+        for (Map<String, Object> userData : data) {
+            String username = (String) userData.get("username");
+            String passwordHash = (String) userData.get("password-hash");
+            String plainPassword = (String) userData.get("password");
+            String role = userData.get("role") != null ? String.valueOf(userData.get("role")).trim() : null;
+
+            if (username == null || username.isBlank()) {
+                logger.warn("Skipping panel-user entry without username: {}", userData);
+                continue;
+            }
+            String effectiveHash = passwordHash;
+            if (effectiveHash == null) {
+                if (plainPassword == null) {
+                    logger.warn("Skipping panel-user entry without password-hash or password: {}", username);
+                    continue;
+                }
+                effectiveHash = AuthManager.hashPassword(plainPassword);
+            }
+            String normalizedRole = role != null ? role.toUpperCase(Locale.ROOT) : null;
+            if (!"ADMIN".equals(normalizedRole) && !"VIEWER".equals(normalizedRole)) {
+                logger.warn("Skipping panel-user entry '{}' with invalid role '{}' (allowed: ADMIN, VIEWER)",
+                        username, role);
+                continue;
+            }
+            users.add(new PanelUserConfig(username, effectiveHash, normalizedRole));
+        }
+
+        return users;
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, GlobalChannelConfig> parseGlobalChannels(Map<String, Object> data) {
         Map<String, GlobalChannelConfig> channels = new LinkedHashMap<>();
@@ -359,6 +440,9 @@ public class ConfigLoader {
             }
             if (channelData.containsKey("max_capacity")) {
                 channel.setMaxCapacity(((Number) channelData.get("max_capacity")).intValue());
+            }
+            if (channelData.containsKey("slow_mode")) {
+                channel.setSlowModeSeconds(((Number) channelData.get("slow_mode")).intValue());
             }
             
             channels.put(entry.getKey(), channel);
@@ -457,6 +541,9 @@ public class ConfigLoader {
                     if (channelData.containsKey("allowed_worlds")) {
                         channel.setAllowedWorlds((List<String>) channelData.get("allowed_worlds"));
                     }
+                    if (channelData.containsKey("slow_mode")) {
+                        channel.setSlowModeSeconds(((Number) channelData.get("slow_mode")).intValue());
+                    }
                     
                     channels.put(channelEntry.getKey(), channel);
                 }
@@ -483,8 +570,44 @@ public class ConfigLoader {
         if (data.containsKey("cross-server-chat-enabled")) {
             features.setCrossServerChatEnabled(Boolean.TRUE.equals(data.get("cross-server-chat-enabled")));
         }
+        if (data.containsKey("private-messages-enabled")) {
+            features.setPrivateMessagesEnabled(Boolean.TRUE.equals(data.get("private-messages-enabled")));
+        }
+        if (data.containsKey("message-log-retention-days")) {
+            Object value = data.get("message-log-retention-days");
+            if (value instanceof Number) {
+                features.setMessageLogRetentionDays(((Number) value).intValue());
+            }
+        }
 
         return features;
+    }
+
+    @SuppressWarnings("unchecked")
+    private FilterConfig parseFilterConfig(Map<String, Object> data) {
+        FilterConfig filter = new FilterConfig();
+        if (data == null) return filter;
+
+        if (data.get("words") instanceof List) {
+            List<String> words = new ArrayList<>();
+            for (Object word : (List<Object>) data.get("words")) {
+                if (word != null) {
+                    words.add(String.valueOf(word));
+                }
+            }
+            filter.setWords(words);
+        }
+        if (data.get("patterns") instanceof List) {
+            List<String> patterns = new ArrayList<>();
+            for (Object pattern : (List<Object>) data.get("patterns")) {
+                if (pattern != null) {
+                    patterns.add(String.valueOf(pattern));
+                }
+            }
+            filter.setPatterns(patterns);
+        }
+
+        return filter;
     }
 
     // Serialization methods
@@ -500,6 +623,13 @@ public class ConfigLoader {
         server.put("secret-key", config.getServer().getSecretKey());
         server.put("worker-threads", config.getServer().getWorkerThreads());
         server.put("locale", config.getServer().getLocale());
+        server.put("cors-allowed-origins", config.getServer().getCorsAllowedOrigins());
+        server.put("idle-timeout-seconds", config.getServer().getIdleTimeoutSeconds());
+        server.put("rest-worker-threads", config.getServer().getRestWorkerThreads());
+        Map<String, Object> rateLimit = new LinkedHashMap<>();
+        rateLimit.put("messages-per-second", config.getServer().getRateLimitMessagesPerSecond());
+        rateLimit.put("burst", config.getServer().getRateLimitBurst());
+        server.put("rate-limit", rateLimit);
         data.put("server", server);
         
         // Database section
@@ -555,7 +685,20 @@ public class ConfigLoader {
             superAdmins.add(adminData);
         }
         data.put("super-admins", superAdmins);
-        
+
+        // Panel users (always persist the resolved password-hash; never the plain password)
+        if (config.getPanelUsers() != null && !config.getPanelUsers().isEmpty()) {
+            List<Map<String, Object>> panelUsers = new ArrayList<>();
+            for (PanelUserConfig user : config.getPanelUsers()) {
+                Map<String, Object> userData = new LinkedHashMap<>();
+                userData.put("username", user.getUsername());
+                userData.put("password-hash", user.getPasswordHash());
+                userData.put("role", user.getRole());
+                panelUsers.add(userData);
+            }
+            data.put("panel-users", panelUsers);
+        }
+
         // Debug
         data.put("debug", config.isDebug());
         
@@ -566,6 +709,9 @@ public class ConfigLoader {
             channelData.put("display_name", entry.getValue().getDisplayName());
             channelData.put("permission", entry.getValue().getPermission());
             channelData.put("max_capacity", entry.getValue().getMaxCapacity());
+            if (entry.getValue().getSlowModeSeconds() > 0) {
+                channelData.put("slow_mode", entry.getValue().getSlowModeSeconds());
+            }
             globalChannels.put(entry.getKey(), channelData);
         }
         data.put("global_channels", globalChannels);
@@ -623,6 +769,9 @@ public class ConfigLoader {
                 if (channel.getAllowedWorlds() != null) {
                     channelData.put("allowed_worlds", channel.getAllowedWorlds());
                 }
+                if (channel.getSlowModeSeconds() > 0) {
+                    channelData.put("slow_mode", channel.getSlowModeSeconds());
+                }
                 
                 channels.put(channelEntry.getKey(), channelData);
             }
@@ -638,7 +787,17 @@ public class ConfigLoader {
             features.put("filter-enabled", config.getFeatures().isFilterEnabled());
             features.put("message-log-enabled", config.getFeatures().isMessageLogEnabled());
             features.put("cross-server-chat-enabled", config.getFeatures().isCrossServerChatEnabled());
+            features.put("private-messages-enabled", config.getFeatures().isPrivateMessagesEnabled());
+            features.put("message-log-retention-days", config.getFeatures().getMessageLogRetentionDays());
             data.put("features", features);
+        }
+
+        // Custom sensitive-word filter lists
+        if (config.getFilter() != null) {
+            Map<String, Object> filter = new LinkedHashMap<>();
+            filter.put("words", new ArrayList<>(config.getFilter().getWords()));
+            filter.put("patterns", new ArrayList<>(config.getFilter().getPatterns()));
+            data.put("filter", filter);
         }
 
         Yaml yaml = createYaml();
@@ -679,6 +838,11 @@ public class ConfigLoader {
         // Auto-complete features config
         if (config.getFeatures() == null) {
             config.setFeatures(defaults.getFeatures());
+        }
+
+        // Auto-complete filter config
+        if (config.getFilter() == null) {
+            config.setFilter(defaults.getFilter());
         }
     }
 

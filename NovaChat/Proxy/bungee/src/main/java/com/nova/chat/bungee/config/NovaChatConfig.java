@@ -29,6 +29,7 @@ public class NovaChatConfig {
     private boolean replaceVanilla;
     private String defaultChannel;
     private String locale;
+    private Map<String, String> channelPrefixes;
 
     // Format settings
     private String prefix;
@@ -47,6 +48,7 @@ public class NovaChatConfig {
      */
     public NovaChatConfig(File dataFolder) {
         this.channelFormats = new HashMap<>();
+        this.channelPrefixes = new HashMap<>();
         loadConfig(dataFolder);
     }
 
@@ -111,6 +113,15 @@ public class NovaChatConfig {
             this.replaceVanilla = chat.getBoolean("replace_vanilla", false);
             this.defaultChannel = chat.getString("default_channel", "local");
             this.locale = chat.getString("locale", "zh_CN");
+            Configuration prefixes = chat.getSection("channel-prefixes");
+            if (prefixes != null) {
+                for (String key : prefixes.getKeys()) {
+                    String channelId = prefixes.getString(key);
+                    if (key != null && !key.isEmpty() && channelId != null && !channelId.isEmpty()) {
+                        channelPrefixes.put(key, channelId);
+                    }
+                }
+            }
         } else {
             this.replaceVanilla = false;
             this.defaultChannel = "local";
@@ -183,6 +194,12 @@ public class NovaChatConfig {
               replace_vanilla: false
               default_channel: "local"
               locale: "zh_CN"  # 默认语言（zh_CN / en_US）；玩家客户端语言优先
+              # 频道前缀：消息首字符命中前缀时直接发往对应频道（无需切换频道）。
+              # 默认为空 = 关闭。示例：
+              # channel-prefixes:
+              #   "!": global
+              #   "$": trade
+              channel-prefixes: {}
             
             # 消息格式
             format:
@@ -259,6 +276,17 @@ public class NovaChatConfig {
 
     public Map<String, String> getChannelFormats() {
         return channelFormats;
+    }
+
+    /**
+     * Gets the configured channel-prefix routing map
+     * ({@code chat.channel-prefixes}: prefix string → channel ID). Empty map
+     * (the default) disables prefix routing.
+     *
+     * @return the prefix→channelId map, never null
+     */
+    public Map<String, String> getChannelPrefixes() {
+        return channelPrefixes;
     }
 
     /**

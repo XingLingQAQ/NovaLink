@@ -142,3 +142,35 @@ target("novachat-levilamina-tests")
         os.cp("src/i18n/lang", targetdir .. "/lang")
     end)
 target_end()
+
+-- Test target: cross-language golden byte verification (no LeviLamina SDK
+-- needed). Decodes the Java-generated frames under <repo>/test/protocol-golden
+-- with the C++ protocol classes and re-encodes them byte-for-byte.
+--
+-- The golden directory is located at runtime: NOVALINK_REPO_ROOT env var, or
+-- walking up from the working directory to the repo root (settings.gradle).
+-- `xmake run` executes from the project dir, so no configuration is needed.
+--
+-- Build & run:
+--   xmake f --sdk=n -m debug
+--   xmake build novachat-levilamina-golden-tests
+--   xmake run novachat-levilamina-golden-tests
+target("novachat-levilamina-golden-tests")
+    set_kind("binary")
+    set_languages("c++20")
+    set_symbols("debug")
+    -- /utf-8: the golden spot checks contain UTF-8 Chinese/emoji literals
+    -- (same rationale as novachat-levilamina-tests above).
+    add_cxflags("/utf-8")
+    add_includedirs("src")
+
+    add_files("tests/test_protocol_golden.cpp")
+    add_files("src/protocol/PacketBuffer.cpp")
+
+    set_targetdir("$(buildir)/bin")
+    set_filename("novachat-levilamina-golden-tests.exe")
+
+    if is_plat("windows") then
+        add_defines("NOMINMAX", "UNICODE", "_UNICODE", "WIN32", "_WIN32", "_WINDOWS")
+    end
+target_end()

@@ -42,6 +42,12 @@ dependencies {
     testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
     testImplementation "net.jqwik:jqwik:${jqwikVersion}"
     testImplementation "org.assertj:assertj-core:${assertjVersion}"
+    testImplementation "org.mockito:mockito-core:${mockitoVersion}"
+    testImplementation "org.mockito:mockito-junit-jupiter:${mockitoVersion}"
+    // Platform API on the test classpath so Mockito can mock com.velocitypowered.*
+    // types (compileOnly keeps it out of the artifact; tests need it resolvable).
+    // Mirrors the nukkit module's testImplementation approach.
+    testImplementation "com.velocitypowered:velocity-api:${velocityVersion}"
 }
 
 tasks.named('test') {

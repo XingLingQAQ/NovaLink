@@ -35,6 +35,9 @@ dependencies {
     testImplementation "org.assertj:assertj-core:${assertjVersion}"
     testImplementation "org.mockito:mockito-core:${mockitoVersion}"
     testImplementation "org.mockito:mockito-junit-jupiter:${mockitoVersion}"
+    // Bukkit platform API on the test classpath so Mockito can mock org.bukkit.*
+    // (compileOnly deps are not visible to tests). Mirrors the nukkit module.
+    testImplementation "org.spigotmc:spigot-api:${spigotVersion}"
 }
 
 tasks.named('test') {

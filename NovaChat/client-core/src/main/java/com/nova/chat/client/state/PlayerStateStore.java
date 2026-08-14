@@ -20,10 +20,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * creates exactly one state. {@link #set} refuses null state defensively so a
  * bug that would otherwise store a null and NPE a later reader is surfaced at
  * the call site.
- *
- * <p>PNX is not driven through this store: it wraps {@link PlayerChannelState}
- * in a local {@code PlayerChatState} and hardcodes {@code ChatMode.HYBRID},
- * so migrating it is a separate follow-up.
  */
 public final class PlayerStateStore {
 

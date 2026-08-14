@@ -1,0 +1,18 @@
+{
+  "name": "chat_message_legacy_no_placeholders",
+  "packet": "ChatMessagePacket",
+  "packetId": 3,
+  "requestId": "00000000-0000-0000-0000-00000000002f",
+  "legacyWire": true,
+  "reencodeExact": false,
+  "description": "遗留聊天消息：payload 在 content 后结束（无 placeholders 计数），空字符串边界；re-encode 会补写 varint 0，不做字节比对",
+  "fields": {
+    "senderId": "fedcba98-7654-3210-fedc-ba9876543210",
+    "senderName": "",
+    "clientId": "",
+    "channelId": "lobby",
+    "content": "",
+    "placeholders": {}
+  },
+  "frameHex": "2a030000000000000000000000000000002ffedcba9876543210fedcba98765432100000056c6f62627900"
+}

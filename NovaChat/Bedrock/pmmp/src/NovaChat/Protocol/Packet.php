@@ -28,6 +28,7 @@ abstract class Packet {
     public const CHANNEL_UPDATE = 0x0D;
     public const ITEM_DISPLAY = 0x10;
     public const MENTION = 0x12;
+    public const PRIVATE_MESSAGE = 0x14;
 
     // Alias for backward compatibility
     public const TITLE_MESSAGE = self::TITLE;
@@ -130,6 +131,7 @@ abstract class Packet {
             self::ADMIN_ACTION_RESPONSE => new AdminActionResponsePacket(),
             self::ITEM_DISPLAY => new ItemDisplayPacket(),
             self::MENTION => new MentionPacket(),
+            self::PRIVATE_MESSAGE => new PrivateMessagePacket(),
             default => null,
         };
     }

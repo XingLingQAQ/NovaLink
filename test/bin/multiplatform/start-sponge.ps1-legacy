@@ -1,0 +1,25 @@
+# Start the isolated SpongeVanilla server for the E2E workspace.
+param(
+  [string]$JavaHome = "C:\Program Files\Eclipse Adoptium\jdk-17.0.19.10-hotspot",
+  [string]$SpongeDir = "D:\Project\NovaLink\.e2e\sponge",
+  [string]$Jar = "D:\Project\NovaLink\.e2e\artifacts\dist\spongevanilla-1.16.5-8.2.0-universal.jar",
+  [int]$MemoryMb = 1024
+)
+
+$java = Join-Path $JavaHome "bin\java.exe"
+if (-not (Test-Path $java)) { throw "JDK 17 java.exe not found: $java" }
+if (-not (Test-Path $Jar)) { throw "Server jar not found: $Jar" }
+foreach ($required in @("server.properties", "eula.txt")) {
+  $path = Join-Path $SpongeDir $required
+  if (-not (Test-Path $path)) { throw "Missing Sponge E2E file: $path" }
+}
+
+$stdout = Join-Path $SpongeDir "sponge.stdout.log"
+$stderr = Join-Path $SpongeDir "sponge.stderr.log"
+$pidFile = Join-Path $SpongeDir "sponge.pid"
+Remove-Item $stdout, $stderr, $pidFile -ErrorAction SilentlyContinue
+$jvmArgs = @("-Xms${MemoryMb}M", "-Xmx${MemoryMb}M", "-jar", $Jar, "nogui")
+$proc = Start-Process -FilePath $java -ArgumentList $jvmArgs -WorkingDirectory $SpongeDir `
+  -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
+$proc.Id | Set-Content -Encoding ascii $pidFile
+Write-Output ("SPONGE_PID=" + $proc.Id)

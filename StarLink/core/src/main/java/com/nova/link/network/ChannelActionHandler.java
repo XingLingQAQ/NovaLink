@@ -49,6 +49,9 @@ public class ChannelActionHandler {
     private final MuteManager muteManager;
     private final BanManager banManager;
     private NotificationStore notificationStore;
+    private Runnable playerUpdateBroadcaster;
+    /** Optional sink for player.join/player.leave webhook events (P0-4). */
+    private com.nova.link.api.WebhookManager webhookManager;
 
     public ChannelActionHandler(ChannelManager channelManager,
                                 PlayerStateManager playerStateManager,
@@ -96,6 +99,70 @@ public class ChannelActionHandler {
      */
     public void setNotificationStore(NotificationStore notificationStore) {
         this.notificationStore = notificationStore;
+    }
+
+    /**
+     * Late-binds the broadcaster invoked after a successful JOIN/LEAVE so the
+     * web panel receives real-time {@code player_update} events. Optional —
+     * if never set, the panel falls back to on-demand {@code get_players}.
+     */
+    public void setPlayerUpdateBroadcaster(Runnable playerUpdateBroadcaster) {
+        this.playerUpdateBroadcaster = playerUpdateBroadcaster;
+    }
+
+    /**
+     * Late-binds the webhook manager so player.join / player.leave events fire
+     * webhooks (P0-4). Optional — if never set, join/leave still work, just
+     * without webhook delivery. NovaLinkMain wires this after construction.
+     */
+    public void setWebhookManager(com.nova.link.api.WebhookManager webhookManager) {
+        this.webhookManager = webhookManager;
+    }
+
+    /**
+     * Fires the player-update broadcaster, swallowing any exception so a
+     * broadcast failure can never break the channel action itself.
+     */
+    private void notifyPlayerUpdate() {
+        Runnable broadcaster = this.playerUpdateBroadcaster;
+        if (broadcaster != null) {
+            try {
+                broadcaster.run();
+            } catch (Exception e) {
+                logger.debug("player_update broadcast failed: {}", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Fires the player.join / player.leave webhook events (P0-4). The payload
+     * carries uuid, name, server (clientId) and channel context so webhook
+     * consumers can react to presence changes. Swallows all exceptions so a
+     * webhook delivery failure never breaks the channel action itself.
+     */
+    private void firePresenceWebhook(String eventType, UUID playerId, String playerName,
+                                     String clientId, String channelId) {
+        com.nova.link.api.WebhookManager wm = this.webhookManager;
+        if (wm == null || playerId == null) {
+            return;
+        }
+        try {
+            com.google.gson.JsonObject payload = new com.google.gson.JsonObject();
+            payload.addProperty("uuid", playerId.toString());
+            if (playerName != null) {
+                payload.addProperty("name", playerName);
+            }
+            if (clientId != null) {
+                payload.addProperty("server", clientId);
+            }
+            if (channelId != null) {
+                payload.addProperty("channelId", channelId);
+            }
+            payload.addProperty("timestamp", System.currentTimeMillis());
+            wm.triggerWebhook(eventType, payload);
+        } catch (Exception e) {
+            logger.debug("{} webhook trigger failed: {}", eventType, e.getMessage());
+        }
     }
 
     /**
@@ -218,6 +285,9 @@ public class ChannelActionHandler {
         }
 
         upsertPlayerState(connection, playerId, playerName, world, channelId, platform);
+        notifyPlayerUpdate();
+        firePresenceWebhook("player.join", playerId, playerName,
+                connection.getClientId(), channelId);
         ChannelActionResponsePacket response = new ChannelActionResponsePacket(true, ChannelAction.JOIN, channelId, "", "Joined channel");
         return response;
     }
@@ -265,6 +335,9 @@ public class ChannelActionHandler {
             state.setPlatform(platform);
         }
         playerStateManager.leaveChannel(playerId, channelId);
+        notifyPlayerUpdate();
+        firePresenceWebhook("player.leave", playerId, playerName,
+                connection.getClientId(), channelId);
 
         return new ChannelActionResponsePacket(true, ChannelAction.LEAVE, channelId, "", "Left channel");
     }

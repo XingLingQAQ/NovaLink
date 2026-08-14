@@ -14,6 +14,7 @@ import com.nova.link.config.ConfigManager;
 import com.nova.link.database.DatabaseProvider;
 import com.nova.link.database.PlayerStateManager;
 import com.nova.link.filter.SensitiveWordFilter;
+import com.nova.link.log.MessageLogService;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.network.NettyServer;
 import com.nova.link.network.ServerNetworkHandler;
@@ -52,6 +53,19 @@ public final class BackendContext {
     private final SpyManager spyManager;
     private final NettyServer tcpServer;
     private final WebSocketGateway webSocketGateway;
+
+    /**
+     * Message persistence service (setter-injected: it is created after some
+     * contexts are already built, and the constructor is left untouched to
+     * keep existing call sites stable).
+     */
+    private MessageLogService messageLogService;
+
+    /**
+     * Dedicated REST worker pool (setter-injected, same rationale as
+     * {@link #messageLogService}). Shut down after the WebSocket gateway.
+     */
+    private java.util.concurrent.ExecutorService restWorkerPool;
 
     public BackendContext(ConfigManager configManager,
                           AuthManager authManager,
@@ -115,4 +129,14 @@ public final class BackendContext {
     public SpyManager getSpyManager() { return spyManager; }
     public NettyServer getTcpServer() { return tcpServer; }
     public WebSocketGateway getWebSocketGateway() { return webSocketGateway; }
+
+    public MessageLogService getMessageLogService() { return messageLogService; }
+    public void setMessageLogService(MessageLogService messageLogService) {
+        this.messageLogService = messageLogService;
+    }
+
+    public java.util.concurrent.ExecutorService getRestWorkerPool() { return restWorkerPool; }
+    public void setRestWorkerPool(java.util.concurrent.ExecutorService restWorkerPool) {
+        this.restWorkerPool = restWorkerPool;
+    }
 }

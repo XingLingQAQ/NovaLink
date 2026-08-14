@@ -1,7 +1,6 @@
-# NovaLink unified CI -- build + test the ENTIRE monorepo with one Gradle command.
+# NovaLink unified CI -- backend/platform Gradle gate + independent Panel gate.
 #
-# One job, one runner (windows-2022), one command: `./gradlew build test`.
-# This drives every language stack in the repo through Gradle:
+# The Windows Gradle job drives every backend/platform language stack:
 #   - Java:   all 16 Gradle Java modules (NovaChat:common, NovaChat:client-core,
 #             StarLink:core, 7 server platforms, MOD fabric/neoforge/quilt)
 #   - Python: NovaChat:Bedrock:endstone (base-plugin wrapper -> pythonEnv +
@@ -11,7 +10,7 @@
 #   - C++:    NovaChat:Bedrock:levilamina (base-plugin wrapper -> xmakeConfigure
 #             + xmakeBuild + test tasks)
 #
-# WHY A SINGLE WINDOWS RUNNER:
+# WHY THE GRADLE JOB USES A SINGLE WINDOWS RUNNER:
 #   levilamina is Windows-only. Its xmake.lua builds a BDS (Bedrock Dedicated
 #   Server) C++20 shared library with MSVC intrinsics + Windows ABI, and
 #   levilamina 26.20.7 specifically requires MSVC 14.43 / v143 (the VS 2022
@@ -58,6 +57,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  orchestration-path-contract:
+    name: Test orchestration path contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Reject removed E2E source paths
+        shell: pwsh
+        run: ./test/bin/verify-orchestration-paths.ps1
+
+  panel:
+    name: Panel lint + production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: Panel/web
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: Panel/web/package-lock.json
+
+      - name: Install Panel dependencies from lock
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint Panel
+        run: npm run lint
+
+      - name: Build Panel
+        run: npm run build
+
   build:
     name: Gradle build + test (all platforms)
     runs-on: windows-2022

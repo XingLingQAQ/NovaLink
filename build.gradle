@@ -62,11 +62,21 @@ subprojects {
         assertjVersion = '3.24.2'
         mockitoVersion = '5.18.0'
         jjwtVersion = '0.12.3'
-        // Minecraft Java platform compile targets (as of 2026-07)
-        // Latest stable classic line: 1.21.11; calendar line: 26.2 (Paper/Spigot also publish 26.x coords)
-        spigotVersion = '1.21.11-R0.1-SNAPSHOT'
-        paperVersion = '1.21.11-R0.1-SNAPSHOT'
-        foliaVersion = '1.21.11-R0.1-SNAPSHOT'
+        // Minecraft Java platform compile targets (as of 2026-08)
+        // Calendar line 26.2 is the latest stable line; classic 1.21.11 line remains
+        // available as a fallback. Spigot, Paper, and Folia all publish 26.x coords.
+        //
+        // Verified GAVs via repo.papermc.io maven-metadata.xml + artifact POMs:
+        //   org.spigotmc:spigot-api            26.2-R0.1-SNAPSHOT      (latest snapshot, timestamped jars present)
+        //   io.papermc.paper:paper-api         26.2.build.112-stable   (latest stable release)
+        //   dev.folia:folia-api                26.1.2.build.8-stable   (latest stable Folia release; 26.2 only beta)
+        //
+        // NOTE: Paper 26.x and Folia 26.x Gradle module metadata declares
+        // org.gradle.jvm.version=25, so the folia module is compiled with JDK 25.
+        // Spigot 26.2-R0.1-SNAPSHOT targets Java 17 (maven.compiler.release=17).
+        spigotVersion = '26.2-R0.1-SNAPSHOT'
+        paperVersion = '26.2.build.112-stable'
+        foliaVersion = '26.1.2.build.8-stable'
         velocityVersion = '4.1.0-SNAPSHOT'
         bungeecordVersion = '1.21-R0.4'
         nukkitVersion = '1.0-SNAPSHOT'
@@ -98,32 +108,67 @@ subprojects {
 // ============================================================================
 // Real-server E2E harness integration (OPTIONAL -- never runs by default).
 //
-// The E2E harness lives under e2e/ (COMMITTED to the repo). It requires real
-// Minecraft server jars, real bot processes (mineflayer/bedrock-protocol), a
-// running NovaLink backend, JDK 17/21/25, and Node.js. None of these are
-// available in a clean CI environment by default, so this task is opt-in.
+// The committed E2E harness lives under test/. Runtime downloads and logs live
+// under .e2e-artifacts/ and remain separate from the source tree. The harness
+// requires real Minecraft servers, bot processes, JDK 17/21/25, and Node.js,
+// so execution is opt-in; harness integrity is never optional once requested.
 //
 // Entry points:
-//   1. Dedicated task:  ./gradlew realE2E
-//   2. Gate into check: ./gradlew check -PenableRealE2E=true
+//   1. Harness-only preflight: ./gradlew verifyRealE2EHarness
+//   2. Dedicated task:         ./gradlew realE2E
+//   3. Gate into check:        ./gradlew check -PenableRealE2E=true
 //
 // Platform subset:
 //   ./gradlew realE2E -Pe2ePlatforms=bukkit,velocity
 //   (default: bukkit,bungee,velocity,nukkit,folia,pnx,sponge)
-//
-// When e2e/ is absent (fresh clone without the harness -- should not happen
-// since e2e/ is committed), the task logs a helpful message and succeeds as a
-// no-op -- it NEVER fails the build due to harness absence.
 // ============================================================================
 
-def e2eDir = file('e2e')
-def e2eOrchestrator = file('e2e/bin/run-e2e-orchestrator.ps1')
-def e2eSummaryFile = file('e2e/artifacts/runs/e2e-summary.json')
+def e2eOrchestrator = file('test/bin/run-e2e-orchestrator.ps1')
+def e2eSummaryFile = file('.e2e-artifacts/runs/e2e-summary.json')
+def e2eRequiredPaths = [
+    'test/README.md',
+    'test/versions.lock.ps1',
+    'test/conf/novalink.template.yml',
+    'test/bot/package.json',
+    'test/bot/package-lock.json',
+    'test/bot/run-e2e.js',
+    'test/bot/run-e2e-bedrock.js',
+    'test/bin/build-plugin-phar.php',
+    'test/bin/fetch-server.ps1',
+    'test/bin/write-classpath.init.gradle',
+    'test/bin/verify-orchestration-paths.ps1',
+    'test/bin/run-e2e-orchestrator.ps1',
+    'test/bin/run-bukkit-e2e.ps1',
+    'test/bin/run-endstone-e2e.ps1',
+    'test/bin/run-levilamina-e2e.ps1',
+    'test/bin/run-pmmp-e2e.ps1',
+    'test/bin/multiplatform/run-multiplatform-e2e.ps1',
+    'test/bin/multiplatform/start-backend.ps1',
+    'test/bin/multiplatform/start-server.ps1'
+]
 def defaultE2ePlatforms = 'bukkit,bungee,velocity,nukkit,folia,pnx,sponge'
+
+tasks.register('verifyRealE2EHarness') {
+    group = 'verification'
+    description = 'Fails unless every committed real-server E2E harness input exists under test/.'
+    inputs.files(e2eRequiredPaths.collect { file(it) })
+
+    doLast {
+        def missing = e2eRequiredPaths.findAll { !file(it).isFile() }
+        if (!missing.isEmpty()) {
+            throw new GradleException(
+                '[verifyRealE2EHarness] Required committed harness files are missing:\n  - ' +
+                missing.join('\n  - ')
+            )
+        }
+        logger.lifecycle('[verifyRealE2EHarness] PASS: test/bin/run-e2e-orchestrator.ps1 and all required harness inputs exist.')
+    }
+}
 
 tasks.register('realE2E', Exec) {
     group = 'verification'
-    description = 'Runs the real-server E2E harness (opt-in; requires e2e/ + real server jars + Node.js). Use -Pe2ePlatforms=bukkit,velocity to subset. No-op if e2e/ absent.'
+    description = 'Runs the real-server E2E harness under test/ (opt-in; missing committed inputs fail the task).'
+    dependsOn('verifyRealE2EHarness')
 
     // This task is NEVER included in build/check/test by default.
     // It is only pulled into check when -PenableRealE2E=true is passed.
@@ -135,48 +180,27 @@ tasks.register('realE2E', Exec) {
     // Default 30 min total; override with -Pe2eTimeoutSec=600.
     def timeoutSec = providers.gradleProperty('e2eTimeoutSec').orElse('1800').get().toInteger()
 
-    // Gradle's Exec runs the command; we use a guard doFirst so the task body
-    // is a no-op (succeeds) when the harness is absent.
-    def shouldRun = e2eDir.exists() && e2eOrchestrator.exists()
-
-    if (shouldRun) {
-        workingDir = rootProject.projectDir
-        commandLine 'powershell.exe',
-            '-ExecutionPolicy', 'Bypass',
-            '-NoProfile',
-            '-File', e2eOrchestrator.absolutePath,
-            '-Platforms', platforms,
-            '-TimeoutSec', '420',
-            '-BotWaitSec', '150'
-        timeout = java.time.Duration.ofSeconds(timeoutSec)
-        // ignoreExitValue = false: a platform failure (exit 1) fails the task.
-        // exit 2 (prereq failure) also fails the task with a clear message.
-    } else {
-        // No-op: the command is a harmless echo. doFirst logs the reason.
-        commandLine 'powershell.exe', '-NoProfile', '-Command',
-            "Write-Output '[realE2E] E2E harness not present (e2e/ is committed but not found here) -- skipping.'"
-    }
+    workingDir = rootProject.projectDir
+    commandLine 'powershell.exe',
+        '-ExecutionPolicy', 'Bypass',
+        '-NoProfile',
+        '-File', e2eOrchestrator.absolutePath,
+        '-Platforms', platforms,
+        '-TimeoutSec', '420',
+        '-BotWaitSec', '150'
+    timeout = java.time.Duration.ofSeconds(timeoutSec)
+    // ignoreExitValue defaults to false: platform and prerequisite failures
+    // both fail the Gradle task.
 
     doFirst {
-        if (!e2eDir.exists()) {
-            logger.lifecycle('[realE2E] e2e/ directory not found (should be committed in the repo).')
-            logger.lifecycle('[realE2E] The E2E harness is committed under e2e/.')
-            logger.lifecycle('[realE2E] To run E2E: ensure e2e/ is checked out, then run scripts under e2e/bin/.')
-            logger.lifecycle('[realE2E] Skipping (no-op). Build will NOT fail because of E2E absence.')
-        } else if (!e2eOrchestrator.exists()) {
-            logger.lifecycle('[realE2E] e2e/ exists but orchestrator script missing: ' + e2eOrchestrator)
-            logger.lifecycle('[realE2E] Expected e2e/bin/run-e2e-orchestrator.ps1 (committed).')
-            logger.lifecycle('[realE2E] Skipping (no-op).')
-        } else {
-            logger.lifecycle('[realE2E] Starting real-server E2E for platforms: ' + platforms)
-            logger.lifecycle('[realE2E] Timeout: ' + timeoutSec + 's. This will spawn real server + bot processes.')
-            logger.lifecycle('[realE2E] Results summary will be written to: ' + e2eSummaryFile)
-        }
+        logger.lifecycle('[realE2E] Orchestrator: ' + e2eOrchestrator)
+        logger.lifecycle('[realE2E] Starting real-server E2E for platforms: ' + platforms)
+        logger.lifecycle('[realE2E] Timeout: ' + timeoutSec + 's. This will spawn real server + bot processes.')
+        logger.lifecycle('[realE2E] Results summary: ' + e2eSummaryFile)
     }
 
     doLast {
-        // If we actually ran the orchestrator, read + print the summary JSON.
-        if (e2eDir.exists() && e2eOrchestrator.exists() && e2eSummaryFile.exists()) {
+        if (e2eSummaryFile.exists()) {
             logger.lifecycle('[realE2E] --- Results Summary ---')
             def summaryJson = e2eSummaryFile.text
             try {

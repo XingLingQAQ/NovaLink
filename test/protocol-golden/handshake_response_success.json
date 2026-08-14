@@ -1,0 +1,15 @@
+{
+  "name": "handshake_response_success",
+  "packet": "HandshakeResponsePacket",
+  "packetId": 2,
+  "requestId": "00000000-0000-0000-0000-00000000002c",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "握手成功响应：空 errorCode + 中文/emoji message",
+  "fields": {
+    "success": true,
+    "errorCode": "",
+    "message": "欢迎 Welcome ✨"
+  },
+  "frameHex": "26020000000000000000000000000000002c010012e6aca2e8bf8e2057656c636f6d6520e29ca8"
+}

@@ -33,6 +33,23 @@ if TYPE_CHECKING:
     from novachat_endstone.config.manager import ConfigManager
 
 
+# Map a bare language prefix (no region) to the bundled <lang>_<REGION>
+# locale. Only zh and en have shipped bundles today; any other bare
+# language falls back to the hard default (zh_CN) so the i18n provider
+# always resolves to a real bundle.
+_BARE_LANGUAGE_DEFAULTS: Dict[str, str] = {
+    "zh": "zh_CN",
+    "en": "en_US",
+}
+
+
+def _bare_language_default(lang: str) -> str:
+    """Resolve a bare language prefix (e.g. ``"zh"``) to a full locale code."""
+    if not lang:
+        return "zh_CN"
+    return _BARE_LANGUAGE_DEFAULTS.get(lang, "zh_CN")
+
+
 class ChatHandler:
     """
     Handler for chat message interception and processing.
@@ -673,12 +690,25 @@ class ChatHandler:
         self._player_channels[player_uuid] = self._config_manager.default_channel
         self._chat_enabled[player_uuid] = True
 
-        # Detect player locale (zh_CN default; en_US if client locale starts with en)
+        # Capture the player's full client locale. Endstone's Player.locale
+        # exposes the language code the Bedrock client sent in its login
+        # packet (e.g. "zh_CN", "en_US", "ja_JP", "fr_FR"). We pass the
+        # complete code through to the i18n provider, which already falls
+        # back to zh_CN (I18n.DEFAULT_LOCALE) when the requested locale has
+        # no bundle. This means ja_JP/fr_FR/... are honoured when a lang
+        # file exists, and silently fall back to zh_CN otherwise -- so we
+        # never need to whitelist or binary-detect locales here.
+        #
+        # Normalization: trim + lowercase the region suffix to tolerate
+        # "ZH_cn"/"zh_cn"/"ZH_CN" variants from the client. If the code lacks
+        # a region (e.g. "zh", "en"), map the two known bare language prefixes
+        # to our bundled locales (zh -> zh_CN, en -> en_US); any other bare
+        # language is left as-is and the i18n fallback handles it.
         locale = "zh_CN"
         try:
-            client_locale = getattr(player, "locale", None) or ""
-            if str(client_locale).lower().startswith("en"):
-                locale = "en_US"
+            client_locale = (getattr(player, "locale", None) or "").strip()
+            if client_locale:
+                locale = self._normalize_locale(str(client_locale))
         except Exception:
             pass
         self._player_locales[player_uuid] = locale
@@ -702,13 +732,48 @@ class ChatHandler:
         self._logger.debug(f"Player {player.name} quit, cleaned up state")
 
     def get_player_locale(self, player_uuid: str) -> str:
-        """Get a player's locale (zh_CN or en_US)."""
+        """Get a player's locale (defaults to zh_CN when unknown)."""
         return self._player_locales.get(player_uuid, "zh_CN")
 
     def set_player_locale(self, player_uuid: str, locale: str) -> None:
-        """Set a player's locale."""
-        if locale in ("zh_CN", "en_US"):
-            self._player_locales[player_uuid] = locale
+        """Set a player's locale.
+
+        Any locale code is accepted; the i18n provider falls back to zh_CN
+        when no bundle exists for the requested locale, so we do not need a
+        whitelist here. The locale is normalized first so callers can pass
+        raw client strings without breaking later lookups.
+        """
+        normalized = self._normalize_locale(locale) if locale else "zh_CN"
+        self._player_locales[player_uuid] = normalized
+
+    @staticmethod
+    def _normalize_locale(raw: str) -> str:
+        """Normalize a client locale string into <lang>_<REGION> form.
+
+        Tolerates "zh_cn"/"ZH_CN"/"zh-CN"/"zh" variants. Bare language
+        prefixes for the two bundled locales (zh, en) are mapped to the
+        full <lang>_<REGION> form; any other value is returned in the
+        normalized <lang>_<REGION> shape (or as-is if it cannot be split)
+        and left for the i18n provider to fall back to zh_CN.
+        """
+        text = (raw or "").strip()
+        if not text:
+            return "zh_CN"
+        # Endstone/Bedrock uses "_" as the separator, but be lenient and
+        # also accept "-" (Java/BungeeCord style) and "." (legacy Bukkit).
+        cleaned = text.replace("-", "_").replace(".", "_")
+        if "_" in cleaned:
+            lang, _, region = cleaned.partition("_")
+            lang = lang.lower()
+            region = region.upper()
+            if not lang:
+                return "zh_CN"
+            if not region:
+                # Bare language prefix with a trailing separator (e.g. "zh_").
+                return _bare_language_default(lang)
+            return f"{lang}_{region}"
+        # No region separator at all.
+        return _bare_language_default(cleaned.lower())
 
     def get_known_channels(self) -> list:
         """Get the known channel list (from backend ConfigSync)."""

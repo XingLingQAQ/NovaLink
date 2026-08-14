@@ -1,0 +1,16 @@
+# Start the Velocity proxy in background with redirected output.
+param(
+  [string]$VelocityDir = "D:\Project\NovaLink\.e2e\velocity",
+  [string]$Jar = "D:\Project\NovaLink\.e2e\artifacts\dist\velocity.jar",
+  [string]$PidFile = "$VelocityDir\velocity.pid",
+  [string]$Stdout = "$VelocityDir\velocity.stdout.log",
+  [string]$Stderr = "$VelocityDir\velocity.stderr.log"
+)
+
+$java21 = Join-Path $env:JAVA_HOME "bin\java.exe"
+Remove-Item $Stdout, $Stderr -ErrorAction SilentlyContinue
+$argList = @("-Xmx512M", "-jar", $jar)
+$proc = Start-Process -FilePath $java21 -ArgumentList $argList -WorkingDirectory $VelocityDir `
+  -RedirectStandardOutput $Stdout -RedirectStandardError $Stderr -PassThru -NoNewWindow
+$proc.Id | Set-Content $PidFile
+Write-Output ("VELOCITY_PID=" + $proc.Id)

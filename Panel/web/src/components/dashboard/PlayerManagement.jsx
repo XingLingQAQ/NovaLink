@@ -33,6 +33,7 @@ import CustomSelect from '../ui/CustomSelect';
 import Avatar from '../ui/Avatar';
 import { api } from '../../services/api';
 import { formatRemainingMs } from '../../utils/adapters';
+import { can } from '../../lib/permissions';
 
 function PlayerManagement({
   theme,
@@ -48,9 +49,11 @@ function PlayerManagement({
   onKickPlayer,
   onBanPlayer,
   onUnbanPlayer,
+  role,
 }) {
   void _txtMain; void _txtSec;
   const { t } = useTranslation();
+  const canPunish = can(role, 'punish');
   const [tab, setTab] = useState('online');
   const [searchQuery, setSearchQuery] = useState('');
   const [serverFilter, setServerFilter] = useState('all');
@@ -99,6 +102,11 @@ function PlayerManagement({
 
   // Get unique servers.
   const uniqueServers = [...new Set(players.map((p) => p.server))];
+
+  // Platform filter options derived from the live player data — the backend
+  // sends PlatformType enum names (e.g. BUKKIT, VELOCITY, NUKKIT), so a
+  // hardcoded list would never match.
+  const uniquePlatforms = [...new Set(players.map((p) => p && p.platform).filter(Boolean))];
 
   // Channel options for the mute modal (all + each channel id).
   const channelOptions = ['all', ...channels.map((c) => c.id).filter(Boolean)];
@@ -407,7 +415,7 @@ function PlayerManagement({
                 <CustomSelect
                   theme={theme}
                   mode={mode}
-                  options={['all', 'Java', 'Bedrock']}
+                  options={['all', ...uniquePlatforms]}
                   defaultValue={platformFilter}
                   onChange={setPlatformFilter}
                 />
@@ -461,10 +469,11 @@ function PlayerManagement({
                           size="icon"
                           onClick={() => handleViewDetails(player)}
                           title={t('players.details')}
+                          aria-label={t('players.details')}
                         >
                           <Eye size={12} />
                         </Button>
-                        {!player.muted && (
+                        {canPunish && !player.muted && (
                           <Button
                             theme={theme}
                             mode={mode}
@@ -476,7 +485,7 @@ function PlayerManagement({
                             {t('players.mute')}
                           </Button>
                         )}
-                        {onBanPlayer && (
+                        {canPunish && onBanPlayer && (
                           <Button
                             theme={theme}
                             mode={mode}
@@ -488,7 +497,7 @@ function PlayerManagement({
                             {t('players.ban')}
                           </Button>
                         )}
-                        {onKickPlayer && (
+                        {canPunish && onKickPlayer && (
                           <Button
                             theme={theme}
                             mode={mode}
@@ -496,6 +505,7 @@ function PlayerManagement({
                             size="icon"
                             onClick={() => handleKick(player)}
                             title={t('players.kick_title')}
+                            aria-label={t('players.kick_title')}
                           >
                             <UserX size={12} />
                           </Button>
@@ -563,16 +573,18 @@ function PlayerManagement({
                       </div>
                     </td>
                     <td className="p-3 text-right">
-                      <Button
-                        theme={theme}
-                        mode={mode}
-                        variant="outline"
-                        className="text-xs text-emerald-600 dark:text-emerald-400"
-                        onClick={() => handleUnmute(mute)}
-                        title={t('players.unmute_title')}
-                      >
-                        {t('players.unmute')}
-                      </Button>
+                      {canPunish && (
+                        <Button
+                          theme={theme}
+                          mode={mode}
+                          variant="outline"
+                          className="text-xs text-emerald-600 dark:text-emerald-400"
+                          onClick={() => handleUnmute(mute)}
+                          title={t('players.unmute_title')}
+                        >
+                          {t('players.unmute')}
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -643,16 +655,18 @@ function PlayerManagement({
                     </td>
                     <td className="p-3 text-muted-foreground">{formatBanCreated(ban)}</td>
                     <td className="p-3 text-right">
-                      <Button
-                        theme={theme}
-                        mode={mode}
-                        variant="outline"
-                        className="text-xs text-emerald-600 dark:text-emerald-400"
-                        onClick={() => handleUnban(ban)}
-                        title={t('players.unban_title')}
-                      >
-                        {t('players.unban')}
-                      </Button>
+                      {canPunish && (
+                        <Button
+                          theme={theme}
+                          mode={mode}
+                          variant="outline"
+                          className="text-xs text-emerald-600 dark:text-emerald-400"
+                          onClick={() => handleUnban(ban)}
+                          title={t('players.unban_title')}
+                        >
+                          {t('players.unban')}
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -709,7 +723,7 @@ function PlayerManagement({
             <CustomSelect
               theme={theme}
               mode={mode}
-              options={durationOptions.map((d) => d.value)}
+              options={durationOptions}
               defaultValue="1h"
               onChange={(val) => setMuteTarget({ ...muteTarget, duration: val })}
             />
@@ -864,7 +878,7 @@ function PlayerManagement({
             <CustomSelect
               theme={theme}
               mode={mode}
-              options={durationOptions.map((d) => d.value)}
+              options={durationOptions}
               defaultValue="1h"
               onChange={(val) => setBanTarget({ ...banTarget, duration: val })}
             />

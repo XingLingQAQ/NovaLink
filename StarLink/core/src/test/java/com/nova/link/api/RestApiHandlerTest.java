@@ -61,6 +61,9 @@ class RestApiHandlerTest {
 
     private static final String SECRET_KEY = "test-secret-key-at-least-32-chars-long";
 
+    @org.junit.jupiter.api.io.TempDir
+    java.nio.file.Path tempDir;
+
     private RestApiHandler handler;
     private JwtService jwtService;
     private ChannelManager channelManager;
@@ -73,6 +76,8 @@ class RestApiHandlerTest {
     private ServerNetworkHandler networkHandler;
     private ConsoleCommandHandler consoleCommandHandler;
     private DatabaseProvider db;
+    private MessageRouter messageRouter;
+    private SensitiveWordFilter sensitiveWordFilter;
 
     private UUID targetId;
     private ClientConnection capturedClient;
@@ -91,7 +96,7 @@ class RestApiHandlerTest {
         banManager = new BanManager(db, permissionManager, channelManager);
         notificationStore = new NotificationStore(db);
         invitationManager = new InvitationManager(db, channelManager);
-        SensitiveWordFilter sensitiveWordFilter = new SensitiveWordFilter();
+        sensitiveWordFilter = new SensitiveWordFilter();
         configManager = new ConfigManager(java.nio.file.Path.of("novalink-test.yml"));
 
         // Seed channels
@@ -115,7 +120,7 @@ class RestApiHandlerTest {
         when(networkHandler.findByClientId("Survival")).thenReturn(capturedClient);
         when(networkHandler.findByClientId("nonexistent")).thenReturn(null);
 
-        MessageRouter messageRouter = new MessageRouter(channelManager, networkHandler);
+        messageRouter = new MessageRouter(channelManager, networkHandler);
         messageRouter.setMuteManager(muteManager);
         messageRouter.setSensitiveWordFilter(sensitiveWordFilter);
         messageRouter.setPermissionChecker((c, p) -> true);
@@ -190,10 +195,18 @@ class RestApiHandlerTest {
     // ====================== helper: dispatch a request ======================
 
     /**
-     * Builds a FullHttpRequest, dispatches it through the handler, and returns
-     * the captured response status + body.
+     * Builds a FullHttpRequest, dispatches it through the default handler, and
+     * returns the captured response status + body.
      */
     private Response dispatch(HttpMethod method, String uri, String body) {
+        return dispatch(handler, method, uri, body);
+    }
+
+    /**
+     * Dispatch variant for tests that need a handler with different wiring
+     * (e.g. a loaded ConfigManager for the settings endpoint).
+     */
+    private Response dispatch(RestApiHandler targetHandler, HttpMethod method, String uri, String body) {
         FullHttpRequest request = new DefaultFullHttpRequest(
                 HttpVersion.HTTP_1_1, method, uri,
                 body != null ? Unpooled.copiedBuffer(body, CharsetUtil.UTF_8) : Unpooled.EMPTY_BUFFER);
@@ -212,7 +225,7 @@ class RestApiHandlerTest {
         }).when(ctx).writeAndFlush(any());
 
         try {
-            handler.channelRead0(ctx, request);
+            targetHandler.channelRead0(ctx, request);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -323,6 +336,46 @@ class RestApiHandlerTest {
         assertThat(resp.status).isEqualTo(HttpResponseStatus.NOT_FOUND);
     }
 
+    @Test
+    @DisplayName("PUT /api/channels/{id} sets slowModeSeconds and GET echoes it")
+    void updateChannelSlowMode() {
+        Response resp = dispatch(HttpMethod.PUT, "/api/channels/staff",
+                "{\"slowModeSeconds\":15}");
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        assertThat(resp.asJson().getAsJsonObject("channel").get("slowModeSeconds").getAsInt())
+                .isEqualTo(15);
+        assertThat(channelManager.getChannel("staff").getSlowModeSeconds()).isEqualTo(15);
+
+        Response get = dispatch(HttpMethod.GET, "/api/channels/staff", null);
+        assertThat(get.status).isEqualTo(HttpResponseStatus.OK);
+        assertThat(get.asJson().get("slowModeSeconds").getAsInt()).isEqualTo(15);
+
+        // Setting 0 disables slow mode again.
+        Response disable = dispatch(HttpMethod.PUT, "/api/channels/staff",
+                "{\"slowModeSeconds\":0}");
+        assertThat(disable.status).isEqualTo(HttpResponseStatus.OK);
+        assertThat(channelManager.getChannel("staff").getSlowModeSeconds()).isZero();
+    }
+
+    @Test
+    @DisplayName("PUT /api/channels/{id} rejects negative slowModeSeconds with 400")
+    void updateChannelSlowModeNegative() {
+        Response resp = dispatch(HttpMethod.PUT, "/api/channels/staff",
+                "{\"slowModeSeconds\":-1}");
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.BAD_REQUEST);
+        assertThat(channelManager.getChannel("staff").getSlowModeSeconds()).isZero();
+    }
+
+    @Test
+    @DisplayName("PUT /api/channels/{id} without slowModeSeconds leaves it unchanged")
+    void updateChannelSlowModeUntouched() {
+        channelManager.getChannel("staff").setSlowModeSeconds(7);
+        Response resp = dispatch(HttpMethod.PUT, "/api/channels/staff",
+                "{\"displayName\":\"Staff Chat\"}");
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        assertThat(channelManager.getChannel("staff").getSlowModeSeconds()).isEqualTo(7);
+    }
+
     // ====================== mute / unmute / getMutes ======================
 
     @Test
@@ -394,6 +447,32 @@ class RestApiHandlerTest {
             }
         }
         assertThat(foundTarget).isTrue();
+    }
+
+    @Test
+    @DisplayName("REST mute records the panel operator; GET /api/mutes shows the operator column")
+    void muteAttributesPanelOperator() {
+        Response muteResp = dispatch(HttpMethod.POST, "/api/players/" + targetId + "/mute",
+                "{\"channelId\":\"survival-chat\",\"durationMs\":60000,\"reason\":\"spam\"}");
+        assertThat(muteResp.status).isEqualTo(HttpResponseStatus.OK);
+
+        UUID expectedOperator = UUID.nameUUIDFromBytes(
+                "panel:admin".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        Response resp = dispatch(HttpMethod.GET, "/api/mutes", null);
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        JsonArray mutes = resp.asJson().getAsJsonArray("mutes");
+        boolean found = false;
+        for (int i = 0; i < mutes.size(); i++) {
+            JsonObject m = mutes.get(i).getAsJsonObject();
+            if (m.get("playerId").getAsString().equals(targetId.toString())) {
+                found = true;
+                // Stable name-derived operator UUID + panel username in the operator column.
+                assertThat(m.get("operatorId").getAsString()).isEqualTo(expectedOperator.toString());
+                assertThat(m.get("operator").getAsString()).isEqualTo("admin");
+            }
+        }
+        assertThat(found).isTrue();
     }
 
     @Test
@@ -543,26 +622,33 @@ class RestApiHandlerTest {
     }
 
     @Test
-    @DisplayName("POST /api/console rejects stop command (blacklist)")
-    void consoleStopBlacklisted() {
+    @DisplayName("POST /api/console rejects stop command (not on the whitelist)")
+    void consoleStopNotWhitelisted() {
         Response resp = dispatch(HttpMethod.POST, "/api/console", "{\"command\":\"stop\"}");
-        assertThat(resp.status).isEqualTo(HttpResponseStatus.BAD_REQUEST);
-        assertThat(resp.body).contains("blacklisted");
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.FORBIDDEN);
+        assertThat(resp.body).contains("stop");
     }
 
     @Test
-    @DisplayName("POST /api/console rejects shutdown command (blacklist)")
-    void consoleShutdownBlacklisted() {
+    @DisplayName("POST /api/console rejects shutdown command (not on the whitelist)")
+    void consoleShutdownNotWhitelisted() {
         Response resp = dispatch(HttpMethod.POST, "/api/console", "{\"command\":\"shutdown\"}");
-        assertThat(resp.status).isEqualTo(HttpResponseStatus.BAD_REQUEST);
-        assertThat(resp.body).contains("blacklisted");
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.FORBIDDEN);
+        assertThat(resp.body).contains("shutdown");
     }
 
     @Test
-    @DisplayName("POST /api/console rejects stop with trailing args (blacklist by first token)")
-    void consoleStopWithArgsBlacklisted() {
+    @DisplayName("POST /api/console rejects stop with trailing args (whitelist by first token)")
+    void consoleStopWithArgsNotWhitelisted() {
         Response resp = dispatch(HttpMethod.POST, "/api/console", "{\"command\":\"stop now please\"}");
-        assertThat(resp.status).isEqualTo(HttpResponseStatus.BAD_REQUEST);
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.FORBIDDEN);
+    }
+
+    @Test
+    @DisplayName("POST /api/console rejects spy command (reserved for the real console)")
+    void consoleSpyNotWhitelisted() {
+        Response resp = dispatch(HttpMethod.POST, "/api/console", "{\"command\":\"spy start staff\"}");
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.FORBIDDEN);
     }
 
     @Test
@@ -638,5 +724,127 @@ class RestApiHandlerTest {
     void unknownEndpoint() {
         Response resp = dispatch(HttpMethod.GET, "/api/unknown", null);
         assertThat(resp.status).isEqualTo(HttpResponseStatus.NOT_FOUND);
+    }
+
+    // ====================== settings ======================
+
+    @Test
+    @DisplayName("PUT /api/settings applies to runtime, persists to disk, and never reloads from disk")
+    void updateSettingsAppliesAndPersistsWithoutReload() throws Exception {
+        java.nio.file.Path configPath = tempDir.resolve("novalink.yml");
+        ConfigManager liveConfigManager = new ConfigManager(configPath);
+        // Creates the default config on disk: filterEnabled=true,
+        // messageLogEnabled=false, crossServerChatEnabled=true.
+        liveConfigManager.load();
+
+        RestApiHandler settingsHandler = new RestApiHandler(
+                jwtService,
+                new AuthManager(new IpBanManager(5, 60000)),
+                channelManager,
+                playerStateManager,
+                messageRouter,
+                new WebhookManager(),
+                muteManager,
+                banManager,
+                invitationManager,
+                liveConfigManager,
+                networkHandler,
+                consoleCommandHandler,
+                notificationStore
+        );
+
+        assertThat(sensitiveWordFilter.isEnabled()).isTrue();
+
+        Response resp = dispatch(settingsHandler, HttpMethod.PUT, "/api/settings",
+                "{\"filterEnabled\":false,\"messageLogEnabled\":true,\"crossServerChatEnabled\":false}");
+
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        JsonObject json = resp.asJson();
+        // Response echoes the values that actually took effect.
+        assertThat(json.get("filterEnabled").getAsBoolean()).isFalse();
+        assertThat(json.get("messageLogEnabled").getAsBoolean()).isTrue();
+        assertThat(json.get("crossServerChatEnabled").getAsBoolean()).isFalse();
+
+        // Applied to the live runtime component (the old code triggered a disk
+        // reload which reverted the just-made change).
+        assertThat(sensitiveWordFilter.isEnabled()).isFalse();
+        // No reload happened — the fix must not re-read the config from disk.
+        assertThat(liveConfigManager.getReloadCount()).isZero();
+        // Live in-memory config carries the new values.
+        assertThat(liveConfigManager.getConfig().getFeatures().isFilterEnabled()).isFalse();
+        assertThat(liveConfigManager.getConfig().getFeatures().isMessageLogEnabled()).isTrue();
+        assertThat(liveConfigManager.getConfig().getFeatures().isCrossServerChatEnabled()).isFalse();
+
+        // Persisted: a fresh loader reading the same file sees the new values.
+        ConfigManager reread = new ConfigManager(configPath);
+        com.nova.link.config.NovaLinkConfig persisted = reread.load();
+        assertThat(persisted.getFeatures().isFilterEnabled()).isFalse();
+        assertThat(persisted.getFeatures().isMessageLogEnabled()).isTrue();
+        assertThat(persisted.getFeatures().isCrossServerChatEnabled()).isFalse();
+    }
+
+    // ====================== offline moderation visibility ======================
+
+    @Test
+    @DisplayName("GET /api/mutes lists mutes of offline players (not in the online state cache)")
+    void getMutesIncludesOfflinePlayers() {
+        UUID offlineId = UUID.randomUUID();
+        muteManager.mutePlayer(new UUID(0, 0), offlineId, null, 0, "offline mute", null);
+
+        Response resp = dispatch(HttpMethod.GET, "/api/mutes", null);
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        JsonArray mutes = resp.asJson().getAsJsonArray("mutes");
+        boolean found = false;
+        for (int i = 0; i < mutes.size(); i++) {
+            JsonObject m = mutes.get(i).getAsJsonObject();
+            if (m.get("playerId").getAsString().equals(offlineId.toString())) {
+                found = true;
+                assertThat(m.get("channelId").getAsString()).isEqualTo("(global)");
+                assertThat(m.get("reason").getAsString()).isEqualTo("offline mute");
+                assertThat(m.get("permanent").getAsBoolean()).isTrue();
+            }
+        }
+        assertThat(found).isTrue();
+    }
+
+    @Test
+    @DisplayName("GET /api/bans lists bans of offline players (not in the online state cache)")
+    void getBansIncludesOfflinePlayers() {
+        UUID offlineId = UUID.randomUUID();
+        banManager.banPlayer(new UUID(0, 0), offlineId, null, 0, "offline ban", null);
+
+        Response resp = dispatch(HttpMethod.GET, "/api/bans", null);
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        JsonArray bans = JsonParser.parseString(resp.body).getAsJsonArray();
+        boolean found = false;
+        for (int i = 0; i < bans.size(); i++) {
+            JsonObject entry = bans.get(i).getAsJsonObject();
+            if (entry.get("playerId").getAsString().equals(offlineId.toString())) {
+                found = true;
+                JsonArray playerBans = entry.getAsJsonArray("bans");
+                assertThat(playerBans.size()).isEqualTo(1);
+                assertThat(playerBans.get(0).getAsJsonObject().get("reason").getAsString())
+                        .isEqualTo("offline ban");
+            }
+        }
+        assertThat(found).isTrue();
+    }
+
+    // ====================== notification pagination ======================
+
+    @Test
+    @DisplayName("GET /api/notifications reports the real total, not the page size")
+    void getNotificationsReportsRealTotal() {
+        notificationStore.createNotification("t1", "m1", "info");
+        notificationStore.createNotification("t2", "m2", "info");
+        notificationStore.createNotification("t3", "m3", "info");
+
+        Response resp = dispatch(HttpMethod.GET, "/api/notifications?page=1&size=2", null);
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        JsonObject json = resp.asJson();
+        assertThat(json.getAsJsonArray("items").size()).isEqualTo(2);
+        assertThat(json.get("total").getAsInt()).isEqualTo(3);
+        assertThat(json.get("page").getAsInt()).isEqualTo(1);
+        assertThat(json.get("pageSize").getAsInt()).isEqualTo(2);
     }
 }

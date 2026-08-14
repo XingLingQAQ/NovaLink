@@ -73,8 +73,10 @@ void CommandHandler::registerCommands() {
     ncCommand.overload<HelpParams>()
         .text("help")
         .execute([this](CommandOrigin const& origin, CommandOutput& output, HelpParams const&) {
+            const bool isAdmin = origin.getPermissionsLevel() >= CommandPermissionLevel::GameDirectors;
             if (auto* player = origin.getEntity(); player && player->isPlayer()) {
-                handleHelp(static_cast<Player*>(player)->getName(), {});
+                auto* p = static_cast<Player*>(player);
+                handleHelp(p->getName(), p->getUuid().asString(), {}, isAdmin);
             }
             output.success();
         });
@@ -109,7 +111,8 @@ void CommandHandler::registerCommands() {
         .text("list")
         .execute([this](CommandOrigin const& origin, CommandOutput& output, ListParams const&) {
             if (auto* player = origin.getEntity(); player && player->isPlayer()) {
-                handleList(static_cast<Player*>(player)->getName(), {});
+                auto* p = static_cast<Player*>(player);
+                handleList(p->getName(), p->getUuid().asString(), {});
             }
             output.success();
         });
@@ -140,11 +143,26 @@ void CommandHandler::registerCommands() {
         });
 
     // /nc reload (admin only)
+    //
+    // LeviLamina's Overload API has no per-overload permission gate (the
+    // Overload<Params> builder only exposes optional/required/text/.../execute,
+    // there is no .permission() chain). The /nc command itself is registered at
+    // CommandPermissionLevel::Any so basic-user subcommands (help/join/...)
+    // remain usable by everyone, so reload must gate on admin at execute time.
+    // We compare the origin's CommandPermissionLevel against GameDirectors (OP)
+    // — the same level the LeviLamina core uses for its own admin-only commands
+    // (see ll/core/Config.h: `CommandPermissionLevel::GameDirectors`).
     ncCommand.overload<ReloadParams>()
         .text("reload")
         .execute([this](CommandOrigin const& origin, CommandOutput& output, ReloadParams const&) {
+            if (origin.getPermissionsLevel() < CommandPermissionLevel::GameDirectors) {
+                auto& i18n = i18n::I18n::getInstance();
+                output.error(i18n.get("chat.command.no_permission_code", origin.getLocaleCode()));
+                return;
+            }
             if (auto* player = origin.getEntity(); player && player->isPlayer()) {
-                handleReload(static_cast<Player*>(player)->getName(), {});
+                auto* p = static_cast<Player*>(player);
+                handleReload(p->getName(), p->getUuid().asString(), {});
             }
             output.success();
         });
@@ -175,10 +193,13 @@ std::vector<std::string> CommandHandler::completeChannel(const std::string& part
     return result;
 }
 
-void CommandHandler::handleHelp(const std::string& playerName, const std::vector<std::string>& args) {
+void CommandHandler::handleHelp(const std::string& playerName, const std::string& playerUuid,
+                                const std::vector<std::string>& args, bool isAdmin) {
     auto& i18n = i18n::I18n::getInstance();
-    // Use the server default locale for help (per-player locale lookup needs uuid).
     std::string locale = "zh_CN";
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        locale = interceptor->getPlayerLocale(playerUuid);
+    }
     std::string prefix = mPlugin.getConfig()->getPrefix();
 
     sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix + i18n.get("chat.command.help.title", locale)));
@@ -188,7 +209,10 @@ void CommandHandler::handleHelp(const std::string& playerName, const std::vector
     sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_list", locale)));
     sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_who", locale)));
     sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_toggle", locale)));
-    sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_reload", locale)));
+    // Mirror the Java/Python platforms: only reveal the reload line to admins.
+    if (isAdmin) {
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_reload", locale)));
+    }
 }
 
 void CommandHandler::handleJoin(const std::string& playerName, const std::string& playerUuid,
@@ -267,9 +291,13 @@ void CommandHandler::handleLeave(const std::string& playerName, const std::strin
         i18n.get("chat.leave.left", locale, {currentChannel, defaultChannel})));
 }
 
-void CommandHandler::handleList(const std::string& playerName, const std::vector<std::string>& args) {
+void CommandHandler::handleList(const std::string& playerName, const std::string& playerUuid,
+                                 const std::vector<std::string>& args) {
     auto& i18n = i18n::I18n::getInstance();
     std::string locale = "zh_CN";
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        locale = interceptor->getPlayerLocale(playerUuid);
+    }
     std::string prefix = mPlugin.getConfig()->getPrefix();
 
     sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix + i18n.get("chat.command.list.title", locale)));
@@ -348,10 +376,15 @@ void CommandHandler::handleToggle(const std::string& playerName, const std::stri
         i18n.get("chat.command.toggle.switched", locale, {modeStr})));
 }
 
-void CommandHandler::handleReload(const std::string& playerName, const std::vector<std::string>& args) {
-    // TODO: Add permission check (admin only)
+void CommandHandler::handleReload(const std::string& playerName, const std::string& playerUuid,
+                                   const std::vector<std::string>& args) {
+    // Permission check is enforced at the /nc reload overload entry point
+    // (CommandPermissionLevel::GameDirectors gate in registerCommands()).
     auto& i18n = i18n::I18n::getInstance();
     std::string locale = "zh_CN";
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        locale = interceptor->getPlayerLocale(playerUuid);
+    }
     std::string prefix = mPlugin.getConfig()->getPrefix();
 
     if (mPlugin.getConfig()->reload()) {

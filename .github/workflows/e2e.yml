@@ -7,7 +7,7 @@
 # build+test CI lives in nova-ci.yml.
 #
 # What it does:
-#   1. Restores the committed e2e/ harness (scripts + versions.lock.ps1).
+#   1. Restores the committed test/ harness (scripts + versions.lock.ps1).
 #   2. Restores the server-binary cache keyed on versions.lock.ps1 (so a lock
 #      bump invalidates and forces a fresh verified download).
 #   3. Sets up EVERY toolchain the E2E matrix can reach: JDK 17 (sponge) +
@@ -15,7 +15,7 @@
 #      + bedrock-protocol bots) + PHP (pmmp) + Python (endstone) + MSVC +
 #      xmake (levilamina dll build).
 #   4. Runs `./gradlew realE2E -PenableRealE2E=true` which dispatches to
-#      e2e/bin/run-e2e-orchestrator.ps1 for the requested platform subset.
+#      test/bin/run-e2e-orchestrator.ps1 for the requested platform subset.
 #   5. On failure, uploads e2e artifacts (logs, results.json, bot-results.json)
 #      for post-mortem.
 #
@@ -87,6 +87,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Verify committed E2E harness paths
+        shell: pwsh
+        run: ./test/bin/verify-orchestration-paths.ps1
+
       # ---------------------------------------------------------------------
       # JDK: 17 (sponge) + 21 (primary, most platforms) + 25 (velocity
       # toolchain). setup-java registers all three as Gradle toolchain
@@ -104,25 +108,20 @@ jobs:
       # ---------------------------------------------------------------------
       # Node 18+ for the bots: Java platforms use mineflayer (run-e2e.js),
       # Bedrock platforms use bedrock-protocol (run-e2e-bedrock.js). Both are
-      # npm-installed from e2e/bot/package.json.
+      # npm-installed from test/bot/package-lock.json.
       # ---------------------------------------------------------------------
       - name: Set up Node 18 (mineflayer + bedrock-protocol bots)
         uses: actions/setup-node@v4
         with:
           node-version: '18'
           cache: 'npm'
-          cache-dependency-path: e2e/bot/package.json
+          cache-dependency-path: test/bot/package-lock.json
 
       - name: Install bot npm deps
-        # The orchestrator scripts run the bots via `node e2e/bot/run-e2e*.js`.
-        # Install once up front so the platform scripts don't each repeat it.
+        # The path contract above requires both package files. npm ci additionally
+        # proves the committed lock is reproducible and fails on lock drift.
         shell: pwsh
-        run: |
-          if (Test-Path e2e/bot/package.json) {
-            npm --prefix e2e/bot ci --no-audit --no-fund
-          } else {
-            Write-Host "[e2e] e2e/bot/package.json not found -- bots may fail to start"
-          }
+        run: npm --prefix test/bot ci --no-audit --no-fund
 
       # ---------------------------------------------------------------------
       # PHP 8.2 (pmmp). shivammathur/setup-php with sockets+mbstring+openssl
@@ -170,16 +169,16 @@ jobs:
 
       # ---------------------------------------------------------------------
       # Server-binary cache. fetch-server.ps1 downloads real server jars/zip/
-      # phar to e2e/artifacts/dist/ and SHA-256-verifies them. Keying on
-      # e2e/versions.lock.ps1 means a lock bump invalidates and forces a fresh
+      # phar to .e2e-artifacts/dist/ and SHA-256-verifies them. Keying on
+      # test/versions.lock.ps1 means a lock bump invalidates and forces a fresh
       # verified download; an unchanged lock reuses the cached binaries
       # (minutes saved per platform). Path matches docs/REAL-SERVER-E2E.md §8.2.
       # ---------------------------------------------------------------------
       - name: Cache E2E server binaries (dist)
         uses: actions/cache@v4
         with:
-          path: e2e/artifacts/dist
-          key: e2e-dist-${{ runner.os }}-${{ hashFiles('e2e/versions.lock.ps1') }}
+          path: .e2e-artifacts/dist
+          key: e2e-dist-${{ runner.os }}-${{ hashFiles('test/versions.lock.ps1') }}
           restore-keys: |
             e2e-dist-${{ runner.os }}-
 
@@ -195,16 +194,15 @@ jobs:
 
       # ---------------------------------------------------------------------
       # THE E2E RUN. `./gradlew realE2E` (root build.gradle) dispatches to the
-      # committed e2e/bin/run-e2e-orchestrator.ps1 with -Platforms set to this
+      # committed test/bin/run-e2e-orchestrator.ps1 with -Platforms set to this
       # matrix platform (or the workflow_dispatch input on manual runs).
       # -PenableRealE2E=true is what gates realE2E into `check`; passing it
       # explicitly here also documents intent. The installations.paths=
       # override clears the dev scoop path from gradle.properties so Gradle
       # toolchain auto-detection finds the setup-java JDKs.
       #
-      # The realE2E task is a no-op if e2e/ is absent (it never is on CI --
-      # e2e/ is committed), so this can't fail the job on harness absence.
-      # A platform failure (orchestrator exit 1) DOES fail this step.
+      # The Gradle preflight fails if any required script, lock, bot package, or
+      # config template is absent. Platform failures also fail this step.
       # ---------------------------------------------------------------------
       - name: Run E2E (${{ matrix.platform }})
         shell: pwsh
@@ -234,7 +232,7 @@ jobs:
         with:
           name: e2e-${{ matrix.platform }}-${{ github.run_id }}
           path: |
-            e2e/artifacts/
+            .e2e-artifacts/
             **/bot-results.json
             **/runs/
           if-no-files-found: ignore

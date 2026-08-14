@@ -1,0 +1,232 @@
+{
+  "protocolVersion": 2,
+  "frameFormat": "Length(VarInt) | PacketID(1B) | RequestID(UUID 16B big-endian) | Payload",
+  "generator": "NovaChat/common/src/test/java/com/nova/chat/common/protocol/golden/GoldenFileGenerator.java",
+  "samples": [
+    {
+      "name": "handshake_v2_full",
+      "packet": "HandshakePacket",
+      "packetId": 1,
+      "bin": "handshake_v2_full.bin",
+      "json": "handshake_v2_full.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "handshake_v1_no_serverversion",
+      "packet": "HandshakePacket",
+      "packetId": 1,
+      "bin": "handshake_v1_no_serverversion.bin",
+      "json": "handshake_v1_no_serverversion.json",
+      "legacyWire": true,
+      "reencodeExact": false
+    },
+    {
+      "name": "handshake_response_success",
+      "packet": "HandshakeResponsePacket",
+      "packetId": 2,
+      "bin": "handshake_response_success.bin",
+      "json": "handshake_response_success.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "handshake_response_failure",
+      "packet": "HandshakeResponsePacket",
+      "packetId": 2,
+      "bin": "handshake_response_failure.bin",
+      "json": "handshake_response_failure.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "chat_message_full",
+      "packet": "ChatMessagePacket",
+      "packetId": 3,
+      "bin": "chat_message_full.bin",
+      "json": "chat_message_full.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "chat_message_legacy_no_placeholders",
+      "packet": "ChatMessagePacket",
+      "packetId": 3,
+      "bin": "chat_message_legacy_no_placeholders.bin",
+      "json": "chat_message_legacy_no_placeholders.json",
+      "legacyWire": true,
+      "reencodeExact": false
+    },
+    {
+      "name": "channel_action_create_extra",
+      "packet": "ChannelActionPacket",
+      "packetId": 4,
+      "bin": "channel_action_create_extra.bin",
+      "json": "channel_action_create_extra.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "channel_action_join_empty_extra",
+      "packet": "ChannelActionPacket",
+      "packetId": 4,
+      "bin": "channel_action_join_empty_extra.bin",
+      "json": "channel_action_join_empty_extra.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "channel_action_response_ok_extra",
+      "packet": "ChannelActionResponsePacket",
+      "packetId": 5,
+      "bin": "channel_action_response_ok_extra.bin",
+      "json": "channel_action_response_ok_extra.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "channel_action_response_error",
+      "packet": "ChannelActionResponsePacket",
+      "packetId": 5,
+      "bin": "channel_action_response_error.bin",
+      "json": "channel_action_response_error.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "config_sync_typical",
+      "packet": "ConfigSyncPacket",
+      "packetId": 6,
+      "bin": "config_sync_typical.bin",
+      "json": "config_sync_typical.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "config_sync_empty_string",
+      "packet": "ConfigSyncPacket",
+      "packetId": 6,
+      "bin": "config_sync_empty_string.bin",
+      "json": "config_sync_empty_string.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "keep_alive_typical",
+      "packet": "KeepAlivePacket",
+      "packetId": 7,
+      "bin": "keep_alive_typical.bin",
+      "json": "keep_alive_typical.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "keep_alive_max_long",
+      "packet": "KeepAlivePacket",
+      "packetId": 7,
+      "bin": "keep_alive_max_long.bin",
+      "json": "keep_alive_max_long.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "title_typical",
+      "packet": "TitlePacket",
+      "packetId": 9,
+      "bin": "title_typical.bin",
+      "json": "title_typical.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "title_boundary",
+      "packet": "TitlePacket",
+      "packetId": 9,
+      "bin": "title_boundary.bin",
+      "json": "title_boundary.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "admin_action_auth",
+      "packet": "AdminActionPacket",
+      "packetId": 11,
+      "bin": "admin_action_auth.bin",
+      "json": "admin_action_auth.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "admin_action_spy_extra",
+      "packet": "AdminActionPacket",
+      "packetId": 11,
+      "bin": "admin_action_spy_extra.bin",
+      "json": "admin_action_spy_extra.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "admin_action_response_ok",
+      "packet": "AdminActionResponsePacket",
+      "packetId": 12,
+      "bin": "admin_action_response_ok.bin",
+      "json": "admin_action_response_ok.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "admin_action_response_fail",
+      "packet": "AdminActionResponsePacket",
+      "packetId": 12,
+      "bin": "admin_action_response_fail.bin",
+      "json": "admin_action_response_fail.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "item_display_typical",
+      "packet": "ItemDisplayPacket",
+      "packetId": 16,
+      "bin": "item_display_typical.bin",
+      "json": "item_display_typical.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "item_display_boundary",
+      "packet": "ItemDisplayPacket",
+      "packetId": 16,
+      "bin": "item_display_boundary.bin",
+      "json": "item_display_boundary.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "mention_typical",
+      "packet": "MentionPacket",
+      "packetId": 18,
+      "bin": "mention_typical.bin",
+      "json": "mention_typical.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "private_message_typical",
+      "packet": "PrivateMessagePacket",
+      "packetId": 20,
+      "bin": "private_message_typical.bin",
+      "json": "private_message_typical.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
+      "name": "private_message_cjk_nil_target",
+      "packet": "PrivateMessagePacket",
+      "packetId": 20,
+      "bin": "private_message_cjk_nil_target.bin",
+      "json": "private_message_cjk_nil_target.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    }
+  ]
+}

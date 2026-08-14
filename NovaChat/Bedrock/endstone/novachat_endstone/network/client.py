@@ -77,6 +77,10 @@ class NetworkClient:
         self._packet_handlers: Dict[int, Callable[[Packet], None]] = {}
         self._keepalive_task: Optional[asyncio.Task] = None
         self._read_task: Optional[asyncio.Task] = None
+        self._reconnect_task: Optional[asyncio.Task] = None
+        # Set by disconnect(); blocks any new reconnect scheduling until the
+        # next explicit connect() so plugin unload cannot leave a loop running.
+        self._closing = False
         
         self._logger = logging.getLogger("NovaChat.Network")
     
@@ -87,6 +91,11 @@ class NetworkClient:
         Returns:
             True if connection and authentication succeeded
         """
+        # An explicit connect() re-arms the client after disconnect(). The
+        # reconnect loop also lands here, but disconnect() cancels that task
+        # before it can run again, so re-arming is safe.
+        self._closing = False
+        
         try:
             self._logger.info(f"Connecting to {self._host}:{self._port}...")
             
@@ -114,18 +123,45 @@ class NetworkClient:
         except Exception as e:
             self._logger.error(f"Connection failed: {e}")
             self._connected = False
-            asyncio.create_task(self._reconnect())
+            self._schedule_reconnect()
             return False
     
     def disconnect(self) -> None:
-        """Disconnect from the backend server."""
+        """
+        Disconnect from the backend server (explicit shutdown).
+
+        Sets the closing flag so no new reconnect gets scheduled, cancels any
+        running reconnect loop, and closes the connection. A later explicit
+        :meth:`connect` re-arms the client.
+        """
+        self._closing = True
         self._logger.info("Disconnecting from backend...")
+        self._cancel_reconnect_task()
         asyncio.create_task(self._close_connection())
+    
+    def _cancel_reconnect_task(self) -> None:
+        """Cancel a pending reconnect loop, if any."""
+        task = self._reconnect_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._reconnect_task = None
+    
+    def _schedule_reconnect(self) -> None:
+        """Start the reconnect loop unless closing or one is already running."""
+        if self._closing:
+            return
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.create_task(self._reconnect())
     
     async def _close_connection(self) -> None:
         """Close the connection and cleanup."""
         self._connected = False
         self._authenticated = False
+        
+        if self._closing:
+            # Shutdown path: make sure no reconnect loop survives the close.
+            self._cancel_reconnect_task()
         
         if self._keepalive_task:
             self._keepalive_task.cancel()
@@ -146,11 +182,14 @@ class NetworkClient:
     
     async def _reconnect(self) -> None:
         """Attempt to reconnect with exponential backoff."""
-        while not self._connected:
+        while not self._connected and not self._closing:
             self._logger.info(
                 f"Reconnecting in {self._current_reconnect_delay} seconds..."
             )
             await asyncio.sleep(self._current_reconnect_delay)
+            
+            if self._closing:
+                break
             
             if await self.connect():
                 break
@@ -349,7 +388,7 @@ class NetworkClient:
         if self._connected:
             self._logger.warning("Connection lost, attempting to reconnect...")
             await self._close_connection()
-            asyncio.create_task(self._reconnect())
+            self._schedule_reconnect()
     
     def register_handler(
         self,

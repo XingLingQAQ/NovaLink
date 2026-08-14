@@ -1,0 +1,14 @@
+{
+  "name": "config_sync_typical",
+  "packet": "ConfigSyncPacket",
+  "packetId": 6,
+  "requestId": "00000000-0000-0000-0000-000000000034",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "配置同步：嵌套 JSON 字符串（含引号转义与中文/emoji）+ 毫秒时间戳",
+  "fields": {
+    "configJson": "{\"channels\":[\"global\",\"trade\"],\"motd\":\"今日维护 🛠️\"}",
+    "timestamp": 1755057600000
+  },
+  "frameHex": "5706000000000000000000000000000000343d7b226368616e6e656c73223a5b22676c6f62616c222c227472616465225d2c226d6f7464223a22e4bb8ae697a5e7bbb4e68aa420f09f9ba0efb88f227d00000198a195b600"
+}

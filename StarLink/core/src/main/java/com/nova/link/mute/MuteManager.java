@@ -126,6 +126,23 @@ public class MuteManager {
      */
     public MuteResult mutePlayer(UUID operatorId, UUID targetPlayerId, String channelId,
                                   long durationMs, String reason, String operatorClientId) {
+        return mutePlayer(operatorId, targetPlayerId, channelId, durationMs, reason, operatorClientId, false);
+    }
+
+    /**
+     * Mutes a player in a channel, optionally treating the operator as already
+     * authorized. {@code trustedOperator=true} is used by the REST layer where
+     * the caller's role was already checked against the panel RBAC matrix but
+     * the (panel-derived) operator UUID is unknown to the PermissionManager.
+     * This keeps operation attribution (the real operator id is recorded)
+     * without requiring the console sentinel bypass.
+     *
+     * @param trustedOperator when true, skip PermissionManager lookup and treat
+     *                        the operator as SUPER_ADMIN (caller pre-authorized)
+     */
+    public MuteResult mutePlayer(UUID operatorId, UUID targetPlayerId, String channelId,
+                                  long durationMs, String reason, String operatorClientId,
+                                  boolean trustedOperator) {
         if (operatorId == null) {
             return MuteResult.badRequest("Operator ID is required");
         }
@@ -138,8 +155,11 @@ public class MuteManager {
         // mirrors the bypass in ChannelActionHandler.requireModerationPermission;
         // without it, mutePlayer would reject console mutes as PLAYER-level even
         // though the handler already authorized the console sentinel.
+        // Trusted operators (panel RBAC pre-authorized) get the same bypass while
+        // keeping their own UUID for attribution.
         PermissionLevel operatorLevel;
-        if (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L) {
+        if (trustedOperator
+                || (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L)) {
             operatorLevel = PermissionLevel.SUPER_ADMIN;
         } else {
             operatorLevel = permissionManager.getPermissionLevel(operatorId, channelId);
@@ -258,6 +278,15 @@ public class MuteManager {
      */
     public MuteResult unmutePlayer(UUID operatorId, UUID targetPlayerId, String channelId,
                                     String operatorClientId) {
+        return unmutePlayer(operatorId, targetPlayerId, channelId, operatorClientId, false);
+    }
+
+    /**
+     * Unmutes a player, optionally treating the operator as already authorized
+     * (see {@link #mutePlayer(UUID, UUID, String, long, String, String, boolean)}).
+     */
+    public MuteResult unmutePlayer(UUID operatorId, UUID targetPlayerId, String channelId,
+                                    String operatorClientId, boolean trustedOperator) {
         if (operatorId == null) {
             return MuteResult.badRequest("Operator ID is required");
         }
@@ -269,7 +298,8 @@ public class MuteManager {
         // bypass permission validation — console always has full authority. Mirrors
         // the bypass in mutePlayer and ChannelActionHandler.requireModerationPermission.
         PermissionLevel operatorLevel;
-        if (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L) {
+        if (trustedOperator
+                || (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L)) {
             operatorLevel = PermissionLevel.SUPER_ADMIN;
         } else {
             operatorLevel = permissionManager.getPermissionLevel(operatorId, channelId);
@@ -422,6 +452,66 @@ public class MuteManager {
         return activeMutes;
     }
 
+
+    /**
+     * Gets all active mutes across all players from the in-memory cache.
+     *
+     * <p>Combined with {@link #loadAllMutes()} at startup, this gives REST
+     * listings visibility of offline players' mutes as well.
+     *
+     * @return map of player UUID to that player's active mutes
+     */
+    public Map<UUID, List<MuteInfo>> getAllActiveMutes() {
+        Map<UUID, List<MuteInfo>> result = new HashMap<>();
+        for (Map.Entry<UUID, Map<String, MuteInfo>> entry : muteCache.entrySet()) {
+            List<MuteInfo> active = new ArrayList<>();
+            for (MuteInfo mute : entry.getValue().values()) {
+                if (!mute.isExpired()) {
+                    active.add(mute);
+                }
+            }
+            if (!active.isEmpty()) {
+                result.put(entry.getKey(), active);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Loads all active mutes from the database into the cache. Called once
+     * during startup so persisted mutes stay effective across a backend
+     * restart ({@code isMuted} only consults the cache).
+     *
+     * @return the number of mutes loaded
+     */
+    public int loadAllMutes() {
+        if (databaseProvider == null) {
+            return 0;
+        }
+
+        int loaded = 0;
+        try {
+            Map<UUID, List<MuteInfo>> allMutes = databaseProvider.getAllActiveMutes();
+            for (Map.Entry<UUID, List<MuteInfo>> entry : allMutes.entrySet()) {
+                Map<String, MuteInfo> playerMutes = muteCache.computeIfAbsent(
+                        entry.getKey(), k -> new ConcurrentHashMap<>());
+                for (MuteInfo mute : entry.getValue()) {
+                    if (!mute.isExpired()) {
+                        String cacheKey = mute.getChannelId() != null ?
+                                mute.getChannelId() : GLOBAL_MUTE_KEY;
+                        playerMutes.put(cacheKey, mute);
+                        loaded++;
+                    }
+                }
+            }
+            if (loaded > 0) {
+                logger.info("Loaded {} active mutes from database", loaded);
+            }
+        } catch (DatabaseException e) {
+            logger.error("Failed to load active mutes from database: {}", e.getMessage());
+        }
+        return loaded;
+    }
 
     /**
      * Loads mutes for a player from the database into cache.

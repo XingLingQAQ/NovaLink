@@ -2,6 +2,7 @@ package com.nova.link.websocket;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
@@ -9,6 +10,9 @@ import io.netty.handler.codec.http.websocketx.WebSocketFrame;
 import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.PingWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.PongWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler;
+import io.netty.handler.timeout.IdleState;
+import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,7 +20,14 @@ import org.slf4j.LoggerFactory;
 /**
  * Netty channel handler for WebSocket frames.
  * Handles WebSocket protocol messages and delegates to WebSocketMessageHandler.
- * 
+ *
+ * <p>Two-phase idle handling (paired with the {@code IdleStateHandler} in
+ * {@link WebSocketServer}): the first read-idle sends a WS ping frame to give
+ * the client one chance to prove liveness; a second consecutive read-idle
+ * closes the session. Any inbound frame (including pong) resets the phase.
+ * The panel sends an application-level ping every 30s, so a healthy client
+ * never reaches the first idle event (60s).</p>
+ *
  * Requirements: 24.1
  */
 public class WebSocketChannelHandler extends SimpleChannelInboundHandler<WebSocketFrame> {
@@ -27,6 +38,10 @@ public class WebSocketChannelHandler extends SimpleChannelInboundHandler<WebSock
             AttributeKey.valueOf("websocket.session");
     
     private final WebSocketMessageHandler messageHandler;
+
+    // Per-connection state (this handler is instantiated per channel).
+    private boolean handshakeComplete;
+    private boolean idlePingSent;
 
     public WebSocketChannelHandler(WebSocketMessageHandler messageHandler) {
         this.messageHandler = messageHandler;
@@ -57,7 +72,12 @@ public class WebSocketChannelHandler extends SimpleChannelInboundHandler<WebSock
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, WebSocketFrame frame) throws Exception {
         WebSocketSession session = ctx.channel().attr(SESSION_KEY).get();
-        
+
+        // Any inbound frame proves the connection is alive: the WS upgrade has
+        // happened and a pending idle-ping (if any) is considered answered.
+        handshakeComplete = true;
+        idlePingSent = false;
+
         if (frame instanceof TextWebSocketFrame) {
             // Handle text message
             String text = ((TextWebSocketFrame) frame).text();
@@ -90,6 +110,38 @@ public class WebSocketChannelHandler extends SimpleChannelInboundHandler<WebSock
         } else {
             logger.warn("Unsupported WebSocket frame type: {}", frame.getClass().getName());
         }
+    }
+
+    @Override
+    public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+        if (evt instanceof WebSocketServerProtocolHandler.HandshakeComplete) {
+            handshakeComplete = true;
+            super.userEventTriggered(ctx, evt);
+            return;
+        }
+        if (evt instanceof IdleStateEvent idleEvent) {
+            if (idleEvent.state() == IdleState.READER_IDLE) {
+                WebSocketSession session = ctx.channel().attr(SESSION_KEY).get();
+                String sessionId = session != null ? session.getSessionId() : "unknown";
+                if (!handshakeComplete) {
+                    // Still in the HTTP handshake phase — a WS ping frame cannot
+                    // be sent yet, so just drop the stale connection.
+                    logger.info("Closing idle WebSocket connection {} (handshake never completed)",
+                            sessionId);
+                    ctx.close();
+                } else if (!idlePingSent) {
+                    idlePingSent = true;
+                    logger.debug("WebSocket session {} read-idle; sending ping frame", sessionId);
+                    ctx.writeAndFlush(new PingWebSocketFrame(Unpooled.EMPTY_BUFFER));
+                } else {
+                    logger.info("Closing idle WebSocket session {} (no response to idle ping)",
+                            sessionId);
+                    ctx.close();
+                }
+            }
+            return;
+        }
+        super.userEventTriggered(ctx, evt);
     }
 
     @Override

@@ -1,0 +1,51 @@
+import org.gradle.api.file.DuplicatesStrategy
+import org.gradle.api.tasks.bundling.Jar
+
+allprojects {
+    afterEvaluate { project ->
+        if (project.path == ':novachat-nukkit') {
+            project.tasks.named('processResources').configure {
+                filesMatching('nukkit.yml') {
+                    expand(project: [version: project.version])
+                }
+            }
+
+            project.tasks.register('nukkitE2eFatJar', Jar) {
+                group = 'e2e'
+                description = 'Builds the isolated Nukkit E2E plugin jar from project outputs only.'
+                dependsOn(
+                    project.tasks.named('classes'),
+                    project.rootProject.project(':novachat-common').tasks.named('classes'),
+                    project.rootProject.project(':novachat-client-core').tasks.named('classes')
+                )
+                archiveFileName = 'novachat-nukkit-1.0.0-SNAPSHOT-e2e-fat.jar'
+                destinationDirectory = project.rootProject.layout.projectDirectory.dir('.e2e/artifacts/dist')
+                duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+                from(project.sourceSets.main.output) {
+                    exclude('nukkit.yml')
+                }
+                from(project.file('src/main/resources/nukkit.yml')) {
+                    expand(project: [version: project.version.toString()])
+                }
+                from(project.rootProject.project(':novachat-common').sourceSets.main.output)
+                from(project.rootProject.project(':novachat-client-core').sourceSets.main.output)
+            }
+        }
+
+        if (project.path == ':novalink-core') {
+            project.tasks.register('nukkitE2eBackendClasspath') {
+                group = 'e2e'
+                description = 'Writes the isolated Nukkit backend runtime classpath.'
+                dependsOn(project.tasks.named('jar'))
+                doLast {
+                    def output = project.rootProject.layout.projectDirectory
+                        .file('.e2e/artifacts/runs/nukkit-novalink.classpath.txt').asFile
+                    output.parentFile.mkdirs()
+                    output.text = ([project.tasks.named('jar').get().archiveFile.get().asFile.absolutePath]
+                        + project.configurations.runtimeClasspath.files.collect { it.absolutePath })
+                        .join(File.pathSeparator)
+                }
+            }
+        }
+    }
+}

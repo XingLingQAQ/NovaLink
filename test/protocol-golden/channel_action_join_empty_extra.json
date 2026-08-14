@@ -1,0 +1,16 @@
+{
+  "name": "channel_action_join_empty_extra",
+  "packet": "ChannelActionPacket",
+  "packetId": 4,
+  "requestId": "00000000-0000-0000-0000-000000000031",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "加入频道：空密码 + 显式写出的空 extra map（varint 0）",
+  "fields": {
+    "action": 0,
+    "channelId": "global",
+    "password": "",
+    "extra": {}
+  },
+  "frameHex": "1b04000000000000000000000000000000310006676c6f62616c0000"
+}

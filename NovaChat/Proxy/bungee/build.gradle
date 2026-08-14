@@ -32,6 +32,12 @@ dependencies {
     testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
     testImplementation "net.jqwik:jqwik:${jqwikVersion}"
     testImplementation "org.assertj:assertj-core:${assertjVersion}"
+    testImplementation "org.mockito:mockito-core:${mockitoVersion}"
+    testImplementation "org.mockito:mockito-junit-jupiter:${mockitoVersion}"
+    // Platform API on the test classpath so Mockito can mock net.md_5.bungee.*
+    // types (compileOnly keeps it out of the artifact; tests need it resolvable).
+    // Mirrors the nukkit module's testImplementation approach.
+    testImplementation "net.md-5:bungeecord-api:${bungeecordVersion}"
 }
 
 tasks.named('test') {

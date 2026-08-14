@@ -11,11 +11,13 @@ import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.timeout.IdleStateHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Netty-based TCP server for NovaLink backend.
@@ -30,6 +32,7 @@ public class NettyServer {
     private final String bindAddress;
     private final int port;
     private final int workerThreads;
+    private final int idleTimeoutSeconds;
     private final PacketRegistry packetRegistry;
     private final ServerNetworkHandler networkHandler;
 
@@ -47,9 +50,27 @@ public class NettyServer {
      * @param networkHandler the handler for processing packets
      */
     public NettyServer(String bindAddress, int port, int workerThreads, ServerNetworkHandler networkHandler) {
+        this(bindAddress, port, workerThreads,
+                com.nova.link.config.ServerConfig.DEFAULT_IDLE_TIMEOUT_SECONDS, networkHandler);
+    }
+
+    /**
+     * Creates a new NettyServer instance with an explicit idle timeout.
+     *
+     * @param bindAddress        the address to bind to
+     * @param port               the port to listen on
+     * @param workerThreads      the number of worker threads
+     * @param idleTimeoutSeconds read-idle timeout in seconds; {@code 0} disables
+     *                           idle detection (write-idle heartbeats fire at a
+     *                           third of this value)
+     * @param networkHandler     the handler for processing packets
+     */
+    public NettyServer(String bindAddress, int port, int workerThreads, int idleTimeoutSeconds,
+                       ServerNetworkHandler networkHandler) {
         this.bindAddress = bindAddress;
         this.port = port;
         this.workerThreads = workerThreads;
+        this.idleTimeoutSeconds = Math.max(0, idleTimeoutSeconds);
         this.networkHandler = networkHandler;
         this.packetRegistry = NovaProtocol.createRegistry();
     }
@@ -88,7 +109,17 @@ public class NettyServer {
                         @Override
                         protected void initChannel(SocketChannel ch) {
                             ChannelPipeline pipeline = ch.pipeline();
-                            
+
+                            // Idle detection: reader-idle closes dead connections;
+                            // writer-idle (timeout/3) triggers a server-initiated
+                            // KeepAlive ping so echo-only clients (Java side) keep
+                            // resetting the read timer. 0 = disabled.
+                            if (idleTimeoutSeconds > 0) {
+                                int pingInterval = Math.max(1, idleTimeoutSeconds / 3);
+                                pipeline.addLast("idleStateHandler", new IdleStateHandler(
+                                        idleTimeoutSeconds, pingInterval, 0, TimeUnit.SECONDS));
+                            }
+
                             // Frame decoders/encoders for packet boundary detection
                             pipeline.addLast("frameDecoder", new Varint21FrameDecoder());
                             pipeline.addLast("framePrepender", new Varint21LengthFieldPrepender());

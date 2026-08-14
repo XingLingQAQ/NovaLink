@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
+import { can } from '../../lib/permissions';
 
 function ClientStatus({
   theme,
@@ -33,9 +34,12 @@ function ClientStatus({
   onReloadConfig,
   onDisconnectServer,
   onViewServerDetails,
+  role,
 }) {
   void _txtMain; void _txtSec;
   const { t } = useTranslation();
+  const canReload = can(role, 'config.reload');
+  const canDisconnect = can(role, 'clients.disconnect');
   const [viewMode, setViewMode] = useState('grid'); // 'grid' or 'list'
 
   // Calculate statistics.
@@ -48,6 +52,13 @@ function ClientStatus({
             servers.filter((s) => s.status === 'online').length
         )
       : 0;
+
+  // Earliest connection = the smallest connectedAt across all servers.
+  const earliestConnectedAt = servers.reduce((min, s) => {
+    const ts = s && s.connectedAt;
+    if (!ts) return min;
+    return min === null || ts < min ? ts : min;
+  }, null);
 
   // Group servers by platform.
   const serversByPlatform = servers.reduce((acc, server) => {
@@ -81,6 +92,7 @@ function ClientStatus({
               className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
                 viewMode === 'grid' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
               }`}
+              aria-label={t('common.view_grid')}
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                 <rect x="1" y="1" width="6" height="6" rx="1" />
@@ -94,6 +106,7 @@ function ClientStatus({
               className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
                 viewMode === 'list' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
               }`}
+              aria-label={t('common.view_list')}
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                 <rect x="1" y="2" width="14" height="3" rx="1" />
@@ -103,16 +116,18 @@ function ClientStatus({
             </button>
           </div>
 
-          {/* Reload Config */}
-          <Button
-            theme={theme}
-            mode={mode}
-            variant="default"
-            onClick={onReloadConfig}
-            title={t('common.reload_title')}
-          >
-            <RefreshCw size={14} /> {t('common.reload')}
-          </Button>
+          {/* Reload Config (SUPER_ADMIN only) */}
+          {canReload && (
+            <Button
+              theme={theme}
+              mode={mode}
+              variant="default"
+              onClick={onReloadConfig}
+              title={t('common.reload_title')}
+            >
+              <RefreshCw size={14} /> {t('common.reload')}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -139,7 +154,7 @@ function ClientStatus({
         <StatCard
           icon={Clock}
           label={t('common.stat_earliest')}
-          value={servers.length > 0 && servers[0]?.connectedAt ? formatUptime(servers[0].connectedAt) : '-'}
+          value={earliestConnectedAt ? formatUptime(earliestConnectedAt) : '-'}
           color="text-foreground"
         />
       </div>
@@ -161,6 +176,7 @@ function ClientStatus({
               mode={mode}
               onViewDetails={onViewServerDetails}
               onDisconnect={handleDisconnect}
+              canDisconnect={canDisconnect}
             />
           ))}
         </div>
@@ -205,10 +221,11 @@ function ClientStatus({
                           variant="ghost"
                           size="icon"
                           onClick={() => onViewServerDetails && onViewServerDetails(server)}
+                          aria-label={t('common.details')}
                         >
                           <Eye size={14} />
                         </Button>
-                        {server.status === 'online' && (
+                        {canDisconnect && server.status === 'online' && (
                           <Button
                             theme={theme}
                             mode={mode}
@@ -216,6 +233,7 @@ function ClientStatus({
                             size="icon"
                             onClick={() => handleDisconnect(server)}
                             title={t('common.disconnect_title')}
+                            aria-label={t('common.disconnect_title')}
                           >
                             <Power size={14} />
                           </Button>
@@ -293,7 +311,8 @@ function ClientStatus({
 }
 
 // Statistics Card Component
-function StatCard({ icon: Icon, label, value, color }) {
+function StatCard({ icon, label, value, color }) {
+  const Icon = icon;
   return (
     <Card className="p-4">
       <div className="flex items-center gap-3">
@@ -310,7 +329,7 @@ function StatCard({ icon: Icon, label, value, color }) {
 }
 
 // Server Card Component
-function ServerCard({ server, theme, mode, onViewDetails, onDisconnect }) {
+function ServerCard({ server, theme, mode, onViewDetails, onDisconnect, canDisconnect }) {
   const { t } = useTranslation();
   return (
     <Card className="p-4">
@@ -365,7 +384,7 @@ function ServerCard({ server, theme, mode, onViewDetails, onDisconnect }) {
         >
           <Eye size={12} /> {t('common.details')}
         </Button>
-        {server.status === 'online' && (
+        {canDisconnect && server.status === 'online' && (
           <Button
             theme={theme}
             mode={mode}
@@ -373,6 +392,7 @@ function ServerCard({ server, theme, mode, onViewDetails, onDisconnect }) {
             size="icon"
             onClick={() => onDisconnect && onDisconnect(server)}
             title={t('common.disconnect_title')}
+            aria-label={t('common.disconnect_title')}
           >
             <Power size={12} />
           </Button>

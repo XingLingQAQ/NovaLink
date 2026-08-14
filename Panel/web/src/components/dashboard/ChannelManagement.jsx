@@ -31,6 +31,20 @@ import Button from '../ui/Button';
 import Badge from '../ui/Badge';
 import Modal from '../ui/Modal';
 import { api } from '../../services/api';
+import { can } from '../../lib/permissions';
+
+function parseSlowModeSeconds(value) {
+  if (value === '' || value == null) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function formatSlowMode(t, value) {
+  const seconds = parseSlowModeSeconds(value) ?? 0;
+  return seconds === 0
+    ? t('channels.slow_mode_disabled')
+    : t('channels.slow_mode_seconds', { count: seconds });
+}
 
 function ChannelManagement({
   theme,
@@ -42,9 +56,11 @@ function ChannelManagement({
   onEditChannel,
   onDeleteChannel,
   onInviteChannel,
+  role,
 }) {
   void _txtMain; void _txtSec;
   const { t } = useTranslation();
+  const canManage = can(role, 'channels.manage');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -64,15 +80,18 @@ function ChannelManagement({
   const [inviteCopied, setInviteCopied] = useState(false);
 
   // New channel form — aligned with backend POST /api/channels body.
-  // { id?, displayName, scope, maxCapacity, permission }
+  // { id?, displayName, scope, maxCapacity, permission, slowModeSeconds }
   const emptyChannel = {
     id: '',
     name: '',
     scope: 'GLOBAL',
     maxCapacity: 100,
     permission: '',
+    slowModeSeconds: 0,
   };
   const [newChannel, setNewChannel] = useState(emptyChannel);
+  const newSlowModeSeconds = parseSlowModeSeconds(newChannel.slowModeSeconds);
+  const editingSlowModeSeconds = parseSlowModeSeconds(editingChannel?.slowModeSeconds);
 
   // Filter channels.
   const filteredChannels = channels.filter((c) => {
@@ -107,11 +126,12 @@ function ChannelManagement({
 
   // Handle create channel — calls App handler with backend-shaped body.
   const handleCreate = async () => {
-    if (!newChannel.name) return;
+    if (!newChannel.name || newSlowModeSeconds == null) return;
     const body = {
       displayName: newChannel.name,
       scope: newChannel.scope,
       maxCapacity: Number(newChannel.maxCapacity) || 100,
+      slowModeSeconds: newSlowModeSeconds,
     };
     if (newChannel.id && newChannel.id.trim()) body.id = newChannel.id.trim();
     if (newChannel.permission && newChannel.permission.trim()) body.permission = newChannel.permission.trim();
@@ -135,16 +155,18 @@ function ChannelManagement({
       scope: channel.type,
       maxCapacity: channel.maxCapacity || 100,
       permission: channel.permission || '',
+      slowModeSeconds: channel.slowModeSeconds ?? 0,
     });
     setShowEditModal(true);
   };
 
   // Handle save edit — calls App handler with the updatable fields only.
   const handleSaveEdit = async () => {
-    if (!editingChannel || !editingChannel.id) return;
+    if (!editingChannel || !editingChannel.id || editingSlowModeSeconds == null) return;
     const body = {};
     if (editingChannel.name) body.displayName = editingChannel.name;
     body.maxCapacity = Number(editingChannel.maxCapacity) || 100;
+    body.slowModeSeconds = editingSlowModeSeconds;
     if (editingChannel.permission !== undefined) body.permission = editingChannel.permission || null;
     setSubmitting(true);
     try {
@@ -255,15 +277,17 @@ function ChannelManagement({
           <h2 className="text-xl font-medium text-foreground">{t('channels.title')}</h2>
           <p className="text-xs text-muted-foreground mt-1">{t('channels.subtitle', { count: channels.length })}</p>
         </div>
-        <Button
-          theme={theme}
-          mode={mode}
-          variant="default"
-          onClick={() => setShowCreateModal(true)}
-          title={t('channels.create')}
-        >
-          <Plus size={14} /> {t('channels.create')}
-        </Button>
+        {canManage && (
+          <Button
+            theme={theme}
+            mode={mode}
+            variant="default"
+            onClick={() => setShowCreateModal(true)}
+            title={t('channels.create')}
+          >
+            <Plus size={14} /> {t('channels.create')}
+          </Button>
+        )}
       </div>
 
       {/* Filters */}
@@ -335,6 +359,10 @@ function ChannelManagement({
                     </>
                   )}
                 </div>
+                <div className="p-2 rounded-md bg-muted/40 text-xs">
+                  <span className="text-muted-foreground">{t('channels.field_slow_mode')}: </span>
+                  <span className="text-foreground">{formatSlowMode(t, channel.slowModeSeconds)}</span>
+                </div>
               </div>
 
               {/* Actions */}
@@ -349,36 +377,42 @@ function ChannelManagement({
                 >
                   <Eye size={12} /> {t('channels.details')}
                 </Button>
-                <Button
-                  theme={theme}
-                  mode={mode}
-                  variant="outline"
-                  className="text-xs"
-                  onClick={() => handleEdit(channel)}
-                  title={t('channels.edit')}
-                >
-                  <Edit size={12} /> {t('channels.edit')}
-                </Button>
-                <Button
-                  theme={theme}
-                  mode={mode}
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => handleInvite(channel)}
-                  title={t('channels.invite')}
-                >
-                  <Gift size={12} />
-                </Button>
-                <Button
-                  theme={theme}
-                  mode={mode}
-                  variant="destructive"
-                  size="icon"
-                  onClick={() => handleDelete(channel)}
-                  title={t('common.delete')}
-                >
-                  <Trash2 size={12} />
-                </Button>
+                {canManage && (
+                  <>
+                    <Button
+                      theme={theme}
+                      mode={mode}
+                      variant="outline"
+                      className="text-xs"
+                      onClick={() => handleEdit(channel)}
+                      title={t('channels.edit')}
+                    >
+                      <Edit size={12} /> {t('channels.edit')}
+                    </Button>
+                    <Button
+                      theme={theme}
+                      mode={mode}
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleInvite(channel)}
+                      title={t('channels.invite')}
+                      aria-label={t('channels.invite')}
+                    >
+                      <Gift size={12} />
+                    </Button>
+                    <Button
+                      theme={theme}
+                      mode={mode}
+                      variant="destructive"
+                      size="icon"
+                      onClick={() => handleDelete(channel)}
+                      title={t('common.delete')}
+                      aria-label={t('common.delete')}
+                    >
+                      <Trash2 size={12} />
+                    </Button>
+                  </>
+                )}
               </div>
             </Card>
           );
@@ -470,6 +504,35 @@ function ChannelManagement({
             />
           </div>
 
+          {/* Slow Mode */}
+          <div className="space-y-2">
+            <label
+              htmlFor="create-channel-slow-mode"
+              className="text-xs font-normal leading-none text-muted-foreground"
+            >
+              {t('channels.field_slow_mode')}
+            </label>
+            <input
+              id="create-channel-slow-mode"
+              type="number"
+              min="0"
+              step="1"
+              value={newChannel.slowModeSeconds}
+              onChange={(e) => setNewChannel({ ...newChannel, slowModeSeconds: e.target.value })}
+              aria-describedby={`create-channel-slow-mode-hint${newSlowModeSeconds == null ? ' create-channel-slow-mode-error' : ''}`}
+              aria-invalid={newSlowModeSeconds == null ? true : undefined}
+              className={inputClass}
+            />
+            <p id="create-channel-slow-mode-hint" className="text-[11px] text-muted-foreground">
+              {t('channels.field_slow_mode_hint')}
+            </p>
+            {newSlowModeSeconds == null && (
+              <p id="create-channel-slow-mode-error" className="text-[11px] text-destructive" role="alert">
+                {t('channels.field_slow_mode_invalid')}
+              </p>
+            )}
+          </div>
+
           {/* Permission */}
           <div className="space-y-2">
             <label className="text-xs font-normal leading-none text-muted-foreground">
@@ -501,7 +564,7 @@ function ChannelManagement({
             theme={theme}
             mode={mode}
             onClick={handleCreate}
-            disabled={submitting || !newChannel.name}
+            disabled={submitting || !newChannel.name || newSlowModeSeconds == null}
           >
             {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
             {t('common.create')}
@@ -561,6 +624,35 @@ function ChannelManagement({
               />
             </div>
 
+            {/* Slow Mode */}
+            <div className="space-y-2">
+              <label
+                htmlFor="edit-channel-slow-mode"
+                className="text-xs font-normal leading-none text-muted-foreground"
+              >
+                {t('channels.field_slow_mode')}
+              </label>
+              <input
+                id="edit-channel-slow-mode"
+                type="number"
+                min="0"
+                step="1"
+                value={editingChannel.slowModeSeconds}
+                onChange={(e) => setEditingChannel({ ...editingChannel, slowModeSeconds: e.target.value })}
+                aria-describedby={`edit-channel-slow-mode-hint${editingSlowModeSeconds == null ? ' edit-channel-slow-mode-error' : ''}`}
+                aria-invalid={editingSlowModeSeconds == null ? true : undefined}
+                className={inputClass}
+              />
+              <p id="edit-channel-slow-mode-hint" className="text-[11px] text-muted-foreground">
+                {t('channels.field_slow_mode_hint')}
+              </p>
+              {editingSlowModeSeconds == null && (
+                <p id="edit-channel-slow-mode-error" className="text-[11px] text-destructive" role="alert">
+                  {t('channels.field_slow_mode_invalid')}
+                </p>
+              )}
+            </div>
+
             {/* Permission */}
             <div className="space-y-2">
               <label className="text-xs font-normal leading-none text-muted-foreground">
@@ -593,7 +685,7 @@ function ChannelManagement({
             theme={theme}
             mode={mode}
             onClick={handleSaveEdit}
-            disabled={submitting}
+            disabled={submitting || editingSlowModeSeconds == null}
           >
             {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
             {t('common.save')}
@@ -747,6 +839,7 @@ function ChannelDetails({ channel, members }) {
   const maxCapacity = detail.maxCapacity || detail.max_capacity || 0;
   const permission = detail.permission || '';
   const clientId = detail.clientId || detail.client_id || '';
+  const slowModeSeconds = detail.slowModeSeconds ?? detail.slow_mode_seconds ?? 0;
   const memberList = Array.isArray(members) ? members : [];
 
   const rowClass = 'flex items-center justify-between p-2 rounded-md bg-muted/40 text-xs';
@@ -770,6 +863,10 @@ function ChannelDetails({ channel, members }) {
         <div className={rowClass}>
           <span className="text-muted-foreground">{t('channels.member_count')}</span>
           <span className="text-foreground">{memberCount}/{maxCapacity}</span>
+        </div>
+        <div className={rowClass}>
+          <span className="text-muted-foreground">{t('channels.field_slow_mode')}</span>
+          <span className="text-foreground">{formatSlowMode(t, slowModeSeconds)}</span>
         </div>
         {permission && (
           <div className={rowClass}>

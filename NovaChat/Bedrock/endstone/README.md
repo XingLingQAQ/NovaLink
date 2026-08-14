@@ -5,8 +5,8 @@ NovaChat plugin for Endstone - Cross-server chat integration for Minecraft Bedro
 ## Requirements
 
 - Python 3.10+
-- Endstone 0.5.0+
-- Minecraft Bedrock 1.20+ through 26.30
+- Endstone 0.11.0+ (current stable: 0.11.8, supports BDS 1.26.40)
+- Minecraft Bedrock 1.26.40 (BDS paired with endstone 0.11.7+)
 
 ## Installation
 

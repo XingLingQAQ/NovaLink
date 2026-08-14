@@ -44,7 +44,7 @@ public class NovaChatCommand extends Command implements TabExecutor {
 
     /** Available subcommands */
     private static final List<String> SUBCOMMANDS = Arrays.asList(
-        "help", "join", "leave", "list", "who", "toggle", "reload"
+        "help", "join", "leave", "list", "who", "toggle", "ignore", "unignore", "msg", "r", "reload"
     );
 
     /**
@@ -88,6 +88,18 @@ public class NovaChatCommand extends Command implements TabExecutor {
             case "toggle":
                 handleToggle(sender);
                 break;
+            case "ignore":
+                handleIgnore(sender, subArgs);
+                break;
+            case "unignore":
+                handleUnignore(sender, subArgs);
+                break;
+            case "msg":
+                handleMsg(sender, subArgs);
+                break;
+            case "r":
+                handleReply(sender, subArgs);
+                break;
             case "reload":
                 handleReload(sender);
                 break;
@@ -117,6 +129,14 @@ public class NovaChatCommand extends Command implements TabExecutor {
                 I18n.tr(playerId, "chat.command.help.line_who"))));
         sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
                 I18n.tr(playerId, "chat.command.help.line_toggle"))));
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(playerId, "chat.command.help.line_ignore"))));
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(playerId, "chat.command.help.line_unignore"))));
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(playerId, "chat.command.help.line_pm"))));
+        sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
+                I18n.tr(playerId, "chat.command.help.line_reply"))));
         sender.sendMessage(new TextComponent(ChatColor.translateAlternateColorCodes('&',
                 I18n.tr(playerId, "chat.command.help.line_msg"))));
 
@@ -321,6 +341,91 @@ public class NovaChatCommand extends Command implements TabExecutor {
     }
 
     /**
+     * Handles {@code /nc ignore [<player>|list]} — validation, service calls
+     * and receipt copy live in the shared
+     * {@link com.nova.chat.client.command.IgnoreCommandService}; this shell
+     * forwards arguments and renders the returned lines. Local-only.
+     */
+    private void handleIgnore(CommandSender sender, String[] args) {
+        if (!(sender instanceof ProxiedPlayer player)) {
+            sender.sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
+            return;
+        }
+        java.util.List<String> lines = com.nova.chat.client.command.IgnoreCommandService.ignore(
+                plugin.getIgnoreListService(), player.getUniqueId(), player.getName(), args);
+        for (String line : lines) {
+            player.sendMessage(messageFormatter.parseColors(line));
+        }
+    }
+
+    /**
+     * Handles {@code /nc unignore <player>} (see {@link #handleIgnore}).
+     */
+    private void handleUnignore(CommandSender sender, String[] args) {
+        if (!(sender instanceof ProxiedPlayer player)) {
+            sender.sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
+            return;
+        }
+        java.util.List<String> lines = com.nova.chat.client.command.IgnoreCommandService.unignore(
+                plugin.getIgnoreListService(), player.getUniqueId(), args);
+        for (String line : lines) {
+            player.sendMessage(messageFormatter.parseColors(line));
+        }
+    }
+
+    /**
+     * Handles {@code /nc msg <player> <message...>} — validation, packet
+     * construction and receipt copy live in the shared
+     * {@link com.nova.chat.client.command.PrivateMessageCommandService}; this
+     * shell forwards arguments and renders the returned lines. The success
+     * confirmation is rendered from the backend echo (see
+     * {@code ChatListener#handlePrivateMessage}).
+     */
+    private void handleMsg(CommandSender sender, String[] args) {
+        if (!(sender instanceof ProxiedPlayer player)) {
+            sender.sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
+            return;
+        }
+        java.util.List<String> lines = com.nova.chat.client.command.PrivateMessageCommandService.msg(
+                this::sendPrivateMessagePacket,
+                player.getUniqueId(), player.getName(),
+                plugin.getPluginConfig() != null ? plugin.getPluginConfig().getUsername() : null, args);
+        for (String line : lines) {
+            player.sendMessage(messageFormatter.parseColors(line));
+        }
+    }
+
+    /**
+     * Handles {@code /nc r <message...>} — reply to the most recent
+     * private-message partner tracked by the shared
+     * {@link com.nova.chat.client.privatemsg.PrivateMessageService}.
+     */
+    private void handleReply(CommandSender sender, String[] args) {
+        if (!(sender instanceof ProxiedPlayer player)) {
+            sender.sendMessage(messageFormatter.formatError(I18n.tr("chat.command.player_only")));
+            return;
+        }
+        java.util.List<String> lines = com.nova.chat.client.command.PrivateMessageCommandService.reply(
+                plugin.getPrivateMessageService(),
+                this::sendPrivateMessagePacket,
+                player.getUniqueId(), player.getName(),
+                plugin.getPluginConfig() != null ? plugin.getPluginConfig().getUsername() : null, args);
+        for (String line : lines) {
+            player.sendMessage(messageFormatter.parseColors(line));
+        }
+    }
+
+    /** Transmits a private-message packet when the backend link is up. */
+    private boolean sendPrivateMessagePacket(com.nova.chat.common.protocol.packets.PrivateMessagePacket packet) {
+        com.nova.chat.bungee.network.NetworkClient client = plugin.getNetworkClient();
+        if (client == null || !client.isConnected()) {
+            return false;
+        }
+        client.sendPacket(packet);
+        return true;
+    }
+
+    /**
      * Handles the reload subcommand.
      *
      * <p>{@link ChannelCommandService#reload()} is intentionally a no-op on the
@@ -386,6 +491,33 @@ public class NovaChatCommand extends Command implements TabExecutor {
             return state.getJoinedChannels().stream()
                     .filter(id -> id != null && id.toLowerCase().startsWith(prefix))
                     .sorted(String.CASE_INSENSITIVE_ORDER)
+                    .collect(Collectors.toList());
+        }
+        if (sub.equals("ignore")) {
+            List<String> completions = new ArrayList<>();
+            if (com.nova.chat.client.command.IgnoreCommandService.LIST_ARG.startsWith(prefix)) {
+                completions.add(com.nova.chat.client.command.IgnoreCommandService.LIST_ARG);
+            }
+            plugin.getProxy().getPlayers().stream()
+                    .map(ProxiedPlayer::getName)
+                    .filter(name -> name.toLowerCase().startsWith(prefix))
+                    .sorted(String.CASE_INSENSITIVE_ORDER)
+                    .forEach(completions::add);
+            return completions;
+        }
+        if (sub.equals("msg") && args.length == 2) {
+            // First argument of /nc msg: online player names (UX §2.3).
+            return plugin.getProxy().getPlayers().stream()
+                    .map(ProxiedPlayer::getName)
+                    .filter(name -> name.toLowerCase().startsWith(prefix))
+                    .sorted(String.CASE_INSENSITIVE_ORDER)
+                    .collect(Collectors.toList());
+        }
+        if (sub.equals("unignore") && sender instanceof ProxiedPlayer player
+                && plugin.getIgnoreListService() != null) {
+            return plugin.getIgnoreListService()
+                    .listIgnored(player.getUniqueId()).stream()
+                    .filter(name -> name.startsWith(prefix))
                     .collect(Collectors.toList());
         }
 

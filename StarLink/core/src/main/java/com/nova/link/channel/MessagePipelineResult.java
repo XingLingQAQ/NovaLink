@@ -34,7 +34,9 @@ public final class MessagePipelineResult {
         /** Cross-client routing policy denied delivery to the target client. */
         CROSS_CLIENT_DENIED,
         /** No online recipients matched the channel membership. */
-        NO_RECIPIENTS
+        NO_RECIPIENTS,
+        /** The sender violated the channel's slow-mode interval. */
+        SLOW_MODE
     }
 
     private final boolean delivered;
@@ -44,6 +46,7 @@ public final class MessagePipelineResult {
     private final Set<String> recipients;
     private final boolean contentFiltered;
     private final int filterMatchCount;
+    private final long slowModeRemainingSeconds;
 
     private MessagePipelineResult(boolean delivered,
                                   DropReason dropReason,
@@ -51,7 +54,8 @@ public final class MessagePipelineResult {
                                   Channel channel,
                                   Set<String> recipients,
                                   boolean contentFiltered,
-                                  int filterMatchCount) {
+                                  int filterMatchCount,
+                                  long slowModeRemainingSeconds) {
         this.delivered = delivered;
         this.dropReason = dropReason != null ? dropReason : DropReason.NONE;
         this.message = message;
@@ -61,6 +65,7 @@ public final class MessagePipelineResult {
                 : Collections.emptySet();
         this.contentFiltered = contentFiltered;
         this.filterMatchCount = filterMatchCount;
+        this.slowModeRemainingSeconds = slowModeRemainingSeconds;
     }
 
     /**
@@ -73,7 +78,7 @@ public final class MessagePipelineResult {
      * @return a dropped result
      */
     public static MessagePipelineResult dropped(DropReason reason, ChatMessagePacket message) {
-        return new MessagePipelineResult(false, reason, message, null, Collections.emptySet(), false, 0);
+        return new MessagePipelineResult(false, reason, message, null, Collections.emptySet(), false, 0, 0);
     }
 
     /**
@@ -87,7 +92,23 @@ public final class MessagePipelineResult {
      * @return a dropped result
      */
     public static MessagePipelineResult dropped(DropReason reason, ChatMessagePacket message, Channel channel) {
-        return new MessagePipelineResult(false, reason, message, channel, Collections.emptySet(), false, 0);
+        return new MessagePipelineResult(false, reason, message, channel, Collections.emptySet(), false, 0, 0);
+    }
+
+    /**
+     * Creates a dropped result for a slow-mode violation, carrying the number
+     * of seconds the sender still has to wait before the next message.
+     *
+     * @param message          the offending message
+     * @param channel          the slow-mode channel
+     * @param remainingSeconds seconds remaining until the sender may post again
+     * @return a dropped result with reason {@link DropReason#SLOW_MODE}
+     */
+    public static MessagePipelineResult droppedSlowMode(ChatMessagePacket message,
+                                                        Channel channel,
+                                                        long remainingSeconds) {
+        return new MessagePipelineResult(false, DropReason.SLOW_MODE, message, channel,
+                Collections.emptySet(), false, 0, Math.max(1, remainingSeconds));
     }
 
     /**
@@ -109,7 +130,7 @@ public final class MessagePipelineResult {
                                                  int filterMatchCount) {
         Objects.requireNonNull(recipients, "recipients");
         return new MessagePipelineResult(true, DropReason.NONE, message, channel, recipients,
-                contentFiltered, filterMatchCount);
+                contentFiltered, filterMatchCount, 0);
     }
 
     public boolean isDelivered() {
@@ -138,6 +159,14 @@ public final class MessagePipelineResult {
 
     public int getFilterMatchCount() {
         return filterMatchCount;
+    }
+
+    /**
+     * @return for {@link DropReason#SLOW_MODE} drops, the seconds remaining
+     *         until the sender may post again; {@code 0} otherwise
+     */
+    public long getSlowModeRemainingSeconds() {
+        return slowModeRemainingSeconds;
     }
 
     @Override

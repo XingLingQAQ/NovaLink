@@ -82,11 +82,15 @@ class ChatInterceptorTest {
 
     @BeforeEach
     void setUp() {
-        // Shared stubs used across most tests. lenient() avoids UnnecessaryStubbing
+        // Shared stubs used across most tests. lenient() avoids UnecessaryStubbing
         // when a particular test only exercises a subset.
         lenient().when(plugin.getNovaChatConfig()).thenReturn(config);
         lenient().when(plugin.getNetworkClient()).thenReturn(networkClient);
         lenient().when(plugin.getMessageFormatter()).thenReturn(messageFormatter);
+        // Default the global mode to HYBRID. Tests that exercise REPLACE mode
+        // override this stub AND rebuild the interceptor below so the ctor
+        // picks up the new value.
+        lenient().when(config.isReplaceVanilla()).thenReturn(false);
         lenient().when(config.getDefaultChannel()).thenReturn("global");
         lenient().when(player.getUniqueId()).thenReturn(PLAYER_ID);
         lenient().when(player.getName()).thenReturn("Steve");
@@ -114,13 +118,19 @@ class ChatInterceptorTest {
         }
 
         @Test
-        @DisplayName("cancels event and sends error when chat is disabled")
+        @DisplayName("cancels event and sends error when chat forwarding is disabled in REPLACE mode")
         void cancelsWhenChatDisabled() {
             when(chatEvent.isCancelled()).thenReturn(false);
             when(chatEvent.getPlayer()).thenReturn(player);
             when(chatEvent.getMessage()).thenReturn("hi");
+            when(config.isReplaceVanilla()).thenReturn(true);
+            // Rebuild the interceptor so its ctor-derived globalMode picks up
+            // the REPLACE override above. The shared lenient setUp() defaults
+            // isReplaceVanilla() to false, which would otherwise make the
+            // effective mode HYBRID and return early before the forwarding check.
+            interceptor = new ChatInterceptor(plugin);
             when(messageFormatter.formatError(anyString())).thenReturn("err");
-            interceptor.getOrCreateState(player).setChatEnabled(false);
+            interceptor.getOrCreateState(player).setForwardingEnabled(false);
 
             interceptor.onPlayerChat(chatEvent);
 
@@ -136,6 +146,8 @@ class ChatInterceptorTest {
             when(chatEvent.getPlayer()).thenReturn(player);
             when(chatEvent.getMessage()).thenReturn("hello");
             when(config.isReplaceVanilla()).thenReturn(true);
+            // Rebuild so the ctor-derived globalMode picks up REPLACE.
+            interceptor = new ChatInterceptor(plugin);
             when(networkClient.isConnected()).thenReturn(true);
             when(networkClient.isAuthenticated()).thenReturn(true);
             when(config.getBackendUsername()).thenReturn("pnx-server");
@@ -152,20 +164,17 @@ class ChatInterceptorTest {
         }
 
         @Test
-        @DisplayName("replace_vanilla false leaves vanilla chat untouched but still forwards")
+        @DisplayName("HYBRID mode leaves vanilla chat untouched and does not forward")
         void hybridModeDoesNotCancel() {
             when(chatEvent.isCancelled()).thenReturn(false);
             when(chatEvent.getPlayer()).thenReturn(player);
             when(chatEvent.getMessage()).thenReturn("hello");
-            when(config.isReplaceVanilla()).thenReturn(false);
-            when(networkClient.isConnected()).thenReturn(true);
-            when(networkClient.isAuthenticated()).thenReturn(true);
-            when(config.getBackendUsername()).thenReturn("pnx-server");
+            // isReplaceVanilla() already lenient-stubbed to false in setUp().
 
             interceptor.onPlayerChat(chatEvent);
 
             verify(chatEvent, never()).setCancelled(true);
-            verify(networkClient).sendPacket(any(ChatMessagePacket.class));
+            verify(networkClient, never()).sendPacket(any(ChatMessagePacket.class));
         }
 
         @Test
@@ -175,6 +184,8 @@ class ChatInterceptorTest {
             when(chatEvent.getPlayer()).thenReturn(player);
             when(chatEvent.getMessage()).thenReturn("hello");
             when(config.isReplaceVanilla()).thenReturn(true);
+            // Rebuild so the ctor-derived globalMode picks up REPLACE.
+            interceptor = new ChatInterceptor(plugin);
             when(networkClient.isConnected()).thenReturn(false);
             when(messageFormatter.formatError(anyString())).thenReturn("no-net");
 
@@ -192,6 +203,8 @@ class ChatInterceptorTest {
             when(chatEvent.getPlayer()).thenReturn(player);
             when(chatEvent.getMessage()).thenReturn("hello");
             when(config.isReplaceVanilla()).thenReturn(true);
+            // Rebuild so the ctor-derived globalMode picks up REPLACE.
+            interceptor = new ChatInterceptor(plugin);
             when(networkClient.isConnected()).thenReturn(true);
             when(networkClient.isAuthenticated()).thenReturn(false);
             when(messageFormatter.formatError(anyString())).thenReturn("connecting");

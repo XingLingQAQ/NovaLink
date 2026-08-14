@@ -24,16 +24,24 @@ public class Varint21FrameDecoder extends ByteToMessageDecoder {
      */
     private static final int MAX_FRAME_LENGTH = 4 * 1024 * 1024; // 4 MiB
 
+    /**
+     * Sentinel distinct from every possible decoded VarInt value (ints fit in a
+     * long), so a frame length of -1 (encoded FF FF FF FF 0F) cannot be confused
+     * with "not enough bytes" and silently desynchronize the stream.
+     */
+    private static final long NOT_ENOUGH_BYTES = Long.MIN_VALUE;
+
     @Override
     protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) throws Exception {
         in.markReaderIndex();
 
         // Try to read the length prefix
-        int length = readVarIntOrReset(in);
-        if (length == -1) {
-            return; // Not enough bytes for length
+        long lengthRead = readVarIntOrReset(in);
+        if (lengthRead == NOT_ENOUGH_BYTES) {
+            return; // Not enough bytes for length; reader index already reset
         }
 
+        int length = (int) lengthRead;
         if (length < 0 || length > MAX_FRAME_LENGTH) {
             throw new CorruptedFrameException("Invalid frame length: " + length + " (max=" + MAX_FRAME_LENGTH + ")");
         }
@@ -50,12 +58,14 @@ public class Varint21FrameDecoder extends ByteToMessageDecoder {
 
     /**
      * Attempts to read a VarInt from the buffer.
-     * If not enough bytes are available, resets the reader index and returns -1.
+     * If not enough bytes are available, resets the reader index and returns
+     * {@link #NOT_ENOUGH_BYTES}. Decoded values (including negative ones, which
+     * the caller rejects as corrupted frames) are returned as-is.
      *
      * @param buf the buffer to read from
-     * @return the decoded VarInt, or -1 if not enough bytes
+     * @return the decoded VarInt, or {@link #NOT_ENOUGH_BYTES} if not enough bytes
      */
-    private int readVarIntOrReset(ByteBuf buf) {
+    private long readVarIntOrReset(ByteBuf buf) {
         int value = 0;
         int position = 0;
 
@@ -76,6 +86,6 @@ public class Varint21FrameDecoder extends ByteToMessageDecoder {
 
         // Not enough bytes
         buf.resetReaderIndex();
-        return -1;
+        return NOT_ENOUGH_BYTES;
     }
 }

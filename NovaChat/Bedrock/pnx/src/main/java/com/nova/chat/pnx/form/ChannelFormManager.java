@@ -12,12 +12,16 @@ import cn.nukkit.form.response.FormResponseSimple;
 import cn.nukkit.form.window.FormWindowCustom;
 import cn.nukkit.form.window.FormWindowModal;
 import cn.nukkit.form.window.FormWindowSimple;
+import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.command.CommandResult;
 import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.state.ChatMode;
+import com.nova.chat.client.state.ChatModeDescriptions;
+import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.pnx.NovaChatPNX;
-import com.nova.chat.pnx.chat.ChatInterceptor;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -25,13 +29,19 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Manages PowerNukkitX Form API windows for channel selection and management.
  * Provides a GUI-based experience for Bedrock players.
- * 
+ *
+ * <p>DUP-7 migration: per-player state is the shared {@link PlayerChannelState}
+ * (same as the other six platforms). The settings form now toggles the shared
+ * {@link ChatMode} (REPLACE/HYBRID) and the main-form toggle button delegates
+ * to {@link ChannelCommandService#toggle} so PNX is consistent with the rest
+ * of the fleet. Previously this flipped a PNX-only forwarding flag.
+ *
  * Requirements: 28.8
  */
 public class ChannelFormManager {
 
     private final NovaChatPNX plugin;
-    
+
     // Form IDs for tracking responses
     public static final int FORM_CHANNEL_SELECT = 1001;
     public static final int FORM_JOIN_CHANNEL = 1002;
@@ -39,14 +49,14 @@ public class ChannelFormManager {
     public static final int FORM_LEAVE_CONFIRM = 1004;
     public static final int FORM_CHANNEL_INFO = 1005;
     public static final int FORM_SETTINGS = 1006;
-    
+
     // Track pending form data per player
     private final Map<UUID, String> pendingChannelJoin = new ConcurrentHashMap<>();
     private final Map<UUID, String> pendingChannelLeave = new ConcurrentHashMap<>();
-    
+
     // Track available channels (updated from backend)
     private final Set<String> availableChannels = new HashSet<>(Arrays.asList("global", "local"));
-    
+
     // Quick-join channel list (configurable)
     private final List<String> quickJoinChannels = new ArrayList<>(Arrays.asList("global", "local"));
 
@@ -65,7 +75,7 @@ public class ChannelFormManager {
         availableChannels.addAll(channels);
         plugin.debug("Updated available channels: " + channels);
     }
-    
+
     /**
      * Adds a channel to the quick-join list.
      *
@@ -89,16 +99,16 @@ public class ChannelFormManager {
             ""
         );
 
-        // Get current channel
-        ChatInterceptor.PlayerChatState state = plugin.getChatInterceptor().getOrCreateState(player);
-        String currentChannel = state.getCurrentChannel();
-        boolean chatEnabled = state.isChatEnabled();
+        // Get current channel and chat mode
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
+        String currentChannel = state.getActiveChannel();
+        ChatMode currentMode = state.isModeOverridden() ? state.getChatMode() : plugin.getChatInterceptor().getGlobalMode();
+        String modeText = ChatModeDescriptions.modeName(currentMode);
 
         // Build content with current status
         StringBuilder content = new StringBuilder();
         content.append(I18n.tr(playerId, "chat.form.content.current_channel", currentChannel)).append("\n");
-        content.append(I18n.tr(playerId, "chat.form.content.chat_status",
-                chatEnabled ? I18n.tr(playerId, "chat.debug.value_on") : I18n.tr(playerId, "chat.debug.value_off"))).append("\n");
+        content.append(I18n.tr(playerId, "chat.form.content.chat_mode", modeText)).append("\n");
         content.append(I18n.tr(playerId, "chat.form.content.connection",
                 (plugin.getNetworkClient() != null && plugin.getNetworkClient().isAuthenticated())
                         ? I18n.tr(playerId, "chat.debug.value_connected")
@@ -110,7 +120,7 @@ public class ChannelFormManager {
         form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.join")));
         form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.create")));
         form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.leave")));
-        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.toggle_chat")));
+        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.toggle_mode")));
         form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.info")));
         form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.settings")));
 
@@ -176,8 +186,8 @@ public class ChannelFormManager {
      */
     public void showLeaveConfirmForm(Player player) {
         UUID playerId = player.getUniqueId();
-        ChatInterceptor.PlayerChatState state = plugin.getChatInterceptor().getOrCreateState(player);
-        String currentChannel = state.getCurrentChannel();
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
+        String currentChannel = state.getActiveChannel();
         String defaultChannel = plugin.getNovaChatConfig().getDefaultChannel();
 
         if (currentChannel.equals(defaultChannel)) {
@@ -197,7 +207,7 @@ public class ChannelFormManager {
 
         player.showFormWindow(form, FORM_LEAVE_CONFIRM);
     }
-    
+
     /**
      * Shows the channel info form.
      *
@@ -205,20 +215,22 @@ public class ChannelFormManager {
      */
     public void showChannelInfoForm(Player player) {
         UUID playerId = player.getUniqueId();
-        ChatInterceptor.PlayerChatState state = plugin.getChatInterceptor().getOrCreateState(player);
-        String currentChannel = state.getCurrentChannel();
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
+        String currentChannel = state.getActiveChannel();
 
         FormWindowSimple form = new FormWindowSimple(
             I18n.tr(playerId, "chat.form.title.info"),
             ""
         );
 
+        ChatMode mode = state.isModeOverridden() ? state.getChatMode() : plugin.getChatInterceptor().getGlobalMode();
+        String modeText = ChatModeDescriptions.modeName(mode);
+
         StringBuilder content = new StringBuilder();
         content.append(I18n.tr(playerId, "chat.form.content.info_current_channel", currentChannel)).append("\n\n");
         content.append(I18n.tr(playerId, "chat.form.content.info_your_status")).append("\n");
         content.append(I18n.tr(playerId, "chat.form.content.info_world", player.getLevel().getName())).append("\n");
-        content.append(I18n.tr(playerId, "chat.form.content.info_chat_status",
-                state.isChatEnabled() ? I18n.tr(playerId, "chat.debug.value_on") : I18n.tr(playerId, "chat.debug.value_off"))).append("\n\n");
+        content.append(I18n.tr(playerId, "chat.form.content.info_chat_mode", modeText)).append("\n\n");
 
         content.append(I18n.tr(playerId, "chat.form.content.info_available")).append("\n");
         String marker = I18n.tr(playerId, "chat.form.content.info_current_marker");
@@ -235,7 +247,7 @@ public class ChannelFormManager {
 
         player.showFormWindow(form, FORM_CHANNEL_INFO);
     }
-    
+
     /**
      * Shows the settings form.
      *
@@ -243,13 +255,14 @@ public class ChannelFormManager {
      */
     public void showSettingsForm(Player player) {
         UUID playerId = player.getUniqueId();
-        ChatInterceptor.PlayerChatState state = plugin.getChatInterceptor().getOrCreateState(player);
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
+        ChatMode currentMode = state.isModeOverridden() ? state.getChatMode() : plugin.getChatInterceptor().getGlobalMode();
 
         FormWindowCustom form = new FormWindowCustom(I18n.tr(playerId, "chat.form.title.settings"));
 
         form.addElement(new ElementLabel(I18n.tr(playerId, "chat.form.label.settings_prompt")));
-        form.addElement(new ElementToggle(I18n.tr(playerId, "chat.form.label.chat_enabled"), state.isChatEnabled()));
-        form.addElement(new ElementLabel(I18n.tr(playerId, "chat.form.content.settings_chat")));
+        form.addElement(new ElementToggle(I18n.tr(playerId, "chat.form.label.channel_mode"), currentMode == ChatMode.REPLACE));
+        form.addElement(new ElementLabel(I18n.tr(playerId, "chat.form.content.settings_channel")));
 
         player.showFormWindow(form, FORM_SETTINGS);
     }
@@ -268,7 +281,7 @@ public class ChannelFormManager {
             pendingChannelLeave.remove(player.getUniqueId());
             return;
         }
-        
+
         switch (formId) {
             case FORM_CHANNEL_SELECT:
                 handleChannelSelectResponse(player, (FormResponseSimple) response);
@@ -298,7 +311,7 @@ public class ChannelFormManager {
      */
     private void handleChannelSelectResponse(Player player, FormResponseSimple response) {
         int buttonId = response.getClickedButtonId();
-        
+
         switch (buttonId) {
             case 0: // Join channel
                 showJoinChannelForm(player);
@@ -309,8 +322,8 @@ public class ChannelFormManager {
             case 2: // Leave channel
                 showLeaveConfirmForm(player);
                 break;
-            case 3: // Toggle chat
-                toggleChat(player);
+            case 3: // Toggle mode
+                toggleChatMode(player);
                 break;
             case 4: // Channel info
                 showChannelInfoForm(player);
@@ -320,9 +333,9 @@ public class ChannelFormManager {
                 break;
             default:
                 // Quick join buttons (index 6+)
-                ChatInterceptor.PlayerChatState state = plugin.getChatInterceptor().getOrCreateState(player);
-                String currentChannel = state.getCurrentChannel();
-                
+                PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
+                String currentChannel = state.getActiveChannel();
+
                 // Build list of quick-join channels excluding current
                 List<String> availableQuickJoin = new ArrayList<>();
                 for (String channel : quickJoinChannels) {
@@ -330,7 +343,7 @@ public class ChannelFormManager {
                         availableQuickJoin.add(channel);
                     }
                 }
-                
+
                 int channelIndex = buttonId - 6;
                 if (channelIndex >= 0 && channelIndex < availableQuickJoin.size()) {
                     joinChannel(player, availableQuickJoin.get(channelIndex), null);
@@ -345,12 +358,12 @@ public class ChannelFormManager {
     private void handleJoinChannelResponse(Player player, FormResponseCustom response) {
         String channelId = null;
         String password = null;
-        
+
         // Check if we have a dropdown (available channels list)
         if (!availableChannels.isEmpty()) {
             // Form has: Label, Dropdown, Input (channel ID), Input (password)
             int dropdownSelection = response.getDropdownResponse(1).getElementID();
-            
+
             if (dropdownSelection > 0) {
                 // User selected from dropdown (index 0 is "manual input")
                 List<String> channelList = new ArrayList<>(availableChannels);
@@ -365,12 +378,12 @@ public class ChannelFormManager {
             channelId = response.getInputResponse(1);
             password = response.getInputResponse(2);
         }
-        
+
         if (channelId == null || channelId.trim().isEmpty()) {
             sendError(player, I18n.tr(player.getUniqueId(), "chat.action.enter_channel_id"));
             return;
         }
-        
+
         joinChannel(player, channelId.trim(), (password == null || password.isEmpty()) ? null : password);
     }
 
@@ -382,15 +395,15 @@ public class ChannelFormManager {
         String channelName = response.getInputResponse(1);
         String password = response.getInputResponse(2);
         boolean autoJoin = response.getToggleResponse(3);
-        
+
         if (channelName == null || channelName.trim().isEmpty()) {
             sendError(player, I18n.tr(player.getUniqueId(), "chat.action.enter_channel_name"));
             return;
         }
-        
+
         createChannel(player, channelName.trim(), (password == null || password.isEmpty()) ? null : password, autoJoin);
     }
-    
+
     /**
      * Handles the leave confirmation form response.
      */
@@ -410,19 +423,21 @@ public class ChannelFormManager {
             }
         }
     }
-    
+
     /**
      * Handles the settings form response.
      */
     private void handleSettingsResponse(Player player, FormResponseCustom response) {
-        // Form has: Label, Toggle (chat enabled), Label
-        boolean chatEnabled = response.getToggleResponse(1);
+        // Form has: Label, Toggle (channel mode), Label
+        boolean channelMode = response.getToggleResponse(1);
 
-        ChatInterceptor.PlayerChatState state = plugin.getChatInterceptor().getOrCreateState(player);
-        state.setChatEnabled(chatEnabled);
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
+        ChatMode newMode = channelMode ? ChatMode.REPLACE : ChatMode.HYBRID;
+        state.setChatMode(newMode);
+        state.setModeOverridden(true);
 
         sendSuccess(player, I18n.tr(player.getUniqueId(), "chat.command.toggle.switched",
-                chatEnabled ? I18n.tr(player.getUniqueId(), "chat.debug.value_on") : I18n.tr(player.getUniqueId(), "chat.debug.value_off")));
+                ChatModeDescriptions.modeName(newMode)));
     }
 
 
@@ -516,20 +531,27 @@ public class ChannelFormManager {
     }
 
     /**
-     * Toggles the player's chat enabled state.
+     * Toggles the player's chat mode via {@link ChannelCommandService#toggle}.
      */
-    private void toggleChat(Player player) {
-        ChatInterceptor.PlayerChatState state = plugin.getChatInterceptor().getOrCreateState(player);
-        boolean newState = !state.isChatEnabled();
-        state.setChatEnabled(newState);
+    private void toggleChatMode(Player player) {
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
+        ChannelCommandService channelCommands = plugin.getChannelCommandService();
+        CommandResult result = channelCommands.toggle(state);
 
+        if (!result.isSuccess()) {
+            sendError(player, result.getMessage());
+            return;
+        }
+
+        ChatMode newMode = state.getChatMode();
         sendSuccess(player, I18n.tr(player.getUniqueId(), "chat.command.toggle.switched",
-                newState ? I18n.tr(player.getUniqueId(), "chat.debug.value_on") : I18n.tr(player.getUniqueId(), "chat.debug.value_off")));
+                ChatModeDescriptions.modeName(newMode)));
+        sendMessage(player, ChatModeDescriptions.describe(newMode));
 
         // Show main menu again after toggle
         showChannelSelectionForm(player);
     }
-    
+
     /**
      * Gets the set of available channels.
      *
@@ -538,7 +560,7 @@ public class ChannelFormManager {
     public Set<String> getAvailableChannels() {
         return Collections.unmodifiableSet(availableChannels);
     }
-    
+
     /**
      * Gets the list of quick-join channels.
      *
@@ -547,7 +569,7 @@ public class ChannelFormManager {
     public List<String> getQuickJoinChannels() {
         return Collections.unmodifiableList(quickJoinChannels);
     }
-    
+
     /**
      * Clears all pending form data for a player.
      * Should be called when a player disconnects.

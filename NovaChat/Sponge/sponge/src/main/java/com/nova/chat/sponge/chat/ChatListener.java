@@ -4,6 +4,7 @@ import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
+import com.nova.chat.client.itemdisplay.ItemDisplayMessages;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -11,12 +12,15 @@ import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
+import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.sponge.NovaChatSponge;
 import com.nova.chat.sponge.config.NovaChatConfig;
 import net.kyori.adventure.sound.Sound;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
@@ -90,6 +94,101 @@ public class ChatListener {
         plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
         plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
         plugin.getNetworkClient().registerHandler(MentionPacket.class, this::handleMention);
+        plugin.getNetworkClient().registerHandler(TitlePacket.class, this::handleTitle);
+        plugin.getNetworkClient().registerHandler(ItemDisplayPacket.class, this::handleItemDisplay);
+        plugin.getNetworkClient().registerHandler(
+                com.nova.chat.common.protocol.packets.PrivateMessagePacket.class,
+                this::handlePrivateMessage);
+    }
+
+    /**
+     * Handles a completed (S→C) private message: the shared
+     * {@link com.nova.chat.client.privatemsg.PrivateMessageService} resolves
+     * which local players render which role (sender echo vs received line,
+     * receiver-side ignore filter, reply tracking). Hops to the plugin
+     * executor before touching the player API, mirroring
+     * {@link #handleItemDisplay}.
+     */
+    private void handlePrivateMessage(com.nova.chat.common.protocol.packets.PrivateMessagePacket packet) {
+        Sponge.server().scheduler().executor(plugin.getContainer()).execute(() -> {
+            var deliveries = plugin.getPrivateMessageService().handleIncoming(
+                    packet,
+                    id -> Sponge.server().player(id).isPresent(),
+                    plugin.getIgnoreListService());
+            for (com.nova.chat.client.privatemsg.PrivateMessageService.Delivery delivery : deliveries) {
+                Sponge.server().player(delivery.getPlayerId()).ifPresent(player ->
+                        player.sendMessage(LegacyComponentSerializer.legacyAmpersand()
+                                .deserialize(delivery.getLine())));
+            }
+        });
+    }
+
+    /**
+     * Handles an inbound item display packet ({@code [item]}/{@code [i]} play,
+     * packet 0x10) by rendering one hoverable chat line to every player whose
+     * active channel matches the packet channel.
+     *
+     * <p>Receive-side semantics are "receive = render", matching the Bedrock
+     * clients; the backend currently registers no route for this packet. Hops
+     * to the plugin executor before touching the player API, mirroring
+     * {@link #handleTitle}; the hover detail uses Adventure's
+     * {@code HoverEvent.showText}. The line is formatted per viewer because
+     * the copy is locale-dependent.
+     *
+     * <p>Send side is intentionally not implemented on Sponge in this pass:
+     * the outbound chat path stays untouched, matching the task's
+     * server-platform scope (bukkit/folia/nukkit/pnx).
+     */
+    private void handleItemDisplay(ItemDisplayPacket packet) {
+        String channelId = packet.getChannelId();
+        Sponge.server().scheduler().executor(plugin.getContainer()).execute(() -> {
+            for (ServerPlayer player : Sponge.server().onlinePlayers()) {
+                PlayerChannelState state = getState(player.uniqueId());
+                if (state == null || channelId == null || !channelId.equals(state.getActiveChannel())) {
+                    continue;
+                }
+                UUID viewerId = player.uniqueId();
+                // Skip senders the viewer has ignored (/nc ignore)
+                com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
+                if (ignoreService != null && ignoreService.isIgnored(viewerId, packet.getSenderName())) {
+                    continue;
+                }
+                Component line = LegacyComponentSerializer.legacyAmpersand().deserialize(
+                        ItemDisplayMessages.formatLine(viewerId, packet.getSenderName(), packet.getItemJson()));
+                Component hover = LegacyComponentSerializer.legacyAmpersand().deserialize(
+                        ItemDisplayMessages.formatHoverDetail(viewerId, packet.getItemJson()));
+                player.sendMessage(line.hoverEvent(HoverEvent.showText(hover)));
+            }
+        });
+    }
+
+    /**
+     * Handles title packets by displaying them to players whose active channel
+     * matches the packet channel (Requirements 15.1, 15.5). Hops to the plugin
+     * executor before touching the player API, mirroring
+     * {@link #handleIncomingMessage}; rendering uses Adventure
+     * {@code showTitle} with legacy-&amp; color deserialization.
+     */
+    private void handleTitle(TitlePacket packet) {
+        String channelId = packet.getChannelId();
+        Component title = LegacyComponentSerializer.legacyAmpersand().deserialize(
+                packet.getTitle() != null ? packet.getTitle() : "");
+        Component subtitle = LegacyComponentSerializer.legacyAmpersand().deserialize(
+                packet.getSubtitle() != null ? packet.getSubtitle() : "");
+        // Packet timings are in ticks (20/s); Adventure wants durations (50ms/tick).
+        Title.Times times = Title.Times.times(
+                Duration.ofMillis(packet.getFadeIn() * 50L),
+                Duration.ofMillis(packet.getStay() * 50L),
+                Duration.ofMillis(packet.getFadeOut() * 50L));
+
+        Sponge.server().scheduler().executor(plugin.getContainer()).execute(() -> {
+            for (ServerPlayer player : Sponge.server().onlinePlayers()) {
+                PlayerChannelState state = getState(player.uniqueId());
+                if (state != null && channelId != null && channelId.equals(state.getActiveChannel())) {
+                    player.showTitle(Title.title(title, subtitle, times));
+                }
+            }
+        });
     }
 
     /** Legacy color prefix applied to @name mentions when rendering chat (UX-DESIGN §4.2). */
@@ -103,6 +202,19 @@ public class ChatListener {
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         plugin.debug("Received channel action response: " + packet);
+        // Private-message rejections are unsolicited (no pending context in the
+        // shared tracker); the dispatcher would drop them, so route them to the
+        // PrivateMessageService for player-locale rendering instead.
+        if (com.nova.chat.client.privatemsg.PrivateMessageService.isPrivateMessageError(packet)) {
+            Sponge.server().scheduler().executor(plugin.getContainer()).execute(() ->
+                    plugin.getPrivateMessageService()
+                            .renderError(packet, id -> Sponge.server().player(id).isPresent())
+                            .ifPresent(delivery -> Sponge.server().player(delivery.getPlayerId())
+                                    .ifPresent(player -> player.sendMessage(
+                                            LegacyComponentSerializer.legacyAmpersand()
+                                                    .deserialize(delivery.getLine())))));
+            return;
+        }
         dispatcher.handle(packet);
     }
 
@@ -299,6 +411,11 @@ public class ChatListener {
         // Format and send message to players in this channel
         Sponge.server().scheduler().executor(plugin.getContainer()).execute(() -> {
             for (ServerPlayer player : Sponge.server().onlinePlayers()) {
+                // Skip senders the recipient has ignored (/nc ignore)
+                com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
+                if (ignoreService != null && ignoreService.isIgnored(player.uniqueId(), senderName)) {
+                    continue;
+                }
                 // Check if player is in this channel
                 PlayerChannelState state = getState(player.uniqueId());
                 if (state != null && channelId.equals(state.getActiveChannel())) {
@@ -329,6 +446,11 @@ public class ChatListener {
                 return;
             }
             ServerPlayer player = opt.get();
+            // Ignored mentioner: no title, no sound (/nc ignore)
+            com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
+            if (ignoreService != null && ignoreService.isIgnored(mentionedId, packet.getMentionerName())) {
+                return;
+            }
             mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
                 String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
                 String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
@@ -398,9 +520,20 @@ public class ChatListener {
         
         // Get message content
         String message = PlainTextComponentSerializer.plainText().serialize(event.message());
-        
+
+        // Channel-prefix routing (e.g. "!hi" -> global) before the
+        // active-channel send; escape/unknown-prefix cases fall through with
+        // the resolver-produced message (UX: prefix = /nc <channel> shorthand).
+        com.nova.chat.client.channel.ChannelPrefixResolver.Resolution resolution =
+                com.nova.chat.client.channel.ChannelPrefixResolver.resolve(
+                        config.getChannelPrefixes(), message,
+                        plugin.getKnownChannelRegistry() != null
+                                ? plugin.getKnownChannelRegistry().getAll() : null);
+        String targetChannel = resolution.isRedirect()
+                ? resolution.getChannelId() : state.getActiveChannel();
+
         // Forward message to backend
-        sendToChannel(player, state.getActiveChannel(), message);
+        sendToChannel(player, targetChannel, resolution.getMessage());
     }
     
     /**
@@ -441,6 +574,10 @@ public class ChatListener {
         ServerPlayer player = event.player();
         playerStates.remove(player.uniqueId());
         welcomedPlayers.remove(player.uniqueId());
+        // Reply-target cleanup for /nc r (private messages); thread-safe map.
+        if (plugin.getPrivateMessageService() != null) {
+            plugin.getPrivateMessageService().onPlayerQuit(player.uniqueId());
+        }
         // Clear the per-player locale registration so a UUID reuse never
         // inherits a stale locale.
         I18n.registerPlayerLocale(player.uniqueId(), null);

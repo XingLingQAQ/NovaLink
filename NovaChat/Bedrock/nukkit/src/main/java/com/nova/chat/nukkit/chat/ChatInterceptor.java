@@ -3,6 +3,8 @@ package com.nova.chat.nukkit.chat;
 import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.itemdisplay.ItemDisplayMessages;
+import com.nova.chat.client.itemdisplay.ItemDisplayTokens;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -20,9 +22,12 @@ import com.nova.chat.nukkit.config.NovaChatConfig;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
+import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.common.chat.MentionNotifier;
 
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -43,6 +48,9 @@ public class ChatInterceptor implements Listener {
     
     /** Message formatter for color codes and placeholders */
     private final MessageFormatter messageFormatter;
+
+    /** Shared [item]/[i] token detection + per-player cooldown (client-core). */
+    private final ItemDisplayTokens itemDisplayTokens = new ItemDisplayTokens();
     
     /** Player chat states indexed by UUID (shared store). */
     private final com.nova.chat.client.state.PlayerStateStore playerStates =
@@ -86,6 +94,103 @@ public class ChatInterceptor implements Listener {
         plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
         plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
         plugin.getNetworkClient().registerHandler(MentionPacket.class, this::handleMention);
+        plugin.getNetworkClient().registerHandler(TitlePacket.class, this::handleTitle);
+        plugin.getNetworkClient().registerHandler(ItemDisplayPacket.class, this::handleItemDisplay);
+        plugin.getNetworkClient().registerHandler(
+                com.nova.chat.common.protocol.packets.PrivateMessagePacket.class,
+                this::handlePrivateMessage);
+    }
+
+    /**
+     * Handles a completed (S→C) private message: the shared
+     * {@link com.nova.chat.client.privatemsg.PrivateMessageService} resolves
+     * which local players render which role (sender echo vs received line,
+     * receiver-side ignore filter, reply tracking). Hops to the Nukkit main
+     * thread before touching the player API, mirroring
+     * {@link #handleItemDisplay}.
+     */
+    private void handlePrivateMessage(com.nova.chat.common.protocol.packets.PrivateMessagePacket packet) {
+        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+            var deliveries = plugin.getPrivateMessageService().handleIncoming(
+                    packet,
+                    id -> findOnlinePlayer(id) != null,
+                    plugin.getIgnoreListService());
+            for (com.nova.chat.client.privatemsg.PrivateMessageService.Delivery delivery : deliveries) {
+                Player player = findOnlinePlayer(delivery.getPlayerId());
+                if (player != null) {
+                    player.sendMessage(messageFormatter.translateColorCodes(delivery.getLine()));
+                }
+            }
+        });
+    }
+
+    /** Finds an online player by UUID (Nukkit has no direct UUID lookup on Server). */
+    private Player findOnlinePlayer(UUID playerId) {
+        if (playerId == null) {
+            return null;
+        }
+        for (Player player : plugin.getServer().getOnlinePlayers().values()) {
+            if (playerId.equals(player.getUniqueId())) {
+                return player;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Handles an inbound item display packet ({@code [item]}/{@code [i]} play,
+     * packet 0x10) by rendering one chat line to every player whose active
+     * channel matches the packet channel.
+     *
+     * <p>Receive-side semantics are "receive = render", matching the Bedrock
+     * clients (pmmp/endstone/levilamina); the backend currently registers no
+     * route for this packet. Hops to the Nukkit main thread before touching
+     * the player API, mirroring {@link #handleTitle}. Bedrock clients have no
+     * hover component, so the line is plain (color-coded) text.
+     */
+    private void handleItemDisplay(ItemDisplayPacket packet) {
+        String channelId = packet.getChannelId();
+        String senderName = packet.getSenderName();
+        String itemJson = packet.getItemJson();
+        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+            for (Player player : plugin.getServer().getOnlinePlayers().values()) {
+                // Skip senders the viewer has ignored (/nc ignore)
+                com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
+                if (ignoreService != null && ignoreService.isIgnored(player.getUniqueId(), senderName)) {
+                    continue;
+                }
+                PlayerChannelState state = getState(player.getUniqueId());
+                if (state != null && channelId != null && channelId.equals(state.getActiveChannel())) {
+                    player.sendMessage(messageFormatter.translateColorCodes(
+                            ItemDisplayMessages.formatLine(player.getUniqueId(), senderName, itemJson)));
+                }
+            }
+        });
+    }
+
+    /**
+     * Handles title packets by displaying them to players whose active channel
+     * matches the packet channel (Requirements 15.1, 15.5). Hops to the Nukkit
+     * main thread before touching the player API, mirroring
+     * {@link #handleIncomingMessage}.
+     */
+    private void handleTitle(TitlePacket packet) {
+        String channelId = packet.getChannelId();
+        String title = packet.getTitle();
+        String subtitle = packet.getSubtitle();
+        int fadeIn = packet.getFadeIn();
+        int stay = packet.getStay();
+        int fadeOut = packet.getFadeOut();
+        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+            String renderedTitle = messageFormatter.translateColorCodes(title != null ? title : "");
+            String renderedSubtitle = messageFormatter.translateColorCodes(subtitle != null ? subtitle : "");
+            for (Player player : plugin.getServer().getOnlinePlayers().values()) {
+                PlayerChannelState state = getState(player.getUniqueId());
+                if (state != null && channelId != null && channelId.equals(state.getActiveChannel())) {
+                    player.sendTitle(renderedTitle, renderedSubtitle, fadeIn, stay, fadeOut);
+                }
+            }
+        });
     }
 
     /** Legacy color prefix applied to @name mentions when rendering chat (UX-DESIGN §4.2). */
@@ -99,6 +204,21 @@ public class ChatInterceptor implements Listener {
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         plugin.debug("Received channel action response: " + packet);
+        // Private-message rejections are unsolicited (no pending context in the
+        // shared tracker); the dispatcher would drop them, so route them to the
+        // PrivateMessageService for player-locale rendering instead.
+        if (com.nova.chat.client.privatemsg.PrivateMessageService.isPrivateMessageError(packet)) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () ->
+                    plugin.getPrivateMessageService()
+                            .renderError(packet, id -> findOnlinePlayer(id) != null)
+                            .ifPresent(delivery -> {
+                                Player player = findOnlinePlayer(delivery.getPlayerId());
+                                if (player != null) {
+                                    player.sendMessage(messageFormatter.translateColorCodes(delivery.getLine()));
+                                }
+                            }));
+            return;
+        }
         dispatcher.handle(packet);
     }
 
@@ -288,6 +408,11 @@ public class ChatInterceptor implements Listener {
         // Run on main thread for Nukkit API calls
         plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
             for (Player player : plugin.getServer().getOnlinePlayers().values()) {
+                // Skip senders the recipient has ignored (/nc ignore)
+                com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
+                if (ignoreService != null && ignoreService.isIgnored(player.getUniqueId(), senderName)) {
+                    continue;
+                }
                 // Check if player is in this channel
                 PlayerChannelState state = getState(player.getUniqueId());
                 if (state != null && channelId.equals(state.getActiveChannel())) {
@@ -321,6 +446,11 @@ public class ChatInterceptor implements Listener {
         plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
             Player player = plugin.getServer().getPlayer(mentionedId).orElse(null);
             if (player == null) {
+                return;
+            }
+            // Ignored mentioner: no title, no action bar (/nc ignore)
+            com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
+            if (ignoreService != null && ignoreService.isIgnored(mentionedId, packet.getMentionerName())) {
                 return;
             }
             mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
@@ -373,8 +503,19 @@ public class ChatInterceptor implements Listener {
             return;
         }
         
+        // Channel-prefix routing (e.g. "!hi" -> global) before the
+        // active-channel send; escape/unknown-prefix cases fall through with
+        // the resolver-produced message (UX: prefix = /nc <channel> shorthand).
+        com.nova.chat.client.channel.ChannelPrefixResolver.Resolution resolution =
+                com.nova.chat.client.channel.ChannelPrefixResolver.resolve(
+                        config.getChannelPrefixes(), event.getMessage(),
+                        plugin.getKnownChannelRegistry() != null
+                                ? plugin.getKnownChannelRegistry().getAll() : null);
+        String targetChannel = resolution.isRedirect()
+                ? resolution.getChannelId() : state.getActiveChannel();
+
         // Forward message to backend
-        sendToChannel(player, state.getActiveChannel(), event.getMessage());
+        sendToChannel(player, targetChannel, resolution.getMessage());
     }
     
     /**
@@ -408,6 +549,10 @@ public class ChatInterceptor implements Listener {
         UUID playerId = event.getPlayer().getUniqueId();
         playerStates.remove(playerId);
         welcomedPlayers.remove(playerId);
+        // Reply-target cleanup for /nc r (private messages); thread-safe map.
+        if (plugin.getPrivateMessageService() != null) {
+            plugin.getPrivateMessageService().onPlayerQuit(playerId);
+        }
         plugin.debug("Removed chat state for " + event.getPlayer().getName());
     }
     
@@ -439,6 +584,62 @@ public class ChatInterceptor implements Listener {
         
         plugin.getNetworkClient().sendPacket(packet);
         plugin.debug("Sent message to channel " + channelId + ": " + message);
+
+        // [item]/[i] display play: piggybacks on the outbound path (UX spec §4).
+        maybeSendItemDisplay(player, channelId, message);
+    }
+
+    /**
+     * Sends an {@link ItemDisplayPacket} when the outbound message carries an
+     * {@code [item]}/{@code [i]} token.
+     *
+     * <p>Semantics aligned with the Bedrock reference (pmmp/endstone):
+     * case-insensitive {@code \[(item|i)\]} token, the shared
+     * {@code novachat.feature.item} permission gate, and an empty hand still
+     * sends the air payload (renders the "Empty" placeholder). The per-player
+     * cooldown lives in the shared {@link ItemDisplayTokens}. Only display
+     * fields (id/count/custom name) are serialized — never full NBT.
+     */
+    private void maybeSendItemDisplay(Player player, String channelId, String message) {
+        try {
+            if (!ItemDisplayTokens.hasItemToken(message)) {
+                return;
+            }
+            if (!player.hasPermission(ItemDisplayTokens.PERMISSION_ITEM)) {
+                return; // without permission the token stays plain text
+            }
+            if (!itemDisplayTokens.tryAcquire(player.getUniqueId())) {
+                return; // rate-limited: token stays plain text
+            }
+            String itemJson = buildMainHandItemJson(player);
+            plugin.getNetworkClient().sendPacket(ItemDisplayTokens.buildPacket(
+                    player.getUniqueId(), player.getName(), channelId, itemJson));
+            plugin.debug("Sent item display to channel " + channelId + ": " + itemJson);
+        } catch (Exception e) {
+            plugin.debug("Failed to send item display: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Extracts the display fields (id / count / custom name) of the player's
+     * held item. Nukkit's {@code cn.nukkit.item.Item} exposes no namespaced id,
+     * so a {@code minecraft:*} id is derived from the vanilla display name
+     * (e.g. "Netherite Sword" → {@code minecraft:netherite_sword}), keeping the
+     * payload shape aligned with the protocol golden samples. Empty hand → air
+     * payload, matching the Bedrock renderers' "Empty" placeholder behavior.
+     */
+    private String buildMainHandItemJson(Player player) {
+        cn.nukkit.item.Item hand = player.getInventory() != null
+                ? player.getInventory().getItemInHand() : null;
+        if (hand == null || hand.isNull() || hand.getId() == 0 || hand.getCount() <= 0) {
+            return ItemDisplayTokens.emptyHandJson();
+        }
+        String baseName = hand.getName() != null ? hand.getName() : "";
+        String id = baseName.isBlank()
+                ? ""
+                : "minecraft:" + baseName.toLowerCase(Locale.ROOT).replace(' ', '_');
+        String customName = hand.hasCustomName() ? hand.getCustomName() : null;
+        return ItemDisplayTokens.buildItemJson(id, hand.getCount(), customName);
     }
     
     /**

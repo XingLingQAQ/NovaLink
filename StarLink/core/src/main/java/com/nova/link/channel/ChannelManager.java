@@ -1,5 +1,7 @@
 package com.nova.link.channel;
 
+import com.nova.link.database.DatabaseException;
+import com.nova.link.database.DatabaseProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -11,39 +13,71 @@ import java.util.stream.Collectors;
 /**
  * Manages channel lifecycle and provides channel lookup operations.
  * Thread-safe implementation using ConcurrentHashMap.
- * 
+ *
+ * <p><b>Persistence (P0-3):</b> when a {@link DatabaseProvider} is wired via
+ * {@link #setDatabaseProvider(DatabaseProvider)} (or the accepting constructor),
+ * every {@link #createChannel}, {@link #deleteChannel} and {@link #updateChannel}
+ * write-through to the database so the REST and TCP paths stay consistent and
+ * channels survive a backend restart. DB failures are logged at WARN and never
+ * propagate: the in-memory operation still succeeds (the channel remains
+ * available for this process lifetime even if the sink is temporarily down).
+ *
  * Requirements: 3.1, 3.4
  */
 public class ChannelManager {
 
     private static final Logger logger = LoggerFactory.getLogger(ChannelManager.class);
-    
+
     /** Characters used for generating private channel IDs */
     private static final String ID_CHARS = "0123456789ABCDEF";
-    
+
     /** Prefix for private channel IDs */
     private static final String PRIVATE_ID_PREFIX = "NC-";
-    
+
     /** Length of the random part of private channel IDs */
     private static final int PRIVATE_ID_LENGTH = 4;
-    
+
     /** All channels indexed by ID */
     private final Map<String, Channel> channels;
-    
+
     /** Channels indexed by client ID for fast lookup */
     private final Map<String, Set<String>> channelsByClient;
-    
+
     /** Global channels (no client association) */
     private final Set<String> globalChannels;
-    
+
     /** Random generator for ID generation */
     private final SecureRandom random;
+
+    /** Optional write-through persistence sink; null = memory-only (tests/legacy). */
+    private volatile DatabaseProvider databaseProvider;
 
     public ChannelManager() {
         this.channels = new ConcurrentHashMap<>();
         this.channelsByClient = new ConcurrentHashMap<>();
         this.globalChannels = ConcurrentHashMap.newKeySet();
         this.random = new SecureRandom();
+    }
+
+    /**
+     * Accepting constructor: wires the persistence sink so create/delete/update
+     * write-through to the database. Use {@link #ChannelManager()} + later
+     * {@link #setDatabaseProvider(DatabaseProvider)} when the provider is built
+     * after the manager (NovaLinkMain wiring order).
+     *
+     * @param databaseProvider nullable; when null, behaves memory-only
+     */
+    public ChannelManager(DatabaseProvider databaseProvider) {
+        this();
+        this.databaseProvider = databaseProvider;
+    }
+
+    /**
+     * Late-binds the database provider so create/delete/update persist.
+     * Called once at startup after the provider is initialized. Idempotent.
+     */
+    public void setDatabaseProvider(DatabaseProvider databaseProvider) {
+        this.databaseProvider = databaseProvider;
     }
 
     /**
@@ -73,6 +107,7 @@ public class ChannelManager {
         channel.setAllowedWorlds(config.getAllowedWorlds());
         channel.setPassword(config.getPassword());
         channel.setOwnerId(config.getOwnerId());
+        channel.setSlowModeSeconds(config.getSlowModeSeconds());
         
         // Register the channel
         channels.put(channelId, channel);
@@ -86,6 +121,7 @@ public class ChannelManager {
         }
         
         logger.info("Created channel: {} (scope={}, client={})", channelId, config.getScope(), config.getClientId());
+        persistChannel(channel);
         return channel;
     }
 
@@ -112,6 +148,7 @@ public class ChannelManager {
         }
         
         logger.info("Deleted channel: {}", channelId);
+        deletePersistedChannel(channelId);
         return true;
     }
 
@@ -241,6 +278,7 @@ public class ChannelManager {
         }
         logger.info("Updated channel: {} (displayName={}, maxCapacity={}, permission={})",
                 channelId, displayName, maxCapacity, permission);
+        persistChannel(channel);
         return channel;
     }
 
@@ -305,5 +343,44 @@ public class ChannelManager {
         channelsByClient.clear();
         globalChannels.clear();
         logger.info("Cleared all channels");
+    }
+
+    // ==================== Persistence helpers (P0-3) ====================
+
+    /**
+     * Write-through save of a channel to the database, if a provider is wired.
+     * Failures are logged at WARN and swallowed so the in-memory operation
+     * still succeeds — a temporarily-down sink must not break channel lifecycle.
+     */
+    private void persistChannel(Channel channel) {
+        DatabaseProvider db = this.databaseProvider;
+        if (db == null || channel == null) {
+            return;
+        }
+        try {
+            db.saveChannel(channel);
+        } catch (DatabaseException e) {
+            logger.warn("Failed to persist channel '{}': {}", channel.getId(), e.getMessage());
+        } catch (Exception e) {
+            logger.warn("Unexpected error persisting channel '{}': {}", channel.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * Write-through delete of a channel from the database, if a provider is wired.
+     * Failures are logged at WARN and swallowed (same rationale as {@link #persistChannel}).
+     */
+    private void deletePersistedChannel(String channelId) {
+        DatabaseProvider db = this.databaseProvider;
+        if (db == null || channelId == null) {
+            return;
+        }
+        try {
+            db.deleteChannel(channelId);
+        } catch (DatabaseException e) {
+            logger.warn("Failed to delete persisted channel '{}': {}", channelId, e.getMessage());
+        } catch (Exception e) {
+            logger.warn("Unexpected error deleting persisted channel '{}': {}", channelId, e.getMessage());
+        }
     }
 }

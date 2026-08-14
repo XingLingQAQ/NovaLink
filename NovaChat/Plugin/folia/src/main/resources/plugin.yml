@@ -12,9 +12,9 @@ website: https://github.com/nova/novachat
 # ==========================================
 # Supported Folia versions: 1.19+
 # Supported Minecraft versions: 1.19 - 1.21.11 / 26.2
-# Compile target API: Folia 1.21.11-R0.1-SNAPSHOT
+# Compile target API: Folia 26.1.2.build.8-stable (dev.folia:folia-api)
 # NovaProtocol version: 1
-# Minimum Java version: 17
+# Minimum Java version: 25 (Folia 26.x API requires JDK 25 at compile time)
 # ==========================================
 
 # ==========================================

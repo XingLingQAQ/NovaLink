@@ -1,0 +1,18 @@
+{
+  "name": "mention_typical",
+  "packet": "MentionPacket",
+  "packetId": 18,
+  "requestId": "00000000-0000-0000-0000-000000000040",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "@提及通知：双 UUID + 中文/emoji 预览 + 毫秒时间戳",
+  "fields": {
+    "mentionerId": "11223344-5566-7788-99aa-bbccddeeff00",
+    "mentionerName": "Steve",
+    "mentionedId": "fedcba98-7654-3210-fedc-ba9876543210",
+    "channelId": "global",
+    "messagePreview": "@Alex 快来看 👀",
+    "timestamp": 1755057699999
+  },
+  "frameHex": "5b1200000000000000000000000000000040112233445566778899aabbccddeeff00055374657665fedcba9876543210fedcba987654321006676c6f62616c1440416c657820e5bfabe69da5e79c8b20f09f918000000198a1973c9f"
+}

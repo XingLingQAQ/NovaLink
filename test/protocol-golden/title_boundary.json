@@ -1,0 +1,19 @@
+{
+  "name": "title_boundary",
+  "packet": "TitlePacket",
+  "packetId": 9,
+  "requestId": "00000000-0000-0000-0000-000000000039",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "Title 边界：空 channelId/subtitle、零时序、全零 senderId UUID",
+  "fields": {
+    "channelId": "",
+    "title": "紧急 🔥",
+    "subtitle": "",
+    "fadeIn": 0,
+    "stay": 1,
+    "fadeOut": 0,
+    "senderId": "00000000-0000-0000-0000-000000000000"
+  },
+  "frameHex": "3b0900000000000000000000000000000039000be7b4a7e680a520f09f94a50000000000000000010000000000000000000000000000000000000000"
+}

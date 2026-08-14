@@ -22,5 +22,48 @@ public enum AnnouncementType {
      * Scheduled announcement sent according to a Cron expression.
      * Supports periodic announcements.
      */
-    SCHEDULED
+    SCHEDULED;
+
+    /**
+     * Maps this type to its persistence / REST contract value.
+     * {@code SCHEDULED} is stored and exposed as {@code CRON};
+     * {@code IMMEDIATE} maps to {@code INSTANT} (never persisted).
+     *
+     * @return the external string value
+     */
+    public String dbValue() {
+        switch (this) {
+            case SCHEDULED:
+                return "CRON";
+            case JOIN:
+                return "JOIN";
+            case IMMEDIATE:
+            default:
+                return "INSTANT";
+        }
+    }
+
+    /**
+     * Parses an external (database or REST) type value.
+     *
+     * @param value the external value ("JOIN", "CRON", "INSTANT"; case-insensitive)
+     * @return the matching type, or null when unrecognized
+     */
+    public static AnnouncementType fromDbValue(String value) {
+        if (value == null) {
+            return null;
+        }
+        switch (value.toUpperCase(java.util.Locale.ROOT)) {
+            case "CRON":
+            case "SCHEDULED":
+                return SCHEDULED;
+            case "JOIN":
+                return JOIN;
+            case "INSTANT":
+            case "IMMEDIATE":
+                return IMMEDIATE;
+            default:
+                return null;
+        }
+    }
 }

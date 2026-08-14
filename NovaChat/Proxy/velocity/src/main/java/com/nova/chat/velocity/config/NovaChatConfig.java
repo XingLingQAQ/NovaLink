@@ -28,6 +28,7 @@ public class NovaChatConfig {
     private boolean replaceVanilla;
     private String defaultChannel;
     private String locale;
+    private Map<String, String> channelPrefixes;
 
     // Format settings
     private String prefix;
@@ -46,6 +47,7 @@ public class NovaChatConfig {
      */
     public NovaChatConfig(Path dataFolder) {
         this.channelFormats = new HashMap<>();
+        this.channelPrefixes = new HashMap<>();
         loadConfig(dataFolder);
     }
 
@@ -107,6 +109,21 @@ public class NovaChatConfig {
             this.replaceVanilla = chat.getBoolean("replace_vanilla", false);
             this.defaultChannel = chat.getString("default_channel", "local");
             this.locale = chat.getString("locale", "zh_CN");
+
+            // Channel prefixes (prefix -> channel id; empty map = feature disabled)
+            Toml prefixes = chat.getTable("channel-prefixes");
+            if (prefixes != null) {
+                for (Map.Entry<String, Object> entry : prefixes.entrySet()) {
+                    if (entry.getValue() instanceof String) {
+                        // toml4j keeps the quotes on quoted keys (e.g. "\"!\""); strip them.
+                        String key = stripQuotes(entry.getKey());
+                        String channelId = (String) entry.getValue();
+                        if (!key.isEmpty() && !channelId.isEmpty()) {
+                            channelPrefixes.put(key, channelId);
+                        }
+                    }
+                }
+            }
         } else {
             this.replaceVanilla = false;
             this.defaultChannel = "local";
@@ -178,6 +195,10 @@ public class NovaChatConfig {
             default_channel = "local"
             locale = "zh_CN"  # 默认语言（zh_CN / en_US）；玩家客户端语言优先
             
+            # 频道前缀（仅 replace_vanilla = true 时生效），如 "!" = "global"
+            [chat.channel-prefixes]
+            # "!" = "global"
+            
             [format]
             prefix = "&8[&bNovaChat&8]&r "
             error = "&c错误: {message}"
@@ -232,6 +253,25 @@ public class NovaChatConfig {
      */
     public String getLocale() {
         return locale;
+    }
+
+    /**
+     * @return the {@code chat.channel-prefixes} map (message prefix → channel id);
+     *         empty when the feature is disabled
+     */
+    public Map<String, String> getChannelPrefixes() {
+        return channelPrefixes;
+    }
+
+    /** Strips one layer of surrounding double quotes (toml4j quoted-key form). */
+    private static String stripQuotes(String key) {
+        if (key == null) {
+            return "";
+        }
+        if (key.length() >= 2 && key.startsWith("\"") && key.endsWith("\"")) {
+            return key.substring(1, key.length() - 1);
+        }
+        return key;
     }
 
     public String getPrefix() {

@@ -429,6 +429,39 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
         }
     }
 
+    @Override
+    public Map<UUID, List<MuteInfo>> getAllActiveMutes() throws DatabaseException {
+        Map<UUID, List<MuteInfo>> result = new HashMap<>();
+        String sql = "SELECT * FROM mutes WHERE expire_time <= 0 OR expire_time >= ?";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setLong(1, System.currentTimeMillis());
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    UUID playerId = parseUuid(rs.getString("player_id"));
+                    if (playerId == null) {
+                        continue;
+                    }
+                    MuteInfo mute = new MuteInfo(
+                            rs.getString("channel_id"),
+                            rs.getLong("expire_time"),
+                            rs.getString("reason"),
+                            parseUuid(rs.getString("operator_id")),
+                            rs.getLong("created_at")
+                    );
+                    result.computeIfAbsent(playerId, k -> new ArrayList<>()).add(mute);
+                }
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load active mutes", e);
+        }
+
+        return result;
+    }
+
     // ==================== Ban Operations ====================
 
     @Override
@@ -532,6 +565,39 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
         } catch (SQLException e) {
             throw new DatabaseException("Failed to cleanup expired bans", e);
         }
+    }
+
+    @Override
+    public Map<UUID, List<BanInfo>> getAllActiveBans() throws DatabaseException {
+        Map<UUID, List<BanInfo>> result = new HashMap<>();
+        String sql = "SELECT * FROM bans WHERE expire_time <= 0 OR expire_time >= ?";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setLong(1, System.currentTimeMillis());
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    UUID playerId = parseUuid(rs.getString("player_id"));
+                    if (playerId == null) {
+                        continue;
+                    }
+                    BanInfo ban = new BanInfo(
+                            rs.getString("channel_id"),
+                            rs.getLong("expire_time"),
+                            rs.getString("reason"),
+                            parseUuid(rs.getString("operator_id")),
+                            rs.getLong("created_at")
+                    );
+                    result.computeIfAbsent(playerId, k -> new ArrayList<>()).add(ban);
+                }
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load active bans", e);
+        }
+
+        return result;
     }
 
     // ==================== Notification Operations ====================
@@ -656,6 +722,25 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             return 0;
         } catch (SQLException e) {
             throw new DatabaseException("Failed to get unread notification count", e);
+        }
+    }
+
+    @Override
+    public int countNotifications(boolean unreadOnly) throws DatabaseException {
+        String sql = unreadOnly
+                ? "SELECT COUNT(*) FROM notifications WHERE read = FALSE"
+                : "SELECT COUNT(*) FROM notifications";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql);
+             ResultSet rs = stmt.executeQuery()) {
+
+            if (rs.next()) {
+                return rs.getInt(1);
+            }
+            return 0;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to count notifications", e);
         }
     }
 

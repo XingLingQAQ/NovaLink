@@ -18,6 +18,7 @@ use NovaChat\Protocol\MentionPacket;
 use NovaChat\Protocol\TitleMessagePacket;
 use pocketmine\event\Listener;
 use pocketmine\event\player\PlayerChatEvent;
+use pocketmine\event\player\PlayerJoinEvent;
 use pocketmine\event\player\PlayerQuitEvent;
 use pocketmine\player\Player;
 use pocketmine\utils\TextFormat;
@@ -213,7 +214,7 @@ class ChatHandler implements Listener {
     
     /**
      * Handles player quit events to clean up data.
-     * 
+     *
      * @param PlayerQuitEvent $event The quit event
      * @priority NORMAL
      */
@@ -221,6 +222,31 @@ class ChatHandler implements Listener {
         $uuid = $event->getPlayer()->getUniqueId()->toString();
         $this->clearPlayerData($uuid);
         $this->plugin->debug("Cleared player data for: " . $event->getPlayer()->getName());
+    }
+
+    /**
+     * Handles player join events to capture the client locale.
+     *
+     * PocketMine-MP's Player::getLocale() returns the language code the
+     * Bedrock client sent in its login packet (e.g. "zh_CN", "en_US",
+     * "ja_JP"). We register it with ChatHandler::setPlayerLocale() so
+     * downstream i18n lookups (kick/mute notices, mentions, ...) use the
+     * player's real locale instead of the hard default (zh_CN).
+     *
+     * @param PlayerJoinEvent $event The join event
+     * @priority NORMAL
+     */
+    public function onPlayerJoin(PlayerJoinEvent $event): void {
+        $player = $event->getPlayer();
+        $uuid = $player->getUniqueId()->toString();
+        $locale = $player->getLocale();
+        if ($locale !== "" && $locale !== "0") {
+            $this->setPlayerLocale($uuid, $locale);
+        } else {
+            // Default locale when the client sent no language code.
+            $this->setPlayerLocale($uuid, "zh_CN");
+        }
+        $this->plugin->debug("Captured locale for {$player->getName()}: {$this->getPlayerLocale($uuid)}");
     }
     
     /**

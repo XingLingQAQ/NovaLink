@@ -1,0 +1,25 @@
+# Start the NovaLink backend dedicated to the Velocity E2E workspace.
+param(
+  [string]$JavaHome = "C:\Users\XingLingQAQ\scoop\apps\temurin21-jdk\current",
+  [string]$ClassPathFile = "D:\Project\NovaLink\.e2e\artifacts\runs\novalink-core.classpath.txt",
+  [string]$Config = "D:\Project\NovaLink\.e2e\velocity\backend\novalink.yml",
+  [string]$WorkDir = "D:\Project\NovaLink\.e2e\velocity\backend\work"
+)
+
+$java = Join-Path $JavaHome "bin\java.exe"
+if (-not (Test-Path $java)) { throw "JDK 21 java.exe not found: $java" }
+if (-not (Test-Path $ClassPathFile)) { throw "Backend classpath file not found: $ClassPathFile" }
+if (-not (Test-Path $Config)) { throw "Backend config not found: $Config" }
+if (-not (Test-Path $WorkDir)) { New-Item -ItemType Directory -Force $WorkDir | Out-Null }
+
+$classPath = (Get-Content $ClassPathFile -Raw).Trim()
+if ([string]::IsNullOrWhiteSpace($classPath)) { throw "Backend classpath file is empty: $ClassPathFile" }
+$stdout = Join-Path $WorkDir "stdout.log"
+$stderr = Join-Path $WorkDir "stderr.log"
+$pidFile = Join-Path $WorkDir "backend.pid"
+Remove-Item $stdout, $stderr, $pidFile -ErrorAction SilentlyContinue
+$args = @("-cp", $classPath, "com.nova.link.NovaLinkMain", $Config)
+$proc = Start-Process -FilePath $java -ArgumentList $args -WorkingDirectory $WorkDir `
+  -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
+$proc.Id | Set-Content -Encoding ascii $pidFile
+Write-Output ("VELOCITY_BACKEND_PID=" + $proc.Id)

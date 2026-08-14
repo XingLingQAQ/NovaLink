@@ -76,12 +76,20 @@ public class MessageRouter {
         pipeline.setBanManager(banManager);
     }
 
+    public void setPermissionManager(com.nova.link.auth.PermissionManager permissionManager) {
+        pipeline.setPermissionManager(permissionManager);
+    }
+
     public void setSensitiveWordFilter(SensitiveWordFilter sensitiveWordFilter) {
         pipeline.setSensitiveWordFilter(sensitiveWordFilter);
     }
 
     public void setChatLogger(ChatLogger chatLogger) {
         pipeline.setChatLogger(chatLogger);
+    }
+
+    public void setMessageLogService(com.nova.link.log.MessageLogService messageLogService) {
+        pipeline.setMessageLogService(messageLogService);
     }
 
     /**

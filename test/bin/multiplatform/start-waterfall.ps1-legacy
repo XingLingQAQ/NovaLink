@@ -1,0 +1,23 @@
+# Start the isolated Waterfall proxy in the foreground.
+# This script is preparation only and is intentionally never invoked by setup.
+param(
+  [string]$JavaHome = "C:\Users\XingLingQAQ\scoop\apps\temurin21-jdk\current",
+  [string]$WaterfallDir = "D:\Project\NovaLink\.e2e\bungee",
+  [string]$Jar = "D:\Project\NovaLink\.e2e\artifacts\dist\waterfall-1.21-615.jar"
+)
+
+$java = Join-Path $JavaHome "bin\java.exe"
+if (-not (Test-Path $java)) { throw "JDK 21 java.exe not found: $java" }
+if (-not (Test-Path $Jar)) { throw "Waterfall jar not found: $Jar" }
+foreach ($required in @("config.yml", "waterfall.yml", "eula.txt", "plugins\NovaChat\config.yml", "plugins\NovaChat-Bungee.jar")) {
+  $path = Join-Path $WaterfallDir $required
+  if (-not (Test-Path $path)) { throw "Missing Waterfall E2E file: $path" }
+}
+
+Push-Location $WaterfallDir
+try {
+  & $java -Xms512M -Xmx1G -jar $Jar
+  exit $LASTEXITCODE
+} finally {
+  Pop-Location
+}

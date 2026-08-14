@@ -1,18 +1,20 @@
 # NovaChat Endstone Plugin Metadata
 # Compatible with Endstone plugin system
 #
-# Version Compatibility:
-#   Supported Endstone API: 0.5+
-#   Supported Minecraft Bedrock: 1.20+ through 26.30
+# Version Compatibility (verified 2026-08-12 via endstone.dev + PyPI):
+#   Supported Endstone API: 0.11 (runtime: endstone 0.11.8, current stable)
+#   Supported Minecraft Bedrock Dedicated Server: 1.26.40 (BDS paired with
+#     endstone 0.11.7+; endstone 0.11.8 fixes a crossbow-item crash introduced
+#     with BDS 1.26.40 support).
 #   NovaProtocol version: 1
-#   Minimum Python version: 3.10
+#   Minimum Python version: 3.10 (endstone 0.11.8 supports 3.10 through 3.14)
 
 [plugin]
 name = "NovaChat"
 version = "1.0.0"
 description = "Cross-server chat integration for Minecraft Bedrock Edition"
 main = "novachat_endstone.plugin:NovaChatPlugin"
-api = "0.5"
+api = "0.11"
 load = "POSTWORLD"
 
 [plugin.authors]

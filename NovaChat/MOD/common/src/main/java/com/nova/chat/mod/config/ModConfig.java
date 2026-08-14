@@ -183,11 +183,13 @@ public class ModConfig {
         private boolean replaceVanilla;
         private String defaultChannel;
         private String locale;
+        private Map<String, String> channelPrefixes;
 
         public ChatConfig() {
             this.replaceVanilla = false;
             this.defaultChannel = "local";
             this.locale = "zh_CN";
+            this.channelPrefixes = new HashMap<>();
         }
 
         public boolean isReplaceVanilla() {
@@ -216,6 +218,20 @@ public class ModConfig {
 
         public void setLocale(String locale) {
             this.locale = locale;
+        }
+
+        /**
+         * @return the channel-prefix routing map (prefix -> channel id) for the
+         *         shared {@code ChannelPrefixResolver}; empty map disables the
+         *         feature; never null
+         */
+        public Map<String, String> getChannelPrefixes() {
+            return channelPrefixes;
+        }
+
+        public void setChannelPrefixes(Map<String, String> channelPrefixes) {
+            this.channelPrefixes = channelPrefixes != null
+                    ? channelPrefixes : new HashMap<>();
         }
 
         /**

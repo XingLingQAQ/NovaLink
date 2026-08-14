@@ -1,0 +1,19 @@
+{
+  "name": "admin_action_spy_extra",
+  "packet": "AdminActionPacket",
+  "packetId": 11,
+  "requestId": "00000000-0000-0000-0000-00000000003b",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "管理员监听：SPY_START + 中文 target + 非空 extra（1 项）",
+  "fields": {
+    "action": 2,
+    "playerId": "fedcba98-7654-3210-fedc-ba9876543210",
+    "passwordHash": "",
+    "target": "vip-频道",
+    "extra": {
+      "reason": "举报核查 🔍"
+    }
+  },
+  "frameHex": "480b0000000000000000000000000000003b02fedcba9876543210fedcba9876543210000a7669702de9a291e981930106726561736f6e11e4b8bee68aa5e6a0b8e69fa520f09f948d"
+}

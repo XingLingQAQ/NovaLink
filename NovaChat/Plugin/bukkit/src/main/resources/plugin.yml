@@ -10,7 +10,7 @@ website: https://github.com/nova/novachat
 # Version Compatibility
 # ==========================================
 # Supported Minecraft versions: 1.8 - 1.21.11 / 26.2
-# Compile target API: Spigot/Paper 1.21.11-R0.1-SNAPSHOT
+# Compile target API: Spigot/Paper 26.2-R0.1-SNAPSHOT (calendar line)
 # NovaProtocol version: 1
 # Minimum Java version: 17 (legacy 1.8-1.16 builds may use Java 8)
 # ==========================================

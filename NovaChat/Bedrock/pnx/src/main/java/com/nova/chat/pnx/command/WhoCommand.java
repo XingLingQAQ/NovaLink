@@ -93,7 +93,7 @@ public class WhoCommand extends AbstractSubCommand {
             return args[0];
         }
         if (player != null) {
-            String active = plugin.getChatInterceptor().getOrCreateState(player).getCurrentChannel();
+            String active = plugin.getChatInterceptor().getOrCreateState(player).getActiveChannel();
             if (active != null && !active.isBlank()) {
                 return active;
             }

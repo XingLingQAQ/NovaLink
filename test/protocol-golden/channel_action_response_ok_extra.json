@@ -1,0 +1,20 @@
+{
+  "name": "channel_action_response_ok_extra",
+  "packet": "ChannelActionResponsePacket",
+  "packetId": 5,
+  "requestId": "00000000-0000-0000-0000-000000000032",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "频道操作成功响应：中文 message + 非空 extra（1 项）",
+  "fields": {
+    "success": true,
+    "action": 0,
+    "channelId": "global",
+    "errorCode": "",
+    "message": "已加入频道",
+    "extra": {
+      "memberCount": "17"
+    }
+  },
+  "frameHex": "3b0500000000000000000000000000000032010006676c6f62616c000fe5b7b2e58aa0e585a5e9a291e98193010b6d656d626572436f756e74023137"
+}

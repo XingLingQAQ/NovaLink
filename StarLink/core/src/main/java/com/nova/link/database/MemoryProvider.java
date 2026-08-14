@@ -18,12 +18,19 @@ public class MemoryProvider implements DatabaseProvider {
 
     private static final Logger logger = LoggerFactory.getLogger(MemoryProvider.class);
 
+    /** Bounded message history capacity — oldest entries are evicted beyond this. */
+    static final int MAX_MESSAGES = 100_000;
+
     private final Map<UUID, PlayerState> playerStates = new ConcurrentHashMap<>();
     private final Map<String, Channel> channels = new ConcurrentHashMap<>();
     private final Map<UUID, Map<String, MuteInfo>> mutes = new ConcurrentHashMap<>();
     private final Map<UUID, Map<String, BanInfo>> bans = new ConcurrentHashMap<>();
     private final List<Notification> notifications = Collections.synchronizedList(new ArrayList<>());
     private final Map<String, Invitation> invitations = new ConcurrentHashMap<>();
+    private final Deque<ChatMessageRecord> messages = new ArrayDeque<>();
+    private final Map<String, com.nova.link.announcement.Announcement> announcements = new ConcurrentHashMap<>();
+    private final Map<String, com.nova.link.api.Webhook> persistedWebhooks = new ConcurrentHashMap<>();
+    private long messageIdSeq = 0;
 
     private volatile boolean connected = false;
 
@@ -42,6 +49,11 @@ public class MemoryProvider implements DatabaseProvider {
         bans.clear();
         notifications.clear();
         invitations.clear();
+        synchronized (messages) {
+            messages.clear();
+        }
+        announcements.clear();
+        persistedWebhooks.clear();
         logger.info("MemoryProvider shutdown - all data cleared");
     }
 
@@ -189,6 +201,21 @@ public class MemoryProvider implements DatabaseProvider {
         return count;
     }
 
+    @Override
+    public Map<UUID, List<MuteInfo>> getAllActiveMutes() throws DatabaseException {
+        checkConnection();
+        Map<UUID, List<MuteInfo>> result = new HashMap<>();
+        long now = System.currentTimeMillis();
+        for (Map.Entry<UUID, Map<String, MuteInfo>> entry : mutes.entrySet()) {
+            for (MuteInfo mute : entry.getValue().values()) {
+                if (mute.getExpireTime() <= 0 || mute.getExpireTime() >= now) {
+                    result.computeIfAbsent(entry.getKey(), k -> new ArrayList<>()).add(mute);
+                }
+            }
+        }
+        return result;
+    }
+
     // ==================== Ban Operations ====================
 
     @Override
@@ -247,6 +274,21 @@ public class MemoryProvider implements DatabaseProvider {
             logger.debug("Cleaned up {} expired bans", count);
         }
         return count;
+    }
+
+    @Override
+    public Map<UUID, List<BanInfo>> getAllActiveBans() throws DatabaseException {
+        checkConnection();
+        Map<UUID, List<BanInfo>> result = new HashMap<>();
+        long now = System.currentTimeMillis();
+        for (Map.Entry<UUID, Map<String, BanInfo>> entry : bans.entrySet()) {
+            for (BanInfo ban : entry.getValue().values()) {
+                if (ban.getExpireTime() <= 0 || ban.getExpireTime() >= now) {
+                    result.computeIfAbsent(entry.getKey(), k -> new ArrayList<>()).add(ban);
+                }
+            }
+        }
+        return result;
     }
 
     // ==================== Notification Operations ====================
@@ -366,6 +408,15 @@ public class MemoryProvider implements DatabaseProvider {
         return count;
     }
 
+    @Override
+    public int countNotifications(boolean unreadOnly) throws DatabaseException {
+        checkConnection();
+        if (unreadOnly) {
+            return getUnreadCount();
+        }
+        return notifications.size();
+    }
+
     // ==================== Invitation Operations ====================
 
     @Override
@@ -423,6 +474,134 @@ public class MemoryProvider implements DatabaseProvider {
             logger.debug("Cleaned up {} expired invitations", count);
         }
         return count;
+    }
+
+    // ==================== Message History Operations (schema v5) ====================
+
+    @Override
+    public void saveMessage(ChatMessageRecord message) throws DatabaseException {
+        checkConnection();
+        if (message == null) {
+            throw new DatabaseException("Message cannot be null");
+        }
+        synchronized (messages) {
+            message.setId(++messageIdSeq);
+            messages.addLast(message);
+            while (messages.size() > MAX_MESSAGES) {
+                messages.removeFirst();
+            }
+        }
+        logger.debug("Saved message {} in channel {}", message.getId(), message.getChannelId());
+    }
+
+    @Override
+    public List<ChatMessageRecord> searchMessages(MessageFilter filter, int offset, int limit) throws DatabaseException {
+        checkConnection();
+        List<ChatMessageRecord> matched = filterMessagesNewestFirst(filter);
+        int start = Math.max(0, offset);
+        if (start >= matched.size() || limit <= 0) {
+            return new ArrayList<>();
+        }
+        int end = Math.min(matched.size(), start + limit);
+        return new ArrayList<>(matched.subList(start, end));
+    }
+
+    @Override
+    public int countMessages(MessageFilter filter) throws DatabaseException {
+        checkConnection();
+        return filterMessagesNewestFirst(filter).size();
+    }
+
+    @Override
+    public int cleanupMessagesBefore(long cutoffTimestamp) throws DatabaseException {
+        checkConnection();
+        int count = 0;
+        synchronized (messages) {
+            Iterator<ChatMessageRecord> iterator = messages.iterator();
+            while (iterator.hasNext()) {
+                if (iterator.next().getTimestamp() < cutoffTimestamp) {
+                    iterator.remove();
+                    count++;
+                }
+            }
+        }
+        if (count > 0) {
+            logger.debug("Cleaned up {} expired messages", count);
+        }
+        return count;
+    }
+
+    private List<ChatMessageRecord> filterMessagesNewestFirst(MessageFilter filter) {
+        List<ChatMessageRecord> matched = new ArrayList<>();
+        synchronized (messages) {
+            // Insertion order is oldest-first; iterate in reverse for newest-first.
+            Iterator<ChatMessageRecord> it = messages.descendingIterator();
+            while (it.hasNext()) {
+                ChatMessageRecord record = it.next();
+                if (filter.matches(record)) {
+                    matched.add(record);
+                }
+            }
+        }
+        return matched;
+    }
+
+    // ==================== Announcement Operations (schema v5) ====================
+
+    @Override
+    public void saveAnnouncement(com.nova.link.announcement.Announcement announcement) throws DatabaseException {
+        checkConnection();
+        if (announcement == null || announcement.getId() == null) {
+            throw new DatabaseException("Announcement and ID cannot be null");
+        }
+        announcements.put(announcement.getId(), announcement);
+        logger.debug("Saved announcement: {}", announcement.getId());
+    }
+
+    @Override
+    public void deleteAnnouncement(String announcementId) throws DatabaseException {
+        checkConnection();
+        if (announcementId != null) {
+            announcements.remove(announcementId);
+            logger.debug("Deleted announcement: {}", announcementId);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.announcement.Announcement> getAllPersistedAnnouncements() throws DatabaseException {
+        checkConnection();
+        List<com.nova.link.announcement.Announcement> result = new ArrayList<>(announcements.values());
+        result.sort(Comparator.comparingLong(com.nova.link.announcement.Announcement::getCreatedAt));
+        return result;
+    }
+
+    // ==================== Webhook Operations (schema v5) ====================
+
+    @Override
+    public void saveWebhook(com.nova.link.api.Webhook webhook) throws DatabaseException {
+        checkConnection();
+        if (webhook == null || webhook.getId() == null) {
+            throw new DatabaseException("Webhook and ID cannot be null");
+        }
+        persistedWebhooks.put(webhook.getId(), webhook);
+        logger.debug("Saved webhook: {}", webhook.getId());
+    }
+
+    @Override
+    public void deleteWebhook(String webhookId) throws DatabaseException {
+        checkConnection();
+        if (webhookId != null) {
+            persistedWebhooks.remove(webhookId);
+            logger.debug("Deleted webhook: {}", webhookId);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.api.Webhook> getAllPersistedWebhooks() throws DatabaseException {
+        checkConnection();
+        List<com.nova.link.api.Webhook> result = new ArrayList<>(persistedWebhooks.values());
+        result.sort(Comparator.comparingLong(com.nova.link.api.Webhook::getCreatedAt));
+        return result;
     }
 
     @Override

@@ -5,6 +5,9 @@
  * Requirements: 24.1, 24.4
  */
 
+import authService from './auth';
+import { getApiBaseUrl } from './api';
+
 // WebSocket connection states
 export const ConnectionState = {
   DISCONNECTED: 'disconnected',
@@ -48,6 +51,10 @@ class WebSocketService {
     this.pingTimeout = null;
     this.listeners = new Map();
     this.subscribedChannels = new Set();
+    // Channels awaiting re-subscription after an unexpected disconnect: the
+    // backend's new session has no subscription record, so they must be
+    // replayed once re-authenticated.
+    this.pendingResubscribeChannels = new Set();
     this.messageQueue = [];
   }
 
@@ -91,6 +98,7 @@ class WebSocketService {
           this._authenticate(token)
             .then(() => {
               this._startPingInterval();
+              this._resubscribePending();
               this._flushMessageQueue();
               resolve(true);
             })
@@ -117,6 +125,12 @@ class WebSocketService {
           this._stopPingInterval();
           
           if (this.state !== ConnectionState.DISCONNECTED) {
+            // Unexpected close: the backend session (and its subscription
+            // records) is gone. Save the channels for replay after reconnect
+            // and reset the local "already subscribed" state so subscribe()
+            // doesn't filter them out.
+            this.subscribedChannels.forEach((c) => this.pendingResubscribeChannels.add(c));
+            this.subscribedChannels.clear();
             this.state = ConnectionState.DISCONNECTED;
             this._notifyStateChange();
             this._attemptReconnect();
@@ -144,7 +158,19 @@ class WebSocketService {
     }
     
     this.subscribedChannels.clear();
+    this.pendingResubscribeChannels.clear();
     this._notifyStateChange();
+  }
+
+  /**
+   * Replay subscriptions saved from before an unexpected disconnect.
+   * Called after a successful (re)authentication.
+   */
+  _resubscribePending() {
+    if (this.pendingResubscribeChannels.size === 0) return;
+    const channels = Array.from(this.pendingResubscribeChannels);
+    this.pendingResubscribeChannels.clear();
+    this.subscribe(channels);
   }
 
   /**
@@ -339,12 +365,43 @@ class WebSocketService {
 
     console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts + 1})`);
 
-    setTimeout(() => {
+    setTimeout(async () => {
       this.reconnectAttempts++;
-      this.connect(this.url, this.token).catch(() => {
+      // Refresh the access token if it is expiring/expired, then always read
+      // the latest token from the auth store — the token captured at connect
+      // time may be long expired (access tokens live 24h).
+      await authService.maybeRefreshToken(getApiBaseUrl());
+      const token = authService.getToken() || this.token;
+      this.connect(this.url, token).catch(() => {
         // Will trigger another reconnect attempt via onclose
       });
     }, delay);
+  }
+
+  /**
+   * Manually reconnect after the ERROR terminal state (max retries reached).
+   * Resets the retry counter and connects with a fresh token.
+   * @returns {Promise<boolean>}
+   */
+  async manualReconnect() {
+    if (!this.url) {
+      throw new Error('No previous connection to restore');
+    }
+    this.reconnectAttempts = 0;
+    await authService.maybeRefreshToken(getApiBaseUrl());
+    const token = authService.getToken() || this.token;
+    return this.connect(this.url, token);
+  }
+
+  /**
+   * Request immediate on-demand snapshots from the backend instead of waiting
+   * for the 30s periodic broadcast. Responses arrive as server_status /
+   * player_update / channel_update messages (handlers already registered).
+   */
+  requestSnapshot() {
+    this._send({ type: 'get_clients', timestamp: Date.now() });
+    this._send({ type: 'get_players', timestamp: Date.now() });
+    this._send({ type: 'get_channels', timestamp: Date.now() });
   }
 
   /**

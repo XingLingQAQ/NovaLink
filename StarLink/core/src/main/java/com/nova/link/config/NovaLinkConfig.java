@@ -26,6 +26,10 @@ public class NovaLinkConfig {
     
     // Super admin list
     private List<SuperAdminCredentials> superAdmins;
+
+    // Web-panel login accounts (role ADMIN / VIEWER). Optional; when absent,
+    // only super-admins can log into the panel.
+    private List<PanelUserConfig> panelUsers;
     
     // Debug mode
     private boolean debug;
@@ -42,16 +46,21 @@ public class NovaLinkConfig {
     // Feature toggles (Settings page)
     private FeatureConfig features;
 
+    // Custom sensitive-word filter lists (panel-managed)
+    private FilterConfig filter;
+
     public NovaLinkConfig() {
         this.server = new ServerConfig();
         this.database = new DatabaseConfig();
         this.security = new SecurityConfig();
         this.superAdmins = new ArrayList<>();
+        this.panelUsers = new ArrayList<>();
         this.debug = false;
         this.globalChannels = new LinkedHashMap<>();
         this.templates = new LinkedHashMap<>();
         this.clients = new ArrayList<>();
         this.features = new FeatureConfig();
+        this.filter = new FilterConfig();
     }
 
     /**
@@ -126,6 +135,18 @@ public class NovaLinkConfig {
         this.superAdmins = superAdmins != null ? superAdmins : new ArrayList<>();
     }
 
+    /**
+     * @return the {@code panel-users} entries; never null (empty when the
+     *         section is absent — then only super-admins can log into the panel)
+     */
+    public List<PanelUserConfig> getPanelUsers() {
+        return panelUsers;
+    }
+
+    public void setPanelUsers(List<PanelUserConfig> panelUsers) {
+        this.panelUsers = panelUsers != null ? panelUsers : new ArrayList<>();
+    }
+
     public boolean isDebug() {
         return debug;
     }
@@ -166,6 +187,17 @@ public class NovaLinkConfig {
         this.features = features != null ? features : new FeatureConfig();
     }
 
+    /**
+     * @return the custom sensitive-word filter lists; never null
+     */
+    public FilterConfig getFilter() {
+        return filter;
+    }
+
+    public void setFilter(FilterConfig filter) {
+        this.filter = filter != null ? filter : new FilterConfig();
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -176,15 +208,17 @@ public class NovaLinkConfig {
                Objects.equals(database, that.database) &&
                Objects.equals(security, that.security) &&
                Objects.equals(superAdmins, that.superAdmins) &&
+               Objects.equals(panelUsers, that.panelUsers) &&
                Objects.equals(globalChannels, that.globalChannels) &&
                Objects.equals(templates, that.templates) &&
                Objects.equals(clients, that.clients) &&
-               Objects.equals(features, that.features);
+               Objects.equals(features, that.features) &&
+               Objects.equals(filter, that.filter);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(server, database, security, superAdmins, debug,
-                           globalChannels, templates, clients, features);
+        return Objects.hash(server, database, security, superAdmins, panelUsers, debug,
+                           globalChannels, templates, clients, features, filter);
     }
 }

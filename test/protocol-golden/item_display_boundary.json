@@ -1,0 +1,17 @@
+{
+  "name": "item_display_boundary",
+  "packet": "ItemDisplayPacket",
+  "packetId": 16,
+  "requestId": "00000000-0000-0000-0000-00000000003f",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "物品展示边界：全空字符串、全零 UUID、负 long（-1 → 8 个 0xFF 字节）",
+  "fields": {
+    "senderId": "00000000-0000-0000-0000-000000000000",
+    "senderName": "",
+    "channelId": "",
+    "itemJson": "",
+    "timestamp": -1
+  },
+  "frameHex": "2c100000000000000000000000000000003f00000000000000000000000000000000000000ffffffffffffffff"
+}

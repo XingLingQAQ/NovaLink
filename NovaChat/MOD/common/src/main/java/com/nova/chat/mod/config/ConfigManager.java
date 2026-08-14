@@ -157,6 +157,21 @@ public class ConfigManager {
             chat.setReplaceVanilla((Boolean) chatData.getOrDefault("replace_vanilla", false));
             chat.setDefaultChannel((String) chatData.getOrDefault("default_channel", "local"));
             chat.setLocale((String) chatData.getOrDefault("locale", "zh_CN"));
+            // Channel-prefix routing map (e.g. "!": global); empty = disabled.
+            Object prefixData = chatData.get("channel-prefixes");
+            if (prefixData instanceof Map) {
+                Map<String, String> prefixes = new HashMap<>();
+                for (Map.Entry<?, ?> entry : ((Map<?, ?>) prefixData).entrySet()) {
+                    if (entry.getKey() != null && entry.getValue() != null) {
+                        String prefix = String.valueOf(entry.getKey());
+                        String channelId = String.valueOf(entry.getValue());
+                        if (!prefix.isEmpty() && !channelId.isBlank()) {
+                            prefixes.put(prefix, channelId);
+                        }
+                    }
+                }
+                chat.setChannelPrefixes(prefixes);
+            }
             config.setChat(chat);
         }
         
@@ -195,6 +210,7 @@ public class ConfigManager {
         chat.put("replace_vanilla", config.getChat().isReplaceVanilla());
         chat.put("default_channel", config.getChat().getDefaultChannel());
         chat.put("locale", config.getChat().getLocale());
+        chat.put("channel-prefixes", config.getChat().getChannelPrefixes());
         data.put("chat", chat);
         
         // Format

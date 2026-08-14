@@ -1,0 +1,25 @@
+# Start the isolated Purpur downstream used by Velocity.
+param(
+  [string]$JavaHome = "C:\Users\XingLingQAQ\scoop\apps\temurin21-jdk\current",
+  [string]$PaperDir = "D:\Project\NovaLink\.e2e\velocity\paper",
+  [string]$Jar = "D:\Project\NovaLink\.e2e\artifacts\dist\purpur-1.21.8-2497.jar",
+  [int]$MemoryMb = 1024
+)
+
+$java = Join-Path $JavaHome "bin\java.exe"
+if (-not (Test-Path $java)) { throw "JDK 21 java.exe not found: $java" }
+if (-not (Test-Path $Jar)) { throw "Purpur jar not found: $Jar" }
+foreach ($required in @("eula.txt", "server.properties")) {
+  $path = Join-Path $PaperDir $required
+  if (-not (Test-Path $path)) { throw "Missing downstream E2E file: $path" }
+}
+
+$stdout = Join-Path $PaperDir "purpur.stdout.log"
+$stderr = Join-Path $PaperDir "purpur.stderr.log"
+$pidFile = Join-Path $PaperDir "purpur.pid"
+Remove-Item $stdout, $stderr, $pidFile -ErrorAction SilentlyContinue
+$args = @("-Xms${MemoryMb}M", "-Xmx${MemoryMb}M", "-jar", $Jar, "nogui")
+$proc = Start-Process -FilePath $java -ArgumentList $args -WorkingDirectory $PaperDir `
+  -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
+$proc.Id | Set-Content -Encoding ascii $pidFile
+Write-Output ("VELOCITY_PURPUR_PID=" + $proc.Id)

@@ -17,6 +17,8 @@ public class ServerChannelConfig {
     private String permission;
     private Integer maxCapacity;
     private List<String> allowedWorlds;
+    /** Minimum seconds between two messages from the same player (0 = disabled). */
+    private int slowModeSeconds = 0;
 
     public ServerChannelConfig() {}
 
@@ -68,6 +70,14 @@ public class ServerChannelConfig {
         this.allowedWorlds = allowedWorlds != null ? new ArrayList<>(allowedWorlds) : null;
     }
 
+    public int getSlowModeSeconds() {
+        return slowModeSeconds;
+    }
+
+    public void setSlowModeSeconds(int slowModeSeconds) {
+        this.slowModeSeconds = Math.max(0, slowModeSeconds);
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -78,11 +88,13 @@ public class ServerChannelConfig {
                Objects.equals(scope, that.scope) &&
                Objects.equals(permission, that.permission) &&
                Objects.equals(maxCapacity, that.maxCapacity) &&
-               Objects.equals(allowedWorlds, that.allowedWorlds);
+               Objects.equals(allowedWorlds, that.allowedWorlds) &&
+               slowModeSeconds == that.slowModeSeconds;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(useTemplate, displayName, scope, permission, maxCapacity, allowedWorlds);
+        return Objects.hash(useTemplate, displayName, scope, permission, maxCapacity, allowedWorlds,
+                slowModeSeconds);
     }
 }

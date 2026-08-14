@@ -321,6 +321,9 @@ std::unique_ptr<Packet> NetworkClient::decodePacket(PacketBuffer& buffer) {
         case PacketIds::MENTION:
             packet = std::make_unique<MentionPacket>();
             break;
+        case PacketIds::PRIVATE_MESSAGE:
+            packet = std::make_unique<PrivateMessagePacket>();
+            break;
         default:
             return nullptr;
     }

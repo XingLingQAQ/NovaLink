@@ -51,6 +51,7 @@
   "chat.action.success": "Action succeeded",
   "chat.action.failed": "Action failed",
   "chat.action.leave_simple": "Left channel &e{0}",
+  "chat.action.already_default": "You are already in the default channel",
 
   "chat.list.empty": "No known channels yet, waiting for the server to send the channel list",
 
@@ -85,6 +86,8 @@
   "error.NC-410.suggestion": "Contact the channel admin for a new invite code",
   "error.NC-411.message": "Invite code already used",
   "error.NC-411.suggestion": "Each invite code can only be used once",
+  "error.NC-420.message": "Protocol version mismatch",
+  "error.NC-420.suggestion": "Please upgrade your NovaChat client to a protocol v2 build",
   "error.NC-429.message": "Too many requests",
   "error.NC-429.suggestion": "Please try again later",
   "error.NC-430.message": "Invalid format",

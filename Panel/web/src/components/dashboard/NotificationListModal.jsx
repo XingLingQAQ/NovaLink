@@ -17,6 +17,8 @@ import { cn } from '../../lib/cn';
 import { api } from '../../services/api';
 import { adaptNotificationItem } from '../../utils/adapters';
 
+const PAGE_SIZE = 20;
+
 /**
  * Notification List Modal — full paginated notification history.
  *
@@ -38,7 +40,7 @@ const NotificationListModal = ({
   const { t } = useTranslation();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(0);
+  const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -46,7 +48,6 @@ const NotificationListModal = ({
   const [busyId, setBusyId] = useState(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [actionPending, setActionPending] = useState(false);
-  const PAGE_SIZE = 20;
 
   // Fetch a page of notifications. When append=true, items are appended (Load
   // more); otherwise the list is replaced (initial load / filter change).
@@ -60,21 +61,21 @@ const NotificationListModal = ({
       setItems((prev) => append ? [...prev, ...list] : list);
       setTotal(totalCount);
       setUnreadCount(unread);
-      setHasMore(list.length >= PAGE_SIZE && (append ? items.length + list.length : list.length) < totalCount);
+      // Pages are 1-based and the backend total is the real row count.
+      setHasMore((pageToLoad * PAGE_SIZE) < totalCount);
       if (onUnreadCountChange) onUnreadCountChange(unread);
     } catch (err) {
       if (onToast) onToast(t('notifications.toast_fetch_failed', { error: err.message }), 'error');
     } finally {
       setLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterUnreadOnly, onToast, onUnreadCountChange, t]);
 
   // Initial load whenever the modal opens or the filter toggles.
   useEffect(() => {
     if (!isOpen) return;
-    setPage(0);
-    fetchPage(0, false);
+    setPage(1);
+    fetchPage(1, false);
   }, [isOpen, filterUnreadOnly, fetchPage]);
 
   // Mark a single notification as read (click on an unread row).

@@ -57,6 +57,10 @@ public class NovaChatCommand extends Command implements CommandExecutor {
         subCommands.put("list", new ListCommand(plugin));
         subCommands.put("who", new WhoCommand(plugin));
         subCommands.put("toggle", new ToggleCommand(plugin));
+        subCommands.put("ignore", new IgnoreCommand(plugin));
+        subCommands.put("unignore", new UnignoreCommand(plugin));
+        subCommands.put("msg", new MsgCommand(plugin));
+        subCommands.put("r", new ReplyCommand(plugin));
         subCommands.put("channel", new ChannelCommand(plugin)); // Opens Form GUI
         
         // Admin commands

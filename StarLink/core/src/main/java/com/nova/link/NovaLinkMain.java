@@ -25,14 +25,19 @@ import com.nova.link.filter.SensitiveWordFilter;
 import com.nova.link.i18n.I18n;
 import com.nova.link.i18n.LocaleResolver;
 import com.nova.link.log.ChatLogger;
+import com.nova.link.log.MessageLogService;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.network.NettyServer;
 import com.nova.link.network.ServerNetworkHandler;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.AdminActionHandler;
 import com.nova.link.network.ChannelActionHandler;
+import com.nova.link.network.ItemDisplayHandler;
+import com.nova.link.network.PrivateMessageHandler;
+import com.nova.link.network.RateLimiter;
 import com.nova.link.notification.NotificationStore;
 import com.nova.link.spy.SpyManager;
+import com.nova.link.websocket.JwtSecretResolver;
 import com.nova.link.websocket.WebSocketGateway;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -187,6 +192,26 @@ public class NovaLinkMain {
             }
         }
 
+        // Register panel-users (web-panel ADMIN/VIEWER accounts). These live in
+        // a credential pool separate from game-server clients: game-server
+        // credentials can never log into the web panel.
+        if (config.getPanelUsers() != null) {
+            for (com.nova.link.config.PanelUserConfig panelUser : config.getPanelUsers()) {
+                try {
+                    PanelRole role = PanelRole.fromString(panelUser.getRole());
+                    if (role == null || role == PanelRole.SUPER_ADMIN) {
+                        logger.warn("Skipping panel-user '{}' with invalid role '{}'",
+                                panelUser.getUsername(), panelUser.getRole());
+                        continue;
+                    }
+                    authManager.registerPanelUser(new PanelUserCredentials(
+                            panelUser.getUsername(), panelUser.getPasswordHash(), role));
+                } catch (Exception e) {
+                    logger.warn("Failed to register panel user: {}", panelUser, e);
+                }
+            }
+        }
+
         // Initialize database
         DatabaseProvider databaseProvider = createDatabaseProvider(config);
         try {
@@ -200,12 +225,20 @@ public class NovaLinkMain {
         ChannelManager channelManager = new ChannelManager();
         PlayerStateManager playerStateManager = new PlayerStateManager(databaseProvider);
         WebhookManager webhookManager = new WebhookManager();
+        // Webhooks persist in the schema v5 webhooks table: write-through on
+        // create/update/delete, restored here so they survive restarts.
+        webhookManager.setDatabaseProvider(databaseProvider);
+        webhookManager.loadPersistedWebhooks();
         PrivateChannelManager privateChannelManager = new PrivateChannelManager(channelManager);
         InvitationManager invitationManager = new InvitationManager(databaseProvider, channelManager);
         MuteManager muteManager = new MuteManager(databaseProvider, permissionManager, channelManager);
         muteManager.initialize();
         BanManager banManager = new BanManager(databaseProvider, permissionManager, channelManager);
         banManager.initialize();
+        // Warm the moderation caches from the database so persisted mutes/bans
+        // survive a backend restart (isMuted/isBanned only consult the cache).
+        muteManager.loadAllMutes();
+        banManager.loadAllBans();
         SensitiveWordFilter sensitiveWordFilter = new SensitiveWordFilter();
         ChatLogger chatLogger = new ChatLogger();
 
@@ -215,6 +248,7 @@ public class NovaLinkMain {
         // across all connected game servers. notificationStore is wired later
         // (after it is created); the scheduler is started here.
         AnnouncementManager announcementManager = new AnnouncementManager(permissionManager, channelManager);
+        announcementManager.setDatabaseProvider(databaseProvider);
         announcementManager.initialize();
 
         loadConfiguredChannels(channelManager, config);
@@ -230,6 +264,34 @@ public class NovaLinkMain {
         messageRouter.setSensitiveWordFilter(sensitiveWordFilter);
         messageRouter.setChatLogger(chatLogger);
         messageRouter.setPermissionChecker(clientPermissionRegistry.asChecker());
+        // Slow-mode admin exemption + bounded timestamp map cleanup.
+        messageRouter.setPermissionManager(permissionManager);
+        messageRouter.getPipeline().getSlowModeTracker().startCleanupTask();
+
+        // Per-connection token bucket shared by ChatMessage and ItemDisplay
+        // ingress (server.rate-limit; messages-per-second=0 disables it).
+        RateLimiter rateLimiter = new RateLimiter(
+                config.getServer().getRateLimitMessagesPerSecond(),
+                config.getServer().getRateLimitBurst());
+
+        // Message persistence: async write-behind + hourly retention cleanup.
+        MessageLogService messageLogService = new MessageLogService(databaseProvider,
+                config.getFeatures() != null ? config.getFeatures().getMessageLogRetentionDays() : 30);
+        messageLogService.initialize();
+        messageRouter.setMessageLogService(messageLogService);
+
+        // Apply FeatureConfig switches and the custom filter lists at startup
+        // (the reload listener below only covers subsequent config changes).
+        // privateMessagesEnabled is a live flag consumed by PrivateMessageHandler.
+        java.util.concurrent.atomic.AtomicBoolean privateMessagesEnabled =
+                new java.util.concurrent.atomic.AtomicBoolean(true);
+        if (config.getFeatures() != null) {
+            sensitiveWordFilter.setEnabled(config.getFeatures().isFilterEnabled());
+            messageRouter.getPipeline().setCrossServerChatEnabled(config.getFeatures().isCrossServerChatEnabled());
+            messageRouter.getPipeline().setMessageLogEnabled(config.getFeatures().isMessageLogEnabled());
+            privateMessagesEnabled.set(config.getFeatures().isPrivateMessagesEnabled());
+        }
+        applyFilterConfig(sensitiveWordFilter, config.getFilter());
 
         // Clear grants when a game server disconnects so reconnect gets a fresh bootstrap.
         // The full listener (permission cleanup + disconnect notification) is wired after
@@ -246,7 +308,11 @@ public class NovaLinkMain {
                 sensitiveWordFilter.setEnabled(newConfig.getFeatures().isFilterEnabled());
                 messageRouter.getPipeline().setCrossServerChatEnabled(newConfig.getFeatures().isCrossServerChatEnabled());
                 messageRouter.getPipeline().setMessageLogEnabled(newConfig.getFeatures().isMessageLogEnabled());
+                messageLogService.setRetentionDays(newConfig.getFeatures().getMessageLogRetentionDays());
+                privateMessagesEnabled.set(newConfig.getFeatures().isPrivateMessagesEnabled());
             }
+            // Re-apply the custom sensitive-word lists from the filter section.
+            applyFilterConfig(sensitiveWordFilter, newConfig.getFilter());
         });
 
         SpyManager spyManager = new SpyManager(permissionManager, channelManager, networkHandler);
@@ -270,11 +336,12 @@ public class NovaLinkMain {
                 banManager
         );
 
-        // Servers
+        // Servers (idle timeout: server.idle-timeout-seconds, 0 = disabled)
         NettyServer tcpServer = new NettyServer(
                 config.getServer().getBindAddress(),
                 config.getServer().getPort(),
                 workerThreads,
+                config.getServer().getIdleTimeoutSeconds(),
                 networkHandler
         );
 
@@ -317,12 +384,20 @@ public class NovaLinkMain {
             messageRouter.routeMessage(channelId, ConsoleSentinel.CONSOLE_SENTINEL,
                     ConsoleSentinel.CONSOLE_NAME, content, placeholders);
         });
+        // Restore persisted JOIN/CRON announcements (join index + cron
+        // scheduling) now that the sender callback is wired.
+        announcementManager.loadPersistedAnnouncements();
 
         // Disconnect listener: clear permission grants AND surface a panel
         // notification. Wired here (after notificationStore is created) so the
         // notification side-channel is available. The permission cleanup is the
         // original behavior; the notification is the new trigger.
         networkHandler.setDisconnectListener(connection -> {
+            // Drop the connection's token bucket so the limiter map stays
+            // bounded by the number of live connections.
+            if (connection != null) {
+                rateLimiter.remove(connection.getConnectionId());
+            }
             String clientId = connection != null ? connection.getClientId() : null;
             if (clientId != null && !clientId.isBlank()) {
                 clientPermissionRegistry.clearClient(clientId);
@@ -340,10 +415,24 @@ public class NovaLinkMain {
             }
         });
 
+        // Resolve the effective JWT secret: the default placeholder secret is
+        // replaced by a generated 256-bit secret persisted to data/.jwt-secret.
+        String jwtSecret = JwtSecretResolver.resolve(
+                config.getServer().getSecretKey(),
+                workDir.toPath().resolve("data").resolve(".jwt-secret"));
+
+        // CORS origin whitelist for the panel HTTP endpoints. Default ["*"]
+        // keeps backward compatibility but should be tightened in production.
+        List<String> corsAllowedOrigins = config.getServer().getCorsAllowedOrigins();
+        if (corsAllowedOrigins.contains("*")) {
+            logger.warn("CORS allows all origins (server.cors-allowed-origins: [\"*\"]). "
+                    + "Configure the exact panel origin(s) to tighten security.");
+        }
+
         WebSocketGateway webSocketGateway = new WebSocketGateway(
                 config.getServer().getBindAddress(),
                 config.getServer().getWebsocketPort(),
-                config.getServer().getSecretKey(),
+                jwtSecret,
                 authManager,
                 channelManager,
                 playerStateManager,
@@ -355,11 +444,28 @@ public class NovaLinkMain {
                 invitationManager,
                 configManager,
                 consoleCommandHandler,
-                notificationStore
+                notificationStore,
+                corsAllowedOrigins
         );
         // Back-link the gateway so notifications broadcast live.
         notificationStore.setWebSocketGateway(webSocketGateway);
         messageRouter.setWebSocketBroadcaster(webSocketGateway.createBroadcaster());
+        // Inject the setter-based REST dependencies (kept out of the long
+        // RestApiHandler constructor): announcements + message history.
+        webSocketGateway.getRestApiHandler().setAnnouncementManager(announcementManager);
+        webSocketGateway.getRestApiHandler().setMessageLogService(messageLogService);
+        // Offload REST + auth business logic (JDBC queries, BCrypt hashing)
+        // from the Netty IO threads to a dedicated fixed pool
+        // (server.rest-worker-threads); a saturated pool answers 503.
+        java.util.concurrent.ExecutorService restWorkerPool =
+                com.nova.link.api.RestApiHandler.newWorkerPool(config.getServer().getRestWorkerThreads());
+        webSocketGateway.getRestApiHandler().setWorkerExecutor(restWorkerPool);
+        webSocketGateway.getHttpAuthHandler().setWorkerExecutor(restWorkerPool);
+        // Push player_update to panel sessions when a player joins/leaves a
+        // channel, so presence changes show up without polling get_players.
+        channelActionHandler.setPlayerUpdateBroadcaster(webSocketGateway::broadcastPlayerUpdate);
+        // Wire webhook delivery for player.join / player.leave events (P0-4).
+        channelActionHandler.setWebhookManager(webhookManager);
 
         registerPacketHandlers(
                 networkHandler,
@@ -372,7 +478,12 @@ public class NovaLinkMain {
                 clientPermissionRegistry,
                 clientPermissionBootstrap,
                 playerStateManager,
-                notificationStore
+                notificationStore,
+                muteManager,
+                banManager,
+                rateLimiter,
+                privateMessagesEnabled::get,
+                chatLogger
         );
 
         CompletableFuture<Void> startFuture = CompletableFuture.allOf(
@@ -391,6 +502,8 @@ public class NovaLinkMain {
                     privateChannelManager, invitationManager, muteManager, banManager,
                     notificationStore, announcementManager, sensitiveWordFilter,
                     networkHandler, messageRouter, spyManager, tcpServer, webSocketGateway);
+            this.context.setMessageLogService(messageLogService);
+            this.context.setRestWorkerPool(restWorkerPool);
             safeShutdown();
             return;
         }
@@ -406,6 +519,8 @@ public class NovaLinkMain {
                 privateChannelManager, invitationManager, muteManager, banManager,
                 notificationStore, announcementManager, sensitiveWordFilter,
                 networkHandler, messageRouter, spyManager, tcpServer, webSocketGateway);
+        this.context.setMessageLogService(messageLogService);
+        this.context.setRestWorkerPool(restWorkerPool);
 
         // JVM shutdown hook: Ctrl+C / SIGTERM -> same safeShutdown the 'stop'
         // console command uses. Signals the main thread via the latch.
@@ -438,6 +553,28 @@ public class NovaLinkMain {
         // Run on the main thread. The loop blocks on readline until stop/EOF.
         console.run();
         logger.info("Console loop exited; NovaLink main thread returning.");
+    }
+
+    /**
+     * Applies the {@code filter} config section (custom words + regex
+     * patterns) to the runtime filter. Invalid patterns are skipped one by one
+     * with a warning so a single bad entry cannot disable the whole list.
+     */
+    private static void applyFilterConfig(SensitiveWordFilter filter, FilterConfig filterConfig) {
+        if (filter == null || filterConfig == null) {
+            return;
+        }
+        filter.setCustomWords(filterConfig.getWords());
+        List<String> validPatterns = new ArrayList<>();
+        for (String pattern : filterConfig.getPatterns()) {
+            try {
+                java.util.regex.Pattern.compile(pattern);
+                validPatterns.add(pattern);
+            } catch (java.util.regex.PatternSyntaxException e) {
+                logger.warn("Skipping invalid filter pattern '{}': {}", pattern, e.getMessage());
+            }
+        }
+        filter.setCustomPatterns(validPatterns);
     }
 
     /**
@@ -596,6 +733,7 @@ public class NovaLinkMain {
                             .scope(ChannelScope.GLOBAL)
                             .permission(cfg.getPermission())
                             .maxCapacity(cfg.getMaxCapacity())
+                            .slowModeSeconds(cfg.getSlowModeSeconds())
                             .build());
                 } catch (Exception e) {
                     logger.warn("Failed to create global channel '{}': {}", channelId, e.getMessage());
@@ -667,6 +805,7 @@ public class NovaLinkMain {
                             .permission(permission)
                             .maxCapacity(maxCapacity)
                             .allowedWorlds(allowedWorlds)
+                            .slowModeSeconds(channelCfg.getSlowModeSeconds())
                             .build());
                 } catch (Exception e) {
                     logger.warn("Failed to create channel '{}' for client '{}': {}", channelId, clientId, e.getMessage());
@@ -695,6 +834,7 @@ public class NovaLinkMain {
                         .scope(ChannelScope.GLOBAL)
                         .permission(cfg.getPermission())
                         .maxCapacity(cfg.getMaxCapacity())
+                        .slowModeSeconds(cfg.getSlowModeSeconds())
                         .build();
 
                 upsertConfiguredChannel(channelManager, desired);
@@ -762,6 +902,7 @@ public class NovaLinkMain {
                         .permission(permission)
                         .maxCapacity(maxCapacity)
                         .allowedWorlds(allowedWorlds)
+                        .slowModeSeconds(channelCfg.getSlowModeSeconds())
                         .build();
 
                 upsertConfiguredChannel(channelManager, desired);
@@ -804,6 +945,7 @@ public class NovaLinkMain {
         existing.setPermission(desired.getPermission());
         existing.setMaxCapacity(desired.getMaxCapacity());
         existing.setAllowedWorlds(desired.getAllowedWorlds());
+        existing.setSlowModeSeconds(desired.getSlowModeSeconds());
     }
 
     private static void loadPersistedChannels(ChannelManager channelManager, DatabaseProvider databaseProvider) {
@@ -849,7 +991,12 @@ public class NovaLinkMain {
                                                ClientPermissionRegistry clientPermissionRegistry,
                                                Map<String, List<String>> clientPermissionBootstrap,
                                                PlayerStateManager playerStateManager,
-                                               NotificationStore notificationStore) {
+                                               NotificationStore notificationStore,
+                                               MuteManager muteManager,
+                                               BanManager banManager,
+                                               RateLimiter rateLimiter,
+                                               java.util.function.BooleanSupplier privateMessagesEnabled,
+                                               ChatLogger chatLogger) {
         // Handshake handler (auth + version check)
         networkHandler.registerHandler(HandshakePacket.class, (connection, packet) -> {
             int clientProtocolVersion = packet.getProtocolVersion();
@@ -929,10 +1076,60 @@ public class NovaLinkMain {
                 return;
             }
 
+            // Per-connection token bucket: excess messages are dropped before
+            // touching the pipeline; the sender gets a throttled error response
+            // (at most one per 5s) so a flood does not amplify into a response flood.
+            if (rateLimiter != null && rateLimiter.isEnabled()
+                    && !rateLimiter.tryAcquire(connection.getConnectionId())) {
+                if (rateLimiter.shouldNotify(connection.getConnectionId())) {
+                    logger.warn("Rate limit exceeded for client {} (chat message dropped)",
+                            connection.getClientId());
+                    sendThrottleError(connection, packet.getRequestId(), packet.getChannelId(),
+                            "NC-429", I18n.tr("network.error.rate_limited"), "rate_limit");
+                }
+                return;
+            }
+
             // Stamp the authenticated client id so the pipeline can enforce SERVER/PRIVATE isolation.
             packet.setClientId(connection.getClientId());
-            messageRouter.routeMessage(packet);
+            com.nova.link.channel.MessagePipelineResult result =
+                    messageRouter.getPipeline().process(packet);
+
+            // Slow-mode violations answer the sender with the remaining wait
+            // time; other drop reasons keep their existing (silent) behavior.
+            if (!result.isDelivered()
+                    && result.getDropReason() == com.nova.link.channel.MessagePipelineResult.DropReason.SLOW_MODE) {
+                sendThrottleError(connection, packet.getRequestId(), packet.getChannelId(),
+                        "NC-429",
+                        I18n.tr("network.error.slow_mode", result.getSlowModeRemainingSeconds()),
+                        "slow_mode");
+            }
         });
+
+        // Item display handler (0x10) — channel-routed fan-out sharing the
+        // chat token bucket. The panel does not implement item display, so no
+        // WS mirroring is wired.
+        networkHandler.registerHandler(ItemDisplayPacket.class, new ItemDisplayHandler(
+                channelManager,
+                networkHandler,
+                muteManager,
+                banManager,
+                rateLimiter,
+                clientPermissionRegistry.asChecker(),
+                () -> messageRouter.getPipeline().isCrossServerChatEnabled()
+        ));
+
+        // Private message handler (0x14) — cross-server /msg + /reply. Shares
+        // the chat token bucket; audited with a [DM] marker only (privacy: no
+        // messages-table persistence and no WS panel mirroring).
+        networkHandler.registerHandler(PrivateMessagePacket.class, new PrivateMessageHandler(
+                networkHandler,
+                playerStateManager,
+                muteManager,
+                rateLimiter,
+                privateMessagesEnabled,
+                chatLogger
+        ));
 
         // Channel action handler (minimal response; detailed actions handled elsewhere)
         networkHandler.registerHandler(ChannelActionPacket.class, (connection, packet) -> {
@@ -954,14 +1151,22 @@ public class NovaLinkMain {
             }
         });
 
-        // Keep-alive handler
+        // Keep-alive handler. Two directions exist:
+        //  - client-initiated ping (Bedrock clients, every 15s): echo it back;
+        //  - echo of a server-initiated ping (sent by ServerChannelHandler on
+        //    write-idle for echo-only Java clients): record latency and DO NOT
+        //    re-echo, otherwise both sides would ping-pong forever.
         networkHandler.registerHandler(KeepAlivePacket.class, (connection, packet) -> {
-            // Compute round-trip latency from the client-supplied timestamp and
-            // store it on the connection so the panel can display real ping.
+            // Compute round-trip latency from the packet timestamp and store it
+            // on the connection so the panel can display real ping.
             long latency = packet.getLatency();
             if (latency >= 0) {
                 connection.setPing(latency);
                 connection.setLastPingAt(System.currentTimeMillis());
+            }
+            if (connection.consumePendingKeepAliveId(packet.getRequestId())) {
+                // Echo of our own ping — liveness confirmed, nothing to send.
+                return;
             }
             KeepAlivePacket response = new KeepAlivePacket(packet.getTimestamp());
             response.setRequestId(packet.getRequestId());
@@ -983,6 +1188,23 @@ public class NovaLinkMain {
             response.setRequestId(packet.getRequestId());
             connection.sendPacket(response);
         });
+    }
+
+    /**
+     * Sends a failure {@link ChannelActionResponsePacket} to the sender for
+     * rate-limit / slow-mode rejections. This packet type is the protocol's
+     * generic error carrier (server → client, error code + message + extras);
+     * the {@code reason} extra distinguishes these unsolicited notices from
+     * channel-action responses.
+     */
+    private static void sendThrottleError(ClientConnection connection, UUID requestId,
+                                          String channelId, String errorCode,
+                                          String message, String reason) {
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(
+                false, null, channelId != null ? channelId : "", errorCode, message);
+        response.setRequestId(requestId);
+        response.addExtra("reason", reason);
+        connection.sendPacket(response);
     }
 
     /**
@@ -1136,12 +1358,39 @@ public class NovaLinkMain {
             logger.debug("Error shutting down AnnouncementManager: {}", e.getMessage());
         }
 
+        // Flush pending message-log writes while the database is still up.
+        try {
+            if (ctx.getMessageLogService() != null) {
+                ctx.getMessageLogService().shutdown();
+            }
+        } catch (Exception e) {
+            logger.debug("Error shutting down MessageLogService: {}", e.getMessage());
+        }
+
         try {
             if (ctx.getWebSocketGateway() != null) {
                 ctx.getWebSocketGateway().shutdown().join();
             }
         } catch (Exception e) {
             logger.debug("Error shutting down WebSocket gateway: {}", e.getMessage());
+        }
+
+        // Stop the REST worker pool after the gateway so no new requests arrive.
+        try {
+            if (ctx.getRestWorkerPool() != null) {
+                ctx.getRestWorkerPool().shutdownNow();
+            }
+        } catch (Exception e) {
+            logger.debug("Error shutting down REST worker pool: {}", e.getMessage());
+        }
+
+        // Stop the slow-mode cleanup scheduler.
+        try {
+            if (ctx.getMessageRouter() != null) {
+                ctx.getMessageRouter().getPipeline().getSlowModeTracker().shutdown();
+            }
+        } catch (Exception e) {
+            logger.debug("Error shutting down slow-mode tracker: {}", e.getMessage());
         }
 
         try {

@@ -1,0 +1,17 @@
+{
+  "name": "handshake_v2_full",
+  "packet": "HandshakePacket",
+  "packetId": 1,
+  "requestId": "00000000-0000-0000-0000-00000000002a",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "协议 v2 完整握手：含尾部 serverVersion 字段",
+  "fields": {
+    "protocolVersion": 2,
+    "clientId": "bedrock-lobby-01",
+    "passwordHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "platform": 9,
+    "serverVersion": "1.21.44"
+  },
+  "frameHex": "6d010000000000000000000000000000002a0210626564726f636b2d6c6f6262792d303140653362306334343239386663316331343961666266346338393936666239323432376165343165343634396239333463613439353939316237383532623835350907312e32312e3434"
+}

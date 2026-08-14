@@ -5,6 +5,8 @@ import com.nova.link.auth.PermissionManager;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
+import com.nova.link.database.DatabaseException;
+import com.nova.link.database.DatabaseProvider;
 import com.nova.link.notification.NotificationStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,6 +59,13 @@ public class AnnouncementManager {
      */
     private NotificationStore notificationStore;
 
+    /**
+     * Optional persistence backend (schema v5 announcements table). When set,
+     * JOIN/CRON announcements are written through on create/update/delete and
+     * restored via {@link #loadPersistedAnnouncements()} at startup.
+     */
+    private DatabaseProvider databaseProvider;
+
     /** Executor for scheduled announcements */
     private ScheduledExecutorService scheduler;
 
@@ -74,6 +83,54 @@ public class AnnouncementManager {
      */
     public void setNotificationStore(NotificationStore notificationStore) {
         this.notificationStore = notificationStore;
+    }
+
+    /**
+     * Sets the persistence backend. Must be called before
+     * {@link #loadPersistedAnnouncements()}.
+     */
+    public void setDatabaseProvider(DatabaseProvider databaseProvider) {
+        this.databaseProvider = databaseProvider;
+    }
+
+    /**
+     * Loads persisted JOIN/CRON announcements from the database and registers
+     * them (join index + cron scheduling for enabled entries). Call once at
+     * startup, after {@link #initialize()}.
+     *
+     * @return number of announcements restored
+     */
+    public int loadPersistedAnnouncements() {
+        if (databaseProvider == null) {
+            return 0;
+        }
+        int restored = 0;
+        try {
+            for (Announcement announcement : databaseProvider.getAllPersistedAnnouncements()) {
+                announcements.put(announcement.getId(), announcement);
+                if (announcement.getType() == AnnouncementType.JOIN) {
+                    joinAnnouncementsByChannel
+                            .computeIfAbsent(announcement.getChannelId(), k -> ConcurrentHashMap.newKeySet())
+                            .add(announcement.getId());
+                } else if (announcement.getType() == AnnouncementType.SCHEDULED
+                        && announcement.isEnabled()) {
+                    try {
+                        CronSchedule schedule = CronSchedule.parse(announcement.getCronExpression());
+                        scheduleAnnouncement(announcement, schedule);
+                    } catch (IllegalArgumentException e) {
+                        logger.warn("Skipping schedule for announcement {} — invalid cron '{}': {}",
+                                announcement.getId(), announcement.getCronExpression(), e.getMessage());
+                    }
+                }
+                restored++;
+            }
+        } catch (DatabaseException e) {
+            logger.error("Failed to load persisted announcements: {}", e.getMessage());
+        }
+        if (restored > 0) {
+            logger.info("Restored {} persisted announcements", restored);
+        }
+        return restored;
     }
 
     /**
@@ -141,7 +198,18 @@ public class AnnouncementManager {
      */
     public AnnouncementResult sendImmediateAnnouncement(UUID operatorId, String channelId,
                                                          String content, String operatorClientId) {
-        if (operatorId == null) {
+        return sendImmediateAnnouncement(operatorId, channelId, content, operatorClientId, false);
+    }
+
+    /**
+     * Variant with a trusted-operator flag: when {@code trustedOperator} is
+     * true the internal permission check is skipped — the caller (REST layer,
+     * which already enforced panel RBAC) vouches for the operator.
+     */
+    public AnnouncementResult sendImmediateAnnouncement(UUID operatorId, String channelId,
+                                                         String content, String operatorClientId,
+                                                         boolean trustedOperator) {
+        if (operatorId == null && !trustedOperator) {
             return AnnouncementResult.badRequest("Operator ID is required");
         }
         if (channelId == null || channelId.isEmpty()) {
@@ -152,10 +220,12 @@ public class AnnouncementManager {
         }
 
         // Validate permission and scope
-        AnnouncementResult validationResult = validateAnnouncementPermission(
-                operatorId, channelId, operatorClientId);
-        if (!validationResult.isSuccess()) {
-            return validationResult;
+        if (!trustedOperator) {
+            AnnouncementResult validationResult = validateAnnouncementPermission(
+                    operatorId, channelId, operatorClientId);
+            if (!validationResult.isSuccess()) {
+                return validationResult;
+            }
         }
 
         // Send the announcement
@@ -259,7 +329,16 @@ public class AnnouncementManager {
      */
     public AnnouncementResult createJoinAnnouncement(UUID operatorId, String channelId,
                                                       String content, String operatorClientId) {
-        if (operatorId == null) {
+        return createJoinAnnouncement(operatorId, channelId, content, operatorClientId, false);
+    }
+
+    /**
+     * Variant with a trusted-operator flag (REST layer already enforced RBAC).
+     */
+    public AnnouncementResult createJoinAnnouncement(UUID operatorId, String channelId,
+                                                      String content, String operatorClientId,
+                                                      boolean trustedOperator) {
+        if (operatorId == null && !trustedOperator) {
             return AnnouncementResult.badRequest("Operator ID is required");
         }
         if (channelId == null || channelId.isEmpty()) {
@@ -270,10 +349,12 @@ public class AnnouncementManager {
         }
 
         // Validate permission and scope
-        AnnouncementResult validationResult = validateAnnouncementPermission(
-                operatorId, channelId, operatorClientId);
-        if (!validationResult.isSuccess()) {
-            return validationResult;
+        if (!trustedOperator) {
+            AnnouncementResult validationResult = validateAnnouncementPermission(
+                    operatorId, channelId, operatorClientId);
+            if (!validationResult.isSuccess()) {
+                return validationResult;
+            }
         }
 
         // Create the announcement
@@ -286,6 +367,7 @@ public class AnnouncementManager {
         announcements.put(announcementId, announcement);
         joinAnnouncementsByChannel.computeIfAbsent(channelId, k -> ConcurrentHashMap.newKeySet())
                 .add(announcementId);
+        persistAnnouncement(announcement);
 
         logger.info("Join announcement created for channel {} by {}: {}", 
                 channelId, operatorId, announcementId);
@@ -310,7 +392,18 @@ public class AnnouncementManager {
     public AnnouncementResult createScheduledAnnouncement(UUID operatorId, String channelId,
                                                            String content, String cronExpression,
                                                            String operatorClientId) {
-        if (operatorId == null) {
+        return createScheduledAnnouncement(operatorId, channelId, content, cronExpression,
+                operatorClientId, false);
+    }
+
+    /**
+     * Variant with a trusted-operator flag (REST layer already enforced RBAC).
+     */
+    public AnnouncementResult createScheduledAnnouncement(UUID operatorId, String channelId,
+                                                           String content, String cronExpression,
+                                                           String operatorClientId,
+                                                           boolean trustedOperator) {
+        if (operatorId == null && !trustedOperator) {
             return AnnouncementResult.badRequest("Operator ID is required");
         }
         if (channelId == null || channelId.isEmpty()) {
@@ -324,10 +417,12 @@ public class AnnouncementManager {
         }
 
         // Validate permission and scope
-        AnnouncementResult validationResult = validateAnnouncementPermission(
-                operatorId, channelId, operatorClientId);
-        if (!validationResult.isSuccess()) {
-            return validationResult;
+        if (!trustedOperator) {
+            AnnouncementResult validationResult = validateAnnouncementPermission(
+                    operatorId, channelId, operatorClientId);
+            if (!validationResult.isSuccess()) {
+                return validationResult;
+            }
         }
 
         // Parse and validate cron expression
@@ -347,6 +442,7 @@ public class AnnouncementManager {
 
         // Store the announcement
         announcements.put(announcementId, announcement);
+        persistAnnouncement(announcement);
 
         // Schedule the task
         scheduleAnnouncement(announcement, schedule);
@@ -368,7 +464,15 @@ public class AnnouncementManager {
      */
     public AnnouncementResult deleteAnnouncement(UUID operatorId, String announcementId,
                                                   String operatorClientId) {
-        if (operatorId == null) {
+        return deleteAnnouncement(operatorId, announcementId, operatorClientId, false);
+    }
+
+    /**
+     * Variant with a trusted-operator flag (REST layer already enforced RBAC).
+     */
+    public AnnouncementResult deleteAnnouncement(UUID operatorId, String announcementId,
+                                                  String operatorClientId, boolean trustedOperator) {
+        if (operatorId == null && !trustedOperator) {
             return AnnouncementResult.badRequest("Operator ID is required");
         }
         if (announcementId == null || announcementId.isEmpty()) {
@@ -381,10 +485,12 @@ public class AnnouncementManager {
         }
 
         // Validate permission
-        AnnouncementResult validationResult = validateAnnouncementPermission(
-                operatorId, announcement.getChannelId(), operatorClientId);
-        if (!validationResult.isSuccess()) {
-            return validationResult;
+        if (!trustedOperator) {
+            AnnouncementResult validationResult = validateAnnouncementPermission(
+                    operatorId, announcement.getChannelId(), operatorClientId);
+            if (!validationResult.isSuccess()) {
+                return validationResult;
+            }
         }
 
         // Remove from storage
@@ -404,9 +510,52 @@ public class AnnouncementManager {
             task.cancel(false);
         }
 
+        removePersistedAnnouncement(announcementId);
+
         logger.info("Announcement deleted: {} by {}", announcementId, operatorId);
 
         return AnnouncementResult.success("Announcement deleted");
+    }
+
+    /**
+     * Enables or disables a persisted announcement, keeping the CRON scheduler
+     * in sync: disabling cancels the running task, enabling re-schedules it.
+     *
+     * @param announcementId the announcement ID
+     * @param enabled the new enabled state
+     * @return the result carrying the updated announcement
+     */
+    public AnnouncementResult setAnnouncementEnabled(String announcementId, boolean enabled) {
+        if (announcementId == null || announcementId.isEmpty()) {
+            return AnnouncementResult.badRequest("Announcement ID is required");
+        }
+        Announcement announcement = announcements.get(announcementId);
+        if (announcement == null) {
+            return AnnouncementResult.notFound("Announcement not found: " + announcementId);
+        }
+
+        announcement.setEnabled(enabled);
+
+        if (announcement.getType() == AnnouncementType.SCHEDULED) {
+            // Cancel any running task, then re-schedule when (re-)enabled.
+            ScheduledFuture<?> task = scheduledTasks.remove(announcementId);
+            if (task != null) {
+                task.cancel(false);
+            }
+            if (enabled) {
+                try {
+                    CronSchedule schedule = CronSchedule.parse(announcement.getCronExpression());
+                    scheduleAnnouncement(announcement, schedule);
+                } catch (IllegalArgumentException e) {
+                    logger.warn("Cannot re-schedule announcement {} — invalid cron '{}': {}",
+                            announcementId, announcement.getCronExpression(), e.getMessage());
+                }
+            }
+        }
+
+        persistAnnouncement(announcement);
+        logger.info("Announcement {} {}", announcementId, enabled ? "enabled" : "disabled");
+        return AnnouncementResult.success("Announcement updated", announcement);
     }
 
     /**
@@ -579,6 +728,35 @@ public class AnnouncementManager {
         }, delayMs, schedule.getPeriodMs(), TimeUnit.MILLISECONDS);
 
         scheduledTasks.put(announcement.getId(), task);
+    }
+
+    /**
+     * Writes a JOIN/CRON announcement through to the database (best-effort:
+     * runtime state stays authoritative if persistence fails).
+     */
+    private void persistAnnouncement(Announcement announcement) {
+        if (databaseProvider == null || announcement.getType() == AnnouncementType.IMMEDIATE) {
+            return;
+        }
+        try {
+            databaseProvider.saveAnnouncement(announcement);
+        } catch (DatabaseException e) {
+            logger.warn("Failed to persist announcement {}: {}", announcement.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * Removes a persisted announcement row (best-effort).
+     */
+    private void removePersistedAnnouncement(String announcementId) {
+        if (databaseProvider == null) {
+            return;
+        }
+        try {
+            databaseProvider.deleteAnnouncement(announcementId);
+        } catch (DatabaseException e) {
+            logger.warn("Failed to delete persisted announcement {}: {}", announcementId, e.getMessage());
+        }
     }
 
     /**

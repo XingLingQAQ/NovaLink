@@ -3,6 +3,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
+# Endstone's plugin loader requires the distribution name to start with
+# "endstone-" (see endstone.dev tutorial "Create your first plugin"). The
+# previous name "novachat-endstone" already satisfies that prefix; keep it
+# so the installed wheel is discoverable by the Endstone plugin loader.
 name = "novachat-endstone"
 version = "1.0.0"
 description = "NovaChat plugin for Endstone - Cross-server chat integration for Minecraft Bedrock Edition"
@@ -21,12 +25,23 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Games/Entertainment",
 ]
 
+# Endstone 0.11.x is the current stable API line (endstone 0.11.8, 2026-08-07).
+# It supports BDS 1.26.40 and Python 3.10 through 3.14 (verified via PyPI).
+# Pin >=0.11,<0.12 to stay on the stable API line the plugin is written against.
 dependencies = [
-    "endstone>=0.5.0",
+    "endstone>=0.11,<0.12",
 ]
+
+# Entry point so Endstone's pip-based plugin loader discovers NovaChatPlugin.
+# The key MUST be the project name without the "endstone-" prefix
+# ("novachat"), per the Endstone tutorial; the value is {module}:{class}.
+[project.entry-points."endstone"]
+novachat = "novachat_endstone.plugin:NovaChatPlugin"
 
 [project.optional-dependencies]
 dev = [

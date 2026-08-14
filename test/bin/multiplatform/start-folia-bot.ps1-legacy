@@ -1,0 +1,18 @@
+# Install the isolated bot dependency tree when needed, then run the Folia bot
+# in the foreground so its exit code and output remain visible.
+param(
+  [string]$BotDir = "D:\Project\NovaLink\.e2e\folia\bot"
+)
+
+if (-not (Test-Path (Join-Path $BotDir "package.json"))) { throw "Bot package.json not found: $BotDir" }
+Push-Location $BotDir
+try {
+  if (-not (Test-Path (Join-Path $BotDir "node_modules\mineflayer"))) {
+    npm install --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
+  }
+  npm start
+  exit $LASTEXITCODE
+} finally {
+  Pop-Location
+}

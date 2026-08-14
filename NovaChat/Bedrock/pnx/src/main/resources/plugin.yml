@@ -22,6 +22,9 @@ commands:
     aliases: [nc]
 
 permissions:
+  novachat.use:
+    description: Allows basic NovaChat usage (main command gate)
+    default: true
   novachat.admin:
     description: Client administrator permission
     default: op

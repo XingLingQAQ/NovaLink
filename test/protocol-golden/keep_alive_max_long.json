@@ -1,0 +1,13 @@
+{
+  "name": "keep_alive_max_long",
+  "packet": "KeepAlivePacket",
+  "packetId": 7,
+  "requestId": "00000000-0000-0000-0000-000000000037",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "心跳边界：timestamp = Long.MAX_VALUE（0x7FFFFFFFFFFFFFFF）",
+  "fields": {
+    "timestamp": 9223372036854775807
+  },
+  "frameHex": "1907000000000000000000000000000000377fffffffffffffff"
+}

@@ -1,0 +1,25 @@
+# Start the isolated Cloudburst Nukkit server for the Nukkit E2E workspace.
+param(
+  [string]$JavaHome = "C:\Users\XingLingQAQ\scoop\apps\temurin21-jdk\current",
+  [string]$NukkitDir = "D:\Project\NovaLink\.e2e\nukkit",
+  [string]$Jar = "D:\Project\NovaLink\.e2e\artifacts\dist\nukkit-cloudburst-1.0-20260616.184029-1239.jar",
+  [int]$MemoryMb = 512
+)
+
+$java = Join-Path $JavaHome "bin\java.exe"
+if (-not (Test-Path $java)) { throw "JDK 21 java.exe not found: $java" }
+if (-not (Test-Path $Jar)) { throw "Nukkit jar not found: $Jar" }
+foreach ($required in @("server.properties", "nukkit.yml")) {
+  $path = Join-Path $NukkitDir $required
+  if (-not (Test-Path $path)) { throw "Missing Nukkit E2E file: $path" }
+}
+
+$stdout = Join-Path $NukkitDir "nukkit.stdout.log"
+$stderr = Join-Path $NukkitDir "nukkit.stderr.log"
+$pidFile = Join-Path $NukkitDir "nukkit.pid"
+Remove-Item $stdout, $stderr, $pidFile -ErrorAction SilentlyContinue
+$jvmArgs = @("-Xms${MemoryMb}M", "-Xmx${MemoryMb}M", "-jar", $Jar, "nogui")
+$proc = Start-Process -FilePath $java -ArgumentList $jvmArgs -WorkingDirectory $NukkitDir `
+  -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
+$proc.Id | Set-Content -Encoding ascii $pidFile
+Write-Output ("NUKKIT_PID=" + $proc.Id)

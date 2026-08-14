@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import CustomSelect from '../ui/CustomSelect';
+import { can } from '../../lib/permissions';
 
 function MessageMonitor({
   theme,
@@ -25,9 +26,11 @@ function MessageMonitor({
   chatContainerRef: externalChatContainerRef,
   consoleAutoScroll: externalAutoScroll,
   setConsoleAutoScroll: externalSetAutoScroll,
+  role,
 }) {
   void _txtMain; void _txtSec;
   const { t } = useTranslation();
+  const canSend = can(role, 'messages.send');
   const [chatFilter, setChatFilter] = useState('all');
   const [serverFilter, setServerFilter] = useState('all');
   const [internalAutoScroll, setInternalAutoScroll] = useState(true);
@@ -123,6 +126,7 @@ function MessageMonitor({
             onClick={() => setAutoScroll(!autoScroll)}
             className={`rounded-md p-1.5 transition-colors ${autoScroll ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground hover:text-foreground'}`}
             title={autoScroll ? t('messages.autoscroll_on') : t('messages.autoscroll_off')}
+            aria-label={autoScroll ? t('messages.autoscroll_on') : t('messages.autoscroll_off')}
           >
             {autoScroll ? <Volume2 size={16} /> : <VolumeX size={16} />}
           </button>
@@ -135,6 +139,8 @@ function MessageMonitor({
               variant="ghost"
               onClick={onClearMessages}
               className="text-destructive hover:text-destructive"
+              title={t('messages.clear')}
+              aria-label={t('messages.clear')}
             >
               <Trash2 size={14} />
             </Button>
@@ -159,8 +165,8 @@ function MessageMonitor({
           )}
         </div>
 
-        {/* Message Input */}
-        {onSendMessage && (
+        {/* Message Input — hidden for read-only roles */}
+        {onSendMessage && canSend && (
           <div className="p-3 border-t border-border">
             <div className="flex items-center gap-2">
               <div className="w-32">
@@ -186,6 +192,7 @@ function MessageMonitor({
                 size="icon"
                 onClick={handleSendMessage}
                 disabled={sending || !messageInput.trim()}
+                aria-label={t('messages.send')}
               >
                 {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
               </Button>

@@ -1,0 +1,26 @@
+# Start the isolated Folia server. This script only starts Folia; it does not
+# start NovaLink or the mineflayer bot.
+param(
+  [string]$JavaHome = "C:\Users\XingLingQAQ\scoop\apps\temurin21-jdk\current",
+  [string]$FoliaDir = "D:\Project\NovaLink\.e2e\folia",
+  [string]$Jar = "D:\Project\NovaLink\.e2e\artifacts\dist\folia-1.21.11-14.jar",
+  [int]$MemoryMb = 1024
+)
+
+$java = Join-Path $JavaHome "bin\java.exe"
+if (-not (Test-Path $java)) { throw "JDK 21 java.exe not found: $java" }
+if (-not (Test-Path $Jar)) { throw "Folia jar not found: $Jar" }
+if (-not (Test-Path (Join-Path $FoliaDir "eula.txt"))) { throw "Missing EULA: $FoliaDir\eula.txt" }
+$pluginJar = Join-Path $FoliaDir "plugins\NovaChat-Folia.jar"
+if (-not (Test-Path $pluginJar)) { throw "NovaChat Folia plugin jar not found: $pluginJar" }
+
+$stdout = Join-Path $FoliaDir "folia.stdout.log"
+$stderr = Join-Path $FoliaDir "folia.stderr.log"
+$pidFile = Join-Path $FoliaDir "folia.pid"
+Remove-Item $stdout, $stderr, $pidFile -ErrorAction SilentlyContinue
+
+$args = @("-Xms${MemoryMb}M", "-Xmx${MemoryMb}M", "-jar", $Jar, "nogui")
+$proc = Start-Process -FilePath $java -ArgumentList $args -WorkingDirectory $FoliaDir `
+  -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
+$proc.Id | Set-Content -Encoding ascii $pidFile
+Write-Output ("FOLIA_PID=" + $proc.Id)

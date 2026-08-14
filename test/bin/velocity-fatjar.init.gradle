@@ -1,0 +1,33 @@
+// Init script: add a fatJar task to :novachat-velocity that bundles
+// novachat-common and novachat-client-core into the plugin jar.
+// Velocity proxy already provides netty, gson, slf4j, logback, Adventure,
+// guice and the velocity-api via the parent ClassLoader, so we only bundle
+// the two internal modules (same strategy as the bukkit fatJar).
+// Keeps the original `jar` task untouched. Does NOT modify repo build files.
+
+gradle.projectsLoaded {
+    gradle.afterProject { p ->
+        if (p.path == ':novachat-velocity') {
+            def vel = p
+            vel.tasks.register('fatJar', Jar) {
+                archiveBaseName.set('novachat-velocity')
+                archiveVersion.set('1.0.0-SNAPSHOT')
+                archiveClassifier.set('fat')
+                duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+                dependsOn vel.tasks.named('jar')
+                def baseJar = vel.tasks.named('jar').get().archiveFile.get().asFile
+                from vel.zipTree(baseJar)
+
+                def commonJar = vel.rootProject.project(':novachat-common').tasks.named('jar').get().archiveFile.get().asFile
+                def coreJar   = vel.rootProject.project(':novachat-client-core').tasks.named('jar').get().archiveFile.get().asFile
+                from vel.zipTree(commonJar)
+                from vel.zipTree(coreJar)
+
+                // Bundle runtime deps NOT provided by Velocity: gson (used by
+                // common protocol codec) — Velocity bundles gson, so skip.
+                // netty is provided by Velocity. Only internal modules above.
+            }
+        }
+    }
+}

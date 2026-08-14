@@ -66,7 +66,7 @@ public class JoinCommand extends AbstractSubCommand {
             return true;
         }
 
-        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         ChannelCommandService channelCommands = plugin.getChannelCommandService();
         CommandResult result = channelCommands.join(state, channelId, null, player.getName(), player.getLevel().getName());
 

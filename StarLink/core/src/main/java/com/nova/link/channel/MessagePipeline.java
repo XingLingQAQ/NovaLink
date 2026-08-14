@@ -2,10 +2,15 @@ package com.nova.link.channel;
 
 import com.nova.chat.common.NovaConstants;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.link.auth.PermissionLevel;
+import com.nova.link.auth.PermissionManager;
 import com.nova.link.ban.BanManager;
+import com.nova.link.console.ConsoleSentinel;
+import com.nova.link.database.ChatMessageRecord;
 import com.nova.link.filter.FilterResult;
 import com.nova.link.filter.SensitiveWordFilter;
 import com.nova.link.log.ChatLogger;
+import com.nova.link.log.MessageLogService;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.ServerNetworkHandler;
@@ -45,18 +50,31 @@ public class MessagePipeline {
     private BiPredicate<String, String> permissionChecker = (clientId, permission) -> true;
     private MuteManager muteManager;
     private BanManager banManager;
+    private PermissionManager permissionManager;
+    private final SlowModeTracker slowModeTracker;
     private SensitiveWordFilter sensitiveWordFilter;
     private SpyManager spyManager;
     private MessageRouter.WebSocketBroadcaster webSocketBroadcaster;
     private ChatLogger chatLogger;
+    private MessageLogService messageLogService;
 
     // Feature switches (FeatureConfig §3.5) — volatile for hot-reload visibility.
     private volatile boolean crossServerChatEnabled = true;
     private volatile boolean messageLogEnabled = false;
 
     public MessagePipeline(ChannelManager channelManager, ServerNetworkHandler networkHandler) {
+        this(channelManager, networkHandler, new SlowModeTracker());
+    }
+
+    /**
+     * @param slowModeTracker injectable timestamp tracker (tests pass a
+     *                        clock-controlled instance)
+     */
+    public MessagePipeline(ChannelManager channelManager, ServerNetworkHandler networkHandler,
+                           SlowModeTracker slowModeTracker) {
         this.channelManager = Objects.requireNonNull(channelManager, "channelManager");
         this.networkHandler = Objects.requireNonNull(networkHandler, "networkHandler");
+        this.slowModeTracker = Objects.requireNonNull(slowModeTracker, "slowModeTracker");
     }
 
     public void setPermissionChecker(BiPredicate<String, String> permissionChecker) {
@@ -71,8 +89,28 @@ public class MessagePipeline {
         this.banManager = banManager;
     }
 
+    /**
+     * Wires the permission manager used for slow-mode admin exemption
+     * (channel admin and above skip the interval check).
+     */
+    public void setPermissionManager(PermissionManager permissionManager) {
+        this.permissionManager = permissionManager;
+    }
+
+    public SlowModeTracker getSlowModeTracker() {
+        return slowModeTracker;
+    }
+
     public void setSensitiveWordFilter(SensitiveWordFilter sensitiveWordFilter) {
         this.sensitiveWordFilter = sensitiveWordFilter;
+    }
+
+    /**
+     * Exposes the wired filter so hot-apply paths (REST settings) can toggle it
+     * without going through a disk reload.
+     */
+    public SensitiveWordFilter getSensitiveWordFilter() {
+        return sensitiveWordFilter;
     }
 
     public void setSpyManager(SpyManager spyManager) {
@@ -87,8 +125,20 @@ public class MessagePipeline {
         this.chatLogger = chatLogger;
     }
 
+    /**
+     * Wires the async message persistence service. Persisting happens only
+     * when {@code messageLogEnabled} is true and fan-out succeeded.
+     */
+    public void setMessageLogService(MessageLogService messageLogService) {
+        this.messageLogService = messageLogService;
+    }
+
     public void setCrossServerChatEnabled(boolean crossServerChatEnabled) {
         this.crossServerChatEnabled = crossServerChatEnabled;
+    }
+
+    public boolean isCrossServerChatEnabled() {
+        return crossServerChatEnabled;
     }
 
     public void setMessageLogEnabled(boolean messageLogEnabled) {
@@ -183,6 +233,19 @@ public class MessagePipeline {
                     MessagePipelineResult.DropReason.SENDER_BANNED, message, channel);
         }
 
+        // --- Stage 4c: slow mode (channel admins and console are exempt) ---
+        int slowModeSeconds = channel.getSlowModeSeconds();
+        if (slowModeSeconds > 0 && message.getSenderId() != null
+                && !isSlowModeExempt(message.getSenderId(), channel.getId())) {
+            long remaining = slowModeTracker.tryAcquire(
+                    message.getSenderId(), channel.getId(), slowModeSeconds);
+            if (remaining > 0) {
+                logger.debug("Pipeline drop SLOW_MODE player={} channel={} remaining={}s",
+                        message.getSenderId(), channel.getId(), remaining);
+                return MessagePipelineResult.droppedSlowMode(message, channel, remaining);
+            }
+        }
+
         // --- Stage 5: sensitive-word filter (mutates content in place) ---
         int filterMatches = 0;
         boolean filtered = false;
@@ -235,6 +298,18 @@ public class MessagePipeline {
                     MessagePipelineResult.DropReason.NO_RECIPIENTS, message, channel);
         }
 
+        // --- Stage 8: async persistence (only after successful fan-out) ---
+        if (messageLogEnabled && messageLogService != null) {
+            messageLogService.logAsync(new ChatMessageRecord(
+                    message.getChannelId(),
+                    message.getSenderId() != null ? message.getSenderId().toString() : null,
+                    message.getSenderName(),
+                    message.getClientId(),
+                    message.getContent(),
+                    System.currentTimeMillis()
+            ));
+        }
+
         return MessagePipelineResult.delivered(message, channel, recipients, filtered, filterMatches);
     }
 
@@ -244,6 +319,15 @@ public class MessagePipeline {
 
     private boolean isSenderBanned(UUID senderId, String channelId) {
         return banManager != null && senderId != null && banManager.isBanned(senderId, channelId);
+    }
+
+    private boolean isSlowModeExempt(UUID senderId, String channelId) {
+        if (ConsoleSentinel.isConsole(senderId)) {
+            return true;
+        }
+        return permissionManager != null
+                && permissionManager.getPermissionLevel(senderId, channelId)
+                        .hasAtLeast(PermissionLevel.CHANNEL_ADMIN);
     }
 
     private Set<String> fanOut(Channel channel, ChatMessagePacket message) {

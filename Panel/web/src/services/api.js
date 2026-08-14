@@ -124,7 +124,7 @@ export async function apiFetch(path, options = {}, _isRetry = false) {
       if (newToken) {
         return apiFetch(path, options, true);
       }
-    } catch (refreshErr) {
+    } catch {
       // Refresh failed — the token is truly invalid. Log out and surface the
       // original 401 so the UI can react (e.g. show login).
       authService.logout();
@@ -165,6 +165,27 @@ export const api = {
       body: JSON.stringify({ channelId, content, senderName }),
     }),
 
+  // --- Message history (batch 4) ---
+  // GET /api/messages?page=&size=&channel=&server=&player=&q=&from=&to=
+  //   -> { items: [{id, channelId, senderId, senderName, clientId, content,
+  //        timestamp}], page, pageSize, total }
+  // page is 1-based; channel/server/player/q may be empty; from/to are epoch
+  // millis or empty. All keys are always sent (empty string = no filter),
+  // matching the locked backend contract.
+  getMessages: ({ page = 1, size = 50, channel = '', server = '', player = '', q = '', from = '', to = '' } = {}) => {
+    const params = new URLSearchParams({
+      page: String(page),
+      size: String(size),
+      channel: channel || '',
+      server: server || '',
+      player: player || '',
+      q: q || '',
+      from: from === '' || from == null ? '' : String(from),
+      to: to === '' || to == null ? '' : String(to),
+    });
+    return apiFetch(`/messages?${params.toString()}`);
+  },
+
   // --- Channel CRUD (batch 2) ---
   createChannel: (body) => apiFetch('/channels', { method: 'POST', body: JSON.stringify(body) }),
   updateChannel: (id, body) => apiFetch(`/channels/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }),
@@ -186,17 +207,44 @@ export const api = {
 
   // --- Notifications (batch 3) ---
   // GET /api/notifications?page=&size=&unreadOnly= -> { items, total, unreadCount }
-  getNotifications: (page = 0, size = 20, unreadOnly = false) =>
+  // page is 1-based; total is the real row count.
+  getNotifications: (page = 1, size = 20, unreadOnly = false) =>
     apiFetch(`/notifications?page=${page}&size=${size}&unreadOnly=${unreadOnly}`),
   markNotificationRead: (id) => apiFetch(`/notifications/${encodeURIComponent(id)}/read`, { method: 'POST' }),
   markAllNotificationsRead: () => apiFetch('/notifications/read-all', { method: 'POST' }),
   clearNotifications: () => apiFetch('/notifications', { method: 'DELETE' }),
-  createNotification: (body) => apiFetch('/notifications', { method: 'POST', body: JSON.stringify(body) }),
 
   // --- Settings (batch 3) ---
-  // GET/PUT /api/settings -> { filterEnabled, messageLogEnabled, crossServerChatEnabled }
+  // Newer backends also expose privateMessagesEnabled and
+  // messageLogRetentionDays; callers feature-detect those optional fields.
   getSettings: () => apiFetch('/settings'),
   updateSettings: (body) => apiFetch('/settings', { method: 'PUT', body: JSON.stringify(body) }),
+
+  // --- Announcements (batch 4) ---
+  // GET /api/announcements -> { items: [{id, type: "JOIN"|"CRON", channelId,
+  //   content, cron, enabled, createdAt}], total } — only persisted JOIN/CRON
+  //   announcements; cron is set for CRON type only.
+  getAnnouncements: () => apiFetch('/announcements'),
+  // body: { type: "INSTANT"|"JOIN"|"CRON", channelId, content, cron? }
+  // INSTANT sends immediately and returns { sent: true }; JOIN/CRON return
+  // the created announcement object.
+  createAnnouncement: (body) => apiFetch('/announcements', { method: 'POST', body: JSON.stringify(body) }),
+  // body: { enabled: boolean } -> updated announcement object (enable/disable)
+  updateAnnouncement: (id, body) => apiFetch(`/announcements/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteAnnouncement: (id) => apiFetch(`/announcements/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // --- Word filter (batch 4) ---
+  // GET /api/filter -> { enabled: boolean, words: [string], patterns: [string] }
+  getFilter: () => apiFetch('/filter'),
+  // PUT /api/filter { enabled?, words?, patterns? } -> full updated state;
+  // provided arrays fully replace the stored lists.
+  updateFilter: (body) => apiFetch('/filter', { method: 'PUT', body: JSON.stringify(body) }),
+
+  // --- Webhook update / test (batch 4) ---
+  // PUT /api/webhooks/{id} { url?, events?, secret?, active? } -> updated object
+  updateWebhook: (id, body) => apiFetch(`/webhooks/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  // POST /api/webhooks/{id}/test -> { success: boolean, statusCode?, error? }
+  testWebhook: (id) => apiFetch(`/webhooks/${encodeURIComponent(id)}/test`, { method: 'POST' }),
 
   // --- Server / config / console (batch 2) ---
   reloadConfig: () => apiFetch('/reload', { method: 'POST' }),

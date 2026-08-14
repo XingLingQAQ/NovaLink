@@ -1,0 +1,14 @@
+# Start Purpur in background with redirected output.
+$java21 = Join-Path $env:JAVA_HOME "bin\java.exe"
+$paperDir = "D:\Project\NovaLink\.e2e\paper"
+$jar = "D:\Project\NovaLink\.e2e\artifacts\dist\purpur-1.21.8-2497.jar"
+$stdout = Join-Path $paperDir "purpur.stdout.log"
+$stderr = Join-Path $paperDir "purpur.stderr.log"
+$pidFile = Join-Path $paperDir "purpur.pid"
+
+Remove-Item $stdout, $stderr -ErrorAction SilentlyContinue
+$argList = @("-Xmx1G", "-Xms512M", "-jar", $jar, "nogui")
+$proc = Start-Process -FilePath $java21 -ArgumentList $argList -WorkingDirectory $paperDir `
+  -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
+$proc.Id | Set-Content $pidFile
+Write-Output ("PURPUR_PID=" + $proc.Id)

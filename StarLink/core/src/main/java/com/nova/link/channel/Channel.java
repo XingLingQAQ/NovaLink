@@ -38,7 +38,10 @@ public class Channel {
     
     /** Owner UUID for private channels */
     private UUID ownerId;
-    
+
+    /** Slow mode: minimum seconds between two messages from the same player (0 = disabled) */
+    private volatile int slowModeSeconds;
+
     /** Set of member UUIDs currently in this channel */
     private final Set<UUID> members;
     
@@ -205,6 +208,18 @@ public class Channel {
 
     public void setPassword(String password) {
         this.password = password;
+    }
+
+    /**
+     * @return minimum seconds between two messages from the same player;
+     *         {@code 0} means slow mode is disabled
+     */
+    public int getSlowModeSeconds() {
+        return slowModeSeconds;
+    }
+
+    public void setSlowModeSeconds(int slowModeSeconds) {
+        this.slowModeSeconds = Math.max(0, slowModeSeconds);
     }
 
     public UUID getOwnerId() {

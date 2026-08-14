@@ -4,9 +4,17 @@ plugins {
 }
 
 java {
-    // Folia API 1.21.11+ requires JVM 21 at compile time
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    // Folia API 26.1.2+ is published with org.gradle.jvm.version=25 (Gradle
+    // module metadata), so the toolchain must target JVM 25 to satisfy variant
+    // selection. Runtime consumes still target JDK 21+ servers (Folia itself
+    // ships a JDK 25 runtime). The toolchain block mirrors :NovaChat:Proxy:velocity
+    // and lets Gradle auto-detect a JDK 25 install (setup-java on CI, scoop on
+    // dev) so the daemon JVM does NOT have to be JDK 25 itself.
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
 }
 
 repositories {
@@ -33,7 +41,7 @@ dependencies {
     implementation "ch.qos.logback:logback-classic:${logbackVersion}"
 
     // Minecraft Platform - Folia API (Paper-based with region threading)
-    // Latest available classic-line API as of 2026-07: 1.21.11 (also publishes 26.x)
+    // Latest stable Folia API as of 2026-08: dev.folia:folia-api 26.1.2.build.8-stable
     compileOnly "dev.folia:folia-api:${foliaVersion}"
     
     // PlaceholderAPI
@@ -45,6 +53,10 @@ dependencies {
     testImplementation "org.assertj:assertj-core:${assertjVersion}"
     testImplementation "org.mockito:mockito-core:${mockitoVersion}"
     testImplementation "org.mockito:mockito-junit-jupiter:${mockitoVersion}"
+    // Platform API on the test classpath so Mockito can mock org.bukkit.* /
+    // Folia types (compileOnly keeps it out of the shaded artifact; tests need
+    // it resolvable). Mirrors the nukkit module's testImplementation approach.
+    testImplementation "dev.folia:folia-api:${foliaVersion}"
 }
 
 tasks.named('test') {

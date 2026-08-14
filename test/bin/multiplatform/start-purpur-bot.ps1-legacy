@@ -1,0 +1,20 @@
+# Install the isolated mineflayer bot for the bukkit/Purpur E2E workspace.
+# The bot lives at .e2e/bot (the original shared bot dir). Runs in the foreground
+# so its exit code and output remain visible.
+param(
+  [string]$BotDir = "D:\Project\NovaLink\.e2e\bot"
+)
+
+if (-not (Test-Path (Join-Path $BotDir "package.json"))) { throw "Bot package.json not found: $BotDir" }
+if (-not (Test-Path (Join-Path $BotDir "run-e2e.js"))) { throw "Bot script not found: $BotDir\run-e2e.js" }
+Push-Location $BotDir
+try {
+  if (-not (Test-Path (Join-Path $BotDir "node_modules\mineflayer"))) {
+    npm install --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
+  }
+  npm start
+  exit $LASTEXITCODE
+} finally {
+  Pop-Location
+}

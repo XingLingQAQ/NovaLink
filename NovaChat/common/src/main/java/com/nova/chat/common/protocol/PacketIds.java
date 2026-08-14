@@ -57,6 +57,9 @@ public final class PacketIds {
     /** Mention notification packet (Server → Client). Registered: {@code MentionPacket}. */
     public static final int MENTION = 0x12;
 
+    /** Private message packet (Bidirectional). Registered: {@code PrivateMessagePacket}. */
+    public static final int PRIVATE_MESSAGE = 0x14;
+
     // ==================== Reserved / orphan IDs (no Java packet class yet) ====================
     // These constants are kept for protocol-ID stability with PHP/Python clients and
     // future Java support. They are intentionally NOT registered in NovaProtocol until

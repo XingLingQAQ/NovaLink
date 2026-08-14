@@ -1,0 +1,29 @@
+// Init script: add a fatJar task to :novachat-bukkit that bundles novachat-common
+// and novachat-client-core into the plugin jar. Paper/Purpur already provides
+// netty, gson, slf4j, logback via the parent ClassLoader.
+// Keeps the original `jar` task untouched. Does NOT modify repo build files.
+
+gradle.projectsLoaded {
+    gradle.afterProject { p ->
+        if (p.path == ':novachat-bukkit') {
+            def bukkit = p
+            bukkit.tasks.register('fatJar', Jar) {
+                archiveBaseName.set('novachat-bukkit')
+                archiveVersion.set('1.0.0-SNAPSHOT')
+                archiveClassifier.set('fat')
+                duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+                // Start from the regular jar (classes + plugin.yml + config.yml)
+                dependsOn bukkit.tasks.named('jar')
+                def baseJar = bukkit.tasks.named('jar').get().archiveFile.get().asFile
+                from bukkit.zipTree(baseJar)
+
+                // Bundle the two internal modules only (Paper provides the rest).
+                def commonJar = bukkit.rootProject.project(':novachat-common').tasks.named('jar').get().archiveFile.get().asFile
+                def coreJar   = bukkit.rootProject.project(':novachat-client-core').tasks.named('jar').get().archiveFile.get().asFile
+                from bukkit.zipTree(commonJar)
+                from bukkit.zipTree(coreJar)
+            }
+        }
+    }
+}

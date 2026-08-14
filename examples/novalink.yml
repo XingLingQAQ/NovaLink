@@ -20,13 +20,60 @@ server:
   # WebSocket 连接端口（Web 面板）
   websocket-port: 8889
   
-  # Secret key for JWT token generation
-  # JWT 令牌生成密钥
+  # Secret key for JWT token generation (use a random string of >= 32 chars).
+  # If left at the default "change-me-in-production", the backend generates a
+  # random secret and persists it to data/.jwt-secret (with a WARN).
+  # JWT 令牌生成密钥（请使用 ≥32 字符的随机字符串）。
+  # 若保持默认值 "change-me-in-production"，后端会自动生成随机密钥并
+  # 持久化到 data/.jwt-secret（并打 WARN）。
   secret-key: "change-this-to-a-secure-random-string"
   
   # Number of worker threads for handling connections
   # 处理连接的工作线程数
   worker-threads: 4
+
+  # CORS allowed origins for the web panel HTTP/WS endpoints.
+  # Default ["*"] allows all origins (backward compatible; a WARN is logged at
+  # startup). In production, list the exact panel origin(s).
+  # CORS 允许的来源白名单（Web 面板地址）。
+  # 默认 ["*"] 允许所有来源（兼容旧行为，启动时会 WARN 提示收紧）；
+  # 生产环境请改为面板的确切来源。
+  cors-allowed-origins:
+    - "*"
+  # cors-allowed-origins:
+  #   - "https://panel.example.com"
+  #   - "http://localhost:5173"
+
+  # TCP read-idle timeout in seconds; a connection with no inbound data within
+  # this window is treated as dead and closed (0 = disabled).
+  # Heartbeat direction: Bedrock clients send a KeepAlive every 15s on their
+  # own; Java-side clients only ECHO server pings, so the backend proactively
+  # pings on write-idle (1/3 of this value, 30s by default) and the echo keeps
+  # the read timer fresh. 90s >= 3x the 15s client heartbeat period, so healthy
+  # clients are never affected.
+  # TCP 读空闲超时（秒），窗口内未收到任何数据则判定死连接并断开（0 = 关闭）。
+  # 心跳方向：Bedrock 系客户端每 15 秒主动发 KeepAlive；Java 系客户端只回显不主动发，
+  # 因此后端在写空闲（本值的 1/3，默认 30 秒）时主动发 KeepAlive ping，回显即可刷新
+  # 读空闲计时。默认 90 秒 ≥ 3 倍客户端心跳周期（15 秒），健康客户端不会被误断。
+  idle-timeout-seconds: 90
+
+  # Fixed-size worker pool for REST business logic (auth, JDBC queries,
+  # response writing) so slow queries never block the Netty IO threads.
+  # When the pool + queue are saturated, requests get 503 immediately.
+  # REST 业务专用固定线程池大小。REST 请求的鉴权/数据库查询/响应写出都在该池中执行，
+  # 避免慢查询阻塞 Netty IO 线程；池满时立即返回 503。
+  rest-worker-threads: 4
+
+  # Per-connection message rate limit (token bucket). ChatMessage and
+  # ItemDisplay packets share ONE bucket per connection.
+  # 每连接消息限流（令牌桶）。ChatMessage 与 ItemDisplay 数据包共享同一个桶。
+  rate-limit:
+    # Sustained refill rate (tokens per second); 0 = disable rate limiting.
+    # 每秒补充令牌数（持续速率）；0 = 关闭限流。
+    messages-per-second: 10
+    # Bucket capacity (max instantaneous burst).
+    # 桶容量（允许的瞬时突发条数）。
+    burst: 20
 
 # ==========================================
 # Database Settings / 数据库设置
@@ -101,14 +148,54 @@ security:
 # ==========================================
 # Super Admins / 超级管理员
 # ==========================================
-# Super admins have full system access across all clients
-# 超级管理员拥有跨所有客户端的完整系统访问权限
+# Super admins have full system access across all clients. They log into the
+# web panel with role SUPER_ADMIN (full permissions).
+# Credentials support two spellings (choose one):
+#   password       - plain text, hashed with SHA-256 at load time
+#   password-hash  - precomputed SHA-256 hex hash (safer, no plain text on disk)
+# 超级管理员拥有跨所有客户端的完整系统访问权限，登录 Web 面板时角色为
+# SUPER_ADMIN（全部权限）。凭据支持两种写法（二选一）：
+#   password       - 明文密码，加载时自动做 SHA-256
+#   password-hash  - 预计算的 SHA-256 哈希（更安全，不留明文）
 super-admins:
   - uuid: "00000000-0000-0000-0000-000000000000"
+    # Optional human-readable web-panel login name / 可选的面板登录用户名
+    username: "admin"
     # Password hash (SHA-256)
     # 密码哈希（SHA-256）
     # Generate with: echo -n "your-password" | sha256sum
     password-hash: "5e884898da28047d9166e1c7d8b9e8f8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8"
+
+# ==========================================
+# Panel Users / 面板用户
+# ==========================================
+# Web panel login accounts. This pool is fully separated from game-server
+# client credentials below — a game server's connection password can NEVER
+# log into the web panel.
+# Roles (RBAC, VIEWER < ADMIN < SUPER_ADMIN):
+#   VIEWER - read-only: all GET endpoints + WebSocket live data
+#   ADMIN  - VIEWER + player punishments (mute/kick/ban) + channel management
+#            + send messages + notification management
+# SUPER_ADMIN accounts are configured via super-admins above only.
+# Credentials support the same two spellings as super-admins
+# (password OR password-hash). This section is optional: when absent, only
+# super-admins can log into the panel.
+# Web 面板登录账号（与下方游戏服 clients 凭据完全隔离——游戏服接入密码不能登录面板）。
+# 角色（RBAC，VIEWER < ADMIN < SUPER_ADMIN）：
+#   VIEWER - 只读：所有 GET 查询端点 + WebSocket 实时数据
+#   ADMIN  - VIEWER 全部 + 玩家处罚（禁言/踢出/封禁）+ 频道管理 + 发消息 + 通知管理
+# SUPER_ADMIN 只能通过上方 super-admins 配置。
+# 凭据写法与 super-admins 相同（password 明文 或 password-hash）。
+# 本节可省略：省略时仅 super-admins 可登录面板。
+panel-users:
+  - username: "moderator"
+    # Plain password (hashed at load time) / 明文密码（加载时哈希）
+    password: "change-me-moderator"
+    role: ADMIN
+  - username: "auditor"
+    # Precomputed SHA-256 hash / 预计算哈希
+    password-hash: "5e884898da28047d9166e1c7d8b9e8f8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8"
+    role: VIEWER
 
 # ==========================================
 # Debug Mode / 调试模式
@@ -132,6 +219,12 @@ global_channels:
     permission: "novachat.channel.global"
     # Maximum members (0 = unlimited) / 最大成员数（0 = 无限制）
     max_capacity: 0
+    # Slow mode: minimum seconds between two messages from the same player
+    # (0 = disabled; channel admins and above are exempt). Also settable at
+    # runtime via PUT /api/channels/{id} with {"slowModeSeconds": N}.
+    # 慢速模式：同一玩家两条消息的最小间隔秒数（0 = 关闭；频道管理员及以上豁免）。
+    # 也可通过面板 PUT /api/channels/{id} 的 slowModeSeconds 字段在运行时调整。
+    # slow_mode: 5
   
   # Staff channel example / 员工频道示例
   staff:
@@ -195,6 +288,9 @@ clients:
       local:
         use_template: "standard_local"
         display_name: "Survival Local"
+        # Per-channel slow mode also works on SERVER/PRIVATE channels
+        # 服务器/私有频道同样支持慢速模式（0 = 关闭）
+        # slow_mode: 3
       
       # World channel with world filter / 带世界过滤的世界频道
       resource:
@@ -274,84 +370,55 @@ clients:
 features:
   # Enable sensitive-word filtering / 启用敏感词过滤
   filter-enabled: true
-  # Log chat messages to the chat log / 记录聊天消息到日志
+  # Persist chat messages to the database for the panel message-history page
+  # 记录聊天消息并持久化到数据库（供面板消息历史页查询）
   message-log-enabled: false
   # Enable cross-server chat fan-out / 启用跨服聊天分发
   cross-server-chat-enabled: true
+  # Enable cross-server private messages (/msg, /reply). When disabled the
+  # sender gets an NC-403 notice. Private messages are audited to the chat
+  # log with a [DM] marker only — never persisted to the messages table and
+  # never mirrored to the web panel.
+  # 启用跨服私聊（/msg /reply；关闭后发送方收到 NC-403 提示。私聊仅以 [DM]
+  # 标记写入聊天日志审计，不入 messages 历史表、不镜像到面板）
+  private-messages-enabled: true
+  # Retention days for persisted messages (0 = keep forever).
+  # An hourly task deletes rows older than this.
+  # 持久化消息保留天数（0 = 永久保留；每小时自动清理过期消息）
+  message-log-retention-days: 30
 
 # ==========================================
-# Webhook Configuration / Webhook 配置 (Optional / 规划中)
+# Sensitive Word Filter / 敏感词过滤（自定义词与正则）
 # ==========================================
-# NOTE: This section is a forward-looking example. The backend ConfigLoader
-#       currently parses: server, database, security, super-admins, debug,
-#       global_channels, templates, clients, features. Webhook/filter/
-#       announcements sections below are NOT yet read by the backend and are
-#       kept here as reference templates for future implementation.
-# 注意：以下 Webhook / filter / announcements 段落为规划中的示例，
-#       后端 ConfigLoader 当前不解析这些段（仅解析 server/database/security/
-#       super-admins/debug/global_channels/templates/clients/features），
-#       保留作未来实现的参考模板。
-# Send notifications to external services
-# 向外部服务发送通知
-webhooks:
-  # Discord webhook example / Discord Webhook 示例
-  - url: "https://discord.com/api/webhooks/your-webhook-url"
-    # Events to trigger webhook / 触发 Webhook 的事件
-    events:
-      - "message"      # Chat messages / 聊天消息
-      - "join"         # Player joins channel / 玩家加入频道
-      - "leave"        # Player leaves channel / 玩家离开频道
-      - "mute"         # Player muted / 玩家被禁言
-      - "kick"         # Player kicked / 玩家被踢出
-    # Secret for webhook verification / Webhook 验证密钥
-    secret: "your-webhook-secret"
-    # Enable/disable this webhook / 启用/禁用此 Webhook
-    enabled: false
-
-# ==========================================
-# Sensitive Word Filter / 敏感词过滤
-# ==========================================
+# Custom words and regex patterns applied on top of the built-in word list.
+# The on/off switch lives in features.filter-enabled above. This section can
+# be viewed and fully replaced via the panel (GET/PUT /api/filter); changes
+# made from the panel are written back to this file automatically.
+# 自定义敏感词与正则模式（在内置词表基础上追加）。
+# 过滤开关由上方 features.filter-enabled 控制；本节内容可通过面板
+# GET/PUT /api/filter 查看与全量替换，面板保存后自动写回本文件。
 filter:
-  # Enable sensitive word filtering / 启用敏感词过滤
-  enabled: true
-  
-  # Custom sensitive words (in addition to built-in list)
-  # 自定义敏感词（除内置列表外）
-  custom_words:
+  # Custom sensitive words (matched case-insensitively, replaced with ***)
+  # 自定义敏感词（不区分大小写，命中后替换为 ***）
+  words:
     - "badword1"
     - "badword2"
-  
-  # Regex patterns for filtering / 过滤用正则表达式
+  # Regex patterns (case-insensitive; invalid patterns are skipped with a warning)
+  # 自定义正则模式（不区分大小写；非法正则会被跳过并告警）
   patterns:
     - "\\b(spam|advertisement)\\b"
-  
-  # Replacement character / 替换字符
-  replacement: "***"
 
 # ==========================================
-# Announcements / 公告
+# Webhooks & Announcements / Webhook 与公告
 # ==========================================
-announcements:
-  # Scheduled announcements / 定时公告
-  scheduled:
-    - id: "server_rules"
-      # Cron expression (minute hour day month weekday)
-      # Cron 表达式（分 时 日 月 周）
-      cron: "0 */30 * * *"  # Every 30 minutes / 每30分钟
-      channels:
-        - "global"
-      message: "&6[Server] &fRemember to follow the server rules!"
-      enabled: true
-    
-    - id: "vote_reminder"
-      cron: "0 12 * * *"  # Daily at noon / 每天中午
-      channels:
-        - "global"
-      message: "&a[Vote] &fDon't forget to vote for the server!"
-      enabled: true
-  
-  # Join announcements / 加入公告
-  join:
-    - channel: "global"
-      message: "&7Welcome to the server! Type /help for commands."
-      enabled: true
+# NOTE: Webhooks and announcements are NOT configured in this file. They are
+#       managed at runtime via the web panel (or REST API) and persisted in
+#       the database (schema v5 webhooks/announcements tables), surviving
+#       restarts automatically:
+#         - Webhooks:      GET/POST/PUT/DELETE /api/webhooks, POST /api/webhooks/{id}/test
+#         - Announcements: GET/POST/PUT/DELETE /api/announcements
+# 注意：Webhook 与公告不在本配置文件中配置。它们通过 Web 面板（或 REST API）
+#       在运行时管理，并持久化到数据库（schema v5 的 webhooks/announcements 表），
+#       重启后自动恢复：
+#         - Webhook：GET/POST/PUT/DELETE /api/webhooks，POST /api/webhooks/{id}/test
+#         - 公告：GET/POST/PUT/DELETE /api/announcements

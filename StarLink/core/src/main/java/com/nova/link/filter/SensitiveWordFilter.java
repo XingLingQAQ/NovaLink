@@ -36,6 +36,16 @@ public class SensitiveWordFilter {
     // Compiled patterns for word matching (built from sensitiveWords)
     private volatile Pattern wordPattern = null;
 
+    // Built-in words snapshot so custom words can be replaced without
+    // touching the built-in list (panel filter management).
+    private final Set<String> builtinWords = ConcurrentHashMap.newKeySet();
+
+    // Panel-managed custom words / regex sources (config `filter` section).
+    // Kept separately from the merged runtime sets so GET /api/filter returns
+    // only the custom part.
+    private volatile List<String> customWords = Collections.emptyList();
+    private volatile List<String> customPatterns = Collections.emptyList();
+
     // FeatureConfig.filterEnabled — when false, filter() short-circuits to a
     // clean result so no replacement is applied. Volatile for hot-reload.
     private volatile boolean enabled = true;
@@ -77,7 +87,9 @@ public class SensitiveWordFilter {
                     while ((line = reader.readLine()) != null) {
                         line = line.trim();
                         if (!line.isEmpty() && !line.startsWith("#")) {
-                            sensitiveWords.add(line.toLowerCase());
+                            String normalized = line.toLowerCase();
+                            sensitiveWords.add(normalized);
+                            builtinWords.add(normalized);
                         }
                     }
                 }
@@ -104,7 +116,9 @@ public class SensitiveWordFilter {
             "phishing", "malware", "virus", "trojan", "keylogger"
         };
         for (String word : defaults) {
-            sensitiveWords.add(word.toLowerCase());
+            String normalized = word.toLowerCase();
+            sensitiveWords.add(normalized);
+            builtinWords.add(normalized);
         }
         log.info("Loaded {} default sensitive words", sensitiveWords.size());
     }
@@ -218,6 +232,72 @@ public class SensitiveWordFilter {
         return regexPatterns.removeIf(p -> p.pattern().equals(regex));
     }
 
+    // ==================== Panel-managed custom lists ====================
+
+    /**
+     * Replaces the custom word list wholesale (PUT /api/filter semantics).
+     * The merged runtime set becomes built-in words + the new custom words.
+     *
+     * @param words the new custom words (null treated as empty)
+     */
+    public void setCustomWords(Collection<String> words) {
+        List<String> normalized = new ArrayList<>();
+        if (words != null) {
+            for (String word : words) {
+                if (word != null && !word.trim().isEmpty()) {
+                    normalized.add(word.trim().toLowerCase());
+                }
+            }
+        }
+        sensitiveWords.clear();
+        sensitiveWords.addAll(builtinWords);
+        sensitiveWords.addAll(normalized);
+        customWords = Collections.unmodifiableList(normalized);
+        rebuildWordPattern();
+        log.debug("Custom sensitive words replaced ({} entries)", normalized.size());
+    }
+
+    /**
+     * Replaces the custom regex pattern list wholesale.
+     *
+     * @param patterns the new regex sources (null treated as empty)
+     * @throws PatternSyntaxException when any pattern is invalid — callers
+     *         should pre-validate to report which entry failed
+     */
+    public void setCustomPatterns(List<String> patterns) {
+        List<String> sources = new ArrayList<>();
+        List<Pattern> compiled = new ArrayList<>();
+        if (patterns != null) {
+            for (String source : patterns) {
+                if (source == null || source.trim().isEmpty()) {
+                    continue;
+                }
+                compiled.add(Pattern.compile(source, Pattern.CASE_INSENSITIVE));
+                sources.add(source);
+            }
+        }
+        synchronized (regexPatterns) {
+            regexPatterns.clear();
+            regexPatterns.addAll(compiled);
+        }
+        customPatterns = Collections.unmodifiableList(sources);
+        log.debug("Custom regex patterns replaced ({} entries)", sources.size());
+    }
+
+    /**
+     * @return the panel-managed custom words (excludes built-in words)
+     */
+    public List<String> getCustomWords() {
+        return customWords;
+    }
+
+    /**
+     * @return the panel-managed custom regex pattern sources
+     */
+    public List<String> getCustomPatterns() {
+        return customPatterns;
+    }
+
     /**
      * Filters a message, replacing sensitive words with ***.
      * 
@@ -324,6 +404,8 @@ public class SensitiveWordFilter {
     public void reset() {
         sensitiveWords.clear();
         regexPatterns.clear();
+        customWords = Collections.emptyList();
+        customPatterns = Collections.emptyList();
         loadBuiltinWordList();
     }
     
@@ -333,6 +415,9 @@ public class SensitiveWordFilter {
     public void clearAll() {
         sensitiveWords.clear();
         regexPatterns.clear();
+        builtinWords.clear();
+        customWords = Collections.emptyList();
+        customPatterns = Collections.emptyList();
         wordPattern = null;
     }
 }

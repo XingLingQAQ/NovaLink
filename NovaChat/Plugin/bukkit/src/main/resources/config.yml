@@ -15,6 +15,12 @@ chat:
   replace_vanilla: false  # 是否替换原版聊天
   default_channel: "local"  # 默认频道
   locale: "zh_CN"  # 默认语言 (玩家未上报客户端语言时使用；可选 zh_CN / en_US)
+  # 频道前缀（仅 replace_vanilla: true 时生效）：消息以指定前缀开头时直接发往对应频道
+  # 例如配置 "!": global 后，输入 "!大家好" 会发送 "大家好" 到 global 频道
+  # 用 "\" 转义（"\!文本" 发送字面 "!文本"）；默认空 = 关闭
+  channel-prefixes: {}
+  #  "!": global
+  #  "$": trade
 
 # ==========================================
 # 消息格式 (在插件端配置，服主可自定义)

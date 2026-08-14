@@ -315,4 +315,62 @@ class SQLiteProviderTest {
     void providerTypeIsSQLite() {
         assertThat(provider.getProviderType()).isEqualTo("SQLite");
     }
+
+    @Test
+    void getAllActiveMutesSkipsExpiredAndSurvivesReopen() throws DatabaseException {
+        UUID permanent = UUID.randomUUID();
+        UUID timed = UUID.randomUUID();
+        UUID expired = UUID.randomUUID();
+        long future = System.currentTimeMillis() + 3600_000;
+        long past = System.currentTimeMillis() - 10_000;
+
+        provider.saveMute(permanent, new MuteInfo(null, 0, "perm", UUID.randomUUID(), 1000L));
+        provider.saveMute(timed, new MuteInfo("ch-1", future, "timed", UUID.randomUUID(), 1000L));
+        provider.saveMute(expired, new MuteInfo("ch-1", past, "old", UUID.randomUUID(), 1000L));
+
+        // Simulate a backend restart: close and reopen the same database file.
+        provider.shutdown();
+        provider = new SQLiteProvider(dbFile.toString(), 5);
+        provider.initialize();
+
+        java.util.Map<UUID, List<MuteInfo>> active = provider.getAllActiveMutes();
+        assertThat(active).containsOnlyKeys(permanent, timed);
+        assertThat(active.get(permanent).get(0).isPermanent()).isTrue();
+        assertThat(active.get(timed).get(0).getChannelId()).isEqualTo("ch-1");
+    }
+
+    @Test
+    void getAllActiveBansSkipsExpiredAndSurvivesReopen() throws DatabaseException {
+        UUID permanent = UUID.randomUUID();
+        UUID expired = UUID.randomUUID();
+        long past = System.currentTimeMillis() - 10_000;
+
+        provider.saveBan(permanent, new BanInfo(null, 0, "perm", UUID.randomUUID(), 1000L));
+        provider.saveBan(expired, new BanInfo("ch-1", past, "old", UUID.randomUUID(), 1000L));
+
+        provider.shutdown();
+        provider = new SQLiteProvider(dbFile.toString(), 5);
+        provider.initialize();
+
+        java.util.Map<UUID, List<BanInfo>> active = provider.getAllActiveBans();
+        assertThat(active).containsOnlyKeys(permanent);
+        assertThat(active.get(permanent).get(0).isPermanent()).isTrue();
+    }
+
+    @Test
+    void countNotificationsReturnsTotalAndUnread() throws DatabaseException {
+        Notification n1 = new Notification("T1", "B1", Notification.LEVEL_INFO);
+        Notification n2 = new Notification("T2", "B2", Notification.LEVEL_INFO);
+        Notification n3 = new Notification("T3", "B3", Notification.LEVEL_INFO);
+        provider.saveNotification(n1);
+        provider.saveNotification(n2);
+        provider.saveNotification(n3);
+
+        assertThat(provider.countNotifications(false)).isEqualTo(3);
+        assertThat(provider.countNotifications(true)).isEqualTo(3);
+
+        provider.markNotificationRead(n1.getId());
+        assertThat(provider.countNotifications(false)).isEqualTo(3);
+        assertThat(provider.countNotifications(true)).isEqualTo(2);
+    }
 }

@@ -88,6 +88,21 @@ public class NovaChatVelocity {
      */
     private ChannelCommandService channelCommandService;
 
+    /**
+     * Shared per-player ignore lists (client-core). Persisted to
+     * {@code <dataDirectory>/ignore-lists.json}; consulted by the inbound
+     * chat / mention / item-display render paths and the {@code /nc ignore}
+     * command family.
+     */
+    private com.nova.chat.client.ignore.IgnoreListService ignoreListService;
+
+    /**
+     * Shared private-message core (client-core): send-side packet building,
+     * receive-side role rendering, reply-target tracking for {@code /nc r}
+     * and backend error rendering.
+     */
+    private com.nova.chat.client.privatemsg.PrivateMessageService privateMessageService;
+
     /** Debug mode flag */
     private boolean debugMode = false;
     
@@ -112,6 +127,14 @@ public class NovaChatVelocity {
 
         // Load configuration
         loadConfiguration();
+
+        // Per-player ignore lists (persisted in the data directory,
+        // injection precedent: I18n.setExternalLangDir above).
+        ignoreListService = new com.nova.chat.client.ignore.IgnoreListService();
+        ignoreListService.setDataDirectory(dataDirectory);
+
+        // Shared private-message core (/nc msg, /nc r).
+        privateMessageService = new com.nova.chat.client.privatemsg.PrivateMessageService();
 
         // Drop the cached bundles so a reload re-reads external overrides.
         I18n.invalidate();
@@ -140,7 +163,13 @@ public class NovaChatVelocity {
             networkClient.disconnect();
             networkClient = null;
         }
-        
+
+        // Flush pending ignore-list writes and stop the save thread
+        if (ignoreListService != null) {
+            ignoreListService.close();
+            ignoreListService = null;
+        }
+
         instance = null;
         logger.info("NovaChat Velocity plugin disabled!");
     }
@@ -239,6 +268,7 @@ public class NovaChatVelocity {
         
         // Initialize mention Tab completer (Requirements: 11.3)
         mentionTabCompleter = new MentionTabCompleter(this);
+        server.getEventManager().register(this, mentionTabCompleter);
         
         // Register server switch handler for cross-server routing (Requirements: 4.3, 5.3)
         serverSwitchHandler = new ServerSwitchHandler(this);
@@ -364,6 +394,24 @@ public class NovaChatVelocity {
      */
     public ChannelCommandService getChannelCommandService() {
         return channelCommandService;
+    }
+
+    /**
+     * Gets the shared per-player ignore list service.
+     *
+     * @return the ignore list service
+     */
+    public com.nova.chat.client.ignore.IgnoreListService getIgnoreListService() {
+        return ignoreListService;
+    }
+
+    /**
+     * Gets the shared private-message service (/nc msg, /nc r).
+     *
+     * @return the private message service
+     */
+    public com.nova.chat.client.privatemsg.PrivateMessageService getPrivateMessageService() {
+        return privateMessageService;
     }
     
     /**

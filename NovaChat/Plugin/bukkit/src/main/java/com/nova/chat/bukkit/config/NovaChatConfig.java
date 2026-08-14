@@ -24,6 +24,7 @@ public class NovaChatConfig {
     private final boolean replaceVanilla;
     private final String defaultChannel;
     private final String locale;
+    private final Map<String, String> channelPrefixes;
 
     // Format settings
     private final String prefix;
@@ -52,6 +53,18 @@ public class NovaChatConfig {
         this.replaceVanilla = config.getBoolean("chat.replace_vanilla", false);
         this.defaultChannel = config.getString("chat.default_channel", "local");
         this.locale = config.getString("chat.locale", "zh_CN");
+
+        // Channel prefixes (prefix -> channel id; empty map = feature disabled)
+        this.channelPrefixes = new HashMap<>();
+        ConfigurationSection prefixSection = config.getConfigurationSection("chat.channel-prefixes");
+        if (prefixSection != null) {
+            for (String key : prefixSection.getKeys(false)) {
+                String channelId = prefixSection.getString(key);
+                if (key != null && !key.isEmpty() && channelId != null && !channelId.isEmpty()) {
+                    channelPrefixes.put(key, channelId);
+                }
+            }
+        }
 
         // Format settings
         this.prefix = config.getString("format.prefix", "&8[&bNovaChat&8]&r ");
@@ -108,6 +121,14 @@ public class NovaChatConfig {
      */
     public String getLocale() {
         return locale;
+    }
+
+    /**
+     * @return the {@code chat.channel-prefixes} map (message prefix → channel id);
+     *         empty when the feature is disabled
+     */
+    public Map<String, String> getChannelPrefixes() {
+        return channelPrefixes;
     }
 
     public String getPrefix() {

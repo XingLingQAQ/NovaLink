@@ -9,6 +9,8 @@ import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -33,6 +35,13 @@ public class RedisProvider implements DatabaseProvider {
     private static final String NOTIFICATION_INDEX = KEY_PREFIX + "notifications";
     private static final String PLAYER_INDEX = KEY_PREFIX + "players";
     private static final String CHANNEL_INDEX = KEY_PREFIX + "channels";
+    private static final String MESSAGE_PREFIX = KEY_PREFIX + "message:";
+    private static final String MESSAGE_INDEX = KEY_PREFIX + "messages";
+    private static final String MESSAGE_SEQ = KEY_PREFIX + "message:seq";
+    private static final String ANNOUNCEMENT_PREFIX = KEY_PREFIX + "announcement:";
+    private static final String ANNOUNCEMENT_INDEX = KEY_PREFIX + "announcements";
+    private static final String WEBHOOK_PREFIX = KEY_PREFIX + "webhook:";
+    private static final String WEBHOOK_INDEX = KEY_PREFIX + "webhooks";
 
     private final String host;
     private final int port;
@@ -331,6 +340,39 @@ public class RedisProvider implements DatabaseProvider {
         return count;
     }
 
+    @Override
+    public Map<UUID, List<MuteInfo>> getAllActiveMutes() throws DatabaseException {
+        // SCAN over the mute hashes rather than PLAYER_INDEX: a mute can exist
+        // for a player whose state was never persisted, so the index may miss it.
+        Map<UUID, List<MuteInfo>> result = new HashMap<>();
+        try (Jedis jedis = jedisPool.getResource()) {
+            long now = System.currentTimeMillis();
+            ScanParams params = new ScanParams().match(MUTE_PREFIX + "*").count(100);
+            String cursor = ScanParams.SCAN_POINTER_START;
+            do {
+                ScanResult<String> scan = jedis.scan(cursor, params);
+                cursor = scan.getCursor();
+                for (String key : scan.getResult()) {
+                    UUID playerId;
+                    try {
+                        playerId = UUID.fromString(key.substring(MUTE_PREFIX.length()));
+                    } catch (IllegalArgumentException e) {
+                        continue;
+                    }
+                    for (String json : jedis.hgetAll(key).values()) {
+                        MuteInfo mute = gson.fromJson(json, MuteInfoDto.class).toMuteInfo();
+                        if (mute.getExpireTime() <= 0 || mute.getExpireTime() >= now) {
+                            result.computeIfAbsent(playerId, k -> new ArrayList<>()).add(mute);
+                        }
+                    }
+                }
+            } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to load active mutes from Redis", e);
+        }
+        return result;
+    }
+
     // ==================== Ban Operations ====================
 
     @Override
@@ -411,6 +453,38 @@ public class RedisProvider implements DatabaseProvider {
             throw new DatabaseException("Failed to cleanup expired bans from Redis", e);
         }
         return count;
+    }
+
+    @Override
+    public Map<UUID, List<BanInfo>> getAllActiveBans() throws DatabaseException {
+        // Mirrors getAllActiveMutes: SCAN the ban hashes directly.
+        Map<UUID, List<BanInfo>> result = new HashMap<>();
+        try (Jedis jedis = jedisPool.getResource()) {
+            long now = System.currentTimeMillis();
+            ScanParams params = new ScanParams().match(BAN_PREFIX + "*").count(100);
+            String cursor = ScanParams.SCAN_POINTER_START;
+            do {
+                ScanResult<String> scan = jedis.scan(cursor, params);
+                cursor = scan.getCursor();
+                for (String key : scan.getResult()) {
+                    UUID playerId;
+                    try {
+                        playerId = UUID.fromString(key.substring(BAN_PREFIX.length()));
+                    } catch (IllegalArgumentException e) {
+                        continue;
+                    }
+                    for (String json : jedis.hgetAll(key).values()) {
+                        BanInfo ban = gson.fromJson(json, BanInfoDto.class).toBanInfo();
+                        if (ban.getExpireTime() <= 0 || ban.getExpireTime() >= now) {
+                            result.computeIfAbsent(playerId, k -> new ArrayList<>()).add(ban);
+                        }
+                    }
+                }
+            } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to load active bans from Redis", e);
+        }
+        return result;
     }
 
     // ==================== Notification Operations ====================
@@ -561,6 +635,18 @@ public class RedisProvider implements DatabaseProvider {
         }
     }
 
+    @Override
+    public int countNotifications(boolean unreadOnly) throws DatabaseException {
+        if (unreadOnly) {
+            return getUnreadCount();
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            return (int) jedis.zcard(NOTIFICATION_INDEX);
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to count notifications in Redis", e);
+        }
+    }
+
     // ==================== Invitation Operations ====================
 
     @Override
@@ -646,6 +732,205 @@ public class RedisProvider implements DatabaseProvider {
     public int cleanupExpiredInvitations() throws DatabaseException {
         // Redis TTL handles this automatically for invitations
         return 0;
+    }
+
+    // ==================== Message History Operations (schema v5) ====================
+    //
+    // Messages are stored as JSON strings under novalink:message:<id> and
+    // indexed by timestamp in the novalink:messages ZSET. Range scans use
+    // ZREVRANGEBYSCORE (newest first); non-time filters are applied in-memory
+    // while walking the range, which is acceptable for the panel's page sizes.
+
+    @Override
+    public void saveMessage(ChatMessageRecord message) throws DatabaseException {
+        if (message == null) {
+            throw new DatabaseException("Message cannot be null");
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            long id = jedis.incr(MESSAGE_SEQ);
+            message.setId(id);
+            jedis.set(MESSAGE_PREFIX + id, gson.toJson(new ChatMessageDto(message)));
+            jedis.zadd(MESSAGE_INDEX, message.getTimestamp(), String.valueOf(id));
+            logger.debug("Saved message id={} channel={}", id, message.getChannelId());
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to save message to Redis", e);
+        }
+    }
+
+    @Override
+    public List<ChatMessageRecord> searchMessages(MessageFilter filter, int offset, int limit) throws DatabaseException {
+        if (limit <= 0) {
+            return Collections.emptyList();
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<ChatMessageRecord> result = new ArrayList<>();
+            int skipped = 0;
+            for (String idStr : messageIdsNewestFirst(jedis, filter)) {
+                ChatMessageRecord record = loadMessageRecord(jedis, idStr);
+                if (record == null || !filter.matches(record)) {
+                    continue;
+                }
+                if (skipped < offset) {
+                    skipped++;
+                    continue;
+                }
+                result.add(record);
+                if (result.size() >= limit) {
+                    break;
+                }
+            }
+            return result;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to search messages in Redis", e);
+        }
+    }
+
+    @Override
+    public int countMessages(MessageFilter filter) throws DatabaseException {
+        try (Jedis jedis = jedisPool.getResource()) {
+            int count = 0;
+            for (String idStr : messageIdsNewestFirst(jedis, filter)) {
+                ChatMessageRecord record = loadMessageRecord(jedis, idStr);
+                if (record != null && filter.matches(record)) {
+                    count++;
+                }
+            }
+            return count;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to count messages in Redis", e);
+        }
+    }
+
+    @Override
+    public int cleanupMessagesBefore(long cutoffTimestamp) throws DatabaseException {
+        try (Jedis jedis = jedisPool.getResource()) {
+            // "(cutoff" = exclusive upper bound: remove strictly-older rows only.
+            List<String> expired = jedis.zrangeByScore(MESSAGE_INDEX, "-inf", "(" + cutoffTimestamp);
+            for (String idStr : expired) {
+                jedis.del(MESSAGE_PREFIX + idStr);
+            }
+            if (!expired.isEmpty()) {
+                jedis.zremrangeByScore(MESSAGE_INDEX, "-inf", "(" + cutoffTimestamp);
+                logger.debug("Cleaned up {} expired messages", expired.size());
+            }
+            return expired.size();
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to cleanup expired messages from Redis", e);
+        }
+    }
+
+    /**
+     * Ids from the time index, newest first, pre-narrowed by the filter's
+     * from/to bounds so the ZSET does the time filtering.
+     */
+    private List<String> messageIdsNewestFirst(Jedis jedis, MessageFilter filter) {
+        String max = filter.getTo() != null ? String.valueOf(filter.getTo()) : "+inf";
+        String min = filter.getFrom() != null ? String.valueOf(filter.getFrom()) : "-inf";
+        return jedis.zrevrangeByScore(MESSAGE_INDEX, max, min);
+    }
+
+    private ChatMessageRecord loadMessageRecord(Jedis jedis, String idStr) {
+        String json = jedis.get(MESSAGE_PREFIX + idStr);
+        return json != null ? gson.fromJson(json, ChatMessageDto.class).toRecord() : null;
+    }
+
+    // ==================== Announcement Operations (schema v5) ====================
+
+    @Override
+    public void saveAnnouncement(com.nova.link.announcement.Announcement announcement) throws DatabaseException {
+        if (announcement == null || announcement.getId() == null) {
+            throw new DatabaseException("Announcement and ID cannot be null");
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.set(ANNOUNCEMENT_PREFIX + announcement.getId(),
+                    gson.toJson(new AnnouncementDto(announcement)));
+            jedis.sadd(ANNOUNCEMENT_INDEX, announcement.getId());
+            logger.debug("Saved announcement: {}", announcement.getId());
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to save announcement to Redis", e);
+        }
+    }
+
+    @Override
+    public void deleteAnnouncement(String announcementId) throws DatabaseException {
+        if (announcementId == null) {
+            return;
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.del(ANNOUNCEMENT_PREFIX + announcementId);
+            jedis.srem(ANNOUNCEMENT_INDEX, announcementId);
+            logger.debug("Deleted announcement: {}", announcementId);
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to delete announcement from Redis", e);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.announcement.Announcement> getAllPersistedAnnouncements() throws DatabaseException {
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<com.nova.link.announcement.Announcement> result = new ArrayList<>();
+            for (String id : jedis.smembers(ANNOUNCEMENT_INDEX)) {
+                String json = jedis.get(ANNOUNCEMENT_PREFIX + id);
+                if (json != null) {
+                    com.nova.link.announcement.Announcement announcement =
+                            gson.fromJson(json, AnnouncementDto.class).toAnnouncement();
+                    if (announcement != null) {
+                        result.add(announcement);
+                    }
+                }
+            }
+            result.sort(Comparator.comparingLong(com.nova.link.announcement.Announcement::getCreatedAt));
+            return result;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to load announcements from Redis", e);
+        }
+    }
+
+    // ==================== Webhook Operations (schema v5) ====================
+
+    @Override
+    public void saveWebhook(com.nova.link.api.Webhook webhook) throws DatabaseException {
+        if (webhook == null || webhook.getId() == null) {
+            throw new DatabaseException("Webhook and ID cannot be null");
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.set(WEBHOOK_PREFIX + webhook.getId(), gson.toJson(new WebhookDto(webhook)));
+            jedis.sadd(WEBHOOK_INDEX, webhook.getId());
+            logger.debug("Saved webhook: {}", webhook.getId());
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to save webhook to Redis", e);
+        }
+    }
+
+    @Override
+    public void deleteWebhook(String webhookId) throws DatabaseException {
+        if (webhookId == null) {
+            return;
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.del(WEBHOOK_PREFIX + webhookId);
+            jedis.srem(WEBHOOK_INDEX, webhookId);
+            logger.debug("Deleted webhook: {}", webhookId);
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to delete webhook from Redis", e);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.api.Webhook> getAllPersistedWebhooks() throws DatabaseException {
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<com.nova.link.api.Webhook> result = new ArrayList<>();
+            for (String id : jedis.smembers(WEBHOOK_INDEX)) {
+                String json = jedis.get(WEBHOOK_PREFIX + id);
+                if (json != null) {
+                    result.add(gson.fromJson(json, WebhookDto.class).toWebhook());
+                }
+            }
+            result.sort(Comparator.comparingLong(com.nova.link.api.Webhook::getCreatedAt));
+            return result;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to load webhooks from Redis", e);
+        }
     }
 
     @Override
@@ -810,6 +1095,93 @@ public class RedisProvider implements DatabaseProvider {
 
         Notification toNotification() {
             return new Notification(id, title, message, level, createdAt, read);
+        }
+    }
+
+    private static class ChatMessageDto {
+        long id;
+        String channelId;
+        String senderId;
+        String senderName;
+        String clientId;
+        String content;
+        long timestamp;
+
+        ChatMessageDto() {}
+
+        ChatMessageDto(ChatMessageRecord record) {
+            this.id = record.getId();
+            this.channelId = record.getChannelId();
+            this.senderId = record.getSenderId();
+            this.senderName = record.getSenderName();
+            this.clientId = record.getClientId();
+            this.content = record.getContent();
+            this.timestamp = record.getTimestamp();
+        }
+
+        ChatMessageRecord toRecord() {
+            return new ChatMessageRecord(id, channelId, senderId, senderName, clientId, content, timestamp);
+        }
+    }
+
+    private static class AnnouncementDto {
+        String id;
+        String type;
+        String channelId;
+        String content;
+        String cron;
+        boolean enabled;
+        long createdAt;
+
+        AnnouncementDto() {}
+
+        AnnouncementDto(com.nova.link.announcement.Announcement announcement) {
+            this.id = announcement.getId();
+            this.type = announcement.getType().dbValue();
+            this.channelId = announcement.getChannelId();
+            this.content = announcement.getContent();
+            this.cron = announcement.getCronExpression();
+            this.enabled = announcement.isEnabled();
+            this.createdAt = announcement.getCreatedAt();
+        }
+
+        com.nova.link.announcement.Announcement toAnnouncement() {
+            com.nova.link.announcement.AnnouncementType announcementType =
+                    com.nova.link.announcement.AnnouncementType.fromDbValue(type);
+            if (announcementType == null) {
+                return null;
+            }
+            com.nova.link.announcement.Announcement announcement =
+                    new com.nova.link.announcement.Announcement(
+                            id, channelId, content, announcementType, null, null, createdAt, enabled);
+            announcement.setCronExpression(cron);
+            return announcement;
+        }
+    }
+
+    private static class WebhookDto {
+        String id;
+        String url;
+        String event;
+        String secret;
+        boolean active;
+        long createdAt;
+        long lastTriggered;
+
+        WebhookDto() {}
+
+        WebhookDto(com.nova.link.api.Webhook webhook) {
+            this.id = webhook.getId();
+            this.url = webhook.getUrl();
+            this.event = webhook.getEvent();
+            this.secret = webhook.getSecret();
+            this.active = webhook.isActive();
+            this.createdAt = webhook.getCreatedAt();
+            this.lastTriggered = webhook.getLastTriggered();
+        }
+
+        com.nova.link.api.Webhook toWebhook() {
+            return new com.nova.link.api.Webhook(id, url, event, secret, active, createdAt, lastTriggered);
         }
     }
 

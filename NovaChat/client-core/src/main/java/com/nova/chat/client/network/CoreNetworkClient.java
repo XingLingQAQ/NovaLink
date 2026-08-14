@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * Shared Netty client transport for NovaChat plugins.
@@ -78,6 +79,23 @@ public final class CoreNetworkClient {
     private final AtomicBoolean authenticated = new AtomicBoolean(false);
     private final AtomicBoolean reconnecting = new AtomicBoolean(false);
     private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
+
+    /**
+     * Set by {@link #disconnect()} and cleared by an explicit {@link #connect(String, int)}.
+     * A reconnect callback scheduled before the shutdown checks this flag and returns
+     * without connecting, so an intentional shutdown cannot be "revived" by a timer.
+     */
+    private volatile boolean shutdown;
+
+    /**
+     * Guards the connect flow: only the thread that wins the CAS may create the
+     * {@link EventLoopGroup} and start the bootstrap. Losers join the in-flight
+     * attempt via {@link #authFuture} instead of leaking a second group.
+     */
+    private final AtomicBoolean connecting = new AtomicBoolean(false);
+
+    /** Test hook: lets unit tests count/stub event loop group creation. */
+    private volatile Supplier<EventLoopGroup> eventLoopGroupFactory = NioEventLoopGroup::new;
 
     private final Map<Class<? extends Packet>, Consumer<Packet>> packetHandlers =
             new ConcurrentHashMap<>();
@@ -162,55 +180,98 @@ public final class CoreNetworkClient {
 
     /**
      * Connects to the backend. Completes when handshake succeeds or fails (not on TCP alone).
+     *
+     * <p>An explicit call re-arms the client after a previous {@link #disconnect()}
+     * (clears the shutdown flag). Thread-safe: if a connect flow is already in
+     * flight, concurrent callers do not start a second flow (which would leak the
+     * first {@link EventLoopGroup}); they receive the in-flight attempt's future
+     * instead.
      */
     public CompletableFuture<Boolean> connect(String host, int port) {
+        shutdown = false;
+        return doConnect(host, port);
+    }
+
+    /**
+     * Connect flow shared by the public API and the reconnect timer. Unlike
+     * {@link #connect(String, int)}, does not clear the shutdown flag, so a
+     * reconnect callback firing after {@link #disconnect()} stays down.
+     */
+    private CompletableFuture<Boolean> doConnect(String host, int port) {
+        if (shutdown) {
+            return CompletableFuture.completedFuture(false);
+        }
         if (connected.get()) {
             return CompletableFuture.completedFuture(true);
         }
 
         Objects.requireNonNull(host, "host");
+
+        if (!connecting.compareAndSet(false, true)) {
+            // Another connect flow is in flight; join it instead of overwriting
+            // authFuture/workerGroup (the overwritten group would never shut down).
+            CompletableFuture<Boolean> inFlight = authFuture;
+            return inFlight != null ? inFlight : CompletableFuture.completedFuture(false);
+        }
+
         this.lastHost = host;
         this.lastPort = port;
 
-        authFuture = new CompletableFuture<>();
-        workerGroup = new NioEventLoopGroup();
+        CompletableFuture<Boolean> future = new CompletableFuture<>();
+        authFuture = future;
 
-        Bootstrap bootstrap = new Bootstrap();
-        bootstrap.group(workerGroup)
-                .channel(NioSocketChannel.class)
-                .option(ChannelOption.TCP_NODELAY, true)
-                .option(ChannelOption.SO_KEEPALIVE, true)
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectionConfig.getConnectTimeoutMs())
-                .handler(new ChannelInitializer<SocketChannel>() {
-                    @Override
-                    protected void initChannel(SocketChannel ch) {
-                        ChannelPipeline pipeline = ch.pipeline();
-                        pipeline.addLast("frameDecoder", new Varint21FrameDecoder());
-                        pipeline.addLast("framePrepender", new Varint21LengthFieldPrepender());
-                        pipeline.addLast("packetDecoder", new PacketDecoder(packetRegistry));
-                        pipeline.addLast("packetEncoder", new PacketEncoder(packetRegistry));
-                        pipeline.addLast("handler", new CoreClientChannelHandler(CoreNetworkClient.this));
+        try {
+            workerGroup = eventLoopGroupFactory.get();
+
+            Bootstrap bootstrap = new Bootstrap();
+            bootstrap.group(workerGroup)
+                    .channel(NioSocketChannel.class)
+                    .option(ChannelOption.TCP_NODELAY, true)
+                    .option(ChannelOption.SO_KEEPALIVE, true)
+                    .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectionConfig.getConnectTimeoutMs())
+                    .handler(new ChannelInitializer<SocketChannel>() {
+                        @Override
+                        protected void initChannel(SocketChannel ch) {
+                            ChannelPipeline pipeline = ch.pipeline();
+                            pipeline.addLast("frameDecoder", new Varint21FrameDecoder());
+                            pipeline.addLast("framePrepender", new Varint21LengthFieldPrepender());
+                            pipeline.addLast("packetDecoder", new PacketDecoder(packetRegistry));
+                            pipeline.addLast("packetEncoder", new PacketEncoder(packetRegistry));
+                            pipeline.addLast("handler", new CoreClientChannelHandler(CoreNetworkClient.this));
+                        }
+                    });
+
+            logger.debug("Connecting to NovaLink backend at " + host + ":" + port);
+
+            bootstrap.connect(host, port).addListener((ChannelFutureListener) f -> {
+                if (f.isSuccess()) {
+                    if (shutdown) {
+                        // disconnect() happened while the TCP dial was in flight.
+                        f.channel().close();
+                        connecting.set(false);
+                        completeAuth(false);
+                        return;
                     }
-                });
+                    channel = f.channel();
+                    connected.set(true);
+                    connecting.set(false);
+                    reconnectAttempts.set(0);
+                    logger.debug("TCP connection established, sending handshake...");
+                    sendHandshake();
+                } else {
+                    String msg = f.cause() != null ? f.cause().getMessage() : "unknown";
+                    logger.warn("Failed to connect to NovaLink: " + msg);
+                    connecting.set(false);
+                    completeAuth(false);
+                    scheduleReconnect();
+                }
+            });
+        } catch (RuntimeException e) {
+            connecting.set(false);
+            throw e;
+        }
 
-        logger.debug("Connecting to NovaLink backend at " + host + ":" + port);
-
-        bootstrap.connect(host, port).addListener((ChannelFutureListener) future -> {
-            if (future.isSuccess()) {
-                channel = future.channel();
-                connected.set(true);
-                reconnectAttempts.set(0);
-                logger.debug("TCP connection established, sending handshake...");
-                sendHandshake();
-            } else {
-                String msg = future.cause() != null ? future.cause().getMessage() : "unknown";
-                logger.warn("Failed to connect to NovaLink: " + msg);
-                completeAuth(false);
-                scheduleReconnect();
-            }
-        });
-
-        return authFuture;
+        return future;
     }
 
     /**
@@ -221,9 +282,13 @@ public final class CoreNetworkClient {
     }
 
     /**
-     * Explicit shutdown; cancels reconnect budget for this session and does not reschedule.
+     * Explicit shutdown; cancels reconnect for this session and does not reschedule.
+     * A reconnect callback already handed to the {@link SchedulerBridge} will still
+     * fire, but it observes the shutdown flag and returns without connecting.
+     * A later explicit {@link #connect(String, int)} re-arms the client.
      */
     public void disconnect() {
+        shutdown = true;
         reconnecting.set(false);
         authenticated.set(false);
 
@@ -326,6 +391,11 @@ public final class CoreNetworkClient {
         return logger;
     }
 
+    /** Test hook: replaces how {@link #doConnect} creates its {@link EventLoopGroup}. */
+    void setEventLoopGroupFactory(Supplier<EventLoopGroup> factory) {
+        this.eventLoopGroupFactory = Objects.requireNonNull(factory, "factory");
+    }
+
     /**
      * Dispatches an inbound packet to the registered handler, if any.
      */
@@ -337,7 +407,17 @@ public final class CoreNetworkClient {
 
         Consumer<Packet> handler = packetHandlers.get(packet.getClass());
         if (handler != null) {
-            handler.accept(packet);
+            try {
+                handler.accept(packet);
+            } catch (Throwable t) {
+                // A faulty platform handler must not tear down the connection:
+                // an escaping exception would reach exceptionCaught -> ctx.close()
+                // and put the client into a receive->crash->reconnect loop.
+                logger.error(
+                        "Packet handler for " + packet.getClass().getSimpleName()
+                                + " threw " + t.getClass().getName() + ": " + t.getMessage()
+                );
+            }
         } else {
             logger.debug("No handler registered for packet: " + packet.getClass().getSimpleName());
         }
@@ -383,6 +463,9 @@ public final class CoreNetworkClient {
     // --- private lifecycle ---
 
     private void scheduleReconnect() {
+        if (shutdown) {
+            return;
+        }
         if (!connectionConfig.isAutoReconnect()) {
             return;
         }
@@ -413,6 +496,11 @@ public final class CoreNetworkClient {
         scheduler.runLater(() -> {
             reconnecting.set(false);
 
+            if (shutdown) {
+                // disconnect() was called after this task was scheduled; stay down.
+                return;
+            }
+
             EventLoopGroup group = workerGroup;
             if (group != null && !group.isShutdown()) {
                 group.shutdownGracefully();
@@ -421,7 +509,7 @@ public final class CoreNetworkClient {
 
             String host = lastHost != null ? lastHost : connectionConfig.getHost();
             int port = lastPort > 0 ? lastPort : connectionConfig.getPort();
-            connect(host, port);
+            doConnect(host, port);
         }, delay);
     }
 

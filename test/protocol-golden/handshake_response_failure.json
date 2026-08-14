@@ -1,0 +1,15 @@
+{
+  "name": "handshake_response_failure",
+  "packet": "HandshakeResponsePacket",
+  "packetId": 2,
+  "requestId": "00000000-0000-0000-0000-00000000002d",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "握手失败响应：NC-420（字段顺序 success|errorCode|message）",
+  "fields": {
+    "success": false,
+    "errorCode": "NC-420",
+    "message": "Protocol version mismatch: v1 rejected"
+  },
+  "frameHex": "40020000000000000000000000000000002d00064e432d3432302650726f746f636f6c2076657273696f6e206d69736d617463683a2076312072656a6563746564"
+}

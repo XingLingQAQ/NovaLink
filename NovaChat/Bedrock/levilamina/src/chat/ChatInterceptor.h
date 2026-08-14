@@ -258,8 +258,13 @@ private:
     void sendToBackend(const std::string& playerName, const std::string& playerUuid,
                        const std::string& channelId, const std::string& message);
 
-    // Handle player join event
-    void onPlayerJoin(const std::string& playerName, const std::string& playerUuid);
+    // Handle player join event.
+    // localeCode is the player's client locale read from the Bedrock login
+    // chain via Player::getLocaleCode() (e.g. "zh_CN", "en_US", "ja_JP").
+    // An empty string means the locale could not be read; onPlayerJoin falls
+    // back to the hard default (zh_CN) in that case.
+    void onPlayerJoin(const std::string& playerName, const std::string& playerUuid,
+                      const std::string& localeCode = "");
 
     // Handle player leave event
     void onPlayerLeave(const std::string& playerUuid);

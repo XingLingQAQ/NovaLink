@@ -155,13 +155,17 @@ On `KeepAlivePacket`: echo new `KeepAlivePacket(timestamp)` with same `requestId
 ### 3.7 Disconnect (explicit)
 
 ```
+shutdown=true
 reconnecting=false; authenticated=false
 close channel syncUninterruptibly
 connected=false
 shutdownGracefully workerGroup
 ```
 
-Does **not** schedule reconnect (intentional shutdown).
+Does **not** schedule reconnect (intentional shutdown). A reconnect task that was
+already handed to the platform scheduler still fires, but checks the `shutdown`
+flag and returns without connecting. An explicit `connect()` re-arms the client
+(clears `shutdown`).
 
 ### 3.8 Disconnect (unexpected) / reconnect
 
@@ -171,6 +175,7 @@ onDisconnect / connect fail:
   if !reconnecting → scheduleReconnect()
 
 scheduleReconnect:
+  if shutdown → return (explicit disconnect)
   if reconnecting → return
   attempts++
   if attempts > 10 → severe log; reset attempts; stop
@@ -178,8 +183,9 @@ scheduleReconnect:
   delay = min(2^(attempts-1), 30) seconds
   schedule after delay (platform scheduler):
     reconnecting=false
+    if shutdown → return (disconnect() arrived while waiting)
     shutdown old workerGroup
-    connect(config host, port)
+    connect(config host, port)   [internal path: does not clear shutdown]
 ```
 
 Constants shared: `MAX_RECONNECT_ATTEMPTS=10`, `MAX_RECONNECT_DELAY=30s` (see `ClientConnectionConfig` / `ExponentialBackoffReconnectPolicy`).

@@ -52,6 +52,9 @@ struct PacketIds {
 
     /** Mention notification (Server -> Client) - @mention highlight + sound/title */
     static constexpr uint8_t MENTION = 0x12;
+
+    /** Private message (Bidirectional) - cross-server /msg + /reply */
+    static constexpr uint8_t PRIVATE_MESSAGE = 0x14;
 };
 
 /**

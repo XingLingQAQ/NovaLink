@@ -1,0 +1,18 @@
+# Install and run the isolated bedrock-protocol bot for PNX E2E.
+param(
+  [string]$BotDir = "D:\Project\NovaLink\.e2e\pnx\bot"
+)
+
+if (-not (Test-Path (Join-Path $BotDir "package.json"))) { throw "Bot package.json not found: $BotDir" }
+if (-not (Test-Path (Join-Path $BotDir "run-e2e.js"))) { throw "Bot script not found: $BotDir\run-e2e.js" }
+Push-Location $BotDir
+try {
+  if (-not (Test-Path (Join-Path $BotDir "node_modules\bedrock-protocol"))) {
+    npm install --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
+  }
+  npm start
+  exit $LASTEXITCODE
+} finally {
+  Pop-Location
+}

@@ -1,5 +1,10 @@
 package com.nova.link.database.dialect;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -16,7 +21,8 @@ import java.util.List;
 public class MySQLDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
-    private static final int CURRENT_VERSION = 4;
+    private static final String MIGRATION_LOCK_NAME = "novalink_schema_migration";
+    private static final int CURRENT_VERSION = 5;
 
     @Override
     public int getCurrentVersion() {
@@ -33,6 +39,10 @@ public class MySQLDialect implements MigrationDialect {
         return """
             CREATE TABLE IF NOT EXISTS %s (
                 version INT PRIMARY KEY,
+                checksum VARCHAR(64),
+                started_at TIMESTAMP NULL,
+                completed_at TIMESTAMP NULL,
+                status VARCHAR(16),
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 description VARCHAR(255)
             )
@@ -138,7 +148,7 @@ public class MySQLDialect implements MigrationDialect {
                 // upgrade to v2; the v1 CREATE TABLE intentionally omits the column
                 // so this ALTER is the single source of truth for it.
                 statements.add("""
-                    ALTER TABLE players ADD COLUMN platform VARCHAR(32) NULL AFTER active_channel
+                    ALTER TABLE players ADD COLUMN IF NOT EXISTS platform VARCHAR(32) NULL AFTER active_channel
                     """);
             }
             case 3 -> {
@@ -172,9 +182,56 @@ public class MySQLDialect implements MigrationDialect {
                         message TEXT NOT NULL,
                         level VARCHAR(16) NOT NULL DEFAULT 'info',
                         created_at BIGINT NOT NULL,
-                        read BOOLEAN NOT NULL DEFAULT FALSE,
+                        `read` BOOLEAN NOT NULL DEFAULT FALSE,
                         INDEX idx_created_at (created_at),
-                        INDEX idx_read (read)
+                        INDEX idx_read (`read`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+            }
+
+            case 5 -> {
+                // Messages table — persisted chat history. The epoch-millis
+                // column is named created_at (not "timestamp", which is a SQL
+                // type keyword); the webhook event column is event_type (EVENT
+                // is a MySQL keyword).
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        channel_id VARCHAR(64),
+                        sender_id VARCHAR(36),
+                        sender_name VARCHAR(64),
+                        client_id VARCHAR(64),
+                        content TEXT,
+                        created_at BIGINT NOT NULL,
+                        INDEX idx_messages_created_at (created_at),
+                        INDEX idx_messages_channel_id (channel_id),
+                        INDEX idx_messages_sender_name (sender_name)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+
+                // Announcements table — persisted JOIN/CRON announcements.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS announcements (
+                        id VARCHAR(64) PRIMARY KEY,
+                        announcement_type VARCHAR(16) NOT NULL,
+                        channel_id VARCHAR(64),
+                        content TEXT NOT NULL,
+                        cron VARCHAR(64),
+                        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at BIGINT NOT NULL
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+
+                // Webhooks table — persisted webhook registrations.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS webhooks (
+                        id VARCHAR(64) PRIMARY KEY,
+                        url TEXT NOT NULL,
+                        event_type VARCHAR(64),
+                        secret VARCHAR(255),
+                        active BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at BIGINT NOT NULL,
+                        last_triggered BIGINT NOT NULL DEFAULT 0
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                     """);
             }
@@ -192,12 +249,58 @@ public class MySQLDialect implements MigrationDialect {
             case 2 -> "Add platform column to players table";
             case 3 -> "Add bans table for player ban management";
             case 4 -> "Add notifications table for persisted panel notifications";
+            case 5 -> "Add messages, announcements and webhooks tables for persistence";
             default -> "Unknown migration";
         };
     }
 
     @Override
-    public String getRecordMigrationSql() {
-        return "INSERT INTO " + MIGRATION_TABLE + " (version, description) VALUES (?, ?)";
+    public String getMigrationLockAcquireSql() {
+        return "SELECT GET_LOCK('" + MIGRATION_LOCK_NAME + "', ?)";
+    }
+
+    @Override
+    public String getMigrationLockReleaseSql() {
+        return "SELECT RELEASE_LOCK('" + MIGRATION_LOCK_NAME + "')";
+    }
+
+    @Override
+    public MigrationLock acquireMigrationLock(Connection connection, long timeoutMillis) throws SQLException {
+        long roundedSeconds = Math.max(1L, (timeoutMillis + 999L) / 1_000L);
+        int timeoutSeconds = (int) Math.min(Integer.MAX_VALUE, roundedSeconds);
+        try (PreparedStatement statement = connection.prepareStatement(getMigrationLockAcquireSql())) {
+            statement.setInt(1, timeoutSeconds);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next() || !result.getBoolean(1) || result.wasNull()) {
+                    throw new SQLTimeoutException(
+                            "Timed out after " + timeoutSeconds + " seconds acquiring MySQL migration lock '"
+                                    + MIGRATION_LOCK_NAME + "'");
+                }
+            }
+        }
+
+        return new MigrationLock() {
+            private boolean held = true;
+
+            @Override
+            public boolean ownsTransaction() {
+                return false;
+            }
+
+            @Override
+            public void release(boolean commitTransaction) throws SQLException {
+                if (!held) {
+                    return;
+                }
+                try (PreparedStatement statement = connection.prepareStatement(getMigrationLockReleaseSql());
+                     ResultSet result = statement.executeQuery()) {
+                    if (!result.next() || !result.getBoolean(1) || result.wasNull()) {
+                        throw new SQLException("MySQL migration lock was not owned by this connection");
+                    }
+                } finally {
+                    held = false;
+                }
+            }
+        };
     }
 }

@@ -3,6 +3,7 @@ package com.nova.link.database;
 import com.nova.link.channel.Channel;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -140,6 +141,16 @@ public interface DatabaseProvider {
      */
     int cleanupExpiredMutes() throws DatabaseException;
 
+    /**
+     * Loads all active mutes (permanent, or expiring in the future) grouped by
+     * player. Used at startup to warm the mute cache so persisted mutes
+     * survive a backend restart.
+     *
+     * @return map of player UUID to that player's active mute records
+     * @throws DatabaseException if the load operation fails
+     */
+    Map<UUID, List<MuteInfo>> getAllActiveMutes() throws DatabaseException;
+
     // ==================== Ban Operations ====================
 
     /**
@@ -176,6 +187,16 @@ public interface DatabaseProvider {
      * @throws DatabaseException if the operation fails
      */
     int cleanupExpiredBans() throws DatabaseException;
+
+    /**
+     * Loads all active bans (permanent, or expiring in the future) grouped by
+     * player. Used at startup to warm the ban cache so persisted bans survive
+     * a backend restart.
+     *
+     * @return map of player UUID to that player's active ban records
+     * @throws DatabaseException if the load operation fails
+     */
+    Map<UUID, List<BanInfo>> getAllActiveBans() throws DatabaseException;
 
     // ==================== Notification Operations ====================
 
@@ -231,6 +252,16 @@ public interface DatabaseProvider {
      */
     int getUnreadCount() throws DatabaseException;
 
+    /**
+     * Counts notifications matching the pagination filter. Used to report the
+     * real total for paginated notification listings.
+     *
+     * @param unreadOnly when true, only unread notifications are counted
+     * @return the total number of matching notifications
+     * @throws DatabaseException if the operation fails
+     */
+    int countNotifications(boolean unreadOnly) throws DatabaseException;
+
     // ==================== Invitation Operations ====================
 
     /**
@@ -274,6 +305,104 @@ public interface DatabaseProvider {
      * @throws DatabaseException if the operation fails
      */
     int cleanupExpiredInvitations() throws DatabaseException;
+
+    // ==================== Message History Operations (schema v5) ====================
+
+    /**
+     * Persists a chat message. The provider assigns the id and stamps it back
+     * onto the record via {@link ChatMessageRecord#setId(long)}.
+     *
+     * @param message the message record to save
+     * @throws DatabaseException if the save operation fails
+     */
+    void saveMessage(ChatMessageRecord message) throws DatabaseException;
+
+    /**
+     * Searches persisted messages matching the filter, ordered by timestamp
+     * descending (newest first), with pagination.
+     *
+     * @param filter the filter criteria (never null; use {@link MessageFilter#any()})
+     * @param offset the 0-based row offset
+     * @param limit the maximum number of rows to return
+     * @return the matching messages, newest first
+     * @throws DatabaseException if the search fails
+     */
+    List<ChatMessageRecord> searchMessages(MessageFilter filter, int offset, int limit) throws DatabaseException;
+
+    /**
+     * Counts persisted messages matching the filter (same criteria as
+     * {@link #searchMessages}) so paginated listings can report a real total.
+     *
+     * @param filter the filter criteria
+     * @return the total number of matching messages
+     * @throws DatabaseException if the count fails
+     */
+    int countMessages(MessageFilter filter) throws DatabaseException;
+
+    /**
+     * Deletes messages older than the cutoff (retention policy).
+     *
+     * @param cutoffTimestamp epoch milliseconds; rows with timestamp strictly
+     *                        below this value are removed
+     * @return number of messages deleted
+     * @throws DatabaseException if the cleanup fails
+     */
+    int cleanupMessagesBefore(long cutoffTimestamp) throws DatabaseException;
+
+    // ==================== Announcement Operations (schema v5) ====================
+
+    /**
+     * Saves (inserts or updates) a persisted announcement (JOIN/CRON types).
+     *
+     * @param announcement the announcement to save
+     * @throws DatabaseException if the save operation fails
+     */
+    void saveAnnouncement(com.nova.link.announcement.Announcement announcement) throws DatabaseException;
+
+    /**
+     * Deletes a persisted announcement.
+     *
+     * @param announcementId the announcement id
+     * @throws DatabaseException if the delete operation fails
+     */
+    void deleteAnnouncement(String announcementId) throws DatabaseException;
+
+    /**
+     * Loads all persisted announcements (used at startup to restore JOIN
+     * triggers and CRON schedules).
+     *
+     * @return list of all persisted announcements
+     * @throws DatabaseException if the load operation fails
+     */
+    List<com.nova.link.announcement.Announcement> getAllPersistedAnnouncements() throws DatabaseException;
+
+    // ==================== Webhook Operations (schema v5) ====================
+
+    /**
+     * Saves (inserts or updates) a webhook, including its {@code active} flag
+     * and {@code lastTriggered} timestamp.
+     *
+     * @param webhook the webhook to save
+     * @throws DatabaseException if the save operation fails
+     */
+    void saveWebhook(com.nova.link.api.Webhook webhook) throws DatabaseException;
+
+    /**
+     * Deletes a persisted webhook.
+     *
+     * @param webhookId the webhook id
+     * @throws DatabaseException if the delete operation fails
+     */
+    void deleteWebhook(String webhookId) throws DatabaseException;
+
+    /**
+     * Loads all persisted webhooks (used at startup so webhooks survive a
+     * backend restart).
+     *
+     * @return list of all persisted webhooks
+     * @throws DatabaseException if the load operation fails
+     */
+    List<com.nova.link.api.Webhook> getAllPersistedWebhooks() throws DatabaseException;
 
     /**
      * Gets the database provider type name.

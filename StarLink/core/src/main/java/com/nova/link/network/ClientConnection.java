@@ -8,6 +8,7 @@ import io.netty.channel.ChannelFuture;
 import java.net.InetSocketAddress;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Represents a client connection to the NovaLink server.
@@ -29,6 +30,11 @@ public class ClientConnection {
     private volatile String serverVersion;
     private volatile long ping;
     private volatile long lastPingAt;
+
+    // requestId of the last server-initiated KeepAlive ping. When the client
+    // echoes it back, the backend recognizes the echo (and must NOT re-echo,
+    // which would otherwise create an infinite ping-pong loop).
+    private final AtomicReference<UUID> pendingKeepAliveId = new AtomicReference<>();
 
     public ClientConnection(Channel channel) {
         this.channel = channel;
@@ -85,8 +91,8 @@ public class ClientConnection {
      * @return the remote address as a string
      */
     public String getRemoteAddress() {
-        InetSocketAddress address = (InetSocketAddress) channel.remoteAddress();
-        if (address != null) {
+        if (channel.remoteAddress() instanceof InetSocketAddress address
+                && address.getAddress() != null) {
             return address.getAddress().getHostAddress();
         }
         return "unknown";
@@ -98,8 +104,7 @@ public class ClientConnection {
      * @return the remote port
      */
     public int getRemotePort() {
-        InetSocketAddress address = (InetSocketAddress) channel.remoteAddress();
-        if (address != null) {
+        if (channel.remoteAddress() instanceof InetSocketAddress address) {
             return address.getPort();
         }
         return -1;
@@ -263,6 +268,26 @@ public class ClientConnection {
      *
      * @param lastPingAt the timestamp in ms
      */
+    /**
+     * Records the requestId of a server-initiated KeepAlive ping.
+     *
+     * @param requestId the ping's requestId
+     */
+    public void setPendingKeepAliveId(UUID requestId) {
+        pendingKeepAliveId.set(requestId);
+    }
+
+    /**
+     * Atomically checks whether the given requestId matches the outstanding
+     * server-initiated KeepAlive ping and clears it on match.
+     *
+     * @param requestId the requestId of a received KeepAlive packet
+     * @return true if this packet is the echo of the server's own ping
+     */
+    public boolean consumePendingKeepAliveId(UUID requestId) {
+        return requestId != null && pendingKeepAliveId.compareAndSet(requestId, null);
+    }
+
     public void setLastPingAt(long lastPingAt) {
         this.lastPingAt = lastPingAt;
     }

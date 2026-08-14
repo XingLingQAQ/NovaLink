@@ -1,0 +1,17 @@
+{
+  "name": "handshake_v1_no_serverversion",
+  "packet": "HandshakePacket",
+  "packetId": 1,
+  "requestId": "00000000-0000-0000-0000-00000000002b",
+  "legacyWire": true,
+  "reencodeExact": false,
+  "description": "遗留 v1 握手：wire 上缺省尾部 serverVersion（中文 clientId），解码应得空串；re-encode 会补写空 serverVersion，故不做字节比对",
+  "fields": {
+    "protocolVersion": 1,
+    "clientId": "老服-①区",
+    "passwordHash": "a1b2c3",
+    "platform": 4,
+    "serverVersion": ""
+  },
+  "frameHex": "28010000000000000000000000000000002b010de88081e69c8d2de291a0e58cba0661316232633304"
+}

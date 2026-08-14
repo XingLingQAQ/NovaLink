@@ -1,0 +1,17 @@
+{
+  "name": "admin_action_auth",
+  "packet": "AdminActionPacket",
+  "packetId": 11,
+  "requestId": "00000000-0000-0000-0000-00000000003a",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "管理员认证：AUTH + SHA-256 哈希 + 空 target + 空 extra",
+  "fields": {
+    "action": 0,
+    "playerId": "11223344-5566-7788-99aa-bbccddeeff00",
+    "passwordHash": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+    "target": "",
+    "extra": {}
+  },
+  "frameHex": "650b0000000000000000000000000000003a00112233445566778899aabbccddeeff0040356538383438393864613238303437313531643065353666386463363239323737333630336430643661616262646436326131316566373231643135343264380000"
+}

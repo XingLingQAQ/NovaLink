@@ -50,14 +50,34 @@ public class Announcement {
      */
     public Announcement(String id, String channelId, String content, 
                         AnnouncementType type, UUID creatorId, String creatorClientId) {
+        this(id, channelId, content, type, creatorId, creatorClientId,
+                System.currentTimeMillis(), true);
+    }
+
+    /**
+     * Restores an announcement from persistent storage, preserving the original
+     * creation timestamp and enabled flag.
+     *
+     * @param id the unique announcement ID
+     * @param channelId the channel ID (null for cross-channel)
+     * @param content the announcement content
+     * @param type the announcement type
+     * @param creatorId the creator's UUID (may be null for restored rows)
+     * @param creatorClientId the creator's client ID (may be null)
+     * @param createdAt original creation timestamp (epoch millis)
+     * @param enabled whether the announcement is currently enabled
+     */
+    public Announcement(String id, String channelId, String content,
+                        AnnouncementType type, UUID creatorId, String creatorClientId,
+                        long createdAt, boolean enabled) {
         this.id = Objects.requireNonNull(id, "Announcement ID cannot be null");
         this.channelId = channelId;
         this.content = Objects.requireNonNull(content, "Content cannot be null");
         this.type = Objects.requireNonNull(type, "Type cannot be null");
         this.creatorId = creatorId;
         this.creatorClientId = creatorClientId;
-        this.createdAt = System.currentTimeMillis();
-        this.enabled = true;
+        this.createdAt = createdAt;
+        this.enabled = enabled;
     }
 
     // Getters and setters

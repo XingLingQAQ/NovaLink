@@ -19,6 +19,7 @@ public class ChannelConfig {
     private List<String> allowedWorlds;
     private String password;
     private UUID ownerId;
+    private int slowModeSeconds = 0;
 
     private ChannelConfig() {
         this.allowedWorlds = new ArrayList<>();
@@ -65,6 +66,10 @@ public class ChannelConfig {
 
     public String getPassword() {
         return password;
+    }
+
+    public int getSlowModeSeconds() {
+        return slowModeSeconds;
     }
 
     public UUID getOwnerId() {
@@ -123,6 +128,11 @@ public class ChannelConfig {
 
         public Builder ownerId(UUID ownerId) {
             config.ownerId = ownerId;
+            return this;
+        }
+
+        public Builder slowModeSeconds(int slowModeSeconds) {
+            config.slowModeSeconds = Math.max(0, slowModeSeconds);
             return this;
         }
 

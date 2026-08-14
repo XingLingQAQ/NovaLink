@@ -1,5 +1,10 @@
 package com.nova.link.database.dialect;
 
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -28,7 +33,7 @@ import java.util.List;
 public class SQLiteDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
-    private static final int CURRENT_VERSION = 4;
+    private static final int CURRENT_VERSION = 5;
 
     @Override
     public int getCurrentVersion() {
@@ -45,6 +50,10 @@ public class SQLiteDialect implements MigrationDialect {
         return """
             CREATE TABLE IF NOT EXISTS %s (
                 version INTEGER PRIMARY KEY,
+                checksum VARCHAR(64),
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                status VARCHAR(16),
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 description VARCHAR(255)
             )
@@ -142,7 +151,10 @@ public class SQLiteDialect implements MigrationDialect {
             }
 
             case 2 -> {
-                // Add platform column to players table. SQLite has no AFTER clause.
+                // Add platform column to players table. SQLite has no AFTER or
+                // ADD COLUMN IF NOT EXISTS clause. The migration runner holds a
+                // BEGIN IMMEDIATE transaction and rolls this ALTER back on
+                // failure, so retrying an interrupted v2 is safe.
                 statements.add("""
                     ALTER TABLE players ADD COLUMN platform VARCHAR(32)
                     """);
@@ -182,6 +194,52 @@ public class SQLiteDialect implements MigrationDialect {
                 statements.add("CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications (read)");
             }
 
+            case 5 -> {
+                // Messages table — persisted chat history. Epoch-millis column
+                // named created_at to avoid the TIMESTAMP type keyword; webhook
+                // event column named event_type for cross-dialect consistency.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        channel_id VARCHAR(64),
+                        sender_id VARCHAR(36),
+                        sender_name VARCHAR(64),
+                        client_id VARCHAR(64),
+                        content TEXT,
+                        created_at BIGINT NOT NULL
+                    )
+                    """);
+                statements.add("CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages (created_at)");
+                statements.add("CREATE INDEX IF NOT EXISTS idx_messages_channel_id ON messages (channel_id)");
+                statements.add("CREATE INDEX IF NOT EXISTS idx_messages_sender_name ON messages (sender_name)");
+
+                // Announcements table — persisted JOIN/CRON announcements.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS announcements (
+                        id VARCHAR(64) PRIMARY KEY,
+                        announcement_type VARCHAR(16) NOT NULL,
+                        channel_id VARCHAR(64),
+                        content TEXT NOT NULL,
+                        cron VARCHAR(64),
+                        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at BIGINT NOT NULL
+                    )
+                    """);
+
+                // Webhooks table — persisted webhook registrations.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS webhooks (
+                        id VARCHAR(64) PRIMARY KEY,
+                        url TEXT NOT NULL,
+                        event_type VARCHAR(64),
+                        secret VARCHAR(255),
+                        active BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at BIGINT NOT NULL,
+                        last_triggered BIGINT NOT NULL DEFAULT 0
+                    )
+                    """);
+            }
+
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -195,12 +253,97 @@ public class SQLiteDialect implements MigrationDialect {
             case 2 -> "Add platform column to players table";
             case 3 -> "Add bans table for player ban management";
             case 4 -> "Add notifications table for persisted panel notifications";
+            case 5 -> "Add messages, announcements and webhooks tables for persistence";
             default -> "Unknown migration";
         };
     }
 
     @Override
-    public String getRecordMigrationSql() {
-        return "INSERT INTO " + MIGRATION_TABLE + " (version, description) VALUES (?, ?)";
+    public String getMigrationLockAcquireSql() {
+        return "BEGIN IMMEDIATE";
+    }
+
+    @Override
+    public String getMigrationLockReleaseSql() {
+        return "COMMIT";
+    }
+
+    @Override
+    public MigrationLock acquireMigrationLock(Connection connection, long timeoutMillis) throws SQLException {
+        int previousBusyTimeout;
+        try (Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("PRAGMA busy_timeout")) {
+            previousBusyTimeout = result.next() ? result.getInt(1) : 0;
+        }
+
+        int busyTimeout = (int) Math.min(Integer.MAX_VALUE, Math.max(0L, timeoutMillis));
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA busy_timeout = " + busyTimeout);
+            statement.execute(getMigrationLockAcquireSql());
+        } catch (SQLException exception) {
+            if (isLockTimeout(exception)) {
+                SQLTimeoutException timeout = new SQLTimeoutException(
+                        "Timed out after " + timeoutMillis
+                                + " ms acquiring SQLite BEGIN IMMEDIATE migration lock",
+                        exception.getSQLState(), exception.getErrorCode());
+                timeout.initCause(exception);
+                throw timeout;
+            }
+            throw exception;
+        }
+
+        int restoreBusyTimeout = previousBusyTimeout;
+        return new MigrationLock() {
+            private boolean held = true;
+
+            @Override
+            public boolean ownsTransaction() {
+                return true;
+            }
+
+            @Override
+            public void release(boolean commitTransaction) throws SQLException {
+                if (!held) {
+                    return;
+                }
+
+                SQLException failure = null;
+                try (Statement statement = connection.createStatement()) {
+                    statement.execute(commitTransaction ? getMigrationLockReleaseSql() : "ROLLBACK");
+                } catch (SQLException exception) {
+                    failure = exception;
+                    if (commitTransaction) {
+                        try (Statement statement = connection.createStatement()) {
+                            statement.execute("ROLLBACK");
+                        } catch (SQLException rollbackFailure) {
+                            exception.addSuppressed(rollbackFailure);
+                        }
+                    }
+                } finally {
+                    held = false;
+                    try (Statement statement = connection.createStatement()) {
+                        statement.execute("PRAGMA busy_timeout = " + restoreBusyTimeout);
+                    } catch (SQLException restoreFailure) {
+                        if (failure == null) {
+                            failure = restoreFailure;
+                        } else {
+                            failure.addSuppressed(restoreFailure);
+                        }
+                    }
+                }
+
+                if (failure != null) {
+                    throw failure;
+                }
+            }
+        };
+    }
+
+    private static boolean isLockTimeout(SQLException exception) {
+        String message = exception.getMessage();
+        return exception.getErrorCode() == 5
+                || exception.getErrorCode() == 6
+                || (message != null && (message.toLowerCase().contains("locked")
+                || message.toLowerCase().contains("busy")));
     }
 }

@@ -3,6 +3,7 @@ package com.nova.chat.pnx.network;
 import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.itemdisplay.ItemDisplayMessages;
 import com.nova.chat.client.network.AbstractPlatformNetworkClient;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
@@ -17,6 +18,7 @@ import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
 import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.common.chat.MentionNotifier;
@@ -86,6 +88,64 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         registerHandler(TitlePacket.class, this::handleTitleMessage);
         registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
         registerHandler(MentionPacket.class, this::handleMentionMessage);
+        registerHandler(ItemDisplayPacket.class, this::handleItemDisplayMessage);
+        registerHandler(com.nova.chat.common.protocol.packets.PrivateMessagePacket.class,
+                this::handlePrivateMessage);
+    }
+
+    /**
+     * Handles a completed (S→C) private message: the shared
+     * {@link com.nova.chat.client.privatemsg.PrivateMessageService} resolves
+     * which local players render which role (sender echo vs received line,
+     * receiver-side ignore filter, reply tracking). Hops to the PNX main
+     * thread before touching the player API, mirroring
+     * {@link #handleItemDisplayMessage}.
+     */
+    private void handlePrivateMessage(com.nova.chat.common.protocol.packets.PrivateMessagePacket packet) {
+        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+            var deliveries = plugin.getPrivateMessageService().handleIncoming(
+                    packet,
+                    id -> plugin.getServer().getPlayer(id).orElse(null) != null,
+                    plugin.getIgnoreListService());
+            for (com.nova.chat.client.privatemsg.PrivateMessageService.Delivery delivery : deliveries) {
+                cn.nukkit.Player player = plugin.getServer().getPlayer(delivery.getPlayerId()).orElse(null);
+                if (player != null) {
+                    player.sendMessage(plugin.getMessageFormatter().colorize(delivery.getLine()));
+                }
+            }
+        });
+    }
+
+    /**
+     * Handles an inbound item display packet ({@code [item]}/{@code [i]} play,
+     * packet 0x10) by rendering one chat line to every player whose active
+     * channel matches the packet channel.
+     *
+     * <p>Receive-side semantics are "receive = render", matching the Bedrock
+     * clients (pmmp/endstone/levilamina); the backend currently registers no
+     * route for this packet. Hops to the PNX main thread via
+     * {@code scheduleTask} and applies color codes with the shared formatter,
+     * mirroring {@link #handleTitleMessage}. Bedrock clients have no hover
+     * component, so the line is plain (color-coded) text.
+     */
+    private void handleItemDisplayMessage(ItemDisplayPacket packet) {
+        String channelId = packet.getChannelId();
+        String senderName = packet.getSenderName();
+        String itemJson = packet.getItemJson();
+        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+            for (cn.nukkit.Player player : plugin.getServer().getOnlinePlayers().values()) {
+                // Skip senders the viewer has ignored (/nc ignore)
+                com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
+                if (ignoreService != null && ignoreService.isIgnored(player.getUniqueId(), senderName)) {
+                    continue;
+                }
+                PlayerChannelState state = plugin.getChatInterceptor().getState(player.getUniqueId());
+                if (state != null && channelId != null && channelId.equals(state.getActiveChannel())) {
+                    player.sendMessage(plugin.getMessageFormatter().colorize(
+                            ItemDisplayMessages.formatLine(player.getUniqueId(), senderName, itemJson)));
+                }
+            }
+        });
     }
 
     /**
@@ -143,6 +203,11 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                     || !plugin.getChatInterceptor().shouldNotifyMention(mentionedId, mentionerId)) {
                 return;
             }
+            // Ignored mentioner: no title, no action bar (/nc ignore)
+            com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
+            if (ignoreService != null && ignoreService.isIgnored(mentionedId, packet.getMentionerName())) {
+                return;
+            }
             String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
             String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
             String title = plugin.getMessageFormatter().colorize("&e" + mentioner);
@@ -165,6 +230,22 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * PNX main-thread hops, rendering and the §7 action-bar flash.
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
+        // Private-message rejections are unsolicited (no pending context in the
+        // shared tracker); the dispatcher would drop them, so route them to the
+        // PrivateMessageService for player-locale rendering instead.
+        if (com.nova.chat.client.privatemsg.PrivateMessageService.isPrivateMessageError(packet)) {
+            plugin.getServer().getScheduler().scheduleTask(plugin, () ->
+                    plugin.getPrivateMessageService()
+                            .renderError(packet, id -> plugin.getServer().getPlayer(id).orElse(null) != null)
+                            .ifPresent(delivery -> {
+                                cn.nukkit.Player player =
+                                        plugin.getServer().getPlayer(delivery.getPlayerId()).orElse(null);
+                                if (player != null) {
+                                    player.sendMessage(plugin.getMessageFormatter().colorize(delivery.getLine()));
+                                }
+                            }));
+            return;
+        }
         dispatcher.handle(packet);
     }
 
@@ -183,7 +264,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 if (player == null) {
                     return;
                 }
-                plugin.getChatInterceptor().getOrCreateState(player).getChannelState().setActiveChannel(channelId);
+                plugin.getChatInterceptor().getOrCreateState(player).setActiveChannel(channelId);
             });
         }
 
@@ -194,7 +275,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 if (player == null) {
                     return;
                 }
-                PlayerChannelState pnxState = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
+                PlayerChannelState pnxState = plugin.getChatInterceptor().getOrCreateState(player);
                 String current = pnxState.getActiveChannel();
                 if (current != null && current.equals(attemptedChannel)) {
                     pnxState.setActiveChannel(previousChannel);
@@ -247,7 +328,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 if (player == null) {
                     return;
                 }
-                PlayerChannelState pnxState = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
+                PlayerChannelState pnxState = plugin.getChatInterceptor().getOrCreateState(player);
                 sendChannelStatusBar(player, pnxState.getActiveChannel());
             });
         }
@@ -330,11 +411,8 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         if (channelId == null || channelId.isEmpty()) {
             return;
         }
-        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         ChatMode mode = state.getChatMode();
-        if (mode == null) {
-            mode = ChatMode.HYBRID;
-        }
         String text = PlayerMessages.currentChannelBar(player.getUniqueId(), channelId, mode);
         player.sendActionBar(plugin.getMessageFormatter().colorize(text));
     }

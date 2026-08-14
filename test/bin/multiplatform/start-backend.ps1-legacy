@@ -1,0 +1,19 @@
+# Start the NovaLink backend in background, redirecting stdout/stderr to files.
+param(
+  [string]$ClassPathFile = "D:\Project\NovaLink\.e2e\artifacts\runs\novalink-core.classpath.txt",
+  [string]$Config = "D:\Project\NovaLink\.e2e\artifacts\runs\novalink.yml",
+  [string]$WorkDir = "D:\Project\NovaLink\.e2e\artifacts\runs\novalink",
+  [string]$PidFile = "D:\Project\NovaLink\.e2e\artifacts\runs\novalink\backend.pid",
+  [string]$Stdout = "D:\Project\NovaLink\.e2e\artifacts\runs\novalink\stdout.log",
+  [string]$Stderr = "D:\Project\NovaLink\.e2e\artifacts\runs\novalink\stderr.log"
+)
+
+$cp = (Get-Content $ClassPathFile -Raw).Trim()
+Remove-Item $Stdout -ErrorAction SilentlyContinue
+Remove-Item $Stderr -ErrorAction SilentlyContinue
+
+$argList = @("-cp", $cp, "com.nova.link.NovaLinkMain", $Config)
+$proc = Start-Process -FilePath "java" -ArgumentList $argList -WorkingDirectory $WorkDir `
+  -RedirectStandardOutput $Stdout -RedirectStandardError $Stderr -PassThru -NoNewWindow
+$proc.Id | Set-Content $PidFile
+Write-Output ("PID=" + $proc.Id)

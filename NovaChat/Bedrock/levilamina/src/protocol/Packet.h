@@ -5,6 +5,8 @@
 #include <memory>
 #include <unordered_map>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace novachat::protocol {
 
@@ -153,8 +155,12 @@ public:
         buf.writeString(mClientId);
         buf.writeString(mChannelId);
         buf.writeString(mContent);
-        // Placeholders map (optional). Keep empty for this client.
-        buf.writeVarInt(0);
+        // Placeholders map, matching the Java encoder byte-for-byte.
+        buf.writeVarInt(static_cast<int32_t>(mPlaceholders.size()));
+        for (const auto& kv : mPlaceholders) {
+            buf.writeString(kv.first);
+            buf.writeString(kv.second);
+        }
     }
 
     void read(PacketBuffer& buf) override {
@@ -163,12 +169,18 @@ public:
         mClientId = buf.readString();
         mChannelId = buf.readString();
         mContent = buf.readString();
-        // Consume optional placeholders map if present (ignore contents).
+        // Placeholders map (optional for legacy peers), kept like Java does.
+        // vector<pair> preserves wire order so re-encode is byte-stable.
+        mPlaceholders.clear();
         if (buf.readableBytes() > 0) {
             int32_t size = buf.readVarInt();
-            for (int32_t i = 0; i < size; ++i) {
-                (void) buf.readString();
-                (void) buf.readString();
+            if (size >= 0 && size <= 1000) { // defensive bound, mirrors Java
+                mPlaceholders.reserve(static_cast<size_t>(size));
+                for (int32_t i = 0; i < size; ++i) {
+                    std::string key = buf.readString();
+                    std::string value = buf.readString();
+                    mPlaceholders.emplace_back(std::move(key), std::move(value));
+                }
             }
         }
     }
@@ -178,6 +190,17 @@ public:
     [[nodiscard]] const std::string& getClientId() const { return mClientId; }
     [[nodiscard]] const std::string& getChannelId() const { return mChannelId; }
     [[nodiscard]] const std::string& getContent() const { return mContent; }
+    [[nodiscard]] const std::vector<std::pair<std::string, std::string>>& getPlaceholders() const {
+        return mPlaceholders;
+    }
+
+    void setPlaceholders(std::vector<std::pair<std::string, std::string>> placeholders) {
+        mPlaceholders = std::move(placeholders);
+    }
+
+    void addPlaceholder(const std::string& key, const std::string& value) {
+        mPlaceholders.emplace_back(key, value);
+    }
 
 private:
     UUID mSenderId;
@@ -185,6 +208,7 @@ private:
     std::string mClientId;
     std::string mChannelId;
     std::string mContent;
+    std::vector<std::pair<std::string, std::string>> mPlaceholders;
 };
 
 /**
@@ -350,7 +374,9 @@ public:
     [[nodiscard]] uint8_t getPacketId() const override { return PacketIds::CONFIG_SYNC; }
 
     void write(PacketBuffer& buf) const override {
-        buf.writeString(mConfigJson.empty() ? std::string("{}") : mConfigJson);
+        // Java only normalizes null configJson to "{}" (the member default
+        // here); an explicit empty string must be preserved on the wire.
+        buf.writeString(mConfigJson);
         buf.writeLong(mTimestamp);
     }
 
@@ -363,7 +389,7 @@ public:
     [[nodiscard]] int64_t getTimestamp() const { return mTimestamp; }
 
 private:
-    std::string mConfigJson;
+    std::string mConfigJson = "{}";
     int64_t mTimestamp = 0;
 };
 
@@ -612,6 +638,71 @@ private:
     UUID mMentionedId;
     std::string mChannelId;
     std::string mMessagePreview;
+    int64_t mTimestamp = 0;
+};
+
+/**
+ * Private message packet (Bidirectional) - cross-server /msg + /reply.
+ * Packet ID: 0x14
+ * Wire: uuid senderId | string senderName | string senderClientId |
+ *       string targetName | uuid targetId | string content | long timestamp
+ *
+ * Client -> Server: sender fields + targetName are filled; targetId may be the
+ * nil UUID (backend resolves the target by name). Server -> Client: the backend
+ * fills the real targetId and the authoritative timestamp.
+ */
+class PrivateMessagePacket : public Packet {
+public:
+    PrivateMessagePacket() = default;
+    PrivateMessagePacket(const UUID& senderId, const std::string& senderName,
+                         const std::string& senderClientId, const std::string& targetName,
+                         const UUID& targetId, const std::string& content,
+                         int64_t timestamp)
+        : mSenderId(senderId)
+        , mSenderName(senderName)
+        , mSenderClientId(senderClientId)
+        , mTargetName(targetName)
+        , mTargetId(targetId)
+        , mContent(content)
+        , mTimestamp(timestamp) {}
+
+    [[nodiscard]] uint8_t getPacketId() const override { return PacketIds::PRIVATE_MESSAGE; }
+
+    void write(PacketBuffer& buf) const override {
+        buf.writeUUID(mSenderId);
+        buf.writeString(mSenderName);
+        buf.writeString(mSenderClientId);
+        buf.writeString(mTargetName);
+        buf.writeUUID(mTargetId);
+        buf.writeString(mContent);
+        buf.writeLong(mTimestamp);
+    }
+
+    void read(PacketBuffer& buf) override {
+        mSenderId = buf.readUUID();
+        mSenderName = buf.readString();
+        mSenderClientId = buf.readString();
+        mTargetName = buf.readString();
+        mTargetId = buf.readUUID();
+        mContent = buf.readString();
+        mTimestamp = buf.readLong();
+    }
+
+    [[nodiscard]] const UUID& getSenderId() const { return mSenderId; }
+    [[nodiscard]] const std::string& getSenderName() const { return mSenderName; }
+    [[nodiscard]] const std::string& getSenderClientId() const { return mSenderClientId; }
+    [[nodiscard]] const std::string& getTargetName() const { return mTargetName; }
+    [[nodiscard]] const UUID& getTargetId() const { return mTargetId; }
+    [[nodiscard]] const std::string& getContent() const { return mContent; }
+    [[nodiscard]] int64_t getTimestamp() const { return mTimestamp; }
+
+private:
+    UUID mSenderId;
+    std::string mSenderName;
+    std::string mSenderClientId;
+    std::string mTargetName;
+    UUID mTargetId;
+    std::string mContent;
     int64_t mTimestamp = 0;
 };
 

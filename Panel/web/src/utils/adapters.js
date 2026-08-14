@@ -75,14 +75,23 @@ export function channelColorForType(type) {
 }
 
 /**
- * Convert ISO timestamp (ms) to a zh-CN time string HH:MM:SS.
+ * Map the current i18next language (zh_CN / en_US / bare "zh"/"en") to a
+ * BCP-47 locale tag (zh-CN / en-US) for toLocale*String formatting.
+ */
+function currentLocale() {
+  return (i18n.language || 'zh_CN').replace(/_/g, '-');
+}
+
+/**
+ * Convert a timestamp (ms) to a time string HH:MM:SS in the current UI locale.
  */
 function msToTime(ms) {
-  if (!ms) return new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  const locale = currentLocale();
+  if (!ms) return new Date().toLocaleTimeString(locale, { hour12: false });
   try {
-    return new Date(Number(ms)).toLocaleTimeString('zh-CN', { hour12: false });
+    return new Date(Number(ms)).toLocaleTimeString(locale, { hour12: false });
   } catch {
-    return new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    return new Date().toLocaleTimeString(locale, { hour12: false });
   }
 }
 
@@ -93,6 +102,7 @@ function msToTime(ms) {
 export function adaptChannel(channelJson) {
   if (!channelJson) return null;
   const type = scopeToType(channelJson.scope);
+  const parsedSlowMode = Number(channelJson.slowModeSeconds);
   return {
     id: channelJson.id,
     name: channelJson.displayName || channelJson.id,
@@ -104,6 +114,9 @@ export function adaptChannel(channelJson) {
     memberCount: channelJson.memberCount || 0,
     maxCapacity: channelJson.maxCapacity || 0,
     clientId: channelJson.clientId || null,
+    slowModeSeconds: Number.isInteger(parsedSlowMode) && parsedSlowMode >= 0
+      ? parsedSlowMode
+      : 0,
   };
 }
 
@@ -357,6 +370,9 @@ export function adaptNotificationItem(itemJson) {
 /**
  * Build the dashboard stats array from REST /api/status + live data.
  * Only uses real backend-provided fields; no fabricated numbers.
+ * Returns i18n keys + interpolation params (no translated strings) so the
+ * consuming component (DashboardView) renders them via useTranslation and
+ * they re-localize on language change.
  */
 export function buildDashboardStats(statusJson, servers, channels, chatMessages) {
   const onlineServers = servers.filter((s) => s.status === 'online').length;
@@ -371,42 +387,34 @@ export function buildDashboardStats(statusJson, servers, channels, chatMessages)
 
   return [
     {
-      title: i18n.t('dashboard.kpi.online_servers'),
       titleKey: 'dashboard.kpi.online_servers',
       value: totalServers > 0 ? `${onlineServers}/${totalServers}` : '0',
-      change: totalServers === 0
-        ? i18n.t('dashboard.kpi.no_connection')
-        : (onlineServers === totalServers
-          ? i18n.t('dashboard.kpi.all_online')
-          : i18n.t('dashboard.kpi.offline_count', { count: totalServers - onlineServers })),
-      changeKey: totalServers === 0 ? 'dashboard.kpi.no_connection' : (onlineServers === totalServers ? 'dashboard.kpi.all_online' : 'dashboard.kpi.offline_count'),
-      changeOfflineCount: totalServers === 0 ? undefined : (onlineServers === totalServers ? undefined : totalServers - onlineServers),
+      changeKey: totalServers === 0
+        ? 'dashboard.kpi.no_connection'
+        : (onlineServers === totalServers ? 'dashboard.kpi.all_online' : 'dashboard.kpi.offline_count'),
+      changeParams: totalServers > 0 && onlineServers !== totalServers
+        ? { count: totalServers - onlineServers }
+        : undefined,
       trend: totalServers === 0 ? 'normal' : (onlineServers === totalServers ? 'up' : 'down'),
       icon: 'Server',
     },
     {
-      title: i18n.t('dashboard.kpi.online_players'),
       titleKey: 'dashboard.kpi.online_players',
       value: String(playerCount),
-      change: playerCount > 0 ? i18n.t('dashboard.kpi.realtime') : i18n.t('dashboard.kpi.no_players'),
       changeKey: playerCount > 0 ? 'dashboard.kpi.realtime' : 'dashboard.kpi.no_players',
       trend: playerCount > 0 ? 'up' : 'normal',
       icon: 'Users',
     },
     {
-      title: i18n.t('dashboard.kpi.channel_total'),
       titleKey: 'dashboard.kpi.channel_total',
       value: String(channelCount),
-      change: i18n.t('dashboard.kpi.registered'),
       changeKey: 'dashboard.kpi.registered',
       trend: 'normal',
       icon: 'Hash',
     },
     {
-      title: i18n.t('dashboard.kpi.session_messages'),
       titleKey: 'dashboard.kpi.session_messages',
       value: messageCount > 1000 ? `${(messageCount / 1000).toFixed(1)}k` : String(messageCount),
-      change: messageCount > 0 ? i18n.t('dashboard.kpi.this_session') : i18n.t('dashboard.kpi.none'),
       changeKey: messageCount > 0 ? 'dashboard.kpi.this_session' : 'dashboard.kpi.none',
       trend: messageCount > 0 ? 'up' : 'normal',
       icon: 'MessageSquare',

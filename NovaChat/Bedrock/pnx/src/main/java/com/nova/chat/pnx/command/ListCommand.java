@@ -58,7 +58,7 @@ public class ListCommand extends AbstractSubCommand {
         }
         Player player = (Player) sender;
 
-        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player).getChannelState();
+        PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         java.util.Set<String> joined = state != null ? state.getJoinedChannels() : java.util.Set.of();
 
         List<String> lines = ListCommandService.formatChannelList(

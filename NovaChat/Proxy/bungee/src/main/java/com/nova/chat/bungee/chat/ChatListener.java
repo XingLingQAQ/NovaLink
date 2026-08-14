@@ -3,6 +3,7 @@ package com.nova.chat.bungee.chat;
 import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.itemdisplay.ItemDisplayMessages;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -13,9 +14,15 @@ import com.nova.chat.bungee.config.NovaChatConfig;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
+import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.common.chat.MentionNotifier;
+import net.md_5.bungee.api.Title;
 import net.md_5.bungee.api.chat.BaseComponent;
+import net.md_5.bungee.api.chat.HoverEvent;
+import net.md_5.bungee.api.chat.TextComponent;
+import net.md_5.bungee.api.chat.hover.content.Text;
 import net.md_5.bungee.api.connection.ProxiedPlayer;
 import net.md_5.bungee.api.event.ChatEvent;
 import net.md_5.bungee.api.event.PlayerDisconnectEvent;
@@ -87,6 +94,104 @@ public class ChatListener implements Listener {
             plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
             plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
             plugin.getNetworkClient().registerHandler(MentionPacket.class, this::handleMention);
+            plugin.getNetworkClient().registerHandler(TitlePacket.class, this::handleTitle);
+            plugin.getNetworkClient().registerHandler(ItemDisplayPacket.class, this::handleItemDisplay);
+            plugin.getNetworkClient().registerHandler(
+                    com.nova.chat.common.protocol.packets.PrivateMessagePacket.class,
+                    this::handlePrivateMessage);
+        }
+    }
+
+    /**
+     * Handles a completed (S→C) private message: the shared
+     * {@link com.nova.chat.client.privatemsg.PrivateMessageService} resolves
+     * which local players render which role (sender echo vs received line,
+     * receiver-side ignore filter, reply tracking). Like {@link #handleTitle},
+     * no scheduler hop is needed: BungeeCord's player send path is thread-safe
+     * from the Netty callback.
+     */
+    private void handlePrivateMessage(com.nova.chat.common.protocol.packets.PrivateMessagePacket packet) {
+        var deliveries = plugin.getPrivateMessageService().handleIncoming(
+                packet,
+                id -> plugin.getProxy().getPlayer(id) != null,
+                plugin.getIgnoreListService());
+        for (com.nova.chat.client.privatemsg.PrivateMessageService.Delivery delivery : deliveries) {
+            ProxiedPlayer player = plugin.getProxy().getPlayer(delivery.getPlayerId());
+            if (player != null) {
+                player.sendMessage(messageFormatter.parseColors(delivery.getLine()));
+            }
+        }
+    }
+
+    /**
+     * Handles an inbound item display packet ({@code [item]}/{@code [i]} play,
+     * packet 0x10) by rendering one hoverable chat line to every player whose
+     * active channel matches the packet channel.
+     *
+     * <p>Receive-side semantics are "receive = render", matching the Bedrock
+     * clients; the backend currently registers no route for this packet. Like
+     * {@link #handleTitle}, no scheduler hop is needed: BungeeCord's player
+     * send path is thread-safe from the Netty callback. The hover detail uses
+     * the md_5 chat API's {@code SHOW_TEXT} content. The line is formatted per
+     * viewer because the copy is locale-dependent.
+     *
+     * <p>Send side is intentionally absent on the proxy: BungeeCord has no
+     * access to the player's held item, so {@code [item]} tokens typed here
+     * pass through as plain text.
+     */
+    private void handleItemDisplay(ItemDisplayPacket packet) {
+        String channelId = packet.getChannelId();
+        for (ProxiedPlayer player : plugin.getProxy().getPlayers()) {
+            PlayerChannelState state = getState(player.getUniqueId());
+            if (state == null || channelId == null || !channelId.equals(state.getActiveChannel())) {
+                continue;
+            }
+            UUID viewerId = player.getUniqueId();
+            // Skip senders the viewer has ignored (/nc ignore)
+            com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
+            if (ignoreService != null && ignoreService.isIgnored(viewerId, packet.getSenderName())) {
+                continue;
+            }
+            BaseComponent[] line = messageFormatter.parseColors(
+                    ItemDisplayMessages.formatLine(viewerId, packet.getSenderName(), packet.getItemJson()));
+            BaseComponent[] hover = messageFormatter.parseColors(
+                    ItemDisplayMessages.formatHoverDetail(viewerId, packet.getItemJson()));
+
+            TextComponent component = new TextComponent(line);
+            component.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, new Text(hover)));
+            player.sendMessage(component);
+        }
+    }
+
+    /**
+     * Handles title packets by displaying them to players whose active channel
+     * matches the packet channel (Requirements 15.1, 15.5).
+     *
+     * <p>Uses BungeeCord's native proxy title API
+     * ({@code ProxyServer#createTitle()}), which writes the title packets
+     * straight to the downstream client. Like {@link #handleIncomingMessage},
+     * no scheduler hop is needed: BungeeCord's player send path is thread-safe
+     * from the Netty callback.
+     */
+    private void handleTitle(TitlePacket packet) {
+        String channelId = packet.getChannelId();
+        BaseComponent[] title = messageFormatter.parseColors(
+                packet.getTitle() != null ? packet.getTitle() : "");
+        BaseComponent[] subtitle = messageFormatter.parseColors(
+                packet.getSubtitle() != null ? packet.getSubtitle() : "");
+
+        Title bungeeTitle = plugin.getProxy().createTitle()
+                .title(title)
+                .subTitle(subtitle)
+                .fadeIn(packet.getFadeIn())
+                .stay(packet.getStay())
+                .fadeOut(packet.getFadeOut());
+
+        for (ProxiedPlayer player : plugin.getProxy().getPlayers()) {
+            PlayerChannelState state = getState(player.getUniqueId());
+            if (state != null && channelId != null && channelId.equals(state.getActiveChannel())) {
+                bungeeTitle.send(player);
+            }
         }
     }
 
@@ -101,6 +206,20 @@ public class ChatListener implements Listener {
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         plugin.debug("Received channel action response: " + packet);
+        // Private-message rejections are unsolicited (no pending context in the
+        // shared tracker); the dispatcher would drop them, so route them to the
+        // PrivateMessageService for player-locale rendering instead.
+        if (com.nova.chat.client.privatemsg.PrivateMessageService.isPrivateMessageError(packet)) {
+            plugin.getPrivateMessageService()
+                    .renderError(packet, id -> plugin.getProxy().getPlayer(id) != null)
+                    .ifPresent(delivery -> {
+                        ProxiedPlayer player = plugin.getProxy().getPlayer(delivery.getPlayerId());
+                        if (player != null) {
+                            player.sendMessage(messageFormatter.parseColors(delivery.getLine()));
+                        }
+                    });
+            return;
+        }
         dispatcher.handle(packet);
     }
 
@@ -225,6 +344,11 @@ public class ChatListener implements Listener {
         
         // Broadcast to all players in this channel
         for (ProxiedPlayer player : plugin.getProxy().getPlayers()) {
+            // Skip senders the recipient has ignored (/nc ignore)
+            com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
+            if (ignoreService != null && ignoreService.isIgnored(player.getUniqueId(), senderName)) {
+                continue;
+            }
             PlayerChannelState state = getState(player.getUniqueId());
             if (state != null && channelId.equals(state.getActiveChannel())) {
                 BaseComponent[] formattedMessage = messageFormatter.formatChatMessage(
@@ -257,6 +381,11 @@ public class ChatListener implements Listener {
         }
         ProxiedPlayer player = plugin.getProxy().getPlayer(mentionedId);
         if (player == null) {
+            return;
+        }
+        // Ignored mentioner: no notification (/nc ignore)
+        com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
+        if (ignoreService != null && ignoreService.isIgnored(mentionedId, packet.getMentionerName())) {
             return;
         }
         mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
@@ -316,8 +445,19 @@ public class ChatListener implements Listener {
             return;
         }
         
+        // Channel-prefix routing (e.g. "!hi" -> global) before the
+        // active-channel send; escape/unknown-prefix cases fall through with
+        // the resolver-produced message (UX: prefix = /nc <channel> shorthand).
+        com.nova.chat.client.channel.ChannelPrefixResolver.Resolution resolution =
+                com.nova.chat.client.channel.ChannelPrefixResolver.resolve(
+                        config.getChannelPrefixes(), event.getMessage(),
+                        plugin.getKnownChannelRegistry() != null
+                                ? plugin.getKnownChannelRegistry().getAll() : null);
+        String targetChannel = resolution.isRedirect()
+                ? resolution.getChannelId() : state.getActiveChannel();
+
         // Forward message to backend
-        sendToChannel(player, state.getActiveChannel(), event.getMessage());
+        sendToChannel(player, targetChannel, resolution.getMessage());
     }
     
     /**
@@ -348,6 +488,10 @@ public class ChatListener implements Listener {
         UUID playerId = event.getPlayer().getUniqueId();
         playerStates.remove(playerId);
         welcomedPlayers.remove(playerId);
+        // Reply-target cleanup for /nc r (private messages); thread-safe map.
+        if (plugin.getPrivateMessageService() != null) {
+            plugin.getPrivateMessageService().onPlayerQuit(playerId);
+        }
         plugin.debug("Removed chat state for " + event.getPlayer().getName());
     }
 

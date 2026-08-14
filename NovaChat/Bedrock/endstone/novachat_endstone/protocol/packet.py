@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional, Dict, Any
 
@@ -80,6 +80,7 @@ class PacketIds(IntEnum):
     CHANNEL_UPDATE = 0x0D  # optional (no Java class yet)
     ITEM_DISPLAY = 0x10
     MENTION = 0x12
+    PRIVATE_MESSAGE = 0x14
 
 
 class Packet(ABC):
@@ -181,6 +182,8 @@ class ChatMessagePacket(Packet):
     client_id: str
     channel_id: str
     content: str
+    # PlaceholderAPI variables; dict preserves insertion order on re-encode.
+    placeholders: Dict[str, str] = field(default_factory=dict)
     
     @property
     def packet_id(self) -> int:
@@ -192,28 +195,41 @@ class ChatMessagePacket(Packet):
         buffer.write_string(self.client_id)
         buffer.write_string(self.channel_id)
         buffer.write_string(self.content)
-        # Placeholders map (optional). Keep empty for this client.
-        buffer.write_varint(0)
+        # Placeholders map, matching the Java encoder byte-for-byte.
+        buffer.write_varint(len(self.placeholders))
+        for key, value in self.placeholders.items():
+            buffer.write_string(key)
+            buffer.write_string(value)
     
     @classmethod
     def decode(cls, buffer: PacketBuffer) -> "ChatMessagePacket":
-        pkt = cls(
-            sender_id=buffer.read_uuid(),
-            sender_name=buffer.read_string(),
-            client_id=buffer.read_string(),
-            channel_id=buffer.read_string(),
-            content=buffer.read_string()
-        )
-        # Consume optional placeholders map if present (ignore contents).
-        try:
-            if buffer.remaining() > 0:
+        sender_id = buffer.read_uuid()
+        sender_name = buffer.read_string()
+        client_id = buffer.read_string()
+        channel_id = buffer.read_string()
+        content = buffer.read_string()
+
+        # Placeholders map (optional for legacy peers), kept like Java does.
+        placeholders: Dict[str, str] = {}
+        if buffer.remaining() > 0:
+            try:
                 size = buffer.read_varint()
-                for _ in range(max(0, size)):
-                    _ = buffer.read_string()
-                    _ = buffer.read_string()
-        except Exception:
-            pass
-        return pkt
+            except Exception:
+                # Legacy payload ended after content; treat as no placeholders.
+                size = 0
+            if 0 <= size <= 1000:  # defensive bound, mirrors Java
+                for _ in range(size):
+                    key = buffer.read_string()
+                    placeholders[key] = buffer.read_string()
+
+        return cls(
+            sender_id=sender_id,
+            sender_name=sender_name,
+            client_id=client_id,
+            channel_id=channel_id,
+            content=content,
+            placeholders=placeholders,
+        )
 
 
 @dataclass
@@ -437,7 +453,9 @@ class ConfigSyncPacket(Packet):
         return PacketIds.CONFIG_SYNC
 
     def encode(self, buffer: PacketBuffer) -> None:
-        buffer.write_string(self.config_json or "{}")
+        # Java only normalizes null/None to "{}"; an explicit empty string
+        # must be preserved on the wire.
+        buffer.write_string("{}" if self.config_json is None else self.config_json)
         buffer.write_long(self.timestamp)
 
     @classmethod
@@ -602,6 +620,53 @@ class MentionPacket(Packet):
 
 
 @dataclass
+class PrivateMessagePacket(Packet):
+    """Private message packet for cross-server /msg + /reply.
+
+    Packet ID: 0x14, Direction: Bidirectional.
+
+    Client -> Server: sender fields + target_name are filled; target_id may be
+    the nil UUID — the backend resolves the target by name. Server -> Client:
+    the backend fills the real target_id and the authoritative timestamp; the
+    plugin renders the sent/received line depending on which local player
+    matches sender_id/target_id.
+    """
+
+    sender_id: uuid.UUID
+    sender_name: str
+    sender_client_id: str
+    target_name: str
+    target_id: uuid.UUID
+    content: str
+    timestamp: int
+
+    @property
+    def packet_id(self) -> int:
+        return PacketIds.PRIVATE_MESSAGE
+
+    def encode(self, buffer: PacketBuffer) -> None:
+        buffer.write_uuid(self.sender_id)
+        buffer.write_string(self.sender_name or "")
+        buffer.write_string(self.sender_client_id or "")
+        buffer.write_string(self.target_name or "")
+        buffer.write_uuid(self.target_id)
+        buffer.write_string(self.content or "")
+        buffer.write_long(self.timestamp)
+
+    @classmethod
+    def decode(cls, buffer: PacketBuffer) -> "PrivateMessagePacket":
+        return cls(
+            sender_id=buffer.read_uuid(),
+            sender_name=buffer.read_string(),
+            sender_client_id=buffer.read_string(),
+            target_name=buffer.read_string(),
+            target_id=buffer.read_uuid(),
+            content=buffer.read_string(),
+            timestamp=buffer.read_long(),
+        )
+
+
+@dataclass
 class UnknownPacket(Packet):
     """Represents an unknown/unsupported packet type."""
 
@@ -635,6 +700,7 @@ PACKET_REGISTRY: Dict[int, type] = {
     PacketIds.CHANNEL_UPDATE: ChannelUpdatePacket,
     PacketIds.ITEM_DISPLAY: ItemDisplayPacket,
     PacketIds.MENTION: MentionPacket,
+    PacketIds.PRIVATE_MESSAGE: PrivateMessagePacket,
 }
 
 

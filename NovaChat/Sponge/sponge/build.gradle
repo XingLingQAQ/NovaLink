@@ -39,6 +39,10 @@ dependencies {
     testImplementation "org.assertj:assertj-core:${assertjVersion}"
     testImplementation "org.mockito:mockito-core:${mockitoVersion}"
     testImplementation "org.mockito:mockito-junit-jupiter:${mockitoVersion}"
+    // Platform API on the test classpath so Mockito can mock org.spongepowered.*
+    // types (compileOnly keeps it out of the shaded artifact; tests need it
+    // resolvable). Mirrors the nukkit module's testImplementation approach.
+    testImplementation 'org.spongepowered:spongeapi:8.2.0'
 }
 
 tasks.named('test') {

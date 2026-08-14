@@ -1,5 +1,7 @@
 package com.nova.link.database.dialect;
 
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.List;
 
 /**
@@ -14,6 +16,32 @@ import java.util.List;
  * <p>Requirements: 22.1 - Auto-migration on startup (multi-database support)
  */
 public interface MigrationDialect {
+
+    /**
+     * A column required by the hardened migration metadata schema.
+     *
+     * @param name       unquoted column name used when probing result metadata
+     * @param definition complete column definition used after {@code ADD COLUMN}
+     */
+    record MigrationMetadataColumn(String name, String definition) {
+    }
+
+    /**
+     * A database-level migration lock held for the whole migration run.
+     *
+     * <p>SQLite's lock owns the surrounding transaction, while MySQL and
+     * PostgreSQL use session locks and therefore leave per-version transaction
+     * handling to the runner.
+     */
+    interface MigrationLock {
+        boolean ownsTransaction();
+
+        /**
+         * Releases the lock. Transaction-owning locks commit only when
+         * {@code commitTransaction} is true; otherwise they roll back.
+         */
+        void release(boolean commitTransaction) throws SQLException;
+    }
 
     /**
      * The latest schema version this dialect knows how to produce.
@@ -39,6 +67,21 @@ public interface MigrationDialect {
     String getMigrationTableDdl();
 
     /**
+     * Columns added when bootstrapping a legacy migration table. Definitions
+     * deliberately omit non-constant defaults so SQLite can add them in place.
+     */
+    default List<MigrationMetadataColumn> getMigrationMetadataColumns() {
+        return List.of(
+                new MigrationMetadataColumn("applied_at", "applied_at TIMESTAMP"),
+                new MigrationMetadataColumn("description", "description VARCHAR(255)"),
+                new MigrationMetadataColumn("checksum", "checksum VARCHAR(64)"),
+                new MigrationMetadataColumn("started_at", "started_at TIMESTAMP"),
+                new MigrationMetadataColumn("completed_at", "completed_at TIMESTAMP"),
+                new MigrationMetadataColumn("status", "status VARCHAR(16)")
+        );
+    }
+
+    /**
      * The ordered list of DDL/DML statements to run when migrating to the
      * given {@code version}. Each statement is executed individually inside
      * a single transaction (where the backend supports DDL transactions).
@@ -58,11 +101,26 @@ public interface MigrationDialect {
     String getMigrationDescription(int version);
 
     /**
-     * The prepared INSERT used to record an applied migration in the
-     * tracking table. Must have two bind parameters: version (int) and
-     * description (String), in that order.
+     * SQL used to acquire the backend's database-level migration lock.
      *
-     * @return the INSERT SQL for recording a migration
+     * @return lock acquisition SQL, exposed for diagnostics and dialect tests
      */
-    String getRecordMigrationSql();
+    String getMigrationLockAcquireSql();
+
+    /**
+     * SQL used to release the backend's database-level migration lock.
+     *
+     * @return lock release SQL, exposed for diagnostics and dialect tests
+     */
+    String getMigrationLockReleaseSql();
+
+    /**
+     * Acquires the backend's database-level migration lock.
+     *
+     * @param connection    dedicated connection held for the whole migration
+     * @param timeoutMillis maximum time to wait for another migrator
+     * @return the acquired lock
+     * @throws SQLException when acquisition fails or times out
+     */
+    MigrationLock acquireMigrationLock(Connection connection, long timeoutMillis) throws SQLException;
 }

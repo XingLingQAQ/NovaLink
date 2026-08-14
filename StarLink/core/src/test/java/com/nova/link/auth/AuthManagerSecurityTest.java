@@ -190,6 +190,79 @@ class AuthManagerSecurityTest {
     }
 
     @Nested
+    @DisplayName("authenticatePanelUser (credential pooling)")
+    class PanelPooling {
+
+        @BeforeEach
+        void registerPanelAccounts() {
+            authManager.registerSuperAdmin("root", AuthManager.hashPassword("rootpass"));
+            authManager.registerPanelUser(new PanelUserCredentials(
+                    "mod", AuthManager.hashPassword("modpass"), PanelRole.ADMIN));
+        }
+
+        @Test
+        @DisplayName("game-server client credentials cannot log into the panel")
+        void gameClientRejected() {
+            PanelAuthResult result = authManager.authenticatePanelUser(
+                    "Survival_Server", "s3cret", "10.1.0.1");
+            assertThat(result.isSuccess()).isFalse();
+
+            // ...but the same credentials still work for game-server auth.
+            assertThat(authManager.authenticateWithPlainPassword(
+                    "Survival_Server", "s3cret", "10.1.0.1").isSuccess()).isTrue();
+        }
+
+        @Test
+        @DisplayName("super-admin logs in with SUPER_ADMIN role")
+        void superAdminHasRole() {
+            PanelAuthResult result = authManager.authenticatePanelUser("root", "rootpass", "10.1.0.2");
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.getCredentials().getRole()).isEqualTo(PanelRole.SUPER_ADMIN);
+        }
+
+        @Test
+        @DisplayName("panel-user logs in with its configured role")
+        void panelUserHasRole() {
+            PanelAuthResult result = authManager.authenticatePanelUser("mod", "modpass", "10.1.0.3");
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.getCredentials().getRole()).isEqualTo(PanelRole.ADMIN);
+            assertThat(result.getCredentials().getUsername()).isEqualTo("mod");
+        }
+
+        @Test
+        @DisplayName("wrong password records an IP failure; success clears it")
+        void failureTracking() {
+            String ip = "10.1.0.4";
+            assertThat(authManager.authenticatePanelUser("root", "bad", ip).isSuccess()).isFalse();
+            assertThat(ipBanManager.getFailureCount(ip)).isEqualTo(1);
+
+            assertThat(authManager.authenticatePanelUser("root", "rootpass", ip).isSuccess()).isTrue();
+            assertThat(ipBanManager.getFailureCount(ip)).isZero();
+        }
+
+        @Test
+        @DisplayName("banned IP is rejected even with correct panel credentials")
+        void bannedIpRejected() {
+            String ip = "10.1.0.5";
+            for (int i = 0; i < 3; i++) {
+                authManager.authenticatePanelUser("root", "bad", ip);
+            }
+            assertThat(ipBanManager.isBanned(ip)).isTrue();
+
+            PanelAuthResult result = authManager.authenticatePanelUser("root", "rootpass", ip);
+            assertThat(result.isSuccess()).isFalse();
+            assertThat(result.getErrorCode()).isEqualTo("NC-429");
+        }
+
+        @Test
+        @DisplayName("empty inputs are rejected")
+        void emptyInputs() {
+            assertThat(authManager.authenticatePanelUser("", "x", "10.1.0.6").isSuccess()).isFalse();
+            assertThat(authManager.authenticatePanelUser("root", "", "10.1.0.6").isSuccess()).isFalse();
+        }
+    }
+
+    @Nested
     @DisplayName("IpBanManager cleanup")
     class BanCleanup {
 
