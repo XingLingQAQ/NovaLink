@@ -61,3 +61,23 @@ novalink-core/logs/
 .playwright-mcp/
 .jqwik-database
 .jqwik-database/
+
+# Dev/AI tool artifacts and intermediate audit docs (kept locally, excluded from git history)
+.kiro/
+规划.md
+tmp-access-widener.jar
+tmp-access-widener-fabric.jar
+docs/superpowers/
+docs/I18N-MIGRATION-AND-CODE-AUDIT-2026-08.md
+docs/REVIEW-bugs.md
+docs/REVIEW-coupling.md
+docs/REVIEW-dup.md
+docs/TEST-MATRIX-CODE.md
+docs/UX-AUDIT-1.md
+docs/UX-AUDIT-2.md
+docs/UX-COPY-PROXY.md
+docs/UX-COPY-SERVER.md
+docs/UX-DESIGN-2.md
+docs/UX-DESIGN.md
+.cursor-handoff.full.md
+package-lock.json
