@@ -1072,6 +1072,7 @@ public class RedisProvider implements DatabaseProvider {
         String password;
         String ownerId;
         long createdAt;
+        int slowModeSeconds;
 
         ChannelDto() {}
 
@@ -1086,6 +1087,7 @@ public class RedisProvider implements DatabaseProvider {
             this.password = channel.getPassword();
             this.ownerId = channel.getOwnerId() != null ? channel.getOwnerId().toString() : null;
             this.createdAt = channel.getCreatedAt();
+            this.slowModeSeconds = channel.getSlowModeSeconds();
         }
 
         Channel toChannel() {
@@ -1097,6 +1099,7 @@ public class RedisProvider implements DatabaseProvider {
             if (ownerId != null) {
                 channel.setOwnerId(UUID.fromString(ownerId));
             }
+            channel.setSlowModeSeconds(slowModeSeconds);
             return channel;
         }
     }
