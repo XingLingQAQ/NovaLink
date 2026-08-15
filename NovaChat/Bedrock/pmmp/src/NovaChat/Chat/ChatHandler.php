@@ -71,22 +71,27 @@ class ChatHandler implements Listener {
     public function onPlayerChat(PlayerChatEvent $event): void {
         $player = $event->getPlayer();
         $message = $event->getMessage();
-        
+
         // Check if chat is enabled for this player
         $uuid = $player->getUniqueId()->toString();
         if (isset($this->chatEnabled[$uuid]) && !$this->chatEnabled[$uuid]) {
             return;
         }
-        
-        // Get player's current channel
-        $channelId = $this->getPlayerChannel($player);
-        
+
         // Check if we should replace vanilla chat
         $config = $this->plugin->getConfigManager();
-        if ($config->shouldReplaceVanilla()) {
-            $event->cancel();
+        if (!$config->shouldReplaceVanilla()) {
+            // HYBRID mode: let vanilla chat handle the message.
+            // Forwarding here would produce duplicates (vanilla + backend).
+            return;
         }
-        
+
+        // REPLACE mode: cancel vanilla chat and forward to the backend.
+        $event->cancel();
+
+        // Get player's current channel
+        $channelId = $this->getPlayerChannel($player);
+
         // Send message to backend
         $networkClient = $this->plugin->getNetworkClient();
         if ($networkClient !== null && $networkClient->isAuthenticated()) {

@@ -335,7 +335,14 @@ public final class CoreNetworkClient {
 
         Channel ch = channel;
         if (ch != null && ch.isActive()) {
-            ch.close().syncUninterruptibly();
+            // Async close: never block on the event loop. If disconnect() is
+            // invoked from a Netty handler, syncUninterruptibly() would deadlock
+            // waiting for a close future that can only complete on this thread.
+            ch.close().addListener((ChannelFutureListener) future -> {
+                if (!future.isSuccess()) {
+                    logger.warn("Error closing channel: " + future.cause().getMessage());
+                }
+            });
         }
         channel = null;
         connected.set(false);

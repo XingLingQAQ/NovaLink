@@ -221,14 +221,16 @@ public class SQLiteProvider extends AbstractJdbcProvider {
         }
 
         String sql = """
-            INSERT INTO channels (channel_id, display_name, scope, client_id, permission, max_capacity, allowed_worlds, password, owner_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO channels (channel_id, display_name, scope, client_id, permission, max_capacity, allowed_worlds, password, owner_id, slow_mode_seconds, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(channel_id) DO UPDATE SET
                 display_name = excluded.display_name,
                 permission = excluded.permission,
                 max_capacity = excluded.max_capacity,
                 allowed_worlds = excluded.allowed_worlds,
-                password = excluded.password
+                password = excluded.password,
+                owner_id = excluded.owner_id,
+                slow_mode_seconds = excluded.slow_mode_seconds
             """;
 
         try (Connection conn = dataSource.getConnection();
@@ -243,7 +245,8 @@ public class SQLiteProvider extends AbstractJdbcProvider {
             stmt.setString(7, String.join(",", channel.getAllowedWorlds()));
             stmt.setString(8, channel.getPassword());
             stmt.setString(9, channel.getOwnerId() != null ? channel.getOwnerId().toString() : null);
-            stmt.setLong(10, channel.getCreatedAt());
+            stmt.setInt(10, channel.getSlowModeSeconds());
+            stmt.setLong(11, channel.getCreatedAt());
 
             stmt.executeUpdate();
             logger.debug("Saved channel: {}", channel.getId());
@@ -289,6 +292,8 @@ public class SQLiteProvider extends AbstractJdbcProvider {
                     if (ownerId != null) {
                         channel.setOwnerId(UUID.fromString(ownerId));
                     }
+
+                    channel.setSlowModeSeconds(rs.getInt("slow_mode_seconds"));
 
                     return Optional.of(channel);
                 }
@@ -867,9 +872,9 @@ public class SQLiteProvider extends AbstractJdbcProvider {
     }
 
     @Override
-    public void markInvitationUsed(String code, UUID usedBy) throws DatabaseException {
+    public boolean markInvitationUsed(String code, UUID usedBy) throws DatabaseException {
         if (code == null) {
-            return;
+            return false;
         }
 
         // Guard with `AND used = 0` so two concurrent accepts cannot both flip
@@ -890,6 +895,7 @@ public class SQLiteProvider extends AbstractJdbcProvider {
             } else {
                 logger.debug("Marked invitation {} as used by {}", code, usedBy);
             }
+            return affected > 0;
         } catch (SQLException e) {
             throw new DatabaseException("Failed to mark invitation as used", e);
         }

@@ -59,7 +59,7 @@ public class ChatInterceptor implements Listener {
     private final java.util.Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
 
     /** Global chat mode derived from {@code chat.replace_vanilla}. */
-    private ChatMode globalMode;
+    private volatile ChatMode globalMode;
 
     public ChatInterceptor(NovaChatPNX plugin) {
         this.plugin = plugin;

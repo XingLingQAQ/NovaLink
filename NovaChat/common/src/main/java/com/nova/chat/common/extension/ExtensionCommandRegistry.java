@@ -74,10 +74,24 @@ public class ExtensionCommandRegistry {
             }
         }
 
-        // Register all names
+        // Register all names. Use putIfAbsent to avoid silently overwriting a
+        // name registered by another thread between the check above and here.
         RegisteredCommand registered = new RegisteredCommand(extensionId, command);
+        List<String> putNames = new ArrayList<>();
         for (String name : names) {
-            commands.put(name, registered);
+            RegisteredCommand existing = commands.putIfAbsent(name, registered);
+            if (existing != null) {
+                // Conflict: roll back the names we already put for this command.
+                LOGGER.warning("Command name conflict: '" + name + "' already registered; extension=" + extensionId);
+                for (String toRemove : putNames) {
+                    commands.remove(toRemove, registered);
+                }
+                return false;
+            }
+            putNames.add(name);
+        }
+
+        for (String name : putNames) {
             extensionCommandNames.computeIfAbsent(extensionId, k -> ConcurrentHashMap.newKeySet()).add(name);
         }
 

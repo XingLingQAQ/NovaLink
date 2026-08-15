@@ -240,6 +240,15 @@ public class ChatInterceptor implements ChatHandler {
     }
 
     @Override
+    public boolean shouldReplaceVanillaChat(UUID playerId) {
+        PlayerChannelState state = playerStates.get(playerId);
+        if (state != null && state.isModeOverridden()) {
+            return state.getChatMode() == ChatMode.REPLACE;
+        }
+        return globalMode == ChatMode.REPLACE;
+    }
+
+    @Override
     public void displayMessage(UUID playerId, String formattedMessage) {
         if (platform.isPlayerOnline(playerId)) {
             platform.sendMessage(playerId, messageFormatter.parseColors(formattedMessage));

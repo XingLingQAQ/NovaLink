@@ -193,14 +193,18 @@ export function useDashboardData({ addToast, currentUser }) {
   // --- Actions ---
 
   // Send a message via REST POST /api/messages.
+  // Returns true on success, false on failure so callers can avoid clearing the
+  // input on a failed send (the error toast is shown here).
   const handleSendMessage = useCallback(async (channelId, content) => {
-    if (!channelId || !content) return;
+    if (!channelId || !content) return false;
     const senderName = (currentUser && currentUser.username) || 'Panel';
     try {
       await api.sendMessage(channelId, content, senderName);
       addToast(t('messages.toast_sent'), 'success');
+      return true;
     } catch (err) {
       addToast(t('messages.toast_send_failed', { error: err.message }), 'error');
+      return false;
     }
   }, [currentUser, addToast, t]);
 

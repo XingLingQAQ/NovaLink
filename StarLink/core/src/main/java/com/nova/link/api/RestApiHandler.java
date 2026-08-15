@@ -1680,8 +1680,13 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             String channelId = json.has("channelId") ? json.get("channelId").getAsString() : null;
             String senderName = json.has("senderName") ? json.get("senderName").getAsString() : "API";
             String content = json.has("content") ? json.get("content").getAsString() : null;
-            
-            if (channelId == null || content == null) {
+
+            if (content == null || content.isBlank()) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Content is required");
+                return;
+            }
+
+            if (channelId == null) {
                 sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Missing channelId or content");
                 return;
             }

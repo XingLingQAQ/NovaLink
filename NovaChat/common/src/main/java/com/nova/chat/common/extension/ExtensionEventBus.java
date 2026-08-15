@@ -117,14 +117,17 @@ public class ExtensionEventBus {
         Objects.requireNonNull(listener, "listener cannot be null");
         
         RegisteredListener<T> registered = new RegisteredListener<>(extensionId, listener, priority);
-        
-        // Add to event type listeners
-        listeners.computeIfAbsent(eventClass, k -> new CopyOnWriteArrayList<>())
-                 .add(registered);
-        
-        // Sort by priority (highest first)
-        List<RegisteredListener<?>> eventListeners = listeners.get(eventClass);
-        eventListeners.sort((a, b) -> Integer.compare(b.priority, a.priority));
+
+        // Add to event type listeners. The add and sort must be atomic together;
+        // a concurrent register() inserting between them would leave the list
+        // unsorted. Synchronizing on the list is fine because register() is
+        // called rarely (at startup), while dispatch (fire) is the hot path
+        // and reads without synchronization via CopyOnWriteArrayList iterators.
+        List<RegisteredListener<?>> eventListeners = listeners.computeIfAbsent(eventClass, k -> new CopyOnWriteArrayList<>());
+        synchronized (eventListeners) {
+            eventListeners.add(registered);
+            eventListeners.sort((a, b) -> Integer.compare(b.priority, a.priority));
+        }
         
         // Track for extension cleanup
         extensionListeners.computeIfAbsent(extensionId, k -> new CopyOnWriteArrayList<>())

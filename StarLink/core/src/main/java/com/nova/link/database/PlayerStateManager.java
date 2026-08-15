@@ -247,10 +247,13 @@ public class PlayerStateManager {
      * @param channelId the channel ID
      */
     public void leaveChannel(UUID playerId, String channelId) {
+        if (channelId == null) {
+            return;
+        }
         PlayerState state = cache.get(playerId);
         if (state != null) {
             state.removeJoinedChannel(channelId);
-            if (channelId.equals(state.getActiveChannel())) {
+            if (java.util.Objects.equals(channelId, state.getActiveChannel())) {
                 state.setActiveChannel(null);
             }
             markDirty(playerId);

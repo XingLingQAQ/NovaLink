@@ -1,6 +1,7 @@
 package com.nova.link.database;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Represents the persistent state of a player in the NovaLink system.
@@ -44,8 +45,8 @@ public class PlayerState {
 
     public PlayerState(UUID playerId) {
         this.playerId = Objects.requireNonNull(playerId, "Player ID cannot be null");
-        this.joinedChannels = new HashSet<>();
-        this.mutes = new HashMap<>();
+        this.joinedChannels = ConcurrentHashMap.newKeySet();
+        this.mutes = new ConcurrentHashMap<>();
         this.lastSeen = System.currentTimeMillis();
     }
 
@@ -60,9 +61,10 @@ public class PlayerState {
         this.playerName = other.playerName;
         this.clientId = other.clientId;
         this.currentWorld = other.currentWorld;
-        this.joinedChannels = new HashSet<>(other.joinedChannels);
+        this.joinedChannels = ConcurrentHashMap.newKeySet();
+        this.joinedChannels.addAll(other.joinedChannels);
         this.activeChannel = other.activeChannel;
-        this.mutes = new HashMap<>(other.mutes);
+        this.mutes = new ConcurrentHashMap<>(other.mutes);
         this.platform = other.platform;
         this.dmEnabled = other.dmEnabled;
         this.lastSeen = other.lastSeen;
@@ -103,7 +105,11 @@ public class PlayerState {
     }
 
     public void setJoinedChannels(Set<String> joinedChannels) {
-        this.joinedChannels = joinedChannels != null ? new HashSet<>(joinedChannels) : new HashSet<>();
+        Set<String> newSet = ConcurrentHashMap.newKeySet();
+        if (joinedChannels != null) {
+            newSet.addAll(joinedChannels);
+        }
+        this.joinedChannels = newSet;
     }
 
     /** Adds a channel id to the player's joined set; null ids are ignored. */
@@ -135,7 +141,7 @@ public class PlayerState {
     }
 
     public void setMutes(Map<String, MuteInfo> mutes) {
-        this.mutes = mutes != null ? new HashMap<>(mutes) : new HashMap<>();
+        this.mutes = mutes != null ? new ConcurrentHashMap<>(mutes) : new ConcurrentHashMap<>();
     }
 
     /** Associates a mute with the given channel id; null keys or values are ignored. */

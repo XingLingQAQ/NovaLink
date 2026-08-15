@@ -95,13 +95,17 @@ public class NeoForgePlatform implements Platform {
             UUID playerId = player.getUUID();
             String playerName = player.getName().getString();
             String content = event.getMessage().getString();
-            
+
             LOGGER.debug("Chat intercepted from {}: {}", playerName, content);
             chatHandler.onPlayerChat(playerId, playerName, content);
-            
-            // If replaceVanillaChat is true, cancel the vanilla chat message
-            // The message will be handled by our chat handler instead
-            if (replaceVanillaChat) {
+
+            // Cancel vanilla chat only when the player's effective mode is
+            // REPLACE. Checking the global replaceVanillaChat flag alone would
+            // lose messages for players who have a per-player HYBRID override
+            // (onPlayerChat returns early without forwarding, but vanilla would
+            // still be canceled). Mirrors the Fabric adapter's effective-mode
+            // cancellation behavior.
+            if (chatHandler.shouldReplaceVanillaChat(playerId)) {
                 event.setCanceled(true);
             }
         }
@@ -345,6 +349,8 @@ public class NeoForgePlatform implements Platform {
         broadcastMessage(component);
     }
     
+    private static final String COLOR_CODE_CHARS = "0123456789abcdefklmnorABCDEFKLMNOR";
+
     /**
      * Parse color codes in a message and convert to Component
      * Supports & color codes (e.g., &c for red, &l for bold)
@@ -355,9 +361,32 @@ public class NeoForgePlatform implements Platform {
         if (message == null || message.isEmpty()) {
             return Component.empty();
         }
-        
-        // Convert & color codes to § for Minecraft
-        String converted = message.replace("&", "§");
-        return Component.literal(converted);
+
+        return Component.literal(parseColorCodesToSection(message));
+    }
+
+    /**
+     * Replaces {@code &X} with {@code §X} only when {@code X} is a valid
+     * Minecraft color/format code. A bare {@code &} not followed by a valid
+     * code character is preserved as-is so plain text like {@code "Tom & Jerry"}
+     * is not corrupted into garbage section signs.
+     */
+    private static String parseColorCodesToSection(String message) {
+        if (message == null || message.isEmpty()) {
+            return message;
+        }
+        StringBuilder sb = new StringBuilder(message.length());
+        int len = message.length();
+        for (int i = 0; i < len; i++) {
+            char c = message.charAt(i);
+            if (c == '&' && i + 1 < len
+                    && COLOR_CODE_CHARS.indexOf(message.charAt(i + 1)) >= 0) {
+                sb.append('§').append(message.charAt(i + 1));
+                i++;
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 }

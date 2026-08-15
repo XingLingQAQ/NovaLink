@@ -72,7 +72,7 @@ function MessageMonitor({
     if (messageInput.trim() && onSendMessage) {
       setSending(true);
       Promise.resolve(onSendMessage(targetChannel, messageInput.trim()))
-        .then(() => setMessageInput(''))
+        .then((result) => { if (result) setMessageInput(''); })
         .finally(() => setSending(false));
     }
   };
@@ -182,7 +182,7 @@ function MessageMonitor({
                 type="text"
                 value={messageInput}
                 onChange={(e) => setMessageInput(e.target.value)}
-                onKeyPress={handleKeyPress}
+                onKeyDown={handleKeyPress}
                 placeholder={t('messages.input_placeholder')}
                 className="flex-1 h-8 rounded-md border-0 bg-secondary/55 px-3 py-1 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring placeholder:text-muted-foreground text-foreground"
               />

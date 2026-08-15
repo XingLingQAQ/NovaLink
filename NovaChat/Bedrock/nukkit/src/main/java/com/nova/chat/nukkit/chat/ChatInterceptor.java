@@ -67,7 +67,7 @@ public class ChatInterceptor implements Listener {
     private final java.util.Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
     
     /** Global chat mode from configuration */
-    private ChatMode globalMode;
+    private volatile ChatMode globalMode;
     
     /**
      * Creates a new ChatInterceptor.

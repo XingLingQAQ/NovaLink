@@ -191,9 +191,14 @@ public class InvitationManager {
             return InvitationResult.invalid("NC-409", "Channel is full");
         }
         
-        // Mark invitation as used
-        databaseProvider.markInvitationUsed(code, playerId);
-        
+        // Mark invitation as used. The provider makes the used=false → used=true
+        // flip atomic; a false return means another caller already consumed the
+        // invitation, so we must NOT add this player to the channel.
+        boolean marked = databaseProvider.markInvitationUsed(code, playerId);
+        if (!marked) {
+            return InvitationResult.invalid("NC-411", "Invitation has already been used");
+        }
+
         // Add player to channel
         boolean added = channelManager.addMember(channelId, playerId);
         if (!added) {

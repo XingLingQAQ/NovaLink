@@ -30,7 +30,7 @@ public class PostgreSQLDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
     private static final long MIGRATION_LOCK_KEY = 0x4E4F56414C494E4BL;
-    private static final int CURRENT_VERSION = 6;
+    private static final int CURRENT_VERSION = 7;
 
     @Override
     public int getCurrentVersion() {
@@ -92,6 +92,7 @@ public class PostgreSQLDialect implements MigrationDialect {
                         allowed_worlds TEXT,
                         password VARCHAR(128),
                         owner_id VARCHAR(36),
+                        slow_mode_seconds INT NOT NULL DEFAULT 0,
                         created_at BIGINT,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
@@ -243,6 +244,14 @@ public class PostgreSQLDialect implements MigrationDialect {
                     """);
             }
 
+            case 7 -> {
+                // Add slow_mode_seconds column to channels table so channel
+                // slow-mode configuration persists.
+                statements.add("""
+                    ALTER TABLE channels ADD COLUMN IF NOT EXISTS slow_mode_seconds INT NOT NULL DEFAULT 0
+                    """);
+            }
+
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -258,6 +267,7 @@ public class PostgreSQLDialect implements MigrationDialect {
             case 4 -> "Add notifications table for persisted panel notifications";
             case 5 -> "Add messages, announcements and webhooks tables for persistence";
             case 6 -> "Add dm_enabled column to players table to persist DM opt-out";
+            case 7 -> "Add slow_mode_seconds column to channels table to persist slow-mode config";
             default -> "Unknown migration";
         };
     }

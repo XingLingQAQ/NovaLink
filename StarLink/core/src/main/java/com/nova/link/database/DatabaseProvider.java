@@ -284,11 +284,19 @@ public interface DatabaseProvider {
     /**
      * Marks an invitation as used.
      *
+     * <p>Implementations must make the used=false → used=true flip atomic and
+     * return {@code true} only when this caller actually performed the flip.
+     * A {@code false} return means another caller already consumed the
+     * invitation, so the caller must NOT proceed with side effects (e.g.
+     * adding the player to the channel).
+     *
      * @param code the invitation code
      * @param usedBy the UUID of the player who used it
+     * @return true if this call marked the invitation as used; false if it was
+     *         already used (or missing) when this call ran
      * @throws DatabaseException if the operation fails
      */
-    void markInvitationUsed(String code, UUID usedBy) throws DatabaseException;
+    boolean markInvitationUsed(String code, UUID usedBy) throws DatabaseException;
 
     /**
      * Deletes an invitation.

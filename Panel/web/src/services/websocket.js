@@ -153,6 +153,13 @@ class WebSocketService {
     this.state = ConnectionState.DISCONNECTED;
     this._stopPingInterval();
 
+    // Clear a pending auth timeout + its listener so disconnect-during-auth
+    // doesn't leak a dangling setTimeout / AUTH_RESPONSE handler.
+    if (this._authTimeoutId) {
+      clearTimeout(this._authTimeoutId);
+      this._authTimeoutId = null;
+    }
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -171,6 +178,7 @@ class WebSocketService {
 
     this.subscribedChannels.clear();
     this.pendingResubscribeChannels.clear();
+    this.messageQueue = [];
     this._notifyStateChange();
   }
 
@@ -202,7 +210,11 @@ class WebSocketService {
       const authHandler = (data) => {
         if (data.type === MessageType.AUTH_RESPONSE) {
           this.off(MessageType.AUTH_RESPONSE, authHandler);
-          
+          if (this._authTimeoutId) {
+            clearTimeout(this._authTimeoutId);
+            this._authTimeoutId = null;
+          }
+
           if (data.success) {
             this.state = ConnectionState.AUTHENTICATED;
             this._notifyStateChange();
@@ -214,12 +226,13 @@ class WebSocketService {
       };
 
       this.on(MessageType.AUTH_RESPONSE, authHandler);
-      
+
       // Send auth message
       this._send(authMessage);
 
       // Timeout for auth response
-      setTimeout(() => {
+      this._authTimeoutId = setTimeout(() => {
+        this._authTimeoutId = null;
         this.off(MessageType.AUTH_RESPONSE, authHandler);
         if (this.state !== ConnectionState.AUTHENTICATED) {
           reject(new Error('Authentication timeout'));

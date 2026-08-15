@@ -69,6 +69,14 @@ class NetworkClient:
         self._writer: Optional[asyncio.StreamWriter] = None
         self._connected = False
         self._authenticated = False
+
+        # The asyncio event loop running the background read/keepalive tasks.
+        # Captured in connect() (which is async, so a loop is running) so that
+        # callers on non-loop threads (e.g. Endstone's main-thread chat events)
+        # can schedule coroutines onto it via run_coroutine_threadsafe instead
+        # of asyncio.create_task (which requires a running loop in the current
+        # thread and raises RuntimeError otherwise).
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         
         self._reconnect_delay = 5
         self._max_reconnect_delay = 60
@@ -99,6 +107,15 @@ class NetworkClient:
         # reconnect loop also lands here, but disconnect() cancels that task
         # before it can run again, so re-arming is safe.
         self._closing = False
+
+        # Capture the running loop so callers on other threads can schedule
+        # coroutines back onto it via run_coroutine_threadsafe (Bug 4: the
+        # chat handler's on_player_chat runs on Endstone's main thread where
+        # no asyncio loop is running, so asyncio.create_task raises).
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = asyncio.get_event_loop()
         
         try:
             self._logger.info(f"Connecting to {self._host}:{self._port}...")
@@ -482,3 +499,15 @@ class NetworkClient:
     def is_connected(self) -> bool:
         """Check if connected to the backend."""
         return self._connected and self._authenticated
+
+    @property
+    def loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """The asyncio event loop backing this client's background tasks.
+
+        Callers running on a non-loop thread (e.g. Endstone's main server
+        thread) use this with :func:`asyncio.run_coroutine_threadsafe` to
+        schedule coroutines onto the client's loop instead of
+        :func:`asyncio.create_task`, which requires a running loop in the
+        current thread.
+        """
+        return self._loop

@@ -10,11 +10,14 @@ import io.netty.handler.codec.MessageToMessageDecoder;
 
 import java.util.UUID;
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * Decodes ByteBuf frames into Packet objects using the PacketRegistry.
  */
 public class PacketDecoder extends MessageToMessageDecoder<ByteBuf> {
+
+    private static final Logger logger = Logger.getLogger(PacketDecoder.class.getName());
 
     private final PacketRegistry registry;
 
@@ -32,6 +35,7 @@ public class PacketDecoder extends MessageToMessageDecoder<ByteBuf> {
         int packetId = msg.readUnsignedByte();
         Packet packet = registry.createPacket(packetId);
         if (packet == null) {
+            logger.fine("Unknown packet ID: " + packetId + " (no handler registered)");
             return;
         }
 
@@ -54,6 +58,7 @@ public class PacketDecoder extends MessageToMessageDecoder<ByteBuf> {
             // Fall back to legacy handshake (no requestId).
             Packet legacyPacket = registry.createPacket(packetId);
             if (legacyPacket == null) {
+                logger.fine("Unknown packet ID: " + packetId + " (no handler registered for legacy fallback)");
                 return;
             }
             legacyPacket.setRequestId(UUID.randomUUID());

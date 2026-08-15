@@ -124,10 +124,10 @@ function SettingsView({
             </div>
             <div className="flex items-center p-0.5 rounded-full gap-0.5 border border-border bg-muted/60">
               <button type="button" aria-pressed={modeState === 'light'} onClick={() => setMode('light')} className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${modeState === 'light' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
-                <Sun size={12} className="inline mr-1" />Light
+                <Sun size={12} className="inline mr-1" />{t('common.theme_light')}
               </button>
               <button type="button" aria-pressed={modeState === 'dark'} onClick={() => setMode('dark')} className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${modeState === 'dark' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
-                <Moon size={12} className="inline mr-1" />Dark
+                <Moon size={12} className="inline mr-1" />{t('common.theme_dark')}
               </button>
             </div>
           </div>

@@ -450,12 +450,23 @@ public class MemoryProvider implements DatabaseProvider {
     }
 
     @Override
-    public void markInvitationUsed(String code, UUID usedBy) throws DatabaseException {
+    public boolean markInvitationUsed(String code, UUID usedBy) throws DatabaseException {
         checkConnection();
         Invitation invitation = invitations.get(code);
-        if (invitation != null) {
+        if (invitation == null) {
+            return false;
+        }
+        // Atomic check-and-mark: only the caller that observes used=false may
+        // flip it, mirroring the SQL `AND used = FALSE` guard. Without this,
+        // two concurrent accepts could both see used=false and both proceed.
+        synchronized (invitation) {
+            if (invitation.isUsed()) {
+                logger.debug("Invitation {} already marked used; skipping", code);
+                return false;
+            }
             invitation.markUsed(usedBy);
             logger.debug("Marked invitation {} as used by {}", code, usedBy);
+            return true;
         }
     }
 

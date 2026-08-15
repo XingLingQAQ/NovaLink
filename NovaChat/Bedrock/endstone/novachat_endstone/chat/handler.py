@@ -168,9 +168,24 @@ class ChatHandler:
             # Cancel vanilla chat if configured to replace it
             if self._config_manager.replace_vanilla:
                 event.cancelled = True
-            
-            # Send message to backend asynchronously
-            asyncio.create_task(self._send_chat_message(player, channel_id, message))
+
+            # Schedule the backend send on the network client's background
+            # event loop. on_player_chat runs on Endstone's main server thread
+            # where no asyncio loop is running, so asyncio.create_task would
+            # raise RuntimeError and silently drop the message. Using
+            # run_coroutine_threadsafe submits the coroutine to the client's
+            # loop from any thread.
+            loop = self._network_client.loop
+            if loop is not None:
+                asyncio.run_coroutine_threadsafe(
+                    self._send_chat_message(player, channel_id, message),
+                    loop,
+                )
+            else:
+                self._logger.warning(
+                    "No event loop available on network client; "
+                    "dropping chat message"
+                )
             
             self._logger.debug(
                 f"Intercepted chat from {player.name} in channel {channel_id}: {message}"

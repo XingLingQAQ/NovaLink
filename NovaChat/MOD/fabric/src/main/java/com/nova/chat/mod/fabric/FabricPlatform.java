@@ -348,6 +348,8 @@ public class FabricPlatform implements Platform {
         broadcastMessage(component);
     }
     
+    private static final String COLOR_CODE_CHARS = "0123456789abcdefklmnorABCDEFKLMNOR";
+
     /**
      * Parse color codes in a message and convert to Component
      * Supports & color codes (e.g., &c for red, &l for bold)
@@ -358,9 +360,32 @@ public class FabricPlatform implements Platform {
         if (message == null || message.isEmpty()) {
             return Component.empty();
         }
-        
-        // Convert & color codes to § for Minecraft
-        String converted = message.replace("&", "§");
-        return Component.literal(converted);
+
+        return Component.literal(parseColorCodesToSection(message));
+    }
+
+    /**
+     * Replaces {@code &X} with {@code §X} only when {@code X} is a valid
+     * Minecraft color/format code. A bare {@code &} not followed by a valid
+     * code character is preserved as-is so plain text like {@code "Tom & Jerry"}
+     * is not corrupted into garbage section signs.
+     */
+    private static String parseColorCodesToSection(String message) {
+        if (message == null || message.isEmpty()) {
+            return message;
+        }
+        StringBuilder sb = new StringBuilder(message.length());
+        int len = message.length();
+        for (int i = 0; i < len; i++) {
+            char c = message.charAt(i);
+            if (c == '&' && i + 1 < len
+                    && COLOR_CODE_CHARS.indexOf(message.charAt(i + 1)) >= 0) {
+                sb.append('§').append(message.charAt(i + 1));
+                i++;
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 }

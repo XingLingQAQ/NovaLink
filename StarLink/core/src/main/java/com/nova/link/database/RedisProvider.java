@@ -724,9 +724,9 @@ public class RedisProvider implements DatabaseProvider {
     }
 
     @Override
-    public void markInvitationUsed(String code, UUID usedBy) throws DatabaseException {
+    public boolean markInvitationUsed(String code, UUID usedBy) throws DatabaseException {
         if (code == null) {
-            return;
+            return false;
         }
 
         try (Jedis jedis = jedisPool.getResource()) {
@@ -740,14 +740,14 @@ public class RedisProvider implements DatabaseProvider {
                 String json = jedis.get(key);
                 if (json == null) {
                     jedis.unwatch();
-                    return;
+                    return false;
                 }
                 InvitationDto dto = gson.fromJson(json, InvitationDto.class);
                 if (dto.used) {
                     // Already used by another thread — do not overwrite.
                     jedis.unwatch();
                     logger.debug("Invitation {} already marked used; skipping", code);
-                    return;
+                    return false;
                 }
                 dto.used = true;
                 dto.usedBy = usedBy != null ? usedBy.toString() : null;
@@ -766,9 +766,10 @@ public class RedisProvider implements DatabaseProvider {
                     // EXEC aborted: the key changed underneath us — another
                     // thread won the race.
                     logger.debug("Concurrent markInvitationUsed on {}; aborted in favor of earlier writer", code);
-                    return;
+                    return false;
                 }
                 logger.debug("Marked invitation {} as used by {}", code, usedBy);
+                return true;
             } catch (Exception e) {
                 jedis.unwatch();
                 throw e;

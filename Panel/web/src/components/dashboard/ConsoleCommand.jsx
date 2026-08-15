@@ -45,16 +45,16 @@ function ConsoleCommand({ theme, mode, txtMain: _txtMain, txtSec: _txtSec }) {
     const cmd = input.trim();
     if (!cmd || running) return;
     setRunning(true);
-    setCmdHistory((prev) => [...prev, cmd]);
+    setCmdHistory((prev) => [...prev, cmd].slice(-500));
     setHistoryIdx(-1);
     setInput('');
     try {
       const res = await api.runConsoleCommand(cmd);
       const output = (res && res.output) || '';
-      setHistory((prev) => [...prev, { command: cmd, output, error: false }]);
+      setHistory((prev) => [...prev, { command: cmd, output, error: false }].slice(-200));
     } catch (err) {
       const msg = (err && err.message) || String(err);
-      setHistory((prev) => [...prev, { command: cmd, output: msg, error: true }]);
+      setHistory((prev) => [...prev, { command: cmd, output: msg, error: true }].slice(-200));
     } finally {
       setRunning(false);
       if (inputRef.current) inputRef.current.focus();

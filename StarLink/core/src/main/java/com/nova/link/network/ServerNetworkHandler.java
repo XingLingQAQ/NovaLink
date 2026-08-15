@@ -229,6 +229,9 @@ public class ServerNetworkHandler {
      * @return the connection, or null if not found
      */
     public ClientConnection findByClientId(String clientId) {
+        if (clientId == null) {
+            return null;
+        }
         for (ClientConnection connection : connections) {
             if (clientId.equals(connection.getClientId())) {
                 return connection;

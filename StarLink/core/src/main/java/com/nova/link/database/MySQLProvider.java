@@ -229,14 +229,16 @@ public class MySQLProvider extends AbstractJdbcProvider {
         }
 
         String sql = """
-            INSERT INTO channels (channel_id, display_name, scope, client_id, permission, max_capacity, allowed_worlds, password, owner_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO channels (channel_id, display_name, scope, client_id, permission, max_capacity, allowed_worlds, password, owner_id, slow_mode_seconds, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 display_name = VALUES(display_name),
                 permission = VALUES(permission),
                 max_capacity = VALUES(max_capacity),
                 allowed_worlds = VALUES(allowed_worlds),
-                password = VALUES(password)
+                password = VALUES(password),
+                owner_id = VALUES(owner_id),
+                slow_mode_seconds = VALUES(slow_mode_seconds)
             """;
 
         try (Connection conn = dataSource.getConnection();
@@ -251,7 +253,8 @@ public class MySQLProvider extends AbstractJdbcProvider {
             stmt.setString(7, String.join(",", channel.getAllowedWorlds()));
             stmt.setString(8, channel.getPassword());
             stmt.setString(9, channel.getOwnerId() != null ? channel.getOwnerId().toString() : null);
-            stmt.setLong(10, channel.getCreatedAt());
+            stmt.setInt(10, channel.getSlowModeSeconds());
+            stmt.setLong(11, channel.getCreatedAt());
 
             stmt.executeUpdate();
             logger.debug("Saved channel: {}", channel.getId());
@@ -297,6 +300,8 @@ public class MySQLProvider extends AbstractJdbcProvider {
                     if (ownerId != null) {
                         channel.setOwnerId(UUID.fromString(ownerId));
                     }
+
+                    channel.setSlowModeSeconds(rs.getInt("slow_mode_seconds"));
 
                     return Optional.of(channel);
                 }
@@ -884,9 +889,9 @@ public class MySQLProvider extends AbstractJdbcProvider {
     }
 
     @Override
-    public void markInvitationUsed(String code, UUID usedBy) throws DatabaseException {
+    public boolean markInvitationUsed(String code, UUID usedBy) throws DatabaseException {
         if (code == null) {
-            return;
+            return false;
         }
 
         // Guard with `AND used = FALSE` so two concurrent accepts cannot both
@@ -907,6 +912,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
             } else {
                 logger.debug("Marked invitation {} as used by {}", code, usedBy);
             }
+            return affected > 0;
         } catch (SQLException e) {
             throw new DatabaseException("Failed to mark invitation as used", e);
         }

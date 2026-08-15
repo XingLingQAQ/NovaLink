@@ -22,7 +22,7 @@ public class MySQLDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
     private static final String MIGRATION_LOCK_NAME = "novalink_schema_migration";
-    private static final int CURRENT_VERSION = 6;
+    private static final int CURRENT_VERSION = 7;
 
     @Override
     public int getCurrentVersion() {
@@ -85,6 +85,7 @@ public class MySQLDialect implements MigrationDialect {
                         allowed_worlds TEXT,
                         password VARCHAR(128),
                         owner_id VARCHAR(36),
+                        slow_mode_seconds INT NOT NULL DEFAULT 0,
                         created_at BIGINT,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         INDEX idx_scope (scope),
@@ -282,6 +283,29 @@ public class MySQLDialect implements MigrationDialect {
                 statements.add("DROP PROCEDURE IF EXISTS novalink_add_dm_enabled_column");
             }
 
+            case 7 -> {
+                // Add slow_mode_seconds column to channels table so channel
+                // slow-mode configuration persists. Same information_schema-guarded
+                // procedure pattern as v2/v6: standard MySQL 8.0 has no
+                // "ADD COLUMN IF NOT EXISTS".
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_slow_mode_seconds_column");
+                statements.add("""
+                    CREATE PROCEDURE novalink_add_slow_mode_seconds_column()
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = DATABASE()
+                              AND table_name = 'channels'
+                              AND column_name = 'slow_mode_seconds'
+                        ) THEN
+                            ALTER TABLE channels ADD COLUMN slow_mode_seconds INT NOT NULL DEFAULT 0 AFTER owner_id;
+                        END IF;
+                    END
+                    """);
+                statements.add("CALL novalink_add_slow_mode_seconds_column()");
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_slow_mode_seconds_column");
+            }
+
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -297,6 +321,7 @@ public class MySQLDialect implements MigrationDialect {
             case 4 -> "Add notifications table for persisted panel notifications";
             case 5 -> "Add messages, announcements and webhooks tables for persistence";
             case 6 -> "Add dm_enabled column to players table to persist DM opt-out";
+            case 7 -> "Add slow_mode_seconds column to channels table to persist slow-mode config";
             default -> "Unknown migration";
         };
     }

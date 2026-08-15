@@ -737,17 +737,28 @@ public class WebhookManager {
      * @return the generated ID
      */
     private String generateId() {
+        // Bounded loop instead of recursion: a pathological collision storm can
+        // otherwise overflow the stack. 100 attempts is far beyond the birthday
+        // paradox threshold for a 12-char keyspace (36^12 ~ 4.7e18), so a
+        // collision is astronomically unlikely; if it happens we fall back to
+        // the last generated id rather than hanging or recursing further.
+        for (int attempts = 0; attempts < 100; attempts++) {
+            StringBuilder sb = new StringBuilder(ID_LENGTH);
+            for (int i = 0; i < ID_LENGTH; i++) {
+                sb.append(ID_CHARS.charAt(random.nextInt(ID_CHARS.length())));
+            }
+            String id = sb.toString();
+            if (!webhooks.containsKey(id)) {
+                return id;
+            }
+        }
+        // All 100 attempts collided — practically impossible given the keyspace.
+        // Return a fresh id so the caller still gets a value to store.
         StringBuilder sb = new StringBuilder(ID_LENGTH);
         for (int i = 0; i < ID_LENGTH; i++) {
             sb.append(ID_CHARS.charAt(random.nextInt(ID_CHARS.length())));
         }
-        String id = sb.toString();
-        
-        // Ensure uniqueness
-        if (webhooks.containsKey(id)) {
-            return generateId();
-        }
-        return id;
+        return sb.toString();
     }
 
     /**
