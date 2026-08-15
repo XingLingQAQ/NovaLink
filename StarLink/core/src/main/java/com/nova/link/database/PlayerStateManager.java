@@ -52,9 +52,11 @@ public class PlayerStateManager {
             Optional<PlayerState> loaded = databaseProvider.loadPlayerState(playerId);
             if (loaded.isPresent()) {
                 PlayerState state = loaded.get();
-                cache.put(playerId, state);
+                // Use putIfAbsent so a concurrent caller that already cached a
+                // (possibly newer) state wins; we return whichever is canonical.
+                PlayerState existing = cache.putIfAbsent(playerId, state);
                 logger.debug("Loaded player state from database: {}", playerId);
-                return state;
+                return existing != null ? existing : state;
             }
         } catch (DatabaseException e) {
             logger.warn("Failed to load player state from database: {}", playerId, e);
@@ -62,10 +64,14 @@ public class PlayerStateManager {
 
         // Create new state
         PlayerState newState = new PlayerState(playerId, playerName);
-        cache.put(playerId, newState);
-        dirtyStates.add(playerId);
-        logger.debug("Created new player state: {}", playerId);
-        return newState;
+        PlayerState existing = cache.putIfAbsent(playerId, newState);
+        if (existing == null) {
+            dirtyStates.add(playerId);
+            logger.debug("Created new player state: {}", playerId);
+            return newState;
+        }
+        // Another thread cached a state between our check and the put; return it.
+        return existing;
     }
 
     /**
