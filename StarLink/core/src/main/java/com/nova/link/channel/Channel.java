@@ -110,7 +110,7 @@ public class Channel {
      * @param playerId the player UUID to add
      * @return true if the player was added, false if already a member or at capacity
      */
-    public boolean addMember(UUID playerId) {
+    public synchronized boolean addMember(UUID playerId) {
         if (playerId == null) {
             return false;
         }

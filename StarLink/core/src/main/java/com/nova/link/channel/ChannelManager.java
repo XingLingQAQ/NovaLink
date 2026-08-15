@@ -89,18 +89,14 @@ public class ChannelManager {
      */
     public Channel createChannel(ChannelConfig config) {
         Objects.requireNonNull(config, "Channel config cannot be null");
-        
+
         String channelId = config.getId();
-        
+
         // Generate ID for private channels if not provided
         if (config.getScope() == ChannelScope.PRIVATE && (channelId == null || channelId.isEmpty())) {
             channelId = generatePrivateChannelId();
         }
-        
-        if (channels.containsKey(channelId)) {
-            throw new IllegalArgumentException("Channel with ID '" + channelId + "' already exists");
-        }
-        
+
         Channel channel = new Channel(channelId, config.getDisplayName(), config.getScope(), config.getClientId());
         channel.setPermission(config.getPermission());
         channel.setMaxCapacity(config.getMaxCapacity());
@@ -108,10 +104,14 @@ public class ChannelManager {
         channel.setPassword(config.getPassword());
         channel.setOwnerId(config.getOwnerId());
         channel.setSlowModeSeconds(config.getSlowModeSeconds());
-        
-        // Register the channel
-        channels.put(channelId, channel);
-        
+
+        // Register the channel atomically: putIfAbsent returns null only when
+        // the key was absent. A non-null return means another thread won the
+        // race, so we reject instead of silently overwriting the existing channel.
+        if (channels.putIfAbsent(channelId, channel) != null) {
+            throw new IllegalArgumentException("Channel with ID '" + channelId + "' already exists");
+        }
+
         // Index by scope
         if (config.getScope() == ChannelScope.GLOBAL) {
             globalChannels.add(channelId);
@@ -119,7 +119,7 @@ public class ChannelManager {
             channelsByClient.computeIfAbsent(config.getClientId(), k -> ConcurrentHashMap.newKeySet())
                     .add(channelId);
         }
-        
+
         logger.info("Created channel: {} (scope={}, client={})", channelId, config.getScope(), config.getClientId());
         persistChannel(channel);
         return channel;

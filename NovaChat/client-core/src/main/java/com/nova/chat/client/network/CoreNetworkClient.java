@@ -100,7 +100,13 @@ public final class CoreNetworkClient {
     private final Map<Class<? extends Packet>, Consumer<Packet>> packetHandlers =
             new ConcurrentHashMap<>();
 
-    private volatile CompletableFuture<Boolean> authFuture;
+    /**
+     * In-flight authentication future. Initialized atomically via CAS so that
+     * a concurrent caller that loses the connect race joins the winner's
+     * future instead of overwriting it with its own (never-completed) future.
+     */
+    private final java.util.concurrent.atomic.AtomicReference<CompletableFuture<Boolean>> authFuture =
+            new java.util.concurrent.atomic.AtomicReference<>();
     private volatile String lastHost;
     private volatile int lastPort;
 
@@ -207,19 +213,27 @@ public final class CoreNetworkClient {
 
         Objects.requireNonNull(host, "host");
 
-        // Build the authFuture before the CAS so a concurrent caller that loses
-        // the CAS always observes a non-null future via the shared volatile
-        // field, instead of racing against this thread's assignment and seeing
-        // null (which would return a prematurely-completed false future).
+        // Atomically claim the authFuture slot. The winner proceeds to build
+        // the connection; losers return the winner's future instead of
+        // overwriting it (which would leave the winner's future never completed
+        // and the loser returning its own never-completed future).
         CompletableFuture<Boolean> future = new CompletableFuture<>();
-        authFuture = future;
+        CompletableFuture<Boolean> existing = authFuture.get();
+        if (existing != null && !existing.isDone()) {
+            return existing;
+        }
+        if (!authFuture.compareAndSet(null, future) && !authFuture.compareAndSet(existing, future)) {
+            // Another thread won the CAS between our read and write; join it.
+            CompletableFuture<Boolean> winner = authFuture.get();
+            return winner != null ? winner : future;
+        }
 
         if (!connecting.compareAndSet(false, true)) {
-            // Another connect flow is in flight; join it instead of overwriting
-            // authFuture/workerGroup (the overwritten group would never shut down).
-            // authFuture was already set by the winning thread above, so just read
-            // the current value defensively.
-            CompletableFuture<Boolean> inFlight = authFuture;
+            // Another connect flow is in flight; join it instead of starting
+            // a second one (which would leak a second EventLoopGroup).
+            // Clear our authFuture claim so the winner's stays authoritative.
+            authFuture.compareAndSet(future, null);
+            CompletableFuture<Boolean> inFlight = authFuture.get();
             return inFlight != null ? inFlight : future;
         }
 
@@ -256,6 +270,14 @@ public final class CoreNetworkClient {
                         f.channel().close();
                         connecting.set(false);
                         completeAuth(false);
+                        // If workerGroup was assigned after disconnect() read it
+                        // (null), it would leak. Close it here so the event-loop
+                        // threads are always released.
+                        EventLoopGroup group = workerGroup;
+                        if (group != null && !group.isShutdown()) {
+                            group.shutdownGracefully();
+                        }
+                        workerGroup = null;
                         return;
                     }
                     channel = f.channel();
@@ -269,6 +291,15 @@ public final class CoreNetworkClient {
                     logger.warn("Failed to connect to NovaLink: " + msg);
                     connecting.set(false);
                     completeAuth(false);
+                    if (shutdown) {
+                        // disconnect() happened while the TCP dial was in flight.
+                        EventLoopGroup group = workerGroup;
+                        if (group != null && !group.isShutdown()) {
+                            group.shutdownGracefully();
+                        }
+                        workerGroup = null;
+                        return;
+                    }
                     scheduleReconnect();
                 }
             });
@@ -581,7 +612,7 @@ public final class CoreNetworkClient {
     }
 
     private void completeAuth(boolean success) {
-        CompletableFuture<Boolean> future = authFuture;
+        CompletableFuture<Boolean> future = authFuture.get();
         if (future != null && !future.isDone()) {
             future.complete(success);
         }

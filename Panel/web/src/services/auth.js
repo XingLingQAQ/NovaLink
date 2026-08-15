@@ -21,6 +21,7 @@ class AuthService {
     this.refreshToken = null;
     this.user = null;
     this.listeners = new Set();
+    this._refreshPromise = null;
     this._loadFromStorage();
   }
 
@@ -160,34 +161,48 @@ class AuthService {
       throw new Error('No refresh token available');
     }
 
-    try {
-      const response = await fetch(`${apiUrl}/auth/refresh`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ refreshToken: this.refreshToken })
-      });
-
-      if (!response.ok) {
-        throw new Error('Token refresh failed');
-      }
-
-      const data = await response.json();
-
-      this.token = data.token;
-      if (data.refreshToken) {
-        this.refreshToken = data.refreshToken;
-      }
-
-      this._saveToStorage();
-      this._notifyListeners();
-
-      return this.token;
-    } catch (error) {
-      console.error('[Auth] Token refresh failed:', error);
-      throw error;
+    // Deduplicate concurrent refresh requests: if a refresh is already in
+    // flight, every caller shares the same promise instead of firing a
+    // second POST /auth/refresh. This prevents a refresh storm when many
+    // API requests get 401 simultaneously (e.g. dashboard loads).
+    if (this._refreshPromise) {
+      return this._refreshPromise;
     }
+
+    this._refreshPromise = (async () => {
+      try {
+        const response = await fetch(`${apiUrl}/auth/refresh`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ refreshToken: this.refreshToken })
+        });
+
+        if (!response.ok) {
+          throw new Error('Token refresh failed');
+        }
+
+        const data = await response.json();
+
+        this.token = data.token;
+        if (data.refreshToken) {
+          this.refreshToken = data.refreshToken;
+        }
+
+        this._saveToStorage();
+        this._notifyListeners();
+
+        return this.token;
+      } catch (error) {
+        console.error('[Auth] Token refresh failed:', error);
+        throw error;
+      } finally {
+        this._refreshPromise = null;
+      }
+    })();
+
+    return this._refreshPromise;
   }
 
   /**

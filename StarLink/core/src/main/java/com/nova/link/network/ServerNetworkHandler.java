@@ -48,10 +48,10 @@ public class ServerNetworkHandler {
                 60L, TimeUnit.SECONDS,
                 new LinkedBlockingQueue<>(10000),
                 new ThreadFactory() {
-                    private int counter = 0;
+                    private final java.util.concurrent.atomic.AtomicInteger counter = new java.util.concurrent.atomic.AtomicInteger();
                     @Override
                     public Thread newThread(Runnable r) {
-                        Thread thread = new Thread(r, "NovaLink-Business-" + counter++);
+                        Thread thread = new Thread(r, "NovaLink-Business-" + counter.incrementAndGet());
                         thread.setDaemon(true);
                         return thread;
                     }
