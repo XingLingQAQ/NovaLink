@@ -1,10 +1,10 @@
 package com.nova.chat.client.state;
 
 import java.util.Collections;
-import java.util.LinkedHashSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArraySet;
 
 /**
  * Platform-agnostic per-player channel membership and chat mode state.
@@ -15,8 +15,10 @@ import java.util.UUID;
  * scalar fields so platforms that read state from region/async threads
  * (notably Folia) see consistent values; {@link #toggleMode()} is
  * {@code synchronized} so concurrent toggles remain deterministic. The
- * {@code joinedChannels} set is confined to a single owning thread / held
- * under the same lock and exposed only as an unmodifiable view.
+ * {@code joinedChannels} set is a {@link CopyOnWriteArraySet} so that
+ * iteration (e.g. from a command thread reading the live view) is safe
+ * against concurrent mutations and never throws
+ * {@link java.util.ConcurrentModificationException}.
  *
  * <p>Requirements: 11.3
  */
@@ -49,7 +51,7 @@ public final class PlayerChannelState {
     private PlayerChannelState(UUID playerId, ChatMode defaultMode) {
         this.playerId = Objects.requireNonNull(playerId, "playerId");
         Objects.requireNonNull(defaultMode, "defaultMode");
-        this.joinedChannels = new LinkedHashSet<>();
+        this.joinedChannels = new CopyOnWriteArraySet<>();
         this.chatMode = defaultMode;
         this.modeOverridden = false;
         this.currentServer = null;

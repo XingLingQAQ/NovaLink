@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
+import redis.clients.jedis.Transaction;
 import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.resps.ScanResult;
 
@@ -313,24 +314,36 @@ public class RedisProvider implements DatabaseProvider {
 
     @Override
     public int cleanupExpiredMutes() throws DatabaseException {
+        // SCAN over the mute hashes rather than PLAYER_INDEX: a mute can exist
+        // for a player whose state was never persisted, so the index may miss it.
+        // Mirrors the SCAN pattern used by getAllActiveMutes.
         int count = 0;
         try (Jedis jedis = jedisPool.getResource()) {
-            Set<String> playerIds = jedis.smembers(PLAYER_INDEX);
             long now = System.currentTimeMillis();
-            
-            for (String playerId : playerIds) {
-                String key = MUTE_PREFIX + playerId;
-                Map<String, String> mutes = jedis.hgetAll(key);
-                
-                for (Map.Entry<String, String> entry : mutes.entrySet()) {
-                    MuteInfoDto dto = gson.fromJson(entry.getValue(), MuteInfoDto.class);
-                    if (dto.expireTime > 0 && now > dto.expireTime) {
-                        jedis.hdel(key, entry.getKey());
-                        count++;
+            ScanParams params = new ScanParams().match(MUTE_PREFIX + "*").count(100);
+            String cursor = ScanParams.SCAN_POINTER_START;
+            do {
+                ScanResult<String> scan = jedis.scan(cursor, params);
+                cursor = scan.getCursor();
+                for (String key : scan.getResult()) {
+                    UUID playerId;
+                    try {
+                        playerId = UUID.fromString(key.substring(MUTE_PREFIX.length()));
+                    } catch (IllegalArgumentException e) {
+                        continue;
+                    }
+                    Map<String, String> mutes = jedis.hgetAll(key);
+
+                    for (Map.Entry<String, String> entry : mutes.entrySet()) {
+                        MuteInfoDto dto = gson.fromJson(entry.getValue(), MuteInfoDto.class);
+                        if (dto.expireTime > 0 && now > dto.expireTime) {
+                            jedis.hdel(key, entry.getKey());
+                            count++;
+                        }
                     }
                 }
-            }
-            
+            } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
+
             if (count > 0) {
                 logger.debug("Cleaned up {} expired mutes", count);
             }
@@ -428,23 +441,35 @@ public class RedisProvider implements DatabaseProvider {
 
     @Override
     public int cleanupExpiredBans() throws DatabaseException {
+        // SCAN over the ban hashes rather than PLAYER_INDEX: a ban can exist
+        // for a player whose state was never persisted, so the index may miss it.
+        // Mirrors the SCAN pattern used by getAllActiveBans.
         int count = 0;
         try (Jedis jedis = jedisPool.getResource()) {
-            Set<String> playerIds = jedis.smembers(PLAYER_INDEX);
             long now = System.currentTimeMillis();
+            ScanParams params = new ScanParams().match(BAN_PREFIX + "*").count(100);
+            String cursor = ScanParams.SCAN_POINTER_START;
+            do {
+                ScanResult<String> scan = jedis.scan(cursor, params);
+                cursor = scan.getCursor();
+                for (String key : scan.getResult()) {
+                    UUID playerId;
+                    try {
+                        playerId = UUID.fromString(key.substring(BAN_PREFIX.length()));
+                    } catch (IllegalArgumentException e) {
+                        continue;
+                    }
+                    Map<String, String> bans = jedis.hgetAll(key);
 
-            for (String playerId : playerIds) {
-                String key = BAN_PREFIX + playerId;
-                Map<String, String> bans = jedis.hgetAll(key);
-
-                for (Map.Entry<String, String> entry : bans.entrySet()) {
-                    BanInfoDto dto = gson.fromJson(entry.getValue(), BanInfoDto.class);
-                    if (dto.expireTime > 0 && now > dto.expireTime) {
-                        jedis.hdel(key, entry.getKey());
-                        count++;
+                    for (Map.Entry<String, String> entry : bans.entrySet()) {
+                        BanInfoDto dto = gson.fromJson(entry.getValue(), BanInfoDto.class);
+                        if (dto.expireTime > 0 && now > dto.expireTime) {
+                            jedis.hdel(key, entry.getKey());
+                            count++;
+                        }
                     }
                 }
-            }
+            } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
 
             if (count > 0) {
                 logger.debug("Cleaned up {} expired bans", count);
@@ -655,17 +680,24 @@ public class RedisProvider implements DatabaseProvider {
             throw new DatabaseException("Invitation and code cannot be null");
         }
 
+        // Compute TTL up front. An already-expired invitation (ttl <= 0) must
+        // never be persisted as a non-expiring key — drop it instead.
+        long ttl = (invitation.getExpireTime() - System.currentTimeMillis()) / 1000;
+        if (ttl <= 0) {
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.del(INVITATION_PREFIX + invitation.getCode());
+            } catch (Exception e) {
+                throw new DatabaseException("Failed to drop expired invitation from Redis", e);
+            }
+            logger.debug("Skipped persisting already-expired invitation: {}", invitation.getCode());
+            return;
+        }
+
         try (Jedis jedis = jedisPool.getResource()) {
             String key = INVITATION_PREFIX + invitation.getCode();
             String json = gson.toJson(new InvitationDto(invitation));
             jedis.set(key, json);
-            
-            // Set TTL based on expiration
-            long ttl = (invitation.getExpireTime() - System.currentTimeMillis()) / 1000;
-            if (ttl > 0) {
-                jedis.expire(key, ttl);
-            }
-            
+            jedis.expire(key, ttl);
             logger.debug("Saved invitation: {}", invitation.getCode());
         } catch (Exception e) {
             throw new DatabaseException("Failed to save invitation to Redis", e);
@@ -699,14 +731,47 @@ public class RedisProvider implements DatabaseProvider {
 
         try (Jedis jedis = jedisPool.getResource()) {
             String key = INVITATION_PREFIX + code;
-            String json = jedis.get(key);
-            if (json != null) {
+            // Check-and-set via WATCH/MULTI/EXEC so a concurrent accept cannot
+            // both flip used=false -> used=true. If the value changed between
+            // watch and commit (another thread marked it first), the EXEC
+            // aborts and we treat the invitation as already used.
+            jedis.watch(key);
+            try {
+                String json = jedis.get(key);
+                if (json == null) {
+                    jedis.unwatch();
+                    return;
+                }
                 InvitationDto dto = gson.fromJson(json, InvitationDto.class);
+                if (dto.used) {
+                    // Already used by another thread — do not overwrite.
+                    jedis.unwatch();
+                    logger.debug("Invitation {} already marked used; skipping", code);
+                    return;
+                }
                 dto.used = true;
                 dto.usedBy = usedBy != null ? usedBy.toString() : null;
                 dto.usedAt = System.currentTimeMillis();
-                jedis.set(key, gson.toJson(dto));
+                // Read TTL before entering MULTI mode — commands issued directly
+                // on the connection during a transaction are not safely usable.
+                long ttl = jedis.ttl(key);
+                Transaction tx = jedis.multi();
+                tx.set(key, gson.toJson(dto));
+                // Preserve the remaining TTL across the rewrite.
+                if (ttl > 0) {
+                    tx.expire(key, ttl);
+                }
+                java.util.List<Object> execResult = tx.exec();
+                if (execResult == null || execResult.isEmpty()) {
+                    // EXEC aborted: the key changed underneath us — another
+                    // thread won the race.
+                    logger.debug("Concurrent markInvitationUsed on {}; aborted in favor of earlier writer", code);
+                    return;
+                }
                 logger.debug("Marked invitation {} as used by {}", code, usedBy);
+            } catch (Exception e) {
+                jedis.unwatch();
+                throw e;
             }
         } catch (Exception e) {
             throw new DatabaseException("Failed to mark invitation as used in Redis", e);
@@ -948,6 +1013,7 @@ public class RedisProvider implements DatabaseProvider {
         Set<String> joinedChannels;
         String activeChannel;
         String platform;
+        Boolean dmEnabled;
         Map<String, MuteInfoDto> mutes;
         long lastSeen;
 
@@ -961,6 +1027,7 @@ public class RedisProvider implements DatabaseProvider {
             this.joinedChannels = new HashSet<>(state.getJoinedChannels());
             this.activeChannel = state.getActiveChannel();
             this.platform = state.getPlatform();
+            this.dmEnabled = state.isDmEnabled();
             this.mutes = new HashMap<>();
             for (Map.Entry<String, MuteInfo> entry : state.getMutes().entrySet()) {
                 this.mutes.put(entry.getKey(), new MuteInfoDto(entry.getValue()));
@@ -976,6 +1043,11 @@ public class RedisProvider implements DatabaseProvider {
             state.setJoinedChannels(joinedChannels != null ? joinedChannels : new HashSet<>());
             state.setActiveChannel(activeChannel);
             state.setPlatform(platform);
+            // Old Redis entries written before dm_enabled was persisted have no
+            // dmEnabled field; Gson leaves the boxed Boolean null in that case.
+            // Fall back to true (the field default) so existing players keep
+            // receiving DMs instead of being silently muted.
+            state.setDmEnabled(dmEnabled != null ? dmEnabled : true);
             if (mutes != null) {
                 Map<String, MuteInfo> muteMap = new HashMap<>();
                 for (Map.Entry<String, MuteInfoDto> entry : mutes.entrySet()) {

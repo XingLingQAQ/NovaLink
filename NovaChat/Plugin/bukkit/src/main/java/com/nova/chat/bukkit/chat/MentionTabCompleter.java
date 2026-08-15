@@ -16,11 +16,31 @@ import java.util.stream.Collectors;
 
 /**
  * Provides Tab completion for @mentions in chat.
- * 
+ *
  * When a player types @ followed by partial text and presses Tab,
  * this listener provides completions for online player names.
- * 
+ *
  * Requirements: 11.3 - THE 提及功能 SHALL 支持 Tab 补全玩家名称
+ *
+ * <p><b>Deprecation note (Paper/Spigot 1.19.4+):</b> {@link PlayerChatTabCompleteEvent}
+ * was deprecated in Paper 1.13+ and no longer fires on Paper 1.19.4+ for chat
+ * messages (it is only invoked for legacy {@code /}-prefixed command tab
+ * completion on Spigot). On modern Paper/Spigot 26.x the chat-message tab path
+ * has moved to brigadier-backed {@code AsyncPlayerSendCommandsEvent} /
+ * {@code AsyncTabCompleteEvent} ({@code org.bukkit.event.server.AsyncTabCompleteEvent}),
+ * neither of which carries a "chat message" buffer the way this event does.
+ *
+ * <p>A clean migration to {@code AsyncTabCompleteEvent} is non-trivial: that
+ * event fires for <em>all</em> tab completions (chat + command), exposes the
+ * full input buffer via {@code getBuffer()} rather than a pre-split
+ * {@code getLastToken()}, and returns a {@code List<String>} (not the legacy
+ * {@code Collection}). Adopting it would require re-tokenizing the buffer,
+ * gating on a non-command context, and re-testing completion ordering across
+ * Spigot/Paper — tracked separately from this deprecation audit. Until then
+ * this listener is retained for Spigot compatibility and no-ops silently on
+ * Paper 1.19.4+ (the event simply never fires), so the mention permission /
+ * prefix logic in {@link #getMentionCompletions} remains the source of truth
+ * for any future {@code AsyncTabCompleteEvent} migration.
  */
 public class MentionTabCompleter implements Listener {
 

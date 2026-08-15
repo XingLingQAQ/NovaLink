@@ -88,6 +88,7 @@ public class NovaChatFabric implements ModInitializer {
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
             LOGGER.info("Server stopping, disconnecting from NovaChat...");
             services.getNetworkClient().disconnect();
+            platform.shutdown();
         });
 
         LOGGER.info("NovaChat Fabric Mod initialized successfully");

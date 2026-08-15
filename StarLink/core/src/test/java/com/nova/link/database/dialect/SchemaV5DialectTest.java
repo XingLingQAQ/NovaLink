@@ -23,13 +23,13 @@ class SchemaV5DialectTest {
     private final SQLiteDialect sqlite = new SQLiteDialect();
 
     @Test
-    @DisplayName("all three dialects report current version 5 with a description")
-    void currentVersionIsFive() {
+    @DisplayName("all three dialects report current version 6 with a description")
+    void currentVersionIsSix() {
         for (MigrationDialect dialect : List.of(mysql, postgres, sqlite)) {
             assertThat(dialect.getCurrentVersion())
                     .as("%s current version", dialect.getClass().getSimpleName())
-                    .isEqualTo(5);
-            assertThat(dialect.getMigrationDescription(5)).doesNotContain("Unknown");
+                    .isEqualTo(6);
+            assertThat(dialect.getMigrationDescription(6)).doesNotContain("Unknown");
         }
     }
 
@@ -65,6 +65,18 @@ class SchemaV5DialectTest {
                     .contains("idx_messages_created_at")
                     .contains("idx_messages_channel_id")
                     .contains("idx_messages_sender_name");
+        }
+    }
+
+    @Test
+    @DisplayName("v6 adds the dm_enabled column to the players table in every dialect")
+    void v6AddsDmEnabledColumn() {
+        for (MigrationDialect dialect : List.of(mysql, postgres, sqlite)) {
+            String all = String.join("\n", dialect.getMigrationStatements(6));
+            assertThat(all)
+                    .as("%s v6 DDL", dialect.getClass().getSimpleName())
+                    .contains("dm_enabled")
+                    .contains("players");
         }
     }
 }

@@ -381,6 +381,10 @@ void NetworkClient::sendHandshake() {
 
 void NetworkClient::handleHandshakeResponse(const HandshakeResponsePacket& response) {
     mAuthenticated = response.isSuccess();
+    if (!mAuthenticated) {
+        // Auth failed — disconnect so the network loop triggers reconnect via doDisconnect + handleReconnect
+        doDisconnect();
+    }
 }
 
 void NetworkClient::sendKeepAlive() {

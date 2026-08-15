@@ -89,7 +89,10 @@ public class PermissionManager {
             return AuthResult.unauthorized("Not authorized as super admin");
         }
 
-        if (!credentials.getPasswordHash().equalsIgnoreCase(passwordHash)) {
+        // Use constant-time comparison to avoid timing side-channel leaks.
+        // Delegates to AuthManager.constantTimeEqualsIgnoreCase which does not
+        // short-circuit on the first mismatched character.
+        if (!AuthManager.constantTimeEqualsIgnoreCase(credentials.getPasswordHash(), passwordHash)) {
             logger.warn("Super admin authentication failed: password mismatch for UUID {}", playerId);
             return AuthResult.unauthorized("Invalid password");
         }

@@ -17,9 +17,10 @@ Endstone API notes (0.11.x, verified 2026-08-12):
     rejects plugins whose declared ``api_version`` is not a prefix of the
     running server's API line (e.g. "0.11" against endstone 0.11.8).
   - Event listeners are registered with ``self.register_events(self)`` inside
-    ``on_enable``; handler methods use the ``@event_handler`` decorator and
-    take the Endstone event type as their only argument. PlayerChatEvent,
-    PlayerJoinEvent, and PlayerQuitEvent are all available in 0.11.x.
+    ``on_enable``; handler methods use the ``@event_handler`` decorator
+    (applied at class-definition time) and take the Endstone event type as
+    their only argument. PlayerChatEvent, PlayerJoinEvent, and PlayerQuitEvent
+    are all available in 0.11.x.
   - Commands are declared via the ``commands`` class attribute (same shape as
     plugin.toml's ``[plugin.commands]``) and dispatched through
     ``on_command(sender, command, args)``.
@@ -36,6 +37,37 @@ from novachat_endstone.network.client import NetworkClient
 from novachat_endstone.chat.handler import ChatHandler
 from novachat_endstone.command.commands import NovaChatCommand
 from novachat_endstone.extension.extension_loader import ExtensionLoader
+
+# Endstone's ``@event_handler`` decorator is applied at class-definition time
+# (it stamps attributes onto the function object that ``register_events`` later
+# scans for). It is NOT something that can be wired up lazily inside
+# ``on_enable`` — by then the class is already finalized and the Endstone
+# scanner would find no handlers. So we import it at module load.
+#
+# To keep this module importable in environments where the ``endstone`` package
+# is absent (e.g. the pytest protocol suite, which never touches the event
+# system), fall back to a no-op decorator + sentinel when the import fails.
+try:
+    from endstone.event import event_handler, EventPriority
+    _ENDSTONE_EVENT_HANDLER_AVAILABLE = True
+except ImportError:  # pragma: no cover - exercised only without endstone
+    def event_handler(func=None, *, priority=None, ignore_cancelled=False):
+        """No-op fallback so the module imports without endstone installed."""
+        def _wrap(f):
+            return f
+        if func is None:
+            return _wrap
+        return _wrap(func)
+
+    class EventPriority:  # type: ignore[no-redef]
+        LOWEST = 0
+        LOW = 1
+        NORMAL = 2
+        HIGH = 3
+        HIGHEST = 4
+        MONITOR = 5
+
+    _ENDSTONE_EVENT_HANDLER_AVAILABLE = False
 
 if TYPE_CHECKING:
     pass
@@ -275,11 +307,11 @@ class NovaChatPlugin:
 
         Endstone 0.11.x exposes ``self.register_events(self)`` on the Plugin
         base class; it scans the plugin instance for methods decorated with
-        ``@event_handler`` and binds them to the corresponding event types
-        (PlayerChatEvent, PlayerJoinEvent, PlayerQuitEvent). We declare the
-        handlers below as ``_on_player_chat`` / ``_on_player_join`` /
-        ``_on_player_quit``; when endstone is not installed (unit tests),
-        ``register_events`` is absent and we simply log + skip.
+        ``@event_handler`` (applied at class-definition time on
+        ``_on_player_chat`` / ``_on_player_join`` / ``_on_player_quit``) and
+        binds them to the corresponding event types (PlayerChatEvent,
+        PlayerJoinEvent, PlayerQuitEvent). When endstone is not installed
+        (unit tests), ``register_events`` is absent and we simply log + skip.
 
         Validates: Requirements 10.4
         """
@@ -323,38 +355,36 @@ class NovaChatPlugin:
     #
     # ``register_events(self)`` (called in _register_listeners) scans the
     # instance for methods decorated with ``@event_handler`` and binds them
-    # to the matching Endstone event type. The decorator is imported lazily
-    # so the module remains importable without an endstone install (pytest).
-    # Each handler delegates to the ChatHandler so the protocol/chat logic
-    # stays decoupled from the Endstone event API.
+    # to the matching Endstone event type. The decorator MUST be applied at
+    # class-definition time — Endstone's scanner looks for the attributes it
+    # stamps onto the function, so applying it lazily (e.g. inside on_enable)
+    # results in zero handlers being registered. The ``event_handler`` import
+    # above has a no-op fallback so the module still imports without an
+    # endstone install (pytest).
     #
-    # When endstone IS installed, we decorate these methods at on_enable
-    # time (see _register_listeners) so the Endstone scanner finds them.
+    # Priority: HIGH so NovaChat sees chat before lower-priority plugins,
+    # letting us cancel/redirect it. ``ignore_cancelled=False`` keeps the
+    # default behavior of skipping already-cancelled events.
     # ------------------------------------------------------------------
 
-    def _get_event_handler(self):
-        """Return the ``event_handler`` decorator from endstone, or None."""
-        try:
-            from endstone.event import event_handler
-            return event_handler
-        except ImportError:
-            return None
-
+    @event_handler(priority=EventPriority.HIGH)
     def _on_player_chat(self, event):
-        """Endstone PlayerChatEvent listener (decorated at on_enable)."""
+        """Endstone PlayerChatEvent listener."""
         if self._chat_handler:
             self._chat_handler.on_player_chat(event)
 
+    @event_handler(priority=EventPriority.HIGH)
     def _on_player_join(self, event):
-        """Endstone PlayerJoinEvent listener (decorated at on_enable)."""
+        """Endstone PlayerJoinEvent listener."""
         if self._chat_handler:
             try:
                 self._chat_handler.on_player_join(event.player)
             except Exception as e:
                 self._logger.error(f"Error handling player join: {e}")
 
+    @event_handler(priority=EventPriority.HIGH)
     def _on_player_quit(self, event):
-        """Endstone PlayerQuitEvent listener (decorated at on_enable)."""
+        """Endstone PlayerQuitEvent listener."""
         if self._chat_handler:
             try:
                 self._chat_handler.on_player_quit(event.player)

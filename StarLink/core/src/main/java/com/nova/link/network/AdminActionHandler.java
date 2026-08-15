@@ -6,6 +6,8 @@ import com.nova.chat.common.protocol.packets.AdminActionPacket;
 import com.nova.chat.common.protocol.packets.AdminActionResponsePacket;
 import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.link.auth.AuthResult;
+import com.nova.link.auth.AuthManager;
+import com.nova.link.auth.IpBanManager;
 import com.nova.link.auth.PermissionManager;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelManager;
@@ -43,6 +45,10 @@ public class AdminActionHandler {
 
     private final PermissionManager permissionManager;
     private SpyManager spyManager;
+
+    // IP ban manager for rate-limiting brute-force attempts on super-admin auth.
+    // When null, IP ban checks are skipped (backwards-compatible default).
+    private volatile IpBanManager ipBanManager;
 
     // Optional integrations for STATUS sub-actions (announce/title) and richer responses
     private volatile ChannelManager channelManager;
@@ -101,12 +107,37 @@ public class AdminActionHandler {
     }
 
     /**
+     * Sets the IP ban manager used to rate-limit super-admin authentication
+     * brute-force attempts. When set, {@code handleAuth} mirrors the
+     * {@link AuthManager#authenticate} pattern: banned IPs are rejected before
+     * the password check, and every failed attempt is recorded.
+     *
+     * @param ipBanManager the IP ban manager (may be {@code null} to disable)
+     */
+    public void setIpBanManager(IpBanManager ipBanManager) {
+        this.ipBanManager = ipBanManager;
+    }
+
+    /**
      * Handles an admin action packet.
      *
      * @param packet the admin action packet
      * @return the response packet
      */
     public AdminActionResponsePacket handle(AdminActionPacket packet) {
+        return handle(packet, null);
+    }
+
+    /**
+     * Handles an admin action packet, optionally carrying the remote IP address
+     * of the originating connection. The remote address is used by the AUTH
+     * action to enforce IP-based rate limiting / banning via {@link IpBanManager}.
+     *
+     * @param packet       the admin action packet
+     * @param remoteAddress the remote IP of the originating connection, or {@code null}
+     * @return the response packet
+     */
+    public AdminActionResponsePacket handle(AdminActionPacket packet, String remoteAddress) {
         if (packet == null || packet.getAction() == null) {
             return AdminActionResponsePacket.failure(null, "NC-400", "Invalid admin action packet");
         }
@@ -118,7 +149,7 @@ public class AdminActionHandler {
 
         switch (action) {
             case AUTH:
-                return handleAuth(packet);
+                return handleAuth(packet, remoteAddress);
             case LOGOUT:
                 return handleLogout(packet);
             case SPY_START:
@@ -143,25 +174,46 @@ public class AdminActionHandler {
      * @param packet the auth packet
      * @return the response packet
      */
-    private AdminActionResponsePacket handleAuth(AdminActionPacket packet) {
+    private AdminActionResponsePacket handleAuth(AdminActionPacket packet, String remoteAddress) {
         UUID playerId = packet.getPlayerId();
         String passwordHash = packet.getPasswordHash();
 
+        // Mirror AuthManager.authenticate: check IP ban BEFORE any password work.
+        IpBanManager banManager = this.ipBanManager;
+        if (banManager != null && remoteAddress != null && banManager.isBanned(remoteAddress)) {
+            long remainingSeconds = banManager.getRemainingBanTime(remoteAddress) / 1000;
+            logger.warn("Super admin auth attempt from banned IP: {}", remoteAddress);
+            return AdminActionResponsePacket.failure(AdminAction.AUTH, "NC-403",
+                "IP temporarily banned. Try again in " + remainingSeconds + " seconds.");
+        }
+
         if (playerId == null) {
+            if (banManager != null && remoteAddress != null) {
+                banManager.recordFailure(remoteAddress);
+            }
             return AdminActionResponsePacket.failure(AdminAction.AUTH, "NC-400", "Player ID is required");
         }
 
         if (passwordHash == null || passwordHash.isEmpty()) {
+            if (banManager != null && remoteAddress != null) {
+                banManager.recordFailure(remoteAddress);
+            }
             return AdminActionResponsePacket.failure(AdminAction.AUTH, "NC-400", "Password is required");
         }
 
         AuthResult result = permissionManager.authenticateSuperAdmin(playerId, passwordHash);
 
         if (result.isSuccess()) {
+            if (banManager != null && remoteAddress != null) {
+                banManager.clearFailures(remoteAddress);
+            }
             logger.info("Super admin authentication successful for player: {}", playerId);
             return AdminActionResponsePacket.success(AdminAction.AUTH, "Super admin authentication successful");
         } else {
-            logger.warn("Super admin authentication failed for player: {}", playerId);
+            if (banManager != null && remoteAddress != null) {
+                banManager.recordFailure(remoteAddress);
+            }
+            logger.warn("Super admin authentication failed for player: {} from IP: {}", playerId, remoteAddress);
             return AdminActionResponsePacket.failure(AdminAction.AUTH, result.getErrorCode(), result.getMessage());
         }
     }
@@ -331,14 +383,18 @@ public class AdminActionHandler {
             return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-400", "Player ID is required");
         }
 
-        // ANNOUNCE/TITLE subtypes are admin-tier broadcasts gated by the originating
-        // platform's novachat.announce / novachat.title permission (or bukkit op).
-        // They reuse the STATUS action for transport but must NOT require a separate
-        // super-admin auth session — that made them unreachable in default deployments
-        // (novalink.yml ships with no super-admin credentials). Dispatch these
-        // subtypes BEFORE the super-admin session check so op-level players can use
-        // announce/title out-of-box. The plain STATUS path below still requires a
-        // super-admin session (preserved for spy/reload/status-introspection parity).
+        // All STATUS subtypes (including ANNOUNCE/TITLE broadcasts) require an
+        // active super-admin session. Previously ANNOUNCE/TITLE were dispatched
+        // BEFORE this check, allowing any authenticated game server to broadcast
+        // arbitrary announcements/titles network-wide without authorization.
+        if (!permissionManager.hasSuperAdminSession(playerId)) {
+            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-403",
+                "Super admin authentication required for status");
+        }
+
+        // ANNOUNCE/TITLE subtypes reuse the STATUS action for transport. They are
+        // now gated by the super-admin session check above, so only authenticated
+        // super admins can trigger network-wide announcements / titles.
         String type = packet.getExtra("type");
         if (type != null && !type.isEmpty()) {
             String normalized = type.trim().toUpperCase(Locale.ROOT);
@@ -348,15 +404,9 @@ public class AdminActionHandler {
                 case "TITLE":
                     return handleTitle(packet);
                 default:
-                    // Unknown subtype -> fall through to the super-admin-gated status path
+                    // Unknown subtype -> fall through to the plain status path
                     break;
             }
-        }
-
-        // Plain status path — requires super admin session (unchanged).
-        if (!permissionManager.hasSuperAdminSession(playerId)) {
-            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-403",
-                "Super admin authentication required for status");
         }
 
         // Basic status response (can be extended later)
@@ -391,6 +441,12 @@ public class AdminActionHandler {
         placeholders.put("_announcement", "true");
         placeholders.put("_operator", senderName);
 
+        // The trusted routeMessage overload (channelId, ...) intentionally does NOT
+        // re-enforce the sender-client boundary. This is acceptable here because
+        // handleAnnounce is now only reachable by an authenticated super admin
+        // (super-admin session check in handleStatus), who is authorized to
+        // broadcast to any channel including cross-client PRIVATE/SERVER scopes.
+        // Non-super-admin callers can never reach this path.
         messageRouter.routeMessage(channelId, packet.getPlayerId(), senderName, message, placeholders);
         logger.info("Announcement sent to channel {} by {}", channelId, senderName);
         // Surface the announcement to the web panel notification feed.

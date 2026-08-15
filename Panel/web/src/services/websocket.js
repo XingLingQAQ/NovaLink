@@ -55,6 +55,7 @@ class WebSocketService {
     // backend's new session has no subscription record, so they must be
     // replayed once re-authenticated.
     this.pendingResubscribeChannels = new Set();
+    this.reconnectTimer = null;
     this.messageQueue = [];
   }
 
@@ -151,12 +152,23 @@ class WebSocketService {
   disconnect() {
     this.state = ConnectionState.DISCONNECTED;
     this._stopPingInterval();
-    
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     if (this.socket) {
       this.socket.close(1000, 'Client disconnect');
       this.socket = null;
     }
-    
+
+    // Clear connection params so a stale token/url can't be reused after
+    // logout — a pending reconnect that slipped through would otherwise fire
+    // connect(this.url, this.token) with the old credentials.
+    this.url = null;
+    this.token = null;
+
     this.subscribedChannels.clear();
     this.pendingResubscribeChannels.clear();
     this._notifyStateChange();
@@ -365,7 +377,8 @@ class WebSocketService {
 
     console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts + 1})`);
 
-    setTimeout(async () => {
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
       this.reconnectAttempts++;
       // Refresh the access token if it is expiring/expired, then always read
       // the latest token from the auth store — the token captured at connect

@@ -8,8 +8,8 @@ namespace NovaChat\Protocol;
  * Channel update packet sent by server when channel state changes.
  * 
  * Fields:
- * - updateType (byte): Type of update
  * - channelId (string): Channel identifier
+ * - updateType (byte): Type of update
  * - dataJson (string): JSON data for the update
  */
 class ChannelUpdatePacket extends Packet {
@@ -30,14 +30,14 @@ class ChannelUpdatePacket extends Packet {
     }
     
     public function encode(PacketBuffer $buffer): void {
-        $buffer->writeByte($this->updateType);
         $buffer->writeString($this->channelId);
+        $buffer->writeByte($this->updateType);
         $buffer->writeString($this->dataJson);
     }
-    
+
     public function decode(PacketBuffer $buffer): void {
-        $this->updateType = $buffer->readByte();
         $this->channelId = $buffer->readString();
+        $this->updateType = $buffer->readByte();
         $this->dataJson = $buffer->readString();
     }
 }

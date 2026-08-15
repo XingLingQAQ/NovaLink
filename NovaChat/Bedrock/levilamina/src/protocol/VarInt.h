@@ -46,16 +46,16 @@ public:
      * @throws std::runtime_error if the VarInt is too large
      */
     static int32_t decode(const uint8_t* data, size_t size, size_t& bytesRead) {
-        int32_t value = 0;
+        uint32_t value = 0;
         int position = 0;
         bytesRead = 0;
 
         while (bytesRead < size) {
             uint8_t currentByte = data[bytesRead++];
-            value |= (currentByte & SEGMENT_BITS) << position;
+            value |= static_cast<uint32_t>(currentByte & SEGMENT_BITS) << position;
 
             if ((currentByte & CONTINUE_BIT) == 0) {
-                return value;
+                return static_cast<int32_t>(value);
             }
 
             position += 7;
@@ -90,15 +90,16 @@ public:
      * @return true if a complete VarInt was found, false otherwise
      */
     static bool tryPeek(const uint8_t* data, size_t size, int32_t& value, size_t& bytesRead) {
-        value = 0;
+        uint32_t uvalue = 0;
         int position = 0;
         bytesRead = 0;
 
         while (bytesRead < size && bytesRead < MAX_VARINT_SIZE) {
             uint8_t currentByte = data[bytesRead++];
-            value |= (currentByte & SEGMENT_BITS) << position;
+            uvalue |= static_cast<uint32_t>(currentByte & SEGMENT_BITS) << position;
 
             if ((currentByte & CONTINUE_BIT) == 0) {
+                value = static_cast<int32_t>(uvalue);
                 return true;
             }
 

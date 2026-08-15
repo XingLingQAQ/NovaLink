@@ -141,7 +141,7 @@ class DatabaseMigrationHardeningTest {
     }
 
     @Test
-    void upgradesLegacyV1MetadataThroughV5AndRerunDoesNothing() throws Exception {
+    void upgradesLegacyV1MetadataThroughV6AndRerunDoesNothing() throws Exception {
         SQLiteDialect baseDialect = new SQLiteDialect();
         try (HikariDataSource dataSource = sqliteDataSource(tempDir.resolve("legacy-v1.db"), 2)) {
             try (Connection connection = dataSource.getConnection()) {
@@ -174,12 +174,12 @@ class DatabaseMigrationHardeningTest {
 
             migration.migrate();
 
-            assertThat(migration.getVersion()).isEqualTo(5);
+            assertThat(migration.getVersion()).isEqualTo(6);
             assertThat(queryInts(dataSource,
                     "SELECT version FROM migration_execution_probe ORDER BY version"))
-                    .containsExactly(2, 3, 4, 5);
+                    .containsExactly(2, 3, 4, 5, 6);
             assertThat(queryInt(dataSource,
-                    "SELECT COUNT(*) FROM novalink_migrations WHERE status = 'COMPLETED'")).isEqualTo(5);
+                    "SELECT COUNT(*) FROM novalink_migrations WHERE status = 'COMPLETED'")).isEqualTo(6);
             assertThat(queryInt(dataSource,
                     "SELECT COUNT(*) FROM novalink_migrations WHERE checksum IS NULL")).isZero();
             assertThat(queryInt(dataSource,
@@ -193,8 +193,8 @@ class DatabaseMigrationHardeningTest {
 
             assertThat(queryInts(dataSource,
                     "SELECT version FROM migration_execution_probe ORDER BY version"))
-                    .containsExactly(2, 3, 4, 5);
-            assertThat(queryInt(dataSource, "SELECT COUNT(*) FROM novalink_migrations")).isEqualTo(5);
+                    .containsExactly(2, 3, 4, 5, 6);
+            assertThat(queryInt(dataSource, "SELECT COUNT(*) FROM novalink_migrations")).isEqualTo(6);
         }
     }
 

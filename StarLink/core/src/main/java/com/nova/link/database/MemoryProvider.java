@@ -113,7 +113,8 @@ public class MemoryProvider implements DatabaseProvider {
         if (channel == null || channel.getId() == null) {
             throw new DatabaseException("Channel and channel ID cannot be null");
         }
-        channels.put(channel.getId(), channel);
+        // Store a defensive copy to prevent external modifications (mirrors savePlayerState)
+        channels.put(channel.getId(), new Channel(channel));
         logger.debug("Saved channel: {}", channel.getId());
     }
 
@@ -123,7 +124,9 @@ public class MemoryProvider implements DatabaseProvider {
         if (channelId == null) {
             return Optional.empty();
         }
-        return Optional.ofNullable(channels.get(channelId));
+        Channel channel = channels.get(channelId);
+        // Return a copy to prevent external modifications
+        return channel != null ? Optional.of(new Channel(channel)) : Optional.empty();
     }
 
     @Override
@@ -138,7 +141,9 @@ public class MemoryProvider implements DatabaseProvider {
     @Override
     public List<Channel> getAllChannels() throws DatabaseException {
         checkConnection();
-        return new ArrayList<>(channels.values());
+        return channels.values().stream()
+                .map(Channel::new)
+                .collect(Collectors.toList());
     }
 
     // ==================== Mute Operations ====================
@@ -324,25 +329,31 @@ public class MemoryProvider implements DatabaseProvider {
             List<Notification> sorted = new ArrayList<>(notifications);
             sorted.sort((a, b) -> Long.compare(b.getCreatedAt(), a.getCreatedAt()));
             int start = Math.max(0, offset);
-            int end = Math.min(sorted.size(), start + Math.max(0, limit));
-            for (Notification n : sorted.subList(start, end)) {
-                if (!unreadOnly || !n.isRead()) {
-                    result.add(n);
-                }
-            }
-            // When unreadOnly is set we cannot simply subList before filtering,
-            // so re-filter the full descending list to honor the limit.
+            int effectiveLimit = Math.max(0, limit);
             if (unreadOnly) {
-                result.clear();
+                // When unreadOnly is set we cannot simply subList before filtering,
+                // so collect unread from the full descending list, then apply
+                // offset/limit to the filtered set.
+                int skipped = 0;
                 int collected = 0;
                 for (Notification n : sorted) {
-                    if (!n.isRead()) {
-                        if (collected >= limit) {
-                            break;
-                        }
-                        result.add(n);
-                        collected++;
+                    if (n.isRead()) {
+                        continue;
                     }
+                    if (skipped < start) {
+                        skipped++;
+                        continue;
+                    }
+                    if (collected >= effectiveLimit) {
+                        break;
+                    }
+                    result.add(n);
+                    collected++;
+                }
+            } else {
+                int end = Math.min(sorted.size(), start + effectiveLimit);
+                for (Notification n : sorted.subList(start, end)) {
+                    result.add(n);
                 }
             }
         }

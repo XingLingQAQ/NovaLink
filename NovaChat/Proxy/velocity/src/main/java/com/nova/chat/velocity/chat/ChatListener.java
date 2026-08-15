@@ -65,8 +65,15 @@ public class ChatListener {
      */
     private final java.util.Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
     
-    /** Global chat mode from configuration */
-    private ChatMode globalMode;
+    /**
+     * Global chat mode from configuration.
+     *
+     * <p>Marked {@code volatile} for cross-thread visibility: it is read in
+     * {@link #onPlayerChat} (which fires on the proxy main thread) and written
+     * from {@link #setGlobalMode} / {@link #reload} (command thread), matching
+     * the Folia adapter's {@code volatile} declaration.
+     */
+    private volatile ChatMode globalMode;
     
     /**
      * Creates a new ChatListener.

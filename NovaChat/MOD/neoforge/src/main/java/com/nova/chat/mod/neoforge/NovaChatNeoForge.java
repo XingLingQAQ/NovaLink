@@ -95,6 +95,7 @@ public class NovaChatNeoForge {
     public void onServerStopping(ServerStoppingEvent event) {
         LOGGER.info("Server stopping, disconnecting from NovaChat...");
         services.getNetworkClient().disconnect();
+        platform.shutdown();
     }
 
     public static NovaChatNeoForge getInstance() {

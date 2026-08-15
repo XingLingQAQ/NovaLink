@@ -42,9 +42,17 @@ class MigrationDialectHardeningTest {
 
     @Test
     void nonTransactionalMysqlAlterIsIdempotentForSafeRetry() {
-        String migration = String.join("\n", new MySQLDialect().getMigrationStatements(2));
+        List<String> statements = new MySQLDialect().getMigrationStatements(2);
 
-        assertThat(migration).containsIgnoringCase("ADD COLUMN IF NOT EXISTS");
+        // Standard MySQL 8.0 does not support "ADD COLUMN IF NOT EXISTS"
+        // (MariaDB-only). Idempotency is achieved via an information_schema
+        // guard inside a stored procedure instead.
+        assertThat(statements).noneMatch(s -> s.contains("ADD COLUMN IF NOT EXISTS"));
+        String migration = String.join("\n", statements);
+        assertThat(migration).containsIgnoringCase("information_schema.columns");
+        assertThat(migration).containsIgnoringCase("CREATE PROCEDURE");
+        assertThat(migration).containsIgnoringCase("CALL");
+        assertThat(migration).contains("ADD COLUMN platform VARCHAR(32) NULL AFTER active_channel");
     }
 
     @Test

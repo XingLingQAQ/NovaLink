@@ -49,6 +49,33 @@ public class Channel {
     private final long createdAt;
 
     /**
+     * Copy constructor. Produces a defensive copy of the given channel,
+     * including a fresh members set and allowed-worlds list so mutations to
+     * the original (or the copy) do not leak across the boundary.
+     *
+     * @param other the channel to copy (must not be null)
+     */
+    public Channel(Channel other) {
+        Objects.requireNonNull(other, "Channel to copy cannot be null");
+        this.id = other.id;
+        this.displayName = other.displayName;
+        this.scope = other.scope;
+        this.clientId = other.clientId;
+        this.permission = other.permission;
+        this.maxCapacity = other.maxCapacity;
+        this.allowedWorlds = other.allowedWorlds != null
+                ? new ArrayList<>(other.allowedWorlds) : new ArrayList<>();
+        this.password = other.password;
+        this.ownerId = other.ownerId;
+        this.slowModeSeconds = other.slowModeSeconds;
+        this.members = ConcurrentHashMap.newKeySet();
+        if (other.members != null) {
+            this.members.addAll(other.members);
+        }
+        this.createdAt = other.createdAt;
+    }
+
+    /**
      * Creates a new channel with the specified parameters.
      *
      * @param id the unique channel ID

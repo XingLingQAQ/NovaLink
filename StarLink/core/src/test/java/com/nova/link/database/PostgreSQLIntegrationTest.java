@@ -86,6 +86,7 @@ class PostgreSQLIntegrationTest {
         state.setJoinedChannels(java.util.Set.of("global", "staff"));
         state.setActiveChannel("global");
         state.setPlatform("BUKKIT");
+        state.setDmEnabled(false);
         state.setLastSeen(1234567890L);
 
         provider.savePlayerState(state);
@@ -98,6 +99,7 @@ class PostgreSQLIntegrationTest {
         assertThat(loaded.get().getJoinedChannels()).containsExactlyInAnyOrder("global", "staff");
         assertThat(loaded.get().getActiveChannel()).isEqualTo("global");
         assertThat(loaded.get().getPlatform()).isEqualTo("BUKKIT");
+        assertThat(loaded.get().isDmEnabled()).isFalse();
         assertThat(loaded.get().getLastSeen()).isEqualTo(1234567890L);
     }
 

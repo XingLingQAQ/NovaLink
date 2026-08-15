@@ -159,6 +159,7 @@ public class EmbeddedNovaLinkServer {
         adminActionHandler.setChannelManager(channelManager);
         adminActionHandler.setNetworkHandler(networkHandler);
         adminActionHandler.setMessageRouter(messageRouter);
+        adminActionHandler.setIpBanManager(authManager.getIpBanManager());
 
         channelActionHandler = new ChannelActionHandler(
                 channelManager,
@@ -485,7 +486,7 @@ public class EmbeddedNovaLinkServer {
                 return;
             }
 
-            AdminActionResponsePacket response = adminActionHandler.handle(packet);
+            AdminActionResponsePacket response = adminActionHandler.handle(packet, connection.getRemoteAddress());
             response.setRequestId(packet.getRequestId());
             connection.sendPacket(response);
             logger.debug("Processed admin action: {} success={}", packet.getAction(), response.isSuccess());

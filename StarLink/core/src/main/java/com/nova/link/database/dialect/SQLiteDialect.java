@@ -33,7 +33,7 @@ import java.util.List;
 public class SQLiteDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
-    private static final int CURRENT_VERSION = 5;
+    private static final int CURRENT_VERSION = 6;
 
     @Override
     public int getCurrentVersion() {
@@ -240,6 +240,18 @@ public class SQLiteDialect implements MigrationDialect {
                     """);
             }
 
+            case 6 -> {
+                // Persist PlayerState.dmEnabled so a player's DM opt-out
+                // survives restarts instead of silently reverting to the
+                // field default (true). DEFAULT TRUE matches the field default.
+                // SQLite has no ADD COLUMN IF NOT EXISTS clause; the migration
+                // runner holds a BEGIN IMMEDIATE transaction and rolls this ALTER
+                // back on failure, so retrying an interrupted v6 is safe.
+                statements.add("""
+                    ALTER TABLE players ADD COLUMN dm_enabled BOOLEAN NOT NULL DEFAULT TRUE
+                    """);
+            }
+
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -254,6 +266,7 @@ public class SQLiteDialect implements MigrationDialect {
             case 3 -> "Add bans table for player ban management";
             case 4 -> "Add notifications table for persisted panel notifications";
             case 5 -> "Add messages, announcements and webhooks tables for persistence";
+            case 6 -> "Add dm_enabled column to players table to persist DM opt-out";
             default -> "Unknown migration";
         };
     }

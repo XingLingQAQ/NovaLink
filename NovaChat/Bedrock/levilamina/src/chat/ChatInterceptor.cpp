@@ -768,9 +768,9 @@ std::string ChatInterceptor::convertColorCodes(const std::string& message) {
                 (code >= 'k' && code <= 'o') ||
                 (code >= 'K' && code <= 'O') ||
                 code == 'r' || code == 'R') {
-                result[i] = '\xC2';  // First byte of § in UTF-8
-                result.insert(i + 1, 1, '\xA7'); // Second byte of § in UTF-8
-                result.erase(i, 1); // Remove the original &
+                // Replace the 1-byte '&' with the 2-byte UTF-8 sequence for § (0xC2 0xA7)
+                result.replace(i, 1, "\xC2\xA7", 2);
+                ++i; // Skip the inserted 0xA7 byte to avoid re-processing it
             }
         }
     }
@@ -893,11 +893,19 @@ void ChatInterceptor::sendToBackend(const std::string& playerName, const std::st
         return;
     }
 
-    // Create UUID from string
+    // Parse Minecraft UUID string (format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
     UUID senderId;
-    std::hash<std::string> hasher;
-    senderId.mostSigBits = hasher(playerUuid);
-    senderId.leastSigBits = hasher(playerUuid + "salt");
+    std::string hexUuid = playerUuid;
+    hexUuid.erase(std::remove(hexUuid.begin(), hexUuid.end(), '-'), hexUuid.end());
+    if (hexUuid.size() == 32 &&
+        hexUuid.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos) {
+        senderId.mostSigBits  = std::stoull(hexUuid.substr(0, 16),  nullptr, 16);
+        senderId.leastSigBits = std::stoull(hexUuid.substr(16, 16), nullptr, 16);
+    } else {
+        std::hash<std::string> hasher;
+        senderId.mostSigBits  = hasher(playerUuid);
+        senderId.leastSigBits = hasher(playerUuid + "salt");
+    }
 
     auto packet = std::make_unique<ChatMessagePacket>(
         senderId,

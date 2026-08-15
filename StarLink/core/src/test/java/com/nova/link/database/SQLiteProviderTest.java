@@ -78,6 +78,7 @@ class SQLiteProviderTest {
         state.setJoinedChannels(java.util.Set.of("global", "staff"));
         state.setActiveChannel("global");
         state.setPlatform("NUKKIT");
+        state.setDmEnabled(false);
         state.setLastSeen(1234567890L);
 
         provider.savePlayerState(state);
@@ -90,6 +91,7 @@ class SQLiteProviderTest {
         assertThat(loaded.get().getJoinedChannels()).containsExactlyInAnyOrder("global", "staff");
         assertThat(loaded.get().getActiveChannel()).isEqualTo("global");
         assertThat(loaded.get().getPlatform()).isEqualTo("NUKKIT");
+        assertThat(loaded.get().isDmEnabled()).isFalse();
         assertThat(loaded.get().getLastSeen()).isEqualTo(1234567890L);
     }
 

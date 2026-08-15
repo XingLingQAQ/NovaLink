@@ -22,7 +22,7 @@ public class MySQLDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
     private static final String MIGRATION_LOCK_NAME = "novalink_schema_migration";
-    private static final int CURRENT_VERSION = 5;
+    private static final int CURRENT_VERSION = 6;
 
     @Override
     public int getCurrentVersion() {
@@ -147,9 +147,31 @@ public class MySQLDialect implements MigrationDialect {
                 // Both fresh and existing v1 databases reach this migration on
                 // upgrade to v2; the v1 CREATE TABLE intentionally omits the column
                 // so this ALTER is the single source of truth for it.
+                //
+                // Standard MySQL 8.0 does NOT support "ADD COLUMN IF NOT EXISTS"
+                // (that is a MariaDB-only extension). To keep the migration
+                // idempotent across retries without relying on MariaDB syntax,
+                // a stored procedure checks information_schema.columns and only
+                // issues the ALTER when the column is absent. The statement text
+                // is deterministic so migration checksums stay stable, while the
+                // runtime behaviour is conditional. The procedure is dropped
+                // after use so no schema artefact lingers.
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_platform_column");
                 statements.add("""
-                    ALTER TABLE players ADD COLUMN IF NOT EXISTS platform VARCHAR(32) NULL AFTER active_channel
+                    CREATE PROCEDURE novalink_add_platform_column()
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = DATABASE()
+                              AND table_name = 'players'
+                              AND column_name = 'platform'
+                        ) THEN
+                            ALTER TABLE players ADD COLUMN platform VARCHAR(32) NULL AFTER active_channel;
+                        END IF;
+                    END
                     """);
+                statements.add("CALL novalink_add_platform_column()");
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_platform_column");
             }
             case 3 -> {
                 // Bans table — mirrors mutes schema. channelId NULL means a
@@ -236,6 +258,30 @@ public class MySQLDialect implements MigrationDialect {
                     """);
             }
 
+            case 6 -> {
+                // Persist PlayerState.dmEnabled so a player's DM opt-out
+                // survives restarts instead of silently reverting to the
+                // field default (true). DEFAULT TRUE matches the field default.
+                // Same information_schema-guarded procedure pattern as v2:
+                // standard MySQL 8.0 has no "ADD COLUMN IF NOT EXISTS".
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_dm_enabled_column");
+                statements.add("""
+                    CREATE PROCEDURE novalink_add_dm_enabled_column()
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = DATABASE()
+                              AND table_name = 'players'
+                              AND column_name = 'dm_enabled'
+                        ) THEN
+                            ALTER TABLE players ADD COLUMN dm_enabled BOOLEAN NOT NULL DEFAULT TRUE AFTER platform;
+                        END IF;
+                    END
+                    """);
+                statements.add("CALL novalink_add_dm_enabled_column()");
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_dm_enabled_column");
+            }
+
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -250,6 +296,7 @@ public class MySQLDialect implements MigrationDialect {
             case 3 -> "Add bans table for player ban management";
             case 4 -> "Add notifications table for persisted panel notifications";
             case 5 -> "Add messages, announcements and webhooks tables for persistence";
+            case 6 -> "Add dm_enabled column to players table to persist DM opt-out";
             default -> "Unknown migration";
         };
     }

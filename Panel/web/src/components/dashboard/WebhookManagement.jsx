@@ -115,6 +115,8 @@ function WebhookManagement({
       });
       setShowCreateModal(false);
       setNewWebhook({ url: '', event: 'message_sent', secret: '' });
+    } catch {
+      // Handler already toasted; keep the modal open for corrections.
     } finally {
       setSubmitting(false);
     }
@@ -127,6 +129,8 @@ function WebhookManagement({
     try {
       await onDeleteWebhook(deleteTarget.id);
       setDeleteTarget(null);
+    } catch {
+      // Handler already toasted; keep the modal open for confirmation.
     } finally {
       setSubmitting(false);
     }

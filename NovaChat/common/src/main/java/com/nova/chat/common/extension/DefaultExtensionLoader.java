@@ -91,38 +91,69 @@ public class DefaultExtensionLoader implements ExtensionLoader {
      * @return the loaded extension, or null if loading fails
      * @throws ExtensionException if the extension cannot be loaded
      */
+    /**
+     * Loads a single extension from a JAR file.
+     *
+     * @param jarPath path to the JAR file
+     * @return the loaded extension, or null if loading fails
+     * @throws ExtensionException if the extension cannot be loaded
+     */
     private NovaChatExtension loadExtension(Path jarPath) throws ExtensionException {
         ExtensionMeta meta = loadMeta(jarPath);
-        
+
+        URL jarUrl;
         try {
-            URL jarUrl = jarPath.toUri().toURL();
-            URLClassLoader classLoader = new URLClassLoader(
-                new URL[]{jarUrl},
-                getClass().getClassLoader()
-            );
-            
+            jarUrl = jarPath.toUri().toURL();
+        } catch (IOException e) {
+            throw new ExtensionException(meta.getId(),
+                "Failed to resolve JAR URL: " + jarPath.getFileName(), e);
+        }
+
+        URLClassLoader classLoader = new URLClassLoader(
+            new URL[]{jarUrl},
+            getClass().getClassLoader()
+        );
+
+        boolean keepClassLoader = false;
+        try {
             Class<?> mainClass = classLoader.loadClass(meta.getMain());
-            
+
             if (!NovaChatExtension.class.isAssignableFrom(mainClass)) {
-                classLoader.close();
-                throw new ExtensionException(meta.getId(), 
+                throw new ExtensionException(meta.getId(),
                     "Main class " + meta.getMain() + " does not implement NovaChatExtension");
             }
-            
+
             @SuppressWarnings("unchecked")
-            Class<? extends NovaChatExtension> extensionClass = 
+            Class<? extends NovaChatExtension> extensionClass =
                 (Class<? extends NovaChatExtension>) mainClass;
-            
+
             NovaChatExtension extension = createExtensionInstance(extensionClass, meta);
+            // Extension instantiated successfully; hand off the class loader so it
+            // stays open for the lifetime of the extension and is closed later by
+            // disableExtension().
             classLoaders.put(meta.getId(), classLoader);
-            
+            keepClassLoader = true;
+
             return extension;
         } catch (ClassNotFoundException e) {
-            throw new ExtensionException(meta.getId(), 
+            throw new ExtensionException(meta.getId(),
                 "Main class not found: " + meta.getMain(), e);
-        } catch (IOException e) {
-            throw new ExtensionException(meta.getId(), 
-                "Failed to load JAR: " + jarPath.getFileName(), e);
+        } catch (ExtensionException e) {
+            throw e;
+        } catch (Exception e) {
+            // ReflectionInstantiationException / IllegalAccessException etc.
+            throw new ExtensionException(meta.getId(),
+                "Failed to load extension: " + meta.getMain(), e);
+        } finally {
+            if (!keepClassLoader) {
+                try {
+                    classLoader.close();
+                } catch (IOException closeErr) {
+                    LOGGER.log(Level.WARNING,
+                        "Failed to close class loader for failed extension " + meta.getId(),
+                        closeErr);
+                }
+            }
         }
     }
     

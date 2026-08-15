@@ -56,7 +56,23 @@ public class ServerNetworkHandler {
                         return thread;
                     }
                 },
-                new ThreadPoolExecutor.CallerRunsPolicy()
+                // Rejection policy: log and discard rather than running the task on
+                // the calling (Netty IO) thread. CallerRunsPolicy would execute
+                // rejected business logic directly on the Netty event-loop thread,
+                // which can block IO and stall all connections on that loop. Discarding
+                // the task under overload is preferable to stalling the IO thread.
+                // Individual packet handlers that need reliability should use their
+                // own bounded queues / back-pressure rather than relying on the
+                // shared business pool.
+                (Runnable r, ThreadPoolExecutor executor) -> {
+                    if (!executor.isShutdown()) {
+                        logger.warn("Business executor saturated; discarding packet task to protect Netty IO thread " +
+                                "(active={}, poolSize={}, queueSize={})",
+                                executor.getActiveCount(),
+                                executor.getPoolSize(),
+                                executor.getQueue().size());
+                    }
+                }
         );
     }
 

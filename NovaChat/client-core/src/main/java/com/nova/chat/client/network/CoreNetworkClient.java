@@ -207,18 +207,24 @@ public final class CoreNetworkClient {
 
         Objects.requireNonNull(host, "host");
 
+        // Build the authFuture before the CAS so a concurrent caller that loses
+        // the CAS always observes a non-null future via the shared volatile
+        // field, instead of racing against this thread's assignment and seeing
+        // null (which would return a prematurely-completed false future).
+        CompletableFuture<Boolean> future = new CompletableFuture<>();
+        authFuture = future;
+
         if (!connecting.compareAndSet(false, true)) {
             // Another connect flow is in flight; join it instead of overwriting
             // authFuture/workerGroup (the overwritten group would never shut down).
+            // authFuture was already set by the winning thread above, so just read
+            // the current value defensively.
             CompletableFuture<Boolean> inFlight = authFuture;
-            return inFlight != null ? inFlight : CompletableFuture.completedFuture(false);
+            return inFlight != null ? inFlight : future;
         }
 
         this.lastHost = host;
         this.lastPort = port;
-
-        CompletableFuture<Boolean> future = new CompletableFuture<>();
-        authFuture = future;
 
         try {
             workerGroup = eventLoopGroupFactory.get();
@@ -291,6 +297,10 @@ public final class CoreNetworkClient {
         shutdown = true;
         reconnecting.set(false);
         authenticated.set(false);
+
+        // Release any caller blocked in connect() before nulling the channel,
+        // so a handshake-time shutdown cannot leave authFuture incomplete.
+        completeAuth(false);
 
         Channel ch = channel;
         if (ch != null && ch.isActive()) {
@@ -425,10 +435,17 @@ public final class CoreNetworkClient {
 
     /**
      * Called when the TCP connection is lost unexpectedly.
+     *
+     * <p>Completes any in-flight {@code authFuture} with {@code false} so a caller
+     * blocked in {@link #connect(String, int)} is released if the connection
+     * dropped after TCP connect but before {@code HandshakeResponsePacket} arrived.
+     * {@link #completeAuth(boolean)} is idempotent, so this is safe even if the
+     * future was already completed.
      */
     public void onDisconnect() {
         connected.set(false);
         authenticated.set(false);
+        completeAuth(false);
 
         if (!reconnecting.get()) {
             logger.warn("Lost connection to NovaLink backend");

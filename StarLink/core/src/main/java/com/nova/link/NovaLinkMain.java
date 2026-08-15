@@ -324,6 +324,7 @@ public class NovaLinkMain {
         adminActionHandler.setNetworkHandler(networkHandler);
         adminActionHandler.setMessageRouter(messageRouter);
         adminActionHandler.setConfigManager(configManager);
+        adminActionHandler.setIpBanManager(ipBanManager);
 
         ChannelActionHandler channelActionHandler = new ChannelActionHandler(
                 channelManager,
@@ -1184,7 +1185,7 @@ public class NovaLinkMain {
                 return;
             }
 
-            AdminActionResponsePacket response = adminActionHandler.handle(packet);
+            AdminActionResponsePacket response = adminActionHandler.handle(packet, connection.getRemoteAddress());
             response.setRequestId(packet.getRequestId());
             connection.sendPacket(response);
         });

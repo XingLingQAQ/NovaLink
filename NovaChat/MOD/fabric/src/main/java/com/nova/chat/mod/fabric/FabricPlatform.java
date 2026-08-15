@@ -14,6 +14,12 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Fabric platform implementation
@@ -28,7 +34,21 @@ public class FabricPlatform implements Platform {
     private ChatHandler chatHandler;
     private CommandManager commandManager;
     private boolean replaceVanillaChat = false;
-    
+
+    private final ExecutorService asyncExecutor = Executors.newCachedThreadPool(
+            r -> {
+                Thread t = new Thread(r, "NovaChat-fabric-async");
+                t.setDaemon(true);
+                return t;
+            });
+    private final ScheduledExecutorService scheduledExecutor = Executors.newScheduledThreadPool(
+            2, r -> {
+                Thread t = new Thread(r, "NovaChat-fabric-scheduled");
+                t.setDaemon(true);
+                return t;
+            });
+    private final ConcurrentLinkedQueue<ScheduledFuture<?>> pendingDelayedTasks = new ConcurrentLinkedQueue<>();
+
     public FabricPlatform() {
     }
     
@@ -51,26 +71,42 @@ public class FabricPlatform implements Platform {
     @Override
     public void registerChatListener(ChatHandler handler) {
         this.chatHandler = handler;
-        
-        // Register chat event listener using Fabric API's ServerMessageEvents
-        ServerMessageEvents.CHAT_MESSAGE.register((message, sender, params) -> {
+
+        // Fabric fires ALLOW_CHAT_MESSAGE before CHAT_MESSAGE. If we returned false
+        // from ALLOW_CHAT_MESSAGE in REPLACE mode, CHAT_MESSAGE (which forwards to
+        // NovaLink) would never fire and the message would be lost. To mirror the
+        // NeoForge ordering (forward first, then cancel), we forward inside
+        // ALLOW_CHAT_MESSAGE when replacing, and return false to suppress vanilla
+        // chat. In non-replace mode we forward via CHAT_MESSAGE and allow vanilla.
+        ServerMessageEvents.ALLOW_CHAT_MESSAGE.register((message, sender, params) -> {
             if (chatHandler != null && sender != null) {
                 UUID playerId = sender.getUUID();
                 String playerName = sender.getName().getString();
                 String content = message.signedContent();
-                
+
                 LOGGER.debug("Chat intercepted from {}: {}", playerName, content);
                 chatHandler.onPlayerChat(playerId, playerName, content);
             }
-        });
-        
-        // Also register for allow chat event to potentially cancel vanilla chat
-        ServerMessageEvents.ALLOW_CHAT_MESSAGE.register((message, sender, params) -> {
             // If replaceVanillaChat is true, cancel the vanilla chat message
-            // The message will be handled by our chat handler instead
+            // (already forwarded above). The message will be handled by our chat
+            // handler instead.
             return !replaceVanillaChat;
         });
-        
+
+        // In non-replace mode, CHAT_MESSAGE also fires and we forward there too.
+        // To avoid double-forwarding, only forward via CHAT_MESSAGE when NOT in
+        // replace mode (ALLOW_CHAT_MESSAGE handles the replace path above).
+        ServerMessageEvents.CHAT_MESSAGE.register((message, sender, params) -> {
+            if (!replaceVanillaChat && chatHandler != null && sender != null) {
+                UUID playerId = sender.getUUID();
+                String playerName = sender.getName().getString();
+                String content = message.signedContent();
+
+                LOGGER.debug("Chat forwarded from {}: {}", playerName, content);
+                chatHandler.onPlayerChat(playerId, playerName, content);
+            }
+        });
+
         LOGGER.info("Fabric chat listener registered");
     }
     
@@ -177,32 +213,66 @@ public class FabricPlatform implements Platform {
 
     @Override
     public void runAsync(Runnable task) {
-        if (server == null) {
-            new Thread(task, "NovaChat-mod-async").start();
+        if (task == null) {
             return;
         }
-        server.execute(task);
+        // Submit to a dedicated thread pool for true async execution, NOT the
+        // server main thread (server.execute runs on the main server thread).
+        asyncExecutor.submit(() -> {
+            try {
+                task.run();
+            } catch (Throwable t) {
+                LOGGER.error("Error in async task", t);
+            }
+        });
     }
 
     @Override
     public void runLater(Runnable task, long delaySeconds) {
-        long delayMs = Math.max(0L, delaySeconds) * 1000L;
-        if (server == null) {
-            new Thread(task, "NovaChat-mod-delayed").start();
+        if (task == null) {
             return;
         }
-        // Schedule on the server tick thread via a sleep + main-thread execute.
-        // MinecraftServer has no direct delayed-task API in the Fabric mapping; the
-        // shared reconnect policy keeps delays bounded (<= 30s).
-        new Thread(() -> {
+        long delaySec = Math.max(0L, delaySeconds);
+        // Schedule on a managed ScheduledExecutorService so pending tasks can be
+        // cancelled on shutdown instead of leaking raw Thread.sleep threads.
+        ScheduledFuture<?> future = scheduledExecutor.schedule(() -> {
             try {
-                Thread.sleep(delayMs);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
+                task.run();
+            } catch (Throwable t) {
+                LOGGER.error("Error in delayed task", t);
             }
-            server.execute(task);
-        }, "NovaChat-mod-delayed").start();
+        }, delaySec, TimeUnit.SECONDS);
+        pendingDelayedTasks.add(future);
+        // Best-effort cleanup of completed futures to avoid unbounded growth.
+        pendingDelayedTasks.removeIf(f -> f.isDone());
+    }
+
+    /**
+     * Shuts down the async and scheduled executors. Should be called on server
+     * stop / mod disable to avoid leaking threads and to cancel pending delayed
+     * tasks.
+     */
+    public void shutdown() {
+        LOGGER.info("Shutting down NovaChat Fabric schedulers...");
+        pendingDelayedTasks.forEach(f -> f.cancel(false));
+        pendingDelayedTasks.clear();
+        scheduledExecutor.shutdownNow();
+        asyncExecutor.shutdownNow();
+        try {
+            if (!scheduledExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
+                LOGGER.warn("Scheduled executor did not terminate cleanly");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        try {
+            if (!asyncExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
+                LOGGER.warn("Async executor did not terminate cleanly");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        LOGGER.info("NovaChat Fabric schedulers shut down");
     }
 
     @Override

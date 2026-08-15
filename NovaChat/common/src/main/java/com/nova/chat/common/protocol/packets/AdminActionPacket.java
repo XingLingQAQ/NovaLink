@@ -119,9 +119,14 @@ public class AdminActionPacket extends Packet {
         playerId = PacketBuffer.readUUID(buf);
         passwordHash = PacketBuffer.readString(buf);
         target = PacketBuffer.readString(buf);
-        
-        // Read extra map
+
+        // Read extra map with a size guard matching ChannelActionPacket so a
+        // malformed/garbled size cannot cause an oversized allocation.
         int size = PacketBuffer.readVarInt(buf);
+        if (size < 0 || size > 64) {
+            extra = new HashMap<>();
+            return;
+        }
         extra = new HashMap<>(size);
         for (int i = 0; i < size; i++) {
             String key = PacketBuffer.readString(buf);

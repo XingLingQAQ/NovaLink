@@ -37,10 +37,8 @@ const CustomSelect = ({ options, defaultValue, theme, mode, onChange }) => {
   }, []);
 
   useEffect(() => {
-    if (defaultValue) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- sync selected with controlled defaultValue prop
-      setSelected(defaultValue);
-    }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sync selected with controlled defaultValue prop
+    setSelected(defaultValue);
   }, [defaultValue]);
 
   const openMenu = () => {

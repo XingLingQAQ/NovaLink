@@ -65,8 +65,15 @@ public class ChatListener implements Listener {
      */
     private final java.util.Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
     
-    /** Global chat mode from configuration */
-    private ChatMode globalMode;
+    /**
+     * Global chat mode from configuration.
+     *
+     * <p>Marked {@code volatile} for cross-thread visibility: it is read in
+     * {@link #onPlayerChat} (proxy event thread) and written from
+     * {@link #setGlobalMode} / {@link #reload} (command thread), matching the
+     * Folia adapter's {@code volatile} declaration.
+     */
+    private volatile ChatMode globalMode;
     
     /**
      * Creates a new ChatListener.
@@ -227,46 +234,74 @@ public class ChatListener implements Listener {
      * Bungee-specific {@link ChannelResponseDispatcher.ChannelResponseAdapter}.
      * Bungee has no reliable proxy title/action-bar API, so the status-bar
      * callbacks are no-ops and the KICK/MUTE notice is a chat message only.
+     *
+     * <p>GAP-3 fix (mirrors the Velocity {@code VelocityChannelResponseAdapter}):
+     * every callback now hops off the Netty event loop via
+     * {@code plugin.getProxy().getScheduler().runAsync(plugin, ...)} before
+     * touching any {@link ProxiedPlayer} API, the shared {@link #playerStates}
+     * store, or the {@link #welcomedPlayers} set. The shared dispatcher fires
+     * these from the Netty event loop; without the hop the mutations race with
+     * {@link #onPlayerDisconnect} and the {@code PlayerChannelState} reads done
+     * on other threads, and the {@code playerStates}/{@code welcomedPlayers}
+     * collections (both {@link ConcurrentHashMap}-backed but not atomic across
+     * read-modify-write sequences) could see lost updates. This mirrors how
+     * {@code BukkitChannelResponseAdapter} hops to the Bukkit main thread via
+     * {@code getScheduler().runTask(plugin, ...)} on every callback.
+     *
+     * <p>BungeeCord has no single "main thread" like Bukkit/Velocity; the
+     * plugin scheduler's {@code runAsync} runs on BungeeCord's cached async
+     * thread pool, which is the idiomatic BungeeCord hop off the I/O event
+     * loop (see also {@code BungeeSchedulerBridge#runAsync}). That decouples
+     * the callbacks from the Netty thread that received the packet, which is
+     * the actual concurrency hazard the GAP-3 fix targets.
      */
     private final class BungeeChannelResponseAdapter implements ChannelResponseDispatcher.ChannelResponseAdapter {
 
         @Override
         public void setActiveChannel(UUID playerId, String channelId) {
-            PlayerChannelState state = getState(playerId);
-            if (state != null) {
-                state.setActiveChannel(channelId);
-            }
+            plugin.getProxy().getScheduler().runAsync(plugin, () -> {
+                PlayerChannelState state = getState(playerId);
+                if (state != null) {
+                    state.setActiveChannel(channelId);
+                }
+            });
         }
 
         @Override
         public void rollbackJoin(UUID playerId, String attemptedChannel, String previousChannel) {
-            PlayerChannelState state = getState(playerId);
-            if (state == null) {
-                return;
-            }
-            String current = state.getActiveChannel();
-            if (current != null && current.equals(attemptedChannel)) {
-                state.setActiveChannel(previousChannel);
-            }
+            plugin.getProxy().getScheduler().runAsync(plugin, () -> {
+                PlayerChannelState state = getState(playerId);
+                if (state == null) {
+                    return;
+                }
+                String current = state.getActiveChannel();
+                if (current != null && current.equals(attemptedChannel)) {
+                    state.setActiveChannel(previousChannel);
+                }
+            });
         }
 
         @Override
         public void sendJoinSuccess(UUID playerId, String channelId) {
-            ProxiedPlayer player = plugin.getProxy().getPlayer(playerId);
-            if (player == null) {
-                return;
-            }
-            player.sendMessage(messageFormatter.formatSuccess(PlayerMessages.joined(playerId, channelId)));
+            plugin.getProxy().getScheduler().runAsync(plugin, () -> {
+                ProxiedPlayer player = plugin.getProxy().getPlayer(playerId);
+                if (player == null) {
+                    return;
+                }
+                player.sendMessage(messageFormatter.formatSuccess(PlayerMessages.joined(playerId, channelId)));
+            });
         }
 
         @Override
         public void sendLeaveSuccess(UUID playerId, String channelId) {
-            ProxiedPlayer player = plugin.getProxy().getPlayer(playerId);
-            if (player == null) {
-                return;
-            }
-            player.sendMessage(messageFormatter.formatSuccess(
-                    PlayerMessages.left(playerId, channelId, config.getDefaultChannel())));
+            plugin.getProxy().getScheduler().runAsync(plugin, () -> {
+                ProxiedPlayer player = plugin.getProxy().getPlayer(playerId);
+                if (player == null) {
+                    return;
+                }
+                player.sendMessage(messageFormatter.formatSuccess(
+                        PlayerMessages.left(playerId, channelId, config.getDefaultChannel())));
+            });
         }
 
         @Override
@@ -282,46 +317,52 @@ public class ChatListener implements Listener {
 
         @Override
         public void sendErrorMessage(UUID playerId, String text) {
-            ProxiedPlayer player = plugin.getProxy().getPlayer(playerId);
-            if (player == null) {
-                return;
-            }
-            player.sendMessage(messageFormatter.formatError(text));
+            plugin.getProxy().getScheduler().runAsync(plugin, () -> {
+                ProxiedPlayer player = plugin.getProxy().getPlayer(playerId);
+                if (player == null) {
+                    return;
+                }
+                player.sendMessage(messageFormatter.formatError(text));
+            });
         }
 
         @Override
         public void sendWhoResult(UUID playerId, String channelId, String displayName,
                                   String membersCsv, String memberCount) {
-            ProxiedPlayer player = plugin.getProxy().getPlayer(playerId);
-            if (player == null) {
-                return;
-            }
-            String text = WhoCommandService.formatMemberList(
-                    playerId, channelId, displayName, membersCsv, memberCount);
-            for (String line : text.split("\n")) {
-                if (!line.isEmpty()) {
-                    player.sendMessage(messageFormatter.parseColors(line));
+            plugin.getProxy().getScheduler().runAsync(plugin, () -> {
+                ProxiedPlayer player = plugin.getProxy().getPlayer(playerId);
+                if (player == null) {
+                    return;
                 }
-            }
+                String text = WhoCommandService.formatMemberList(
+                        playerId, channelId, displayName, membersCsv, memberCount);
+                for (String line : text.split("\n")) {
+                    if (!line.isEmpty()) {
+                        player.sendMessage(messageFormatter.parseColors(line));
+                    }
+                }
+            });
         }
 
         @Override
         public void notifyKickMuteTarget(ChannelResponseDispatcher.KickMuteNotice notice) {
-            ProxiedPlayer target = plugin.getProxy().getPlayer(notice.getTargetId());
-            if (target == null) {
-                return; // not on this proxy
-            }
-            UUID targetId = notice.getTargetId();
-            String channelId = notice.getChannelId();
-            String operator = notice.getOperator();
-            if (notice.getAction() == ChannelAction.KICK) {
+            plugin.getProxy().getScheduler().runAsync(plugin, () -> {
+                ProxiedPlayer target = plugin.getProxy().getPlayer(notice.getTargetId());
+                if (target == null) {
+                    return; // not on this proxy
+                }
+                UUID targetId = notice.getTargetId();
+                String channelId = notice.getChannelId();
+                String operator = notice.getOperator();
+                if (notice.getAction() == ChannelAction.KICK) {
+                    target.sendMessage(messageFormatter.parseColors(
+                            I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId)));
+                    return;
+                }
+                String durationText = notice.getDurationText();
                 target.sendMessage(messageFormatter.parseColors(
-                        I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId)));
-                return;
-            }
-            String durationText = notice.getDurationText();
-            target.sendMessage(messageFormatter.parseColors(
-                    I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId)));
+                        I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId)));
+            });
         }
     }
 

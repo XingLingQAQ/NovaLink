@@ -64,34 +64,42 @@ class VarInt {
     public static function read(string $buffer, int &$offset): int {
         $result = 0;
         $shift = 0;
-        $bytesRead = 0;
-        
+
         while (true) {
             if ($offset >= strlen($buffer)) {
                 throw new InvalidArgumentException("Buffer underflow while reading VarInt");
             }
-            
-            $byte = ord($buffer[$offset++]);
-            $bytesRead++;
-            
-            if ($bytesRead > self::MAX_BYTES) {
-                throw new InvalidArgumentException("VarInt is too long");
+
+            // Check for overflow BEFORE reading more bytes. After the 5th byte
+            // with its continuation bit set, $shift becomes 35 (>= 32), so we
+            // reject strictly more than 5 bytes without consuming a 6th byte.
+            if ($shift >= 32) {
+                throw new InvalidArgumentException("VarInt is too big");
             }
-            
-            $result |= ($byte & 0x7F) << $shift;
-            
+
+            $byte = ord($buffer[$offset++]);
+
+            // On the 5th byte ($shift === 28), only the low 4 bits are valid for
+            // a 32-bit integer. Mask with 0x0F to reject bits that would shift
+            // past bit 31 and silently corrupt the result.
+            if ($shift === 28) {
+                $result |= ($byte & 0x0F) << $shift;
+            } else {
+                $result |= ($byte & 0x7F) << $shift;
+            }
+
             if (($byte & 0x80) === 0) {
                 break;
             }
-            
+
             $shift += 7;
         }
-        
+
         // Convert to signed 32-bit integer
         if ($result > 0x7FFFFFFF) {
             $result -= 0x100000000;
         }
-        
+
         return $result;
     }
     

@@ -54,13 +54,14 @@ public enum ChannelAction {
      * Resolves a channel action by its numeric wire ID.
      *
      * <p>As a backward-compatibility fallback, if no exact match is found this
-     * method retries with {@code id - 1}, accommodating legacy implementations
-     * that used 1-based IDs. Callers should be aware that a legacy ID may
-     * therefore map to a different action than intended.
+     * method retries with {@code id - 1}, but only when {@code id} falls within
+     * the known legacy 1-based range {@code [1, 12]}. This prevents an unknown
+     * ID (e.g. 13+) from being silently mapped to an existing action.
      *
      * @param id the wire ID
      * @return the matching channel action
-     * @throws IllegalArgumentException if no action matches either {@code id} or {@code id - 1}
+     * @throws IllegalArgumentException if {@code id} does not match a canonical
+     *         action and is outside the legacy 1-based range
      */
     public static ChannelAction fromId(int id) {
         for (ChannelAction action : values()) {
@@ -69,9 +70,14 @@ public enum ChannelAction {
             }
         }
         // Backward compatibility: some legacy implementations used 1-based IDs.
-        for (ChannelAction action : values()) {
-            if (action.id == id - 1) {
-                return action;
+        // Restrict to the known legacy range [1, values().length] so that IDs
+        // outside this range don't silently map to an existing action.
+        int maxLegacyId = values().length; // 0-based max + 1 == 1-based max
+        if (id >= 1 && id <= maxLegacyId) {
+            for (ChannelAction action : values()) {
+                if (action.id == id - 1) {
+                    return action;
+                }
             }
         }
         throw new IllegalArgumentException("Unknown channel action ID: " + id);

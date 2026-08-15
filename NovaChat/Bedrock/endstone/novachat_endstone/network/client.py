@@ -78,6 +78,10 @@ class NetworkClient:
         self._keepalive_task: Optional[asyncio.Task] = None
         self._read_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
+        # Tracks the in-flight _close_connection() task scheduled by
+        # disconnect() so it can be awaited (preventing a fire-and-forget
+        # socket leak where the writer may never finish closing).
+        self._close_task: Optional[asyncio.Task] = None
         # Set by disconnect(); blocks any new reconnect scheduling until the
         # next explicit connect() so plugin unload cannot leave a loop running.
         self._closing = False
@@ -131,13 +135,80 @@ class NetworkClient:
         Disconnect from the backend server (explicit shutdown).
 
         Sets the closing flag so no new reconnect gets scheduled, cancels any
-        running reconnect loop, and closes the connection. A later explicit
+        running reconnect loop, and schedules ``_close_connection`` to flush
+        and close the socket. The close task is tracked on ``self._close_task``
+        so callers that can await (e.g. an async shutdown path) can drive it
+        to completion via :meth:`await_close`. A later explicit
         :meth:`connect` re-arms the client.
         """
         self._closing = True
         self._logger.info("Disconnecting from backend...")
         self._cancel_reconnect_task()
-        asyncio.create_task(self._close_connection())
+
+        # If a previous close is still in flight, let it finish instead of
+        # stacking another task.
+        if self._close_task is not None and not self._close_task.done():
+            return
+
+        # ``disconnect`` is called from a synchronous context (e.g. Endstone's
+        # ``on_disable``), so we cannot await here. Schedule the close and
+        # track it so the writer is actually drained/closed rather than left
+        # dangling (the previous fire-and-forget ``create_task`` could be
+        # garbage-collected before completing the close).
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # No running loop in this thread; perform a best-effort
+            # synchronous close of the writer so the socket is released.
+            self._sync_close_writer()
+            return
+
+        if loop.is_running():
+            self._close_task = loop.create_task(self._close_connection())
+        else:
+            # Loop exists but isn't running — run the close to completion
+            # synchronously so we don't leak an unstarted task.
+            loop.run_until_complete(self._close_connection())
+
+    def _sync_close_writer(self) -> None:
+        """Best-effort synchronous socket close when no event loop is available."""
+        self._connected = False
+        self._authenticated = False
+        if self._keepalive_task is not None and not self._keepalive_task.done():
+            self._keepalive_task.cancel()
+        self._keepalive_task = None
+        if self._read_task is not None and not self._read_task.done():
+            self._read_task.cancel()
+        self._read_task = None
+        if self._writer is not None:
+            try:
+                self._writer.close()
+            except Exception:
+                pass
+            self._writer = None
+            self._reader = None
+
+    async def await_close(self, timeout: float = 5.0) -> None:
+        """
+        Wait for the close task scheduled by :meth:`disconnect` to finish.
+
+        Use from an async shutdown path to ensure the socket is fully closed
+        before returning. No-op if no close is in flight.
+
+        Args:
+            timeout: Maximum seconds to wait for the close to complete.
+        """
+        task = self._close_task
+        if task is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout)
+        except asyncio.TimeoutError:
+            self._logger.warning("Timed out waiting for backend connection close")
+        except Exception as e:
+            self._logger.debug(f"Close task ended with: {e}")
+        finally:
+            self._close_task = None
     
     def _cancel_reconnect_task(self) -> None:
         """Cancel a pending reconnect loop, if any."""
@@ -158,7 +229,10 @@ class NetworkClient:
         """Close the connection and cleanup."""
         self._connected = False
         self._authenticated = False
-        
+        # Clear the close-task reference now that we're executing it, so a
+        # subsequent connect() starts from a clean slate.
+        self._close_task = None
+
         if self._closing:
             # Shutdown path: make sure no reconnect loop survives the close.
             self._cancel_reconnect_task()

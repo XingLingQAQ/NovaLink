@@ -78,8 +78,8 @@ public class MySQLProvider extends AbstractJdbcProvider {
         }
 
         String sql = """
-            INSERT INTO players (player_id, player_name, client_id, current_world, joined_channels, active_channel, platform, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO players (player_id, player_name, client_id, current_world, joined_channels, active_channel, platform, dm_enabled, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 player_name = VALUES(player_name),
                 client_id = VALUES(client_id),
@@ -87,6 +87,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
                 joined_channels = VALUES(joined_channels),
                 active_channel = VALUES(active_channel),
                 platform = VALUES(platform),
+                dm_enabled = VALUES(dm_enabled),
                 last_seen = VALUES(last_seen)
             """;
 
@@ -100,7 +101,8 @@ public class MySQLProvider extends AbstractJdbcProvider {
             stmt.setString(5, String.join(",", state.getJoinedChannels()));
             stmt.setString(6, state.getActiveChannel());
             stmt.setString(7, state.getPlatform());
-            stmt.setLong(8, state.getLastSeen());
+            stmt.setBoolean(8, state.isDmEnabled());
+            stmt.setLong(9, state.getLastSeen());
 
             stmt.executeUpdate();
             logger.debug("Saved player state for: {}", state.getPlayerId());
@@ -136,6 +138,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
 
                     state.setActiveChannel(rs.getString("active_channel"));
                     state.setPlatform(rs.getString("platform"));
+                    state.setDmEnabled(rs.getBoolean("dm_enabled"));
                     state.setLastSeen(rs.getLong("last_seen"));
 
                     // Load mutes
@@ -163,25 +166,35 @@ public class MySQLProvider extends AbstractJdbcProvider {
         }
 
         try (Connection conn = dataSource.getConnection()) {
-            // Delete mutes first
-            try (PreparedStatement stmt = conn.prepareStatement("DELETE FROM mutes WHERE player_id = ?")) {
-                stmt.setString(1, playerId.toString());
-                stmt.executeUpdate();
-            }
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                // Delete mutes first
+                try (PreparedStatement stmt = conn.prepareStatement("DELETE FROM mutes WHERE player_id = ?")) {
+                    stmt.setString(1, playerId.toString());
+                    stmt.executeUpdate();
+                }
 
-            // Delete bans
-            try (PreparedStatement stmt = conn.prepareStatement("DELETE FROM bans WHERE player_id = ?")) {
-                stmt.setString(1, playerId.toString());
-                stmt.executeUpdate();
-            }
+                // Delete bans
+                try (PreparedStatement stmt = conn.prepareStatement("DELETE FROM bans WHERE player_id = ?")) {
+                    stmt.setString(1, playerId.toString());
+                    stmt.executeUpdate();
+                }
 
-            // Delete player
-            try (PreparedStatement stmt = conn.prepareStatement("DELETE FROM players WHERE player_id = ?")) {
-                stmt.setString(1, playerId.toString());
-                stmt.executeUpdate();
-            }
+                // Delete player
+                try (PreparedStatement stmt = conn.prepareStatement("DELETE FROM players WHERE player_id = ?")) {
+                    stmt.setString(1, playerId.toString());
+                    stmt.executeUpdate();
+                }
 
-            logger.debug("Deleted player state for: {}", playerId);
+                conn.commit();
+                logger.debug("Deleted player state for: {}", playerId);
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
         } catch (SQLException e) {
             throw new DatabaseException("Failed to delete player state", e);
         }
@@ -341,23 +354,45 @@ public class MySQLProvider extends AbstractJdbcProvider {
             throw new DatabaseException("Player ID and mute info cannot be null");
         }
 
-        // First delete any existing mute for this player/channel combination
-        deleteMute(playerId, muteInfo.getChannelId());
+        // DELETE + INSERT in one transaction. Doing the delete as a separate
+        // connectionless call (deleteMute opens its own connection) leaves a
+        // window where two concurrent saves can both delete, then both insert,
+        // hitting the UNIQUE(player_id, channel_id) constraint. Keeping both
+        // statements on the same connection under autoCommit=false makes the
+        // replace atomic and serialised by the row lock taken by the DELETE.
+        String deleteSql = muteInfo.getChannelId() != null
+                ? "DELETE FROM mutes WHERE player_id = ? AND channel_id = ?"
+                : "DELETE FROM mutes WHERE player_id = ? AND channel_id IS NULL";
+        String insertSql = "INSERT INTO mutes (player_id, channel_id, expire_time, reason, operator_id, created_at) VALUES (?, ?, ?, ?, ?, ?)";
 
-        String sql = "INSERT INTO mutes (player_id, channel_id, expire_time, reason, operator_id, created_at) VALUES (?, ?, ?, ?, ?, ?)";
-
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-
-            stmt.setString(1, playerId.toString());
-            stmt.setString(2, muteInfo.getChannelId());
-            stmt.setLong(3, muteInfo.getExpireTime());
-            stmt.setString(4, muteInfo.getReason());
-            stmt.setString(5, muteInfo.getOperatorId() != null ? muteInfo.getOperatorId().toString() : null);
-            stmt.setLong(6, muteInfo.getCreatedAt());
-
-            stmt.executeUpdate();
-            logger.debug("Saved mute for player {} in channel {}", playerId, muteInfo.getChannelId());
+        try (Connection conn = dataSource.getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement delete = conn.prepareStatement(deleteSql)) {
+                    delete.setString(1, playerId.toString());
+                    if (muteInfo.getChannelId() != null) {
+                        delete.setString(2, muteInfo.getChannelId());
+                    }
+                    delete.executeUpdate();
+                }
+                try (PreparedStatement insert = conn.prepareStatement(insertSql)) {
+                    insert.setString(1, playerId.toString());
+                    insert.setString(2, muteInfo.getChannelId());
+                    insert.setLong(3, muteInfo.getExpireTime());
+                    insert.setString(4, muteInfo.getReason());
+                    insert.setString(5, muteInfo.getOperatorId() != null ? muteInfo.getOperatorId().toString() : null);
+                    insert.setLong(6, muteInfo.getCreatedAt());
+                    insert.executeUpdate();
+                }
+                conn.commit();
+                logger.debug("Saved mute for player {} in channel {}", playerId, muteInfo.getChannelId());
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
         } catch (SQLException e) {
             throw new DatabaseException("Failed to save mute", e);
         }
@@ -481,23 +516,40 @@ public class MySQLProvider extends AbstractJdbcProvider {
             throw new DatabaseException("Player ID and ban info cannot be null");
         }
 
-        // First delete any existing ban for this player/channel combination
-        deleteBan(playerId, banInfo.getChannelId());
+        // DELETE + INSERT in one transaction (see saveMute for the rationale).
+        String deleteSql = banInfo.getChannelId() != null
+                ? "DELETE FROM bans WHERE player_id = ? AND channel_id = ?"
+                : "DELETE FROM bans WHERE player_id = ? AND channel_id IS NULL";
+        String insertSql = "INSERT INTO bans (player_id, channel_id, expire_time, reason, operator_id, created_at) VALUES (?, ?, ?, ?, ?, ?)";
 
-        String sql = "INSERT INTO bans (player_id, channel_id, expire_time, reason, operator_id, created_at) VALUES (?, ?, ?, ?, ?, ?)";
-
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-
-            stmt.setString(1, playerId.toString());
-            stmt.setString(2, banInfo.getChannelId());
-            stmt.setLong(3, banInfo.getExpireTime());
-            stmt.setString(4, banInfo.getReason());
-            stmt.setString(5, banInfo.getOperatorId() != null ? banInfo.getOperatorId().toString() : null);
-            stmt.setLong(6, banInfo.getCreatedAt());
-
-            stmt.executeUpdate();
-            logger.debug("Saved ban for player {} in channel {}", playerId, banInfo.getChannelId());
+        try (Connection conn = dataSource.getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement delete = conn.prepareStatement(deleteSql)) {
+                    delete.setString(1, playerId.toString());
+                    if (banInfo.getChannelId() != null) {
+                        delete.setString(2, banInfo.getChannelId());
+                    }
+                    delete.executeUpdate();
+                }
+                try (PreparedStatement insert = conn.prepareStatement(insertSql)) {
+                    insert.setString(1, playerId.toString());
+                    insert.setString(2, banInfo.getChannelId());
+                    insert.setLong(3, banInfo.getExpireTime());
+                    insert.setString(4, banInfo.getReason());
+                    insert.setString(5, banInfo.getOperatorId() != null ? banInfo.getOperatorId().toString() : null);
+                    insert.setLong(6, banInfo.getCreatedAt());
+                    insert.executeUpdate();
+                }
+                conn.commit();
+                logger.debug("Saved ban for player {} in channel {}", playerId, banInfo.getChannelId());
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
         } catch (SQLException e) {
             throw new DatabaseException("Failed to save ban", e);
         }
@@ -647,8 +699,8 @@ public class MySQLProvider extends AbstractJdbcProvider {
     public List<Notification> getNotifications(int offset, int limit, boolean unreadOnly) throws DatabaseException {
         List<Notification> notifications = new ArrayList<>();
         String sql = unreadOnly
-                ? "SELECT * FROM notifications WHERE `read` = FALSE ORDER BY created_at DESC LIMIT ? OFFSET ?"
-                : "SELECT * FROM notifications ORDER BY created_at DESC LIMIT ? OFFSET ?";
+                ? "SELECT * FROM notifications WHERE `read` = FALSE ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+                : "SELECT * FROM notifications ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -771,9 +823,10 @@ public class MySQLProvider extends AbstractJdbcProvider {
             INSERT INTO invitations (code, channel_id, inviter_id, expire_time, created_at, used, used_by, used_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
-                used = VALUES(used),
-                used_by = VALUES(used_by),
-                used_at = VALUES(used_at)
+                channel_id = VALUES(channel_id),
+                inviter_id = VALUES(inviter_id),
+                expire_time = VALUES(expire_time),
+                created_at = VALUES(created_at)
             """;
 
         try (Connection conn = dataSource.getConnection();
@@ -836,7 +889,10 @@ public class MySQLProvider extends AbstractJdbcProvider {
             return;
         }
 
-        String sql = "UPDATE invitations SET used = TRUE, used_by = ?, used_at = ? WHERE code = ?";
+        // Guard with `AND used = FALSE` so two concurrent accepts cannot both
+        // flip used=false -> true. If 0 rows are updated, another thread won
+        // the race and already consumed the invitation.
+        String sql = "UPDATE invitations SET used = TRUE, used_by = ?, used_at = ? WHERE code = ? AND used = FALSE";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -845,8 +901,12 @@ public class MySQLProvider extends AbstractJdbcProvider {
             stmt.setLong(2, System.currentTimeMillis());
             stmt.setString(3, code);
 
-            stmt.executeUpdate();
-            logger.debug("Marked invitation {} as used by {}", code, usedBy);
+            int affected = stmt.executeUpdate();
+            if (affected == 0) {
+                logger.warn("markInvitationUsed({}) affected 0 rows — already used by another thread", code);
+            } else {
+                logger.debug("Marked invitation {} as used by {}", code, usedBy);
+            }
         } catch (SQLException e) {
             throw new DatabaseException("Failed to mark invitation as used", e);
         }

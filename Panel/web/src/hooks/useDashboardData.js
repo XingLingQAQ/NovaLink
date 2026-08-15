@@ -512,7 +512,7 @@ export function useDashboardData({ addToast, currentUser }) {
   const handleWsNotification = useCallback((message) => {
     const adapted = adaptNotification(message);
     if (adapted) {
-      setNotifications((prev) => [adapted, ...prev]);
+      setNotifications((prev) => [adapted, ...prev].slice(0, 100));
       addToast(adapted.title + (adapted.desc ? `: ${adapted.desc}` : ''), adapted.type === 'warning' ? 'error' : 'success');
     }
   }, [addToast]);

@@ -5,6 +5,8 @@
  * Requirements: 24.4
  */
 
+import { getApiBaseUrl } from './api';
+
 // Storage keys
 const TOKEN_KEY = 'nova_panel_token';
 const USER_KEY = 'nova_panel_user';
@@ -45,7 +47,7 @@ class AuthService {
         if (this._isTokenExpired(token)) {
           // Defer the refresh attempt so construction isn't blocked by a network
           // call; listeners are notified after the result resolves.
-          this.refreshAccessToken().catch(() => this.logout());
+          this.refreshAccessToken(getApiBaseUrl()).catch(() => this.logout());
         }
       }
     } catch (error) {

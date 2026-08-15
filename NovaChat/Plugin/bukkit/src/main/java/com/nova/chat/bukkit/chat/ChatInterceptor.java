@@ -43,8 +43,15 @@ public class ChatInterceptor implements Listener {
     /** Shared [item]/[i] token detection + per-player cooldown (client-core). */
     private final ItemDisplayTokens itemDisplayTokens = new ItemDisplayTokens();
     
-    /** Global chat mode from configuration */
-    private ChatMode globalMode;
+    /**
+     * Global chat mode from configuration.
+     *
+     * <p>Marked {@code volatile} for cross-thread visibility: it is read in
+     * {@link #onPlayerChat} (Bukkit chat runs async) and written from
+     * {@link #setGlobalMode} / {@link #reload} (command/main thread), matching
+     * the Folia adapter's {@code volatile} declaration.
+     */
+    private volatile ChatMode globalMode;
     
     /**
      * Creates a new ChatInterceptor.

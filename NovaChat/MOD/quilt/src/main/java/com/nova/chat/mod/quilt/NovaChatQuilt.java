@@ -99,6 +99,7 @@ public class NovaChatQuilt implements ModInitializer {
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
             LOGGER.info("Server stopping, disconnecting from NovaChat...");
             services.getNetworkClient().disconnect();
+            platform.shutdown();
         });
 
         LOGGER.info("NovaChat Quilt Mod initialized successfully");
