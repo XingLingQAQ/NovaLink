@@ -27,11 +27,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * regression is caught here regardless of whether the owning project's
  * toolchain is available on this host.
  *
- * <p>The LeviLamina case is intentionally RED: {@code default-config.json}
- * is ACL-locked (owner {@code CodexSandboxOffline}; the current user has
- * only RX via {@code BUILTIN\Users}) and still carries the legacy
- * {@code 18888}. The assertion below is the regression gate for that
- * externally-elevated fix; it must not be disabled or swallowed.
+ * <p>The LeviLamina case is GREEN: the ACL lock on
+ * {@code default-config.json} has been lifted and the template now carries
+ * {@code 8888}. All four cases below are GREEN regression gates that fail
+ * if any template regresses back to the legacy {@code 18888}; they must
+ * not be disabled or swallowed.
  */
 @DisplayName("CONFIG-001: backend default port == client template default port")
 class ConfigCrossModulePortConsistencyTest {
@@ -83,17 +83,16 @@ class ConfigCrossModulePortConsistencyTest {
     }
 
     /**
-     * Regression gate for the ACL-locked LeviLamina template.
+     * Regression gate for the LeviLamina template.
      *
-     * <p>{@code default-config.json} is owned by {@code CodexSandboxOffline}
-     * and the current user has only RX via {@code BUILTIN\Users}, so the
-     * template could not be updated in-place. It still carries the legacy
-     * {@code 18888}. This assertion is RED until an externally-elevated fix
-     * lands; do NOT disable, skip, or catch-and-swallow it — the failure is
-     * the documentation that the gap still exists.
+     * <p>{@code default-config.json} previously carried the legacy
+     * {@code 18888} while the file was ACL-locked. The ACL lock has since
+     * been lifted and the template now carries {@code 8888}. This
+     * assertion is a GREEN regression gate that fails if the template
+     * regresses back to {@code 18888}; do NOT disable, skip, or
+     * catch-and-swallow it.
      *
-     * @throws Exception if the file cannot be read (assertion failure is the
-     *                   expected, intended state for the port check)
+     * @throws Exception if the file cannot be read
      */
     @Test
     @DisplayName("levilamina default-config.json backend.port == 8888 == backend port")
@@ -101,8 +100,8 @@ class ConfigCrossModulePortConsistencyTest {
         int backendPort = readYamlPort(repoFile(BACKEND_YAML), "server", "port");
         int levilaminaPort = readJsonPort(repoFile(LEVILAMINA_JSON));
         assertThat(levilaminaPort)
-                .as("levilamina %s backend.port (ACL-locked; expected RED until "
-                        + "externally elevated fix lands)", LEVILAMINA_JSON)
+                .as("levilamina %s backend.port (GREEN regression gate against legacy 18888)",
+                        LEVILAMINA_JSON)
                 .isEqualTo(CANONICAL_PORT)
                 .isEqualTo(backendPort);
     }
