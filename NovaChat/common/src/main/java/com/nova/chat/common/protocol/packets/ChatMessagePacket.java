@@ -3,6 +3,7 @@ package com.nova.chat.common.protocol.packets;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketBuffer;
 import com.nova.chat.common.protocol.PacketIds;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import io.netty.buffer.ByteBuf;
 
 import java.util.HashMap;
@@ -83,10 +84,12 @@ public class ChatMessagePacket extends Packet {
     public void read(ByteBuf buf) {
         senderId = PacketBuffer.readUUID(buf);
         // Bound field sizes to protocol limits to resist oversized frames
-        senderName = PacketBuffer.readString(buf, 64);
-        clientId = PacketBuffer.readString(buf, 64);
-        channelId = PacketBuffer.readString(buf, 64);
-        content = PacketBuffer.readString(buf, 2048);
+        // (PROTO-003). Constants live in ProtocolLimits so non-JVM forks
+        // mirror the same numeric values.
+        senderName = PacketBuffer.readString(buf, ProtocolLimits.MAX_SENDER_NAME);
+        clientId = PacketBuffer.readString(buf, ProtocolLimits.MAX_CLIENT_ID);
+        channelId = PacketBuffer.readString(buf, ProtocolLimits.MAX_CHANNEL_ID);
+        content = PacketBuffer.readString(buf, ProtocolLimits.MAX_MESSAGE_CONTENT);
 
         // Read placeholders map (optional for legacy clients)
         if (!buf.isReadable()) {

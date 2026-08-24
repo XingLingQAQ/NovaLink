@@ -160,13 +160,26 @@ Log "  endstone launcher: $endstoneExe"
 # 3. Fetch BDS + set up the Endstone run directory.
 # ---------------------------------------------------------------------------
 Log "step 3: fetching Bedrock Dedicated Server (BDS)"
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $binDir "fetch-server.ps1") -Name "bds" -DistDir $DistDir
+# Pass -Auto to match the orchestrator's declared ServerScripts for endstone
+# (run-e2e-orchestrator.ps1 endstone.PlatformDef). With -Auto, fetch-server.ps1
+# calls Resolve-BdsLatest; when minecraft.net pocketbedlinks is unreachable it
+# returns @{ Skip = $true } and fetch-server exits 0 WITHOUT downloading (see
+# fetch-server.ps1 :233-241). Without -Auto the code falls through to the pinned
+# placeholder URL (versions.lock.ps1 bds entry), which 404s after 3 retries ->
+# fetch-server exits non-zero -> this script exit 2's, turning a
+# known-unreachable-BDS env into a red (FAIL) nightly instead of a green SKIP.
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $binDir "fetch-server.ps1") -Name "bds" -Auto -DistDir $DistDir
 if ($LASTEXITCODE -ne 0) { Log "ERROR: fetch-server failed for bds"; exit 2 }
-# The BDS zip lands in $DistDir. Unpack it into the run directory.
+# The BDS zip lands in $DistDir (freshly downloaded by fetch-server, a locally-
+# cached zip per versions.lock.ps1 bds notes, or a cache hit from a prior run).
+# Unpack it into the run directory. When fetch-server exits 0 but no BDS zip is
+# present, that is the documented SKIP signal from Resolve-BdsLatest -- emit a
+# SKIP marker and exit 0 so the nightly stays green on a BDS download-block
+# instead of reddening with exit 2.
 $bdsZip = Get-ChildItem (Join-Path $DistDir "bedrock-server*.zip") -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $bdsZip) {
-    Log "ERROR: BDS zip not found under $DistDir after fetch"
-    exit 2
+    Log "SKIP: BDS server binary unavailable - endstone E2E not run (fetch-server exited 0 with no download; minecraft.net pocketbedlinks unreachable from this env)"
+    exit 0
 }
 $serverDir = Join-Path $RunsDir "bds"
 New-Item -ItemType Directory -Path $serverDir -Force | Out-Null

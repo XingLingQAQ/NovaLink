@@ -3,6 +3,7 @@ package com.nova.chat.common.protocol.packets;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketBuffer;
 import com.nova.chat.common.protocol.PacketIds;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import io.netty.buffer.ByteBuf;
 
 import java.util.UUID;
@@ -116,9 +117,11 @@ public class TitlePacket extends Packet {
 
     @Override
     public void read(ByteBuf buf) {
-        channelId = PacketBuffer.readString(buf);
-        title = PacketBuffer.readString(buf);
-        subtitle = PacketBuffer.readString(buf);
+        // PROTO-003: bound each field so a single oversized string cannot
+        // approach the 4 MiB frame ceiling.
+        channelId = PacketBuffer.readString(buf, ProtocolLimits.MAX_CHANNEL_ID);
+        title = PacketBuffer.readString(buf, ProtocolLimits.MAX_TITLE);
+        subtitle = PacketBuffer.readString(buf, ProtocolLimits.MAX_SUBTITLE);
         fadeIn = PacketBuffer.readInt(buf);
         stay = PacketBuffer.readInt(buf);
         fadeOut = PacketBuffer.readInt(buf);

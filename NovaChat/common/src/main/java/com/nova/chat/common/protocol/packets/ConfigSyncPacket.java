@@ -3,6 +3,7 @@ package com.nova.chat.common.protocol.packets;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketBuffer;
 import com.nova.chat.common.protocol.PacketIds;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import io.netty.buffer.ByteBuf;
 
 import java.util.UUID;
@@ -51,7 +52,10 @@ public class ConfigSyncPacket extends Packet {
 
     @Override
     public void read(ByteBuf buf) {
-        configJson = PacketBuffer.readString(buf);
+        // PROTO-003: bounded by the dedicated ConfigSync JSON budget so a single
+        // field cannot approach the 4 MiB frame ceiling. Non-JVM receivers
+        // mirror this constant.
+        configJson = PacketBuffer.readString(buf, ProtocolLimits.MAX_CONFIG_SYNC_JSON);
         timestamp = buf.readLong();
     }
 

@@ -3,6 +3,7 @@ package com.nova.chat.common.protocol.packets;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketBuffer;
 import com.nova.chat.common.protocol.PacketIds;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import io.netty.buffer.ByteBuf;
 
 import java.util.Objects;
@@ -10,19 +11,20 @@ import java.util.UUID;
 
 /**
  * Item display packet for transmitting item display data across servers.
- * 
+ *
  * Packet ID: 0x10
  * Direction: Bidirectional
- * 
+ *
  * This packet is used when a player uses [item] or [i] tags in chat to display
  * their held item to other players across the network.
  *
- * ROADMAP (not wired): the backend has no [item]/[i] tag parser and no
- * platform client registers a handler for this packet. This is part of the
- * spec §4 display-family ([item]/[inv]/[ec]/[img]); only the protocol shell
- * exists today. To be wired together with InventorySnapshotPacket /
- * ImageDisplayPacket (which currently lack even a class) in a future
- * feature round. Tracked as a known gap, not an in-flight TODO.
+ * §4 display-family ([item]/[inv]/[ec]/[img]); Property 13 / Requirements 19.1.
+ * The backend {@code ItemDisplayHandler} is wired (cross-server fan-out, auth,
+ * mute/ban/channel-boundary/rate-limit checks mirroring chat). Send-side is
+ * implemented on bukkit/folia/nukkit/pnx and MOD-common (fabric/quilt/neoforge
+ * via {@code Platform.getHeldItemJson}); Sponge send-side is in flight; the
+ * Bedrock receive-side is wired on all clients. velocity/bungee are N/A
+ * (proxies have no held-item concept).
  *
  * **Feature: novachat-platform-extensions, Property 13: Display Packet Serialization Round-Trip**
  * **Validates: Requirements 19.1**
@@ -95,9 +97,11 @@ public class ItemDisplayPacket extends Packet {
     @Override
     public void read(ByteBuf buf) {
         senderId = PacketBuffer.readUUID(buf);
-        senderName = PacketBuffer.readString(buf);
-        channelId = PacketBuffer.readString(buf);
-        itemJson = PacketBuffer.readString(buf);
+        // PROTO-003: bound each field so a single oversized string (in
+        // particular itemJson) cannot approach the 4 MiB frame ceiling.
+        senderName = PacketBuffer.readString(buf, ProtocolLimits.MAX_SENDER_NAME);
+        channelId = PacketBuffer.readString(buf, ProtocolLimits.MAX_CHANNEL_ID);
+        itemJson = PacketBuffer.readString(buf, ProtocolLimits.MAX_ITEM_JSON);
         timestamp = PacketBuffer.readLong(buf);
     }
 

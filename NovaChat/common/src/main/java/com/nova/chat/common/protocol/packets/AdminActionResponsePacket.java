@@ -4,6 +4,7 @@ import com.nova.chat.common.protocol.AdminAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketBuffer;
 import com.nova.chat.common.protocol.PacketIds;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import io.netty.buffer.ByteBuf;
 
 import java.util.UUID;
@@ -90,8 +91,10 @@ public class AdminActionResponsePacket extends Packet {
     public void read(ByteBuf buf) {
         action = AdminAction.fromId(buf.readByte());
         success = buf.readBoolean();
-        errorCode = PacketBuffer.readString(buf);
-        message = PacketBuffer.readString(buf);
+        // PROTO-003: bound each field so a single oversized string cannot
+        // approach the 4 MiB frame ceiling.
+        errorCode = PacketBuffer.readString(buf, ProtocolLimits.MAX_ERROR_CODE);
+        message = PacketBuffer.readString(buf, ProtocolLimits.MAX_ERROR_MESSAGE);
     }
 
     // Getters and setters

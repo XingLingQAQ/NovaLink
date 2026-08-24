@@ -20,17 +20,32 @@
 #      for post-mortem.
 #
 # Coverage notes:
-#   - bukkit/endstone/levilamina/pmmp are IMPLEMENTED in the committed harness.
-#   - folia/velocity/bungee/nukkit/pnx/sponge are TODO stubs in the committed
-#     orchestrator (they exit 0 with a "not yet ported" message). The matrix
-#     includes them with continue-on-error so the real per-platform signal is
-#     visible in the log without reddening the whole workflow.
-#   - levilamina + endstone E2E need BDS (Bedrock Dedicated Server). BDS is
+#   - ALL 10 platforms are IMPLEMENTED in the committed harness:
+#       bukkit, endstone, levilamina, pmmp via self-contained scripts
+#       (run-bukkit/run-endstone/run-levilamina/run-pmmp-e2e.ps1);
+#       folia, velocity, bungee, nukkit, pnx, sponge via the shared
+#       multiplatform dispatch (run-multiplatform-e2e.ps1), each with a real
+#       GradleTask + JarGlob + BuildJdk + PluginsSubdir.
+#   - Server-binary downloads (Purpur, PaperMC, Cloudburst maven, Sponge
+#     maven, pmmp, minecraft.net BDS) are flaky and may be blocked from some
+#     runner environments. Platforms whose download fails exit non-zero
+#     (FAIL/red): bukkit, folia, nukkit, pnx, sponge, pmmp. continue-on-error
+#     below keeps download-flaky platforms from reddening the whole nightly.
+#   - velocity + bungee are PROXY-ONLY: run-multiplatform-e2e.ps1 skips them
+#     before any fetch/backend/server/bot step (Note field -> SKIPPED, exit 0),
+#     so they always exit green regardless of NovaLink health. The proxy
+#     plugin IS built + installed (GradleTask), but no bot chat round-trip is
+#     exercised -- a real regression on velocity/bungee will NOT red this job.
+#   - endstone + levilamina need BDS (Bedrock Dedicated Server). BDS is
 #     download-blocked from some environments (minecraft.net pocketbedlinks
-#     drops the connection). fetch-server.ps1 -Name bds -Auto logs the
-#     detection approach and skips live download in that case, so those two
-#     platforms may report SKIP -- that is expected and documented, NOT a
-#     regression.
+#     drops the connection). fetch-server.ps1 -Name bds -Auto has a SKIP path
+#     (exit 0, no download); the endstone/levilamina run scripts pass -Auto
+#     and handle the SKIP sentinel by exiting 0 with a "SKIP: BDS server
+#     binary unavailable" marker, so a BDS download-block SKIPs (green) these
+#     two platforms instead of reddening. They remain in the hard-gate (NOT on
+#     the allowlist); a real regression on endstone/levilamina still reds the
+#     nightly, and a locally-cached BDS zip (versions.lock.ps1) lets the full
+#     E2E run proceed when the download is reachable.
 #
 # Runner: windows-2022 (E2E scripts are PowerShell + Windows process-tree
 # management; levilamina needs VS 2022 / MSVC v143 which windows-2022 ships).
@@ -65,15 +80,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The full declared platform set. Implemented platforms run for real;
-        # TODO stubs exit 0 with a "not yet ported" marker. continue-on-error
-        # below keeps the workflow green on stub failures while the per-platform
-        # log line carries the real signal.
+        # The full declared platform set. ALL 10 platforms are IMPLEMENTED in the
+        # committed harness (see coverage notes above). continue-on-error below
+        # is applied to download-flaky + SKIP-by-design platforms so the nightly
+        # is not intermittently reddened by external download availability.
         platform: [bukkit, folia, velocity, bungee, nukkit, pnx, sponge, endstone, levilamina, pmmp]
-    # Implemented platforms: bukkit, endstone, levilamina, pmmp. The rest are
-    # committed TODO stubs OR depend on BDS (levilamina/endstone) which may be
-    # download-blocked. continue-on-error only for the known-stub platforms so
-    # a real regression on an implemented platform still reds the job.
+    # continue-on-error allowlist = platforms whose nightly signal is unreliable:
+    #   - folia/nukkit/pnx/sponge: FAIL (red) when a pinned/Auto download is
+    #     blocked, which would flaky-red the nightly.
+    #   - velocity/bungee: proxy-only, SKIPPED by design before any bot round-trip
+    #     (a real regression cannot red them regardless of the gate).
+    #   - endstone/levilamina: SKIP (green) on a BDS download-block -- the run
+    #     scripts pass -Auto and handle the SKIP sentinel (exit 0 + "SKIP: BDS
+    #     server binary unavailable" marker). They are NOT on this allowlist;
+    #     they remain in the hard-gate, so a real regression on endstone/levilamina
+    #     still reds the nightly. The hard-gate platforms are
+    #     bukkit/endstone/levilamina/pmmp; a real regression on bukkit/pmmp still
+    #     reds the job.
     continue-on-error: ${{ !contains(fromJson('["bukkit","endstone","levilamina","pmmp"]'), matrix.platform) }}
 
     env:

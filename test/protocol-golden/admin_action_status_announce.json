@@ -1,0 +1,21 @@
+{
+  "name": "admin_action_status_announce",
+  "packet": "AdminActionPacket",
+  "packetId": 11,
+  "requestId": "00000000-0000-0000-0000-00000000003c",
+  "legacyWire": false,
+  "reencodeExact": true,
+  "description": "管理公告：STATUS + type=ANNOUNCE + 中文 content + 3 项 extra（统一广播路径）",
+  "fields": {
+    "action": 5,
+    "playerId": "11223344-5566-7788-99aa-bbccddeeff00",
+    "passwordHash": "",
+    "target": "global",
+    "extra": {
+      "type": "ANNOUNCE",
+      "operatorName": "Alex",
+      "content": "服务器将在 5 分钟后维护 🔧"
+    }
+  },
+  "frameHex": "7a0b0000000000000000000000000000003c05112233445566778899aabbccddeeff000006676c6f62616c03047479706508414e4e4f554e43450c6f70657261746f724e616d6504416c657807636f6e74656e7426e69c8de58aa1e599a8e5b086e59ca8203520e58886e9929fe5908ee7bbb4e68aa420f09f94a7"
+}

@@ -3,6 +3,7 @@ package com.nova.chat.common.protocol.packets;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketBuffer;
 import com.nova.chat.common.protocol.PacketIds;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import io.netty.buffer.ByteBuf;
 
 import java.util.Objects;
@@ -98,11 +99,13 @@ public class PrivateMessagePacket extends Packet {
     @Override
     public void read(ByteBuf buf) {
         senderId = PacketBuffer.readUUID(buf);
-        senderName = PacketBuffer.readString(buf);
-        senderClientId = PacketBuffer.readString(buf);
-        targetName = PacketBuffer.readString(buf);
+        // PROTO-003: bound each field so a single oversized string cannot
+        // approach the 4 MiB frame ceiling.
+        senderName = PacketBuffer.readString(buf, ProtocolLimits.MAX_SENDER_NAME);
+        senderClientId = PacketBuffer.readString(buf, ProtocolLimits.MAX_CLIENT_ID);
+        targetName = PacketBuffer.readString(buf, ProtocolLimits.MAX_TARGET_NAME);
         targetId = PacketBuffer.readUUID(buf);
-        content = PacketBuffer.readString(buf);
+        content = PacketBuffer.readString(buf, ProtocolLimits.MAX_MESSAGE_CONTENT);
         timestamp = PacketBuffer.readLong(buf);
     }
 

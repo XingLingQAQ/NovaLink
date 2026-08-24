@@ -4,6 +4,7 @@ import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketBuffer;
 import com.nova.chat.common.protocol.PacketIds;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import io.netty.buffer.ByteBuf;
 
 import java.util.HashMap;
@@ -82,9 +83,11 @@ public class ChannelActionResponsePacket extends Packet {
     public void read(ByteBuf buf) {
         success = buf.readBoolean();
         action = ChannelAction.fromId(buf.readByte());
-        channelId = PacketBuffer.readString(buf);
-        errorCode = PacketBuffer.readString(buf);
-        message = PacketBuffer.readString(buf);
+        // PROTO-003: bound each field so a single oversized string cannot
+        // approach the 4 MiB frame ceiling.
+        channelId = PacketBuffer.readString(buf, ProtocolLimits.MAX_CHANNEL_ID);
+        errorCode = PacketBuffer.readString(buf, ProtocolLimits.MAX_ERROR_CODE);
+        message = PacketBuffer.readString(buf, ProtocolLimits.MAX_ERROR_MESSAGE);
 
         // Read extra map (optional for legacy implementations)
         if (!buf.isReadable()) {
@@ -107,8 +110,8 @@ public class ChannelActionResponsePacket extends Packet {
 
         extra = new HashMap<>(size);
         for (int i = 0; i < size; i++) {
-            String key = PacketBuffer.readString(buf);
-            String value = PacketBuffer.readString(buf);
+            String key = PacketBuffer.readString(buf, ProtocolLimits.MAX_METADATA_KEY);
+            String value = PacketBuffer.readString(buf, ProtocolLimits.MAX_METADATA_VALUE);
             extra.put(key, value);
         }
     }

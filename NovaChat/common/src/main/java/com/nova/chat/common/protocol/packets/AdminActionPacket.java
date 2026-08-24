@@ -4,6 +4,7 @@ import com.nova.chat.common.protocol.AdminAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketBuffer;
 import com.nova.chat.common.protocol.PacketIds;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import io.netty.buffer.ByteBuf;
 
 import java.util.HashMap;
@@ -117,8 +118,10 @@ public class AdminActionPacket extends Packet {
     public void read(ByteBuf buf) {
         action = AdminAction.fromId(buf.readByte());
         playerId = PacketBuffer.readUUID(buf);
-        passwordHash = PacketBuffer.readString(buf);
-        target = PacketBuffer.readString(buf);
+        // PROTO-003: bound each field so a single oversized string cannot
+        // approach the 4 MiB frame ceiling.
+        passwordHash = PacketBuffer.readString(buf, ProtocolLimits.MAX_PASSWORD_HASH);
+        target = PacketBuffer.readString(buf, ProtocolLimits.MAX_CHANNEL_ID);
 
         // Read extra map with a size guard matching ChannelActionPacket so a
         // malformed/garbled size cannot cause an oversized allocation.
@@ -129,8 +132,8 @@ public class AdminActionPacket extends Packet {
         }
         extra = new HashMap<>(size);
         for (int i = 0; i < size; i++) {
-            String key = PacketBuffer.readString(buf);
-            String value = PacketBuffer.readString(buf);
+            String key = PacketBuffer.readString(buf, ProtocolLimits.MAX_METADATA_KEY);
+            String value = PacketBuffer.readString(buf, ProtocolLimits.MAX_METADATA_VALUE);
             extra.put(key, value);
         }
     }

@@ -2,7 +2,7 @@
   "name": "admin_action_response_ok",
   "packet": "AdminActionResponsePacket",
   "packetId": 12,
-  "requestId": "00000000-0000-0000-0000-00000000003c",
+  "requestId": "00000000-0000-0000-0000-00000000003d",
   "legacyWire": false,
   "reencodeExact": true,
   "description": "管理操作成功响应（字段顺序 action|success|errorCode|message）",
@@ -12,5 +12,5 @@
     "errorCode": "",
     "message": "Authenticated ✔"
   },
-  "frameHex": "260c0000000000000000000000000000003c0001001141757468656e7469636174656420e29c94"
+  "frameHex": "260c0000000000000000000000000000003d0001001141757468656e7469636174656420e29c94"
 }

@@ -33,10 +33,11 @@
 | 16 | `title_boundary` | TitlePacket | 0x09 | `00000000-0000-0000-0000-000000000039` | true | - | Title 边界：空 channelId/subtitle、零时序、全零 senderId UUID |
 | 17 | `admin_action_auth` | AdminActionPacket | 0x0B | `00000000-0000-0000-0000-00000000003a` | true | - | 管理员认证：AUTH + SHA-256 哈希 + 空 target + 空 extra |
 | 18 | `admin_action_spy_extra` | AdminActionPacket | 0x0B | `00000000-0000-0000-0000-00000000003b` | true | - | 管理员监听：SPY_START + 中文 target + 非空 extra（1 项） |
-| 19 | `admin_action_response_ok` | AdminActionResponsePacket | 0x0C | `00000000-0000-0000-0000-00000000003c` | true | - | 管理操作成功响应（字段顺序 action|success|errorCode|message） |
-| 20 | `admin_action_response_fail` | AdminActionResponsePacket | 0x0C | `00000000-0000-0000-0000-00000000003d` | true | - | 管理操作失败响应：NC-500 + 中文 message |
-| 21 | `item_display_typical` | ItemDisplayPacket | 0x10 | `00000000-0000-0000-0000-00000000003e` | true | - | 物品展示：嵌套 JSON 字符串 + 毫秒时间戳 |
-| 22 | `item_display_boundary` | ItemDisplayPacket | 0x10 | `00000000-0000-0000-0000-00000000003f` | true | - | 物品展示边界：全空字符串、全零 UUID、负 long（-1 → 8 个 0xFF 字节） |
-| 23 | `mention_typical` | MentionPacket | 0x12 | `00000000-0000-0000-0000-000000000040` | true | - | @提及通知：双 UUID + 中文/emoji 预览 + 毫秒时间戳 |
-| 24 | `private_message_typical` | PrivateMessagePacket | 0x14 | `00000000-0000-0000-0000-000000000041` | true | - | 私聊消息 S→C 完整形态：后端已填 targetId 与服务器时间戳 |
-| 25 | `private_message_cjk_nil_target` | PrivateMessagePacket | 0x14 | `00000000-0000-0000-0000-000000000042` | true | - | 私聊消息 C→S 边界：全零 targetId（后端按名解析）+ 中文名/emoji 内容 |
+| 19 | `admin_action_status_announce` | AdminActionPacket | 0x0B | `00000000-0000-0000-0000-00000000003c` | true | - | 管理公告：STATUS + type=ANNOUNCE + 中文 content + 3 项 extra（统一广播路径） |
+| 20 | `admin_action_response_ok` | AdminActionResponsePacket | 0x0C | `00000000-0000-0000-0000-00000000003d` | true | - | 管理操作成功响应（字段顺序 action|success|errorCode|message） |
+| 21 | `admin_action_response_fail` | AdminActionResponsePacket | 0x0C | `00000000-0000-0000-0000-00000000003e` | true | - | 管理操作失败响应：NC-500 + 中文 message |
+| 22 | `item_display_typical` | ItemDisplayPacket | 0x10 | `00000000-0000-0000-0000-00000000003f` | true | - | 物品展示：嵌套 JSON 字符串 + 毫秒时间戳 |
+| 23 | `item_display_boundary` | ItemDisplayPacket | 0x10 | `00000000-0000-0000-0000-000000000040` | true | - | 物品展示边界：全空字符串、全零 UUID、负 long（-1 → 8 个 0xFF 字节） |
+| 24 | `mention_typical` | MentionPacket | 0x12 | `00000000-0000-0000-0000-000000000041` | true | - | @提及通知：双 UUID + 中文/emoji 预览 + 毫秒时间戳 |
+| 25 | `private_message_typical` | PrivateMessagePacket | 0x14 | `00000000-0000-0000-0000-000000000042` | true | - | 私聊消息 S→C 完整形态：后端已填 targetId 与服务器时间戳 |
+| 26 | `private_message_cjk_nil_target` | PrivateMessagePacket | 0x14 | `00000000-0000-0000-0000-000000000043` | true | - | 私聊消息 C→S 边界：全零 targetId（后端按名解析）+ 中文名/emoji 内容 |

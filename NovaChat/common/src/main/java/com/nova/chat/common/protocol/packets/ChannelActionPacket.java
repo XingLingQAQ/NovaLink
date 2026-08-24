@@ -7,6 +7,7 @@ import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketBuffer;
 import com.nova.chat.common.protocol.PacketIds;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import io.netty.buffer.ByteBuf;
 
 import java.util.HashMap;
@@ -82,8 +83,10 @@ public class ChannelActionPacket extends Packet {
     @Override
     public void read(ByteBuf buf) {
         action = ChannelAction.fromId(buf.readByte());
-        channelId = PacketBuffer.readString(buf);
-        password = PacketBuffer.readString(buf);
+        // PROTO-003: bound each field so a single oversized string cannot
+        // approach the 4 MiB frame ceiling.
+        channelId = PacketBuffer.readString(buf, ProtocolLimits.MAX_CHANNEL_ID);
+        password = PacketBuffer.readString(buf, ProtocolLimits.MAX_CHANNEL_PASSWORD);
 
         // Read extra map (optional / legacy-compatible).
         if (!buf.isReadable()) {
@@ -101,8 +104,8 @@ public class ChannelActionPacket extends Packet {
 
             extra = new HashMap<>(size);
             for (int i = 0; i < size; i++) {
-                String key = PacketBuffer.readString(buf);
-                String value = PacketBuffer.readString(buf);
+                String key = PacketBuffer.readString(buf, ProtocolLimits.MAX_METADATA_KEY);
+                String value = PacketBuffer.readString(buf, ProtocolLimits.MAX_METADATA_VALUE);
                 extra.put(key, value);
             }
             return;
@@ -112,7 +115,7 @@ public class ChannelActionPacket extends Packet {
 
         // Legacy fallback: extra as a single JSON string (object), try to parse into map.
         try {
-            String json = PacketBuffer.readString(buf);
+            String json = PacketBuffer.readString(buf, ProtocolLimits.MAX_ACTION_JSON);
             extra = parseJsonToMap(json);
         } catch (Exception e) {
             extra = new HashMap<>();

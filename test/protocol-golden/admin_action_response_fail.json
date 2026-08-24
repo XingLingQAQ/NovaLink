@@ -2,7 +2,7 @@
   "name": "admin_action_response_fail",
   "packet": "AdminActionResponsePacket",
   "packetId": 12,
-  "requestId": "00000000-0000-0000-0000-00000000003d",
+  "requestId": "00000000-0000-0000-0000-00000000003e",
   "legacyWire": false,
   "reencodeExact": true,
   "description": "管理操作失败响应：NC-500 + 中文 message",
@@ -12,5 +12,5 @@
     "errorCode": "NC-500",
     "message": "配置重载失败"
   },
-  "frameHex": "2d0c0000000000000000000000000000003d0400064e432d35303012e9858de7bdaee9878de8bdbde5a4b1e8b4a5"
+  "frameHex": "2d0c0000000000000000000000000000003e0400064e432d35303012e9858de7bdaee9878de8bdbde5a4b1e8b4a5"
 }

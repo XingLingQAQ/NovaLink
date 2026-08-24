@@ -3,6 +3,7 @@ package com.nova.chat.common.protocol.packets;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketBuffer;
 import com.nova.chat.common.protocol.PacketIds;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import io.netty.buffer.ByteBuf;
 
 import java.util.Objects;
@@ -83,10 +84,12 @@ public class MentionPacket extends Packet {
     @Override
     public void read(ByteBuf buf) {
         mentionerId = PacketBuffer.readUUID(buf);
-        mentionerName = PacketBuffer.readString(buf);
+        // PROTO-003: bound each field so a single oversized string cannot
+        // approach the 4 MiB frame ceiling.
+        mentionerName = PacketBuffer.readString(buf, ProtocolLimits.MAX_SENDER_NAME);
         mentionedId = PacketBuffer.readUUID(buf);
-        channelId = PacketBuffer.readString(buf);
-        messagePreview = PacketBuffer.readString(buf);
+        channelId = PacketBuffer.readString(buf, ProtocolLimits.MAX_CHANNEL_ID);
+        messagePreview = PacketBuffer.readString(buf, ProtocolLimits.MAX_MESSAGE_PREVIEW);
         timestamp = PacketBuffer.readLong(buf);
     }
 

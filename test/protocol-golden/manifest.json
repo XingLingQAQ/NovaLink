@@ -166,6 +166,15 @@
       "reencodeExact": true
     },
     {
+      "name": "admin_action_status_announce",
+      "packet": "AdminActionPacket",
+      "packetId": 11,
+      "bin": "admin_action_status_announce.bin",
+      "json": "admin_action_status_announce.json",
+      "legacyWire": false,
+      "reencodeExact": true
+    },
+    {
       "name": "admin_action_response_ok",
       "packet": "AdminActionResponsePacket",
       "packetId": 12,
