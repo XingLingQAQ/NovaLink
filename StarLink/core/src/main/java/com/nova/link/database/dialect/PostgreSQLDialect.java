@@ -30,7 +30,7 @@ public class PostgreSQLDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
     private static final long MIGRATION_LOCK_KEY = 0x4E4F56414C494E4BL;
-    private static final int CURRENT_VERSION = 13;
+    private static final int CURRENT_VERSION = 14;
 
     @Override
     public int getCurrentVersion() {
@@ -448,6 +448,48 @@ public class PostgreSQLDialect implements MigrationDialect {
                     """);
             }
 
+            case 14 -> {
+                // Campaigns table (§11.6 item-19 slice B / PANEL proposal 06).
+                //   campaigns — persisted campaign orchestration records keyed by
+                //               the campaign id (VARCHAR(64)). The authoritative
+                //               copy of campaign state lives in the in-memory
+                //               CampaignManager map; this table mirrors non-terminal
+                //               and recently-revoked campaigns so that restarts can
+                //               rehydrate scheduled/active campaigns and keep an
+                //               audit trail of revoked ones. Platforms Set<String>
+                //               is serialised as a comma-joined TEXT column;
+                //               delivery_policy is the enum dbValue() (INSTANT,
+                //               TITLE_FALLBACK, ACTIONBAR_FALLBACK). Status is the
+                //               CampaignStatus enum name (PREVIEW/SCHEDULED/ACTIVE/
+                //               EXPIRED/REVOKED). creator_id/creator_client_id are
+                //               nullable for system-created campaigns. revoked_at
+                //               defaults to 0 and revoked_by is NULL until a revoke
+                //               stamps them. CREATE TABLE IF NOT EXISTS + CREATE
+                //               INDEX IF NOT EXISTS keep the migration idempotent.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS campaigns (
+                        id VARCHAR(64) NOT NULL PRIMARY KEY,
+                        channel_id VARCHAR(64) NOT NULL,
+                        platforms TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        status VARCHAR(16) NOT NULL,
+                        schedule_revision BIGINT NOT NULL,
+                        delivery_policy VARCHAR(32) NOT NULL,
+                        start_at BIGINT NOT NULL,
+                        end_at BIGINT NOT NULL,
+                        rate_limit_per_channel_per_hour INT NOT NULL,
+                        creator_id VARCHAR(36),
+                        creator_client_id VARCHAR(64),
+                        created_at BIGINT NOT NULL,
+                        revoked_at BIGINT NOT NULL DEFAULT 0,
+                        revoked_by VARCHAR(36)
+                    )
+                    """);
+                statements.add("CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns (status)");
+                statements.add("CREATE INDEX IF NOT EXISTS idx_campaigns_channel_id ON campaigns (channel_id)");
+                statements.add("CREATE INDEX IF NOT EXISTS idx_campaigns_created_at ON campaigns (created_at)");
+            }
+
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -470,6 +512,7 @@ public class PostgreSQLDialect implements MigrationDialect {
             case 11 -> "Add moderation_cases, case_evidence and appeals tables (PANEL-007)";
             case 12 -> "Add config_history table for masked config snapshots and rollback (PANEL proposal 10)";
             case 13 -> "Add social_relations and notification_preferences tables for ignore/favorite/mentions (PANEL proposal 08)";
+            case 14 -> "Add campaigns table for persisted campaign orchestration (PANEL proposal 06)";
             default -> "Unknown migration";
         };
     }

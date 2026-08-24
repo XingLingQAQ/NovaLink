@@ -8,6 +8,8 @@ import com.nova.link.auth.PermissionResult;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
+import com.nova.link.database.DatabaseException;
+import com.nova.link.database.DatabaseProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -97,6 +99,13 @@ public class CampaignManager {
     private volatile BiConsumer<String, String> announcementSender;
     /** Scheduler for one-shot activation/expiry tasks. */
     private volatile ScheduledExecutorService scheduler;
+    /**
+     * Optional persistence backend (schema v14 campaigns table). When set,
+     * campaigns are written through on create/schedule/activate/revoke and
+     * restored via {@link #loadPersistedCampaigns()} at startup. When null,
+     * CampaignManager degrades to pure in-memory (slice A behaviour, fail-open).
+     */
+    private volatile DatabaseProvider databaseProvider;
 
     public CampaignManager(PermissionManager permissionManager, ChannelManager channelManager) {
         this.permissionManager = Objects.requireNonNull(permissionManager,
@@ -123,6 +132,17 @@ public class CampaignManager {
      */
     public void setAnnouncementSender(BiConsumer<String, String> sender) {
         this.announcementSender = sender;
+    }
+
+    /**
+     * Wires the optional persistence backend (schema v14 campaigns table).
+     * Must be called before {@link #initialize()} for
+     * {@link #loadPersistedCampaigns()} to take effect. Null = degrade to
+     * pure in-memory (slice A behaviour, fail-open) — persistence failures
+     * never block the authoritative in-memory state.
+     */
+    public void setDatabaseProvider(DatabaseProvider databaseProvider) {
+        this.databaseProvider = databaseProvider;
     }
 
     /**
@@ -236,6 +256,7 @@ public class CampaignManager {
                 operatorId, operatorClientId, System.currentTimeMillis());
         campaigns.put(id, campaign);
 
+        persistCampaign(campaign);
         recordAudit(operatorId == null ? null : operatorId.toString(),
                 "campaign.create", "campaign:" + id, null, null, null, "success");
         logger.info("Campaign created: {} by {} for channel {}", id, operatorId, channelId);
@@ -277,6 +298,7 @@ public class CampaignManager {
         campaign.setStatus(CampaignStatus.SCHEDULED);
         campaign.bumpScheduleRevision();
         armActivation(campaign, operatorId);
+        persistCampaign(campaign);
         recordAudit(operatorId == null ? null : operatorId.toString(),
                 "campaign.schedule", "campaign:" + campaignId, null, null, null, "success");
         logger.info("Campaign scheduled: {} by {} (rev={})",
@@ -332,6 +354,7 @@ public class CampaignManager {
             }
         }
         CampaignResult deliveryResult = deliverOnce(campaign);
+        persistCampaign(campaign);
         recordAudit(operatorId == null ? null : operatorId.toString(),
                 "campaign.activate", "campaign:" + campaign.getId(), null, null, null, "success");
         logger.info("Campaign activated: {} by {} (rev={}, delivery={})",
@@ -367,6 +390,7 @@ public class CampaignManager {
         if (task != null) {
             task.cancel(false);
         }
+        persistCampaign(campaign);
         recordAudit(operatorId == null ? null : operatorId.toString(),
                 "campaign.revoke", "campaign:" + campaignId, null, null, null, "success");
         logger.info("Campaign revoked: {} by {}", campaignId, operatorId);
@@ -394,6 +418,76 @@ public class CampaignManager {
     }
 
     // ====================== internal helpers ======================
+
+    /**
+     * Loads persisted non-terminal campaigns (PREVIEW/SCHEDULED/ACTIVE) from
+     * the database into the in-memory map at startup. Terminal campaigns
+     * (EXPIRED/REVOKED) are NOT reloaded — their audit trail stays in the
+     * campaigns table but they do not re-enter the active campaign map. This
+     * mirrors {@link AnnouncementManager#loadPersistedAnnouncements()}.
+     *
+     * <p>Fail-open: when {@code databaseProvider} is null (slice A mode) or the
+     * load throws, this method returns 0 and the manager proceeds as a pure
+     * in-memory store. SCHEDULED campaigns with a future {@code startAt} are
+     * re-armed via {@link #armActivation(Campaign, UUID)} so their deferred
+     * activation fires after restart. ACTIVE campaigns with a future
+     * {@code endAt} have their expiry re-armed by {@link #doActivate} only on
+     * the next activation — here we simply restore them as ACTIVE without
+     * re-arming expiry (a missed expiry is acceptable: the campaign stays
+     * ACTIVE until manually revoked or re-activated).
+     *
+     * @return number of campaigns restored
+     */
+    public int loadPersistedCampaigns() {
+        if (databaseProvider == null) {
+            return 0;
+        }
+        int restored = 0;
+        try {
+            for (Campaign campaign : databaseProvider.getAllPersistedCampaigns()) {
+                CampaignStatus status = campaign.getStatus();
+                // Skip terminal campaigns — their audit trail stays in the DB
+                // but they do not re-enter the active in-memory map.
+                if (status == CampaignStatus.EXPIRED || status == CampaignStatus.REVOKED) {
+                    continue;
+                }
+                // Don't clobber a campaign that was already loaded (defensive
+                // — loadPersistedCampaigns should only be called once at startup).
+                campaigns.putIfAbsent(campaign.getId(), campaign);
+                // Re-arm deferred activation for SCHEDULED campaigns with a
+                // future startAt. Use a null operatorId (system restore).
+                if (status == CampaignStatus.SCHEDULED && campaign.getStartAt() > 0) {
+                    armActivation(campaign, null);
+                }
+                restored++;
+            }
+            if (restored > 0) {
+                logger.info("Loaded {} persisted campaign(s) from database", restored);
+            }
+        } catch (DatabaseException e) {
+            logger.warn("Failed to load persisted campaigns (degrading to in-memory): {}",
+                    e.getMessage());
+        }
+        return restored;
+    }
+
+    /**
+     * Best-effort persist of a campaign snapshot to the database. Fail-open:
+     * when {@code databaseProvider} is null (slice A mode) or the save throws,
+     * the in-memory authoritative state is unaffected — the DB write failure
+     * is only logged. Mirrors
+     * {@link AnnouncementManager#persistAnnouncement(Announcement)}.
+     */
+    private void persistCampaign(Campaign campaign) {
+        if (databaseProvider == null) {
+            return;
+        }
+        try {
+            databaseProvider.saveCampaign(campaign);
+        } catch (DatabaseException e) {
+            logger.warn("Failed to persist campaign {}: {}", campaign.getId(), e.getMessage());
+        }
+    }
 
     /**
      * Delivers the campaign content once, subject to the per-channel/per-hour
@@ -437,6 +531,7 @@ public class CampaignManager {
             campaign.setStatus(CampaignStatus.EXPIRED);
             campaign.bumpScheduleRevision();
             scheduledTasks.remove(campaignId);
+            persistCampaign(campaign);
             recordAudit(null, "campaign.expire", "campaign:" + campaignId, null, null, null, "success");
             logger.info("Campaign expired naturally: {}", campaignId);
         }

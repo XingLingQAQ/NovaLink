@@ -1288,4 +1288,183 @@ public abstract class AbstractJdbcProvider implements DatabaseProvider {
             throw new DatabaseException("Failed to save notification preference", e);
         }
     }
+
+    // ==================== Campaigns (schema v14 / 提案 06) ====================
+    //
+    // §11.6 item-19 slice B / PANEL proposal 06. The campaigns CRUD is
+    // dialect-neutral: straight DELETE+INSERT upsert on the primary key (id),
+    // a SELECT for single/list, and an UPDATE for status transitions. One
+    // implementation serves MySQL, PostgreSQL and SQLite alike. The upsert
+    // uses DELETE-then-INSERT inside a transaction so a crash never leaves
+    // two rows for the same id. Platforms Set<String> is serialised as a
+    // comma-joined TEXT column (sorted for determinism); delivery_policy is
+    // the enum dbValue(); status is the CampaignStatus enum name; UUIDs are
+    // VARCHAR(36) strings via setString/parseUuid; nullable creator_id and
+    // revoked_by use setString(idx, null) when absent.
+
+    @Override
+    public void saveCampaign(com.nova.link.announcement.Campaign campaign) throws DatabaseException {
+        if (campaign == null) {
+            throw new DatabaseException("Cannot save a null campaign", null);
+        }
+        // Serialise the platforms set as a deterministic comma-joined string so
+        // that round-trip reads reconstruct the same set contents. A LinkedHashSet
+        // preserves insertion order on read-back via Arrays.asList(split).
+        String platformsJoined = String.join(",", campaign.getPlatforms());
+        String deleteSql = "DELETE FROM campaigns WHERE id = ?";
+        String insertSql = """
+                INSERT INTO campaigns (id, channel_id, platforms, content, status,
+                                       schedule_revision, delivery_policy, start_at, end_at,
+                                       rate_limit_per_channel_per_hour, creator_id, creator_client_id,
+                                       created_at, revoked_at, revoked_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """;
+        try (Connection conn = getDataSource().getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement stmt = conn.prepareStatement(deleteSql)) {
+                    stmt.setString(1, campaign.getId());
+                    stmt.executeUpdate();
+                }
+                try (PreparedStatement stmt = conn.prepareStatement(insertSql)) {
+                    stmt.setString(1, campaign.getId());
+                    stmt.setString(2, campaign.getChannelId());
+                    stmt.setString(3, platformsJoined);
+                    stmt.setString(4, campaign.getContent());
+                    stmt.setString(5, campaign.getStatus().name());
+                    stmt.setLong(6, campaign.getScheduleRevision());
+                    stmt.setString(7, campaign.getDeliveryPolicy().dbValue());
+                    stmt.setLong(8, campaign.getStartAt());
+                    stmt.setLong(9, campaign.getEndAt());
+                    stmt.setInt(10, campaign.getRateLimitPerChannelPerHour());
+                    stmt.setString(11, campaign.getCreatorId() != null ? campaign.getCreatorId().toString() : null);
+                    stmt.setString(12, campaign.getCreatorClientId());
+                    stmt.setLong(13, campaign.getCreatedAt());
+                    stmt.setLong(14, campaign.getRevokedAt());
+                    stmt.setString(15, campaign.getRevokedBy() != null ? campaign.getRevokedBy().toString() : null);
+                    stmt.executeUpdate();
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to save campaign: " + campaign.getId(), e);
+        }
+    }
+
+    @Override
+    public java.util.Optional<com.nova.link.announcement.Campaign> getCampaign(String id) throws DatabaseException {
+        if (id == null) {
+            return java.util.Optional.empty();
+        }
+        String sql = "SELECT id, channel_id, platforms, content, status, schedule_revision, "
+                + "delivery_policy, start_at, end_at, rate_limit_per_channel_per_hour, "
+                + "creator_id, creator_client_id, created_at, revoked_at, revoked_by "
+                + "FROM campaigns WHERE id = ?";
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, id);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    return java.util.Optional.empty();
+                }
+                return java.util.Optional.of(mapRow(rs));
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load campaign: " + id, e);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.announcement.Campaign> getAllPersistedCampaigns() throws DatabaseException {
+        String sql = "SELECT id, channel_id, platforms, content, status, schedule_revision, "
+                + "delivery_policy, start_at, end_at, rate_limit_per_channel_per_hour, "
+                + "creator_id, creator_client_id, created_at, revoked_at, revoked_by "
+                + "FROM campaigns ORDER BY created_at ASC";
+        List<com.nova.link.announcement.Campaign> results = new ArrayList<>();
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql);
+             ResultSet rs = stmt.executeQuery()) {
+            while (rs.next()) {
+                results.add(mapRow(rs));
+            }
+            return results;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to list campaigns", e);
+        }
+    }
+
+    @Override
+    public void deleteCampaign(String id) throws DatabaseException {
+        if (id == null) {
+            return;
+        }
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement("DELETE FROM campaigns WHERE id = ?")) {
+            stmt.setString(1, id);
+            stmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to delete campaign: " + id, e);
+        }
+    }
+
+    @Override
+    public void updateCampaignStatus(String id, com.nova.link.announcement.CampaignStatus status,
+                                     long revokedAt, java.util.UUID revokedBy) throws DatabaseException {
+        if (id == null || status == null) {
+            return;
+        }
+        String sql = "UPDATE campaigns SET status = ?, revoked_at = ?, revoked_by = ? WHERE id = ?";
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, status.name());
+            stmt.setLong(2, revokedAt);
+            stmt.setString(3, revokedBy != null ? revokedBy.toString() : null);
+            stmt.setString(4, id);
+            stmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to update campaign status: " + id, e);
+        }
+    }
+
+    /**
+     * Maps a campaigns ResultSet row to a Campaign object. Reconstructs the
+     * platforms Set from the comma-joined TEXT column, the delivery policy
+     * via {@link com.nova.link.announcement.DeliveryPolicy#fromDbValue}, and
+     * the status via {@link com.nova.link.announcement.CampaignStatus#valueOf}.
+     */
+    private com.nova.link.announcement.Campaign mapRow(ResultSet rs) throws SQLException {
+        String platformsJoined = rs.getString("platforms");
+        Set<String> platforms = new java.util.LinkedHashSet<>();
+        if (platformsJoined != null && !platformsJoined.isBlank()) {
+            for (String p : platformsJoined.split(",")) {
+                String trimmed = p.trim();
+                if (!trimmed.isEmpty()) {
+                    platforms.add(trimmed);
+                }
+            }
+        }
+        return new com.nova.link.announcement.Campaign(
+                rs.getString("id"),
+                rs.getString("channel_id"),
+                platforms,
+                rs.getString("content"),
+                com.nova.link.announcement.CampaignStatus.valueOf(rs.getString("status")),
+                rs.getLong("schedule_revision"),
+                com.nova.link.announcement.DeliveryPolicy.fromDbValue(rs.getString("delivery_policy")),
+                rs.getLong("start_at"),
+                rs.getLong("end_at"),
+                rs.getInt("rate_limit_per_channel_per_hour"),
+                parseUuid(rs.getString("creator_id")),
+                rs.getString("creator_client_id"),
+                rs.getLong("created_at"),
+                rs.getLong("revoked_at"),
+                parseUuid(rs.getString("revoked_by"))
+        );
+    }
 }

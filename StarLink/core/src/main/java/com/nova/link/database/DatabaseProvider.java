@@ -726,6 +726,82 @@ public interface DatabaseProvider {
         throw new UnsupportedOperationException("Social relations not supported by this provider");
     }
 
+    // ==================== Campaign Operations (提案 06) ====================
+    // §11.6 item-19 slice B / PANEL proposal 06 — persisted campaign
+    // orchestration. All five methods share the DatabaseProvider optional-method
+    // convention: JDBC + Memory providers override them; RedisProvider inherits
+    // the UnsupportedOperationException default (safe stub). The authoritative
+    // copy of campaign state lives in the in-memory CampaignManager map; these
+    // methods mirror non-terminal and recently-revoked campaigns so that
+    // restarts can rehydrate scheduled/active campaigns and keep an audit trail
+    // of revoked ones. Fail-open: a persistence failure MUST be caught by the
+    // caller (CampaignManager) and logged, never propagated — the in-memory
+    // state is authoritative and must not be blocked by a DB write error.
+
+    /**
+     * Upserts a campaign row. The whole row is replaced on the primary key
+     * {@code campaign.id()} (DELETE+INSERT in JDBC providers). Callers should
+     * invoke this after every mutating operation (create/schedule/activate/
+     * revoke) so the persisted copy tracks the latest in-memory snapshot.
+     *
+     * @param campaign the campaign to persist (not null)
+     * @throws DatabaseException if the save fails
+     */
+    default void saveCampaign(com.nova.link.announcement.Campaign campaign) throws DatabaseException {
+        throw new UnsupportedOperationException("Campaigns not supported by this provider");
+    }
+
+    /**
+     * Loads a single campaign by id.
+     *
+     * @param id the campaign id (not null)
+     * @return the campaign, or empty if not found
+     * @throws DatabaseException if the load fails
+     */
+    default java.util.Optional<com.nova.link.announcement.Campaign> getCampaign(String id)
+            throws DatabaseException {
+        throw new UnsupportedOperationException("Campaigns not supported by this provider");
+    }
+
+    /**
+     * Loads all persisted campaigns. Used at startup to rehydrate the
+     * CampaignManager in-memory map with non-terminal (PREVIEW/SCHEDULED/
+     * ACTIVE) and recently-revoked campaigns.
+     *
+     * @return a list of all persisted campaigns; empty list if none (never null)
+     * @throws DatabaseException if the load fails
+     */
+    default java.util.List<com.nova.link.announcement.Campaign> getAllPersistedCampaigns()
+            throws DatabaseException {
+        throw new UnsupportedOperationException("Campaigns not supported by this provider");
+    }
+
+    /**
+     * Deletes a campaign row by id. A no-op when no such campaign exists.
+     *
+     * @param id the campaign id (not null)
+     * @throws DatabaseException if the delete fails
+     */
+    default void deleteCampaign(String id) throws DatabaseException {
+        throw new UnsupportedOperationException("Campaigns not supported by this provider");
+    }
+
+    /**
+     * Updates the status, revokedAt and revokedBy columns of a campaign row.
+     * Used to persist terminal transitions (ACTIVE → REVOKED) without rewriting
+     * the whole row. A no-op when no such campaign exists.
+     *
+     * @param id        the campaign id (not null)
+     * @param status    the new status (not null)
+     * @param revokedAt the revoke timestamp (epoch millis); 0 if not revoked
+     * @param revokedBy the revoker's UUID; null if not revoked
+     * @throws DatabaseException if the update fails
+     */
+    default void updateCampaignStatus(String id, com.nova.link.announcement.CampaignStatus status,
+                                      long revokedAt, java.util.UUID revokedBy) throws DatabaseException {
+        throw new UnsupportedOperationException("Campaigns not supported by this provider");
+    }
+
     // ==================== Invitation Operations ====================
 
     /**

@@ -508,6 +508,7 @@ public class NovaLinkMain {
         // 与 AnnouncementManager.setAnnouncementSender 同型。生产持久化为后续 slice。
         campaignManager = new CampaignManager(permissionManager, channelManager);
         campaignManager.setAuditStore(auditStore);
+        campaignManager.setDatabaseProvider(databaseProvider);
         campaignManager.setAnnouncementSender((channelId, content) -> {
             Map<String, String> placeholders = new HashMap<>();
             placeholders.put("_announcement", "true");

@@ -31,6 +31,7 @@ public class MemoryProvider implements DatabaseProvider {
     private final Deque<ChatMessageRecord> messages = new ArrayDeque<>();
     private final Map<String, com.nova.link.announcement.Announcement> announcements = new ConcurrentHashMap<>();
     private final Map<String, com.nova.link.api.Webhook> persistedWebhooks = new ConcurrentHashMap<>();
+    private final Map<String, com.nova.link.announcement.Campaign> campaigns = new ConcurrentHashMap<>();
     private long messageIdSeq = 0;
 
     private volatile boolean connected = false;
@@ -56,6 +57,7 @@ public class MemoryProvider implements DatabaseProvider {
         }
         announcements.clear();
         persistedWebhooks.clear();
+        campaigns.clear();
         moderationCases.clear();
         caseEvidence.clear();
         appeals.clear();
@@ -1423,5 +1425,85 @@ public class MemoryProvider implements DatabaseProvider {
         notificationPreferences.put(preference.getPlayerId(), preference);
         logger.debug("Saved notification preference player={} mentionsEnabled={}",
                 preference.getPlayerId(), preference.isMentionsEnabled());
+    }
+
+    // ==================== Campaign Operations (schema v14 / 提案 06) ====================
+    //
+    // §11.6 item-19 slice B / PANEL proposal 08 — in-memory mirror of the JDBC
+    // campaigns store. A simple ConcurrentHashMap keyed by campaign id provides
+    // the same CRUD semantics as the JDBC provider. MemoryProvider is the
+    // session-memory fallback; data does not persist across restarts (warned
+    // by the initialize() log line).
+
+    @Override
+    public void saveCampaign(com.nova.link.announcement.Campaign campaign) throws DatabaseException {
+        checkConnection();
+        if (campaign == null || campaign.getId() == null) {
+            throw new DatabaseException("Campaign and ID cannot be null");
+        }
+        campaigns.put(campaign.getId(), campaign);
+        logger.debug("Saved campaign: {}", campaign.getId());
+    }
+
+    @Override
+    public java.util.Optional<com.nova.link.announcement.Campaign> getCampaign(String id) {
+        if (id == null) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.ofNullable(campaigns.get(id));
+    }
+
+    @Override
+    public java.util.List<com.nova.link.announcement.Campaign> getAllPersistedCampaigns() {
+        java.util.List<com.nova.link.announcement.Campaign> result = new ArrayList<>(campaigns.values());
+        result.sort(Comparator.comparingLong(com.nova.link.announcement.Campaign::getCreatedAt));
+        return result;
+    }
+
+    @Override
+    public void deleteCampaign(String id) {
+        if (id != null) {
+            campaigns.remove(id);
+            logger.debug("Deleted campaign: {}", id);
+        }
+    }
+
+    @Override
+    public void updateCampaignStatus(String id, com.nova.link.announcement.CampaignStatus status,
+                                     long revokedAt, java.util.UUID revokedBy) {
+        if (id == null || status == null) {
+            return;
+        }
+        com.nova.link.announcement.Campaign campaign = campaigns.get(id);
+        if (campaign == null) {
+            return;
+        }
+        // Campaign mutations are package-private; MemoryProvider lives in a
+        // different package than Campaign (com.nova.link.database vs
+        // com.nova.link.announcement), so reflection is used to apply the
+        // state transition. State-machine validity is CampaignManager's
+        // responsibility — this is a blind persistence mirror, matching the
+        // JDBC provider's behaviour (which also does not validate transitions).
+        if (status == com.nova.link.announcement.CampaignStatus.REVOKED) {
+            // markRevoked stamps revokedAt/revokedBy AND forces status=REVOKED.
+            try {
+                java.lang.reflect.Method m = com.nova.link.announcement.Campaign.class
+                        .getDeclaredMethod("markRevoked", long.class, java.util.UUID.class);
+                m.setAccessible(true);
+                m.invoke(campaign, revokedAt, revokedBy);
+            } catch (ReflectiveOperationException e) {
+                logger.warn("Could not invoke Campaign.markRevoked for {}: {}", id, e.getMessage());
+            }
+        } else {
+            try {
+                java.lang.reflect.Method m = com.nova.link.announcement.Campaign.class
+                        .getDeclaredMethod("setStatus", com.nova.link.announcement.CampaignStatus.class);
+                m.setAccessible(true);
+                m.invoke(campaign, status);
+            } catch (ReflectiveOperationException e) {
+                logger.warn("Could not invoke Campaign.setStatus for {}: {}", id, e.getMessage());
+            }
+        }
+        logger.debug("Updated campaign status: {} -> {}", id, status);
     }
 }

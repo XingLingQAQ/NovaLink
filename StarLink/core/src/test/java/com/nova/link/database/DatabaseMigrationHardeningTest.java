@@ -141,7 +141,7 @@ class DatabaseMigrationHardeningTest {
     }
 
     @Test
-    void upgradesLegacyV1MetadataThroughV13AndRerunDoesNothing() throws Exception {
+    void upgradesLegacyV1MetadataThroughV14AndRerunDoesNothing() throws Exception {
         SQLiteDialect baseDialect = new SQLiteDialect();
         try (HikariDataSource dataSource = sqliteDataSource(tempDir.resolve("legacy-v1.db"), 2)) {
             try (Connection connection = dataSource.getConnection()) {
@@ -174,12 +174,12 @@ class DatabaseMigrationHardeningTest {
 
             migration.migrate();
 
-            assertThat(migration.getVersion()).isEqualTo(13);
+            assertThat(migration.getVersion()).isEqualTo(14);
             assertThat(queryInts(dataSource,
                     "SELECT version FROM migration_execution_probe ORDER BY version"))
-                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13);
+                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);
             assertThat(queryInt(dataSource,
-                    "SELECT COUNT(*) FROM novalink_migrations WHERE status = 'COMPLETED'")).isEqualTo(13);
+                    "SELECT COUNT(*) FROM novalink_migrations WHERE status = 'COMPLETED'")).isEqualTo(14);
             assertThat(queryInt(dataSource,
                     "SELECT COUNT(*) FROM novalink_migrations WHERE checksum IS NULL")).isZero();
             assertThat(queryInt(dataSource,
@@ -223,13 +223,27 @@ class DatabaseMigrationHardeningTest {
             assertThat(queryInt(dataSource,
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'notification_preferences'"))
                     .isEqualTo(1);
+            // §11.6 item-19 slice B / PANEL proposal 06: migration v14 creates
+            // the campaigns table + three indexes.
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'campaigns'"))
+                    .isEqualTo(1);
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_campaigns_status'"))
+                    .isEqualTo(1);
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_campaigns_channel_id'"))
+                    .isEqualTo(1);
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_campaigns_created_at'"))
+                    .isEqualTo(1);
 
             migration.migrate();
 
             assertThat(queryInts(dataSource,
                     "SELECT version FROM migration_execution_probe ORDER BY version"))
-                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13);
-            assertThat(queryInt(dataSource, "SELECT COUNT(*) FROM novalink_migrations")).isEqualTo(13);
+                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);
+            assertThat(queryInt(dataSource, "SELECT COUNT(*) FROM novalink_migrations")).isEqualTo(14);
         }
     }
 

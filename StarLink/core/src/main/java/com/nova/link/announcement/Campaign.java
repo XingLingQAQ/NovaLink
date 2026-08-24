@@ -45,6 +45,11 @@ public final class Campaign {
     /**
      * Creates a new campaign. Used by {@link CampaignManager#createCampaign}.
      *
+     * <p>Delegates to {@link #Campaign(String, String, Set, String, CampaignStatus,
+     * long, DeliveryPolicy, long, long, int, UUID, String, long, long, UUID)}
+     * with {@code revokedAt = 0} and {@code revokedBy = null} — a freshly
+     * created campaign has not been revoked.
+     *
      * @param id                        unique campaign ID (CMP- + 8 hex)
      * @param channelId                 target channel ID
      * @param platforms                 immutable target platform set (never null)
@@ -63,6 +68,44 @@ public final class Campaign {
                     CampaignStatus status, long scheduleRevision, DeliveryPolicy deliveryPolicy,
                     long startAt, long endAt, int rateLimitPerChannelPerHour,
                     UUID creatorId, String creatorClientId, long createdAt) {
+        this(id, channelId, platforms, content, status, scheduleRevision, deliveryPolicy,
+                startAt, endAt, rateLimitPerChannelPerHour, creatorId, creatorClientId,
+                createdAt, 0L, null);
+    }
+
+    /**
+     * Reconstitutes a campaign from persisted state. Used by database
+     * providers (JDBC {@code mapRow}, memory reload) to reconstruct a
+     * Campaign that preserves the {@code revokedAt}/{@code revokedBy}
+     * stamps of a previously-revoked campaign. The 13-argument constructor
+     * delegates here with {@code revokedAt = 0} and {@code revokedBy = null}.
+     *
+     * <p>This constructor does NOT validate the {@code status}/{@code revokedAt}
+     * consistency (a REVOKED campaign should have a non-zero {@code revokedAt});
+     * it trusts the persisted state. State-machine validity is enforced by
+     * {@link CampaignManager} on new transitions, not on rehydration.
+     *
+     * @param id                        unique campaign ID
+     * @param channelId                 target channel ID
+     * @param platforms                 immutable target platform set (never null)
+     * @param content                   campaign content
+     * @param status                    persisted status
+     * @param scheduleRevision          persisted schedule revision
+     * @param deliveryPolicy            delivery policy
+     * @param startAt                   epoch ms activation time
+     * @param endAt                     epoch ms expiry
+     * @param rateLimitPerChannelPerHour per-channel/per-hour delivery cap
+     * @param creatorId                 creator UUID (may be null)
+     * @param creatorClientId           creator client ID (may be null)
+     * @param createdAt                 creation epoch ms
+     * @param revokedAt                 revoke timestamp (0 if not revoked)
+     * @param revokedBy                 revoker UUID (null if not revoked)
+     */
+    public Campaign(String id, String channelId, Set<String> platforms, String content,
+                    CampaignStatus status, long scheduleRevision, DeliveryPolicy deliveryPolicy,
+                    long startAt, long endAt, int rateLimitPerChannelPerHour,
+                    UUID creatorId, String creatorClientId, long createdAt,
+                    long revokedAt, UUID revokedBy) {
         this.id = Objects.requireNonNull(id, "Campaign ID cannot be null");
         this.channelId = Objects.requireNonNull(channelId, "Channel ID cannot be null");
         this.platforms = Collections.unmodifiableSet(
@@ -78,8 +121,8 @@ public final class Campaign {
         this.creatorId = creatorId;
         this.creatorClientId = creatorClientId;
         this.createdAt = createdAt;
-        this.revokedAt = 0L;
-        this.revokedBy = null;
+        this.revokedAt = revokedAt;
+        this.revokedBy = revokedBy;
     }
 
     public String getId() {
