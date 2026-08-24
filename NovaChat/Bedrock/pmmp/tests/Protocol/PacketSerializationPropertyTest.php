@@ -18,6 +18,7 @@ use NovaChat\Protocol\KeepAlivePacket;
 use NovaChat\Protocol\MentionPacket;
 use NovaChat\Protocol\Packet;
 use NovaChat\Protocol\PacketBuffer;
+use NovaChat\Protocol\ProtocolLimits;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -47,16 +48,45 @@ class PacketSerializationPropertyTest extends TestCase {
     }
 
     /**
+     * Builds an Eris string generator whose output is guaranteed to stay
+     * within the given byte budget. ProtocolLimits fields are enforced on
+     * the decode side by `PacketBuffer::readString($maxLength)`; an
+     * unbounded `Generator\string()` can exceed that and trip a length
+     * exception that is a property-of-the-generator artifact, not a
+     * serialization bug. We cap the generated length to the field limit
+     * so the property only exercises the legal value domain.
+     *
+     * The eris `StringGenerator` grows with the quantifier `size` (up to
+     * `withMaxSize(100)` here), so without a cap it routinely emits 65+-
+     * byte strings. We wrap `Generator\string()` in `Generator\suchThat`
+     * with a `strlen($s) <= $maxBytes` predicate so every generated (and
+     * shrunk) value is decodable.
+     */
+    private function boundedString(int $maxBytes) {
+        return Generator\suchThat(
+            static function (string $s) use ($maxBytes): bool {
+                return strlen($s) <= $maxBytes;
+            },
+            Generator\string()
+        );
+    }
+
+    /**
      * Property 2: HandshakePacket Serialization Round-Trip
-     * 
+     *
      * For any valid HandshakePacket, serializing and deserializing should
      * produce an equivalent packet.
+     *
+     * Fields are bounded with the same ProtocolLimits constants the decode
+     * side enforces (PROTO-003): clientId <= MAX_CLIENT_ID, passwordHash <=
+     * MAX_PASSWORD_HASH. serverVersion is optional on decode and is covered
+     * by the dedicated v2 round-trip test below.
      */
     public function testHandshakePacketRoundTrip(): void {
         $this->forAll(
             Generator\int(),
-            Generator\string(),
-            Generator\string(),
+            $this->boundedString(ProtocolLimits::MAX_CLIENT_ID),
+            $this->boundedString(ProtocolLimits::MAX_PASSWORD_HASH),
             Generator\choose(0, 255)
         )
         ->withMaxSize(100)
@@ -89,16 +119,21 @@ class PacketSerializationPropertyTest extends TestCase {
 
     /**
      * Property 2: ChatMessagePacket Serialization Round-Trip
-     * 
+     *
      * For any valid ChatMessagePacket, serializing and deserializing should
      * produce an equivalent packet.
+     *
+     * String fields are bounded with the same ProtocolLimits constants the
+     * decode side enforces (PROTO-003): senderName <= MAX_SENDER_NAME,
+     * clientId <= MAX_CLIENT_ID, channelId <= MAX_CHANNEL_ID, content <=
+     * MAX_MESSAGE_CONTENT.
      */
     public function testChatMessagePacketRoundTrip(): void {
         $this->forAll(
-            Generator\string(),
-            Generator\string(),
-            Generator\string(),
-            Generator\string()
+            $this->boundedString(ProtocolLimits::MAX_SENDER_NAME),
+            $this->boundedString(ProtocolLimits::MAX_CLIENT_ID),
+            $this->boundedString(ProtocolLimits::MAX_CHANNEL_ID),
+            $this->boundedString(ProtocolLimits::MAX_MESSAGE_CONTENT)
         )
         ->withMaxSize(100)
         ->then(function (string $senderName, string $clientId, string $channelId, string $content): void {
@@ -132,17 +167,22 @@ class PacketSerializationPropertyTest extends TestCase {
 
     /**
      * Property 2: ChannelActionPacket Serialization Round-Trip
-     * 
+     *
      * For any valid ChannelActionPacket, serializing and deserializing should
      * produce an equivalent packet.
+     *
+     * String fields are bounded with the same ProtocolLimits constants the
+     * decode side enforces (PROTO-003): channelId <= MAX_CHANNEL_ID,
+     * password <= MAX_CHANNEL_PASSWORD, extra key/value <= MAX_METADATA_KEY
+     * / MAX_METADATA_VALUE.
      */
     public function testChannelActionPacketRoundTrip(): void {
         $this->forAll(
             Generator\choose(0, 255),
-            Generator\string(),
-            Generator\string(),
-            Generator\string(),
-            Generator\string()
+            $this->boundedString(ProtocolLimits::MAX_CHANNEL_ID),
+            $this->boundedString(ProtocolLimits::MAX_CHANNEL_PASSWORD),
+            $this->boundedString(ProtocolLimits::MAX_METADATA_KEY),
+            $this->boundedString(ProtocolLimits::MAX_METADATA_VALUE)
         )
         ->withMaxSize(100)
         ->then(function (int $action, string $channelId, string $password, string $extraKey, string $extraValue): void {

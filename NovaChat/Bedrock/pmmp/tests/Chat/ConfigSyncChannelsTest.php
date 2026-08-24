@@ -50,8 +50,14 @@ final class ConfigSyncChannelsTest extends TestCase {
         $plugin = $this->createStub(NovaChatPlugin::class);
         $plugin->method("getConfigManager")->willReturn($configManager);
         // ChatHandler only calls $this->plugin->debug() for logging; the stub
-        // absorbs those calls (debug() is a void method).
-        $plugin->method("debug")->willReturn(null);
+        // absorbs those calls. debug() is declared `: void` in NovaChatPlugin,
+        // and PHPUnit 10 rejects `willReturn(null)` for a void-typed stub
+        // method (IncompatibleReturnValueException). For a void method the
+        // correct stub is `willReturnCallback` with a no-op closure: PHPUnit
+        // treats the declared return type as `void`, a bare `willReturn()`
+        // call is rejected too (the signature requires >=1 argument), but a
+        // callback that returns nothing satisfies the void contract.
+        $plugin->method("debug")->willReturnCallback(static function (): void {});
 
         return new ChatHandler($plugin);
     }
@@ -87,13 +93,20 @@ final class ConfigSyncChannelsTest extends TestCase {
         self::assertNotContains("arena-1", $known);
     }
 
+    /**
+     * A blank backend.username is rejected at ConfigManager load time, not
+     * tolerated as a "globals-only" filter input. This mirrors the strict
+     * behavior of the other方言 (Endstone ConfigManager._validate requires
+     * backend.username non-blank; Java MOD ConfigManager.requireNonBlankString
+     * rejects blank; StarLink ConfigLoader.requiredNonBlankString rejects
+     * blank for clients.username). The ChatHandler only reaches the blank
+     * check in handleConfigSync if a ConfigManager could be constructed,
+     * which a blank username prevents, so the exception surfaces here.
+     */
     public function testBlankUsernameReturnsGlobalsOnly(): void {
-        $handler = $this->makeHandler("");
-        $payload = $this->loadFixture("config-sync-payload.json");
-
-        $handler->handleConfigSync($this->syncPacket($payload));
-
-        self::assertSame(["global", "staff"], $handler->getKnownChannels());
+        $this->expectException(\UnexpectedValueException::class);
+        $this->expectExceptionMessage("backend.username must not be blank");
+        $this->makeHandler("");
     }
 
     public function testUnknownUsernameReturnsGlobalsOnly(): void {
