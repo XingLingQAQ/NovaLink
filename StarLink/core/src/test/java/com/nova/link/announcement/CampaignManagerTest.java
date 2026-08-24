@@ -6,6 +6,8 @@ import com.nova.link.auth.SuperAdminCredentials;
 import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
+import com.nova.link.database.DatabaseException;
+import com.nova.link.database.MemoryProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -490,5 +492,88 @@ class CampaignManagerTest {
         assertThat(manager.listCampaigns("alert")).hasSize(1);
         // Null filter → all campaigns.
         assertThat(manager.listCampaigns(null)).hasSize(2);
+    }
+
+    // ====================== startup rehydration (slice B) ======================
+
+    /**
+     * Builds a {@link Campaign} directly in the requested status via the
+     * 15-arg rehydration constructor (the same path JDBC mapRow uses). The
+     * campaign is seeded into the provided MemoryProvider — NOT into the
+     * CampaignManager — so that {@link CampaignManager#loadPersistedCampaigns()}
+     * is the only path that can populate the manager's in-memory map. This
+     * mirrors how {@code AnnouncementPersistenceTest.restartRestoresAnnouncements}
+     * seeds the provider then builds a fresh manager.
+     */
+    private static Campaign seedCampaign(MemoryProvider provider, String id,
+                                         CampaignStatus status, long startAt) throws DatabaseException {
+        Set<String> platforms = new LinkedHashSet<>();
+        platforms.add("survival");
+        Campaign campaign = new Campaign(
+                id, CHANNEL_ID, platforms, "rehydrated " + id,
+                status, 1L, DeliveryPolicy.INSTANT, startAt, 0L, 5,
+                UUID.randomUUID(), "TestClient", System.currentTimeMillis(),
+                status == CampaignStatus.REVOKED ? System.currentTimeMillis() : 0L,
+                status == CampaignStatus.REVOKED ? UUID.randomUUID() : null);
+        provider.saveCampaign(campaign);
+        return campaign;
+    }
+
+    @Test
+    @DisplayName("loadPersistedCampaigns rehydrates non-terminal and skips terminal campaigns")
+    void loadPersistedCampaignsRehydratesNonTerminalAndSkipsTerminal() throws DatabaseException {
+        MemoryProvider provider = new MemoryProvider();
+        provider.initialize();
+        try {
+            // Pre-seed one campaign per status into the provider (the manager
+            // has NOT seen these yet — only the provider has). This models the
+            // restart scenario: the DB holds rows, the manager starts empty.
+            Campaign preview = seedCampaign(provider, "CMP-prev0001", CampaignStatus.PREVIEW, 0L);
+            long futureStart = System.currentTimeMillis() + 3_600_000L;
+            Campaign scheduled = seedCampaign(provider, "CMP-sch0002", CampaignStatus.SCHEDULED, futureStart);
+            Campaign active = seedCampaign(provider, "CMP-act0003", CampaignStatus.ACTIVE, 0L);
+            Campaign expired = seedCampaign(provider, "CMP-exp0004", CampaignStatus.EXPIRED, 0L);
+            Campaign revoked = seedCampaign(provider, "CMP-rev0005", CampaignStatus.REVOKED, 0L);
+
+            // Inject the provider and run startup rehydration. The manager is
+            // already initialized by setUp() and has its scheduler running,
+            // so armActivation will arm a real one-shot for the SCHEDULED row.
+            manager.setDatabaseProvider(provider);
+            int restored = manager.loadPersistedCampaigns();
+
+            // Non-terminal count = PREVIEW + SCHEDULED + ACTIVE = 3.
+            assertThat(restored).as("only non-terminal campaigns should be rehydrated").isEqualTo(3);
+
+            // Non-terminal campaigns are now in the manager's in-memory map.
+            assertThat(manager.getCampaign(preview.getId()))
+                    .as("PREVIEW campaign should be rehydrated").isNotNull();
+            assertThat(manager.getCampaign(scheduled.getId()))
+                    .as("SCHEDULED campaign should be rehydrated").isNotNull();
+            assertThat(manager.getCampaign(active.getId()))
+                    .as("ACTIVE campaign should be rehydrated").isNotNull();
+
+            // Terminal campaigns were skipped — they live only in the provider
+            // (audit trail) and must NOT re-enter the active campaign map.
+            assertThat(manager.getCampaign(expired.getId()))
+                    .as("EXPIRED campaign must not be rehydrated").isNull();
+            assertThat(manager.getCampaign(revoked.getId()))
+                    .as("REVOKED campaign must not be rehydrated").isNull();
+
+            // SCHEDULED with a future startAt should have re-armed its one-shot
+            // activation task on the internal scheduler (mirrors how
+            // revokeCancelsScheduledTask asserts arm/cancel symmetry).
+            assertThat(manager.getScheduledTaskCount())
+                    .as("SCHEDULED campaign with future startAt should re-arm a scheduled task")
+                    .isEqualTo(1);
+        } finally {
+            provider.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("loadPersistedCampaigns without a databaseProvider returns 0 (slice A mode)")
+    void loadPersistedCampaignsWithoutProviderReturnsZero() {
+        // No setDatabaseProvider call — manager stays in pure in-memory mode.
+        assertThat(manager.loadPersistedCampaigns()).isZero();
     }
 }

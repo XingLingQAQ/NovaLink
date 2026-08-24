@@ -516,6 +516,13 @@ public class NovaLinkMain {
                     ConsoleSentinel.CONSOLE_NAME, content, placeholders);
         });
         campaignManager.initialize();
+        // Rehydrate non-terminal campaigns (PREVIEW/SCHEDULED/ACTIVE) from the
+        // database now that the sender callback + scheduler are wired — mirrors
+        // announcementManager.loadPersistedAnnouncements() above. Terminal
+        // campaigns (EXPIRED/REVOKED) stay in the table as an audit trail but
+        // are skipped here. SCHEDULED campaigns with a future startAt are
+        // re-armed via CampaignManager.armActivation on the internal scheduler.
+        campaignManager.loadPersistedCampaigns();
 
         WebSocketGateway webSocketGateway = new WebSocketGateway(
                 config.getServer().getBindAddress(),
