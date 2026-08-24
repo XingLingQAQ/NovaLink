@@ -534,44 +534,18 @@ void NetworkClient::sendLoop() {
     auto drain = [this]() -> DrainResult {
         while (mSendOffset < mSendBuffer.size()) {
             const size_t remaining = mSendBuffer.size() - mSendOffset;
-            int sent;
-            // AUTH-002 TLS: when TLS is established, encrypt the plaintext
-            // send-buffer bytes through SSL_write. The non-blocking semantics
-            // match: SSL_ERROR_WANT_WRITE is the TLS analogue of EAGAIN, and
-            // any other error is fatal (cert revoked, session torn down, etc).
-            if (mTlsState == TlsState::Established && mSsl != nullptr) {
-                sent = tlsSend(reinterpret_cast<const char*>(mSendBuffer.data() + mSendOffset),
-                               static_cast<int>(remaining));
-                if (sent <= 0) {
-                    // tlsSend already mapped the SSL error to the errno-like
-                    // model (WSAEWOULDBLOCK on WANT_WRITE, fatal otherwise).
-#ifdef _WIN32
-                    const int err = WSAGetLastError();
-                    if (err == WSAEWOULDBLOCK) {
-                        return DrainResult::Blocked;
-                    }
-                    return DrainResult::Fatal;
-#else
-                    if (errno == EINTR) {
-                        continue;
-                    }
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        return DrainResult::Blocked;
-                    }
-                    return DrainResult::Fatal;
-#endif
-                }
-            } else {
-                sent = send(mSocket,
-                                 reinterpret_cast<const char*>(mSendBuffer.data() + mSendOffset),
-                                 static_cast<int>(remaining),
-                                 0);
-            }
+            const int sent = doRawSend(
+                reinterpret_cast<const char*>(mSendBuffer.data() + mSendOffset),
+                static_cast<int>(remaining));
             if (sent > 0) {
                 mSendOffset += static_cast<size_t>(sent);
                 continue;
             }
             // sent <= 0: distinguish backpressure from fatal errors.
+            // doRawSend already set WSAGetLastError / errno to the right
+            // value (tlsSend and the test hook both use WSASetLastError /
+            // errno assignment; ::send sets it natively). We only need to
+            // read it here to classify the outcome.
 #ifdef _WIN32
             const int err = WSAGetLastError();
             if (err == WSAEWOULDBLOCK) {
@@ -648,6 +622,34 @@ void NetworkClient::sendLoop() {
     if (fatalError) {
         doDisconnect();
     }
+}
+
+int NetworkClient::doRawSend(const char* buf, int len) {
+    // PROTO-001 test seam: when a test hook is installed, route the pending
+    // send-buffer slice through it. The hook is responsible for setting
+    // WSAGetLastError / errno to WOULDBLOCK/EAGAIN for backpressure or a
+    // fatal code (ECONNRESET/...) to force a disconnect — mirroring the
+    // contract of ::send / SSL_write. When no hook is installed (the
+    // production default), behaviour is byte-for-byte identical to the
+    // pre-seam sendLoop: TLS-established sessions encrypt via tlsSend,
+    // everything else calls ::send directly on mSocket.
+    if (mSendHook) {
+        return mSendHook(buf, len);
+    }
+    if (mTlsState == TlsState::Established && mSsl != nullptr) {
+        return tlsSend(buf, len);
+    }
+    return send(mSocket, buf, len, 0);
+}
+
+void NetworkClient::pumpSendLoopForTest() {
+    // PROTO-001 test seam: drive exactly one sendLoop() pass from the calling
+    // (test) thread. This re-enters sendLoop() as if the network thread's
+    // select() reported the socket writable, WITHOUT spinning up the network
+    // thread or a real socket. The test installs mSendHook, enqueues packets
+    // via enqueuePacketForTest, then calls this method and asserts on the
+    // observable post-state via sendBufferStateForTest / isConnectedForTest.
+    sendLoop();
 }
 
 void NetworkClient::encodePacket(const Packet& packet, std::vector<uint8_t>& output) {

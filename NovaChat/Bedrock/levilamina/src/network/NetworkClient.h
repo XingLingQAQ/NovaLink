@@ -11,6 +11,7 @@
 #include <functional>
 #include <unordered_map>
 #include <mutex>
+#include <utility>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -138,6 +139,114 @@ public:
      */
     [[nodiscard]] const std::atomic<bool>& isConnectedWrapper() const { return mConnected; }
 
+    // -----------------------------------------------------------------------
+    // PROTO-001 partial-write acceptance tests — test-only send seam.
+    //
+    // These accessors exist ONLY so the acceptance tests can deterministically
+    // inject short writes, zero writes, WOULDBLOCK and fatal errors into the
+    // sendLoop() drain path WITHOUT a real socket and WITHOUT a network thread.
+    // They are not part of the stable API.
+    //
+    // Invariant: when mSendHook is empty (the default for all production
+    // NetworkClient instances), doRawSend() forwards to the exact same
+    // ::send / tlsSend call the sendLoop() body made before this seam was
+    // introduced, so production send behaviour is byte-for-byte unchanged.
+    // The "production path regression" scenario in
+    // tests/test_network_send_partial.cpp guards this invariant.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Install a test-only send hook. When non-null, sendLoop()'s doRawSend()
+     * helper calls the hook INSTEAD of ::send / tlsSend. The hook receives a
+     * pointer to the pending send-buffer slice and its length, and must return
+     * the number of bytes "written" (>=0) or -1 to signal an error (the test
+     * sets WSAGetLastError / errno to WOULDBLOCK/EAGAIN for backpressure or a
+     * fatal value like ECONNRESET to force a disconnect). The hook is invoked
+     * on the thread that calls pumpSendLoopForTest().
+     *
+     * Test-only, not part of the stable API.
+     */
+    void setSendHookForTest(std::function<int(const char* buf, int len)> hook) {
+        mSendHook = std::move(hook);
+    }
+
+    /**
+     * Remove the test-only send hook, restoring the production doRawSend() path
+     * (::send / tlsSend). Test-only, not part of the stable API.
+     */
+    void clearSendHookForTest() { mSendHook = nullptr; }
+
+    /**
+     * Drive a single sendLoop() pass synchronously from the calling (test)
+     * thread. This bypasses the network thread / select() / real socket: the
+     * test manually populates mOutgoingQueue (via enqueuePacketForTest, or
+     * sendPacket when mConnected is flipped on via setConnectedForTest) and
+     * the send buffer state, then calls this method to run one drain pass.
+     *
+     * The test asserts on the observable post-state via
+     * sendBufferStateForTest() / isConnectedForTest() rather than on a return
+     * value, which keeps the test black-box.
+     *
+     * Test-only, not part of the stable API.
+     */
+    void pumpSendLoopForTest();
+
+    /**
+     * Test-only mConnected flip so sendPacket() will actually enqueue into
+     * mOutgoingQueue without a live socket. Mirrors the isConnectedWrapper()
+     * pattern: a narrow accessor for tests, not a production setter.
+     * Test-only, not part of the stable API.
+     */
+    void setConnectedForTest(bool connected) { mConnected = connected; }
+
+    /**
+     * Test-only mSocket setter. sendLoop() returns early when
+     * mSocket == INVALID_SOCKET (the production guard). For the hook-based
+     * partial-write scenarios the test installs a dummy valid fd here so
+     * sendLoop reaches the drain path (the hook intercepts before any real
+     * I/O happens on this fd). For the "production path regression" scenario
+     * the test leaves mSocket == INVALID_SOCKET to assert the early-return.
+     * The fd is closed by doDisconnect() on a fatal drain result, so the test
+     * should pass a freshly-created socket() that owns no connection.
+     * Test-only, not part of the stable API.
+     */
+    void setSocketForTest(SOCKET s) { mSocket = s; }
+
+    /**
+     * Test-only snapshot of the framed send buffer state. Returns
+     * {mSendBuffer.size(), mSendOffset} so the test can assert that a short
+     * write left residual bytes (mSendOffset < mSendBuffer.size()) and that a
+     * full drain cleared both. Test-only, not part of the stable API.
+     */
+    [[nodiscard]] std::pair<size_t, size_t> sendBufferStateForTest() const {
+        return {mSendBuffer.size(), mSendOffset};
+    }
+
+    /**
+     * Test-only direct queue access. sendPacket() is the production path and
+     * requires mConnected == true; this helper lets a test push a packet
+     * regardless of connection state so the burst/stress scenarios can
+     * assemble a large outgoing queue before the first pump without faking a
+     * connection. Test-only, not part of the stable API.
+     */
+    void enqueuePacketForTest(std::unique_ptr<Packet> packet) {
+        mOutgoingQueue.push(std::move(packet));
+    }
+
+    /**
+     * Test-only getter for the outgoing queue size so the test can assert the
+     * queue is drained after a full flush. Test-only, not part of the stable
+     * API.
+     */
+    [[nodiscard]] size_t outgoingQueueSizeForTest() const { return mOutgoingQueue.size(); }
+
+    /**
+     * Test-only getter for the raw socket fd so the "production path
+     * regression" scenario can assert mSocket == INVALID_SOCKET when no
+     * connect() has been called. Test-only, not part of the stable API.
+     */
+    [[nodiscard]] SOCKET socketForTest() const { return mSocket; }
+
     /**
      * Check if authenticated with the backend.
      * @return true if authenticated
@@ -168,6 +277,13 @@ private:
     void networkThreadFunc();
     void receiveLoop();
     void sendLoop();
+    // PROTO-001 test seam: raw-send dispatcher. When mSendHook is installed
+    // (test-only), routes the pending send-buffer slice through the hook;
+    // otherwise calls ::send / tlsSend exactly as sendLoop() did before the
+    // seam. Returning -1 with WSAEWOULDBLOCK/EAGAIN means backpressure
+    // (DrainResult::Blocked); any other -1 is fatal. Declared private so
+    // only sendLoop() (and the test pump) call it.
+    int doRawSend(const char* buf, int len);
     bool doConnect();
     void doDisconnect();
     void handleReconnect();
@@ -274,6 +390,12 @@ private:
     // Packet handlers
     std::unordered_map<uint8_t, PacketHandler> mHandlers;
     std::mutex mHandlersMutex;
+
+    // PROTO-001 test seam: when non-null, sendLoop()'s doRawSend() dispatches
+    // the pending send-buffer slice through this hook instead of ::send /
+    // tlsSend. Defaults to null (production path) so behaviour is unchanged
+    // unless a test explicitly installs a hook via setSendHookForTest().
+    std::function<int(const char* buf, int len)> mSendHook;
 
     // Keep-alive
     std::chrono::steady_clock::time_point mLastKeepAlive;

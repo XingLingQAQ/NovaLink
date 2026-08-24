@@ -252,3 +252,58 @@ target("novachat-levilamina-tls-tests")
         os.cp("tests/tls", targetdir .. "/tls")
     end)
 target_end()
+
+-- Test target: PROTO-001 partial-write acceptance tests for the sendLoop()
+-- framed-buffer + DrainResult path. These tests verify that a non-blocking
+-- socket send that returns a partial write (short write), zero write,
+-- WOULDBLOCK/EAGAIN, or a fatal error (ECONNRESET) never truncates, reorders
+-- or drops packets — the acceptance criteria for PROTO-001.
+--
+-- The tests install a deterministic send hook via setSendHookForTest() so
+-- they can inject each outcome on demand without a real socket or the
+-- network thread. The "production path regression" scenario at the end
+-- guards that the seam is a no-op when no hook is installed (mSendHook ==
+-- null -> doRawSend falls through to ::send / tlsSend exactly as before).
+--
+-- Build & run:
+--   xmake f --sdk=n -m debug
+--   xmake build novachat-levilamina-send-tests
+--   xmake run novachat-levilamina-send-tests
+target("novachat-levilamina-send-tests")
+    set_kind("binary")
+    set_languages("c++20")
+    set_symbols("debug")
+    -- /utf-8: the test source contains UTF-8 literals (same rationale as the
+    -- protocol tests above).
+    add_cxflags("/utf-8")
+    add_includedirs("src")
+
+    -- OpenSSL: NetworkClient.cpp's TLS code path pulls in <openssl/ssl.h>;
+    -- the partial-write tests exercise the plaintext branch but the TUs must
+    -- still link the OpenSSL import libs to resolve tlsSend/tlsRecv symbols.
+    add_packages("openssl")
+
+    add_files("tests/test_network_send_partial.cpp")
+    add_files("src/network/NetworkClient.cpp")
+    add_files("src/protocol/PacketBuffer.cpp")
+    add_files("src/util/Sha256.cpp")
+    add_files("src/util/HmacSha256.cpp")
+    add_files("src/i18n/I18n.cpp")
+
+    set_targetdir("$(buildir)/bin")
+    set_filename("novachat-levilamina-send-tests.exe")
+
+    if is_plat("windows") then
+        add_defines("NOMINMAX", "UNICODE", "_UNICODE", "WIN32", "_WIN32", "_WINDOWS")
+        add_syslinks("ws2_32", "advapi32", "libssl", "libcrypto")
+    end
+
+    -- Copy the lang/ resource directory next to the test binary so the I18n
+    -- loader (which scans <exe-dir>/lang/*.json) finds the translations
+    -- regardless of the current working directory. Mirrors how the real BDS
+    -- plugin ships lang/ next to its .dll at runtime.
+    after_build(function (target)
+        local targetdir = target:targetdir()
+        os.cp("src/i18n/lang", targetdir .. "/lang")
+    end)
+target_end()
