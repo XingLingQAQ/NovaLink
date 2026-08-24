@@ -64,6 +64,7 @@ novalink-core/logs/
 
 # Dev/AI tool artifacts and intermediate audit docs (kept locally, excluded from git history)
 .kiro/
+docs/PRODUCTION_READINESS_AND_PRODUCT_PLAN.md
 规划.md
 tmp-access-widener.jar
 tmp-access-widener-fabric.jar
