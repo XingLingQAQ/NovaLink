@@ -153,7 +153,7 @@ test('disconnect during authentication rejects once and ignores a late response'
   service.destroy();
 });
 
-test('token rotation retires the old socket and restores desired subscriptions only', async () => {
+test('token rotation re-authenticates in place on the live socket without a gap', async () => {
   const { auth, service, sockets } = harness();
   const received = [];
   service.on(MessageType.CHAT, (message) => received.push(message.id));
@@ -161,7 +161,56 @@ test('token rotation retires the old socket and restores desired subscriptions o
 
   const firstConnection = service.connect('ws://example/ws', 'token-1');
   await authenticate(service, sockets[0], firstConnection);
-  const staleMessage = sockets[0].onmessage;
+
+  // Token rotation on a live AUTHENTICATED socket: the socket must NOT be
+  // retired. The backend handleAuth overwrites the session's auth state on
+  // an existing authenticated session, so we re-auth IN PLACE and keep
+  // receiving messages throughout the rotation (PANEL-001).
+  auth.emit({
+    isAuthenticated: true,
+    token: 'token-2',
+    previousToken: 'token-1',
+    reason: 'refresh',
+  });
+  assert.equal(sockets.length, 1, 'no new socket should be created on in-place re-auth');
+  assert.equal(sockets[0].closeCalls.length, 0, 'live socket must NOT be closed on rotation');
+  assert.equal(service.getState(), ConnectionState.AUTHENTICATED, 'state stays AUTHENTICATED through the rotation');
+
+  // A second AUTH message with the rotated token must have been sent on the
+  // same socket (the in-place re-auth handshake).
+  const authMessages = sockets[0].sent.filter((message) => message.type === MessageType.AUTH);
+  assert.equal(authMessages.length, 2, 'a second AUTH must be sent for re-auth');
+  assert.equal(authMessages[1].token, 'token-2', 'the re-auth AUTH carries the rotated token');
+
+  // Subscriptions persist across the in-place re-auth (same socket, same
+  // server-side session). Messages delivered before AUTH_RESPONSE still
+  // arrive because the socket was never dropped.
+  sockets[0].message({ type: MessageType.CHAT, id: 'during-rotation' });
+  assert.deepEqual(received, ['during-rotation'], 'messages during the re-auth window are received (no gap)');
+
+  // Complete the in-place re-auth.
+  sockets[0].message({ type: MessageType.AUTH_RESPONSE, success: true });
+  assert.equal(service.getState(), ConnectionState.AUTHENTICATED);
+  assert.equal(service.pendingAuth, null, 'pendingAuth is cleared after in-place re-auth settles');
+  assert.deepEqual(
+    service.getSubscribedChannels(),
+    ['global', 'survival'],
+    'subscriptions persist across in-place re-auth',
+  );
+  service.destroy();
+});
+
+test('token rotation without a live authenticated socket falls back to reconnectWithToken', async () => {
+  const { auth, service, sockets } = harness();
+  service.setSubscriptions(['global']);
+
+  // Connect and open the socket, but emit the rotation BEFORE the socket
+  // authenticates. The state is CONNECTED (not AUTHENTICATED), so there is
+  // no live authenticated socket to re-auth on — the fallback full
+  // reconnect path must be used.
+  const firstConnection = service.connect('ws://example/ws', 'token-1');
+  sockets[0].open();
+  assert.equal(service.getState(), ConnectionState.CONNECTED);
 
   auth.emit({
     isAuthenticated: true,
@@ -169,27 +218,72 @@ test('token rotation retires the old socket and restores desired subscriptions o
     previousToken: 'token-1',
     reason: 'refresh',
   });
-  assert.equal(sockets.length, 2);
-  assert.equal(sockets[0].closeCalls.length, 1);
-  assert.deepEqual(service.getDesiredSubscriptions(), ['global', 'survival']);
 
+  // A new socket must have been created (the full reconnect path), and the
+  // old socket retired (closed). This locks in the fallback.
+  assert.equal(sockets.length, 2, 'fallback must create a new socket');
+  assert.equal(sockets[0].closeCalls.length, 1, 'old socket must be retired on fallback');
+
+  // The first connection (pendingConnect on sockets[0]) rejects because
+  // _startConnection retires the old socket before creating the new one.
+  await assert.rejects(firstConnection, (error) => error.code === 'WS_CONNECTION_REPLACED');
+
+  // Authenticate on the new socket with the rotated token. The AUTH message
+  // is sent in socket.onopen, so open the new socket first.
   sockets[1].open();
-  staleMessage({ data: JSON.stringify({
-    type: MessageType.AUTH_RESPONSE,
-    success: true,
-  }) });
-  staleMessage({ data: JSON.stringify({ type: MessageType.CHAT, id: 'stale' }) });
-  assert.equal(service.getState(), ConnectionState.CONNECTED);
-  assert.deepEqual(received, []);
-
+  const authMessages = sockets[1].sent.filter((message) => message.type === MessageType.AUTH);
+  assert.equal(authMessages[0].token, 'token-2', 'fallback reconnect uses the rotated token');
   sockets[1].message({ type: MessageType.AUTH_RESPONSE, success: true });
   await service.connectionPromise;
   assert.equal(service.getState(), ConnectionState.AUTHENTICATED);
-  assert.deepEqual(service.getSubscribedChannels(), ['global', 'survival']);
-  assert.deepEqual(
-    sockets[1].sent.find((message) => message.type === MessageType.SUBSCRIBE).channels,
-    ['global', 'survival'],
-  );
+  service.destroy();
+});
+
+test('in-place re-auth failure falls back to reconnectWithToken', async () => {
+  const { auth, service, sockets } = harness();
+  service.setSubscriptions(['global', 'survival']);
+
+  const firstConnection = service.connect('ws://example/ws', 'token-1');
+  await authenticate(service, sockets[0], firstConnection);
+  assert.equal(sockets.length, 1);
+
+  // Rotate on the live authenticated socket — in-place re-auth is attempted.
+  auth.emit({
+    isAuthenticated: true,
+    token: 'token-2',
+    previousToken: 'token-1',
+    reason: 'refresh',
+  });
+  assert.equal(sockets.length, 1, 'in-place re-auth does not create a new socket up front');
+  assert.equal(service.getState(), ConnectionState.AUTHENTICATED, 'state stays AUTHENTICATED during the re-auth attempt');
+
+  // Server rejects the rotated token. The in-place re-auth fails, so the
+  // service must fall back to a full reconnectWithToken with the rotated
+  // token.
+  sockets[0].message({
+    type: MessageType.AUTH_RESPONSE,
+    success: false,
+    error: 'token rejected',
+  });
+
+  // Give the .catch handler a microtask to run reconnectWithToken.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Fallback: a new socket is created and the old one is retired.
+  assert.equal(sockets.length, 2, 'failure must fall back to reconnectWithToken (new socket created)');
+  assert.equal(sockets[0].closeCalls.length, 1, 'old socket must be retired on fallback');
+  assert.equal(service.getState(), ConnectionState.CONNECTING, 'service is reconnecting, not stuck non-AUTHENTICATED');
+
+  // The reconnect attempt carries the rotated token. The AUTH message is
+  // sent in socket.onopen, so open the new socket first.
+  sockets[1].open();
+  const authMessages = sockets[1].sent.filter((message) => message.type === MessageType.AUTH);
+  assert.equal(authMessages[0].token, 'token-2', 'fallback reconnect uses the rotated token');
+
+  // Authenticate on the new socket to confirm the service recovers.
+  sockets[1].message({ type: MessageType.AUTH_RESPONSE, success: true });
+  await service.connectionPromise;
+  assert.equal(service.getState(), ConnectionState.AUTHENTICATED, 'service recovers AUTHENTICATED after fallback');
   service.destroy();
 });
 

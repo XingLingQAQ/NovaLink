@@ -313,13 +313,77 @@ export class WebSocketService {
       if (this.socket || this.reconnectTimer || this.url) this.disconnect();
       return;
     }
-    if (token && previousToken && token !== previousToken && this.url) {
-      this.reconnectWithToken(token).catch((error) => {
-        if (!isWebSocketLifecycleCancellation(error)) {
-          console.error('[WebSocket] Token rotation reconnect failed:', error);
-        }
-      });
+    // Token rotation. Prefer in-place re-auth on the live authenticated socket:
+    // the backend handleAuth overwrites the session's auth state without
+    // requiring a new connection, eliminating the brief receive gap that a
+    // full reconnectWithToken would introduce. Subscriptions persist (same
+    // socket, same server-side session). Fall back to a full reconnect only
+    // when there is no live authenticated socket to re-auth on.
+    if (!token || !previousToken || token === previousToken || !this.url) return;
+    if (this.state === ConnectionState.AUTHENTICATED && this.socket) {
+      this._reauthenticateInPlace(token);
+      return;
     }
+    this.reconnectWithToken(token).catch((error) => {
+      if (!isWebSocketLifecycleCancellation(error)) {
+        console.error('[WebSocket] Token rotation reconnect failed:', error);
+      }
+    });
+  }
+
+  /**
+   * PANEL-001: re-authenticate IN PLACE on the live authenticated socket
+   * instead of tearing it down and creating a new one. The backend's
+   * handleAuth overwrites the session's auth state on an existing
+   * authenticated session, so we can send a second `auth` message on the
+   * same socket and keep receiving messages throughout the rotation. The
+   * generation is NOT bumped — the live socket's handlers are registered
+   * with the current generation and must keep firing. State stays
+   * AUTHENTICATED the whole time (the socket never dropped), so we do not
+   * introduce a new ConnectionState value (that enum is exported and
+   * switched on by observers; adding one would be an out-of-scope API
+   * change). Falls back to a full reconnectWithToken if the in-place
+   * re-auth fails.
+   */
+  _reauthenticateInPlace(token) {
+    this.token = token;
+    this.reconnectAttempts = 0;
+    // Do NOT bump generation — the live socket's handlers are registered
+    // with the current generation and must keep firing.
+    const generation = this.generation;
+    const socket = this.socket;
+
+    // If a previous in-flight re-auth is still pending (double rotation
+    // within the auth handshake window), cancel it first so its listener
+    // and promise are cleaned up before we start a new one.
+    if (this.pendingAuth) {
+      this._cancelAuthentication(
+        this.pendingAuth.generation,
+        new WebSocketLifecycleError(
+          'Re-auth replaced by newer token',
+          'WS_CONNECTION_REPLACED',
+        ),
+      );
+    }
+
+    this._authenticate(token, generation, socket)
+      .then(() => {
+        if (!this._isCurrent(generation, socket)) return;
+        // State is already AUTHENTICATED (the socket never dropped), but be
+        // explicit so a future change to _authenticate can't regress this.
+        this._setState(ConnectionState.AUTHENTICATED);
+        // Re-sync subscriptions in case the server pruned them on re-auth.
+        this._applyDesiredSubscriptions(generation, socket);
+        // Reset the ping cadence so the new auth window has a clean timer.
+        this._startPingInterval(generation, socket);
+      })
+      .catch((error) => {
+        if (!this._isCurrent(generation, socket)) return;
+        console.error('[WebSocket] In-place re-authentication failed:', error);
+        // Fallback: tear down and reconnect with the rotated token. Swallow
+        // lifecycle-cancellation errors (e.g. another rotation raced ahead).
+        this.reconnectWithToken(token).catch(() => {});
+      });
   }
 
   setSubscriptions(channels) {
