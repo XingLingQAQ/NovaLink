@@ -149,7 +149,11 @@ final class ConfigSyncChannelsTest extends TestCase {
         // there is no public setter; the real code path sets it from chat
         // commands. We only assert ConfigSync does not touch it.
         $ref = new \ReflectionProperty(ChatHandler::class, "playerChannels");
-        $ref->setAccessible(true);
+        // setAccessible() is a no-op since PHP 8.1 and deprecated since 8.5;
+        // keep the call only for older PHP runtimes (it harms nothing on 8.1+).
+        if (PHP_VERSION_ID < 80100) {
+            $ref->setAccessible(true);
+        }
         $ref->setValue($handler, ["player-1" => "global"]);
 
         $handler->handleConfigSync($this->syncPacket(

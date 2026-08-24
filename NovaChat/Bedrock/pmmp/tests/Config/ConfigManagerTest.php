@@ -21,7 +21,7 @@ final class ConfigManagerTest extends TestCase {
 
     public function testFloatingPointPortIsRejected(): void {
         $config = $this->validConfig();
-        $config["backend"]["port"] = 18888.0;
+        $config["backend"]["port"] = 8888.0;
 
         $this->expectException(UnexpectedValueException::class);
         new ConfigManager($config);
@@ -88,7 +88,7 @@ final class ConfigManagerTest extends TestCase {
             "config-version" => 1,
             "backend" => [
                 "host" => "127.0.0.1",
-                "port" => 18888,
+                "port" => 8888,
                 "username" => "PMMP_Server",
                 "password" => "secret",
                 "server-version" => "5.0.0",
