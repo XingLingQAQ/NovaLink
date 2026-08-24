@@ -45,8 +45,13 @@ public class TitleCommand extends AbstractSubCommand {
     @Override
     public boolean isPlayerOnly() {
         // Console/RCON can also send titles (uses the all-zeros sentinel UUID so
-        // the backend can route the broadcast). The super-admin auth session is no
-        // longer required for TITLE (see AdminActionHandler.handleStatus).
+        // the backend can route the broadcast). The backend gates STATUS/TITLE
+        // behind permissionManager.hasSuperAdminSession(playerId) and returns
+        // NC-403 when absent (see AdminActionHandler.handleStatus), so the
+        // sender must first run /nc auth <password> to establish a super-admin
+        // session. The local novachat.title permission (default: op) is only
+        // a coarse client-side gate; the real authorization gate is the backend
+        // super-admin session.
         return false;
     }
 

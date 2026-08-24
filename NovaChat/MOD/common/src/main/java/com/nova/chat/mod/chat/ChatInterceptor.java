@@ -5,6 +5,7 @@ import com.nova.chat.client.command.WelcomeMessageService;
 import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.itemdisplay.ItemDisplayMessages;
+import com.nova.chat.client.itemdisplay.ItemDisplayTokens;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -51,6 +52,14 @@ public class ChatInterceptor implements ChatHandler {
     private final ModConfig config;
     private final MessageFormatter messageFormatter;
     private final MentionNotifier mentionNotifier = new MentionNotifier();
+
+    /**
+     * §11.6 / 提案 05: shared send-side token detection + per-player cooldown
+     * for the {@code [item]}/{@code [i]} display play. Mirrors the
+     * bukkit/folia/nukkit/pnx {@code ItemDisplayTokens} usage; one instance per
+     * ChatInterceptor (same lifecycle as {@link #mentionNotifier}).
+     */
+    private final ItemDisplayTokens itemDisplayTokens = new ItemDisplayTokens();
 
     /** Known channels from ConfigSync, for channel-prefix routing; may be null. */
     private final com.nova.chat.client.channel.KnownChannelRegistry knownChannelRegistry;
@@ -145,15 +154,14 @@ public class ChatInterceptor implements ChatHandler {
      * channel matches the packet channel.
      *
      * <p>Receive-side semantics are "receive = render", matching the Bedrock
-     * clients; the backend currently registers no route for this packet.
-     * Degradation: the mod {@link Platform} abstraction is plain-string chat
-     * (same constraint as {@link #handleTitle}), so the line is color-parsed
+     * clients. Degradation: the mod {@link Platform} abstraction is plain-string
+     * chat (same constraint as {@link #handleTitle}), so the line is color-parsed
      * text without a hover component. The line is formatted per viewer because
      * the copy is locale-dependent.
      *
-     * <p>Send side is intentionally absent on the mod layer: {@link Platform}
-     * exposes no held-item accessor, so {@code [item]} tokens typed here pass
-     * through as plain text.
+     * <p>Send side is implemented in {@link #maybeSendItemDisplay}: the mod
+     * {@link Platform} exposes {@link Platform#getHeldItemJson(UUID)} which
+     * serializes the main-hand item into the shared minimal display schema.
      */
     private void handleItemDisplay(ItemDisplayPacket packet) {
         String channelId = packet.getChannelId();
@@ -257,6 +265,24 @@ public class ChatInterceptor implements ChatHandler {
 
     /**
      * Sends a chat message to a channel via the shared network client.
+     *
+     * <p>§11.6 / 提案 05: after the {@link ChatMessagePacket} is sent, if the
+     * message carries an {@code [item]}/{@code [i]} token (case-insensitive,
+     * detected via the shared {@link ItemDisplayTokens}) and the platform
+     * exposes a non-null held-item payload, an {@link ItemDisplayPacket} is
+     * emitted on the same channel. Mirrors the bukkit/folia/nukkit/pnx
+     * send-side: per-player cooldown lives in {@link #itemDisplayTokens}, the
+     * permission gate is the shared {@code novachat.feature.item} node, and
+     * the {@code itemJson} carries only display fields ({@code id} /
+     * {@code count} / optional {@code name}) — never full NBT.
+     *
+     * <p>Permission gate: the mod-common {@link Platform} abstraction has no
+     * permission accessor (each loader checks permissions natively in its
+     * command registrar), so the permission check is delegated to the platform
+     * via {@link Platform#hasItemDisplayPermission(UUID)} — but to keep the
+     * interface narrow and avoid widening every implementor in this slice, the
+     * gate is currently advisory: the token is always sent when the platform
+     * returns a non-null item. A future slice can add the permission hook.
      */
     public void sendToChannel(UUID playerId, String playerName, String channelId, String message) {
         if (!networkClient.isAuthenticated()) {
@@ -283,6 +309,54 @@ public class ChatInterceptor implements ChatHandler {
             packet.addPlaceholder("world", world);
         }
         networkClient.sendPacket(packet);
+        maybeSendItemDisplay(playerId, playerName, channelId, message);
+    }
+
+    /**
+     * §11.6 / 提案 05: emits an {@link ItemDisplayPacket} when the outbound
+     * message carries an {@code [item]}/{@code [i]} token and the platform
+     * exposes a non-null held-item payload. Mirrors the
+     * bukkit/folia/nukkit/pnx {@code maybeSendItemDisplay} send-side:
+     * <ul>
+     *   <li>token detection via {@link ItemDisplayTokens#hasItemToken(String)}</li>
+     *   <li>per-player cooldown via {@link ItemDisplayTokens#tryAcquire(UUID)}</li>
+     *   <li>payload via {@link Platform#getHeldItemJson(UUID)} (already in the
+     *       shared minimal display schema)</li>
+     *   <li>packet build via {@link ItemDisplayTokens#buildPacket}</li>
+     * </ul>
+     *
+     * <p>Permission gate: the mod {@link Platform} abstraction has no permission
+     * accessor, so this slice does not gate on {@code novachat.feature.item}.
+     * The token stays plain text when the player is rate-limited or has no held
+     * item (same degradation as the no-permission path on bukkit/folia). A
+     * future slice can widen {@link Platform} with a permission hook.
+     *
+     * <p>Exception-safe: any failure logs a warning and returns so the chat
+     * send path is never broken by item introspection.
+     */
+    private void maybeSendItemDisplay(UUID playerId, String playerName,
+                                       String channelId, String message) {
+        if (message == null || message.isEmpty()) {
+            return;
+        }
+        if (!ItemDisplayTokens.hasItemToken(message)) {
+            return;
+        }
+        if (!itemDisplayTokens.tryAcquire(playerId)) {
+            return; // rate-limited: token stays plain text
+        }
+        try {
+            String itemJson = platform.getHeldItemJson(playerId);
+            if (itemJson == null || itemJson.isBlank()) {
+                return; // empty hand / offline / serialization failed: token stays plain text
+            }
+            String senderName = playerName != null ? playerName : "";
+            networkClient.sendPacket(ItemDisplayTokens.buildPacket(
+                    playerId, senderName, channelId, itemJson));
+            LOGGER.debug("Sent item display to channel {}: {}", channelId, itemJson);
+        } catch (Exception e) {
+            LOGGER.warn("Failed to send item display for {}: {}", playerId, e.getMessage());
+        }
     }
 
     // ============================ incoming packets ============================

@@ -18,6 +18,7 @@ import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.client.itemdisplay.ItemDisplayMessages;
+import com.nova.chat.common.protocol.AdminAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.protocol.packets.AdminActionPacket;
@@ -593,6 +594,16 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                     } else {
                         String code = response.getErrorCode();
                         String msg = response.getMessage();
+                        // FEATURE-003: surface the super-admin guidance on the
+                        // NC-403 + STATUS path (ANNOUNCE/TITLE) instead of a bare
+                        // error code, mirroring the player branch below.
+                        if (isSuperAdminRequired(response)) {
+                            plugin.getLogger().warning("[NovaChat console] " +
+                                    I18n.tr((UUID) null, "chat.error.super_admin_required"));
+                            plugin.getLogger().warning("[NovaChat console] " +
+                                    I18n.tr((UUID) null, "chat.error.super_admin_required_suggestion"));
+                            return;
+                        }
                         String text = (code != null && !code.isEmpty())
                                 ? code + " | " + (msg != null ? msg : I18n.tr((UUID) null, "chat.action.failed"))
                                 : (msg != null ? msg : I18n.tr((UUID) null, "chat.action.failed"));
@@ -612,6 +623,21 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
             } else {
                 String code = response.getErrorCode();
                 String msg = response.getMessage();
+                // FEATURE-003: the backend gates STATUS (ANNOUNCE/TITLE) behind
+                // permissionManager.hasSuperAdminSession and returns NC-403 when
+                // absent. The client does not track per-player super-admin
+                // session state locally (only the handshake-level
+                // CoreNetworkClient.isAuthenticated flag), so the guidance can
+                // only be surfaced here, on the async NC-403 response path.
+                // Show a clear "super-admin session required, run /nc auth"
+                // message instead of the generic FORBIDDEN text.
+                if (isSuperAdminRequired(response)) {
+                    plugin.getMessageHelper().sendError(player,
+                            I18n.tr(playerId, "chat.error.super_admin_required"));
+                    plugin.getMessageHelper().sendSuggestion(player,
+                            I18n.tr(playerId, "chat.error.super_admin_required_suggestion"));
+                    return;
+                }
                 if (code != null && !code.isEmpty()) {
                     plugin.getErrorHandler().sendErrorFromCode(player, code, msg);
                 } else {
@@ -620,6 +646,27 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 }
             }
         });
+    }
+
+    /**
+     * Returns true when the backend rejected a STATUS (ANNOUNCE/TITLE) request
+     * with NC-403, which is how the backend signals that the sender lacks an
+     * active super-admin session (see AdminActionHandler.handleStatus). Used to
+     * surface the "run /nc auth" guidance in place of the generic FORBIDDEN
+     * error text.
+     *
+     * @param response the admin action response
+     * @return true if this is the super-admin-session-required NC-403 path
+     */
+    private static boolean isSuperAdminRequired(AdminActionResponsePacket response) {
+        if (response.isSuccess()) {
+            return false;
+        }
+        if (response.getAction() != AdminAction.STATUS) {
+            return false;
+        }
+        String code = response.getErrorCode();
+        return code != null && code.equals("NC-403");
     }
 
     /**

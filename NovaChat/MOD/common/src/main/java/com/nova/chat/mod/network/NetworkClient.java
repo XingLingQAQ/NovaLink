@@ -4,11 +4,13 @@ import com.nova.chat.client.network.AbstractPlatformNetworkClient;
 import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.client.network.ClientLogger;
 import com.nova.chat.client.network.SchedulerBridge;
+import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.mod.config.ModConfig;
 import com.nova.chat.mod.platform.Platform;
 
 import java.util.Objects;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -46,7 +48,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 platform.getPlatformType().toCommon(),
                 scheduler,
                 logger,
-                "config/novachat.yml",
+                "novachat.yml",
                 Function.identity(),
                 serverVersion != null ? serverVersion : ""
         );
@@ -57,6 +59,26 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      */
     public Platform getPlatform() {
         return platform;
+    }
+
+    /**
+     * PLAT-001: wraps every registered handler so it dispatches on the
+     * Minecraft server thread instead of the Netty event loop. MC server APIs
+     * ({@code getPlayerList()}, {@code sendSystemMessage},
+     * {@code broadcastSystemMessage}, dimension lookup) are not safe off the
+     * server thread; this hop mirrors the Folia
+     * {@code AsyncNetworkClient#registerHandler} wrap, but targets the server
+     * thread via {@link Platform#execute} rather than an async scheduler.
+     *
+     * <p>If a test stubs {@link Platform#execute} to run the runnable inline
+     * (the common case for unit tests that capture the handler Consumer and
+     * invoke it synchronously), the wrapped handler still runs to completion
+     * on the test thread, preserving existing assertions.
+     */
+    @SuppressWarnings("unchecked")
+    @Override
+    public <T extends Packet> void registerHandler(Class<T> packetClass, Consumer<T> handler) {
+        core().registerHandler(packetClass, packet -> platform.execute(() -> handler.accept((T) packet)));
     }
 
     /**

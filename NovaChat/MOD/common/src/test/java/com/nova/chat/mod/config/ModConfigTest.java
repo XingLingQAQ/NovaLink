@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for {@link ModConfig} features added with the client-core
@@ -15,14 +16,28 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("ModConfig")
 class ModConfigTest {
 
+    private static ModConfig validConfig() {
+        ModConfig config = new ModConfig();
+        ModConfig.BackendConfig backend = new ModConfig.BackendConfig();
+        backend.setHost("127.0.0.1");
+        backend.setPort(8888);
+        backend.setUsername("ModServer");
+        backend.setPassword("password");
+        backend.setReconnectDelay(5);
+        config.setBackend(backend);
+        config.getChat().setDefaultChannel("local");
+        config.getChat().setLocale("zh_CN");
+        return config;
+    }
+
     @Nested
     @DisplayName("toClientConnectionConfig()")
     class ToClientConnectionConfig {
 
         @Test
-        @DisplayName("maps backend host/port/username/password and clamps reconnect delay to >= 1")
+        @DisplayName("maps backend host, port, credentials, and reconnect delay")
         void mapsAllBackendFields() {
-            ModConfig config = new ModConfig();
+            ModConfig config = validConfig();
             ModConfig.BackendConfig backend = new ModConfig.BackendConfig();
             backend.setHost("10.0.0.5");
             backend.setPort(9999);
@@ -41,39 +56,33 @@ class ModConfigTest {
         }
 
         @Test
-        @DisplayName("clamps a zero reconnect delay up to 1 (Math.max(1, delay))")
-        void clampsZeroReconnectDelayToOne() {
-            ModConfig config = new ModConfig();
+        @DisplayName("rejects a zero reconnect delay")
+        void rejectsZeroReconnectDelay() {
+            ModConfig config = validConfig();
             config.getBackend().setReconnectDelay(0);
 
-            ClientConnectionConfig cc = config.toClientConnectionConfig();
-
-            assertThat(cc.getInitialReconnectDelaySeconds()).isGreaterThanOrEqualTo(1);
+            assertThatThrownBy(config::toClientConnectionConfig)
+                    .isInstanceOf(IllegalStateException.class);
         }
 
         @Test
-        @DisplayName("clamps a negative reconnect delay up to 1")
-        void clampsNegativeReconnectDelayToOne() {
-            ModConfig config = new ModConfig();
+        @DisplayName("rejects a negative reconnect delay")
+        void rejectsNegativeReconnectDelay() {
+            ModConfig config = validConfig();
             config.getBackend().setReconnectDelay(-5);
 
-            ClientConnectionConfig cc = config.toClientConnectionConfig();
-
-            assertThat(cc.getInitialReconnectDelaySeconds()).isGreaterThanOrEqualTo(1);
+            assertThatThrownBy(config::toClientConnectionConfig)
+                    .isInstanceOf(IllegalStateException.class);
         }
 
         @Test
-        @DisplayName("falls back to a default BackendConfig when backend is null")
-        void handlesNullBackend() {
-            ModConfig config = new ModConfig();
+        @DisplayName("rejects a missing backend instead of inventing connection values")
+        void rejectsNullBackend() {
+            ModConfig config = validConfig();
             config.setBackend(null);
 
-            ClientConnectionConfig cc = config.toClientConnectionConfig();
-
-            // Defaults from BackendConfig(): host 127.0.0.1, port 8888, username ModServer
-            assertThat(cc.getHost()).isEqualTo("127.0.0.1");
-            assertThat(cc.getPort()).isEqualTo(8888);
-            assertThat(cc.getUsername()).isEqualTo("ModServer");
+            assertThatThrownBy(config::toClientConnectionConfig)
+                    .isInstanceOf(IllegalStateException.class);
         }
     }
 
@@ -82,9 +91,9 @@ class ModConfigTest {
     class Locale {
 
         @Test
-        @DisplayName("default locale is zh_CN")
-        void defaultLocaleIsZhCn() {
-            assertThat(new ModConfig().getChat().getLocale()).isEqualTo("zh_CN");
+        @DisplayName("the data model does not inject a locale default")
+        void modelDoesNotInjectLocale() {
+            assertThat(new ModConfig().getChat().getLocale()).isNull();
         }
 
         @Test
@@ -98,7 +107,7 @@ class ModConfigTest {
         @Test
         @DisplayName("locale round-trips through the whole ModConfig.ChatConfig holder")
         void localeRoundTripThroughChatConfig() {
-            ModConfig config = new ModConfig();
+            ModConfig config = validConfig();
             config.getChat().setLocale("en_US");
 
             ModConfig.ChatConfig chat = config.getChat();
@@ -113,15 +122,15 @@ class ModConfigTest {
     class Validate {
 
         @Test
-        @DisplayName("default config validates (non-empty channel, valid backend defaults)")
-        void defaultConfigValidates() {
-            assertThat(new ModConfig().validate()).isTrue();
+        @DisplayName("an unparsed data model is not a valid runtime config")
+        void emptyModelIsInvalid() {
+            assertThat(new ModConfig().validate()).isFalse();
         }
 
         @Test
         @DisplayName("empty default channel fails validation")
         void emptyDefaultChannelFails() {
-            ModConfig config = new ModConfig();
+            ModConfig config = validConfig();
             config.getChat().setDefaultChannel("");
             assertThat(config.validate()).isFalse();
         }
@@ -129,7 +138,7 @@ class ModConfigTest {
         @Test
         @DisplayName("invalid port fails validation")
         void invalidPortFails() {
-            ModConfig config = new ModConfig();
+            ModConfig config = validConfig();
             config.getBackend().setPort(0);
             assertThat(config.validate()).isFalse();
         }
@@ -137,7 +146,7 @@ class ModConfigTest {
         @Test
         @DisplayName("null backend fails validation")
         void nullBackendFails() {
-            ModConfig config = new ModConfig();
+            ModConfig config = validConfig();
             config.setBackend(null);
             assertThat(config.validate()).isFalse();
         }
@@ -145,7 +154,7 @@ class ModConfigTest {
         @Test
         @DisplayName("empty host fails backend validation")
         void emptyHostFails() {
-            ModConfig config = new ModConfig();
+            ModConfig config = validConfig();
             config.getBackend().setHost("");
             assertThat(config.validate()).isFalse();
         }
@@ -158,7 +167,7 @@ class ModConfigTest {
         @Test
         @DisplayName("getBackendHost/getBackendPort/getUsername delegate to backend")
         void accessorsDelegateToBackend() {
-            ModConfig config = new ModConfig();
+            ModConfig config = validConfig();
             config.getBackend().setHost("h");
             config.getBackend().setPort(1234);
             config.getBackend().setUsername("u");
@@ -169,20 +178,13 @@ class ModConfigTest {
         }
 
         @Test
-        @DisplayName("getBackendPort returns DEFAULT_PORT when backend is null")
-        void portDefaultWhenBackendNull() {
-            ModConfig config = new ModConfig();
+        @DisplayName("backend access fails when no parsed backend exists")
+        void accessFailsWhenBackendNull() {
+            ModConfig config = validConfig();
             config.setBackend(null);
-            assertThat(config.getBackendPort()).isEqualTo(ClientConnectionConfig.DEFAULT_PORT);
-        }
-
-        @Test
-        @DisplayName("getBackendHost/getUsername return null when backend is null")
-        void hostAndUserNullWhenBackendNull() {
-            ModConfig config = new ModConfig();
-            config.setBackend(null);
-            assertThat(config.getBackendHost()).isNull();
-            assertThat(config.getUsername()).isNull();
+            assertThatThrownBy(config::getBackendPort).isInstanceOf(NullPointerException.class);
+            assertThatThrownBy(config::getBackendHost).isInstanceOf(NullPointerException.class);
+            assertThatThrownBy(config::getUsername).isInstanceOf(NullPointerException.class);
         }
     }
 }

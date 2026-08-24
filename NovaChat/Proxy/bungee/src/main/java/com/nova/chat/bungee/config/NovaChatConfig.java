@@ -1,6 +1,7 @@
 package com.nova.chat.bungee.config;
 
 import com.nova.chat.client.network.ClientConnectionConfig;
+import com.nova.chat.common.config.YamlConfigUpdater;
 import net.md_5.bungee.config.Configuration;
 import net.md_5.bungee.config.ConfigurationProvider;
 import net.md_5.bungee.config.YamlConfiguration;
@@ -8,15 +9,18 @@ import net.md_5.bungee.config.YamlConfiguration;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Files;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 /**
  * Configuration wrapper for NovaChat BungeeCord plugin.
  * Parses and provides access to config.yml settings.
  */
 public class NovaChatConfig {
+    private static final Set<String> DYNAMIC_CONFIG_MAPPINGS = Set.of(
+            "chat.channel-prefixes", "format.channels", "world-routing.mappings");
 
     // Backend connection settings
     private String backendHost;
@@ -40,6 +44,7 @@ public class NovaChatConfig {
 
     // Debug mode
     private boolean debug;
+    private YamlConfigUpdater.UpdateResult updateResult;
 
     /**
      * Creates a new configuration from the given data folder.
@@ -57,33 +62,18 @@ public class NovaChatConfig {
      */
     private void loadConfig(File dataFolder) {
         File configFile = new File(dataFolder, "config.yml");
-        
-        // Create default config if not exists
-        if (!configFile.exists()) {
-            try {
-                if (!dataFolder.exists()) {
-                    dataFolder.mkdirs();
-                }
-                try (InputStream in = getClass().getResourceAsStream("/config.yml")) {
-                    if (in != null) {
-                        Files.copy(in, configFile.toPath());
-                    } else {
-                        createDefaultConfig(configFile);
-                    }
-                }
-            } catch (IOException e) {
-                setDefaults();
-                return;
+        try (InputStream template = getClass().getResourceAsStream("/config.yml")) {
+            if (template == null) {
+                throw new IOException("Bundled config.yml template is missing");
             }
-        }
-
-        // Parse YAML config
-        try {
+            updateResult = YamlConfigUpdater.update(configFile.toPath(), template,
+                    DYNAMIC_CONFIG_MAPPINGS);
             Configuration config = ConfigurationProvider.getProvider(YamlConfiguration.class)
                 .load(configFile);
             parseConfig(config);
         } catch (Exception e) {
-            setDefaults();
+            throw new IllegalStateException(
+                    "Failed to install, upgrade, or load " + configFile, e);
         }
     }
 
@@ -92,132 +82,115 @@ public class NovaChatConfig {
      */
     private void parseConfig(Configuration config) {
         // Backend settings
-        Configuration backend = config.getSection("backend");
-        if (backend != null) {
-            this.backendHost = backend.getString("host", "127.0.0.1");
-            this.backendPort = backend.getInt("port", 8888);
-            this.username = backend.getString("username", "");
-            this.password = backend.getString("password", "");
-            this.reconnectDelay = backend.getInt("reconnect-delay", 5);
-        } else {
-            this.backendHost = "127.0.0.1";
-            this.backendPort = 8888;
-            this.username = "";
-            this.password = "";
-            this.reconnectDelay = 5;
-        }
+        Configuration backend = Objects.requireNonNull(config.getSection("backend"),
+                "Missing required configuration section: backend");
+        this.backendHost = requiredNonBlankString(backend, "host", "backend.host");
+        this.backendPort = requiredPort(backend, "port", "backend.port");
+        this.username = requiredString(backend, "username", "backend.username");
+        this.password = requiredString(backend, "password", "backend.password");
+        this.reconnectDelay = requiredPositiveInt(
+                backend, "reconnect-delay", "backend.reconnect-delay");
 
         // Chat settings
-        Configuration chat = config.getSection("chat");
-        if (chat != null) {
-            this.replaceVanilla = chat.getBoolean("replace_vanilla", false);
-            this.defaultChannel = chat.getString("default_channel", "local");
-            this.locale = chat.getString("locale", "zh_CN");
-            Configuration prefixes = chat.getSection("channel-prefixes");
-            if (prefixes != null) {
-                for (String key : prefixes.getKeys()) {
-                    String channelId = prefixes.getString(key);
-                    if (key != null && !key.isEmpty() && channelId != null && !channelId.isEmpty()) {
-                        channelPrefixes.put(key, channelId);
-                    }
-                }
+        Configuration chat = Objects.requireNonNull(config.getSection("chat"),
+                "Missing required configuration section: chat");
+        this.replaceVanilla = requiredBoolean(chat, "replace_vanilla", "chat.replace_vanilla");
+        this.defaultChannel = requiredNonBlankString(
+                chat, "default_channel", "chat.default_channel");
+        this.locale = requiredNonBlankString(chat, "locale", "chat.locale");
+        Configuration prefixes = requiredSection(chat, "channel-prefixes", "chat.channel-prefixes");
+        for (String key : prefixes.getKeys()) {
+            String channelId = requiredString(prefixes, key, "chat.channel-prefixes." + key);
+            if (!key.isEmpty() && !channelId.isEmpty()) {
+                channelPrefixes.put(key, channelId);
             }
-        } else {
-            this.replaceVanilla = false;
-            this.defaultChannel = "local";
-            this.locale = "zh_CN";
         }
 
         // Format settings
-        Configuration format = config.getSection("format");
-        if (format != null) {
-            this.prefix = format.getString("prefix", "&8[&bNovaChat&8]&r ");
-            this.errorFormat = format.getString("error", "&c错误: {message}");
-            this.successFormat = format.getString("success", "&a成功: {message}");
-            this.defaultFormat = format.getString("default", "&7[{channel_color}{channel_name}] {player}&f: {message}");
-            
-            Configuration channels = format.getSection("channels");
-            if (channels != null) {
-                for (String key : channels.getKeys()) {
-                    channelFormats.put(key, channels.getString(key));
-                }
-            }
-        } else {
-            this.prefix = "&8[&bNovaChat&8]&r ";
-            this.errorFormat = "&c错误: {message}";
-            this.successFormat = "&a成功: {message}";
-            this.defaultFormat = "&7[{channel_color}{channel_name}] {player}&f: {message}";
+        Configuration format = Objects.requireNonNull(config.getSection("format"),
+                "Missing required configuration section: format");
+        this.prefix = requiredString(format, "prefix", "format.prefix");
+        this.errorFormat = requiredString(format, "error", "format.error");
+        this.successFormat = requiredString(format, "success", "format.success");
+        this.defaultFormat = requiredString(format, "default", "format.default");
+
+        Configuration channels = requiredSection(format, "channels", "format.channels");
+        for (String key : channels.getKeys()) {
+            channelFormats.put(key, requiredString(channels, key, "format.channels." + key));
         }
 
         // Debug mode
-        this.debug = config.getBoolean("debug", false);
+        this.debug = requiredBoolean(config, "debug", "debug");
+
+        toClientConnectionConfig();
     }
 
-    /**
-     * Sets default values.
-     */
-    private void setDefaults() {
-        this.backendHost = "127.0.0.1";
-        this.backendPort = 8888;
-        this.username = "";
-        this.password = "";
-        this.reconnectDelay = 5;
-        this.replaceVanilla = false;
-        this.defaultChannel = "local";
-        this.locale = "zh_CN";
-        this.prefix = "&8[&bNovaChat&8]&r ";
-        this.errorFormat = "&c错误: {message}";
-        this.successFormat = "&a成功: {message}";
-        this.defaultFormat = "&7[{channel_color}{channel_name}] {player}&f: {message}";
-        this.debug = false;
+    private static Configuration requiredSection(Configuration parent, String key, String path) {
+        Configuration section = parent.getSection(key);
+        if (section == null) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be a mapping");
+        }
+        return section;
     }
 
-    /**
-     * Creates a default configuration file.
-     */
-    private void createDefaultConfig(File configFile) throws IOException {
-        String defaultConfig = """
-            # ==========================================
-            # NovaChat BungeeCord 配置文件
-            # ==========================================
-            
-            # 后端连接设置
-            backend:
-              host: "127.0.0.1"
-              port: 8888
-              username: ""
-              password: ""
-              reconnect-delay: 5
-            
-            # 聊天设置
-            chat:
-              replace_vanilla: false
-              default_channel: "local"
-              locale: "zh_CN"  # 默认语言（zh_CN / en_US）；玩家客户端语言优先
-              # 频道前缀：消息首字符命中前缀时直接发往对应频道（无需切换频道）。
-              # 默认为空 = 关闭。示例：
-              # channel-prefixes:
-              #   "!": global
-              #   "$": trade
-              channel-prefixes: {}
-            
-            # 消息格式
-            format:
-              prefix: "&8[&bNovaChat&8]&r "
-              error: "&c错误: {message}"
-              success: "&a成功: {message}"
-              default: "&7[{channel_color}{channel_name}] {player}&f: {message}"
-              channels:
-                global: "&c[全服] &7{player}&f: {message}"
-                local: "&e[本地] &7{player}&f: {message}"
-            
-            # 调试模式
-            debug: false
-            """;
-        Files.writeString(configFile.toPath(), defaultConfig);
+    private static String requiredString(Configuration parent, String key, String path) {
+        Object value = parent.get(key);
+        if (!(value instanceof String stringValue)) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be a string");
+        }
+        return stringValue;
+    }
+
+    private static String requiredNonBlankString(Configuration parent, String key, String path) {
+        String value = requiredString(parent, key, path);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException("Configuration value " + path + " must not be blank");
+        }
+        return value;
+    }
+
+    private static int requiredInt(Configuration parent, String key, String path) {
+        Object value = parent.get(key);
+        if (!(value instanceof Number numberValue)
+                || !Double.isFinite(numberValue.doubleValue())
+                || numberValue.doubleValue() != Math.rint(numberValue.doubleValue())
+                || numberValue.doubleValue() < Integer.MIN_VALUE
+                || numberValue.doubleValue() > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be an integer");
+        }
+        return numberValue.intValue();
+    }
+
+    private static int requiredPositiveInt(Configuration parent, String key, String path) {
+        int value = requiredInt(parent, key, path);
+        if (value <= 0) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be greater than 0");
+        }
+        return value;
+    }
+
+    private static int requiredPort(Configuration parent, String key, String path) {
+        int value = requiredInt(parent, key, path);
+        if (value < 1 || value > 65535) {
+            throw new IllegalArgumentException(
+                    "Configuration value " + path + " must be between 1 and 65535");
+        }
+        return value;
+    }
+
+    private static boolean requiredBoolean(Configuration parent, String key, String path) {
+        Object value = parent.get(key);
+        if (!(value instanceof Boolean booleanValue)) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be a boolean");
+        }
+        return booleanValue;
     }
 
     // Getters
+
+    public YamlConfigUpdater.UpdateResult getUpdateResult() {
+        return updateResult;
+    }
 
     public String getBackendHost() {
         return backendHost;
@@ -252,7 +225,7 @@ public class NovaChatConfig {
      * {@code "en_US"}). Used to seed {@link com.nova.chat.client.i18n.I18n} at
      * startup; per-player client locales still override this.
      *
-     * @return the configured locale string, never null (defaults to {@code "zh_CN"})
+     * @return the locale string read from {@code chat.locale}
      */
     public String getLocale() {
         return locale;
@@ -306,10 +279,7 @@ public class NovaChatConfig {
     /**
      * Maps platform config to the shared {@link ClientConnectionConfig}.
      *
-     * <p>Historical reconnect math used a fixed 1s initial / 30s cap / 10 attempts
-     * (not {@code backend.reconnect-delay}); that behaviour is preserved here.
-     * {@code reconnect-delay} remains available via {@link #getReconnectDelay()} for
-     * callers that want the configured value.
+     * <p>The initial reconnect delay comes from {@code backend.reconnect-delay}.
      */
     public ClientConnectionConfig toClientConnectionConfig() {
         return ClientConnectionConfig.builder()
@@ -317,6 +287,7 @@ public class NovaChatConfig {
                 .port(backendPort)
                 .username(username)
                 .password(password)
+                .initialReconnectDelaySeconds(reconnectDelay)
                 .build();
     }
 }

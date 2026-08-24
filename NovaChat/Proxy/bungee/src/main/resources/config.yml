@@ -2,6 +2,8 @@
 # NovaChat BungeeCord 配置文件
 # ==========================================
 
+config-version: 1
+
 # 后端连接设置
 backend:
   host: "127.0.0.1"

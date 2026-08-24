@@ -113,12 +113,14 @@ class CommandManagerTest {
         }
         @Override public void broadcastMessage(Object message) {}
         @Override public String getCurrentWorld(UUID playerId) { return "world"; }
+        @Override public String getHeldItemJson(UUID playerId) { return null; }
         @Override public String getPlayerName(UUID playerId) { return "Steve"; }
         @Override public boolean isPlayerOnline(UUID playerId) { return true; }
         @Override public java.util.Collection<UUID> getOnlinePlayerIds() { return List.of(PLAYER); }
         @Override public PlatformType getPlatformType() { return PlatformType.FABRIC; }
         @Override public void runAsync(Runnable task) { task.run(); }
         @Override public void runLater(Runnable task, long delaySeconds) { task.run(); }
+        @Override public void execute(Runnable task) { task.run(); }
         @Override public void logInfo(String message) {}
         @Override public void logWarn(String message) {}
         @Override public void logDebug(String message) {}

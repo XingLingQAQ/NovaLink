@@ -54,8 +54,7 @@ public class NovaChatFabric implements ModInitializer {
         platform.setReplaceVanillaChat(config.getChat().isReplaceVanilla());
 
         // Bootstrap the shared mod runtime (network + chat + commands + registry)
-        services = NovaChatMod.bootstrap(platform, config,
-                config.getBackend() != null ? config.getBackend().getUsername() : null);
+        services = NovaChatMod.bootstrap(platform, config, config.getBackend().getUsername());
 
         // Initialize command manager and register handlers
         CommandManager commandManager = new CommandManager(platform);

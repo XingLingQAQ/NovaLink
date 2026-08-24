@@ -11,6 +11,7 @@ import cn.nukkit.utils.Config;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
+import com.nova.chat.common.config.YamlConfigUpdater;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.extension.ExtensionManager;
 import com.nova.chat.nukkit.chat.ChatInterceptor;
@@ -30,6 +31,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Set;
 
 /**
  * NovaChat Nukkit Plugin - Main class
@@ -40,6 +42,9 @@ import java.nio.file.StandardCopyOption;
  * Supports: Nukkit Bedrock servers (Requirements: 23.4)
  */
 public class NovaChatNukkit extends PluginBase implements Listener {
+    private static final Set<String> DYNAMIC_CONFIG_MAPPINGS = Set.of(
+            "chat.channel-prefixes", "format.channels", "world-routing.mappings");
+
     
     private static NovaChatNukkit instance;
     
@@ -103,9 +108,6 @@ public class NovaChatNukkit extends PluginBase implements Listener {
     public void onEnable() {
         instance = this;
 
-        // Save default config if not exists
-        saveDefaultConfigFile();
-
         // Extract default lang/ bundles to plugins/NovaChat/lang/ so users have
         // a template to copy/edit and can drop in new languages without a rebuild.
         // I18n reads <externalLangDir>/lang/<locale>.properties on top of the
@@ -115,8 +117,11 @@ public class NovaChatNukkit extends PluginBase implements Listener {
         extractDefaultLang(langDir, "zh_CN");
         extractDefaultLang(langDir, "en_US");
 
-        // Load configuration
-        loadConfiguration();
+        // Install or upgrade the resource-backed configuration before loading it.
+        if (!loadConfiguration()) {
+            throw new IllegalStateException(
+                    "NovaChat initialization stopped because config.yml could not be loaded safely");
+        }
 
         // Seed the shared I18n default locale from config (per-player locales
         // captured by LocaleListener override this per player).
@@ -187,16 +192,6 @@ public class NovaChatNukkit extends PluginBase implements Listener {
     }
     
     /**
-     * Saves the default configuration file if it doesn't exist.
-     */
-    private void saveDefaultConfigFile() {
-        File configFile = new File(getDataFolder(), "config.yml");
-        if (!configFile.exists()) {
-            saveResource("config.yml", false);
-        }
-    }
-
-    /**
      * Extracts a default lang bundle from the jar to {@code <langDir>/<locale>.properties}
      * only when it does not already exist (so user customizations win). The
      * classpath resource path is {@code lang/<locale>.properties} (the
@@ -240,22 +235,46 @@ public class NovaChatNukkit extends PluginBase implements Listener {
      * The Nukkit {@link Config} class already reads via UTF-8 internally, but
      * its SnakeYAML reader does not strip a leading BOM, so we handle it here.
      */
-    public void loadConfiguration() {
-        Config config = new Config(Config.YAML);
+    public boolean loadConfiguration() {
+        NovaChatConfig previousConfig = novaChatConfig;
+        boolean previousDebugMode = debugMode;
         File configFile = new File(getDataFolder(), "config.yml");
-        try (InputStream raw = new FileInputStream(configFile);
-             InputStream bomStripped = stripBom(raw)) {
-            config.loadFromStream(bomStripped);
-        } catch (Exception e) {
-            getLogger().error("Failed to load config.yml with UTF-8: " + e.getMessage(), e);
-            // Fallback: let Config handle the file directly
-            config = new Config(configFile, Config.YAML);
-        }
-        novaChatConfig = new NovaChatConfig(config);
-        debugMode = novaChatConfig.isDebug();
+        try (InputStream template = getResource("config.yml")) {
+            if (template == null) {
+                throw new IOException("Bundled config.yml template is missing");
+            }
+            YamlConfigUpdater.UpdateResult update = YamlConfigUpdater.update(
+                    configFile.toPath(), template, DYNAMIC_CONFIG_MAPPINGS);
+            logConfigUpdate(update);
 
-        if (debugMode) {
-            getLogger().info("[Debug] Configuration loaded successfully");
+            Config loadedFile = new Config(Config.YAML);
+            try (InputStream raw = new FileInputStream(configFile);
+                 InputStream bomStripped = stripBom(raw)) {
+                loadedFile.loadFromStream(bomStripped);
+            }
+            NovaChatConfig loaded = new NovaChatConfig(loadedFile);
+            novaChatConfig = loaded;
+            debugMode = loaded.isDebug();
+
+            if (debugMode) {
+                getLogger().info("[Debug] Configuration loaded successfully");
+            }
+            return true;
+        } catch (Exception e) {
+            novaChatConfig = previousConfig;
+            debugMode = previousDebugMode;
+            getLogger().error(
+                    "Failed to install, upgrade, or load config.yml; the file was not overwritten", e);
+            return false;
+        }
+    }
+
+    private void logConfigUpdate(YamlConfigUpdater.UpdateResult update) {
+        if (update.created()) {
+            getLogger().info("Created config.yml from the bundled template");
+        } else if (update.updated()) {
+            getLogger().info("Added new config.yml fields; previous file saved to "
+                    + update.backupPath());
         }
     }
 
@@ -443,7 +462,10 @@ public class NovaChatNukkit extends PluginBase implements Listener {
      * Reloads the plugin configuration and reconnects to backend if needed.
      */
     public void reload() {
-        loadConfiguration();
+        if (!loadConfiguration()) {
+            getLogger().warning("Configuration reload rejected; continuing with previous values");
+            return;
+        }
         
         // Reload chat interceptor settings
         if (chatInterceptor != null) {

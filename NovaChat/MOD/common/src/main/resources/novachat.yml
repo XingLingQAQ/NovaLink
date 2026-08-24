@@ -1,0 +1,32 @@
+# ==========================================
+# NovaChat MOD configuration
+# Shared by Fabric, NeoForge, and Quilt
+# ==========================================
+
+config-version: 1
+
+# NovaLink backend connection
+backend:
+  host: "127.0.0.1"
+  port: 8888
+  username: "ModServer"
+  password: "your-password"
+  reconnect-delay: 5
+
+chat:
+  replace_vanilla: false
+  default_channel: "local"
+  locale: "zh_CN"
+  # Prefix to channel mappings. Empty means disabled.
+  # channel-prefixes:
+  #   "!": global
+  channel-prefixes: {}
+
+# Channel-specific message formats. This mapping is entirely user-owned after
+# the file has been created, so removed examples will not be added back.
+format:
+  channels:
+    global: "&c[全服] &7{player}&f: {message}"
+    local: "&e[本地] &7{player}&f: {message}"
+
+debug: false

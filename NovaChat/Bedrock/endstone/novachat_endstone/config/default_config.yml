@@ -1,0 +1,55 @@
+# NovaChat-Endstone Configuration
+# Cross-server chat integration for Minecraft Bedrock Edition
+
+config-version: 1
+
+# Backend connection settings
+backend:
+  host: "127.0.0.1"
+  port: 8888
+  username: "EndstoneServer"
+  password: "change-me"
+  reconnect-delay: 5
+  # TLS (AUTH-002): encrypt the backend transport. Default off keeps the
+  # plaintext path for development / trusted networks (the backend's
+  # insecure-mode gate controls forced TLS in production). When enabled, the
+  # backend server certificate is ALWAYS verified — there is no option to
+  # disable verification.
+  tls:
+    enable: false
+    # CA certificate (PEM) used to verify the backend. Empty = use the system
+    # CA store. Non-empty = verify against this CA bundle only.
+    ca_cert_path: ""
+    # Optional mTLS client certificate / key (the backend does not require
+    # mTLS by default; these are reserved for mutual-TLS deployments).
+    client_cert_path: ""
+    client_key_path: ""
+
+# Chat settings
+chat:
+  # Replace vanilla chat with NovaChat
+  replace_vanilla: false
+  # Default channel to join on connect
+  default_channel: "local"
+
+# Message format templates. Channel IDs are operator-defined and are not
+# supplemented from future templates once this mapping exists.
+format:
+  channels:
+    global: "§c[全服] §7{player}§f: {message}"
+    local: "§e[本地] §7{player}§f: {message}"
+  default: "§7[{channel_name}] {player}§f: {message}"
+
+# World-based channel routing. Mapping keys are operator-defined.
+world-routing:
+  enabled: true
+  mappings:
+    overworld: "local"
+    nether: "nether"
+    the_end: "end"
+
+# Minecraft server version reported during the backend handshake.
+server-version: "1.21.0"
+
+# Debug mode
+debug: false

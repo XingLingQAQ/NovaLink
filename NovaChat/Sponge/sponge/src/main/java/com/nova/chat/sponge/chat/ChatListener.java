@@ -5,6 +5,7 @@ import com.nova.chat.client.command.WhoCommandService;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
 import com.nova.chat.client.itemdisplay.ItemDisplayMessages;
+import com.nova.chat.client.itemdisplay.ItemDisplayTokens;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
@@ -26,12 +27,18 @@ import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import net.kyori.adventure.title.Title;
 import org.spongepowered.api.Sponge;
+import org.spongepowered.api.data.Key;
 import org.spongepowered.api.entity.living.player.server.ServerPlayer;
 import org.spongepowered.api.event.Listener;
 import org.spongepowered.api.event.Order;
 import org.spongepowered.api.event.filter.cause.First;
 import org.spongepowered.api.event.message.PlayerChatEvent;
 import org.spongepowered.api.event.network.ServerSideConnectionEvent;
+import org.spongepowered.api.item.ItemType;
+import org.spongepowered.api.item.ItemTypes;
+import org.spongepowered.api.item.inventory.ItemStack;
+import org.spongepowered.api.item.inventory.equipment.EquipmentTypes;
+import org.spongepowered.api.registry.RegistryTypes;
 
 import java.util.Map;
 import java.util.Optional;
@@ -51,6 +58,9 @@ public class ChatListener {
     private final NovaChatSponge plugin;
     private final NovaChatConfig config;
     private final MentionNotifier mentionNotifier = new MentionNotifier();
+
+    /** Shared [item]/[i] token detection + per-player cooldown (client-core). */
+    private final ItemDisplayTokens itemDisplayTokens = new ItemDisplayTokens();
     
     /** Player chat states indexed by UUID */
     private final com.nova.chat.client.state.PlayerStateStore playerStates =
@@ -135,9 +145,15 @@ public class ChatListener {
      * {@code HoverEvent.showText}. The line is formatted per viewer because
      * the copy is locale-dependent.
      *
-     * <p>Send side is intentionally not implemented on Sponge in this pass:
-     * the outbound chat path stays untouched, matching the task's
-     * server-platform scope (bukkit/folia/nukkit/pnx).
+     * <p>Send side is implemented on the outbound chat path: when a player's
+     * message carries an {@code [item]}/{@code [i]} token,
+     * {@link #sendToChannel} invokes {@link #maybeSendItemDisplay}, which
+     * serializes the main-hand item via the Sponge Adventure API and emits
+     * an {@link ItemDisplayPacket} to the backend. Hops to the plugin
+     * executor before touching the player API, mirroring
+     * {@link #handleTitle}; the hover detail uses Adventure's
+     * {@code HoverEvent.showText}. The line is formatted per viewer because
+     * the copy is locale-dependent.
      */
     private void handleItemDisplay(ItemDisplayPacket packet) {
         String channelId = packet.getChannelId();
@@ -612,6 +628,91 @@ public class ChatListener {
         
         plugin.getNetworkClient().sendPacket(packet);
         plugin.debug("Sent message to channel " + channelId + ": " + message);
+
+        // [item]/[i] display play: piggybacks on the outbound path (UX spec §4).
+        maybeSendItemDisplay(player, channelId, message);
+    }
+
+    /**
+     * Sends an {@link ItemDisplayPacket} when the outbound message carries an
+     * {@code [item]}/{@code [i]} token.
+     *
+     * <p>Semantics aligned with the Bedrock reference (pmmp/endstone) and the
+     * bukkit/folia/nukkit/pnx adapters: case-insensitive
+     * {@code \[(item|i)\]} token, the shared {@code novachat.feature.item}
+     * permission gate (no permission → tokens stay plain text,
+     * Requirements 12.5), and an empty hand still sends the air payload
+     * (Bedrock renders the "Empty" placeholder). The per-player cooldown
+     * lives in the shared {@link ItemDisplayTokens}. Only display fields
+     * (id/count/custom name) are serialized — never full NBT.
+     *
+     * @param player    the sending player
+     * @param channelId the target channel
+     * @param message   the outbound chat message
+     */
+    private void maybeSendItemDisplay(ServerPlayer player, String channelId, String message) {
+        try {
+            if (!ItemDisplayTokens.hasItemToken(message)) {
+                return;
+            }
+            if (!player.hasPermission(ItemDisplayTokens.PERMISSION_ITEM)) {
+                return; // 12.5: without permission the token stays plain text
+            }
+            if (!itemDisplayTokens.tryAcquire(player.uniqueId())) {
+                return; // rate-limited: token stays plain text
+            }
+            String itemJson = buildMainHandItemJson(player);
+            plugin.getNetworkClient().sendPacket(ItemDisplayTokens.buildPacket(
+                    player.uniqueId(), player.name(), channelId, itemJson));
+            plugin.debug("Sent item display to channel " + channelId + ": " + itemJson);
+        } catch (Exception e) {
+            plugin.debug("Failed to send item display: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Extracts the display fields (id / count / custom name) of the player's
+     * main-hand item via the Sponge API. Empty hand → air payload, matching the
+     * Bedrock renderers' "Empty" placeholder behavior.
+     *
+     * <p>Sponge API 8 exposes the held item through {@link ServerPlayer}'s
+     * {@link org.spongepowered.api.item.inventory.Equipable#equipped} with
+     * {@link EquipmentTypes#MAIN_HAND}. The item id is resolved through the
+     * ITEM_TYPE registry ({@link ItemType#key} via
+     * {@link RegistryTypes#ITEM_TYPE}), formatted as {@code namespace:value}
+     * to match the Bedrock/Java clients' {@code minecraft:stone} form. The
+     * custom display name comes from the Sponge {@link org.spongepowered.api.data.Keys#CUSTOM_NAME}
+     * data key; when absent the natural item name is used (resolved by the
+     * shared {@link com.nova.chat.client.itemdisplay.ItemDisplayInfo} on the
+     * receive side).
+     */
+    private String buildMainHandItemJson(ServerPlayer player) {
+        ItemStack hand = player.equipped(EquipmentTypes.MAIN_HAND).orElse(ItemStack.empty());
+        if (hand.isEmpty()) {
+            return ItemDisplayTokens.emptyHandJson();
+        }
+        ItemType type = hand.type();
+        String id;
+        try {
+            id = type.key(RegistryTypes.ITEM_TYPE).formatted();
+        } catch (Exception e) {
+            // Fallback: AIR is the safe degradation if the registry is not
+            // available (e.g. during a test harness with mocked types).
+            id = type == ItemTypes.AIR.get() ? ItemDisplayTokens.EMPTY_ITEM_ID : type.toString();
+        }
+        int count = hand.quantity();
+        String customName = null;
+        try {
+            net.kyori.adventure.text.Component name = hand.get(
+                    (Key<org.spongepowered.api.data.value.Value<net.kyori.adventure.text.Component>>)
+                            org.spongepowered.api.data.Keys.CUSTOM_NAME).orElse(null);
+            if (name != null) {
+                customName = PlainTextComponentSerializer.plainText().serialize(name);
+            }
+        } catch (Exception ignored) {
+            // CUSTOM_NAME unsupported on this item type → null customName.
+        }
+        return ItemDisplayTokens.buildItemJson(id, count, customName);
     }
     
     /**

@@ -9,6 +9,7 @@ import com.nova.chat.sponge.chat.ChatListener;
 import com.nova.chat.sponge.chat.MentionTabCompleter;
 import com.nova.chat.sponge.chat.MessageFormatter;
 import com.nova.chat.sponge.command.NovaChatCommand;
+import com.nova.chat.sponge.config.HoconConfigUpdater;
 import com.nova.chat.sponge.config.NovaChatConfig;
 import com.nova.chat.sponge.network.NetworkClient;
 import org.apache.logging.log4j.Logger;
@@ -23,7 +24,6 @@ import org.spongepowered.api.event.lifecycle.RegisterCommandEvent;
 import org.spongepowered.api.event.lifecycle.StartedEngineEvent;
 import org.spongepowered.api.event.lifecycle.StoppingEngineEvent;
 import org.spongepowered.configurate.CommentedConfigurationNode;
-import org.spongepowered.configurate.ConfigurateException;
 import org.spongepowered.configurate.loader.ConfigurationLoader;
 import org.spongepowered.plugin.PluginContainer;
 import org.spongepowered.plugin.builtin.jvm.Plugin;
@@ -33,6 +33,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Set;
 
 /**
  * NovaChat Sponge Plugin - Main class
@@ -44,6 +45,12 @@ import java.nio.file.StandardCopyOption;
  */
 @Plugin("novachat")
 public class NovaChatSponge {
+
+    private static final Set<String> DYNAMIC_CONFIG_MAPPINGS = Set.of(
+            "chat.channel-prefixes",
+            "format.channels",
+            "world-routing.mappings"
+    );
     
     private static NovaChatSponge instance;
     
@@ -95,6 +102,9 @@ public class NovaChatSponge {
 
     /** Debug mode flag */
     private boolean debugMode = false;
+
+    /** Whether startup configuration was installed, upgraded, and loaded. */
+    private boolean configurationReady;
     
     @Inject
     public NovaChatSponge(
@@ -113,11 +123,12 @@ public class NovaChatSponge {
     public void onConstruct(ConstructPluginEvent event) {
         logger.info("NovaChat Sponge plugin constructing...");
 
-        // Save default config if not exists
-        saveDefaultConfig();
-
-        // Load configuration
-        loadConfiguration();
+        configurationReady = loadConfiguration();
+        if (!configurationReady) {
+            logger.error("NovaChat initialization stopped because the configuration could not be loaded. "
+                    + "The existing file was left unchanged.");
+            return;
+        }
 
         // Seed the shared i18n default locale from chat.locale (zh_CN fallback).
         // Player-specific locales are registered later on join (ChatListener).
@@ -147,6 +158,10 @@ public class NovaChatSponge {
     
     @Listener
     public void onServerStarted(StartedEngineEvent<Server> event) {
+        if (!configurationReady) {
+            logger.error("NovaChat was not started because its configuration is unavailable");
+            return;
+        }
         logger.info("NovaChat Sponge plugin starting...");
         
         // Initialize message formatter
@@ -186,44 +201,15 @@ public class NovaChatSponge {
     
     @Listener
     public void onRegisterCommands(RegisterCommandEvent<Command.Parameterized> event) {
+        if (!configurationReady) {
+            return;
+        }
         // Register commands (Requirements: 3.1)
         NovaChatCommand commandHandler = new NovaChatCommand(this);
         event.register(container, commandHandler.buildCommand(), "novachat", "nc");
         debug("Registered /novachat and /nc commands");
     }
 
-    /**
-     * Saves the default configuration file if it doesn't exist.
-     *
-     * <p>The injected {@code @DefaultConfig(sharedRoot=false)} loader reads HOCON
-     * from {@code <configDir>/novachat.conf} (Sponge resolves it to
-     * {@code config/novachat/novachat.conf} for plugin id "novachat"). The old
-     * implementation wrote a YAML {@code config.yml} into {@code configDir}, which
-     * the HOCON loader never reads — silently leaving the user's config ignored.
-     * This writes the bundled HOCON default resource to the exact path the loader
-     * reads, and only when the file is absent (so user/E2E-provided configs win).
-     */
-    private void saveDefaultConfig() {
-        // @DefaultConfig(sharedRoot=false) targets <configDir>/<plugin-id>.conf
-        Path configFile = configDir.resolve("novachat.conf");
-
-        if (!Files.exists(configFile)) {
-            try {
-                Files.createDirectories(configDir);
-
-                // HOCON resource — must match the format the injected loader parses.
-                try (InputStream in = getClass().getResourceAsStream("/default-novachat.conf")) {
-                    if (in != null) {
-                        Files.copy(in, configFile);
-                        logger.info("Created default configuration file");
-                    }
-                }
-            } catch (IOException e) {
-                logger.error("Failed to save default config", e);
-            }
-        }
-    }
-    
     /**
      * Extracts a default lang bundle from the jar to
      * {@code <configDir>/lang/<locale>.properties} only when it does not already
@@ -258,20 +244,52 @@ public class NovaChatSponge {
     /**
      * Loads or reloads the plugin configuration.
      */
-    public void loadConfiguration() {
+    public boolean loadConfiguration() {
+        Path configFile = configDir.resolve("novachat.conf");
+        Path legacyConfig = configDir.resolve("config.yml");
         try {
+            boolean migrated;
+            try (InputStream template = openConfigTemplate()) {
+                migrated = HoconConfigUpdater.migrateLegacyYaml(
+                        legacyConfig, configFile, template, DYNAMIC_CONFIG_MAPPINGS);
+            }
+            if (migrated) {
+                logger.info("Migrated legacy config.yml to novachat.conf; the original YAML file was retained");
+            }
+
+            HoconConfigUpdater.UpdateResult updateResult;
+            try (InputStream template = openConfigTemplate()) {
+                updateResult = HoconConfigUpdater.update(
+                        configFile, template, DYNAMIC_CONFIG_MAPPINGS);
+            }
+            if (updateResult.created()) {
+                logger.info("Created configuration from the bundled HOCON template");
+            } else if (updateResult.updated()) {
+                logger.info("Added new configuration entries from the bundled template; backup: "
+                        + updateResult.backupPath());
+            }
+
             CommentedConfigurationNode rootNode = configLoader.load();
-            novaChatConfig = new NovaChatConfig(rootNode);
-            debugMode = novaChatConfig.isDebug();
+            NovaChatConfig loadedConfig = new NovaChatConfig(rootNode);
+            novaChatConfig = loadedConfig;
+            debugMode = loadedConfig.isDebug();
             
             if (debugMode) {
                 logger.info("[Debug] Configuration loaded successfully");
             }
-        } catch (ConfigurateException e) {
-            logger.error("Failed to load configuration", e);
-            // Create default config
-            novaChatConfig = new NovaChatConfig(null);
+            return true;
+        } catch (Exception e) {
+            logger.error("Failed to install, upgrade, or load configuration", e);
+            return false;
         }
+    }
+
+    private InputStream openConfigTemplate() throws IOException {
+        InputStream template = NovaChatSponge.class.getResourceAsStream("/default-novachat.conf");
+        if (template == null) {
+            throw new IOException("Bundled configuration template default-novachat.conf is missing");
+        }
+        return template;
     }
     
     /**
@@ -336,7 +354,10 @@ public class NovaChatSponge {
      * Reloads the plugin configuration and reconnects to backend if needed.
      */
     public void reload() {
-        loadConfiguration();
+        if (!loadConfiguration()) {
+            logger.warn("NovaChat configuration reload was rejected; the previous runtime configuration remains active");
+            return;
+        }
 
         // Re-seed the i18n default locale in case chat.locale changed.
         I18n.setDefaultLocale(

@@ -3,14 +3,31 @@
 # NovaChat PocketMine-MP Plugin Configuration
 # ==========================================
 
+config-version: 1
+
 # 后端连接设置 / Backend Connection Settings
 backend:
   host: "127.0.0.1"
-  port: 18888
+  port: 8888
   username: "PMMP_Server"
   password: "your-password-here"
-  server-version: "5.0.0"  # 服务器版本（协议v2握手上报）/ Server version (reported in protocol v2 handshake)
+  server-version: "5.0.0"  # 服务器版本（协议v3握手上报）/ Server version (reported in protocol v3 handshake)
   reconnect-delay: 5  # 重连延迟（秒）/ Reconnect delay (seconds)
+  # TLS (AUTH-002): 加密后端传输层。默认关闭以保持明文兼容（后端 InsecureModeGate 在
+  # 生产环境强制开启 TLS）。启用时始终验证后端证书——不提供关闭验证的后门。
+  # TLS (AUTH-002): encrypt the backend transport. Default off keeps the
+  # plaintext path (the backend's insecure-mode gate controls forced TLS in
+  # production). When enabled the backend certificate is ALWAYS verified —
+  # there is no option to disable verification.
+  tls:
+    enable: false
+    # 验证后端证书的 CA 证书 (PEM)。空=用系统 CA 存储；非空=仅用此 CA 验证。
+    # CA certificate (PEM) to verify the backend. Empty = system CA store.
+    ca_cert_path: ""
+    # 可选 mTLS 客户端证书/私钥（后端默认不要求 mTLS，此为预留）。
+    # Optional mTLS client cert/key (backend does not require mTLS by default).
+    client_cert_path: ""
+    client_key_path: ""
 
 # 聊天设置 / Chat Settings
 chat:

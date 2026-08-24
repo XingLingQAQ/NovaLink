@@ -125,8 +125,11 @@ public class NovaChatVelocity {
         extractDefaultLang("zh_CN");
         extractDefaultLang("en_US");
 
-        // Load configuration
-        loadConfiguration();
+        // Load the resource-backed configuration before initializing services.
+        if (!loadConfiguration()) {
+            logger.error("NovaChat initialization stopped because config.toml could not be loaded safely");
+            return;
+        }
 
         // Per-player ignore lists (persisted in the data directory,
         // injection precedent: I18n.setExternalLangDir above).
@@ -204,19 +207,34 @@ public class NovaChatVelocity {
     /**
      * Loads or reloads the plugin configuration.
      */
-    public void loadConfiguration() {
-        config = new NovaChatConfig(dataDirectory);
-        debugMode = config.isDebug();
+    public boolean loadConfiguration() {
+        NovaChatConfig previousConfig = config;
+        boolean previousDebugMode = debugMode;
+        try {
+            NovaChatConfig loaded = new NovaChatConfig(dataDirectory);
+            config = loaded;
+            debugMode = loaded.isDebug();
 
-        // Apply the configured default locale to the shared i18n service before
-        // any player-facing text is rendered. Falls back to zh_CN (ROOT_LOCALE)
-        // when the configured value is blank or unparseable.
-        I18n.setDefaultLocale(LocaleResolver.parseOrDefault(config.getLocale(), LocaleResolver.ROOT_LOCALE));
-        // Re-read external lang overrides so edited/added lang/*.properties take effect.
-        I18n.invalidate();
+            if (loaded.wasConfigCreated()) {
+                logger.info("Created config.toml from the bundled template");
+            } else if (loaded.wasConfigUpdated()) {
+                logger.info("Added new config.toml fields; previous file saved to {}",
+                        loaded.getConfigBackupPath());
+            }
 
-        if (debugMode) {
-            logger.info("[Debug] Configuration loaded successfully");
+            I18n.setDefaultLocale(LocaleResolver.parseOrDefault(
+                    loaded.getLocale(), LocaleResolver.ROOT_LOCALE));
+            I18n.invalidate();
+
+            if (debugMode) {
+                logger.info("[Debug] Configuration loaded successfully");
+            }
+            return true;
+        } catch (Exception e) {
+            config = previousConfig;
+            debugMode = previousDebugMode;
+            logger.error("Failed to install, upgrade, or load config.toml; the file was not overwritten", e);
+            return false;
         }
     }
     
@@ -306,7 +324,10 @@ public class NovaChatVelocity {
      * Reloads the plugin configuration and reconnects to backend if needed.
      */
     public void reload() {
-        loadConfiguration();
+        if (!loadConfiguration()) {
+            logger.warn("Configuration reload rejected; continuing with previous values");
+            return;
+        }
         
         // Reload chat listener settings
         if (chatListener != null) {

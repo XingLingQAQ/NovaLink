@@ -1,0 +1,33 @@
+{
+  "global_channels": {
+    "global": { "name": "Global", "description": "Server-wide channel" },
+    "staff": { "name": "Staff", "description": "Staff-only channel" }
+  },
+  "clients": [
+    {
+      "username": "EndstoneServer",
+      "channels": {
+        "local": { "name": "Local", "world": "overworld" },
+        "trade": { "name": "Trade" }
+      }
+    },
+    {
+      "username": "PMMP_Server",
+      "channels": {
+        "local": { "name": "Local" },
+        "help": { "name": "Help" }
+      }
+    },
+    {
+      "username": "NukkitServer",
+      "channels": {
+        "global": { "name": "Global" },
+        "arena-1": { "name": "Arena 1" }
+      }
+    }
+  ],
+  "templates": {
+    "default": "[{channel}] {player}: {message}",
+    "local": "[{channel}] {player}: {message}"
+  }
+}

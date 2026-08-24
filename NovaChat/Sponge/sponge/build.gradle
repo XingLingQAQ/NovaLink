@@ -25,6 +25,8 @@ dependencies {
     compileOnly "org.projectlombok:lombok:${lombokVersion}"
     annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
     implementation "com.google.code.gson:gson:${gsonVersion}"
+    implementation 'org.spongepowered:configurate-hocon:4.2.0'
+    implementation 'org.spongepowered:configurate-yaml:4.2.0'
 
     // Logging
     implementation "org.slf4j:slf4j-api:${slf4jVersion}"
@@ -62,6 +64,10 @@ shadowJar {
     // Relocate dependencies to avoid conflicts
     relocate 'io.netty', 'com.nova.chat.sponge.libs.netty'
     relocate 'com.google.gson', 'com.nova.chat.sponge.libs.gson'
+    relocate 'org.spongepowered.configurate', 'com.nova.chat.sponge.libs.configurate'
+    relocate 'com.typesafe.config', 'com.nova.chat.sponge.libs.typesafeconfig'
+    relocate 'org.yaml.snakeyaml', 'com.nova.chat.sponge.libs.snakeyaml'
+    relocate 'io.leangen.geantyref', 'com.nova.chat.sponge.libs.geantyref'
     
     // Exclude unnecessary files
     exclude 'META-INF/*.SF'
@@ -75,6 +81,10 @@ shadowJar {
         // Include runtime dependencies
         include(dependency('io.netty:.*'))
         include(dependency('com.google.code.gson:gson'))
+        include(dependency('org.spongepowered:configurate-.*'))
+        include(dependency('com.typesafe:config'))
+        include(dependency('org.yaml:snakeyaml'))
+        include(dependency('io.leangen.geantyref:geantyref'))
     }
 }
 

@@ -6,6 +6,7 @@ import org.bukkit.configuration.file.FileConfiguration;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Configuration wrapper for NovaChat Bukkit plugin.
@@ -43,46 +44,99 @@ public class NovaChatConfig {
      */
     public NovaChatConfig(FileConfiguration config) {
         // Backend settings
-        this.backendHost = config.getString("backend.host", "127.0.0.1");
-        this.backendPort = config.getInt("backend.port", 8888);
-        this.username = config.getString("backend.username", "");
-        this.password = config.getString("backend.password", "");
-        this.reconnectDelay = config.getInt("backend.reconnect-delay", 5);
+        this.backendHost = requiredNonBlankString(config, "backend.host");
+        this.backendPort = requiredPort(config, "backend.port");
+        this.username = requiredNonBlankString(config, "backend.username");
+        this.password = requiredString(config, "backend.password");
+        this.reconnectDelay = requiredPositiveInt(config, "backend.reconnect-delay");
 
         // Chat settings
-        this.replaceVanilla = config.getBoolean("chat.replace_vanilla", false);
-        this.defaultChannel = config.getString("chat.default_channel", "local");
-        this.locale = config.getString("chat.locale", "zh_CN");
+        this.replaceVanilla = requiredBoolean(config, "chat.replace_vanilla");
+        this.defaultChannel = requiredNonBlankString(config, "chat.default_channel");
+        this.locale = requiredNonBlankString(config, "chat.locale");
 
         // Channel prefixes (prefix -> channel id; empty map = feature disabled)
         this.channelPrefixes = new HashMap<>();
-        ConfigurationSection prefixSection = config.getConfigurationSection("chat.channel-prefixes");
-        if (prefixSection != null) {
-            for (String key : prefixSection.getKeys(false)) {
-                String channelId = prefixSection.getString(key);
-                if (key != null && !key.isEmpty() && channelId != null && !channelId.isEmpty()) {
-                    channelPrefixes.put(key, channelId);
-                }
+        ConfigurationSection prefixSection = requiredSection(config, "chat.channel-prefixes");
+        for (String key : prefixSection.getKeys(false)) {
+            String path = "chat.channel-prefixes." + key;
+            String channelId = requiredString(config, path);
+            if (!key.isEmpty() && !channelId.isEmpty()) {
+                channelPrefixes.put(key, channelId);
             }
         }
 
         // Format settings
-        this.prefix = config.getString("format.prefix", "&8[&bNovaChat&8]&r ");
-        this.errorFormat = config.getString("format.error", "&c错误: {message}");
-        this.successFormat = config.getString("format.success", "&a成功: {message}");
-        this.defaultFormat = config.getString("format.default", "&7[{channel_color}{channel_name}] {player}&f: {message}");
+        this.prefix = requiredString(config, "format.prefix");
+        this.errorFormat = requiredString(config, "format.error");
+        this.successFormat = requiredString(config, "format.success");
+        this.defaultFormat = requiredString(config, "format.default");
 
         // Channel formats
         this.channelFormats = new HashMap<>();
-        ConfigurationSection channelsSection = config.getConfigurationSection("format.channels");
-        if (channelsSection != null) {
-            for (String key : channelsSection.getKeys(false)) {
-                channelFormats.put(key, channelsSection.getString(key));
-            }
+        ConfigurationSection channelsSection = requiredSection(config, "format.channels");
+        for (String key : channelsSection.getKeys(false)) {
+            channelFormats.put(key, requiredString(config, "format.channels." + key));
         }
 
         // Debug mode
-        this.debug = config.getBoolean("debug", false);
+        this.debug = requiredBoolean(config, "debug");
+
+        toClientConnectionConfig();
+    }
+
+    private static String requiredString(FileConfiguration config, String path) {
+        if (!config.isString(path)) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be a string");
+        }
+        return Objects.requireNonNull(config.getString(path));
+    }
+
+    private static String requiredNonBlankString(FileConfiguration config, String path) {
+        String value = requiredString(config, path);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException("Configuration value " + path + " must not be blank");
+        }
+        return value;
+    }
+
+    private static int requiredInt(FileConfiguration config, String path) {
+        if (!config.isInt(path)) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be an integer");
+        }
+        return config.getInt(path);
+    }
+
+    private static int requiredPositiveInt(FileConfiguration config, String path) {
+        int value = requiredInt(config, path);
+        if (value <= 0) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be greater than 0");
+        }
+        return value;
+    }
+
+    private static int requiredPort(FileConfiguration config, String path) {
+        int value = requiredInt(config, path);
+        if (value < 1 || value > 65535) {
+            throw new IllegalArgumentException(
+                    "Configuration value " + path + " must be between 1 and 65535");
+        }
+        return value;
+    }
+
+    private static boolean requiredBoolean(FileConfiguration config, String path) {
+        if (!config.isBoolean(path)) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be a boolean");
+        }
+        return config.getBoolean(path);
+    }
+
+    private static ConfigurationSection requiredSection(FileConfiguration config, String path) {
+        ConfigurationSection section = config.getConfigurationSection(path);
+        if (section == null) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be a mapping");
+        }
+        return section;
     }
 
     // Getters
@@ -168,10 +222,7 @@ public class NovaChatConfig {
     /**
      * Maps platform config to the shared {@link ClientConnectionConfig}.
      *
-     * <p>Historical reconnect math used a fixed 1s initial / 30s cap / 10 attempts
-     * (not {@code backend.reconnect-delay}); that behaviour is preserved here.
-     * {@code reconnect-delay} remains available via {@link #getReconnectDelay()} for
-     * callers that want the configured value.
+     * <p>The initial reconnect delay comes from {@code backend.reconnect-delay}.
      */
     public ClientConnectionConfig toClientConnectionConfig() {
         return ClientConnectionConfig.builder()
@@ -179,6 +230,7 @@ public class NovaChatConfig {
                 .port(backendPort)
                 .username(username)
                 .password(password)
+                .initialReconnectDelaySeconds(reconnectDelay)
                 .build();
     }
 }

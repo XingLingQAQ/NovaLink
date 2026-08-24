@@ -170,20 +170,99 @@ public class NeoForgePlatform implements Platform {
         if (server == null) {
             return null;
         }
-        
+
         ServerPlayer player = server.getPlayerList().getPlayer(playerId);
         if (player != null) {
             return player.level().dimension().identifier().toString();
         }
         return null;
     }
-    
+
+    /**
+     * §11.6 / 提案 05: serializes the player's main-hand item into the shared
+     * minimal display schema ({@code id} / {@code count} / optional
+     * {@code name}) via {@link ItemDisplayTokens#buildItemJson}, mirroring the
+     * bukkit/folia/nukkit/pnx send-side. NeoForge 1.20.5+ uses data
+     * components, but only the display fields are exposed here — full NBT is
+     * never serialized (Property 13, Requirements 19.1).
+     *
+     * <p>Exception-safe: any failure returns null and logs a warning so the
+     * chat send path is never broken by item introspection. Note that
+     * NeoForge's MinecraftServer exposes the registry access via
+     * {@code server.registryAccess()} when available, but {@code BuiltInRegistries}
+     * suffices for the item id lookup and avoids a version-dependent accessor.
+     */
+    @Override
+    public String getHeldItemJson(UUID playerId) {
+        if (server == null) {
+            return null;
+        }
+        try {
+            ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+            if (player == null) {
+                return null;
+            }
+            net.minecraft.world.item.ItemStack stack = player.getMainHandItem();
+            if (stack == null || stack.isEmpty()) {
+                return null;
+            }
+            String id = net.minecraft.core.registries.BuiltInRegistries.ITEM
+                    .getKey(stack.getItem()).toString();
+            int count = stack.getCount();
+            String customName = resolveCustomItemName(stack);
+            return com.nova.chat.client.itemdisplay.ItemDisplayTokens
+                    .buildItemJson(id, count, customName);
+        } catch (Throwable t) {
+            LOGGER.warn("Failed to serialize held item for {}: {}", playerId, t.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Resolves the optional custom display name from an item stack. Returns null
+     * when the item has no custom name (so {@code ItemDisplayTokens.buildItemJson}
+     * omits the {@code name} field and the receiver prettifies the id).
+     *
+     * <p>MC 1.21.5+ moved custom names into the data-component model; the old
+     * {@code hasCustomHoverName()} accessor was removed. This helper reads
+     * {@code DataComponents.CUSTOM_NAME} reflectively so the same source
+     * compiles across 1.20.x (legacy NBT items) and 1.21.x (data components)
+     * without a version-split build. Any reflective failure degrades to null.
+     */
+    private static String resolveCustomItemName(net.minecraft.world.item.ItemStack stack) {
+        try {
+            // DataComponents.CUSTOM_NAME was added in 1.20.5+. Use reflection so the
+            // common source compiles on 1.20.2 (no DataComponents class) too.
+            Class<?> dataComponentsClass = Class.forName(
+                    "net.minecraft.core.component.DataComponents");
+            Object customNameComponent = java.util.Arrays.stream(dataComponentsClass.getFields())
+                    .filter(f -> "CUSTOM_NAME".equals(f.getName()))
+                    .findFirst()
+                    .map(f -> {
+                        try { return f.get(null); }
+                        catch (Exception e) { return null; }
+                    })
+                    .orElse(null);
+            if (customNameComponent == null) {
+                return null;
+            }
+            Object name = stack.getClass().getMethod("get", Object.class)
+                    .invoke(stack, customNameComponent);
+            if (name instanceof net.minecraft.network.chat.Component component) {
+                return component.getString();
+            }
+        } catch (Throwable ignored) {
+            // accessor missing on this mapping/version; skip custom name
+        }
+        return null;
+    }
+
     @Override
     public String getPlayerName(UUID playerId) {
         if (server == null) {
             return null;
         }
-        
+
         ServerPlayer player = server.getPlayerList().getPlayer(playerId);
         if (player != null) {
             return player.getName().getString();
@@ -226,6 +305,49 @@ public class NeoForgePlatform implements Platform {
                 LOGGER.error("Error in async task", t);
             }
         });
+    }
+
+    /**
+     * PLAT-001: hops a task to the Minecraft server thread before it touches
+     * any server API (player list, {@code sendSystemMessage},
+     * {@code broadcastSystemMessage}, dimension lookup). Inbound packet
+     * handlers dispatch on the Netty event loop, which is not safe for these
+     * calls.
+     *
+     * <p>If the caller is already on the server thread ({@link
+     * MinecraftServer#isSameThread}), the task runs synchronously to avoid
+     * unnecessary re-queueing and to preserve the behavior expected by unit
+     * tests that stub {@link Platform#execute} to run the runnable inline.
+     *
+     * <p>If the server reference is null (pre-{@link #setServer}), the task
+     * runs on the calling thread as a best-effort fallback so handler
+     * invocations are never silently dropped during startup ordering.
+     *
+     * @param task the task to run on the server thread
+     */
+    @Override
+    public void execute(Runnable task) {
+        if (task == null) {
+            return;
+        }
+        if (server == null) {
+            LOGGER.debug("Server not initialized, running task on caller thread");
+            runTaskSafely(task);
+            return;
+        }
+        if (server.isSameThread()) {
+            runTaskSafely(task);
+            return;
+        }
+        server.execute(() -> runTaskSafely(task));
+    }
+
+    private static void runTaskSafely(Runnable task) {
+        try {
+            task.run();
+        } catch (Throwable t) {
+            LOGGER.error("Error in server-thread task", t);
+        }
     }
 
     @Override

@@ -3,19 +3,21 @@ package com.nova.chat.velocity.config;
 import com.moandjiezana.toml.Toml;
 import com.nova.chat.client.network.ClientConnectionConfig;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 /**
  * Configuration wrapper for NovaChat Velocity plugin.
  * Parses and provides access to config.toml settings.
  */
 public class NovaChatConfig {
+    private static final Set<String> DYNAMIC_CONFIG_TABLES = Set.of(
+            "chat.channel-prefixes", "format.channels", "world-routing.mappings");
 
     // Backend connection settings
     private String backendHost;
@@ -39,6 +41,7 @@ public class NovaChatConfig {
 
     // Debug mode
     private boolean debug;
+    private TomlConfigUpdater.UpdateResult updateResult;
 
     /**
      * Creates a new configuration from the given data folder.
@@ -56,30 +59,17 @@ public class NovaChatConfig {
      */
     private void loadConfig(Path dataFolder) {
         Path configPath = dataFolder.resolve("config.toml");
-        
-        // Create default config if not exists
-        if (!Files.exists(configPath)) {
-            try {
-                Files.createDirectories(dataFolder);
-                try (InputStream in = getClass().getResourceAsStream("/config.toml")) {
-                    if (in != null) {
-                        Files.copy(in, configPath);
-                    } else {
-                        createDefaultConfig(configPath);
-                    }
-                }
-            } catch (IOException e) {
-                setDefaults();
-                return;
+        try (InputStream template = getClass().getResourceAsStream("/config.toml")) {
+            if (template == null) {
+                throw new IOException("Bundled config.toml template is missing");
             }
-        }
-
-        // Parse TOML config
-        try {
+            updateResult = TomlConfigUpdater.update(configPath, template,
+                    DYNAMIC_CONFIG_TABLES);
             Toml toml = new Toml().read(configPath.toFile());
             parseConfig(toml);
         } catch (Exception e) {
-            setDefaults();
+            throw new IllegalStateException(
+                    "Failed to install, upgrade, or load " + configPath, e);
         }
     }
 
@@ -88,133 +78,121 @@ public class NovaChatConfig {
      */
     private void parseConfig(Toml toml) {
         // Backend settings
-        Toml backend = toml.getTable("backend");
-        if (backend != null) {
-            this.backendHost = backend.getString("host", "127.0.0.1");
-            this.backendPort = backend.getLong("port", 8888L).intValue();
-            this.username = backend.getString("username", "");
-            this.password = backend.getString("password", "");
-            this.reconnectDelay = backend.getLong("reconnect-delay", 5L).intValue();
-        } else {
-            this.backendHost = "127.0.0.1";
-            this.backendPort = 8888;
-            this.username = "";
-            this.password = "";
-            this.reconnectDelay = 5;
-        }
+        Toml backend = requiredTable(toml, "backend");
+        this.backendHost = requiredNonBlankString(backend, "host", "backend.host");
+        this.backendPort = requiredPort(backend, "port", "backend.port");
+        this.username = requiredString(backend, "username", "backend.username");
+        this.password = requiredString(backend, "password", "backend.password");
+        this.reconnectDelay = requiredPositiveInt(
+                backend, "reconnect-delay", "backend.reconnect-delay");
 
         // Chat settings
-        Toml chat = toml.getTable("chat");
-        if (chat != null) {
-            this.replaceVanilla = chat.getBoolean("replace_vanilla", false);
-            this.defaultChannel = chat.getString("default_channel", "local");
-            this.locale = chat.getString("locale", "zh_CN");
+        Toml chat = requiredTable(toml, "chat");
+        this.replaceVanilla = requiredBoolean(chat, "replace_vanilla", "chat.replace_vanilla");
+        this.defaultChannel = requiredNonBlankString(
+                chat, "default_channel", "chat.default_channel");
+        this.locale = requiredNonBlankString(chat, "locale", "chat.locale");
 
-            // Channel prefixes (prefix -> channel id; empty map = feature disabled)
-            Toml prefixes = chat.getTable("channel-prefixes");
-            if (prefixes != null) {
-                for (Map.Entry<String, Object> entry : prefixes.entrySet()) {
-                    if (entry.getValue() instanceof String) {
-                        // toml4j keeps the quotes on quoted keys (e.g. "\"!\""); strip them.
-                        String key = stripQuotes(entry.getKey());
-                        String channelId = (String) entry.getValue();
-                        if (!key.isEmpty() && !channelId.isEmpty()) {
-                            channelPrefixes.put(key, channelId);
-                        }
-                    }
-                }
+        // Channel prefixes (prefix -> channel id; empty map = feature disabled)
+        Toml prefixes = requiredTable(chat, "channel-prefixes");
+        for (Map.Entry<String, Object> entry : prefixes.entrySet()) {
+            if (!(entry.getValue() instanceof String channelId)) {
+                throw new IllegalArgumentException("Configuration value chat.channel-prefixes."
+                        + entry.getKey() + " must be a string");
             }
-        } else {
-            this.replaceVanilla = false;
-            this.defaultChannel = "local";
-            this.locale = "zh_CN";
+            // toml4j keeps the quotes on quoted keys (e.g. "\"!\""); strip them.
+            String key = stripQuotes(entry.getKey());
+            if (!key.isEmpty() && !channelId.isEmpty()) {
+                channelPrefixes.put(key, channelId);
+            }
         }
 
         // Format settings
-        Toml format = toml.getTable("format");
-        if (format != null) {
-            this.prefix = format.getString("prefix", "&8[&bNovaChat&8]&r ");
-            this.errorFormat = format.getString("error", "&c错误: {message}");
-            this.successFormat = format.getString("success", "&a成功: {message}");
-            this.defaultFormat = format.getString("default", "&7[{channel_color}{channel_name}] {player}&f: {message}");
-            
-            Toml channels = format.getTable("channels");
-            if (channels != null) {
-                for (Map.Entry<String, Object> entry : channels.entrySet()) {
-                    if (entry.getValue() instanceof String) {
-                        channelFormats.put(entry.getKey(), (String) entry.getValue());
-                    }
-                }
+        Toml format = requiredTable(toml, "format");
+        this.prefix = requiredString(format, "prefix", "format.prefix");
+        this.errorFormat = requiredString(format, "error", "format.error");
+        this.successFormat = requiredString(format, "success", "format.success");
+        this.defaultFormat = requiredString(format, "default", "format.default");
+
+        Toml channels = requiredTable(format, "channels");
+        for (Map.Entry<String, Object> entry : channels.entrySet()) {
+            if ("debug".equals(entry.getKey()) && entry.getValue() instanceof Boolean) {
+                // Older templates stored the root debug flag in this table.
+                // TomlConfigUpdater copies it to the root during migration.
+                continue;
             }
-        } else {
-            this.prefix = "&8[&bNovaChat&8]&r ";
-            this.errorFormat = "&c错误: {message}";
-            this.successFormat = "&a成功: {message}";
-            this.defaultFormat = "&7[{channel_color}{channel_name}] {player}&f: {message}";
+            if (!(entry.getValue() instanceof String channelFormat)) {
+                throw new IllegalArgumentException("Configuration value format.channels."
+                        + entry.getKey() + " must be a string");
+            }
+            channelFormats.put(entry.getKey(), channelFormat);
         }
 
         // Debug mode
-        this.debug = toml.getBoolean("debug", false);
+        this.debug = requiredBoolean(toml, "debug", "debug");
+
+        toClientConnectionConfig();
     }
 
-    /**
-     * Sets default values.
-     */
-    private void setDefaults() {
-        this.backendHost = "127.0.0.1";
-        this.backendPort = 8888;
-        this.username = "";
-        this.password = "";
-        this.reconnectDelay = 5;
-        this.replaceVanilla = false;
-        this.defaultChannel = "local";
-        this.locale = "zh_CN";
-        this.prefix = "&8[&bNovaChat&8]&r ";
-        this.errorFormat = "&c错误: {message}";
-        this.successFormat = "&a成功: {message}";
-        this.defaultFormat = "&7[{channel_color}{channel_name}] {player}&f: {message}";
-        this.debug = false;
+    private static Toml requiredTable(Toml parent, String key) {
+        return Objects.requireNonNull(parent.getTable(key),
+                "Missing required configuration table: " + key);
     }
 
-    /**
-     * Creates a default configuration file.
-     */
-    private void createDefaultConfig(Path configPath) throws IOException {
-        String defaultConfig = """
-            # NovaChat Velocity Configuration
-            
-            [backend]
-            host = "127.0.0.1"
-            port = 8888
-            username = ""
-            password = ""
-            reconnect-delay = 5
-            
-            [chat]
-            replace_vanilla = false
-            default_channel = "local"
-            locale = "zh_CN"  # 默认语言（zh_CN / en_US）；玩家客户端语言优先
-            
-            # 频道前缀（仅 replace_vanilla = true 时生效），如 "!" = "global"
-            [chat.channel-prefixes]
-            # "!" = "global"
-            
-            [format]
-            prefix = "&8[&bNovaChat&8]&r "
-            error = "&c错误: {message}"
-            success = "&a成功: {message}"
-            default = "&7[{channel_color}{channel_name}] {player}&f: {message}"
-            
-            [format.channels]
-            global = "&c[全服] &7{player}&f: {message}"
-            local = "&e[本地] &7{player}&f: {message}"
-            
-            debug = false
-            """;
-        Files.writeString(configPath, defaultConfig);
+    private static String requiredString(Toml parent, String key, String path) {
+        return Objects.requireNonNull(parent.getString(key),
+                "Missing required configuration value: " + path);
+    }
+
+    private static String requiredNonBlankString(Toml parent, String key, String path) {
+        String value = requiredString(parent, key, path);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException("Configuration value " + path + " must not be blank");
+        }
+        return value;
+    }
+
+    private static Long requiredLong(Toml parent, String key, String path) {
+        return Objects.requireNonNull(parent.getLong(key),
+                "Missing required configuration value: " + path);
+    }
+
+    private static int requiredPositiveInt(Toml parent, String key, String path) {
+        long value = requiredLong(parent, key, path);
+        if (value <= 0 || value > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(
+                    "Configuration value " + path + " must be between 1 and " + Integer.MAX_VALUE);
+        }
+        return (int) value;
+    }
+
+    private static int requiredPort(Toml parent, String key, String path) {
+        long value = requiredLong(parent, key, path);
+        if (value < 1 || value > 65535) {
+            throw new IllegalArgumentException(
+                    "Configuration value " + path + " must be between 1 and 65535");
+        }
+        return (int) value;
+    }
+
+    private static boolean requiredBoolean(Toml parent, String key, String path) {
+        return Objects.requireNonNull(parent.getBoolean(key),
+                "Missing or invalid boolean configuration value: " + path);
     }
 
     // Getters
+
+    public boolean wasConfigCreated() {
+        return updateResult != null && updateResult.created();
+    }
+
+    public boolean wasConfigUpdated() {
+        return updateResult != null && updateResult.updated();
+    }
+
+    public Path getConfigBackupPath() {
+        return updateResult != null ? updateResult.backupPath() : null;
+    }
 
     public String getBackendHost() {
         return backendHost;
@@ -249,7 +227,7 @@ public class NovaChatConfig {
      * {@code "en_US"}). Used to seed {@link com.nova.chat.client.i18n.I18n} at
      * startup; per-player client locales still override this.
      *
-     * @return the configured locale string, never null (defaults to {@code "zh_CN"})
+     * @return the locale string read from {@code chat.locale}
      */
     public String getLocale() {
         return locale;
@@ -311,10 +289,7 @@ public class NovaChatConfig {
     /**
      * Maps platform config to the shared {@link ClientConnectionConfig}.
      *
-     * <p>Historical reconnect math used a fixed 1s initial / 30s cap / 10 attempts
-     * (not {@code backend.reconnect-delay}); that behaviour is preserved here.
-     * {@code reconnect-delay} remains available via {@link #getReconnectDelay()} for
-     * callers that want the configured value.
+     * <p>The initial reconnect delay comes from {@code backend.reconnect-delay}.
      */
     public ClientConnectionConfig toClientConnectionConfig() {
         return ClientConnectionConfig.builder()
@@ -322,6 +297,7 @@ public class NovaChatConfig {
                 .port(backendPort)
                 .username(username)
                 .password(password)
+                .initialReconnectDelaySeconds(reconnectDelay)
                 .build();
     }
 }

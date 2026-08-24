@@ -3,6 +3,8 @@
 # NovaChat Nukkit Plugin Configuration
 # ==========================================
 
+config-version: 1
+
 # 后端连接设置 / Backend Connection Settings
 backend:
   host: "127.0.0.1"

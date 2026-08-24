@@ -4,11 +4,15 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.nova.chat.mod.command.HelpCommand;
+import com.nova.chat.mod.command.IgnoreCommand;
 import com.nova.chat.mod.command.JoinCommand;
 import com.nova.chat.mod.command.LeaveCommand;
 import com.nova.chat.mod.command.ListCommand;
+import com.nova.chat.mod.command.MsgCommand;
 import com.nova.chat.mod.command.ReloadCommand;
+import com.nova.chat.mod.command.ReplyCommand;
 import com.nova.chat.mod.command.ToggleCommand;
+import com.nova.chat.mod.command.UnignoreCommand;
 import com.nova.chat.mod.command.WhoCommand;
 import com.nova.chat.mod.platform.CommandHandler;
 import com.nova.chat.mod.platform.CommandManager;
@@ -27,9 +31,9 @@ import org.slf4j.LoggerFactory;
 /**
  * Registers NovaChat commands using Quilted Fabric API's CommandRegistrationCallback.
  *
- * <p>Registers all seven subcommands (help/join/leave/list/who/toggle/reload)
- * through the shared {@link CommandManager} and attaches {@link ModServices} to
- * each command context.
+ * <p>Registers all eleven subcommands (help/join/leave/list/who/toggle/
+ * ignore/unignore/msg/r/reload) through the shared {@link CommandManager} and
+ * attaches {@link ModServices} to each command context.
  */
 public class QuiltCommandRegistrar {
     private static final Logger LOGGER = LoggerFactory.getLogger(QuiltCommandRegistrar.class);
@@ -38,10 +42,11 @@ public class QuiltCommandRegistrar {
     private static ModServices services;
 
     /**
-     * Registers all seven NovaChat subcommands (help/join/leave/list/who/toggle/
-     * reload) with the shared {@link CommandManager} and registers a
-     * {@link CommandRegistrationCallback} listener (via the Quilted Fabric API)
-     * that builds the brigadier {@code novachat}/{@code nc} command trees.
+     * Registers all eleven NovaChat subcommands (help/join/leave/list/who/toggle/
+     * ignore/unignore/msg/r/reload) with the shared {@link CommandManager} and
+     * registers a {@link CommandRegistrationCallback} listener (via the Quilted
+     * Fabric API) that builds the brigadier {@code novachat}/{@code nc} command
+     * trees.
      *
      * @param manager  the shared command manager to register handlers into
      * @param services the shared mod services attached to each command context
@@ -56,6 +61,10 @@ public class QuiltCommandRegistrar {
         manager.registerCommand("list", new ListCommand());
         manager.registerCommand("who", new WhoCommand());
         manager.registerCommand("toggle", new ToggleCommand());
+        manager.registerCommand("msg", new MsgCommand());
+        manager.registerCommand("r", new ReplyCommand());
+        manager.registerCommand("ignore", new IgnoreCommand());
+        manager.registerCommand("unignore", new UnignoreCommand());
         manager.registerCommand("reload", new ReloadCommand());
 
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
@@ -95,6 +104,33 @@ public class QuiltCommandRegistrar {
                 .executes(ctx -> executeSubCommand(ctx, "who", new String[0])))
             .then(Commands.literal("toggle")
                 .executes(ctx -> executeSubCommand(ctx, "toggle", new String[0])))
+            .then(Commands.literal("msg")
+                .then(Commands.argument("player", StringArgumentType.word())
+                    .then(Commands.argument("message", StringArgumentType.greedyString())
+                        .executes(ctx -> {
+                            String p = StringArgumentType.getString(ctx, "player");
+                            String m = StringArgumentType.getString(ctx, "message");
+                            return executeSubCommand(ctx, "msg", new String[]{p, m});
+                        }))))
+            .then(Commands.literal("r")
+                .then(Commands.argument("message", StringArgumentType.greedyString())
+                    .executes(ctx -> {
+                        String m = StringArgumentType.getString(ctx, "message");
+                        return executeSubCommand(ctx, "r", new String[]{m});
+                    })))
+            .then(Commands.literal("ignore")
+                .executes(ctx -> executeSubCommand(ctx, "ignore", new String[0]))
+                .then(Commands.argument("target", StringArgumentType.word())
+                    .executes(ctx -> {
+                        String t = StringArgumentType.getString(ctx, "target");
+                        return executeSubCommand(ctx, "ignore", new String[]{t});
+                    })))
+            .then(Commands.literal("unignore")
+                .then(Commands.argument("target", StringArgumentType.word())
+                    .executes(ctx -> {
+                        String t = StringArgumentType.getString(ctx, "target");
+                        return executeSubCommand(ctx, "unignore", new String[]{t});
+                    })))
             .then(Commands.literal("reload")
                 .requires(source -> isAdmin(source))
                 .executes(ctx -> executeSubCommand(ctx, "reload", new String[0])))
@@ -135,6 +171,33 @@ public class QuiltCommandRegistrar {
                 .executes(ctx -> executeSubCommand(ctx, "who", new String[0])))
             .then(Commands.literal("toggle")
                 .executes(ctx -> executeSubCommand(ctx, "toggle", new String[0])))
+            .then(Commands.literal("msg")
+                .then(Commands.argument("player", StringArgumentType.word())
+                    .then(Commands.argument("message", StringArgumentType.greedyString())
+                        .executes(ctx -> {
+                            String p = StringArgumentType.getString(ctx, "player");
+                            String m = StringArgumentType.getString(ctx, "message");
+                            return executeSubCommand(ctx, "msg", new String[]{p, m});
+                        }))))
+            .then(Commands.literal("r")
+                .then(Commands.argument("message", StringArgumentType.greedyString())
+                    .executes(ctx -> {
+                        String m = StringArgumentType.getString(ctx, "message");
+                        return executeSubCommand(ctx, "r", new String[]{m});
+                    })))
+            .then(Commands.literal("ignore")
+                .executes(ctx -> executeSubCommand(ctx, "ignore", new String[0]))
+                .then(Commands.argument("target", StringArgumentType.word())
+                    .executes(ctx -> {
+                        String t = StringArgumentType.getString(ctx, "target");
+                        return executeSubCommand(ctx, "ignore", new String[]{t});
+                    })))
+            .then(Commands.literal("unignore")
+                .then(Commands.argument("target", StringArgumentType.word())
+                    .executes(ctx -> {
+                        String t = StringArgumentType.getString(ctx, "target");
+                        return executeSubCommand(ctx, "unignore", new String[]{t});
+                    })))
             .then(Commands.literal("reload")
                 .requires(source -> isAdmin(source))
                 .executes(ctx -> executeSubCommand(ctx, "reload", new String[0])))

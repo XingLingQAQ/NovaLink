@@ -5,6 +5,7 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Configuration wrapper for NovaChat Sponge plugin.
@@ -40,78 +41,148 @@ public class NovaChatConfig {
     /**
      * Creates a new configuration from the given ConfigurationNode.
      *
-     * @param rootNode the root configuration node (can be null for defaults)
+     * @param rootNode the root configuration node, already completed from the bundled template
      */
     public NovaChatConfig(CommentedConfigurationNode rootNode) {
-        if (rootNode == null) {
-            // Use defaults
-            this.backendHost = "127.0.0.1";
-            this.backendPort = 8888;
-            this.username = "";
-            this.password = "";
-            this.reconnectDelay = 5;
-            this.replaceVanilla = false;
-            this.defaultChannel = "local";
-            this.locale = "zh_CN";
-            this.prefix = "&8[&bNovaChat&8]&r ";
-            this.errorFormat = "&c错误: {message}";
-            this.successFormat = "&a成功: {message}";
-            this.defaultFormat = "&7[{channel_color}{channel_name}] {player}&f: {message}";
-            this.channelFormats = new HashMap<>();
-            this.channelPrefixes = new HashMap<>();
-            this.debug = false;
-            return;
-        }
+        Objects.requireNonNull(rootNode, "Configuration root cannot be null");
 
         // Backend settings
-        CommentedConfigurationNode backendNode = rootNode.node("backend");
-        this.backendHost = backendNode.node("host").getString("127.0.0.1");
-        this.backendPort = backendNode.node("port").getInt(8888);
-        this.username = backendNode.node("username").getString("");
-        this.password = backendNode.node("password").getString("");
-        this.reconnectDelay = backendNode.node("reconnect-delay").getInt(5);
+        CommentedConfigurationNode backendNode = requireMap(rootNode, "backend", "backend");
+        this.backendHost = requireNonBlankString(backendNode, "host", "backend.host");
+        this.backendPort = requirePort(backendNode, "port", "backend.port");
+        this.username = requireNonBlankString(backendNode, "username", "backend.username");
+        this.password = requireString(backendNode, "password", "backend.password");
+        this.reconnectDelay = requirePositiveInt(
+                backendNode, "reconnect-delay", "backend.reconnect-delay");
 
         // Chat settings
-        CommentedConfigurationNode chatNode = rootNode.node("chat");
-        this.replaceVanilla = chatNode.node("replace_vanilla").getBoolean(false);
-        this.defaultChannel = chatNode.node("default_channel").getString("local");
-        this.locale = chatNode.node("locale").getString("zh_CN");
+        CommentedConfigurationNode chatNode = requireMap(rootNode, "chat", "chat");
+        this.replaceVanilla = requireBoolean(
+                chatNode, "replace_vanilla", "chat.replace_vanilla");
+        this.defaultChannel = requireNonBlankString(
+                chatNode, "default_channel", "chat.default_channel");
+        this.locale = requireNonBlankString(chatNode, "locale", "chat.locale");
 
         // Channel-prefix routing (prefix string -> channel ID); empty = disabled
         this.channelPrefixes = new HashMap<>();
         CommentedConfigurationNode prefixesNode = chatNode.node("channel-prefixes");
+        if (!prefixesNode.isMap()) {
+            throw new IllegalArgumentException(
+                    "Configuration value chat.channel-prefixes must be a mapping");
+        }
         if (!prefixesNode.virtual()) {
             for (Map.Entry<Object, CommentedConfigurationNode> entry : prefixesNode.childrenMap().entrySet()) {
                 String key = entry.getKey().toString();
-                String value = entry.getValue().getString();
-                if (!key.isEmpty() && value != null && !value.isEmpty()) {
+                Object rawValue = entry.getValue().raw();
+                if (!(rawValue instanceof String value)) {
+                    throw new IllegalArgumentException(
+                            "Configuration value chat.channel-prefixes." + key + " must be a string");
+                }
+                if (!key.isEmpty() && !value.isEmpty()) {
                     channelPrefixes.put(key, value);
                 }
             }
         }
 
         // Format settings
-        CommentedConfigurationNode formatNode = rootNode.node("format");
-        this.prefix = formatNode.node("prefix").getString("&8[&bNovaChat&8]&r ");
-        this.errorFormat = formatNode.node("error").getString("&c错误: {message}");
-        this.successFormat = formatNode.node("success").getString("&a成功: {message}");
-        this.defaultFormat = formatNode.node("default").getString("&7[{channel_color}{channel_name}] {player}&f: {message}");
+        CommentedConfigurationNode formatNode = requireMap(rootNode, "format", "format");
+        this.prefix = requireString(formatNode, "prefix", "format.prefix");
+        this.errorFormat = requireString(formatNode, "error", "format.error");
+        this.successFormat = requireString(formatNode, "success", "format.success");
+        this.defaultFormat = requireString(formatNode, "default", "format.default");
 
         // Channel formats
         this.channelFormats = new HashMap<>();
         CommentedConfigurationNode channelsNode = formatNode.node("channels");
+        if (!channelsNode.isMap()) {
+            throw new IllegalArgumentException(
+                    "Configuration value format.channels must be a mapping");
+        }
         if (!channelsNode.virtual()) {
             for (Map.Entry<Object, CommentedConfigurationNode> entry : channelsNode.childrenMap().entrySet()) {
                 String key = entry.getKey().toString();
-                String value = entry.getValue().getString();
-                if (value != null) {
-                    channelFormats.put(key, value);
+                Object rawValue = entry.getValue().raw();
+                if (!(rawValue instanceof String value)) {
+                    throw new IllegalArgumentException(
+                            "Configuration value format.channels." + key + " must be a string");
                 }
+                channelFormats.put(key, value);
             }
         }
 
         // Debug mode
-        this.debug = rootNode.node("debug").getBoolean(false);
+        this.debug = requireBoolean(rootNode, "debug", "debug");
+
+        toClientConnectionConfig();
+    }
+
+    private static CommentedConfigurationNode requireMap(
+            CommentedConfigurationNode parent, String key, String path) {
+        CommentedConfigurationNode value = parent.node(key);
+        if (!value.isMap()) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be a mapping");
+        }
+        return value;
+    }
+
+    private static String requireString(
+            CommentedConfigurationNode parent, String key, String path) {
+        Object value = parent.node(key).raw();
+        if (!(value instanceof String stringValue)) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be a string");
+        }
+        return stringValue;
+    }
+
+    private static String requireNonBlankString(
+            CommentedConfigurationNode parent, String key, String path) {
+        String value = requireString(parent, key, path);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException("Configuration value " + path + " must not be blank");
+        }
+        return value;
+    }
+
+    private static int requireInt(
+            CommentedConfigurationNode parent, String key, String path) {
+        Object value = parent.node(key).raw();
+        if (!(value instanceof Number numberValue)
+                || !Double.isFinite(numberValue.doubleValue())
+                || numberValue.doubleValue() != Math.rint(numberValue.doubleValue())
+                || numberValue.doubleValue() < Integer.MIN_VALUE
+                || numberValue.doubleValue() > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be an integer");
+        }
+        return numberValue.intValue();
+    }
+
+    private static int requirePositiveInt(
+            CommentedConfigurationNode parent, String key, String path) {
+        int value = requireInt(parent, key, path);
+        if (value <= 0) {
+            throw new IllegalArgumentException(
+                    "Configuration value " + path + " must be greater than 0");
+        }
+        return value;
+    }
+
+    private static int requirePort(
+            CommentedConfigurationNode parent, String key, String path) {
+        int value = requireInt(parent, key, path);
+        if (value < 1 || value > 65535) {
+            throw new IllegalArgumentException(
+                    "Configuration value " + path + " must be between 1 and 65535");
+        }
+        return value;
+    }
+
+    private static boolean requireBoolean(
+            CommentedConfigurationNode parent, String key, String path) {
+        Object value = parent.node(key).raw();
+        if (!(value instanceof Boolean booleanValue)) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be a boolean");
+        }
+        return booleanValue;
     }
 
     // Getters
@@ -145,9 +216,8 @@ public class NovaChatConfig {
     }
 
     /**
-     * @return the configured default locale tag (e.g. {@code "zh_CN"}), used
-     *         to seed {@link com.nova.chat.client.i18n.I18n#setDefaultLocale}
-     *         at startup. Never null; defaults to {@code "zh_CN"}.
+     * @return the locale tag read from {@code chat.locale}, used to seed
+     *         {@link com.nova.chat.client.i18n.I18n#setDefaultLocale} at startup
      */
     public String getLocale() {
         return locale;
@@ -201,10 +271,7 @@ public class NovaChatConfig {
     /**
      * Maps platform config to the shared {@link ClientConnectionConfig}.
      *
-     * <p>Historical reconnect math used a fixed 1s initial / 30s cap / 10 attempts
-     * (not {@code backend.reconnect-delay}); that behaviour is preserved here.
-     * {@code reconnect-delay} remains available via {@link #getReconnectDelay()} for
-     * callers that want the configured value.
+     * <p>The initial reconnect delay comes from {@code backend.reconnect-delay}.
      */
     public ClientConnectionConfig toClientConnectionConfig() {
         return ClientConnectionConfig.builder()
@@ -212,6 +279,7 @@ public class NovaChatConfig {
                 .port(backendPort)
                 .username(username)
                 .password(password)
+                .initialReconnectDelaySeconds(reconnectDelay)
                 .build();
     }
 }

@@ -1,28 +1,30 @@
 package com.nova.chat.mod.config;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
+import com.nova.chat.common.config.YamlConfigUpdater;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
 
-import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Manages loading and saving of mod configuration
  */
 public class ConfigManager {
     private static final Logger LOGGER = LoggerFactory.getLogger(ConfigManager.class);
-    private static final String CONFIG_FILE = "config/novachat.yml";
+    private static final String CONFIG_FILE = "novachat.yml";
+    private static final String LEGACY_CONFIG_FILE = "config/novachat.yml";
+    private static final String CONFIG_TEMPLATE = "/novachat.yml";
+    private static final Set<String> DYNAMIC_MAPPINGS = Set.of(
+            "chat.channel-prefixes", "format.channels");
     private static final Yaml YAML = new Yaml();
-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     
     private ModConfig config;
     private final Path configPath;
@@ -37,45 +39,40 @@ public class ConfigManager {
      */
     public ModConfig loadConfig() {
         try {
-            if (Files.exists(configPath)) {
-                LOGGER.info("Loading configuration from {}", configPath);
-                try (FileInputStream fis = new FileInputStream(configPath.toFile())) {
-                    Map<String, Object> data = YAML.load(fis);
-                    config = parseYamlToConfig(data);
-                    
-                    if (!config.validate()) {
-                        LOGGER.warn("Configuration validation failed, using defaults");
-                        config = createDefaultConfig();
-                    }
+            migrateLegacyPath();
+            try (InputStream template = ConfigManager.class.getResourceAsStream(CONFIG_TEMPLATE)) {
+                if (template == null) {
+                    throw new IOException("Bundled configuration template is missing: " + CONFIG_TEMPLATE);
                 }
-            } else {
-                LOGGER.info("Configuration file not found, creating default");
-                config = createDefaultConfig();
-                saveConfig();
+                YamlConfigUpdater.UpdateResult update =
+                        YamlConfigUpdater.update(configPath, template, DYNAMIC_MAPPINGS);
+                if (update.created()) {
+                    LOGGER.info("Created configuration from bundled template: {}", configPath);
+                } else if (update.updated()) {
+                    LOGGER.info("Added newly introduced configuration fields to {} (backup: {})",
+                            configPath, update.backupPath());
+                }
             }
-        } catch (IOException e) {
-            LOGGER.error("Failed to load configuration", e);
-            config = createDefaultConfig();
+
+            LOGGER.info("Loading configuration from {}", configPath);
+            try (FileInputStream input = new FileInputStream(configPath.toFile())) {
+                Map<String, Object> data = YAML.load(input);
+                ModConfig loaded = parseYamlToConfig(data);
+                if (!loaded.validate()) {
+                    throw new IOException("Configuration validation failed");
+                }
+                loaded.toClientConnectionConfig();
+                config = loaded;
+            }
+        } catch (Exception e) {
+            LOGGER.error("Failed to load configuration {}; keeping the previous runtime values",
+                    configPath, e);
+            if (config == null) {
+                throw new IllegalStateException("NovaChat configuration could not be loaded", e);
+            }
         }
         
         return config;
-    }
-    
-    /**
-     * Save configuration to file
-     */
-    public void saveConfig() {
-        try {
-            Files.createDirectories(configPath.getParent());
-            
-            Map<String, Object> data = configToYaml(config);
-            try (FileWriter fw = new FileWriter(configPath.toFile())) {
-                YAML.dump(data, fw);
-                LOGGER.info("Configuration saved to {}", configPath);
-            }
-        } catch (IOException e) {
-            LOGGER.error("Failed to save configuration", e);
-        }
     }
     
     /**
@@ -89,46 +86,14 @@ public class ConfigManager {
         return config;
     }
     
-    /**
-     * Set the configuration
-     * @param config the new configuration
-     */
-    public void setConfig(ModConfig config) {
-        this.config = config;
-    }
-    
-    /**
-     * Create default configuration
-     * @return the default configuration
-     */
-    private ModConfig createDefaultConfig() {
-        ModConfig config = new ModConfig();
-        
-        // Backend config
-        ModConfig.BackendConfig backend = new ModConfig.BackendConfig();
-        backend.setHost("127.0.0.1");
-        backend.setPort(8888);
-        backend.setUsername("ModServer");
-        backend.setPassword("your-password");
-        backend.setReconnectDelay(5);
-        config.setBackend(backend);
-        
-        // Chat config
-        ModConfig.ChatConfig chat = new ModConfig.ChatConfig();
-        chat.setReplaceVanilla(false);
-        chat.setDefaultChannel("local");
-        chat.setLocale("zh_CN");
-        config.setChat(chat);
-        
-        // Format templates
-        Map<String, String> formats = new HashMap<>();
-        formats.put("global", "&c[全服] &7{player}&f: {message}");
-        formats.put("local", "&e[本地] &7{player}&f: {message}");
-        config.setFormats(formats);
-        
-        config.setDebug(false);
-        
-        return config;
+    private void migrateLegacyPath() throws IOException {
+        Path legacyPath = configPath.getParent().resolve(LEGACY_CONFIG_FILE);
+        if (!Files.exists(configPath) && Files.isRegularFile(legacyPath)) {
+            Files.createDirectories(configPath.getParent());
+            Files.copy(legacyPath, configPath);
+            LOGGER.warn("Copied legacy configuration {} to {}; the legacy file was kept",
+                    legacyPath, configPath);
+        }
     }
     
     /**
@@ -136,90 +101,134 @@ public class ConfigManager {
      * @param data the YAML data
      * @return the parsed configuration
      */
-    @SuppressWarnings("unchecked")
     private ModConfig parseYamlToConfig(Map<String, Object> data) {
+        if (data == null) {
+            throw new IllegalArgumentException("Configuration root must be a YAML mapping");
+        }
         ModConfig config = new ModConfig();
-        
-        if (data.containsKey("backend")) {
-            Map<String, Object> backendData = (Map<String, Object>) data.get("backend");
-            ModConfig.BackendConfig backend = new ModConfig.BackendConfig();
-            backend.setHost((String) backendData.getOrDefault("host", "127.0.0.1"));
-            backend.setPort(((Number) backendData.getOrDefault("port", 8888)).intValue());
-            backend.setUsername((String) backendData.getOrDefault("username", "ModServer"));
-            backend.setPassword((String) backendData.getOrDefault("password", "password"));
-            backend.setReconnectDelay(((Number) backendData.getOrDefault("reconnect-delay", 5)).intValue());
-            config.setBackend(backend);
-        }
-        
-        if (data.containsKey("chat")) {
-            Map<String, Object> chatData = (Map<String, Object>) data.get("chat");
-            ModConfig.ChatConfig chat = new ModConfig.ChatConfig();
-            chat.setReplaceVanilla((Boolean) chatData.getOrDefault("replace_vanilla", false));
-            chat.setDefaultChannel((String) chatData.getOrDefault("default_channel", "local"));
-            chat.setLocale((String) chatData.getOrDefault("locale", "zh_CN"));
-            // Channel-prefix routing map (e.g. "!": global); empty = disabled.
-            Object prefixData = chatData.get("channel-prefixes");
-            if (prefixData instanceof Map) {
-                Map<String, String> prefixes = new HashMap<>();
-                for (Map.Entry<?, ?> entry : ((Map<?, ?>) prefixData).entrySet()) {
-                    if (entry.getKey() != null && entry.getValue() != null) {
-                        String prefix = String.valueOf(entry.getKey());
-                        String channelId = String.valueOf(entry.getValue());
-                        if (!prefix.isEmpty() && !channelId.isBlank()) {
-                            prefixes.put(prefix, channelId);
-                        }
-                    }
-                }
-                chat.setChannelPrefixes(prefixes);
+
+        Map<String, Object> backendData = requireMap(data, "backend");
+        ModConfig.BackendConfig backend = new ModConfig.BackendConfig();
+        backend.setHost(requireNonBlankString(backendData, "host", "backend.host"));
+        backend.setPort(requirePort(backendData, "port", "backend.port"));
+        backend.setUsername(requireNonBlankString(backendData, "username", "backend.username"));
+        backend.setPassword(requireString(backendData, "password", "backend.password"));
+        backend.setReconnectDelay(requirePositiveInt(
+                backendData, "reconnect-delay", "backend.reconnect-delay"));
+        config.setBackend(backend);
+
+        Map<String, Object> chatData = requireMap(data, "chat");
+        ModConfig.ChatConfig chat = new ModConfig.ChatConfig();
+        chat.setReplaceVanilla(requireBoolean(
+                chatData, "replace_vanilla", "chat.replace_vanilla"));
+        chat.setDefaultChannel(requireNonBlankString(
+                chatData, "default_channel", "chat.default_channel"));
+        chat.setLocale(requireNonBlankString(chatData, "locale", "chat.locale"));
+        Map<String, Object> prefixData = requireMap(chatData, "channel-prefixes");
+        Map<String, String> prefixes = new HashMap<>();
+        for (Map.Entry<String, Object> entry : prefixData.entrySet()) {
+            if (!(entry.getValue() instanceof String channelId)) {
+                throw new IllegalArgumentException(
+                        "Configuration value chat.channel-prefixes." + entry.getKey()
+                                + " must be a string");
             }
-            config.setChat(chat);
-        }
-        
-        if (data.containsKey("format")) {
-            Map<String, Object> formatData = (Map<String, Object>) data.get("format");
-            if (formatData.containsKey("channels")) {
-                Map<String, String> channels = (Map<String, String>) formatData.get("channels");
-                config.setFormats(new HashMap<>(channels));
+            if (!entry.getKey().isEmpty() && !channelId.isBlank()) {
+                prefixes.put(entry.getKey(), channelId);
             }
         }
-        
-        config.setDebug((Boolean) data.getOrDefault("debug", false));
+        chat.setChannelPrefixes(prefixes);
+        config.setChat(chat);
+
+        Map<String, Object> formatData = requireMap(data, "format");
+        Map<String, Object> channelData = requireMap(formatData, "channels");
+        Map<String, String> channels = new HashMap<>();
+        for (Map.Entry<String, Object> entry : channelData.entrySet()) {
+            if (!(entry.getValue() instanceof String format)) {
+                throw new IllegalArgumentException(
+                        "Configuration value format.channels." + entry.getKey()
+                                + " must be a string");
+            }
+            channels.put(entry.getKey(), format);
+        }
+        config.setFormats(channels);
+
+        config.setDebug(requireBoolean(data, "debug", "debug"));
         
         return config;
     }
-    
-    /**
-     * Convert ModConfig to YAML data
-     * @param config the configuration
-     * @return the YAML data
-     */
-    private Map<String, Object> configToYaml(ModConfig config) {
-        Map<String, Object> data = new HashMap<>();
-        
-        // Backend
-        Map<String, Object> backend = new HashMap<>();
-        backend.put("host", config.getBackend().getHost());
-        backend.put("port", config.getBackend().getPort());
-        backend.put("username", config.getBackend().getUsername());
-        backend.put("password", config.getBackend().getPassword());
-        backend.put("reconnect-delay", config.getBackend().getReconnectDelay());
-        data.put("backend", backend);
-        
-        // Chat
-        Map<String, Object> chat = new HashMap<>();
-        chat.put("replace_vanilla", config.getChat().isReplaceVanilla());
-        chat.put("default_channel", config.getChat().getDefaultChannel());
-        chat.put("locale", config.getChat().getLocale());
-        chat.put("channel-prefixes", config.getChat().getChannelPrefixes());
-        data.put("chat", chat);
-        
-        // Format
-        Map<String, Object> format = new HashMap<>();
-        format.put("channels", config.getFormats());
-        data.put("format", format);
-        
-        data.put("debug", config.isDebug());
-        
-        return data;
+
+    private static Map<String, Object> requireMap(Map<String, Object> parent, String key) {
+        Object value = parent.get(key);
+        if (!(value instanceof Map<?, ?> rawMap)) {
+            throw new IllegalArgumentException(
+                    "Configuration value " + key + " must be a mapping");
+        }
+        Map<String, Object> result = new HashMap<>();
+        for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+            if (!(entry.getKey() instanceof String stringKey)) {
+                throw new IllegalArgumentException(
+                        "Configuration mapping " + key + " contains a non-string key");
+            }
+            result.put(stringKey, entry.getValue());
+        }
+        return result;
     }
+
+    private static String requireString(Map<String, Object> parent, String key, String path) {
+        Object value = parent.get(key);
+        if (!(value instanceof String stringValue)) {
+            throw new IllegalArgumentException(
+                    "Configuration value " + path + " must be a string");
+        }
+        return stringValue;
+    }
+
+    private static int requireInt(Map<String, Object> parent, String key, String path) {
+        Object value = parent.get(key);
+        if (!(value instanceof Number numberValue)
+                || !Double.isFinite(numberValue.doubleValue())
+                || numberValue.doubleValue() != Math.rint(numberValue.doubleValue())
+                || numberValue.doubleValue() < Integer.MIN_VALUE
+                || numberValue.doubleValue() > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(
+                    "Configuration value " + path + " must be an integer");
+        }
+        return numberValue.intValue();
+    }
+
+    private static int requirePositiveInt(Map<String, Object> parent, String key, String path) {
+        int value = requireInt(parent, key, path);
+        if (value <= 0) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be greater than 0");
+        }
+        return value;
+    }
+
+    private static int requirePort(Map<String, Object> parent, String key, String path) {
+        int value = requireInt(parent, key, path);
+        if (value < 1 || value > 65535) {
+            throw new IllegalArgumentException(
+                    "Configuration value " + path + " must be between 1 and 65535");
+        }
+        return value;
+    }
+
+    private static String requireNonBlankString(
+            Map<String, Object> parent, String key, String path) {
+        String value = requireString(parent, key, path);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException("Configuration value " + path + " must not be blank");
+        }
+        return value;
+    }
+
+    private static boolean requireBoolean(Map<String, Object> parent, String key, String path) {
+        Object value = parent.get(key);
+        if (!(value instanceof Boolean booleanValue)) {
+            throw new IllegalArgumentException(
+                    "Configuration value " + path + " must be a boolean");
+        }
+        return booleanValue;
+    }
+
 }

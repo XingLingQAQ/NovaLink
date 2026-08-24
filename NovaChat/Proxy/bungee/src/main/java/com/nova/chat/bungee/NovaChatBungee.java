@@ -19,6 +19,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 /**
  * NovaChat BungeeCord Plugin - Main class
@@ -97,8 +98,11 @@ public class NovaChatBungee extends Plugin {
         extractDefaultLang(langDir, "zh_CN");
         extractDefaultLang(langDir, "en_US");
 
-        // Load configuration
-        loadConfiguration();
+        // Load the resource-backed configuration before initializing services.
+        if (!loadConfiguration()) {
+            getLogger().severe("NovaChat initialization stopped because config.yml could not be loaded safely");
+            return;
+        }
 
         // Drop the cached bundles so a reload re-reads external overrides.
         I18n.invalidate();
@@ -176,19 +180,35 @@ public class NovaChatBungee extends Plugin {
     /**
      * Loads or reloads the plugin configuration.
      */
-    public void loadConfiguration() {
-        config = new NovaChatConfig(getDataFolder());
-        debugMode = config.isDebug();
+    public boolean loadConfiguration() {
+        NovaChatConfig previousConfig = config;
+        boolean previousDebugMode = debugMode;
+        try {
+            NovaChatConfig loaded = new NovaChatConfig(getDataFolder());
+            config = loaded;
+            debugMode = loaded.isDebug();
 
-        // Apply the configured default locale to the shared i18n service before
-        // any player-facing text is rendered. Falls back to zh_CN (ROOT_LOCALE)
-        // when the configured value is blank or unparseable.
-        I18n.setDefaultLocale(LocaleResolver.parseOrDefault(config.getLocale(), LocaleResolver.ROOT_LOCALE));
-        // Re-read external lang overrides so edited/added lang/*.properties take effect.
-        I18n.invalidate();
+            if (loaded.getUpdateResult().created()) {
+                getLogger().info("Created config.yml from the bundled template");
+            } else if (loaded.getUpdateResult().updated()) {
+                getLogger().info("Added new config.yml fields; previous file saved to "
+                        + loaded.getUpdateResult().backupPath());
+            }
 
-        if (debugMode) {
-            getLogger().info("[Debug] Configuration loaded successfully");
+            I18n.setDefaultLocale(LocaleResolver.parseOrDefault(
+                    loaded.getLocale(), LocaleResolver.ROOT_LOCALE));
+            I18n.invalidate();
+
+            if (debugMode) {
+                getLogger().info("[Debug] Configuration loaded successfully");
+            }
+            return true;
+        } catch (Exception e) {
+            config = previousConfig;
+            debugMode = previousDebugMode;
+            getLogger().log(Level.SEVERE,
+                    "Failed to install, upgrade, or load config.yml; the file was not overwritten", e);
+            return false;
         }
     }
 
@@ -270,7 +290,10 @@ public class NovaChatBungee extends Plugin {
      * Reloads the plugin configuration and reconnects to backend if needed.
      */
     public void reload() {
-        loadConfiguration();
+        if (!loadConfiguration()) {
+            getLogger().warning("Configuration reload rejected; continuing with previous values");
+            return;
+        }
         
         // Reload chat listener settings
         if (chatListener != null) {

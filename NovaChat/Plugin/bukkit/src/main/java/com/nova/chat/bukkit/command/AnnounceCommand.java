@@ -45,8 +45,13 @@ public class AnnounceCommand extends AbstractSubCommand {
     @Override
     public boolean isPlayerOnly() {
         // Console/RCON can also announce (uses the all-zeros sentinel UUID so the
-        // backend can route the broadcast). The super-admin auth session is no
-        // longer required for ANNOUNCE (see AdminActionHandler.handleStatus).
+        // backend can route the broadcast). The backend gates STATUS/ANNOUNCE
+        // behind permissionManager.hasSuperAdminSession(playerId) and returns
+        // NC-403 when absent (see AdminActionHandler.handleStatus), so the
+        // sender must first run /nc auth <password> to establish a super-admin
+        // session. The local novachat.announce permission (default: op) is only
+        // a coarse client-side gate; the real authorization gate is the backend
+        // super-admin session.
         return false;
     }
 

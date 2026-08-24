@@ -7,6 +7,11 @@
 #   Minimum Java version: 17
 # ==========================================
 
+config-version = 1
+
+# 调试模式
+debug = false
+
 # 后端连接设置
 [backend]
 host = "127.0.0.1"
@@ -49,6 +54,3 @@ default = "&7[{channel_color}{channel_name}] {player}&f: {message}"
 [format.channels]
 global = "&c[全服] &7{player}&f: {message}"
 local = "&e[本地] &7{player}&f: {message}"
-
-# 调试模式
-debug = false

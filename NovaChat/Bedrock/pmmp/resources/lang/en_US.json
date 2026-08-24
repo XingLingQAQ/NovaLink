@@ -7,6 +7,14 @@
     "chat.toggle.on": "Chat enabled",
     "chat.toggle.off": "Chat disabled",
 
+    "chat.auth.progress": "Authenticating...",
+    "chat.auth.success": "Super admin authentication successful",
+    "chat.auth.failed": "Authentication failed",
+    "chat.announce.progress": "Sending announcement to channel {0}...",
+    "chat.announce.usage": "Usage: /nc announce <channel> <message>",
+    "chat.error.super_admin_required": "Super admin session required. Run /nc auth <password> first.",
+    "chat.error.super_admin_required_suggestion": "Authenticate with /nc auth <password>, then retry.",
+
     "chat.command.help.title": "&6=== NovaChat Help ===",
     "chat.command.help.line_help": "&e/nc help &r- Show this help",
     "chat.command.help.line_join": "&e/nc join <channel> [password] &r- Join a channel",
@@ -14,6 +22,8 @@
     "chat.command.help.line_list": "&e/nc list &r- List available channels",
     "chat.command.help.line_who": "&e/nc who [channel] &r- List online members",
     "chat.command.help.line_toggle": "&e/nc toggle &r- Toggle chat mode",
+    "chat.command.help.line_auth": "&e/nc auth <password> &r- Super admin auth (hidden)",
+    "chat.command.help.line_announce": "&e/nc announce <channel> <message> &r- Broadcast announcement",
     "chat.command.help.line_reload": "&e/nc reload &r- Reload config",
     "chat.command.desc.help": "Show available commands",
     "chat.command.desc.join": "Join a channel",
@@ -38,6 +48,9 @@
     "chat.network.not_connected": "Not connected to chat server",
 
     "chat.mention.subtitle": "&7mentioned you in &b{0}",
+
+    "chat.msg.sent": "&7You whisper to &e{0}&7: &f{1}",
+    "chat.msg.received": "&e{0} &7whispers to you: &f{1}",
 
     "chat.notice.kick_title": "&cYou have been kicked from the channel",
     "chat.notice.kick_subtitle": "&7Kicked by &e{0} &7from &b{1}",
@@ -73,6 +86,10 @@
     "error.NC-404.suggestion": "Please check the channel id or player name",
     "error.NC-409.message": "Conflict",
     "error.NC-409.suggestion": "The resource already exists or is in use",
+    "error.NC-410.message": "Invite code expired",
+    "error.NC-410.suggestion": "Contact the channel admin for a new invite code",
+    "error.NC-411.message": "Invite code already used",
+    "error.NC-411.suggestion": "Each invite code can only be used once",
     "error.NC-420.message": "Protocol version mismatch",
     "error.NC-420.suggestion": "Please upgrade your NovaChat client to a protocol v2 build",
     "error.NC-429.message": "Too many requests",

@@ -44,49 +44,113 @@ public class NovaChatConfig {
      */
     public NovaChatConfig(Config config) {
         // Backend settings
-        this.backendHost = config.getString("backend.host", "127.0.0.1");
-        this.backendPort = config.getInt("backend.port", 8888);
-        this.username = config.getString("backend.username", "");
-        this.password = config.getString("backend.password", "");
-        this.reconnectDelay = config.getInt("backend.reconnect-delay", 5);
+        this.backendHost = requireNonBlankString(config, "backend.host");
+        this.backendPort = requirePort(config, "backend.port");
+        this.username = requireNonBlankString(config, "backend.username");
+        this.password = requireString(config, "backend.password");
+        this.reconnectDelay = requirePositiveInt(config, "backend.reconnect-delay");
 
         // Chat settings
-        this.replaceVanilla = config.getBoolean("chat.replace_vanilla", false);
-        this.defaultChannel = config.getString("chat.default_channel", "local");
-        this.locale = config.getString("chat.locale", "zh_CN");
+        this.replaceVanilla = requireBoolean(config, "chat.replace_vanilla");
+        this.defaultChannel = requireNonBlankString(config, "chat.default_channel");
+        this.locale = requireNonBlankString(config, "chat.locale");
 
         // Channel-prefix routing (prefix string -> channel ID); empty = disabled
         this.channelPrefixes = new HashMap<>();
-        Map<String, Object> prefixesSection = config.getSection("chat.channel-prefixes").getAllMap();
-        if (prefixesSection != null) {
-            for (Map.Entry<String, Object> entry : prefixesSection.entrySet()) {
-                String key = entry.getKey();
-                if (key != null && !key.isEmpty() && entry.getValue() instanceof String value
-                        && !value.isEmpty()) {
-                    channelPrefixes.put(key, value);
-                }
+        Map<String, Object> prefixesSection = requireSection(config, "chat.channel-prefixes");
+        for (Map.Entry<String, Object> entry : prefixesSection.entrySet()) {
+            String key = entry.getKey();
+            if (!(entry.getValue() instanceof String value)) {
+                throw new IllegalArgumentException(
+                        "Configuration value chat.channel-prefixes." + key + " must be a string");
+            }
+            if (key != null && !key.isEmpty() && !value.isEmpty()) {
+                channelPrefixes.put(key, value);
             }
         }
 
         // Format settings
-        this.prefix = config.getString("format.prefix", "§8[§bNovaChat§8]§r ");
-        this.errorFormat = config.getString("format.error", "§c错误: {message}");
-        this.successFormat = config.getString("format.success", "§a成功: {message}");
-        this.defaultFormat = config.getString("format.default", "§7[{channel_color}{channel_name}] {player}§f: {message}");
+        this.prefix = requireString(config, "format.prefix");
+        this.errorFormat = requireString(config, "format.error");
+        this.successFormat = requireString(config, "format.success");
+        this.defaultFormat = requireString(config, "format.default");
 
         // Channel formats
         this.channelFormats = new HashMap<>();
-        Map<String, Object> channelsSection = config.getSection("format.channels").getAllMap();
-        if (channelsSection != null) {
-            for (Map.Entry<String, Object> entry : channelsSection.entrySet()) {
-                if (entry.getValue() instanceof String) {
-                    channelFormats.put(entry.getKey(), (String) entry.getValue());
-                }
+        Map<String, Object> channelsSection = requireSection(config, "format.channels");
+        for (Map.Entry<String, Object> entry : channelsSection.entrySet()) {
+            if (!(entry.getValue() instanceof String value)) {
+                throw new IllegalArgumentException(
+                        "Configuration value format.channels." + entry.getKey() + " must be a string");
             }
+            channelFormats.put(entry.getKey(), value);
         }
 
         // Debug mode
-        this.debug = config.getBoolean("debug", false);
+        this.debug = requireBoolean(config, "debug");
+
+        toClientConnectionConfig();
+    }
+
+    private static String requireString(Config config, String path) {
+        Object value = config.get(path);
+        if (!(value instanceof String stringValue)) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be a string");
+        }
+        return stringValue;
+    }
+
+    private static String requireNonBlankString(Config config, String path) {
+        String value = requireString(config, path);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException("Configuration value " + path + " must not be blank");
+        }
+        return value;
+    }
+
+    private static int requireInt(Config config, String path) {
+        Object value = config.get(path);
+        if (!(value instanceof Number numberValue)
+                || !Double.isFinite(numberValue.doubleValue())
+                || numberValue.doubleValue() != Math.rint(numberValue.doubleValue())
+                || numberValue.doubleValue() < Integer.MIN_VALUE
+                || numberValue.doubleValue() > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be an integer");
+        }
+        return numberValue.intValue();
+    }
+
+    private static int requirePositiveInt(Config config, String path) {
+        int value = requireInt(config, path);
+        if (value <= 0) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be greater than 0");
+        }
+        return value;
+    }
+
+    private static int requirePort(Config config, String path) {
+        int value = requireInt(config, path);
+        if (value < 1 || value > 65535) {
+            throw new IllegalArgumentException(
+                    "Configuration value " + path + " must be between 1 and 65535");
+        }
+        return value;
+    }
+
+    private static boolean requireBoolean(Config config, String path) {
+        Object value = config.get(path);
+        if (!(value instanceof Boolean booleanValue)) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be a boolean");
+        }
+        return booleanValue;
+    }
+
+    private static Map<String, Object> requireSection(Config config, String path) {
+        Object value = config.get(path);
+        if (!(value instanceof Map<?, ?>)) {
+            throw new IllegalArgumentException("Configuration value " + path + " must be a mapping");
+        }
+        return config.getSection(path).getAllMap();
     }
 
     // Getters
@@ -123,7 +187,7 @@ public class NovaChatConfig {
      * Gets the configured default locale code (e.g. {@code "zh_CN"},
      * {@code "en_US"}). Used at startup to seed {@link com.nova.chat.client.i18n.I18n}.
      *
-     * @return the configured locale code, defaulting to {@code "zh_CN"}
+     * @return the locale code read from {@code chat.locale}
      */
     public String getLocale() {
         return locale;
@@ -177,10 +241,7 @@ public class NovaChatConfig {
     /**
      * Maps platform config to the shared {@link ClientConnectionConfig}.
      *
-     * <p>Historical reconnect math used a fixed 1s initial / 30s cap / 10 attempts
-     * (not {@code backend.reconnect-delay}); that behaviour is preserved here.
-     * {@code reconnect-delay} remains available via {@link #getReconnectDelay()} for
-     * callers that want the configured value.
+     * <p>The initial reconnect delay comes from {@code backend.reconnect-delay}.
      */
     public ClientConnectionConfig toClientConnectionConfig() {
         return ClientConnectionConfig.builder()
@@ -188,6 +249,7 @@ public class NovaChatConfig {
                 .port(backendPort)
                 .username(username)
                 .password(password)
+                .initialReconnectDelaySeconds(reconnectDelay)
                 .build();
     }
 }

@@ -41,6 +41,10 @@ dependencies {
 }
 
 processResources {
+    from(project(':NovaChat:MOD:mod-common').sourceSets.main.resources) {
+        include 'novachat.yml'
+    }
+
     inputs.property "version", project.version
     inputs.property "minecraft_version", "1.21.11"
 

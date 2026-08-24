@@ -10,6 +10,7 @@ import cn.nukkit.scheduler.AsyncTask;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
+import com.nova.chat.common.config.YamlConfigUpdater;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.extension.ExtensionManager;
 import com.nova.chat.pnx.chat.ChatInterceptor;
@@ -29,6 +30,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Set;
 
 /**
  * NovaChat plugin for PowerNukkitX Bedrock servers.
@@ -40,6 +42,9 @@ import java.nio.file.StandardCopyOption;
  * Requirements: 28.1, 28.2, 28.3, 28.5
  */
 public class NovaChatPNX extends PluginBase implements Listener {
+    private static final Set<String> DYNAMIC_CONFIG_MAPPINGS = Set.of(
+            "chat.channel-prefixes", "format.channels", "world-routing.mappings");
+
 
     @Getter
     private static NovaChatPNX instance;
@@ -121,9 +126,6 @@ public class NovaChatPNX extends PluginBase implements Listener {
 
     @Override
     public void onEnable() {
-        // Save default config if not exists
-        saveDefaultConfigFile();
-
         // Extract default lang/ bundles to plugins/NovaChat/lang/ so users have
         // a template to copy/edit and can drop in new languages without a rebuild.
         // I18n reads <externalLangDir>/lang/<locale>.properties on top of the
@@ -133,10 +135,11 @@ public class NovaChatPNX extends PluginBase implements Listener {
         extractDefaultLang(langDir, "zh_CN");
         extractDefaultLang(langDir, "en_US");
 
-        // Load configuration
-        novaChatConfig = new NovaChatConfig(this);
-        novaChatConfig.load();
-        debugMode = novaChatConfig.isDebug();
+        // Install or upgrade the resource-backed configuration before loading it.
+        if (!loadConfiguration()) {
+            throw new IllegalStateException(
+                    "NovaChat initialization stopped because config.yml could not be loaded safely");
+        }
 
         // Seed the shared I18n default locale from config (per-player locales
         // captured by LocaleListener override this per player).
@@ -249,13 +252,35 @@ public class NovaChatPNX extends PluginBase implements Listener {
         }
     }
 
-    /**
-     * Saves the default configuration file if it doesn't exist.
-     */
-    private void saveDefaultConfigFile() {
-        File configFile = new File(getDataFolder(), "config.yml");
-        if (!configFile.exists()) {
-            saveResource("config.yml", false);
+    private boolean loadConfiguration() {
+        NovaChatConfig previousConfig = novaChatConfig;
+        boolean previousDebugMode = debugMode;
+        Path configPath = getDataFolder().toPath().resolve("config.yml");
+        try (InputStream template = getResource("config.yml")) {
+            if (template == null) {
+                throw new IOException("Bundled config.yml template is missing");
+            }
+            YamlConfigUpdater.UpdateResult update = YamlConfigUpdater.update(
+                    configPath, template, DYNAMIC_CONFIG_MAPPINGS);
+            if (update.created()) {
+                getLogger().info("Created config.yml from the bundled template");
+            } else if (update.updated()) {
+                getLogger().info("Added new config.yml fields; previous file saved to "
+                        + update.backupPath());
+            }
+
+            reloadConfig();
+            NovaChatConfig loaded = new NovaChatConfig(this);
+            loaded.load();
+            novaChatConfig = loaded;
+            debugMode = loaded.isDebug();
+            return true;
+        } catch (Exception e) {
+            novaChatConfig = previousConfig;
+            debugMode = previousDebugMode;
+            getLogger().error(
+                    "Failed to install, upgrade, or load config.yml; the file was not overwritten", e);
+            return false;
         }
     }
 
@@ -414,9 +439,10 @@ public class NovaChatPNX extends PluginBase implements Listener {
      * Reload the plugin configuration.
      */
     public void reload() {
-        reloadConfig();
-        novaChatConfig.load();
-        debugMode = novaChatConfig.isDebug();
+        if (!loadConfiguration()) {
+            getLogger().warning("Configuration reload rejected; continuing with previous values");
+            return;
+        }
         
         // Reload chat interceptor settings
         if (chatInterceptor != null) {

@@ -58,7 +58,7 @@ public class ModConfig {
      * @return the backend host
      */
     public String getBackendHost() {
-        return backend != null ? backend.getHost() : null;
+        return backend.getHost();
     }
 
     /**
@@ -66,7 +66,7 @@ public class ModConfig {
      * @return the backend port
      */
     public int getBackendPort() {
-        return backend != null ? backend.getPort() : ClientConnectionConfig.DEFAULT_PORT;
+        return backend.getPort();
     }
 
     /**
@@ -74,7 +74,7 @@ public class ModConfig {
      * @return the backend username
      */
     public String getUsername() {
-        return backend != null ? backend.getUsername() : null;
+        return backend.getUsername();
     }
 
     /**
@@ -84,13 +84,16 @@ public class ModConfig {
      * @return a connection config populated from the backend/chat sections
      */
     public ClientConnectionConfig toClientConnectionConfig() {
-        BackendConfig b = backend != null ? backend : new BackendConfig();
+        if (!validate()) {
+            throw new IllegalStateException("Cannot build network settings from an invalid mod configuration");
+        }
+        BackendConfig b = backend;
         return ClientConnectionConfig.builder()
                 .host(b.getHost())
                 .port(b.getPort())
                 .username(b.getUsername())
                 .password(b.getPassword())
-                .initialReconnectDelaySeconds(Math.max(1, b.getReconnectDelay()))
+                .initialReconnectDelaySeconds(b.getReconnectDelay())
                 .build();
     }
 
@@ -113,14 +116,6 @@ public class ModConfig {
         private String username;
         private String password;
         private int reconnectDelay;
-        
-        public BackendConfig() {
-            this.host = "127.0.0.1";
-            this.port = 8888;
-            this.username = "ModServer";
-            this.password = "password";
-            this.reconnectDelay = 5;
-        }
         
         public String getHost() {
             return host;
@@ -186,9 +181,6 @@ public class ModConfig {
         private Map<String, String> channelPrefixes;
 
         public ChatConfig() {
-            this.replaceVanilla = false;
-            this.defaultChannel = "local";
-            this.locale = "zh_CN";
             this.channelPrefixes = new HashMap<>();
         }
 
@@ -239,7 +231,8 @@ public class ModConfig {
          * @return true if a non-empty default channel is configured
          */
         public boolean validate() {
-            return defaultChannel != null && !defaultChannel.isEmpty();
+            return defaultChannel != null && !defaultChannel.isBlank()
+                    && locale != null && !locale.isBlank();
         }
     }
 }

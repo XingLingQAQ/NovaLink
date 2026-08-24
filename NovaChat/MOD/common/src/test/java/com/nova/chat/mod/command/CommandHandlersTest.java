@@ -283,26 +283,26 @@ class CommandHandlersTest {
     class Help {
 
         @Test
-        @DisplayName("non-admin help lists 10 lines and excludes the reload line")
+        @DisplayName("non-admin help lists 12 lines and excludes the reload line")
         void nonAdminHelp() {
             recordMessages();
             CommandContext ctx = context(false);
 
             new HelpCommand().execute(new String[]{}, ctx);
 
-            // title + 9 lines (help/join/leave/list/who/toggle/ignore/unignore/msg)
-            assertThat(sentMessages).hasSize(10);
+            // title + 11 lines (help/join/leave/list/who/toggle/ignore/unignore/pm/reply/msg)
+            assertThat(sentMessages).hasSize(12);
         }
 
         @Test
-        @DisplayName("admin help includes the reload line (11 lines total)")
+        @DisplayName("admin help includes the reload line (13 lines total)")
         void adminHelpIncludesReload() {
             recordMessages();
             CommandContext ctx = context(true);
 
             new HelpCommand().execute(new String[]{}, ctx);
 
-            assertThat(sentMessages).hasSize(11);
+            assertThat(sentMessages).hasSize(13);
         }
     }
 

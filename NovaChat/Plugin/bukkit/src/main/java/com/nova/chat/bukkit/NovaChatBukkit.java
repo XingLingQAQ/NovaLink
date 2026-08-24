@@ -14,6 +14,7 @@ import com.nova.chat.bukkit.world.WorldMonitor;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
+import com.nova.chat.common.config.YamlConfigUpdater;
 import com.nova.chat.common.protocol.PlatformType;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -23,6 +24,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -34,6 +36,9 @@ import java.util.logging.Level;
  * Supports: Bukkit/Spigot/Paper servers (Requirements: 23.1)
  */
 public class NovaChatBukkit extends JavaPlugin {
+    private static final Set<String> DYNAMIC_CONFIG_MAPPINGS = Set.of(
+            "chat.channel-prefixes", "format.channels", "world-routing.mappings");
+
     
     private static NovaChatBukkit instance;
     
@@ -100,9 +105,6 @@ public class NovaChatBukkit extends JavaPlugin {
     public void onEnable() {
         instance = this;
 
-        // Save default config if not exists
-        saveDefaultConfig();
-
         // Extract default lang/ bundles to plugins/NovaChat/lang/ so users have
         // a template to copy/edit and can drop in new languages without a rebuild.
         // I18n reads <externalLangDir>/lang/<locale>.properties on top of the
@@ -112,8 +114,12 @@ public class NovaChatBukkit extends JavaPlugin {
         extractDefaultLang(langDir, "zh_CN");
         extractDefaultLang(langDir, "en_US");
 
-        // Load configuration
-        loadConfiguration();
+        // Install or upgrade the resource-backed configuration before loading it.
+        if (!loadConfiguration()) {
+            getLogger().severe("NovaChat was disabled because config.yml could not be loaded safely");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
 
         // Per-player ignore lists (persisted in the plugin data folder,
         // injection precedent: I18n.setExternalLangDir above).
@@ -209,13 +215,42 @@ public class NovaChatBukkit extends JavaPlugin {
     /**
      * Loads or reloads the plugin configuration.
      */
-    public void loadConfiguration() {
-        reloadConfig();
-        novaChatConfig = new NovaChatConfig(getConfig());
-        debugMode = novaChatConfig.isDebug();
-        
-        if (debugMode) {
-            getLogger().info("[Debug] Configuration loaded successfully");
+    public boolean loadConfiguration() {
+        NovaChatConfig previousConfig = novaChatConfig;
+        boolean previousDebugMode = debugMode;
+        try (InputStream template = getResource("config.yml")) {
+            if (template == null) {
+                throw new IOException("Bundled config.yml template is missing");
+            }
+            YamlConfigUpdater.UpdateResult update = YamlConfigUpdater.update(
+                    getDataFolder().toPath().resolve("config.yml"), template,
+                    DYNAMIC_CONFIG_MAPPINGS);
+            logConfigUpdate(update);
+
+            reloadConfig();
+            NovaChatConfig loaded = new NovaChatConfig(getConfig());
+            novaChatConfig = loaded;
+            debugMode = loaded.isDebug();
+
+            if (debugMode) {
+                getLogger().info("[Debug] Configuration loaded successfully");
+            }
+            return true;
+        } catch (Exception e) {
+            novaChatConfig = previousConfig;
+            debugMode = previousDebugMode;
+            getLogger().log(Level.SEVERE,
+                    "Failed to install, upgrade, or load config.yml; the file was not overwritten", e);
+            return false;
+        }
+    }
+
+    private void logConfigUpdate(YamlConfigUpdater.UpdateResult update) {
+        if (update.created()) {
+            getLogger().info("Created config.yml from the bundled template");
+        } else if (update.updated()) {
+            getLogger().info("Added new config.yml fields; previous file saved to "
+                    + update.backupPath());
         }
     }
     
@@ -337,7 +372,10 @@ public class NovaChatBukkit extends JavaPlugin {
      * Reloads the plugin configuration and reconnects to backend if needed.
      */
     public void reload() {
-        loadConfiguration();
+        if (!loadConfiguration()) {
+            getLogger().warning("Configuration reload rejected; continuing with previous values");
+            return;
+        }
 
         // Re-apply the configured default locale so a /nc reload picks up locale changes.
         I18n.setDefaultLocale(LocaleResolver.parseOrDefault(

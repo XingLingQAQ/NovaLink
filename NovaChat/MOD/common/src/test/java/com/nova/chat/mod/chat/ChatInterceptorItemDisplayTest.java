@@ -71,6 +71,12 @@ class ChatInterceptorItemDisplayTest {
         I18n.setDefaultLocale(Locale.SIMPLIFIED_CHINESE);
 
         sentToPlayer.clear();
+        // PLAT-001: NetworkClient wraps each handler with platform.execute(...).
+        // Run the wrapped body synchronously so captured-handler assertions stay valid.
+        doAnswer(inv -> {
+            inv.<Runnable>getArgument(0).run();
+            return null;
+        }).when(platform).execute(any());
         doAnswer(inv -> {
             UUID id = inv.getArgument(0);
             if (id.equals(PLAYER)) {
