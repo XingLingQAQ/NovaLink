@@ -10,6 +10,7 @@
 #include <atomic>
 #include <functional>
 #include <unordered_map>
+#include <mutex>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -27,9 +28,37 @@
 #define closesocket close
 #endif
 
+// AUTH-002 TLS transport: OpenSSL headers for the non-blocking SSL state
+// machine. The openssl xmake package supplies these on all platforms; on
+// Windows the import libs (libssl/libcrypto) are linked via add_syslinks in
+// xmake.lua. We do NOT include <openssl/ssl.h> transitatively through any
+// LeviLamina header, so the direct include here is intentional.
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
 namespace novachat::network {
 
 using namespace novachat::protocol;
+
+/**
+ * AUTH-002 TLS handshake state machine phases.
+ *
+ * The non-blocking SSL_connect call may need to retry after select() reports
+ * the fd readable or writable. The state machine below tracks where we are so
+ * the select() loop in networkThreadFunc() can drive SSL_connect to
+ * completion before any application data is sent or received.
+ *
+ *   Idle      — no TLS session in progress (TLS disabled or not yet started)
+ *   Connecting — SSL_connect has been initiated but not yet completed
+ *   Established — TLS handshake finished; SSL_read/SSL_write are the data path
+ *   Failed    — TLS handshake failed; the connection must be torn down
+ */
+enum class TlsState {
+    Idle,
+    Connecting,
+    Established,
+    Failed
+};
 
 /**
  * Async network client for NovaLink backend communication.
@@ -59,10 +88,12 @@ public:
      * optional mTLS pair is loaded only when both clientCertPath and
      * clientKeyPath are non-empty.
      *
-     * NOTE: TLS transport is not yet implemented in doConnect() — the backend
-     * still connects over plaintext TCP even when TLS is configured. This
-     * stores the config so the (forthcoming) OpenSSL integration can consume
-     * it without re-plumbing the constructor. See the TODO in doConnect().
+     * When TLS is enabled, doConnect() creates an SSL_CTX with
+     * SSL_VERIFY_PEER (no insecure bypass), loads the optional client
+     * cert/key for mutual TLS, and starts a non-blocking SSL_connect state
+     * machine driven by the select() loop in networkThreadFunc().
+     * receiveLoop() and sendLoop() use SSL_read / SSL_write in place of the
+     * raw recv / send calls whenever a TLS session is established.
      */
     void setTlsConfig(bool tlsEnabled,
                       const std::string& caCertPath,
@@ -100,6 +131,14 @@ public:
     [[nodiscard]] bool isConnected() const { return mConnected; }
 
     /**
+     * Test-only accessor for the connected flag (returns a reference to the
+     * underlying atomic). Used by the TLS integration tests to poll the
+     * connection state from the main thread without exposing the private
+     * member. Not part of the stable API.
+     */
+    [[nodiscard]] const std::atomic<bool>& isConnectedWrapper() const { return mConnected; }
+
+    /**
      * Check if authenticated with the backend.
      * @return true if authenticated
      */
@@ -133,6 +172,18 @@ private:
     void doDisconnect();
     void handleReconnect();
 
+    // AUTH-002 TLS transport helpers (all run on the network thread).
+    // setupTlsContext() builds the SSL_CTX with SSL_VERIFY_PEER and loads the
+    // optional client cert/key for mTLS; tlsHandshakeStep() advances the
+    // non-blocking SSL_connect state machine, returning the updated TlsState;
+    // tlsRecv()/tlsSend() wrap SSL_read/SSL_write for the data path;
+    // tlsShutdown() performs an orderly SSL_shutdown + resource release.
+    bool setupTlsContext();
+    TlsState tlsHandshakeStep();
+    int tlsRecv(char* buf, int len);
+    int tlsSend(const char* buf, int len);
+    void tlsShutdown();
+
     // Packet processing
     void processReceivedData();
     std::unique_ptr<Packet> decodePacket(PacketBuffer& buffer);
@@ -157,20 +208,41 @@ private:
     std::string mServerVersion;
     int mReconnectDelay;
 
-    // AUTH-002 TLS transport settings. Stored via setTlsConfig() but NOT yet
-    // applied in doConnect() — see the TODO there. Kept on the instance so the
-    // OpenSSL integration can consume them without re-plumbing the constructor
-    // signature (which is shared with the test target and the plugin wiring).
+    // AUTH-002 TLS transport settings. Stored via setTlsConfig() and applied
+    // in doConnect() — when mTlsEnabled is true, the socket is wrapped in an
+    // OpenSSL TLS session (SSL_CTX with SSL_VERIFY_PEER, optional mTLS
+    // client cert/key). There is no option to disable certificate
+    // verification once TLS is enabled.
     bool mTlsEnabled = false;
     std::string mTlsCaCertPath;
     std::string mTlsClientCertPath;
     std::string mTlsClientKeyPath;
+
+    // AUTH-002 TLS runtime state. The SSL_CTX is created once per connection
+    // in setupTlsContext() and freed in tlsShutdown(); the SSL handle is the
+    // per-connection session object. mTlsState drives the select() loop:
+    //   Idle       — no TLS (plaintext path)
+    //   Connecting — SSL_connect in progress (retry on want_read/want_write)
+    //   Established — SSL_read/SSL_write replace recv/send
+    //   Failed     — handshake failed, connection must be torn down
+    // All four members are owned by the network thread (set in doConnect /
+    // setupTlsContext / tlsHandshakeStep, cleared in doDisconnect).
+    SSL_CTX* mSslCtx = nullptr;
+    SSL* mSsl = nullptr;
+    TlsState mTlsState = TlsState::Idle;
 
     // AUTH-002: the client nonce sent in HandshakeInit, retained across select()
     // loop iterations until the matching HandshakeChallenge arrives. Owned by
     // the network thread (set in sendHandshake, consumed+cleared in
     // handleHandshakeChallenge, both on the network thread).
     std::string mPendingClientNonce;
+
+    // AUTH-002 TLS: set to true by doConnect() when the TCP connection
+    // succeeds, cleared after sendHandshake() is called. For plaintext, this
+    // happens immediately on the next loop iteration. For TLS, the handshake
+    // must reach Established first — sending application data before the TLS
+    // session is established would corrupt the TLS state machine.
+    bool mHandshakePending = false;
 
     // Socket
     SOCKET mSocket = INVALID_SOCKET;

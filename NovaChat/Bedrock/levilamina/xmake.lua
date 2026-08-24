@@ -49,6 +49,11 @@ if get_config("sdk") ~= "n" then
     -- HmacSha256/Sha256 utilities do NOT depend on OpenSSL (they have their
     -- own bundled implementations); this dependency is transport-only.
     add_requires("openssl")
+else
+    -- When --sdk=n is passed (standalone test builds), we still need OpenSSL
+    -- for the TLS transport + the TLS integration tests. Declared here so the
+    -- test targets can add_packages("openssl") and get the headers + link.
+    add_requires("openssl")
 end
 
 -- Target: novachat-levilamina (the BDS plugin shared library)
@@ -195,4 +200,55 @@ target("novachat-levilamina-golden-tests")
     if is_plat("windows") then
         add_defines("NOMINMAX", "UNICODE", "_UNICODE", "WIN32", "_WIN32", "_WINDOWS")
     end
+target_end()
+
+-- Test target: AUTH-002 TLS transport integration tests (no LeviLamina SDK
+-- needed). Starts a mock TLS server using OpenSSL (SSL_CTX + SSL_accept) and
+-- verifies the NetworkClient TLS state machine: handshake success with a
+-- trusted CA, handshake failure with an untrusted CA, and handshake failure
+-- with a hostname mismatch.
+--
+-- The NetworkClient TLS code links against the same OpenSSL runtime via
+-- add_syslinks("libssl", "libcrypto"). The test file supplies its own mock
+-- server SSL_CTX so no BDS/plugin runtime is needed.
+--
+-- Build & run:
+--   xmake f --sdk=n -m debug
+--   xmake build novachat-levilamina-tls-tests
+--   xmake run novachat-levilamina-tls-tests
+target("novachat-levilamina-tls-tests")
+    set_kind("binary")
+    set_languages("c++20")
+    set_symbols("debug")
+    -- /utf-8: the test source contains UTF-8 literals (same rationale as the
+    -- protocol tests above).
+    add_cxflags("/utf-8")
+    add_includedirs("src")
+
+    -- OpenSSL headers + import libs for both the NetworkClient TLS transport
+    -- and the mock TLS server inside the test.
+    add_packages("openssl")
+
+    add_files("tests/test_network_client_tls.cpp")
+    add_files("src/network/NetworkClient.cpp")
+    add_files("src/protocol/PacketBuffer.cpp")
+    add_files("src/util/Sha256.cpp")
+    add_files("src/util/HmacSha256.cpp")
+    add_files("src/i18n/I18n.cpp")
+
+    set_targetdir("$(buildir)/bin")
+    set_filename("novachat-levilamina-tls-tests.exe")
+
+    if is_plat("windows") then
+        add_defines("NOMINMAX", "UNICODE", "_UNICODE", "WIN32", "_WIN32", "_WINDOWS")
+        add_syslinks("ws2_32", "advapi32", "libssl", "libcrypto")
+    end
+
+    -- Copy the TLS fixture directory next to the test binary so the test can
+    -- find the self-signed certs regardless of the cwd xmake launches from.
+    -- Mirrors the lang/ copy on the protocol tests target above.
+    after_build(function (target)
+        local targetdir = target:targetdir()
+        os.cp("tests/tls", targetdir .. "/tls")
+    end)
 target_end()

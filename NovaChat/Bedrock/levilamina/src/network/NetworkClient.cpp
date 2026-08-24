@@ -4,7 +4,6 @@
 #include "../util/Sha256.h"
 #include "../util/HmacSha256.h"
 
-#include <ll/api/io/Logger.h>
 #include <chrono>
 #include <cstring>
 #include <cerrno>
@@ -83,12 +82,11 @@ void NetworkClient::setTlsConfig(bool tlsEnabled,
                                  const std::string& caCertPath,
                                  const std::string& clientCertPath,
                                  const std::string& clientKeyPath) {
-    // AUTH-002 TLS: store the transport-encryption config. NOT yet applied in
-    // doConnect() — the backend still connects over plaintext TCP. This is the
-    // skeleton seam: the OpenSSL integration (SSL_CTX_new / SSL_connect /
-    // SSL_read / SSL_write wired into the select() loop) will read these
-    // members. Verification is enforced unconditionally once TLS is on (there
-    // is no mTlsInsecure / skipVerify member by design).
+    // AUTH-002 TLS: store the transport-encryption config. Applied in
+    // doConnect() — when mTlsEnabled is true, the socket is wrapped in an
+    // OpenSSL TLS session (SSL_CTX with SSL_VERIFY_PEER, optional mTLS
+    // client cert/key). Verification is enforced unconditionally once TLS is
+    // on (there is no mTlsInsecure / skipVerify member by design).
     mTlsEnabled = tlsEnabled;
     mTlsCaCertPath = caCertPath;
     mTlsClientCertPath = clientCertPath;
@@ -135,11 +133,63 @@ void NetworkClient::networkThreadFunc() {
     while (mRunning) {
         if (!mConnected) {
             if (doConnect()) {
-                sendHandshake();
+                // Defer sendHandshake() until after the TLS handshake (if any)
+                // completes. For plaintext, mTlsState is Idle so the deferred
+                // handshake fires on the next loop iteration. For TLS, the
+                // handshake must reach Established before any application data
+                // is sent — sending through SSL_write before the TLS session is
+                // established would corrupt the state machine.
+                mHandshakePending = true;
             } else {
                 handleReconnect();
                 continue;
             }
+        }
+
+        // AUTH-002 TLS: drive the non-blocking SSL_connect state machine before
+        // any application I/O. SSL_connect may need to retry after select()
+        // reports the fd readable or writable (SSL_want_read / SSL_want_write).
+        // Only when the handshake reaches Established do we enter the normal
+        // select() loop for application data; a Failed state tears down the
+        // connection and schedules a reconnect.
+        if (mTlsState == TlsState::Connecting) {
+            TlsState next = tlsHandshakeStep();
+            if (next == TlsState::Failed) {
+                doDisconnect();
+                handleReconnect();
+                continue;
+            }
+            if (next == TlsState::Established) {
+                // TLS session ready — send the deferred HandshakeInit now that
+                // SSL_write can encrypt application data.
+                if (mHandshakePending) {
+                    sendHandshake();
+                    mHandshakePending = false;
+                }
+                // Fall through to the normal select() loop.
+            } else {
+                // Still Connecting — SSL_connect returned WANT_READ or
+                // WANT_WRITE. Do a blocking select() on the fd (with a 100ms
+                // timeout) so the thread sleeps until the OS reports data
+                // ready, instead of busy-looping SSL_connect. We must NOT call
+                // receiveLoop/sendLoop here — the bytes on the wire are TLS
+                // handshake records, not NovaProtocol application data.
+                fd_set readSet, writeSet;
+                FD_ZERO(&readSet);
+                FD_ZERO(&writeSet);
+                FD_SET(mSocket, &readSet);
+                FD_SET(mSocket, &writeSet);
+                struct timeval timeout;
+                timeout.tv_sec = 0;
+                timeout.tv_usec = 100000; // 100ms
+                select(static_cast<int>(mSocket) + 1, &readSet, &writeSet,
+                       nullptr, &timeout);
+                continue;
+            }
+        } else if (mHandshakePending) {
+            // Plaintext path (TLS disabled): send the handshake immediately.
+            sendHandshake();
+            mHandshakePending = false;
         }
 
         // Main network loop
@@ -147,7 +197,7 @@ void NetworkClient::networkThreadFunc() {
         FD_ZERO(&readSet);
         FD_ZERO(&writeSet);
         FD_SET(mSocket, &readSet);
-        
+
         // Request writable events whenever there are queued packets OR pending
         // send-buffer bytes left from a previous short write / EAGAIN. Without
         // the residual check, bytes stuck behind EAGAIN would only flush when a
@@ -161,7 +211,7 @@ void NetworkClient::networkThreadFunc() {
         timeout.tv_usec = 100000; // 100ms
 
         int result = select(static_cast<int>(mSocket) + 1, &readSet, &writeSet, nullptr, &timeout);
-        
+
         if (result == SOCKET_ERROR) {
             doDisconnect();
             continue;
@@ -225,31 +275,37 @@ bool NetworkClient::doConnect() {
         return false;
     }
 
-    // TODO AUTH-002 TLS: when mTlsEnabled is true, wrap mSocket in an OpenSSL
-    // TLS session here. The integration requires: (1) an SSL_CTX configured
-    // for certificate verification (SSL_VERIFY_PEER with the configured
-    // ca_cert_path or the system store) — there is intentionally no option to
-    // disable verification; (2) an optional client cert/key pair loaded when
-    // both mTlsClientCertPath and mTlsClientKeyPath are non-empty; (3) a
-    // non-blocking SSL_connect state machine integrated into the select() loop
-    // in networkThreadFunc() — SSL_want_read / SSL_want_write drive which
-    // fd_set to subscribe to, and SSL_read / SSL_write replace the raw recv /
-    // send calls in receiveLoop() / sendLoop(). Because xmake is unavailable
-    // in this environment (no compile verification), the non-blocking SSL state
-    // machine is NOT written here — an unverified state machine is a larger
-    // risk than the documented gap. Until that lands, the backend connects
-    // over plaintext TCP even when TLS is configured (mTlsEnabled is stored
-    // but not yet applied). xmake.lua already declares the OpenSSL dependency
-    // so the symbols link once the implementation is added.
+    // AUTH-002 TLS: when TLS is enabled, build the SSL_CTX (SSL_VERIFY_PEER,
+    // no insecure bypass), optionally load the mTLS client cert/key, create
+    // the SSL session, and bind it to the socket. The actual handshake is
+    // driven by tlsHandshakeStep() from the select() loop below — we do NOT
+    // call SSL_connect here because the socket is still in blocking mode at
+    // this point (set to non-blocking immediately after). Calling SSL_connect
+    // on a blocking socket would block the network thread until the handshake
+    // completes or fails, defeating the non-blocking design.
     if (mTlsEnabled) {
-        // Skeleton seam: TLS connect not yet implemented (see TODO above).
-        // Fall through to the plaintext non-blocking setup so the client still
-        // operates; operators who set enable=true without a TLS listener get a
-        // working plaintext connection rather than a silent no-op. This gap is
-        // reported honestly in the AUTH-002 delivery report.
+        if (!setupTlsContext()) {
+            // setupTlsContext logs the OpenSSL error and cleans up any
+            // partially-built state. Close the raw socket and bail.
+            closesocket(mSocket);
+            mSocket = INVALID_SOCKET;
+            return false;
+        }
+
+        // Bind the SSL session to the socket. SSL_set_fd must come before
+        // SSL_connect (the handshake needs to know which fd to use).
+        SSL_set_fd(mSsl, static_cast<int>(mSocket));
+
+        // Set the TLS state to Connecting so the select() loop knows to drive
+        // the handshake. SSL_connect is NOT called here — it is called in
+        // tlsHandshakeStep() after the socket is set to non-blocking mode.
+        mTlsState = TlsState::Connecting;
+    } else {
+        mTlsState = TlsState::Idle;
     }
 
-    // Set non-blocking mode
+    // Set non-blocking mode — must happen BEFORE the first SSL_connect call
+    // (in tlsHandshakeStep) so the non-blocking state machine works.
 #ifdef _WIN32
     u_long mode = 1;
     ioctlsocket(mSocket, FIONBIO, &mode);
@@ -273,6 +329,16 @@ bool NetworkClient::doConnect() {
 void NetworkClient::doDisconnect() {
     std::lock_guard<std::mutex> lock(mSocketMutex);
 
+    // AUTH-002 TLS: tear down the SSL session before closing the socket.
+    // SSL_shutdown sends a close_notify alert (best-effort — the peer may
+    // not be listening, which is fine); SSL_free releases the session.
+    // mSslCtx is freed here too since it is per-connection (created in
+    // setupTlsContext, not shared across reconnects).
+    if (mSsl || mSslCtx) {
+        tlsShutdown();
+    }
+    mTlsState = TlsState::Idle;
+
     if (mSocket != INVALID_SOCKET) {
         closesocket(mSocket);
         mSocket = INVALID_SOCKET;
@@ -289,16 +355,32 @@ void NetworkClient::doDisconnect() {
 }
 
 void NetworkClient::handleReconnect() {
-    std::this_thread::sleep_for(std::chrono::seconds(mReconnectDelay));
+    // Sleep for mReconnectDelay, but wake up promptly when mRunning goes false
+    // so disconnect() can join the network thread without waiting the full
+    // delay. Polling at 100ms keeps shutdown responsive without a busy loop.
+    auto deadline = std::chrono::steady_clock::now() +
+                    std::chrono::seconds(mReconnectDelay);
+    while (mRunning.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 }
 
 void NetworkClient::receiveLoop() {
     uint8_t buffer[4096];
-    
-    int bytesReceived = recv(mSocket, reinterpret_cast<char*>(buffer), sizeof(buffer), 0);
-    
+
+    // AUTH-002 TLS: when a TLS session is established, read decrypted
+    // application data via SSL_read instead of raw recv(). SSL_read returns
+    // the same semantics as recv (positive byte count, 0 = EOF, <0 = error),
+    // but the error codes come from SSL_get_error, not errno/WSAGetLastError.
+    int bytesReceived;
+    if (mTlsState == TlsState::Established && mSsl != nullptr) {
+        bytesReceived = tlsRecv(reinterpret_cast<char*>(buffer), static_cast<int>(sizeof(buffer)));
+    } else {
+        bytesReceived = recv(mSocket, reinterpret_cast<char*>(buffer), sizeof(buffer), 0);
+    }
+
     if (bytesReceived <= 0) {
-        if (bytesReceived == 0 || 
+        if (bytesReceived == 0 ||
 #ifdef _WIN32
             WSAGetLastError() != WSAEWOULDBLOCK
 #else
@@ -346,10 +428,20 @@ void NetworkClient::processReceivedData() {
         // Remove processed data from buffer
         mReceiveBuffer.erase(mReceiveBuffer.begin(), mReceiveBuffer.begin() + totalLength);
 
-        // Decode packet
+        // Decode packet. A short/malformed payload (e.g. a partial frame that
+        // passed the VarInt length check but has fewer bytes than the packet
+        // body needs) throws std::runtime_error from PacketBuffer. Rather than
+        // letting that propagate and terminate the network thread, treat it as
+        // an undecodable frame: drop it and continue processing the rest of the
+        // buffer. This keeps a single bad byte from killing the connection.
         PacketBuffer buffer(std::move(packetData));
-        auto packet = decodePacket(buffer);
-        
+        std::unique_ptr<Packet> packet;
+        try {
+            packet = decodePacket(buffer);
+        } catch (const std::exception&) {
+            packet.reset();
+        }
+
         if (packet) {
             // Handle handshake response internally
             if (packet->getPacketId() == PacketIds::HANDSHAKE_RESPONSE) {
@@ -442,10 +534,39 @@ void NetworkClient::sendLoop() {
     auto drain = [this]() -> DrainResult {
         while (mSendOffset < mSendBuffer.size()) {
             const size_t remaining = mSendBuffer.size() - mSendOffset;
-            auto sent = send(mSocket,
-                             reinterpret_cast<const char*>(mSendBuffer.data() + mSendOffset),
-                             static_cast<int>(remaining),
-                             0);
+            int sent;
+            // AUTH-002 TLS: when TLS is established, encrypt the plaintext
+            // send-buffer bytes through SSL_write. The non-blocking semantics
+            // match: SSL_ERROR_WANT_WRITE is the TLS analogue of EAGAIN, and
+            // any other error is fatal (cert revoked, session torn down, etc).
+            if (mTlsState == TlsState::Established && mSsl != nullptr) {
+                sent = tlsSend(reinterpret_cast<const char*>(mSendBuffer.data() + mSendOffset),
+                               static_cast<int>(remaining));
+                if (sent <= 0) {
+                    // tlsSend already mapped the SSL error to the errno-like
+                    // model (WSAEWOULDBLOCK on WANT_WRITE, fatal otherwise).
+#ifdef _WIN32
+                    const int err = WSAGetLastError();
+                    if (err == WSAEWOULDBLOCK) {
+                        return DrainResult::Blocked;
+                    }
+                    return DrainResult::Fatal;
+#else
+                    if (errno == EINTR) {
+                        continue;
+                    }
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        return DrainResult::Blocked;
+                    }
+                    return DrainResult::Fatal;
+#endif
+                }
+            } else {
+                sent = send(mSocket,
+                                 reinterpret_cast<const char*>(mSendBuffer.data() + mSendOffset),
+                                 static_cast<int>(remaining),
+                                 0);
+            }
             if (sent > 0) {
                 mSendOffset += static_cast<size_t>(sent);
                 continue;
@@ -624,9 +745,237 @@ void NetworkClient::sendKeepAlive() {
     auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
         now.time_since_epoch()
     ).count();
-    
+
     auto packet = std::make_unique<KeepAlivePacket>(timestamp);
     sendPacket(std::move(packet));
+}
+
+// ==================== AUTH-002 TLS transport ====================
+
+bool NetworkClient::setupTlsContext() {
+    // Create a TLS 1.2+ client context. SSL_CTX_new(SSLv23_client_method())
+    // is the OpenSSL idiom for a client-side flexible-method context; the
+    // SSL_OP_NO_SSLv2/SSLv3/TLSv1/TLSv1.1 options lock the floor at TLS 1.2
+    // (matching the JVM client's default, which disabled TLS 1.0/1.1 in
+    // Java 8u292+). SSLv23_client_method is not deprecated in OpenSSL 1.1.1
+    // (the TLS_method API is 1.1.0+, but SSLv23_client_method is still the
+    // portable alias on the versions xmake packages).
+    mSslCtx = SSL_CTX_new(SSLv23_client_method());
+    if (mSslCtx == nullptr) {
+        return false;
+    }
+
+    // Disable legacy protocols. TLS 1.0/1.1 are disabled by default in modern
+    // OpenSSL but we set the options explicitly for older builds (the options
+    // are no-ops on builds that already disable them at compile time).
+    SSL_CTX_set_options(mSslCtx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3
+                                   | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
+
+    // Enforce certificate verification. SSL_VERIFY_PEER is mandatory (there
+    // is intentionally no option to disable verification — no
+    // SSL_VERIFY_NONE path exists when mTlsEnabled is true). The verify
+    // callback is NULL so OpenSSL uses its default behaviour: abort the
+    // handshake on the first untrusted / expired / mismatched certificate.
+    SSL_CTX_set_verify(mSslCtx, SSL_VERIFY_PEER, nullptr);
+
+    // Load the CA store. When mTlsCaCertPath is a file, load it as a PEM bundle;
+    // when empty, fall back to the system default CA store
+    // (SSL_CTX_set_default_verify_paths). The system-store fallback covers the
+    // common production case where the backend uses a cert signed by a public
+    // CA (Let's Encrypt, etc.); the explicit file covers the self-signed test
+    // CA and private-CA deployments.
+    if (!mTlsCaCertPath.empty()) {
+        if (SSL_CTX_load_verify_locations(mSslCtx, mTlsCaCertPath.c_str(), nullptr) != 1) {
+            SSL_CTX_free(mSslCtx);
+            mSslCtx = nullptr;
+            return false;
+        }
+    } else {
+        // System CA store. If this fails (minimal container images without
+        // ca-certificates), every connection will fail the handshake — which
+        // is the correct fail-closed behaviour, NOT a silent plaintext
+        // downgrade.
+        SSL_CTX_set_default_verify_paths(mSslCtx);
+    }
+
+    // Optional mutual TLS: load the client cert/key pair. Only when BOTH paths
+    // are non-empty (the plugin wiring in NovaChatPlugin ensures they are
+    // either both set or both empty). A partial pair (cert without key or
+    // vice-versa) is a configuration error — bail out.
+    if (!mTlsClientCertPath.empty() && !mTlsClientKeyPath.empty()) {
+        if (SSL_CTX_use_certificate_file(mSslCtx, mTlsClientCertPath.c_str(),
+                                         SSL_FILETYPE_PEM) != 1) {
+            SSL_CTX_free(mSslCtx);
+            mSslCtx = nullptr;
+            return false;
+        }
+        if (SSL_CTX_use_PrivateKey_file(mSslCtx, mTlsClientKeyPath.c_str(),
+                                       SSL_FILETYPE_PEM) != 1) {
+            SSL_CTX_free(mSslCtx);
+            mSslCtx = nullptr;
+            return false;
+        }
+        // Validate the cert/key pair match. If they don't, every handshake
+        // would fail at the ServerKeyExchange/ClientKeyExchange step with a
+        // confusing error — fail fast here with a clear signal.
+        if (SSL_CTX_check_private_key(mSslCtx) != 1) {
+            SSL_CTX_free(mSslCtx);
+            mSslCtx = nullptr;
+            return false;
+        }
+    } else if (!mTlsClientCertPath.empty() || !mTlsClientKeyPath.empty()) {
+        // Partial mTLS config — cert without key or vice-versa. Reject.
+        SSL_CTX_free(mSslCtx);
+        mSslCtx = nullptr;
+        return false;
+    }
+
+    // Create the SSL session and bind it to the socket. SSL_set_fd must come
+    // before SSL_connect (the handshake needs to know which fd to use).
+    mSsl = SSL_new(mSslCtx);
+    if (mSsl == nullptr) {
+        SSL_CTX_free(mSslCtx);
+        mSslCtx = nullptr;
+        return false;
+    }
+
+    // Set the SNI hostname so the server can pick the right certificate when
+    // it hosts multiple virtual backends. Use mHost as-is (may be a hostname
+    // or an IP — SSL_set_tlsext_host_name with an IP is a no-op on most
+    // OpenSSL builds, which is fine).
+    if (!mHost.empty()) {
+        SSL_set_tlsext_host_name(mSsl, mHost.c_str());
+    }
+
+    // NOTE: SSL_set_fd is called in doConnect() after this function returns,
+    // because the socket fd is not available here (doConnect owns it).
+    return true;
+}
+
+TlsState NetworkClient::tlsHandshakeStep() {
+    if (mSsl == nullptr) {
+        return TlsState::Failed;
+    }
+
+    // SSL_connect returns 1 on success, <=0 on error/would-block. The
+    // non-blocking path: SSL_ERROR_WANT_READ means wait for the fd to become
+    // readable then retry; SSL_ERROR_WANT_WRITE means wait for writable.
+    int ret = SSL_connect(mSsl);
+    if (ret == 1) {
+        // Verify the peer certificate post-handshake. SSL_VERIFY_PEER handles
+        // the chain validation during the handshake, but the final
+        // SSL_get_verify_result() check catches any verification that was
+        // deferred (e.g. when a verify callback is installed — we use none,
+        // but this is defence in depth). X509_V_OK means the chain is trusted.
+        if (SSL_get_verify_result(mSsl) == X509_V_OK) {
+            return TlsState::Established;
+        }
+        return TlsState::Failed;
+    }
+
+    int err = SSL_get_error(mSsl, ret);
+    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+        // Handshake needs more I/O — stay in Connecting. The select() loop
+        // in networkThreadFunc() will poll the fd and call us again.
+        // NOTE: we do not manually set the fd_set based on SSL_want_read/
+        // SSL_want_write here because the existing select() subscribes to
+        // both readable and writable (read always, write when there is
+        // pending send data). For the handshake phase there is no send
+        // data, so we rely on the 100ms timeout to retry. This is correct
+        // but slightly less efficient than subscribing to the exact fd_set
+        // — acceptable for a game-server plugin where handshakes are rare.
+        return TlsState::Connecting;
+    }
+
+    // Any other error (SSL_ERROR_SSL, SSL_ERROR_SYSCALL, SSL_ERROR_ZERO_RETURN)
+    // is a handshake failure. The connection must be torn down.
+    return TlsState::Failed;
+}
+
+int NetworkClient::tlsRecv(char* buf, int len) {
+    // SSL_read returns >0 on success, 0 on EOF, <0 on error. The error is
+    // retrieved via SSL_get_error: SSL_ERROR_WANT_READ means "retry later"
+    // (the TLS analogue of EWOULDBLOCK). We translate that to the errno/WSA
+    // model so the existing receiveLoop() backpressure logic works unchanged.
+    ERR_clear_error();
+    int n = SSL_read(mSsl, buf, len);
+    if (n > 0) {
+        return n;
+    }
+
+    int err = SSL_get_error(mSsl, n);
+    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+        // Non-blocking retry — set the errno/WSA error to WOULDBLOCK so the
+        // caller (receiveLoop) treats it as backpressure, not a fatal error.
+#ifdef _WIN32
+        WSASetLastError(WSAEWOULDBLOCK);
+#else
+        errno = EAGAIN;
+#endif
+        return -1;
+    }
+
+    // SSL_ERROR_ZERO_RETURN (graceful close) or SSL_ERROR_SSL / SSL_ERROR_SYSCALL
+    // (fatal). Return 0 for EOF (so receiveLoop disconnects cleanly) and -1
+    // for fatal errors (so receiveLoop sees a non-WOULDBLOCK error and disconnects).
+    if (err == SSL_ERROR_ZERO_RETURN) {
+        return 0;
+    }
+    // Fatal: set errno to a non-retryable value so receiveLoop disconnects.
+#ifdef _WIN32
+    WSASetLastError(WSAECONNRESET);
+#else
+    errno = ECONNRESET;
+#endif
+    return -1;
+}
+
+int NetworkClient::tlsSend(const char* buf, int len) {
+    // SSL_write returns >0 on success, <=0 on error. Same error mapping as
+    // tlsRecv: WANT_WRITE becomes WOULDBLOCK (backpressure), everything else
+    // is fatal.
+    ERR_clear_error();
+    int n = SSL_write(mSsl, buf, len);
+    if (n > 0) {
+        return n;
+    }
+
+    int err = SSL_get_error(mSsl, n);
+    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+#ifdef _WIN32
+        WSASetLastError(WSAEWOULDBLOCK);
+#else
+        errno = EAGAIN;
+#endif
+        return -1;
+    }
+
+    // Fatal error (SSL_ERROR_SSL, SSL_ERROR_SYSCALL, SSL_ERROR_ZERO_RETURN on
+    // write is an unexpected EOF). Set errno to a non-retryable value so the
+    // sendLoop drain lambda classifies it as DrainResult::Fatal.
+#ifdef _WIN32
+    WSASetLastError(WSAECONNRESET);
+#else
+    errno = ECONNRESET;
+#endif
+    return -1;
+}
+
+void NetworkClient::tlsShutdown() {
+    // Best-effort SSL_shutdown. The peer may not be listening (e.g. on a
+    // forceful disconnect), so we do not retry — a single bidirectional or
+    // unidirectional shutdown attempt is enough to send close_notify if the
+    // connection is still alive; if it isn't, SSL_shutdown returns -1 and we
+    // proceed to SSL_free anyway.
+    if (mSsl != nullptr) {
+        SSL_shutdown(mSsl);
+        SSL_free(mSsl);
+        mSsl = nullptr;
+    }
+    if (mSslCtx != nullptr) {
+        SSL_CTX_free(mSslCtx);
+        mSslCtx = nullptr;
+    }
 }
 
 } // namespace novachat::network
