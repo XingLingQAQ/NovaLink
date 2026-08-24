@@ -160,10 +160,35 @@ public class CronSchedule {
     /**
      * Gets the delay until the next execution in milliseconds.
      *
-     * @return delay in milliseconds, or -1 if cannot be calculated
+     * <p>This is the single source of truth for the next-fire delay and is
+     * called on every fire (by the one-shot re-arm in
+     * {@link AnnouncementManager}) so that non-uniform schedules (monthly,
+     * weekday-specific, DST-affected hourly) fire at the correct wall-clock
+     * time each fire — not at a fixed {@link #getPeriodMs()} interval that
+     * drifts.
+     *
+     * <p>When the calculated time is in the past, the method advances by the
+     * appropriate calendar <em>unit</em> (1 month for day-of-month, 1 week for
+     * day-of-week, 1 day for hourly, 1 hour for minute-only, 1 year for
+     * month-specific) rather than adding a fixed {@code periodMs}. This is
+     * what keeps monthly (≈28-31d) and DST-hourly schedules aligned to the
+     * wall clock.
+     *
+     * @return delay in milliseconds (at least {@link #MIN_PERIOD_MS}), or -1 if cannot be calculated
      */
     public long getNextExecutionDelay() {
-        Calendar now = Calendar.getInstance();
+        return getNextExecutionDelay(Calendar.getInstance());
+    }
+
+    /**
+     * Overload accepting a reference "now" so tests can verify monthly and
+     * DST-boundary behavior deterministically without depending on the wall
+     * clock. Package-private to keep the public API stable.
+     *
+     * @param now the reference time to compute the next fire from
+     * @return delay in milliseconds (at least {@link #MIN_PERIOD_MS})
+     */
+    long getNextExecutionDelay(Calendar now) {
         Calendar next = (Calendar) now.clone();
 
         // Set the next execution time based on cron fields
@@ -192,9 +217,29 @@ public class CronSchedule {
         next.set(Calendar.SECOND, 0);
         next.set(Calendar.MILLISECOND, 0);
 
-        // If the calculated time is in the past, add the period
+        // If the calculated time is in the past (or exactly now), advance by
+        // the appropriate calendar UNIT — not by a fixed periodMs. Adding 30d
+        // for a monthly schedule drifts (months are 28-31d); adding 1 month
+        // via Calendar.add keeps the day-of-month aligned to the wall clock.
+        // Calendar.add is also DST-aware, so advancing across a DST boundary
+        // lands on the correct wall-clock hour.
         if (next.before(now) || next.equals(now)) {
-            next.setTimeInMillis(now.getTimeInMillis() + periodMs);
+            if (month >= 0) {
+                // Year-specific (e.g., "0 0 1 1 *" = Jan 1): advance a year.
+                next.add(Calendar.YEAR, 1);
+            } else if (dayOfMonth >= 0) {
+                next.add(Calendar.MONTH, 1);
+            } else if (dayOfWeek >= 0) {
+                next.add(Calendar.DAY_OF_MONTH, 7);
+            } else if (hour >= 0) {
+                next.add(Calendar.DAY_OF_MONTH, 1);
+            } else if (minute >= 0) {
+                next.add(Calendar.HOUR_OF_DAY, 1);
+            } else {
+                // Step patterns (* /N) and all-wildcard: these are uniform,
+                // so periodMs is safe and aligns with the step interval.
+                next.setTimeInMillis(now.getTimeInMillis() + periodMs);
+            }
         }
 
         long delay = next.getTimeInMillis() - now.getTimeInMillis();

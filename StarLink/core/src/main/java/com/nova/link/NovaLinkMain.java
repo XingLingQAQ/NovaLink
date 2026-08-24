@@ -1,5 +1,6 @@
 package com.nova.link;
 
+import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.common.protocol.NovaProtocol;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.*;
@@ -7,11 +8,14 @@ import com.nova.link.auth.*;
 import com.nova.link.auth.ClientPermissionRegistry;
 import com.nova.link.api.WebhookManager;
 import com.nova.link.announcement.AnnouncementManager;
+import com.nova.link.announcement.CampaignManager;
 import com.nova.link.ban.BanManager;
+import com.nova.link.chat.MentionResolver;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
+import com.nova.link.channel.ChannelSource;
 import com.nova.link.channel.MessageRouter;
 import com.nova.link.channel.PrivateChannelManager;
 import com.nova.link.channel.InvitationManager;
@@ -35,6 +39,9 @@ import com.nova.link.network.ChannelActionHandler;
 import com.nova.link.network.ItemDisplayHandler;
 import com.nova.link.network.PrivateMessageHandler;
 import com.nova.link.network.RateLimiter;
+import com.nova.link.network.InsecureModeGate;
+import com.nova.link.audit.AuditStore;
+import com.nova.link.moderation.ModerationManager;
 import com.nova.link.notification.NotificationStore;
 import com.nova.link.spy.SpyManager;
 import com.nova.link.websocket.JwtSecretResolver;
@@ -72,6 +79,17 @@ public class NovaLinkMain {
      * the fully-published context.
      */
     private volatile BackendContext context;
+
+    /**
+     * §11.6 提案 06 (项目 19) — campaign 编排管理器。内存态（slice A，零迁移）；
+     * 复用同一个 AuditStore 记录 campaign 审计；投递回调走受信 MessageRouter 路径，
+     * 与 AnnouncementManager.setAnnouncementSender 同型。生产持久化为后续 slice。
+     * <p>
+     * Not part of {@link BackendContext} (slice A keeps the manager local to this
+     * class): wired as a private field so the shutdown hook can stop its scheduler
+     * the same way it stops AnnouncementManager.
+     */
+    private volatile CampaignManager campaignManager;
 
     /**
      * Latch used by the JVM shutdown hook to signal the main (console) thread
@@ -153,7 +171,7 @@ public class NovaLinkMain {
         // Initialize authentication
         IpBanManager ipBanManager = new IpBanManager(
                 IpBanManager.DEFAULT_MAX_FAILURES,
-                Math.max(1, config.getSecurity().getIpBanDuration()) * 1000L
+                config.getSecurity().getIpBanDuration() * 1000L
         );
         AuthManager authManager = new AuthManager(ipBanManager);
         registerClients(authManager, config);
@@ -256,7 +274,7 @@ public class NovaLinkMain {
         bootstrapPrivateChannelAdmins(permissionManager, channelManager);
 
         // Network + routing
-        int workerThreads = Math.max(1, config.getServer().getWorkerThreads());
+        int workerThreads = config.getServer().getWorkerThreads();
         ServerNetworkHandler networkHandler = new ServerNetworkHandler(workerThreads);
         MessageRouter messageRouter = new MessageRouter(channelManager, networkHandler);
         messageRouter.setMuteManager(muteManager);
@@ -276,7 +294,7 @@ public class NovaLinkMain {
 
         // Message persistence: async write-behind + hourly retention cleanup.
         MessageLogService messageLogService = new MessageLogService(databaseProvider,
-                config.getFeatures() != null ? config.getFeatures().getMessageLogRetentionDays() : 30);
+                config.getFeatures().getMessageLogRetentionDays());
         messageLogService.initialize();
         messageRouter.setMessageLogService(messageLogService);
 
@@ -284,13 +302,33 @@ public class NovaLinkMain {
         // (the reload listener below only covers subsequent config changes).
         // privateMessagesEnabled is a live flag consumed by PrivateMessageHandler.
         java.util.concurrent.atomic.AtomicBoolean privateMessagesEnabled =
-                new java.util.concurrent.atomic.AtomicBoolean(true);
-        if (config.getFeatures() != null) {
-            sensitiveWordFilter.setEnabled(config.getFeatures().isFilterEnabled());
-            messageRouter.getPipeline().setCrossServerChatEnabled(config.getFeatures().isCrossServerChatEnabled());
-            messageRouter.getPipeline().setMessageLogEnabled(config.getFeatures().isMessageLogEnabled());
-            privateMessagesEnabled.set(config.getFeatures().isPrivateMessagesEnabled());
-        }
+                new java.util.concurrent.atomic.AtomicBoolean(
+                        config.getFeatures().isPrivateMessagesEnabled());
+        sensitiveWordFilter.setEnabled(config.getFeatures().isFilterEnabled());
+        messageRouter.getPipeline().setCrossServerChatEnabled(
+                config.getFeatures().isCrossServerChatEnabled());
+        messageRouter.getPipeline().setMessageLogEnabled(config.getFeatures().isMessageLogEnabled());
+        // §11.6 Proposal 05 sub-slice: wire backend @mention emit. MentionResolver
+        // reuses NovaChat/common's MentionNotifier (no independent parser). Nullable
+        // setter + mentionsEnabled (default true) means Stage 7b in MessagePipeline
+        // fires for cross-server recipients. FeatureConfig has no mentionsEnabled
+        // toggle yet, so this is hardcoded on; a future FeatureConfig field can drive
+        // a reload-listener flip.
+        messageRouter.getPipeline().setMentionResolver(
+                new MentionResolver(
+                        new MentionNotifier(),
+                        playerStateManager,
+                        networkHandler,
+                        // §11.6 item-18 Part C: fail-open ignore + mention-pref
+                        // lookups. DatabaseProvider methods throw checked
+                        // DatabaseException, but the FI is non-throwing, so the
+                        // lambdas swallow and degrade: ignore-failure → false
+                        // (don't suppress the mention), pref-failure → true
+                        // (mention still sent). databaseProvider is effectively
+                        // final (assigned once at line 222).
+                        (src, tgt) -> { try { return databaseProvider.isIgnored(src, tgt); } catch (Exception e) { return false; } },
+                        id -> { try { return databaseProvider.getNotificationPreference(id).isMentionsEnabled(); } catch (Exception e) { return true; } }
+                ));
         applyFilterConfig(sensitiveWordFilter, config.getFilter());
 
         // Clear grants when a game server disconnects so reconnect gets a fresh bootstrap.
@@ -304,13 +342,14 @@ public class NovaLinkMain {
             applyConfiguredChannels(channelManager, newConfig);
             bootstrapPrivateChannelAdmins(permissionManager, channelManager);
             // Apply FeatureConfig switches (§3.7) so config changes hot-apply to runtime.
-            if (newConfig.getFeatures() != null) {
-                sensitiveWordFilter.setEnabled(newConfig.getFeatures().isFilterEnabled());
-                messageRouter.getPipeline().setCrossServerChatEnabled(newConfig.getFeatures().isCrossServerChatEnabled());
-                messageRouter.getPipeline().setMessageLogEnabled(newConfig.getFeatures().isMessageLogEnabled());
-                messageLogService.setRetentionDays(newConfig.getFeatures().getMessageLogRetentionDays());
-                privateMessagesEnabled.set(newConfig.getFeatures().isPrivateMessagesEnabled());
-            }
+            sensitiveWordFilter.setEnabled(newConfig.getFeatures().isFilterEnabled());
+            messageRouter.getPipeline().setCrossServerChatEnabled(
+                    newConfig.getFeatures().isCrossServerChatEnabled());
+            messageRouter.getPipeline().setMessageLogEnabled(
+                    newConfig.getFeatures().isMessageLogEnabled());
+            messageLogService.setRetentionDays(
+                    newConfig.getFeatures().getMessageLogRetentionDays());
+            privateMessagesEnabled.set(newConfig.getFeatures().isPrivateMessagesEnabled());
             // Re-apply the custom sensitive-word lists from the filter section.
             applyFilterConfig(sensitiveWordFilter, newConfig.getFilter());
         });
@@ -337,14 +376,24 @@ public class NovaLinkMain {
                 banManager
         );
 
-        // Servers (idle timeout: server.idle-timeout-seconds, 0 = disabled)
+        // Servers (idle timeout: server.idle-timeout-seconds, 0 = disabled).
+        // AUTH-002: pass the configured TLS material so the listener wraps the
+        // challenge-response handshake in an encrypted channel when configured.
         NettyServer tcpServer = new NettyServer(
                 config.getServer().getBindAddress(),
                 config.getServer().getPort(),
                 workerThreads,
                 config.getServer().getIdleTimeoutSeconds(),
-                networkHandler
+                networkHandler,
+                config.getServer().getTls()
         );
+
+        // AUTH-002: fail-closed — refuse to start the TCP listener in plaintext
+        // unless the operator has explicitly set insecure-allow-plaintext: true.
+        // The challenge-response handshake protects the stored password hash
+        // either way, but only TLS hides the handshake from a network observer.
+        InsecureModeGate.requireTlsOrExplicitInsecure(config.getServer(),
+                "TCP listener (port " + config.getServer().getPort() + ")");
 
         // Build a ConsoleCommandHandler for the REST /api/console endpoint.
         // BackendContext is normally published after the servers start, but the
@@ -393,14 +442,18 @@ public class NovaLinkMain {
         // notification. Wired here (after notificationStore is created) so the
         // notification side-channel is available. The permission cleanup is the
         // original behavior; the notification is the new trigger.
-        networkHandler.setDisconnectListener(connection -> {
+        networkHandler.setDisconnectListener((connection, activeGenerationEnded) -> {
             // Drop the connection's token bucket so the limiter map stays
             // bounded by the number of live connections.
             if (connection != null) {
                 rateLimiter.remove(connection.getConnectionId());
             }
             String clientId = connection != null ? connection.getClientId() : null;
-            if (clientId != null && !clientId.isBlank()) {
+            // An old generation can report channelInactive after a newer
+            // connection has taken over the same clientId. Only the current
+            // generation may clear client-scoped permissions or announce the
+            // client offline.
+            if (activeGenerationEnded && clientId != null && !clientId.isBlank()) {
                 clientPermissionRegistry.clearClient(clientId);
                 logger.debug("Cleared permission grants for disconnected client '{}'", clientId);
                 if (notificationStore != null) {
@@ -430,6 +483,39 @@ public class NovaLinkMain {
                     + "Configure the exact panel origin(s) to tighten security.");
         }
 
+        // PANEL-011 / AUTH-002: fail-closed for the WS/REST port too — refuse
+        // to start the WebSocket/REST listener in plaintext unless the operator
+        // has explicitly set insecure-allow-plaintext: true. The WS port
+        // carries JWT login + panel traffic; only TLS hides that from a passive
+        // observer. Mirrors the TCP gate above.
+        InsecureModeGate.requireTlsOrExplicitInsecure(config.getServer(),
+                "WebSocket/REST listener (port " + config.getServer().getWebsocketPort() + ")");
+
+        // PANEL-006: append-only audit store backed by the same DatabaseProvider
+        // as the rest of the persistence layer. Constructed once and shared with
+        // the REST handler so every P1 admin mutation is recorded.
+        AuditStore auditStore = new AuditStore(databaseProvider);
+
+        // PANEL-007: moderation case/appeal manager. Shares the same
+        // DatabaseProvider + AuditStore so every moderation mutation (report,
+        // assign, resolve, evidence, appeal, review) records an audit entry
+        // internally — the REST handler must NOT duplicate those audit calls.
+        ModerationManager moderationManager =
+                new ModerationManager(databaseProvider, auditStore);
+
+        // §11.6 提案 06 (项目 19) — campaign 编排管理器。内存态（slice A，零迁移）；
+        // 复用同一个 AuditStore 记录 campaign 审计；投递回调走受信 MessageRouter 路径，
+        // 与 AnnouncementManager.setAnnouncementSender 同型。生产持久化为后续 slice。
+        campaignManager = new CampaignManager(permissionManager, channelManager);
+        campaignManager.setAuditStore(auditStore);
+        campaignManager.setAnnouncementSender((channelId, content) -> {
+            Map<String, String> placeholders = new HashMap<>();
+            placeholders.put("_announcement", "true");
+            messageRouter.routeMessage(channelId, ConsoleSentinel.CONSOLE_SENTINEL,
+                    ConsoleSentinel.CONSOLE_NAME, content, placeholders);
+        });
+        campaignManager.initialize();
+
         WebSocketGateway webSocketGateway = new WebSocketGateway(
                 config.getServer().getBindAddress(),
                 config.getServer().getWebsocketPort(),
@@ -446,7 +532,9 @@ public class NovaLinkMain {
                 configManager,
                 consoleCommandHandler,
                 notificationStore,
-                corsAllowedOrigins
+                corsAllowedOrigins,
+                config.getServer().getTls(),
+                auditStore
         );
         // Back-link the gateway so notifications broadcast live.
         notificationStore.setWebSocketGateway(webSocketGateway);
@@ -455,6 +543,17 @@ public class NovaLinkMain {
         // RestApiHandler constructor): announcements + message history.
         webSocketGateway.getRestApiHandler().setAnnouncementManager(announcementManager);
         webSocketGateway.getRestApiHandler().setMessageLogService(messageLogService);
+        // PANEL-007: hand the moderation manager to the REST handler so the
+        // case/appeal endpoints can dispatch to it.
+        webSocketGateway.getRestApiHandler().setModerationManager(moderationManager);
+        // §11.6 提案 06 (项目 19): hand the campaign manager to the REST handler
+        // so the campaign routes dispatch to it (slice A: in-memory, zero migration).
+        webSocketGateway.getRestApiHandler().setCampaignManager(campaignManager);
+        // §11.6 项目 17: wire ws gateway so metrics expose nova_link_ws_sessions_active + checks.ws.
+        webSocketGateway.getRestApiHandler().setWebSocketGateway(webSocketGateway);
+        // Wire the live private-messages-enabled flag so panel updates reach
+        // PrivateMessageHandler without a full configuration reload.
+        webSocketGateway.getRestApiHandler().setPrivateMessagesEnabledFlag(privateMessagesEnabled);
         // Offload REST + auth business logic (JDBC queries, BCrypt hashing)
         // from the Netty IO threads to a dedicated fixed pool
         // (server.rest-worker-threads); a saturated pool answers 503.
@@ -467,6 +566,11 @@ public class NovaLinkMain {
         channelActionHandler.setPlayerUpdateBroadcaster(webSocketGateway::broadcastPlayerUpdate);
         // Wire webhook delivery for player.join / player.leave events (P0-4).
         channelActionHandler.setWebhookManager(webhookManager);
+
+        // AUTH-002: per-server pending-challenge cache for the 3-packet
+        // challenge-response handshake. Lives for the lifetime of the server
+        // process; entries self-expire (30s TTL) and the map is bounded.
+        NonceCache nonceCache = new NonceCache();
 
         registerPacketHandlers(
                 networkHandler,
@@ -484,7 +588,9 @@ public class NovaLinkMain {
                 banManager,
                 rateLimiter,
                 privateMessagesEnabled::get,
-                chatLogger
+                chatLogger,
+                nonceCache,
+                databaseProvider
         );
 
         CompletableFuture<Void> startFuture = CompletableFuture.allOf(
@@ -676,8 +782,7 @@ public class NovaLinkMain {
     }
 
     private static DatabaseProvider createDatabaseProvider(NovaLinkConfig config) {
-        String type = config.getDatabase() != null ? config.getDatabase().getType() : "memory";
-        String normalized = type != null ? type.trim().toLowerCase(Locale.ROOT) : "memory";
+        String normalized = config.getDatabase().getType().trim().toLowerCase(Locale.ROOT);
 
         switch (normalized) {
             case "mysql":
@@ -712,8 +817,9 @@ public class NovaLinkMain {
                 DatabaseConfig.RedisConfig redis = config.getDatabase().getRedis();
                 return new RedisProvider(redis.getHost(), redis.getPort(), redis.getPassword());
             case "memory":
-            default:
                 return new MemoryProvider();
+            default:
+                throw new IllegalArgumentException("Unsupported database type: " + normalized);
         }
     }
 
@@ -735,7 +841,7 @@ public class NovaLinkMain {
                             .permission(cfg.getPermission())
                             .maxCapacity(cfg.getMaxCapacity())
                             .slowModeSeconds(cfg.getSlowModeSeconds())
-                            .build());
+                            .build(), ChannelSource.CONFIG);
                 } catch (Exception e) {
                     logger.warn("Failed to create global channel '{}': {}", channelId, e.getMessage());
                 }
@@ -807,7 +913,7 @@ public class NovaLinkMain {
                             .maxCapacity(maxCapacity)
                             .allowedWorlds(allowedWorlds)
                             .slowModeSeconds(channelCfg.getSlowModeSeconds())
-                            .build());
+                            .build(), ChannelSource.CONFIG);
                 } catch (Exception e) {
                     logger.warn("Failed to create channel '{}' for client '{}': {}", channelId, clientId, e.getMessage());
                 }
@@ -819,6 +925,10 @@ public class NovaLinkMain {
         if (config == null) {
             return;
         }
+
+        // Track every channel ID declared in the new config so we can detect
+        // (and remove) CONFIG channels that were deleted from config on reload.
+        java.util.Set<String> desiredIds = new java.util.HashSet<>();
 
         // Global channels
         if (config.getGlobalChannels() != null) {
@@ -838,79 +948,107 @@ public class NovaLinkMain {
                         .slowModeSeconds(cfg.getSlowModeSeconds())
                         .build();
 
+                desiredIds.add(channelId);
                 upsertConfiguredChannel(channelManager, desired);
             }
         }
 
-        if (config.getClients() == null) {
-            return;
-        }
+        if (config.getClients() != null) {
+            // Client channels (SERVER/PRIVATE)
+            for (ClientConfig client : config.getClients()) {
+                if (client == null || client.getUsername() == null || client.getUsername().isBlank()) {
+                    continue;
+                }
+                String clientId = client.getUsername();
 
-        // Client channels (SERVER/PRIVATE)
-        for (ClientConfig client : config.getClients()) {
-            if (client == null || client.getUsername() == null || client.getUsername().isBlank()) {
-                continue;
-            }
-            String clientId = client.getUsername();
-
-            if (client.getChannels() == null) {
-                continue;
-            }
-
-            for (Map.Entry<String, ServerChannelConfig> entry : client.getChannels().entrySet()) {
-                String channelId = entry.getKey();
-                ServerChannelConfig channelCfg = entry.getValue();
-                if (channelId == null || channelId.isBlank() || channelCfg == null) {
+                if (client.getChannels() == null) {
                     continue;
                 }
 
-                ChannelTemplateConfig template = null;
-                if (channelCfg.getUseTemplate() != null && config.getTemplates() != null) {
-                    template = config.getTemplates().get(channelCfg.getUseTemplate());
+                for (Map.Entry<String, ServerChannelConfig> entry : client.getChannels().entrySet()) {
+                    String channelId = entry.getKey();
+                    ServerChannelConfig channelCfg = entry.getValue();
+                    if (channelId == null || channelId.isBlank() || channelCfg == null) {
+                        continue;
+                    }
+
+                    ChannelTemplateConfig template = null;
+                    if (channelCfg.getUseTemplate() != null && config.getTemplates() != null) {
+                        template = config.getTemplates().get(channelCfg.getUseTemplate());
+                    }
+
+                    String displayName = firstNonBlank(channelCfg.getDisplayName(),
+                            template != null ? template.getDisplayName() : null,
+                            channelId);
+
+                    String scopeRaw = firstNonBlank(channelCfg.getScope(), template != null ? template.getScope() : null, "SERVER");
+                    ChannelScope scope = parseScope(scopeRaw, ChannelScope.SERVER);
+                    if (scope == ChannelScope.GLOBAL) {
+                        scope = ChannelScope.SERVER;
+                    }
+
+                    String permission = firstNonBlank(channelCfg.getPermission(), template != null ? template.getPermission() : null, null);
+
+                    int maxCapacity = 100;
+                    if (template != null && template.getMaxCapacity() != null) {
+                        maxCapacity = template.getMaxCapacity();
+                    }
+                    if (channelCfg.getMaxCapacity() != null) {
+                        maxCapacity = channelCfg.getMaxCapacity();
+                    }
+
+                    java.util.List<String> allowedWorlds = channelCfg.getAllowedWorlds() != null
+                            ? channelCfg.getAllowedWorlds()
+                            : (template != null && template.getAllowedWorlds() != null
+                            ? template.getAllowedWorlds()
+                            : java.util.Collections.emptyList());
+
+                    ChannelConfig desired = ChannelConfig.builder()
+                            .id(channelId)
+                            .displayName(displayName)
+                            .scope(scope)
+                            .clientId(clientId)
+                            .permission(permission)
+                            .maxCapacity(maxCapacity)
+                            .allowedWorlds(allowedWorlds)
+                            .slowModeSeconds(channelCfg.getSlowModeSeconds())
+                            .build();
+
+                    desiredIds.add(channelId);
+                    upsertConfiguredChannel(channelManager, desired);
                 }
-
-                String displayName = firstNonBlank(channelCfg.getDisplayName(),
-                        template != null ? template.getDisplayName() : null,
-                        channelId);
-
-                String scopeRaw = firstNonBlank(channelCfg.getScope(), template != null ? template.getScope() : null, "SERVER");
-                ChannelScope scope = parseScope(scopeRaw, ChannelScope.SERVER);
-                if (scope == ChannelScope.GLOBAL) {
-                    scope = ChannelScope.SERVER;
-                }
-
-                String permission = firstNonBlank(channelCfg.getPermission(), template != null ? template.getPermission() : null, null);
-
-                int maxCapacity = 100;
-                if (template != null && template.getMaxCapacity() != null) {
-                    maxCapacity = template.getMaxCapacity();
-                }
-                if (channelCfg.getMaxCapacity() != null) {
-                    maxCapacity = channelCfg.getMaxCapacity();
-                }
-
-                java.util.List<String> allowedWorlds = channelCfg.getAllowedWorlds() != null
-                        ? channelCfg.getAllowedWorlds()
-                        : (template != null && template.getAllowedWorlds() != null
-                        ? template.getAllowedWorlds()
-                        : java.util.Collections.emptyList());
-
-                ChannelConfig desired = ChannelConfig.builder()
-                        .id(channelId)
-                        .displayName(displayName)
-                        .scope(scope)
-                        .clientId(clientId)
-                        .permission(permission)
-                        .maxCapacity(maxCapacity)
-                        .allowedWorlds(allowedWorlds)
-                        .slowModeSeconds(channelCfg.getSlowModeSeconds())
-                        .build();
-
-                upsertConfiguredChannel(channelManager, desired);
             }
+        }
+
+        // PANEL-004: delete CONFIG channels that are no longer declared in the
+        // config. Non-CONFIG (DATABASE/RUNTIME) channels are never touched by
+        // reload, so a previously-deleted config channel is not revived and a
+        // dynamic channel is never overwritten.
+        java.util.List<String> staleConfigIds = new java.util.ArrayList<>();
+        for (Channel ch : channelManager.getAllChannels()) {
+            if (ch == null || ch.getSource() != ChannelSource.CONFIG) {
+                continue;
+            }
+            if (!desiredIds.contains(ch.getId())) {
+                staleConfigIds.add(ch.getId());
+            }
+        }
+        for (String staleId : staleConfigIds) {
+            channelManager.deleteChannel(staleId);
+            logger.info("Removed config channel '{}' (no longer in config after reload)", staleId);
         }
     }
 
+    /**
+     * Applies a single config-declared channel on reload. PANEL-004 semantics:
+     * <ul>
+     *   <li>If the channel does not exist, it is created with source CONFIG.</li>
+     *   <li>If it exists and its source is CONFIG, the config values are applied.</li>
+     *   <li>If it exists but its source is DATABASE or RUNTIME (dynamic), it is
+     *       left untouched — reload must not overwrite unmanaged channels.</li>
+     * </ul>
+     * Removed config channels are pruned by {@link #applyConfiguredChannels}.
+     */
     private static void upsertConfiguredChannel(ChannelManager channelManager, ChannelConfig desired) {
         if (desired == null || desired.getId() == null || desired.getId().isBlank()) {
             return;
@@ -919,19 +1057,24 @@ public class NovaLinkMain {
         Channel existing = channelManager.getChannel(desired.getId());
         if (existing == null) {
             try {
-                channelManager.createChannel(desired);
+                channelManager.createChannel(desired, ChannelSource.CONFIG);
             } catch (Exception e) {
                 logger.warn("Failed to create channel '{}' from config reload: {}", desired.getId(), e.getMessage());
             }
             return;
         }
 
-        // Never mutate runtime private channels from config reload.
-        if (existing.getScope() == ChannelScope.PRIVATE) {
+        // PANEL-004: never overwrite a dynamic (non-CONFIG) channel. This covers
+        // DATABASE channels restored from persistence and RUNTIME channels
+        // created via REST/console. A deleted config channel that was recreated
+        // as dynamic stays dynamic and is not revived as CONFIG here.
+        if (existing.getSource() != ChannelSource.CONFIG) {
+            logger.debug("Skipping config reload for dynamic channel '{}' (source={})",
+                    desired.getId(), existing.getSource());
             return;
         }
 
-        // Avoid accidentally rewriting a channel that belongs to a different client.
+        // Avoid accidentally rewriting a CONFIG channel that belongs to a different client.
         if (existing.getScope() != ChannelScope.GLOBAL) {
             String existingClient = existing.getClientId();
             String desiredClient = desired.getClientId();
@@ -947,6 +1090,7 @@ public class NovaLinkMain {
         existing.setMaxCapacity(desired.getMaxCapacity());
         existing.setAllowedWorlds(desired.getAllowedWorlds());
         existing.setSlowModeSeconds(desired.getSlowModeSeconds());
+        existing.bumpRevision();
     }
 
     private static void loadPersistedChannels(ChannelManager channelManager, DatabaseProvider databaseProvider) {
@@ -971,7 +1115,7 @@ public class NovaLinkMain {
                             .allowedWorlds(ch.getAllowedWorlds())
                             .password(ch.getPassword())
                             .ownerId(ch.getOwnerId())
-                            .build());
+                            .build(), ChannelSource.DATABASE);
                 } catch (Exception e) {
                     logger.warn("Failed to load persisted channel '{}': {}", ch.getId(), e.getMessage());
                 }
@@ -997,7 +1141,127 @@ public class NovaLinkMain {
                                                BanManager banManager,
                                                RateLimiter rateLimiter,
                                                java.util.function.BooleanSupplier privateMessagesEnabled,
-                                               ChatLogger chatLogger) {
+                                               ChatLogger chatLogger,
+                                               NonceCache nonceCache,
+                                               DatabaseProvider databaseProvider) {
+        // ==================== AUTH-002 challenge-response handshake ====================
+        // Replaces the replayable static-hash HandshakePacket (0x01) flow with a
+        // 3-packet dance: HandshakeInit (0x15) → HandshakeChallenge (0x16) →
+        // HandshakeAuthenticate (0x17). The legacy 0x01 handler below is kept
+        // only so existing callers still compile; live clients use the new path.
+        networkHandler.registerHandler(HandshakeInitPacket.class, (connection, packet) -> {
+            int clientProtocolVersion = packet.getProtocolVersion();
+            if (clientProtocolVersion != NovaProtocol.PROTOCOL_VERSION) {
+                HandshakeResponsePacket response = HandshakeResponsePacket.failure(
+                        "NC-420",
+                        String.format(
+                                "Protocol version mismatch: client=%d, server=%d. Please update your client.",
+                                clientProtocolVersion,
+                                NovaProtocol.PROTOCOL_VERSION
+                        )
+                );
+                response.setRequestId(packet.getRequestId());
+                sendResponseAndClose(connection, response, "protocol mismatch");
+                logger.warn("Protocol version mismatch from {} (clientId={}): client={}, server={}",
+                        connection.getRemoteAddress(), packet.getClientId(),
+                        clientProtocolVersion, NovaProtocol.PROTOCOL_VERSION);
+                return;
+            }
+
+            String clientId = packet.getClientId();
+            String clientNonce = packet.getClientNonce();
+            if (clientId == null || clientId.isEmpty() || clientNonce == null || clientNonce.isEmpty()) {
+                HandshakeResponsePacket response = HandshakeResponsePacket.failure(
+                        "NC-401", "Invalid handshake init");
+                response.setRequestId(packet.getRequestId());
+                sendResponseAndClose(connection, response, "malformed init");
+                return;
+            }
+
+            // Record the platform / server version the client reported so the
+            // panel can display them in the server-status broadcast.
+            connection.setPlatform(packet.getPlatform());
+            connection.setServerVersion(packet.getServerVersion());
+
+            // Generate a fresh server nonce (16 bytes → 32 lowercase-hex chars)
+            // and store it in the NonceCache keyed by (clientId, clientNonce).
+            // The entry is consumed exactly once on authenticate, so a replayed
+            // init→authenticate pair finds nothing.
+            String serverNonce = generateNonceHex();
+            nonceCache.put(clientId, clientNonce, serverNonce);
+
+            HandshakeChallengePacket challenge = new HandshakeChallengePacket(serverNonce);
+            challenge.setRequestId(packet.getRequestId());
+            connection.sendPacket(challenge);
+        });
+
+        networkHandler.registerHandler(HandshakeAuthenticatePacket.class, (connection, packet) -> {
+            String clientId = packet.getClientId();
+            String clientNonce = packet.getClientNonce();
+            String hmac = packet.getHmac();
+
+            AuthResult authResult = authManager.authenticateChallenge(
+                    clientId,
+                    clientNonce,
+                    hmac,
+                    nonceCache,
+                    connection.getRemoteAddress()
+            );
+
+            HandshakeResponsePacket response;
+            if (authResult.isSuccess()) {
+                if (!networkHandler.activateAuthenticated(
+                        connection,
+                        clientId,
+                        () -> grantBootstrapPermissions(
+                                clientPermissionRegistry,
+                                clientPermissionBootstrap,
+                                clientId))) {
+                    logger.warn("Authentication completed for client '{}' after its connection was closed; ignoring generation",
+                            clientId);
+                    return;
+                }
+                response = HandshakeResponsePacket.success("Authentication successful");
+                logger.info("Client authenticated: {} from {}", clientId, connection.getRemoteAddress());
+                if (notificationStore != null) {
+                    try {
+                        notificationStore.createNotification(
+                                "Client Connected",
+                                clientId + " has connected",
+                                "info");
+                    } catch (Exception ignored) {
+                        // non-fatal
+                    }
+                }
+            } else {
+                response = HandshakeResponsePacket.failure(
+                        authResult.getErrorCode() != null ? authResult.getErrorCode() : "NC-401",
+                        authResult.getMessage() != null ? authResult.getMessage() : "Authentication failed"
+                );
+                logger.warn("Challenge authentication failed for client '{}' from {}: {}",
+                        clientId, connection.getRemoteAddress(), authResult.getErrorCode());
+            }
+            response.setRequestId(packet.getRequestId());
+            if (authResult.isSuccess()) {
+                connection.sendPacket(response);
+            } else {
+                sendResponseAndClose(connection, response, "authentication failure");
+            }
+
+            // Push current config snapshot after a successful handshake (hot reload baseline).
+            if (authResult.isSuccess() && configManager != null) {
+                try {
+                    configManager.sendConfigSync(connection);
+                } catch (Exception e) {
+                    logger.debug("Failed to send initial config sync to client {}: {}",
+                            clientId, e.getMessage());
+                }
+            }
+        });
+
+        // ==================== Legacy handshake handler (0x01) ====================
+        // Kept for compile compatibility; live clients use the challenge-response
+        // path above. Old v2 clients that still send 0x01 are rejected with NC-420.
         // Handshake handler (auth + version check)
         networkHandler.registerHandler(HandshakePacket.class, (connection, packet) -> {
             int clientProtocolVersion = packet.getProtocolVersion();
@@ -1011,63 +1275,22 @@ public class NovaLinkMain {
                         )
                 );
                 response.setRequestId(packet.getRequestId());
-                connection.sendPacket(response);
+                sendResponseAndClose(connection, response, "protocol mismatch");
                 logger.warn("Protocol version mismatch from {} (clientId={}): client={}, server={}",
                         connection.getRemoteAddress(), packet.getClientId(), clientProtocolVersion, NovaProtocol.PROTOCOL_VERSION);
                 return;
             }
 
-            AuthResult authResult = authManager.authenticate(
-                    packet.getClientId(),
-                    packet.getPasswordHash(),
-                    connection.getRemoteAddress()
+            // Legacy static-hash auth is no longer accepted: the protocol bumped
+            // to v3 and the challenge-response path is now mandatory.
+            HandshakeResponsePacket response = HandshakeResponsePacket.failure(
+                    "NC-420",
+                    "Legacy handshake is no longer supported. Please update your client to use the challenge-response handshake."
             );
-
-            HandshakeResponsePacket response;
-            if (authResult.isSuccess()) {
-                connection.setAuthenticated(true);
-                connection.setClientId(packet.getClientId());
-                // Record the platform reported by the client so the panel can
-                // display it in the server-status broadcast.
-                connection.setPlatform(packet.getPlatform());
-                // Record the Minecraft server version reported by the client so
-                // the panel can display it in the server-status broadcast.
-                connection.setServerVersion(packet.getServerVersion());
-                // Bootstrap GLOBAL channel permission grants for this game-server client.
-                grantBootstrapPermissions(clientPermissionRegistry, clientPermissionBootstrap, packet.getClientId());
-                response = HandshakeResponsePacket.success("Authentication successful");
-                logger.info("Client authenticated: {} from {}", packet.getClientId(), connection.getRemoteAddress());
-                // Surface the client connect to the web panel notification feed.
-                if (notificationStore != null) {
-                    try {
-                        notificationStore.createNotification(
-                                "Client Connected",
-                                packet.getClientId() + " has connected",
-                                "info");
-                    } catch (Exception ignored) {
-                        // non-fatal
-                    }
-                }
-            } else {
-                response = HandshakeResponsePacket.failure(
-                        authResult.getErrorCode() != null ? authResult.getErrorCode() : "NC-401",
-                        authResult.getMessage() != null ? authResult.getMessage() : "Authentication failed"
-                );
-                logger.warn("Authentication failed for client '{}' from {}: {}",
-                        packet.getClientId(), connection.getRemoteAddress(), authResult.getErrorCode());
-            }
             response.setRequestId(packet.getRequestId());
-            connection.sendPacket(response);
-
-            // Push current config snapshot after a successful handshake (hot reload baseline).
-            if (authResult.isSuccess() && configManager != null) {
-                try {
-                    configManager.sendConfigSync(connection);
-                } catch (Exception e) {
-                    logger.debug("Failed to send initial config sync to client {}: {}",
-                            packet.getClientId(), e.getMessage());
-                }
-            }
+            sendResponseAndClose(connection, response, "legacy handshake rejected");
+            logger.warn("Rejected legacy HandshakePacket (0x01) from {} (clientId={}); protocol now requires challenge-response",
+                    connection.getRemoteAddress(), packet.getClientId());
         });
 
         // Chat message handler — single pipeline entry (validate/boundary/mute/filter/fan-out).
@@ -1123,13 +1346,17 @@ public class NovaLinkMain {
         // Private message handler (0x14) — cross-server /msg + /reply. Shares
         // the chat token bucket; audited with a [DM] marker only (privacy: no
         // messages-table persistence and no WS panel mirroring).
+        // §11.6 item-18 Part B: directional ignore filter. Fail-open: on any
+        // lookup failure return false (do not block the DM). databaseProvider
+        // is passed into registerPacketHandlers (static idiom, not a field).
         networkHandler.registerHandler(PrivateMessagePacket.class, new PrivateMessageHandler(
                 networkHandler,
                 playerStateManager,
                 muteManager,
                 rateLimiter,
                 privateMessagesEnabled,
-                chatLogger
+                chatLogger,
+                (src, tgt) -> { try { return databaseProvider.isIgnored(src, tgt); } catch (Exception e) { return false; } }
         ));
 
         // Channel action handler (minimal response; detailed actions handled elsewhere)
@@ -1189,6 +1416,38 @@ public class NovaLinkMain {
             response.setRequestId(packet.getRequestId());
             connection.sendPacket(response);
         });
+    }
+
+    /** Writes the explicit handshake failure before closing the unauthenticated channel. */
+    private static void sendResponseAndClose(ClientConnection connection,
+                                             HandshakeResponsePacket response,
+                                             String reason) {
+        connection.sendPacket(response).whenComplete((ignored, error) -> {
+            if (error != null) {
+                logger.warn("Failed to write handshake {} response to {}: {}",
+                        reason, connection.getRemoteAddress(), error.getMessage());
+            }
+            connection.close();
+        });
+    }
+
+    /**
+     * Generates a fresh server nonce for the AUTH-002 challenge-response
+     * handshake: 16 cryptographically-random bytes, lowercase-hex-encoded
+     * (32 characters). Matches the wire format the client side expects.
+     */
+    private static String generateNonceHex() {
+        byte[] bytes = new byte[16];
+        new java.security.SecureRandom().nextBytes(bytes);
+        StringBuilder hex = new StringBuilder(32);
+        for (byte b : bytes) {
+            String h = Integer.toHexString(0xff & b);
+            if (h.length() == 1) {
+                hex.append('0');
+            }
+            hex.append(h);
+        }
+        return hex.toString();
     }
 
     /**
@@ -1325,6 +1584,17 @@ public class NovaLinkMain {
             return;
         }
         safeShutdownComponents(ctx);
+        // §11.6 提案 06 (项目 19): campaign manager is not part of BackendContext
+        // (slice A keeps it local), so it is stopped here, after the shared
+        // component shutdown, mirroring AnnouncementManager.shutdown(). Defensive
+        // against a failed/partial startup where campaignManager was never set.
+        if (campaignManager != null) {
+            try {
+                campaignManager.shutdown();
+            } catch (Exception e) {
+                logger.debug("Error shutting down CampaignManager: {}", e.getMessage());
+            }
+        }
     }
 
     /**

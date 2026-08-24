@@ -3,6 +3,11 @@ package com.nova.link.announcement;
 import net.jqwik.api.*;
 import net.jqwik.api.constraints.*;
 
+import java.util.Calendar;
+import java.util.TimeZone;
+
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -289,9 +294,9 @@ public class CronSchedulePropertyTest {
 
     /**
      * **Feature: novachat-platform-expansion, Property 13: Cron Schedule Correctness**
-     * 
+     *
      * toString should contain the original expression.
-     * 
+     *
      * **Validates: Requirements 22.1**
      */
     @Property(tries = 100)
@@ -299,10 +304,145 @@ public class CronSchedulePropertyTest {
             @ForAll @IntRange(min = 0, max = 59) int minute
     ) {
         String expression = minute + " * * * *";
-        
+
         CronSchedule schedule = CronSchedule.parse(expression);
         String toString = schedule.toString();
-        
+
         assertThat(toString).contains(expression);
+    }
+
+    // ==================== BACK-005: per-fire next-delay tests ====================
+
+    /**
+     * Monthly schedule ("0 0 15 * *") must target the 15th of the next month
+     * rather than now plus 30 days. With a reference time of Feb 1 2026
+     * 00:00 UTC, the next fire is Feb 15 2026 00:00 (14 days), whereas the
+     * buggy fixed-period approximation (30d) would land on Mar 3.
+     */
+    @Test
+    void monthlyNextDelayTargetsNextWallClockDayNotPlus30Days() {
+        TimeZone tz = TimeZone.getTimeZone("UTC");
+        Calendar now = Calendar.getInstance(tz);
+        now.set(2026, Calendar.FEBRUARY, 1, 0, 0, 0);
+        now.set(Calendar.MILLISECOND, 0);
+
+        CronSchedule schedule = CronSchedule.parse("0 0 15 * *");
+        long delayMs = schedule.getNextExecutionDelay(now);
+
+        // Feb 1 to Feb 15 = 14 days = 14 * 86_400_000 ms
+        long fourteenDaysMs = 14L * 24 * 60 * 60 * 1000L;
+        assertThat(delayMs).isEqualTo(fourteenDaysMs);
+    }
+
+    /**
+     * Monthly schedule firing past the target day rolls to the next month,
+     * preserving the day-of-month rather than using now plus 30 days.
+     * Jan 16 2026 to Feb 15 2026 is 30 days here, but the mechanism is a
+     * month-add, which matters for short months like Feb.
+     */
+    @Test
+    void monthlyNextDelayFromPastTargetDayRollsToNextMonth() {
+        TimeZone tz = TimeZone.getTimeZone("UTC");
+        Calendar now = Calendar.getInstance(tz);
+        now.set(2026, Calendar.JANUARY, 16, 0, 0, 0);
+        now.set(Calendar.MILLISECOND, 0);
+
+        CronSchedule schedule = CronSchedule.parse("0 0 15 * *");
+        long delayMs = schedule.getNextExecutionDelay(now);
+
+        // Jan 16 to Feb 15 = 30 days (Jan has 31, so 31-16 + 15 = 30)
+        long expectedMs = 30L * 24 * 60 * 60 * 1000L;
+        assertThat(delayMs).isEqualTo(expectedMs);
+    }
+
+    /**
+     * Monthly schedule landing on Feb 15 from Jan 31 must give Feb 15
+     * (15 days), not Mar 2 (30d). This is the bug the fixed-period
+     * approximation would produce.
+     */
+    @Test
+    void monthlyNextDelayAcrossShortMonthIsNotPlus30Days() {
+        TimeZone tz = TimeZone.getTimeZone("UTC");
+        Calendar now = Calendar.getInstance(tz);
+        now.set(2026, Calendar.JANUARY, 31, 0, 0, 0);
+        now.set(Calendar.MILLISECOND, 0);
+
+        CronSchedule schedule = CronSchedule.parse("0 0 15 * *");
+        long delayMs = schedule.getNextExecutionDelay(now);
+
+        // Jan 31 to Feb 15 = 15 days (Feb has 28 days, so plus 30d would
+        // overshoot to Mar 2). 15 * 86_400_000 ms.
+        long fifteenDaysMs = 15L * 24 * 60 * 60 * 1000L;
+        assertThat(delayMs).isEqualTo(fifteenDaysMs);
+    }
+
+    /**
+     * Weekday-specific schedule ("0 12 * * 1" = Mondays at noon) targets
+     * the next Monday at noon rather than now plus 7 days. With a
+     * reference time of Wed Feb 4 2026 10:00 UTC, the next Monday is
+     * Feb 9 2026 12:00.
+     */
+    @Test
+    void weekdayNextDelayTargetsNextWallClockDayNotPlus7Days() {
+        TimeZone tz = TimeZone.getTimeZone("UTC");
+        Calendar now = Calendar.getInstance(tz);
+        // Feb 4 2026 is a Wednesday; 10:00 local.
+        now.set(2026, Calendar.FEBRUARY, 4, 10, 0, 0);
+        now.set(Calendar.MILLISECOND, 0);
+
+        // day-of-week: 0 = Sunday in this cron parser, so 1 = Monday.
+        CronSchedule schedule = CronSchedule.parse("0 12 * * 1");
+        long delayMs = schedule.getNextExecutionDelay(now);
+
+        // Wed Feb 4 10:00 to Mon Feb 9 12:00 = 5 days 2 hours.
+        long expectedMs = (5L * 24 * 60 * 60 + 2 * 60 * 60) * 1000L;
+        assertThat(delayMs).isEqualTo(expectedMs);
+    }
+
+    /**
+     * Hourly schedule ("0 * * * *") at a reference time of 10:30 must
+     * target 11:00 (30 minutes), not now plus 1h (which would be 11:30).
+     * This is what keeps hourly schedules firing on the wall-clock hour
+     * across DST.
+     */
+    @Test
+    void hourlyNextDelayTargetsWallClockHourNotPlusPeriod() {
+        TimeZone tz = TimeZone.getTimeZone("UTC");
+        Calendar now = Calendar.getInstance(tz);
+        now.set(2026, Calendar.FEBRUARY, 4, 10, 30, 0);
+        now.set(Calendar.MILLISECOND, 0);
+
+        CronSchedule schedule = CronSchedule.parse("0 * * * *");
+        long delayMs = schedule.getNextExecutionDelay(now);
+
+        // 10:30 to 11:00 = 30 minutes = 30 * 60 * 1000 ms
+        long thirtyMinMs = 30L * 60 * 1000L;
+        assertThat(delayMs).isEqualTo(thirtyMinMs);
+    }
+
+    /**
+     * DST-hourly recompute: in a timezone that observes DST
+     * (America/New_York), an hourly cron ("0 * * * *") at 01:30 local on
+     * the spring-forward boundary (the hour 02:00-02:59 does not exist)
+     * must still target a valid wall-clock time. Calendar.add of one
+     * hour is DST-aware and lands on 03:00 EDT (the first valid hour
+     * after the skip), so the real elapsed delay is 30 minutes.
+     */
+    @Test
+    void hourlyNextDelayAcrossDSTSpringForwardRecomputes() {
+        TimeZone nyTz = TimeZone.getTimeZone("America/New_York");
+        // US DST 2026 starts Sun Mar 8 2026. At 01:30 NY the 02:00 hour
+        // has not yet been skipped; the next whole hour is 03:00 EDT.
+        Calendar now = Calendar.getInstance(nyTz);
+        now.set(2026, Calendar.MARCH, 8, 1, 30, 0);
+        now.set(Calendar.MILLISECOND, 0);
+
+        CronSchedule schedule = CronSchedule.parse("0 * * * *");
+        long delayMs = schedule.getNextExecutionDelay(now);
+
+        // 01:30 EST to 03:00 EDT is exactly 30 minutes of real time (the
+        // 02:00 hour vanishes). 30 * 60 * 1000 ms.
+        long thirtyMinMs = 30L * 60 * 1000L;
+        assertThat(delayMs).isEqualTo(thirtyMinMs);
     }
 }

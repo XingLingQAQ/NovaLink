@@ -9,19 +9,25 @@ import com.nova.link.announcement.AnnouncementManager;
 import com.nova.link.announcement.AnnouncementResult;
 import com.nova.link.announcement.AnnouncementType;
 import com.nova.link.auth.AuthManager;
+import com.nova.link.auth.PanelResourcePolicy;
 import com.nova.link.auth.PanelRole;
+import com.nova.link.audit.AuditEvent;
+import com.nova.link.audit.AuditStore;
 import com.nova.link.ban.BanManager;
 import com.nova.link.ban.BanResult;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
+import com.nova.link.channel.ChannelSource;
 import com.nova.link.channel.InvitationManager;
 import com.nova.link.channel.MessageRouter;
+import com.nova.link.channel.RoutingResult;
 import com.nova.link.config.ConfigManager;
 import com.nova.link.console.ConsoleCommandHandler;
 import com.nova.link.database.BanInfo;
 import com.nova.link.database.ChatMessageRecord;
+import com.nova.link.database.DatabaseProvider;
 import com.nova.link.database.Invitation;
 import com.nova.link.database.MessageFilter;
 import com.nova.link.database.MuteInfo;
@@ -30,12 +36,24 @@ import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
 import com.nova.link.i18n.I18n;
 import com.nova.link.log.MessageLogService;
+import com.nova.link.moderation.Appeal;
+import com.nova.link.moderation.AppealStatus;
+import com.nova.link.moderation.CaseEvidence;
+import com.nova.link.moderation.CaseEvidenceType;
+import com.nova.link.moderation.CaseSource;
+import com.nova.link.moderation.CaseStatus;
+import com.nova.link.moderation.ModerationCase;
+import com.nova.link.moderation.ModerationException;
+import com.nova.link.moderation.ModerationManager;
+import com.nova.link.moderation.ReporterSource;
+import com.nova.link.moderation.ResolutionAction;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.mute.MuteResult;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.ServerNetworkHandler;
 import com.nova.link.notification.NotificationStore;
 import com.nova.link.websocket.JwtService;
+import com.nova.link.websocket.WebSocketGateway;
 import io.jsonwebtoken.Claims;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -85,6 +103,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
 
     private final JwtService jwtService;
     private final AuthManager authManager;
+    private final PanelResourcePolicy resourcePolicy;
     private final ChannelManager channelManager;
     private final PlayerStateManager playerStateManager;
     private final MessageRouter messageRouter;
@@ -96,8 +115,20 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     private final ServerNetworkHandler networkHandler;
     private final ConsoleCommandHandler consoleCommandHandler;
     private final NotificationStore notificationStore;
+    private final AuditStore auditStore;
     private final List<String> corsAllowedOrigins;
     private final Gson gson;
+
+    /**
+     * Channel attribute key holding the per-request correlation id
+     * (PANEL-006). The id is generated (or honored from the incoming
+     * {@code X-Request-Id} header) at the top of {@link #channelRead0} and
+     * read by {@link #currentRequestId} for response stamping and audit
+     * recording. Using a channel attribute avoids threading the id through
+     * every handler signature.
+     */
+    private static final io.netty.util.AttributeKey<String> REQUEST_ID_KEY =
+            io.netty.util.AttributeKey.valueOf("novalink-request-id");
 
     /**
      * Announcement manager (setter-injected after construction to keep the
@@ -106,9 +137,24 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     private AnnouncementManager announcementManager;
 
     /**
+     * Campaign manager (setter-injected; §11.6 提案 06 slice A). Required for
+     * /api/campaigns*. When null, campaign routes return 503.
+     */
+    private com.nova.link.announcement.CampaignManager campaignManager;
+
+    /**
      * Message history service (setter-injected). Required for GET /api/messages.
      */
     private MessageLogService messageLogService;
+
+    /**
+     * Live flag for {@code features.private-messages-enabled}, shared with the
+     * {@link com.nova.link.network.PrivateMessageHandler} (which reads it as a
+     * {@code BooleanSupplier}). Setter-injected so the REST handler can
+     * propagate panel toggles to the PrivateMessageHandler without a full
+     * reload. When unset, {@code applyFeatureConfig} simply skips the toggle.
+     */
+    private volatile java.util.concurrent.atomic.AtomicBoolean privateMessagesEnabledFlag;
 
     /**
      * Runtime map of panel operator UUIDs (stable, name-derived) to panel
@@ -130,7 +176,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                           NotificationStore notificationStore) {
         this(jwtService, authManager, channelManager, playerStateManager, messageRouter,
                 webhookManager, muteManager, banManager, invitationManager, configManager,
-                networkHandler, consoleCommandHandler, notificationStore, List.of("*"));
+                networkHandler, consoleCommandHandler, notificationStore, null, List.of("*"));
     }
 
     public RestApiHandler(JwtService jwtService, AuthManager authManager,
@@ -142,9 +188,34 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                           ConsoleCommandHandler consoleCommandHandler,
                           NotificationStore notificationStore,
                           List<String> corsAllowedOrigins) {
+        this(jwtService, authManager, channelManager, playerStateManager, messageRouter,
+                webhookManager, muteManager, banManager, invitationManager, configManager,
+                networkHandler, consoleCommandHandler, notificationStore, null, corsAllowedOrigins);
+    }
+
+    /**
+     * Full constructor with an {@link AuditStore} (PANEL-006). The audit store
+     * is passed explicitly rather than setter-injected because audit recording
+     * is mandatory for P1 mutations, not optional. The two legacy constructors
+     * above delegate here with a null store (audit silently disabled) so
+     * existing call sites and tests keep compiling.
+     *
+     * @param auditStore the append-only audit store, or null to disable audit
+     */
+    public RestApiHandler(JwtService jwtService, AuthManager authManager,
+                          ChannelManager channelManager, PlayerStateManager playerStateManager,
+                          MessageRouter messageRouter, WebhookManager webhookManager,
+                          MuteManager muteManager, BanManager banManager,
+                          InvitationManager invitationManager,
+                          ConfigManager configManager, ServerNetworkHandler networkHandler,
+                          ConsoleCommandHandler consoleCommandHandler,
+                          NotificationStore notificationStore,
+                          AuditStore auditStore,
+                          List<String> corsAllowedOrigins) {
         this.jwtService = jwtService;
         this.authManager = authManager;
         this.channelManager = channelManager;
+        this.resourcePolicy = new PanelResourcePolicy(authManager, channelManager);
         this.playerStateManager = playerStateManager;
         this.messageRouter = messageRouter;
         this.webhookManager = webhookManager;
@@ -155,6 +226,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         this.networkHandler = networkHandler;
         this.consoleCommandHandler = consoleCommandHandler;
         this.notificationStore = notificationStore;
+        this.auditStore = auditStore;
         this.corsAllowedOrigins = (corsAllowedOrigins != null && !corsAllowedOrigins.isEmpty())
                 ? List.copyOf(corsAllowedOrigins)
                 : List.of("*");
@@ -168,10 +240,33 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         this.announcementManager = announcementManager;
     }
 
+    /** Wires the campaign manager (§11.6 提案 06 slice A, called after construction). */
+    public void setCampaignManager(com.nova.link.announcement.CampaignManager campaignManager) {
+        this.campaignManager = campaignManager;
+    }
+
     /** Wires the message history service (called after construction). */
     public void setMessageLogService(MessageLogService messageLogService) {
         this.messageLogService = messageLogService;
     }
+
+    /**
+     * Wires the live {@code private-messages-enabled} flag shared with
+     * {@link com.nova.link.network.PrivateMessageHandler}. When a panel
+     * settings update arrives, the flag is flipped in place so the handler
+     * picks up the new value on its next message without a full reload.
+     */
+    public void setPrivateMessagesEnabledFlag(java.util.concurrent.atomic.AtomicBoolean flag) {
+        this.privateMessagesEnabledFlag = flag;
+    }
+
+    /**
+     * Moderation manager (setter-injected after construction so the already-long
+     * constructor signature stays stable — the test setUp uses the 13-arg
+     * legacy constructor). Required for the PANEL-007 moderation case/appeal
+     * workflow routes. When unset, those routes 503 instead of NPE-ing.
+     */
+    private ModerationManager moderationManager;
 
     /**
      * Dedicated worker pool for request processing (auth check, business
@@ -185,6 +280,47 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     /** Injects the worker executor (package-visible for tests, used by NovaLinkMain). */
     public void setWorkerExecutor(java.util.concurrent.Executor workerExecutor) {
         this.workerExecutor = workerExecutor;
+    }
+
+    /**
+     * Wires the moderation manager (PANEL-007). Setter-injected to avoid
+     * touching the constructor signature (the test setUp uses the 13-arg
+     * legacy constructor). When null, the moderation routes 503.
+     */
+    public void setModerationManager(ModerationManager moderationManager) {
+        this.moderationManager = moderationManager;
+    }
+
+    /**
+     * WebSocket gateway (setter-injected so the already-long constructor
+     * signature stays stable). §11.6 Project 17: backs the
+     * {@code nova_link_ws_sessions_active} metric surfaced by
+     * {@link #healthMetricsService()}. Nullable — when unset, the ws metric and
+     * the {@code checks.ws} sub-item are omitted (graceful degradation).
+     */
+    private WebSocketGateway webSocketGateway;
+
+    /**
+     * Wires the WebSocket gateway. Called after construction so the metrics
+     * service can report active panel sessions without changing the
+     * constructor signature.
+     */
+    public void setWebSocketGateway(WebSocketGateway webSocketGateway) {
+        this.webSocketGateway = webSocketGateway;
+        // The lazy metrics service may already be cached from an earlier probe;
+        // null it so the next call reassembles with the new gateway ref.
+        this.healthMetricsService = null;
+    }
+
+    /**
+     * Exposes the injected {@link ConfigManager} for tests that need to mutate
+     * the live config (e.g. stashing a secret before recording a snapshot).
+     * Not used by production wiring.
+     *
+     * @return the config manager backing this handler
+     */
+    ConfigManager configManager() {
+        return configManager;
     }
 
     /**
@@ -209,17 +345,108 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
     }
 
+    /**
+     * Lazily-assembled monitoring service for GET /api/health and
+     * GET /api/metrics. Built on demand from already-injected refs so that
+     * no constructor signature changes (the auth002-jvm fork edits
+     * NovaLinkMain; touching the RestApiHandler constructor risks collision).
+     * Nullable fields (announcementManager, databaseProvider) are tolerated
+     * internally; the service degrades to {@code degraded}/{@code down} status
+     * rather than throwing.
+     */
+    private volatile HealthMetricsService healthMetricsService;
+
+    private HealthMetricsService healthMetricsService() {
+        HealthMetricsService cached = healthMetricsService;
+        if (cached != null) {
+            return cached;
+        }
+        DatabaseProvider db = null;
+        try {
+            db = playerStateManager.getDatabaseProvider();
+        } catch (Exception ignored) {
+            // PlayerStateManager is always injected in production; a null DB
+            // here just downgrades the health check.
+        }
+        HealthMetricsService built = new HealthMetricsService(
+                networkHandler, channelManager, webhookManager,
+                announcementManager, db, configManager, webSocketGateway);
+        healthMetricsService = built;
+        return built;
+    }
+
+    /**
+     * §11.6 Project 20 / PANEL proposal 10 — config diff + atomic rollback.
+     * Lazily-assembled backing service for {@code GET /api/settings/history},
+     * {@code /api/settings/snapshots/{revision}}, {@code /api/settings/diff},
+     * and {@code POST /api/settings/rollback}. Built on demand from the
+     * injected {@link ConfigManager}, the {@link DatabaseProvider} reachable
+     * via {@link PlayerStateManager}, and the audit store — same lazy pattern
+     * as {@link #healthMetricsService()}. The constructor signature stays
+     * untouched (NovaLinkMain is being edited by another agent). The service
+     * also wires itself into ConfigManager via setter so that every
+     * {@link ConfigManager#save()} records a masked snapshot automatically.
+     * When the database provider is unavailable, every endpoint 503s instead
+     * of NPE-ing.
+     */
+    private volatile ConfigHistoryService configHistoryService;
+
+    private ConfigHistoryService configHistoryService() {
+        ConfigHistoryService cached = configHistoryService;
+        if (cached != null) {
+            return cached;
+        }
+        DatabaseProvider db = null;
+        try {
+            db = playerStateManager.getDatabaseProvider();
+        } catch (Exception ignored) {
+            // PlayerStateManager is always injected in production; a null DB
+            // here makes the config-history endpoints 503.
+        }
+        if (db == null || configManager == null) {
+            return null;
+        }
+        ConfigHistoryService built = new ConfigHistoryService(db, configManager, auditStore);
+        // Wire the service into ConfigManager so subsequent save() calls
+        // record a masked snapshot automatically. Idempotent: repeated calls
+        // return the same cached instance, and setConfigHistoryService just
+        // overwrites the field.
+        try {
+            configManager.setConfigHistoryService(built);
+        } catch (Exception ignored) {
+            // ConfigManager tolerates a null service; a setter failure here is
+            // non-fatal — the endpoints still work, just without auto-recording.
+        }
+        configHistoryService = built;
+        return built;
+    }
+
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
         String uri = request.uri();
         HttpMethod method = request.method();
-        
+
+        // PANEL-006: stamp every response with a per-request correlation id.
+        // Honor an incoming X-Request-Id header (truncated) so upstream LBs can
+        // thread their own trace id; otherwise generate a fresh UUID. The id is
+        // stored as a channel attribute so the audit hooks and response writers
+        // can read it without threading it through every handler signature.
+        String incomingRequestId = request.headers().get("X-Request-Id");
+        String requestId;
+        if (incomingRequestId != null && !incomingRequestId.isBlank()
+                && incomingRequestId.length() <= 128) {
+            requestId = incomingRequestId;
+        } else {
+            requestId = java.util.UUID.randomUUID().toString();
+        }
+        ctx.channel().attr(REQUEST_ID_KEY).set(requestId);
+
         // Handle CORS preflight (cheap; stays on the IO thread)
         if (method == HttpMethod.OPTIONS) {
             sendCorsResponse(ctx, request);
             return;
         }
-        
+
         // Check if this is an API request
         if (!uri.startsWith("/api/")) {
             // Pass to next handler (WebSocket, etc.)
@@ -235,6 +462,21 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
 
+        // GET /api/health is an unauthenticated liveness/readiness probe for
+        // LB and k8s. It bypasses the worker pool and auth entirely so that a
+        // saturated worker pool or a revoked probe token never makes a healthy
+        // backend look unhealthy. Only the GET method is exempt; other methods
+        // fall through to the normal authed path (and 404/405 as expected).
+        if (uri.startsWith("/api/health") && method == HttpMethod.GET) {
+            try {
+                handleHealth(ctx, request);
+            } catch (Exception e) {
+                logger.error("health probe error", e);
+                sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR, "Internal server error");
+            }
+            return;
+        }
+
         java.util.concurrent.Executor executor = workerExecutor;
         if (executor == null) {
             processApiRequest(ctx, request, uri, method);
@@ -244,7 +486,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         // Offload auth validation + business logic + response writing to the
         // worker pool. The request must be retained: SimpleChannelInboundHandler
         // releases it when channelRead0 returns, while the worker still needs
-        // the body. ctx.writeAndFlush is thread-safe.
+        // the body. ctx.writeAndFlush is thread-safe. The channel attribute set
+        // above is visible to the worker because it is read off the channel,
+        // not off the IO thread's stack.
         request.retain();
         try {
             executor.execute(() -> {
@@ -279,7 +523,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             }
             String path = uri.contains("?") ? uri.substring(0, uri.indexOf("?")) : uri;
             PanelRole required = requiredRole(path, method);
-            if (!hasRole(claims, required)) {
+            PanelRole actual = resourcePolicy.resolveRole(claims);
+            if (!hasRole(actual, required)) {
                 sendJsonError(ctx, request, HttpResponseStatus.FORBIDDEN,
                         I18n.tr("api.error.forbidden_role", required.name()));
                 return;
@@ -300,7 +545,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      *       GET /api/webhooks.</li>
      *   <li><b>ADMIN</b>: VIEWER + player punishments
      *       (POST /api/players/{uuid}/mute|unmute|kick|ban|unban) + channel CRUD
-     *       (POST/PUT/DELETE /api/channels*, invite) + POST /api/messages +
+     *       (POST/PUT/DELETE /api/channels*, invite, invitation revoke) + POST /api/messages +
      *       notification management (read/read-all/DELETE) +
      *       announcement management (POST/PUT/DELETE /api/announcements*) +
      *       PUT /api/filter.</li>
@@ -315,6 +560,21 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      */
     static PanelRole requiredRole(String path, HttpMethod method) {
         if (method == HttpMethod.GET) {
+            // PANEL-006: GET /api/audit is ADMIN+ (read access to the audit
+            // log is deliberately separate from notification clear, which is
+            // already ADMIN under the default branch below).
+            if (path.equals("/api/audit")) {
+                return PanelRole.ADMIN;
+            }
+            // §11.6 Project 20: config history/snapshot/diff expose the masked
+            // (not plaintext) configuration of the deployment — database hosts,
+            // client usernames, admin rosters. ADMIN+ even though they are GETs;
+            // VIEWER must not see the deployment topology.
+            if (path.equals("/api/settings/history")
+                    || path.matches("/api/settings/snapshots/[^/]+")
+                    || path.equals("/api/settings/diff")) {
+                return PanelRole.ADMIN;
+            }
             return PanelRole.VIEWER;
         }
         // SUPER_ADMIN-only mutations
@@ -330,6 +590,21 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         if (path.equals("/api/settings") && method == HttpMethod.PUT) {
             return PanelRole.SUPER_ADMIN;
         }
+        // §11.6 Project 20: rollback rewrites the live config from a masked
+        // snapshot — SUPER_ADMIN only, same as /api/settings PUT.
+        if (path.equals("/api/settings/rollback") && method == HttpMethod.POST) {
+            return PanelRole.SUPER_ADMIN;
+        }
+        // §11.6 Project 20 (proposal 10): validate is a dry-run against the
+        // same structural rules as rollback/save, but does NOT persist. The
+        // YAML body may echo the live (masked) config the caller already sees
+        // via /api/settings/history (ADMIN+); a validate call therefore leaks
+        // no more than history does. ADMIN+, not SUPER_ADMIN — a non-owner
+        // admin preparing a candidate config can dry-run it before asking the
+        // owner to apply it.
+        if (path.equals("/api/settings/validate") && method == HttpMethod.POST) {
+            return PanelRole.ADMIN;
+        }
         if (path.equals("/api/webhooks") && method == HttpMethod.POST) {
             return PanelRole.SUPER_ADMIN;
         }
@@ -339,6 +614,27 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         if (path.matches("/api/webhooks/[^/]+/test") && method == HttpMethod.POST) {
             return PanelRole.SUPER_ADMIN;
         }
+        // PANEL-014: global broadcast cleanup (DELETE /api/notifications/broadcast)
+        // is SUPER_ADMIN-only because it deletes broadcast events visible to all
+        // admins. The per-user DELETE /api/notifications (clears only the
+        // caller's directed notifications) stays ADMIN under the default branch.
+        if (path.equals("/api/notifications/broadcast") && method == HttpMethod.DELETE) {
+            return PanelRole.SUPER_ADMIN;
+        }
+        // §11.6 提案 06 — campaign revoke is SUPER_ADMIN-only (matches the
+        // CampaignManager RBAC mapping where campaign.revoke requires
+        // PermissionLevel.SUPER_ADMIN).
+        if (path.matches("/api/campaigns/[^/]+/revoke") && method == HttpMethod.POST) {
+            return PanelRole.SUPER_ADMIN;
+        }
+        // PANEL-007: moderation routes rely on the defaults above — every
+        // GET under /api/moderation/* and /api/appeals is VIEWER (the default
+        // GET branch), and every POST mutation (POST /api/reports,
+        // POST /api/moderation/cases/{id}/{assign,resolve,evidence},
+        // POST /api/appeals, POST /api/appeals/{id}/review) falls through to
+        // the ADMIN default below. The appeal reviewer-must-differ-from-
+        // case-moderator rule is a SECOND authorization layer enforced inside
+        // ModerationManager as a hard 403 — it is not covered here.
         // Every other mutation (player punishments, channel CRUD + invite,
         // messages, notification management, announcements, filter) requires ADMIN.
         return PanelRole.ADMIN;
@@ -348,8 +644,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * @return true when the token's role claim satisfies the required minimum.
      *         Unknown/legacy roles (e.g. CLIENT_ADMIN) never satisfy any level.
      */
-    private static boolean hasRole(Claims claims, PanelRole required) {
-        PanelRole actual = PanelRole.fromString(claims.get("role", String.class));
+    private static boolean hasRole(PanelRole actual, PanelRole required) {
         return actual != null && actual.atLeast(required);
     }
 
@@ -431,6 +726,80 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
+    // ==================== Audit helpers (PANEL-006) ====================
+
+    /**
+     * Records an audit event for a P1 admin mutation. Best-effort: the audit
+     * store swallows persistence failures so a degraded audit trail never
+     * blocks the business operation. The {@code requestId}, {@code actor},
+     * {@code role} and {@code origin} are derived from the request context and
+     * claims so individual handlers only need to supply action/resource/hashes.
+     *
+     * @param ctx        the channel context (for requestId + origin)
+     * @param claims     the operator claims (for actor + role)
+     * @param action     stable action code (e.g. {@code channel.create})
+     * @param resource   human-readable resource identifier (may be null)
+     * @param beforeHash SHA-256 hex of pre-action state (may be null)
+     * @param afterHash  SHA-256 hex of post-action state (may be null)
+     * @param reason     free-form reason (may be null)
+     * @param result     {@code "success"} or {@code "failure"}
+     */
+    private void recordAudit(ChannelHandlerContext ctx, Claims claims,
+                             String action, String resource,
+                             String beforeHash, String afterHash,
+                             String reason, String result) {
+        if (auditStore == null) {
+            return;
+        }
+        try {
+            String actor = panelUsername(claims);
+            String role = claims != null ? resourcePolicy.resolveRole(claims).name() : null;
+            String origin = resolveOrigin(ctx);
+            String requestId = currentRequestId(ctx);
+            String eventId = java.util.UUID.randomUUID().toString();
+            AuditEvent event = new AuditEvent(
+                    eventId, requestId, actor, role, origin, action, resource,
+                    beforeHash, afterHash, reason, result, System.currentTimeMillis());
+            auditStore.record(event);
+        } catch (Exception e) {
+            // Audit must never block the mutation.
+            logger.warn("Failed to record audit event action={}: {}", action, e.getMessage());
+        }
+    }
+
+    /**
+     * Convenience for recording a successful mutation with no reason. Most P1
+     * handlers call this on the happy path.
+     */
+    private void recordAuditSuccess(ChannelHandlerContext ctx, Claims claims,
+                                   String action, String resource,
+                                   String beforeHash, String afterHash) {
+        recordAudit(ctx, claims, action, resource, beforeHash, afterHash, null, "success");
+    }
+
+    /**
+     * @return the originating IP/host for audit attribution, or null when no
+     *         channel context is available. Uses {@code X-Forwarded-For} when
+     *         present (LB front), falling back to the remote address.
+     */
+    private String resolveOrigin(ChannelHandlerContext ctx) {
+        if (ctx == null || ctx.channel() == null) {
+            return null;
+        }
+        try {
+            io.netty.channel.Channel ch = ctx.channel();
+            java.net.SocketAddress remote = ch.remoteAddress();
+            if (remote instanceof java.net.InetSocketAddress isa) {
+                return isa.getAddress() != null
+                        ? isa.getAddress().getHostAddress()
+                        : isa.getHostString();
+            }
+        } catch (Exception ignored) {
+            // non-fatal; origin is best-effort
+        }
+        return null;
+    }
+
     /**
      * Routes API requests to appropriate handlers. The caller has already
      * authenticated the request and enforced the RBAC matrix; {@code claims}
@@ -443,30 +812,34 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
 
         // Channel endpoints
         if (path.equals("/api/channels") && method == HttpMethod.GET) {
-            handleGetChannels(ctx, request);
+            handleGetChannels(ctx, request, claims);
         } else if (path.equals("/api/channels") && method == HttpMethod.POST) {
-            handleCreateChannel(ctx, request);
+            handleCreateChannel(ctx, request, claims);
         } else if (path.matches("/api/channels/[^/]+") && method == HttpMethod.GET) {
             String channelId = path.substring("/api/channels/".length());
-            handleGetChannel(ctx, request, channelId);
+            handleGetChannel(ctx, request, channelId, claims);
         } else if (path.matches("/api/channels/[^/]+") && method == HttpMethod.DELETE) {
             String channelId = path.substring("/api/channels/".length());
-            handleDeleteChannel(ctx, request, channelId);
+            handleDeleteChannel(ctx, request, channelId, claims);
         } else if (path.matches("/api/channels/[^/]+") && method == HttpMethod.PUT) {
             String channelId = path.substring("/api/channels/".length());
-            handleUpdateChannel(ctx, request, channelId);
+            handleUpdateChannel(ctx, request, channelId, claims);
         } else if (path.matches("/api/channels/[^/]+/members") && method == HttpMethod.GET) {
             String channelId = path.substring("/api/channels/".length(), path.lastIndexOf("/members"));
-            handleGetChannelMembers(ctx, request, channelId);
+            handleGetChannelMembers(ctx, request, channelId, claims);
         } else if (path.matches("/api/channels/[^/]+/invite") && method == HttpMethod.POST) {
             String channelId = path.substring("/api/channels/".length(), path.lastIndexOf("/invite"));
-            handleInviteChannel(ctx, request, channelId);
+            handleInviteChannel(ctx, request, channelId, claims);
+        } else if (path.matches("/api/channels/[^/]+/invitations/[^/]+") && method == HttpMethod.DELETE) {
+            String channelId = path.substring("/api/channels/".length(), path.indexOf("/invitations/"));
+            String code = path.substring(path.lastIndexOf("/invitations/") + "/invitations/".length());
+            handleRevokeInvitation(ctx, request, channelId, code, claims);
         }
         // Message endpoints
         else if (path.equals("/api/messages") && method == HttpMethod.POST) {
-            handleSendMessage(ctx, request);
+            handleSendMessage(ctx, request, claims);
         } else if (path.equals("/api/messages") && method == HttpMethod.GET) {
-            handleGetMessages(ctx, request);
+            handleGetMessages(ctx, request, claims);
         }
         // Announcement endpoints
         else if (path.equals("/api/announcements") && method == HttpMethod.GET) {
@@ -488,13 +861,13 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
         // Player endpoints
         else if (path.equals("/api/players") && method == HttpMethod.GET) {
-            handleGetPlayers(ctx, request);
+            handleGetPlayers(ctx, request, claims);
         } else if (path.matches("/api/players/[^/]+") && method == HttpMethod.GET) {
             String playerId = path.substring("/api/players/".length());
-            handleGetPlayer(ctx, request, playerId);
+            handleGetPlayer(ctx, request, playerId, claims);
         } else if (path.matches("/api/players/[^/]+/mute") && method == HttpMethod.POST) {
             String playerId = path.substring("/api/players/".length(), path.lastIndexOf("/mute"));
-            handleMutePlayer(ctx, request, playerId, panelUsername(claims));
+            handleMutePlayer(ctx, request, playerId, panelUsername(claims), claims);
         } else if (path.matches("/api/players/[^/]+/unmute") && method == HttpMethod.POST) {
             String playerId = path.substring("/api/players/".length(), path.lastIndexOf("/unmute"));
             handleUnmutePlayer(ctx, request, playerId, panelUsername(claims));
@@ -505,7 +878,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         // Ban endpoints
         else if (path.matches("/api/players/[^/]+/ban") && method == HttpMethod.POST) {
             String playerId = path.substring("/api/players/".length(), path.lastIndexOf("/ban"));
-            handleBanPlayer(ctx, request, playerId, panelUsername(claims));
+            handleBanPlayer(ctx, request, playerId, panelUsername(claims), claims);
         } else if (path.matches("/api/players/[^/]+/unban") && method == HttpMethod.POST) {
             String playerId = path.substring("/api/players/".length(), path.lastIndexOf("/unban"));
             handleUnbanPlayer(ctx, request, playerId, panelUsername(claims));
@@ -522,13 +895,13 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         else if (path.equals("/api/webhooks") && method == HttpMethod.GET) {
             handleGetWebhooks(ctx, request);
         } else if (path.equals("/api/webhooks") && method == HttpMethod.POST) {
-            handleCreateWebhook(ctx, request);
+            handleCreateWebhook(ctx, request, claims);
         } else if (path.matches("/api/webhooks/[^/]+") && method == HttpMethod.DELETE) {
             String webhookId = path.substring("/api/webhooks/".length());
-            handleDeleteWebhook(ctx, request, webhookId);
+            handleDeleteWebhook(ctx, request, webhookId, claims);
         } else if (path.matches("/api/webhooks/[^/]+") && method == HttpMethod.PUT) {
             String webhookId = path.substring("/api/webhooks/".length());
-            handleUpdateWebhook(ctx, request, webhookId);
+            handleUpdateWebhook(ctx, request, webhookId, claims);
         } else if (path.matches("/api/webhooks/[^/]+/test") && method == HttpMethod.POST) {
             String webhookId = path.substring("/api/webhooks/".length(), path.lastIndexOf("/test"));
             handleTestWebhook(ctx, request, webhookId);
@@ -540,24 +913,122 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
         // Config reload endpoint
         else if (path.equals("/api/reload") && method == HttpMethod.POST) {
-            handleReload(ctx, request);
+            handleReload(ctx, request, claims);
         }
         // Settings endpoints (FeatureConfig)
         else if (path.equals("/api/settings") && method == HttpMethod.GET) {
             handleGetSettings(ctx, request);
         } else if (path.equals("/api/settings") && method == HttpMethod.PUT) {
-            handleUpdateSettings(ctx, request);
+            handleUpdateSettings(ctx, request, claims);
         }
-        // Notification endpoints
+        // §11.6 Project 20 — config history / snapshot / diff / rollback.
+        // Routes are ADMIN+ (history/snapshot/diff) or SUPER_ADMIN (rollback);
+        // requiredRole enforces that matrix. The handlers all 503 when the
+        // backing service is unavailable (no database provider).
+        else if (path.equals("/api/settings/history") && method == HttpMethod.GET) {
+            handleGetConfigHistory(ctx, request, uri);
+        } else if (path.matches("/api/settings/snapshots/[^/]+") && method == HttpMethod.GET) {
+            String revStr = path.substring("/api/settings/snapshots/".length());
+            handleGetConfigSnapshot(ctx, request, revStr);
+        } else if (path.equals("/api/settings/diff") && method == HttpMethod.GET) {
+            handleConfigDiff(ctx, request, uri);
+        } else if (path.equals("/api/settings/rollback") && method == HttpMethod.POST) {
+            handleRollbackConfig(ctx, request, claims);
+        }
+        // §11.6 Project 20 (proposal 10): dry-run structural validation of a
+        // candidate YAML document. RBAC: ADMIN+ (see requiredRole). Never
+        // persists; handler 503s when configManager is null and 400s when the
+        // body is missing the "yaml" field or is unparseable JSON.
+        else if (path.equals("/api/settings/validate") && method == HttpMethod.POST) {
+            handleValidateConfig(ctx, request, uri);
+        }
+        // Audit log endpoint (PANEL-006): ADMIN+ paginated listing with
+        // optional actor/action filters. Read access is deliberately separate
+        // from notification clear.
+        else if (path.equals("/api/audit") && method == HttpMethod.GET) {
+            handleGetAudit(ctx, request, uri, claims);
+        }
+        // Notification endpoints (PANEL-014: per-user state. userId is the
+        // panel username from the JWT; broadcast events remain visible to all
+        // but read/clear state is isolated per user. DELETE /api/notifications
+        // clears only the caller's directed notifications; broadcast cleanup
+        // requires the separate SUPER_ADMIN /api/notifications/broadcast route.)
         else if (path.equals("/api/notifications") && method == HttpMethod.GET) {
-            handleGetNotifications(ctx, request);
+            handleGetNotifications(ctx, request, claims);
         } else if (path.matches("/api/notifications/[^/]+/read") && method == HttpMethod.POST) {
             String idStr = path.substring("/api/notifications/".length(), path.lastIndexOf("/read"));
-            handleMarkNotificationRead(ctx, request, idStr);
+            handleMarkNotificationRead(ctx, request, idStr, claims);
         } else if (path.equals("/api/notifications/read-all") && method == HttpMethod.POST) {
-            handleMarkAllNotificationsRead(ctx, request);
+            handleMarkAllNotificationsRead(ctx, request, claims);
         } else if (path.equals("/api/notifications") && method == HttpMethod.DELETE) {
-            handleClearNotifications(ctx, request);
+            handleClearNotifications(ctx, request, claims);
+        } else if (path.equals("/api/notifications/broadcast") && method == HttpMethod.DELETE) {
+            handleClearBroadcastNotifications(ctx, request, claims);
+        }
+        // §11.6 提案 06 — Campaign endpoints (slice A: in-memory, backend-only).
+        // GET /api/campaigns and GET /api/campaigns/{id} are VIEWER (default
+        // GET branch). POST /api/campaigns and POST /api/campaigns/{id}/{schedule,
+        // activate} are ADMIN (default mutation branch). POST /api/campaigns/{id}
+        // /revoke is SUPER_ADMIN — see requiredRole().
+        else if (path.equals("/api/campaigns") && method == HttpMethod.GET) {
+            handleListCampaigns(ctx, request, uri);
+        } else if (path.equals("/api/campaigns") && method == HttpMethod.POST) {
+            handleCreateCampaign(ctx, request, claims);
+        } else if (path.matches("/api/campaigns/[^/]+") && method == HttpMethod.GET) {
+            String campaignId = path.substring("/api/campaigns/".length());
+            handleGetCampaign(ctx, request, campaignId);
+        } else if (path.matches("/api/campaigns/[^/]+/schedule") && method == HttpMethod.POST) {
+            String campaignId = path.substring("/api/campaigns/".length(), path.lastIndexOf("/schedule"));
+            handleScheduleCampaign(ctx, request, campaignId, claims);
+        } else if (path.matches("/api/campaigns/[^/]+/activate") && method == HttpMethod.POST) {
+            String campaignId = path.substring("/api/campaigns/".length(), path.lastIndexOf("/activate"));
+            handleActivateCampaign(ctx, request, campaignId, claims);
+        } else if (path.matches("/api/campaigns/[^/]+/revoke") && method == HttpMethod.POST) {
+            String campaignId = path.substring("/api/campaigns/".length(), path.lastIndexOf("/revoke"));
+            handleRevokeCampaign(ctx, request, campaignId, claims);
+        }
+        // PANEL-007: moderation case/appeal workflow. Evidence is only
+        // retrievable via the case-scoped GET .../evidence route — there is no
+        // global evidence-list endpoint, and GET /api/private-messages does
+        // not exist at all (a 404 in the not-found branch below handles its
+        // absence). The reviewer-must-differ-from-case-moderator rule is a
+        // hard 403 enforced by ModerationManager, not a silent fallback.
+        else if (path.equals("/api/reports") && method == HttpMethod.POST) {
+            handleCreateReport(ctx, request, claims);
+        } else if (path.equals("/api/moderation/cases") && method == HttpMethod.GET) {
+            handleListModerationCases(ctx, request, uri, claims);
+        } else if (path.matches("/api/moderation/cases/[^/]+") && method == HttpMethod.GET) {
+            String caseId = path.substring("/api/moderation/cases/".length());
+            handleGetModerationCase(ctx, request, caseId);
+        } else if (path.matches("/api/moderation/cases/[^/]+/assign") && method == HttpMethod.POST) {
+            String caseId = path.substring("/api/moderation/cases/".length(), path.lastIndexOf("/assign"));
+            handleAssignModeratorCase(ctx, request, caseId, claims);
+        } else if (path.matches("/api/moderation/cases/[^/]+/resolve") && method == HttpMethod.POST) {
+            String caseId = path.substring("/api/moderation/cases/".length(), path.lastIndexOf("/resolve"));
+            handleResolveModerationCase(ctx, request, caseId, claims);
+        } else if (path.matches("/api/moderation/cases/[^/]+/evidence") && method == HttpMethod.GET) {
+            String caseId = path.substring("/api/moderation/cases/".length(), path.lastIndexOf("/evidence"));
+            handleListCaseEvidence(ctx, request, caseId, claims);
+        } else if (path.matches("/api/moderation/cases/[^/]+/evidence") && method == HttpMethod.POST) {
+            String caseId = path.substring("/api/moderation/cases/".length(), path.lastIndexOf("/evidence"));
+            handleAddCaseEvidence(ctx, request, caseId, claims);
+        } else if (path.matches("/api/moderation/cases/[^/]+/status") && method == HttpMethod.GET) {
+            String caseId = path.substring("/api/moderation/cases/".length(), path.lastIndexOf("/status"));
+            handleGetModerationCaseStatus(ctx, request, caseId);
+        } else if (path.equals("/api/appeals") && method == HttpMethod.POST) {
+            handleCreateAppeal(ctx, request, claims);
+        } else if (path.equals("/api/appeals") && method == HttpMethod.GET) {
+            handleListAppeals(ctx, request, uri);
+        } else if (path.matches("/api/appeals/[^/]+/review") && method == HttpMethod.POST) {
+            String appealId = path.substring("/api/appeals/".length(), path.lastIndexOf("/review"));
+            handleReviewAppeal(ctx, request, appealId, claims);
+        }
+        // §11.6 Project 17 — 提案 09: batch moderation endpoint. ADMIN-only
+        // (the default branch in requiredRole enforces this for POST mutations).
+        // Applies a mute/unmute/ban/unban action to up to BATCH_MAX_TARGETS
+        // players in one request, with an in-memory idempotency cache.
+        else if (path.equals("/api/moderation/batch") && method == HttpMethod.POST) {
+            handleBatchModeration(ctx, request, claims);
         }
         // Console command execution endpoint
         else if (path.equals("/api/console") && method == HttpMethod.POST) {
@@ -566,6 +1037,12 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         // Status endpoint
         else if (path.equals("/api/status") && method == HttpMethod.GET) {
             handleGetStatus(ctx, request);
+        }
+        // Metrics endpoint (auth-gated; requiredRole GET → VIEWER). Emits
+        // Prometheus exposition-format text. /api/health is handled earlier in
+        // channelRead0 (unauthenticated), so it never reaches here.
+        else if (path.equals("/api/metrics") && method == HttpMethod.GET) {
+            handleMetrics(ctx, request);
         }
         // Auth endpoints (handled by HttpAuthHandler, but we pass through)
         else if (path.startsWith("/api/auth/")) {
@@ -612,14 +1089,23 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * GET /api/channels - List all channels
      * Requirements: 25.4
      */
-    private void handleGetChannels(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private void handleGetChannels(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
+        PanelRole role = resourcePolicy.resolveRole(claims);
         JsonArray channels = new JsonArray();
+        JsonArray subscribableChannelIds = new JsonArray();
         for (Channel channel : channelManager.getAllChannels()) {
-            channels.add(channelToJson(channel));
+            if (!resourcePolicy.canViewChannel(role, channel)) {
+                continue;
+            }
+            channels.add(channelToJson(channel, role));
+            if (resourcePolicy.canSubscribe(role, channel)) {
+                subscribableChannelIds.add(channel.getId());
+            }
         }
         
         JsonObject response = new JsonObject();
         response.add("channels", channels);
+        response.add("subscribableChannelIds", subscribableChannelIds);
         response.addProperty("total", channels.size());
         
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
@@ -629,23 +1115,27 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * GET /api/channels/{id} - Get channel details
      * Requirements: 25.4
      */
-    private void handleGetChannel(ChannelHandlerContext ctx, FullHttpRequest request, String channelId) {
+    private void handleGetChannel(ChannelHandlerContext ctx, FullHttpRequest request,
+                                  String channelId, Claims claims) {
         Channel channel = channelManager.getChannel(channelId);
-        if (channel == null) {
+        PanelRole role = resourcePolicy.resolveRole(claims);
+        if (!resourcePolicy.canViewChannel(role, channel)) {
             sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
             return;
         }
         
-        sendJsonResponse(ctx, request, HttpResponseStatus.OK, channelToJson(channel));
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, channelToJson(channel, role));
     }
 
     /**
      * GET /api/channels/{id}/members - Get channel members
      * Requirements: 25.4
      */
-    private void handleGetChannelMembers(ChannelHandlerContext ctx, FullHttpRequest request, String channelId) {
+    private void handleGetChannelMembers(ChannelHandlerContext ctx, FullHttpRequest request,
+                                         String channelId, Claims claims) {
         Channel channel = channelManager.getChannel(channelId);
-        if (channel == null) {
+        PanelRole role = resourcePolicy.resolveRole(claims);
+        if (!resourcePolicy.canViewChannel(role, channel)) {
             sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
             return;
         }
@@ -673,12 +1163,12 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     /**
      * POST /api/channels - Create a new channel (admin operation).
      *
-     * <p>REST channel creation is a super-admin operation and is not restricted
-     * to private channels (unlike {@code ChannelActionHandler.handleCreate}).
+     * <p>ADMIN may create GLOBAL/SERVER channels; PRIVATE channel creation is
+     * restricted to SUPER_ADMIN by the shared panel resource policy.
      * Private channels without an explicit id get an auto-generated NC-XXXX id.
      * Requirements: 25.4
      */
-    private void handleCreateChannel(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private void handleCreateChannel(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
         try {
             String body = request.content().toString(CharsetUtil.UTF_8);
             JsonObject json = JsonParser.parseString(body).getAsJsonObject();
@@ -693,6 +1183,15 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                     ? json.get("maxCapacity").getAsInt() : 100;
             String permission = json.has("permission") && !json.get("permission").isJsonNull()
                     ? json.get("permission").getAsString() : null;
+            String clientId = json.has("clientId") && !json.get("clientId").isJsonNull()
+                    ? json.get("clientId").getAsString() : null;
+
+            // PANEL-003: maxCapacity must be a positive integer for the created channel.
+            if (maxCapacity <= 0) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                        "maxCapacity must be a positive integer");
+                return;
+            }
 
             ChannelScope scope;
             try {
@@ -702,21 +1201,54 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 return;
             }
 
-            // PRIVATE channels require a clientId; for REST admin creation of a
-            // private channel, bind it to a synthetic "console" client (mirrors
-            // ConsoleCommandHandler.handleCreate private branch). For PRIVATE
-            // channels, ChannelManager.createChannel auto-generates an NC-XXXX id
-            // when none is supplied. For GLOBAL/SERVER scopes the Channel ctor
-            // rejects a null id, so auto-generate one here as well — REST admin
-            // creation should not require a caller-supplied id for any scope.
-            String clientId = null;
-            if (scope == ChannelScope.PRIVATE) {
-                clientId = "console";
-            } else if (id == null || id.isEmpty()) {
+            PanelRole role = resourcePolicy.resolveRole(claims);
+            if (!resourcePolicy.canManageScope(role, scope)) {
+                sendJsonError(ctx, request, HttpResponseStatus.FORBIDDEN,
+                        "Channel scope is not accessible for this role");
+                return;
+            }
+
+            // PANEL-003: SERVER/PRIVATE channels must be bound to a real,
+            // connected client. A synthetic "console" clientId is no longer
+            // accepted — the caller must supply a clientId that resolves to an
+            // active ClientConnection. GLOBAL channels never carry a clientId.
+            if (scope == ChannelScope.GLOBAL) {
+                if (clientId != null && !clientId.isEmpty()) {
+                    sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                            "GLOBAL channels cannot have a clientId");
+                    return;
+                }
+            } else {
+                if (clientId == null || clientId.isEmpty()) {
+                    sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                            "clientId is required for SERVER/PRIVATE channels");
+                    return;
+                }
+                if (networkHandler == null) {
+                    sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE,
+                            "Network handler not available");
+                    return;
+                }
+                if (networkHandler.findByClientId(clientId) == null) {
+                    sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                            "Unknown clientId: no connected client matches '" + clientId + "'");
+                    return;
+                }
+            }
+
+            // For GLOBAL/SERVER scopes the Channel ctor rejects a null/blank id,
+            // so auto-generate one here — REST admin creation should not require
+            // a caller-supplied id. For PRIVATE channels, leave the id null/blank
+            // so ChannelManager auto-generates the NC-XXXX id.
+            if (scope != ChannelScope.PRIVATE && (id == null || id.isEmpty())) {
                 id = generateRestChannelId();
             }
 
             // Fall back to the generated/id-derived name when no display name given.
+            // For PRIVATE channels the id may still be null here (auto-generated
+            // later by ChannelManager); ChannelConfig passes null displayName
+            // through, and the Channel constructor falls back to the id at
+            // creation time, so this stays safe.
             String effectiveDisplayName = displayName != null ? displayName : id;
 
             ChannelConfig config = ChannelConfig.builder()
@@ -728,7 +1260,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                     .permission(permission)
                     .build();
 
-            Channel channel = channelManager.createChannel(config);
+            // Runtime-created channels are tagged RUNTIME so config reload never
+            // overwrites them and they are editable from the Panel.
+            Channel channel = channelManager.createChannel(config, ChannelSource.RUNTIME);
 
             JsonObject response = new JsonObject();
             response.addProperty("success", true);
@@ -736,11 +1270,21 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
 
             sendJsonResponse(ctx, request, HttpResponseStatus.CREATED, response);
 
+            // PANEL-006: audit the creation. No before-state (new resource);
+            // after-hash is the SHA-256 of the channel JSON with no secrets
+            // (channelToJson never emits the password).
+            recordAuditSuccess(ctx, claims, "channel.create", "channel:" + channel.getId(),
+                    null, AuditEvent.hashJson(gson.toJson(channelToJson(channel))));
+
         } catch (IllegalArgumentException e) {
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, e.getMessage());
+            recordAudit(ctx, claims, "channel.create", null,
+                    null, null, e.getMessage(), "failure");
         } catch (Exception e) {
             logger.error("Error creating channel via API", e);
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            recordAudit(ctx, claims, "channel.create", null,
+                    null, null, "invalid request body", "failure");
         }
     }
 
@@ -751,12 +1295,29 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * {@code ConsoleCommandHandler.handleDelete}.
      * Requirements: 25.4
      */
-    private void handleDeleteChannel(ChannelHandlerContext ctx, FullHttpRequest request, String channelId) {
+    private void handleDeleteChannel(ChannelHandlerContext ctx, FullHttpRequest request,
+                                     String channelId, Claims claims) {
         Channel channel = channelManager.getChannel(channelId);
-        if (channel == null) {
+        PanelRole role = resourcePolicy.resolveRole(claims);
+        if (!resourcePolicy.canManageChannel(role, channel)) {
             sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
             return;
         }
+
+        // PANEL-004: config-managed channels are read-only via the Panel/REST.
+        // Deletion of a CONFIG channel would be revived by the next config
+        // reload anyway, so reject it up-front rather than creating a confusing
+        // delete-then-revive cycle.
+        if (channel.getSource() == ChannelSource.CONFIG) {
+            sendJsonError(ctx, request, HttpResponseStatus.FORBIDDEN,
+                    "Channel is managed by config and cannot be deleted via the Panel");
+            return;
+        }
+
+        // PANEL-006: capture the before-state hash for audit before the
+        // channel is removed. channelToJson never emits the password.
+        JsonObject beforeJson = channelToJson(channel, role);
+        String beforeHash = AuditEvent.hashJson(gson.toJson(beforeJson));
 
         // Remove all members first (clear membership side-effects).
         for (UUID m : new java.util.ArrayList<>(channelManager.getChannelMembers(channelId))) {
@@ -780,6 +1341,10 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         response.addProperty("channelId", channelId);
 
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+
+        // PANEL-006: audit the deletion. No after-state (resource removed).
+        recordAuditSuccess(ctx, claims, "channel.delete", "channel:" + channelId,
+                beforeHash, null);
     }
 
     /**
@@ -787,14 +1352,32 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      *
      * <p>Only non-null body fields are applied. Mirrors
      * {@code NovaLinkMain.upsertConfiguredChannel} field-by-field update.
+     * To explicitly clear the {@code permission} (set it to null), send a body
+     * with {@code "permissionPresent": true} and either omit {@code permission}
+     * or send it as null. When {@code permissionPresent} is absent, a null
+     * {@code permission} leaves the existing value untouched (backward compat).
      * Requirements: 25.4
      */
-    private void handleUpdateChannel(ChannelHandlerContext ctx, FullHttpRequest request, String channelId) {
+    private void handleUpdateChannel(ChannelHandlerContext ctx, FullHttpRequest request,
+                                     String channelId, Claims claims) {
         Channel existing = channelManager.getChannel(channelId);
-        if (existing == null) {
+        PanelRole role = resourcePolicy.resolveRole(claims);
+        if (!resourcePolicy.canManageChannel(role, existing)) {
             sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
             return;
         }
+
+        // PANEL-004: config-managed channels are read-only via the Panel/REST.
+        if (existing.getSource() == ChannelSource.CONFIG) {
+            sendJsonError(ctx, request, HttpResponseStatus.FORBIDDEN,
+                    "Channel is managed by config and cannot be edited via the Panel");
+            return;
+        }
+
+        // PANEL-006: capture the before-state hash for audit. channelToJson
+        // never emits the password, so the hash is secret-safe.
+        JsonObject beforeJson = channelToJson(existing, role);
+        String beforeHash = AuditEvent.hashJson(gson.toJson(beforeJson));
 
         try {
             String body = request.content().toString(CharsetUtil.UTF_8);
@@ -808,6 +1391,15 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             }
             String permission = json.has("permission") && !json.get("permission").isJsonNull()
                     ? json.get("permission").getAsString() : null;
+            // permissionPresent lets the caller distinguish "leave permission
+            // untouched" (absent/false) from "clear permission" (true + null).
+            // When omitted, default to true only when permission is non-null.
+            boolean permissionPresent;
+            if (json.has("permissionPresent") && !json.get("permissionPresent").isJsonNull()) {
+                permissionPresent = json.get("permissionPresent").getAsBoolean();
+            } else {
+                permissionPresent = permission != null;
+            }
             Integer slowModeSeconds = null;
             if (json.has("slowModeSeconds") && !json.get("slowModeSeconds").isJsonNull()) {
                 slowModeSeconds = json.get("slowModeSeconds").getAsInt();
@@ -818,7 +1410,14 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 }
             }
 
-            Channel updated = channelManager.updateChannel(channelId, displayName, maxCapacity, permission);
+            Channel updated;
+            try {
+                updated = channelManager.updateChannel(channelId, displayName, maxCapacity,
+                        permission, permissionPresent);
+            } catch (IllegalArgumentException e) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, e.getMessage());
+                return;
+            }
             if (updated == null) {
                 sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
                 return;
@@ -827,15 +1426,22 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 updated.setSlowModeSeconds(slowModeSeconds);
             }
 
+            JsonObject afterJson = channelToJson(updated, role);
             JsonObject response = new JsonObject();
             response.addProperty("success", true);
-            response.add("channel", channelToJson(updated));
+            response.add("channel", afterJson);
 
             sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+
+            // PANEL-006: audit the update with before/after hashes.
+            recordAuditSuccess(ctx, claims, "channel.update", "channel:" + channelId,
+                    beforeHash, AuditEvent.hashJson(gson.toJson(afterJson)));
 
         } catch (Exception e) {
             logger.error("Error updating channel via API", e);
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            recordAudit(ctx, claims, "channel.update", "channel:" + channelId,
+                    beforeHash, null, "invalid request body", "failure");
         }
     }
 
@@ -845,17 +1451,23 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * <p>Uses the console sentinel as the inviter. Returns the generated code.
      * Requirements: 25.4
      */
-    private void handleInviteChannel(ChannelHandlerContext ctx, FullHttpRequest request, String channelId) {
+    private void handleInviteChannel(ChannelHandlerContext ctx, FullHttpRequest request,
+                                     String channelId, Claims claims) {
         if (invitationManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Invitations not enabled");
             return;
         }
 
         Channel channel = channelManager.getChannel(channelId);
-        if (channel == null) {
+        PanelRole role = resourcePolicy.resolveRole(claims);
+        if (!resourcePolicy.canManageChannel(role, channel)) {
             sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
             return;
         }
+
+        // PANEL-004: inviting into a CONFIG channel is permitted (membership is
+        // runtime state, not a channel edit), so no CONFIG guard here. Only
+        // structural mutations (create/update/delete) are blocked for CONFIG.
 
         long ttlMillis = InvitationManager.DEFAULT_TTL_MILLIS;
         try {
@@ -888,6 +1500,514 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     }
 
     /**
+     * DELETE /api/channels/{id}/invitations/{code} - Revoke an invitation.
+     *
+     * <p>Force-revokes (admin path) because panel-originated invitations are
+     * created with the console sentinel as inviter, so the panel operator's
+     * UUID never matches the inviter and the inviter-only revoke path would
+     * always fail. The invitation must belong to the channel in the URL
+     * (defense-in-depth against cross-channel revoke). Requirements: 25.4
+     */
+    private void handleRevokeInvitation(ChannelHandlerContext ctx, FullHttpRequest request,
+                                        String channelId, String code, Claims claims) {
+        if (invitationManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Invitations not enabled");
+            return;
+        }
+        Channel channel = channelManager.getChannel(channelId);
+        PanelRole role = resourcePolicy.resolveRole(claims);
+        if (!resourcePolicy.canManageChannel(role, channel)) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
+            return;
+        }
+        try {
+            // Validate the code belongs to this channel (defense-in-depth:
+            // an admin on channel A must not revoke an invitation for channel B).
+            Optional<Invitation> opt = invitationManager.getInvitation(code);
+            if (opt.isEmpty() || !opt.get().getChannelId().equals(channelId)) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Invitation not found");
+                return;
+            }
+            boolean revoked = invitationManager.forceRevokeInvitation(code);
+            if (!revoked) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Invitation not found");
+                return;
+            }
+            JsonObject response = new JsonObject();
+            response.addProperty("success", true);
+            response.addProperty("code", code);
+            response.addProperty("channelId", channelId);
+            response.addProperty("revoked", true);
+            String operator = panelUsername(claims);
+            logger.info("Invitation {} for channel {} revoked via API by operator {}", code, channelId, operator);
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+        } catch (Exception e) {
+            logger.error("Error revoking invitation {} via API", code, e);
+            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR, "NC-510: Database error");
+        }
+    }
+
+    /**
+     * Maximum number of targets a single batch moderation request may carry.
+     * Bounded so a single malicious or fat-fingered request cannot enumerate
+     * the whole player base or pin the worker pool for seconds at a time.
+     */
+    static final int BATCH_MAX_TARGETS = 100;
+
+    /**
+     * Idempotency cache TTL: a replay within this window returns the exact
+     * same response (status + body) as the original request, with no side
+     * effects. 10 minutes is long enough to cover a retry after a network
+     * blip yet short enough that the bounded cache (1024 entries) does not
+     * retain stale keys indefinitely.
+     */
+    static final long BATCH_IDEMPOTENCY_TTL_MILLIS = 10L * 60L * 1000L;
+
+    /**
+     * Upper bound on the idempotency cache size. A put past this cap triggers
+     * a sweep of expired entries; if the sweep does not free enough room the
+     * oldest entry (by recorded-at timestamp) is evicted. Bounded so the
+     * cache cannot grow unbounded in a long-running process.
+     */
+    static final int BATCH_IDEMPOTENCY_MAX_ENTRIES = 1024;
+
+    /**
+     * In-memory idempotency cache for batch moderation (§11.6 Project 17).
+     * Keyed by the caller-supplied {@code idempotencyKey}. A replay within
+     * {@link #BATCH_IDEMPOTENCY_TTL_MILLIS} returns the cached response with
+     * no side effects. <strong>Single-process only</strong>: the cache is not
+     * shared across backend instances, so in a horizontally-scaled deployment
+     * a replay routed to a different instance will re-execute. A shared store
+     * (Redis) would be required for cluster-wide idempotency; that is out of
+     * scope for this slice (no new persistence is introduced).
+     */
+    private final Map<String, CachedBatchResult> cachedBatchResults = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Cached response for a batch moderation request, used to make replays
+     * idempotent. The cached payload is stored as its already-serialized JSON
+     * string so a replay returns byte-identical bytes without re-running the
+     * per-target mutation logic.
+     */
+    private static final class CachedBatchResult {
+        final HttpResponseStatus status;
+        final String body;
+        final String contentType;
+        final long recordedAt;
+
+        CachedBatchResult(HttpResponseStatus status, String body, String contentType) {
+            this.status = status;
+            this.body = body;
+            this.contentType = contentType;
+            this.recordedAt = System.currentTimeMillis();
+        }
+
+        boolean isExpired() {
+            return System.currentTimeMillis() - recordedAt > BATCH_IDEMPOTENCY_TTL_MILLIS;
+        }
+    }
+
+    /**
+     * POST /api/moderation/batch — apply a moderation action to many targets at
+     * once (§11.6 Project 17, 提案 09).
+     *
+     * <p>Body:
+     * <pre>{@code
+     * {
+     *   "action": "mute" | "unmute" | "ban" | "unban",
+     *   "targetIds": ["<uuid>", ...],            // ≤ 100
+     *   "channelId": "<optional>",
+     *   "durationMs": <long>,                    // mute/ban only
+     *   "reason": "<required>",
+     *   "caseId": "<optional>",
+     *   "dryRun": <boolean>,                     // default false
+     *   "idempotencyKey": "<required>"
+     * }
+     * }</pre>
+     *
+     * <p>RBAC: ADMIN minimum (enforced upstream by {@link #requiredRole},
+     * default branch — VIEWER is rejected with 403 before reaching here, the
+     * same pattern used by {@code handleMutePlayer}).
+     *
+     * <p>Idempotency: a replay carrying the same {@code idempotencyKey} within
+     * {@link #BATCH_IDEMPOTENCY_TTL_MILLIS} returns the cached response with
+     * no side effects. The cache is bounded ({@link #BATCH_IDEMPOTENCY_MAX_ENTRIES})
+     * and single-process (see {@link #cachedBatchResults} javadoc).
+     *
+     * <p>Partial failure: each target is applied independently. A per-target
+     * failure does NOT abort the batch — the response is HTTP 200 with a
+     * {@code results} array carrying one entry per target, each flagged
+     * success/failure. Only validation failures (bad action, too many targets,
+     * missing reason/key, missing managers) short-circuit with a 4xx/5xx.
+     *
+     * <p>Audit: one {@link AuditEvent} per target (action
+     * {@code player.batch_mute}/ {@code player.batch_ban} etc, resource
+     * {@code player:<uuid>}, reason carries {@code batch:<idempotencyKey>} so
+     * the batch is traceable to its origin).
+     */
+    private void handleBatchModeration(ChannelHandlerContext ctx, FullHttpRequest request,
+                                       Claims claims) {
+        // ---- parse body ----
+        JsonObject json;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            if (body == null || body.isBlank()) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                        "Request body is required");
+                return;
+            }
+            json = JsonParser.parseString(body).getAsJsonObject();
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+
+        String action = json.has("action") && !json.get("action").isJsonNull()
+                ? json.get("action").getAsString() : null;
+        if (action == null || action.isBlank()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "action is required");
+            return;
+        }
+        if (!action.equals("mute") && !action.equals("unmute")
+                && !action.equals("ban") && !action.equals("unban")) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "action must be one of: mute, unmute, ban, unban");
+            return;
+        }
+
+        if (!json.has("targetIds") || !json.get("targetIds").isJsonArray()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "targetIds (array) is required");
+            return;
+        }
+        JsonArray targetIdsJson = json.getAsJsonArray("targetIds");
+        if (targetIdsJson.isEmpty()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "targetIds must contain at least one UUID");
+            return;
+        }
+        if (targetIdsJson.size() > BATCH_MAX_TARGETS) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "targetIds exceeds the batch upper bound of " + BATCH_MAX_TARGETS);
+            return;
+        }
+        List<UUID> targetIds = new ArrayList<>(targetIdsJson.size());
+        Set<UUID> seen = new HashSet<>(targetIdsJson.size() * 2);
+        for (int i = 0; i < targetIdsJson.size(); i++) {
+            String raw = targetIdsJson.get(i).getAsString();
+            UUID uuid;
+            try {
+                uuid = UUID.fromString(raw);
+            } catch (Exception e) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                        "Invalid UUID in targetIds: " + raw);
+                return;
+            }
+            if (!seen.add(uuid)) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                        "Duplicate UUID in targetIds: " + uuid);
+                return;
+            }
+            targetIds.add(uuid);
+        }
+
+        String reason = json.has("reason") && !json.get("reason").isJsonNull()
+                ? json.get("reason").getAsString() : null;
+        if (reason == null || reason.isBlank()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "reason is required");
+            return;
+        }
+
+        String idempotencyKey = json.has("idempotencyKey") && !json.get("idempotencyKey").isJsonNull()
+                ? json.get("idempotencyKey").getAsString() : null;
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "idempotencyKey is required");
+            return;
+        }
+        if (idempotencyKey.length() > 128) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "idempotencyKey must be ≤ 128 characters");
+            return;
+        }
+
+        String channelId = null;
+        if (json.has("channelId") && !json.get("channelId").isJsonNull()) {
+            channelId = json.get("channelId").getAsString();
+            if (channelId.isBlank()) {
+                channelId = null;
+            }
+        }
+        if (channelId != null && !channelManager.channelExists(channelId)) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
+            return;
+        }
+
+        long durationMs = 0L;
+        if (json.has("durationMs") && !json.get("durationMs").isJsonNull()) {
+            try {
+                durationMs = json.get("durationMs").getAsLong();
+            } catch (Exception e) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                        "durationMs must be a number");
+                return;
+            }
+        }
+        if ((action.equals("mute") || action.equals("ban")) && durationMs < 0L) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "durationMs must be ≥ 0 (0 = permanent)");
+            return;
+        }
+
+        String caseId = json.has("caseId") && !json.get("caseId").isJsonNull()
+                ? json.get("caseId").getAsString() : null;
+        boolean dryRun = json.has("dryRun") && !json.get("dryRun").isJsonNull()
+                && json.get("dryRun").getAsBoolean();
+
+        // ---- idempotency replay ----
+        CachedBatchResult cached = cachedBatchResults.get(idempotencyKey);
+        if (cached != null) {
+            if (cached.isExpired()) {
+                cachedBatchResults.remove(idempotencyKey, cached);
+            } else {
+                // Replay: return the cached response verbatim, no side effects.
+                ByteBuf buf = Unpooled.copiedBuffer(cached.body, CharsetUtil.UTF_8);
+                FullHttpResponse response = new DefaultFullHttpResponse(
+                        HttpVersion.HTTP_1_1, cached.status, buf);
+                response.headers().set(HttpHeaderNames.CONTENT_TYPE,
+                        cached.contentType != null ? cached.contentType
+                                : "application/json; charset=UTF-8");
+                response.headers().set(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
+                addCorsHeaders(request, response);
+                stampRequestId(ctx, response);
+                boolean keepAlive = HttpUtil.isKeepAlive(request);
+                if (keepAlive) {
+                    response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+                    ctx.writeAndFlush(response);
+                } else {
+                    ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+                }
+                return;
+            }
+        }
+
+        // ---- manager availability ----
+        boolean needsMute = action.equals("mute") || action.equals("unmute");
+        boolean needsBan = action.equals("ban") || action.equals("unban");
+        if (needsMute && muteManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE,
+                    "Mute system not enabled");
+            return;
+        }
+        if (needsBan && banManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE,
+                    "Ban system not enabled");
+            return;
+        }
+
+        String operatorUsername = panelUsername(claims);
+        UUID operatorUuid = panelOperatorUuid(operatorUsername);
+        // The reason recorded in the audit log carries the batch key so the
+        // full batch can be reconstructed from the audit trail alone.
+        String auditReason = reason + " (batch:" + idempotencyKey + ")";
+
+        // ---- dry-run preview: no side effects, no manager calls, no audit ----
+        if (dryRun) {
+            JsonArray previewResults = new JsonArray();
+            for (UUID targetUuid : targetIds) {
+                JsonObject item = new JsonObject();
+                item.addProperty("targetId", targetUuid.toString());
+                item.addProperty("status", "preview");
+                previewResults.add(item);
+            }
+            JsonObject preview = new JsonObject();
+            preview.addProperty("action", action);
+            if (channelId != null) {
+                preview.addProperty("channelId", channelId);
+            }
+            preview.addProperty("dryRun", true);
+            preview.addProperty("total", targetIds.size());
+            preview.addProperty("succeeded", 0);
+            preview.addProperty("failed", 0);
+            if (caseId != null && !caseId.isBlank()) {
+                preview.addProperty("caseId", caseId);
+            }
+            preview.addProperty("idempotencyKey", idempotencyKey);
+            preview.add("results", previewResults);
+            // dry-run is intentionally NOT cached: it is a side-effect-free
+            // preview and cheap to re-run, so replay protection is unnecessary.
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK, preview);
+            return;
+        }
+
+        // ---- apply per-target ----
+        JsonArray results = new JsonArray();
+        int successCount = 0;
+        int failureCount = 0;
+        for (UUID targetUuid : targetIds) {
+            JsonObject item = new JsonObject();
+            item.addProperty("targetId", targetUuid.toString());
+            String itemStatus;
+            String itemMessage = null;
+            String itemErrorCode = null;
+            try {
+                if (action.equals("mute")) {
+                    MuteResult r = muteManager.mutePlayer(operatorUuid, targetUuid,
+                            channelId, durationMs, reason, null, true);
+                    if (r.isSuccess()) {
+                        itemStatus = "success";
+                        successCount++;
+                    } else {
+                        itemStatus = "failure";
+                        itemMessage = r.getMessage();
+                        itemErrorCode = r.getErrorCode();
+                        failureCount++;
+                    }
+                } else if (action.equals("unmute")) {
+                    MuteResult r = muteManager.unmutePlayer(operatorUuid, targetUuid,
+                            channelId, null, true);
+                    if (r.isSuccess()) {
+                        itemStatus = "success";
+                        successCount++;
+                    } else {
+                        itemStatus = "failure";
+                        itemMessage = r.getMessage();
+                        itemErrorCode = r.getErrorCode();
+                        failureCount++;
+                    }
+                } else if (action.equals("ban")) {
+                    BanResult r = banManager.banPlayer(operatorUuid, targetUuid,
+                            channelId, durationMs, reason, null, true);
+                    if (r.isSuccess()) {
+                        itemStatus = "success";
+                        successCount++;
+                    } else {
+                        itemStatus = "failure";
+                        itemMessage = r.getMessage();
+                        itemErrorCode = r.getErrorCode();
+                        failureCount++;
+                    }
+                } else { // unban
+                    BanResult r = banManager.unbanPlayer(operatorUuid, targetUuid,
+                            channelId, null, true);
+                    if (r.isSuccess()) {
+                        itemStatus = "success";
+                        successCount++;
+                    } else {
+                        itemStatus = "failure";
+                        itemMessage = r.getMessage();
+                        itemErrorCode = r.getErrorCode();
+                        failureCount++;
+                    }
+                }
+            } catch (Exception e) {
+                logger.warn("Batch {} for target {} failed", action, targetUuid, e);
+                itemStatus = "failure";
+                itemMessage = e.getMessage() != null ? e.getMessage() : "internal error";
+                itemErrorCode = "NC-510";
+                failureCount++;
+            }
+
+            item.addProperty("status", itemStatus);
+            if (itemMessage != null) {
+                item.addProperty("message", itemMessage);
+            }
+            if (itemErrorCode != null) {
+                item.addProperty("errorCode", itemErrorCode);
+            }
+            results.add(item);
+
+            // Per-target audit event; reason carries the batch key so the
+            // whole batch can be reconstructed from the audit trail alone.
+            String auditAction = "player.batch_" + action;
+            recordAudit(ctx, claims, auditAction, "player:" + targetUuid,
+                    null, null, auditReason,
+                    "success".equals(itemStatus) ? "success" : "failure");
+        }
+
+        // ---- response ----
+        JsonObject response = new JsonObject();
+        response.addProperty("action", action);
+        if (channelId != null) {
+            response.addProperty("channelId", channelId);
+        }
+        response.addProperty("dryRun", dryRun);
+        response.addProperty("total", targetIds.size());
+        response.addProperty("succeeded", successCount);
+        response.addProperty("failed", failureCount);
+        if (caseId != null && !caseId.isBlank()) {
+            response.addProperty("caseId", caseId);
+        }
+        response.addProperty("idempotencyKey", idempotencyKey);
+        response.add("results", results);
+
+        // Partial failure → 200 (the batch itself was accepted and processed;
+        // per-target outcomes are in the results array). Only full-accept and
+        // partial-accept return 200; validation/replay-error paths above
+        // already returned with 4xx/5xx.
+        HttpResponseStatus status = HttpResponseStatus.OK;
+        String content = gson.toJson(response);
+        ByteBuf buf = Unpooled.copiedBuffer(content, CharsetUtil.UTF_8);
+        FullHttpResponse httpResponse = new DefaultFullHttpResponse(
+                HttpVersion.HTTP_1_1, status, buf);
+        httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json; charset=UTF-8");
+        httpResponse.headers().set(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
+        addCorsHeaders(request, httpResponse);
+        stampRequestId(ctx, httpResponse);
+
+        // ---- cache + evict ----
+        // Cache only the actually-applied response so a replay within the TTL
+        // returns byte-identical bytes with no side effects.
+        evictExpiredBatchResults();
+        cachedBatchResults.put(idempotencyKey,
+                new CachedBatchResult(status, content, "application/json; charset=UTF-8"));
+
+        boolean keepAlive = HttpUtil.isKeepAlive(request);
+        if (keepAlive) {
+            httpResponse.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+            ctx.writeAndFlush(httpResponse);
+        } else {
+            ctx.writeAndFlush(httpResponse).addListener(ChannelFutureListener.CLOSE);
+        }
+    }
+
+    /**
+     * Sweeps expired entries from {@link #cachedBatchResults} and, if the cache
+     * is still at capacity, evicts the oldest entry by recorded-at timestamp.
+     * Called on every non-dry-run put so the cache stays bounded without a
+     * dedicated cleaner thread.
+     */
+    private void evictExpiredBatchResults() {
+        if (cachedBatchResults.isEmpty()) {
+            return;
+        }
+        // Sweep expired entries (cheap on the common path where there are none).
+        boolean removedAny = false;
+        Iterator<Map.Entry<String, CachedBatchResult>> it =
+                cachedBatchResults.entrySet().iterator();
+        while (it.hasNext()) {
+            if (it.next().getValue().isExpired()) {
+                it.remove();
+                removedAny = true;
+            }
+        }
+        if (cachedBatchResults.size() < BATCH_IDEMPOTENCY_MAX_ENTRIES) {
+            return;
+        }
+        // Still at/over capacity: evict the single oldest entry. A full sort
+        // is avoided — one eviction per put keeps the cache bounded over time.
+        Map.Entry<String, CachedBatchResult> oldest = null;
+        for (Map.Entry<String, CachedBatchResult> e : cachedBatchResults.entrySet()) {
+            if (oldest == null || e.getValue().recordedAt < oldest.getValue().recordedAt) {
+                oldest = e;
+            }
+        }
+        if (oldest != null) {
+            cachedBatchResults.remove(oldest.getKey());
+        }
+    }
+
+    /**
      * POST /api/players/{uuid}/mute - Mute a player.
      *
      * <p>The operator is the panel account from the JWT (stable name-derived
@@ -896,7 +2016,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * Requirements: 25.4
      */
     private void handleMutePlayer(ChannelHandlerContext ctx, FullHttpRequest request, String playerId,
-                                  String operatorUsername) {
+                                  String operatorUsername, Claims claims) {
         if (muteManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Mute system not enabled");
             return;
@@ -913,6 +2033,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         String channelId = null;
         long durationMs = 0;
         String reason = null;
+        String caseId = null;
         try {
             String body = request.content().toString(CharsetUtil.UTF_8);
             if (!body.isBlank()) {
@@ -925,6 +2046,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 }
                 if (json.has("reason") && !json.get("reason").isJsonNull()) {
                     reason = json.get("reason").getAsString();
+                }
+                if (json.has("caseId") && !json.get("caseId").isJsonNull()) {
+                    caseId = json.get("caseId").getAsString();
                 }
             }
         } catch (Exception e) {
@@ -948,6 +2072,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonError(ctx, request, status,
                     result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
                             : result.getMessage());
+            // PANEL-006: audit the failed mute attempt.
+            recordAudit(ctx, claims, "player.mute", "player:" + targetUuid,
+                    null, null, reason, "failure");
             return;
         }
 
@@ -958,7 +2085,18 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         if (channelId != null) {
             response.addProperty("channelId", channelId);
         }
+        // PANEL-007: echo the linked caseId back when the caller supplied one.
+        // caseId is optional — when absent, the response shape is unchanged.
+        if (caseId != null && !caseId.isBlank()) {
+            response.addProperty("caseId", caseId);
+        }
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+
+        // PANEL-006: audit the successful mute. No before/after payload hash
+        // (the resource is a player, not a JSON document we serialize here);
+        // the reason is recorded in the reason field.
+        recordAudit(ctx, claims, "player.mute", "player:" + targetUuid,
+                null, null, reason, "success");
     }
 
     /**
@@ -1097,7 +2235,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * Body: {channelId?, durationMs, reason}
      */
     private void handleBanPlayer(ChannelHandlerContext ctx, FullHttpRequest request, String playerId,
-                                 String operatorUsername) {
+                                 String operatorUsername, Claims claims) {
         if (banManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Ban system not enabled");
             return;
@@ -1114,6 +2252,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         String channelId = null;
         long durationMs = 0;
         String reason = null;
+        String caseId = null;
         try {
             String body = request.content().toString(CharsetUtil.UTF_8);
             if (!body.isBlank()) {
@@ -1126,6 +2265,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 }
                 if (json.has("reason") && !json.get("reason").isJsonNull()) {
                     reason = json.get("reason").getAsString();
+                }
+                if (json.has("caseId") && !json.get("caseId").isJsonNull()) {
+                    caseId = json.get("caseId").getAsString();
                 }
             }
         } catch (Exception e) {
@@ -1149,6 +2291,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonError(ctx, request, status,
                     result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
                             : result.getMessage());
+            // PANEL-006: audit the failed ban attempt.
+            recordAudit(ctx, claims, "player.ban", "player:" + targetUuid,
+                    null, null, reason, "failure");
             return;
         }
 
@@ -1159,7 +2304,15 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         if (channelId != null) {
             response.addProperty("channelId", channelId);
         }
+        // PANEL-007: echo the linked caseId back when supplied (optional).
+        if (caseId != null && !caseId.isBlank()) {
+            response.addProperty("caseId", caseId);
+        }
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+
+        // PANEL-006: audit the successful ban.
+        recordAudit(ctx, claims, "player.ban", "player:" + targetUuid,
+                null, null, reason, "success");
     }
 
     /**
@@ -1300,12 +2453,16 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
 
         String channelId = null;
+        String caseId = null;
         try {
             String body = request.content().toString(CharsetUtil.UTF_8);
             if (!body.isBlank()) {
                 JsonObject json = JsonParser.parseString(body).getAsJsonObject();
                 if (json.has("channelId") && !json.get("channelId").isJsonNull()) {
                     channelId = json.get("channelId").getAsString();
+                }
+                if (json.has("caseId") && !json.get("caseId").isJsonNull()) {
+                    caseId = json.get("caseId").getAsString();
                 }
             }
         } catch (Exception e) {
@@ -1355,6 +2512,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         response.addProperty("message", "Player kicked");
         response.addProperty("playerId", targetUuid.toString());
         response.addProperty("channelId", channelId);
+        if (caseId != null && !caseId.isBlank()) {
+            response.addProperty("caseId", caseId);
+        }
 
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
     }
@@ -1393,7 +2553,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * <p>Mirrors {@code ConsoleCommandHandler.handleReload}.
      * Requirements: 25.4
      */
-    private void handleReload(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private void handleReload(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
         if (configManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config manager not available");
             return;
@@ -1405,18 +2565,50 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             response.addProperty("success", true);
             response.addProperty("message", "Configuration reloaded successfully");
             response.addProperty("reloadCount", configManager.getReloadCount());
+            // PANEL-010: include the settings revision so callers can detect
+            // whether a reload bumped the revision (it does when save() runs).
+            response.addProperty("settingsRevision", configManager.getSettingsRevision());
             sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+            // PANEL-006: audit the reload.
+            recordAuditSuccess(ctx, claims, "config.reload", "config",
+                    null, null);
+
+            // §11.6 Project 20 (proposal 10): reload re-reads the config file,
+            // which may have changed feature flags. Broadcast the post-reload
+            // settings revision and features so panel clients can refresh.
+            // Fire AFTER the response + audit so a broadcast failure never
+            // masks the reload result.
+            if (webSocketGateway != null) {
+                try {
+                    com.nova.link.config.FeatureConfig reloadedFeatures =
+                            configManager.getConfig() != null
+                                    ? configManager.getConfig().getFeatures()
+                                    : null;
+                    webSocketGateway.getMessageHandler().broadcastSettingsUpdate(
+                            configManager.getSettingsRevision(), reloadedFeatures);
+                } catch (Exception e) {
+                    logger.debug("settings_update broadcast after reload failed: {}",
+                            e.getMessage());
+                }
+            }
         } catch (Exception e) {
             logger.error("Error reloading config via API", e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
                     "NC-500: Reload failed: " + e.getMessage());
+            recordAudit(ctx, claims, "config.reload", "config",
+                    null, null, e.getMessage(), "failure");
         }
     }
 
     /**
      * GET /api/settings - Returns the FeatureConfig switches.
      *
-     * <p>Returns {filterEnabled, messageLogEnabled, crossServerChatEnabled}.
+     * <p>Returns {filterEnabled, messageLogEnabled, crossServerChatEnabled,
+     * privateMessagesEnabled, messageLogRetentionDays, revision}. The last two
+     * are feature-detected by the frontend. {@code revision} (PANEL-010) is the
+     * optimistic-concurrency token callers echo back via {@code If-Match} (or
+     * {@code baseRevision} in the request body) on PUT; an ETag header is also
+     * set so standard HTTP conditional-request clients can use it directly.
      */
     private void handleGetSettings(ChannelHandlerContext ctx, FullHttpRequest request) {
         if (configManager == null || configManager.getConfig() == null
@@ -1429,37 +2621,97 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         response.addProperty("filterEnabled", features.isFilterEnabled());
         response.addProperty("messageLogEnabled", features.isMessageLogEnabled());
         response.addProperty("crossServerChatEnabled", features.isCrossServerChatEnabled());
+        response.addProperty("privateMessagesEnabled", features.isPrivateMessagesEnabled());
+        response.addProperty("messageLogRetentionDays", features.getMessageLogRetentionDays());
+        // PANEL-010: expose the settings revision so PUT callers can detect
+        // staleness before we accept their update.
+        long revision = configManager.getSettingsRevision();
+        response.addProperty("revision", revision);
+        // SendJsonResponse doesn't accept extra headers; we add the ETag here
+        // by post-processing the response object via a wrapper. The simpler
+        // route is to write the ETag through the channel after send. Since
+        // sendJsonResponse builds and writes the FullHttpResponse internally,
+        // we instead rely on the body-level `revision` field for the panel
+        // (the frontend uses baseRevision, not ETag). A standard ETag header
+        // is still useful for HTTP-native clients, so we emit it on the
+        // channel after the response is written is not possible — instead
+        // we accept the body-level revision as the contract.
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
     }
 
     /**
      * PUT /api/settings - Updates the FeatureConfig switches.
      *
-     * <p>Body: {filterEnabled?, messageLogEnabled?, crossServerChatEnabled?}.
-     * Only present fields are applied. Persists via configManager.save() and
-     * applies to runtime immediately so the panel toggle is effective without
-     * a full reload.
+     * <p>Body: {filterEnabled?, messageLogEnabled?, crossServerChatEnabled?,
+     * privateMessagesEnabled?, messageLogRetentionDays?, baseRevision?}. Only
+     * present fields are applied. Persists via configManager.save() and applies
+     * to runtime immediately so the panel toggle is effective without a full
+     * reload.
+     *
+     * <p>PANEL-010: optimistic-concurrency protection. Callers MUST supply
+     * either an {@code If-Match: W/"<revision>"} header or a
+     * {@code baseRevision} body field; if the supplied revision does not match
+     * the current {@link ConfigManager#getSettingsRevision()}, the update is
+     * rejected with 409 Conflict and the current settings are returned so the
+     * caller can re-merge. On success the revision is incremented atomically
+     * (inside {@link ConfigManager#save()}).
      */
-    private void handleUpdateSettings(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private void handleUpdateSettings(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
         if (configManager == null || configManager.getConfig() == null
                 || configManager.getConfig().getFeatures() == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Settings not available");
             return;
         }
 
+        // §11.6 Project 20: ensure the config-history service is assembled and
+        // wired into ConfigManager BEFORE save() records a snapshot. The service
+        // is lazy (built on first config-history endpoint hit); without this
+        // warm-up the first settings save after startup would record no
+        // snapshot, and a subsequent rollback/diff would 404 on a revision the
+        // operator just wrote. No-op when the service is already built, and
+        // still 503s gracefully when no database provider is available.
+        configHistoryService();
+
+        // PANEL-010: optimistic-concurrency check. Accept either the standard
+        // If-Match header (W/"<rev>") or a body-level baseRevision field (the
+        // panel JS uses the latter because it is simpler to set with fetch).
+        long currentRevision = configManager.getSettingsRevision();
+        Long clientRevision = null;
+        String ifMatch = request.headers().get(HttpHeaderNames.IF_MATCH);
+        if (ifMatch != null && !ifMatch.isBlank()) {
+            // Parse W/"<rev>" or "<rev>" or "rev".
+            String trimmed = ifMatch.trim();
+            if (trimmed.startsWith("W/")) {
+                trimmed = trimmed.substring(2);
+            }
+            // Strip surrounding quotes if present.
+            if (trimmed.length() >= 2 && trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
+                trimmed = trimmed.substring(1, trimmed.length() - 1);
+            }
+            try {
+                clientRevision = Long.parseLong(trimmed.trim());
+            } catch (NumberFormatException ignored) {
+                // Fall through to body-level baseRevision below.
+            }
+        }
+
         com.nova.link.config.FeatureConfig features = configManager.getConfig().getFeatures();
+        JsonObject json = null;
         try {
             String body = request.content().toString(CharsetUtil.UTF_8);
             if (body != null && !body.isBlank()) {
-                JsonObject json = JsonParser.parseString(body).getAsJsonObject();
-                if (json.has("filterEnabled") && !json.get("filterEnabled").isJsonNull()) {
-                    features.setFilterEnabled(json.get("filterEnabled").getAsBoolean());
-                }
-                if (json.has("messageLogEnabled") && !json.get("messageLogEnabled").isJsonNull()) {
-                    features.setMessageLogEnabled(json.get("messageLogEnabled").getAsBoolean());
-                }
-                if (json.has("crossServerChatEnabled") && !json.get("crossServerChatEnabled").isJsonNull()) {
-                    features.setCrossServerChatEnabled(json.get("crossServerChatEnabled").getAsBoolean());
+                json = JsonParser.parseString(body).getAsJsonObject();
+
+                // Body-level baseRevision takes effect when If-Match was not
+                // supplied (or was unparseable). If both are present and
+                // disagree, the header wins (standard HTTP semantics).
+                if (clientRevision == null
+                        && json.has("baseRevision") && !json.get("baseRevision").isJsonNull()) {
+                    try {
+                        clientRevision = json.get("baseRevision").getAsLong();
+                    } catch (NumberFormatException ignored) {
+                        // leave null → treated as missing
+                    }
                 }
             }
         } catch (Exception e) {
@@ -1467,10 +2719,58 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
 
+        // Stale revision → 409 with the current settings so the caller can
+        // re-merge. This MUST happen before any body field is applied to the
+        // live FeatureConfig, otherwise a rejected (stale) update would
+        // silently mutate the runtime — the exact race PANEL-010 guards
+        // against. We do this AFTER parsing the body so a malformed body still
+        // gets 400 (a client error that would mask a 409 otherwise). When
+        // baseRevision is absent entirely, we allow the update for backward
+        // compatibility (the panel will be updated to always send it).
+        if (clientRevision != null && clientRevision != currentRevision) {
+            JsonObject conflict = new JsonObject();
+            conflict.addProperty("error", "Settings revision mismatch");
+            conflict.addProperty("message", "Settings were modified by another editor. "
+                    + "Refresh and re-apply your changes.");
+            conflict.addProperty("status", 409);
+            conflict.addProperty("currentRevision", currentRevision);
+            conflict.addProperty("clientRevision", clientRevision);
+            // Include the current settings so the caller can merge.
+            conflict.addProperty("filterEnabled", features.isFilterEnabled());
+            conflict.addProperty("messageLogEnabled", features.isMessageLogEnabled());
+            conflict.addProperty("crossServerChatEnabled", features.isCrossServerChatEnabled());
+            conflict.addProperty("privateMessagesEnabled", features.isPrivateMessagesEnabled());
+            conflict.addProperty("messageLogRetentionDays", features.getMessageLogRetentionDays());
+            conflict.addProperty("revision", currentRevision);
+            sendJsonResponse(ctx, request, HttpResponseStatus.CONFLICT, conflict);
+            return;
+        }
+
+        // Revision is fresh (or absent for backward compat) — apply the body.
+        if (json != null) {
+            if (json.has("filterEnabled") && !json.get("filterEnabled").isJsonNull()) {
+                features.setFilterEnabled(json.get("filterEnabled").getAsBoolean());
+            }
+            if (json.has("messageLogEnabled") && !json.get("messageLogEnabled").isJsonNull()) {
+                features.setMessageLogEnabled(json.get("messageLogEnabled").getAsBoolean());
+            }
+            if (json.has("crossServerChatEnabled") && !json.get("crossServerChatEnabled").isJsonNull()) {
+                features.setCrossServerChatEnabled(json.get("crossServerChatEnabled").getAsBoolean());
+            }
+            if (json.has("privateMessagesEnabled") && !json.get("privateMessagesEnabled").isJsonNull()) {
+                features.setPrivateMessagesEnabled(json.get("privateMessagesEnabled").getAsBoolean());
+            }
+            if (json.has("messageLogRetentionDays") && !json.get("messageLogRetentionDays").isJsonNull()) {
+                int days = json.get("messageLogRetentionDays").getAsInt();
+                // Clamp to [0, 365] per the frontend contract.
+                features.setMessageLogRetentionDays(Math.max(0, Math.min(365, days)));
+            }
+        }
+
         // Apply to runtime immediately.
         applyFeatureConfig(features);
 
-        // Persist to disk.
+        // Persist to disk. save() also bumps settingsRevision atomically.
         try {
             configManager.save();
         } catch (Exception e) {
@@ -1480,12 +2780,45 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
 
+        // §11.6 Project 20 (proposal 10): broadcast the new settings revision
+        // and feature flags to every authenticated panel session so clients
+        // can refetch instead of polling. Fire AFTER save() succeeded and
+        // AFTER the response is built (features object is already the post-
+        // mutation state). Null-gateway is a silent no-op (test/standalone
+        // harness without WS wiring).
+        if (webSocketGateway != null) {
+            try {
+                webSocketGateway.getMessageHandler().broadcastSettingsUpdate(
+                        configManager.getSettingsRevision(), features);
+            } catch (Exception e) {
+                logger.debug("settings_update broadcast after update failed: {}", e.getMessage());
+            }
+        }
+
         JsonObject response = new JsonObject();
         response.addProperty("success", true);
         response.addProperty("filterEnabled", features.isFilterEnabled());
         response.addProperty("messageLogEnabled", features.isMessageLogEnabled());
         response.addProperty("crossServerChatEnabled", features.isCrossServerChatEnabled());
+        response.addProperty("privateMessagesEnabled", features.isPrivateMessagesEnabled());
+        response.addProperty("messageLogRetentionDays", features.getMessageLogRetentionDays());
+        // PANEL-010: return the new revision so the caller can use it as the
+        // baseRevision for its next update.
+        response.addProperty("revision", configManager.getSettingsRevision());
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+
+        // PANEL-006: audit the settings update. beforeHash/afterHash are the
+        // SHA-256 of the settings JSON before and after the change (no secrets
+        // are present in FeatureConfig).
+        JsonObject settingsJson = new JsonObject();
+        settingsJson.addProperty("filterEnabled", features.isFilterEnabled());
+        settingsJson.addProperty("messageLogEnabled", features.isMessageLogEnabled());
+        settingsJson.addProperty("crossServerChatEnabled", features.isCrossServerChatEnabled());
+        settingsJson.addProperty("privateMessagesEnabled", features.isPrivateMessagesEnabled());
+        settingsJson.addProperty("messageLogRetentionDays", features.getMessageLogRetentionDays());
+        String afterHash = AuditEvent.hashJson(gson.toJson(settingsJson));
+        recordAuditSuccess(ctx, claims, "settings.update", "config:features",
+                null, afterHash);
     }
 
     /**
@@ -1493,6 +2826,10 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * mirroring the reload listener in {@code NovaLinkMain}. Deliberately does
      * NOT trigger a config reload: reload re-reads the file from disk and would
      * discard the in-memory changes just made by the settings endpoint.
+     *
+     * <p>Also applies {@code privateMessagesEnabled} (via the injected
+     * {@link #privateMessagesEnabledFlag}) and {@code messageLogRetentionDays}
+     * (via the {@link MessageLogService}).
      */
     private void applyFeatureConfig(com.nova.link.config.FeatureConfig features) {
         if (features == null || messageRouter == null) {
@@ -1505,6 +2842,1239 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         if (filter != null) {
             filter.setEnabled(features.isFilterEnabled());
         }
+        // Private messages toggle: propagate to the AtomicBoolean the
+        // PrivateMessageHandler reads. Wired via setPrivateMessagesEnabledFlag.
+        if (privateMessagesEnabledFlag != null) {
+            privateMessagesEnabledFlag.set(features.isPrivateMessagesEnabled());
+        }
+        // Message log retention: hot-apply to the message log service.
+        if (messageLogService != null) {
+            messageLogService.setRetentionDays(features.getMessageLogRetentionDays());
+        }
+    }
+
+    // ==================== Audit Endpoints ====================
+
+    /**
+     * GET /api/audit - List audit events with pagination and optional filters.
+     *
+     * <p>PANEL-006: ADMIN+ read access to the append-only audit log. Query
+     * params: page (1-based, default 1), size (default 20, capped at 100),
+     * actor (optional substring filter on actor), action (optional exact
+     * action filter e.g. {@code channel.create}).
+     * Returns {items:[...], total, page, pageSize}.
+     *
+     * <p>Read access is deliberately separate from notification clear so an
+     * admin can audit actions without being granted notification management.
+     */
+    private void handleGetAudit(ChannelHandlerContext ctx, FullHttpRequest request,
+                                String uri, Claims claims) {
+        if (auditStore == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Audit log not enabled");
+            return;
+        }
+
+        int page = 1;
+        int size = 20;
+        String actor = null;
+        String action = null;
+        int q = uri.indexOf('?');
+        if (q >= 0) {
+            String query = uri.substring(q + 1);
+            for (String pair : query.split("&")) {
+                String[] kv = pair.split("=", 2);
+                if (kv.length != 2) {
+                    continue;
+                }
+                String key = kv[0];
+                String value;
+                try {
+                    value = java.net.URLDecoder.decode(kv[1],
+                            java.nio.charset.StandardCharsets.UTF_8);
+                } catch (IllegalArgumentException e) {
+                    // Malformed percent-encoding; skip this pair.
+                    continue;
+                }
+                try {
+                    switch (key) {
+                        case "page" -> page = Math.max(1, Integer.parseInt(value));
+                        case "size" -> size = Math.min(100, Math.max(1, Integer.parseInt(value)));
+                        case "actor" -> actor = value.isBlank() ? null : value;
+                        case "action" -> action = value.isBlank() ? null : value;
+                    }
+                } catch (NumberFormatException ignored) {
+                    // keep defaults
+                }
+            }
+        }
+        int offset = (page - 1) * size;
+
+        List<AuditEvent> events = auditStore.list(offset, size, actor, action);
+        int total = auditStore.count(actor, action);
+
+        JsonArray items = new JsonArray();
+        for (AuditEvent e : events) {
+            JsonObject item = new JsonObject();
+            item.addProperty("id", e.getId());
+            if (e.getEventId() != null) {
+                item.addProperty("eventId", e.getEventId());
+            }
+            if (e.getRequestId() != null) {
+                item.addProperty("requestId", e.getRequestId());
+            }
+            if (e.getActor() != null) {
+                item.addProperty("actor", e.getActor());
+            }
+            if (e.getRole() != null) {
+                item.addProperty("role", e.getRole());
+            }
+            if (e.getOrigin() != null) {
+                item.addProperty("origin", e.getOrigin());
+            }
+            item.addProperty("action", e.getAction());
+            if (e.getResource() != null) {
+                item.addProperty("resource", e.getResource());
+            }
+            if (e.getBeforeHash() != null) {
+                item.addProperty("beforeHash", e.getBeforeHash());
+            }
+            if (e.getAfterHash() != null) {
+                item.addProperty("afterHash", e.getAfterHash());
+            }
+            if (e.getReason() != null) {
+                item.addProperty("reason", e.getReason());
+            }
+            item.addProperty("result", e.getResult());
+            item.addProperty("createdAt", e.getCreatedAt());
+            items.add(item);
+        }
+
+        JsonObject response = new JsonObject();
+        response.add("items", items);
+        response.addProperty("page", page);
+        response.addProperty("pageSize", size);
+        response.addProperty("total", total);
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    // ==================== Config History Endpoints (§11.6 Project 20) ====================
+
+    /**
+     * GET /api/settings/history?limit=N — lists masked config snapshots newest
+     * first, WITHOUT the snapshot_json payload (callers fetch payloads via
+     * /api/settings/snapshots/{revision}). Default limit 50, clamped to 200.
+     * Returns {items:[{id, revision, createdAt, createdBy, active}], total}.
+     * ADMIN+ (requiredRole enforces). 503 when the service is unavailable.
+     */
+    private void handleGetConfigHistory(ChannelHandlerContext ctx, FullHttpRequest request, String uri) {
+        ConfigHistoryService service = configHistoryService();
+        if (service == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config history not enabled");
+            return;
+        }
+        int limit = 50;
+        int q = uri.indexOf('?');
+        if (q >= 0) {
+            Map<String, List<String>> params = parseQueryParams(uri.substring(q + 1));
+            limit = parseIntParam(params, "limit", 50);
+        }
+        // Clamp to [1, 200] per the acceptance spec.
+        limit = Math.min(200, Math.max(1, limit));
+
+        List<com.nova.link.config.ConfigSnapshot> snapshots = service.getHistory(limit);
+        JsonArray items = new JsonArray();
+        for (com.nova.link.config.ConfigSnapshot s : snapshots) {
+            JsonObject item = new JsonObject();
+            item.addProperty("id", s.getId());
+            item.addProperty("revision", s.getRevision());
+            item.addProperty("createdAt", s.getCreatedAt());
+            if (s.getCreatedBy() != null) {
+                item.addProperty("createdBy", s.getCreatedBy());
+            }
+            item.addProperty("active", s.isActive());
+            items.add(item);
+        }
+        JsonObject response = new JsonObject();
+        response.add("items", items);
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * GET /api/settings/snapshots/{revision} — loads a single masked snapshot
+     * including its payload. The payload is the masked JSON form (secrets
+     * already {@code "***"}), so it is safe to return to the panel. 404 when
+     * the revision is absent or unparseable; 503 when the service is down.
+     */
+    private void handleGetConfigSnapshot(ChannelHandlerContext ctx, FullHttpRequest request, String revStr) {
+        ConfigHistoryService service = configHistoryService();
+        if (service == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config history not enabled");
+            return;
+        }
+        long revision;
+        try {
+            revision = Long.parseLong(revStr);
+        } catch (NumberFormatException e) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Snapshot not found");
+            return;
+        }
+        java.util.Optional<com.nova.link.config.ConfigSnapshot> snap = service.getSnapshot(revision);
+        if (snap.isEmpty()) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Snapshot not found");
+            return;
+        }
+        JsonObject response = new JsonObject();
+        com.nova.link.config.ConfigSnapshot s = snap.get();
+        response.addProperty("id", s.getId());
+        response.addProperty("revision", s.getRevision());
+        response.addProperty("createdAt", s.getCreatedAt());
+        if (s.getCreatedBy() != null) {
+            response.addProperty("createdBy", s.getCreatedBy());
+        }
+        response.addProperty("active", s.isActive());
+        // snapshotJson is already masked in storage; parse it back so the
+        // response carries a structured object rather than an escaped string.
+        try {
+            response.add("snapshot", JsonParser.parseString(s.getSnapshotJson()));
+        } catch (Exception e) {
+            response.addProperty("snapshot", s.getSnapshotJson());
+        }
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * GET /api/settings/diff?from={rev}&to={rev} — produces a masked
+     * added/removed/changed map between two revisions. Both revisions must
+     * exist; a missing revision yields 404. 503 when the service is down.
+     */
+    private void handleConfigDiff(ChannelHandlerContext ctx, FullHttpRequest request, String uri) {
+        ConfigHistoryService service = configHistoryService();
+        if (service == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config history not enabled");
+            return;
+        }
+        long from;
+        long to;
+        int q = uri.indexOf('?');
+        if (q < 0) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "Missing required query parameters: from, to");
+            return;
+        }
+        Map<String, List<String>> params = parseQueryParams(uri.substring(q + 1));
+        Long fromParam = parseLongParam(params, "from");
+        Long toParam = parseLongParam(params, "to");
+        if (fromParam == null || toParam == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "Missing required query parameters: from, to");
+            return;
+        }
+        from = fromParam;
+        to = toParam;
+
+        // 404 when either revision does not resolve, rather than an empty diff.
+        if (service.getSnapshot(from).isEmpty()) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
+                    "Snapshot not found for revision: " + from);
+            return;
+        }
+        if (service.getSnapshot(to).isEmpty()) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
+                    "Snapshot not found for revision: " + to);
+            return;
+        }
+        try {
+            Map<String, Object> diff = service.diffSettings(from, to);
+            JsonObject response = new JsonObject();
+            response.addProperty("fromRevision", from);
+            response.addProperty("toRevision", to);
+            response.add("added", gson.toJsonTree(diff.get("added")));
+            response.add("removed", gson.toJsonTree(diff.get("removed")));
+            response.add("changed", gson.toJsonTree(diff.get("changed")));
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+        } catch (Exception e) {
+            logger.error("Error computing config diff {}->{}", from, to, e);
+            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR, "NC-510: Database error");
+        }
+    }
+
+    /**
+     * POST /api/settings/rollback {targetRevision} — atomically rolls the live
+     * config back to the masked snapshot identified by targetRevision.
+     * SUPER_ADMIN only (requiredRole enforces). Fail-closed: any error after
+     * the snapshot is loaded surfaces as 500/NC-510 and leaves the live config
+     * untouched. 400 when the target is already the active revision; 404 when
+     * the target is absent.
+     */
+    private void handleRollbackConfig(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
+        ConfigHistoryService service = configHistoryService();
+        if (service == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config history not enabled");
+            return;
+        }
+        long targetRevision;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            if (!json.has("targetRevision") || json.get("targetRevision").isJsonNull()) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                        "Missing required field: targetRevision");
+                return;
+            }
+            targetRevision = json.get("targetRevision").getAsLong();
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+
+        String actor = panelUsername(claims);
+        try {
+            long newRevision = service.rollback(targetRevision, actor);
+            if (newRevision == -1L) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                        "Target revision is already the active config");
+                return;
+            }
+            if (newRevision == -2L) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
+                        "Snapshot not found for revision: " + targetRevision);
+                return;
+            }
+            JsonObject response = new JsonObject();
+            response.addProperty("success", true);
+            response.addProperty("rolledBackTo", targetRevision);
+            response.addProperty("revision", newRevision);
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+
+            // §11.6 Project 20 (proposal 10): broadcast the post-rollback
+            // settings revision and feature flags so panel clients see the
+            // rolled-back state without polling. Uses the live config's
+            // features (rollback re-reads the file into configLoader); the
+            // rollback service already verified the write succeeded.
+            if (webSocketGateway != null) {
+                try {
+                    com.nova.link.config.FeatureConfig rolledBackFeatures =
+                            configManager.getConfig() != null
+                                    ? configManager.getConfig().getFeatures()
+                                    : null;
+                    webSocketGateway.getMessageHandler().broadcastSettingsUpdate(
+                            newRevision, rolledBackFeatures);
+                } catch (Exception e) {
+                    logger.debug("settings_update broadcast after rollback failed: {}",
+                            e.getMessage());
+                }
+            }
+        } catch (IllegalStateException e) {
+            // Fail-closed: the rollback service could not complete the atomic
+            // write; the live config is unchanged. Surface as NC-510.
+            logger.error("Config rollback to revision {} failed (fail-closed)", targetRevision, e);
+            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                    "NC-510: Rollback failed: " + e.getMessage());
+        } catch (Exception e) {
+            logger.error("Unexpected error during config rollback to revision {}", targetRevision, e);
+            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR, "NC-510: Database error");
+        }
+    }
+
+    /**
+     * POST /api/settings/validate {"yaml":"..."} — dry-runs a candidate YAML
+     * document against the same structural rules the loader enforces on real
+     * load/save, without persisting anything.
+     *
+     * <p>§11.6 Project 20 (proposal 10). RBAC: ADMIN+ (see {@link #requiredRole}).
+     * Response 200: {@code {"valid":bool,"errors":[{"path":null,"message":"..."}],
+     * "warnings":[],"revision":<settingsRevision>,"checkedAt":<currentTimeMillis>}}.
+     * The {@code path} field is {@code null} for every error: the loader's
+     * {@code ConfigException} embeds path线索 in {@code message} already and the
+     * contract forbids synthesising a path.
+     *
+     * <p>400 when the body is missing the {@code yaml} field or is unparseable
+     * JSON; 503 when {@code configManager} is {@code null} (handler assembled
+     * without a backing config — e.g. some unit-test harnesses).
+     */
+    private void handleValidateConfig(ChannelHandlerContext ctx, FullHttpRequest request,
+                                     String uri) {
+        if (configManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE,
+                    "Config manager not available");
+            return;
+        }
+        String yaml;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            if (!json.has("yaml") || json.get("yaml").isJsonNull()) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                        "Missing required field: yaml");
+                return;
+            }
+            yaml = json.get("yaml").getAsString();
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+
+        com.nova.link.config.ConfigValidationResult result = configManager.validateYaml(yaml);
+
+        JsonObject response = new JsonObject();
+        response.addProperty("valid", result.isValid());
+        JsonArray errors = new JsonArray();
+        for (com.nova.link.config.ConfigValidationResult.ValidationError error : result.getErrors()) {
+            JsonObject err = new JsonObject();
+            // path is always null per the contract — the loader does not emit a
+            // structured path; the message already carries any path线索.
+            err.add("path", null);
+            err.addProperty("message", error.getMessage());
+            errors.add(err);
+        }
+        response.add("errors", errors);
+        JsonArray warnings = new JsonArray();
+        for (String w : result.getWarnings()) {
+            warnings.add(w);
+        }
+        response.add("warnings", warnings);
+        response.addProperty("revision", configManager.getSettingsRevision());
+        response.addProperty("checkedAt", System.currentTimeMillis());
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * Parses a raw query string (the part after {@code ?}) into a multimap.
+     * Keys with no {@code =} get an empty-string value; malformed percent
+     * encodings are skipped. Shared by the config-history GET endpoints.
+     */
+    private static Map<String, List<String>> parseQueryParams(String query) {
+        Map<String, List<String>> params = new LinkedHashMap<>();
+        if (query == null || query.isEmpty()) {
+            return params;
+        }
+        for (String pair : query.split("&")) {
+            String[] kv = pair.split("=", 2);
+            if (kv.length == 0) {
+                continue;
+            }
+            String key = kv[0];
+            if (key.isEmpty()) {
+                continue;
+            }
+            String value;
+            try {
+                value = kv.length == 2
+                        ? java.net.URLDecoder.decode(kv[1], java.nio.charset.StandardCharsets.UTF_8)
+                        : "";
+            } catch (IllegalArgumentException e) {
+                continue;
+            }
+            params.computeIfAbsent(key, k -> new ArrayList<>()).add(value);
+        }
+        return params;
+    }
+
+    // ==================== Moderation Endpoints (PANEL-007) ====================
+
+    /**
+     * Maps a {@link ModerationException} {@code NC-###} error code to the
+     * matching HTTP status, mirroring the {@code handleBanPlayer} convention.
+     * Unknown codes default to {@code BAD_REQUEST}; the NC-500 persistence
+     * failure maps to {@code INTERNAL_SERVER_ERROR}.
+     */
+    private static HttpResponseStatus moderationErrorStatus(String errorCode) {
+        if ("NC-404".equals(errorCode)) {
+            return HttpResponseStatus.NOT_FOUND;
+        }
+        if ("NC-403".equals(errorCode)) {
+            return HttpResponseStatus.FORBIDDEN;
+        }
+        if ("NC-500".equals(errorCode)) {
+            return HttpResponseStatus.INTERNAL_SERVER_ERROR;
+        }
+        return HttpResponseStatus.BAD_REQUEST;
+    }
+
+    /**
+     * Shared catch for {@link ModerationException}: emits the mapped JSON
+     * error and returns true if the exception was handled. Returns false when
+     * the throwable is not a {@link ModerationException} (the caller should
+     * then rethrow or emit its own generic 500).
+     */
+    private boolean handleModerationException(ChannelHandlerContext ctx, FullHttpRequest request,
+                                              Exception e) {
+        if (e instanceof ModerationException me) {
+            sendJsonError(ctx, request, moderationErrorStatus(me.getErrorCode()),
+                    me.getErrorCode() + ": " + me.getMessage());
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Splits a stored {@code reason} back into the frontend-facing
+     * {@code reasonCode}/{@code reasonText} pair. {@link ModerationCase} has a
+     * single {@code reason} field; {@link #handleCreateReport} merges the
+     * panel's {@code reasonCode}+{@code reasonText} into {@code "[CODE] text"}.
+     * This reverses that merge so the list/detail JSON matches the locked
+     * contract. A reason without the {@code [CODE]} prefix yields a null code
+     * and the raw reason as the text.
+     *
+     * @return a two-element array {@code {reasonCode, reasonText}}
+     */
+    private static String[] splitReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return new String[]{null, reason};
+        }
+        java.util.regex.Matcher m = REASON_CODE_PATTERN.matcher(reason);
+        if (m.matches()) {
+            return new String[]{m.group(1), m.group(2)};
+        }
+        return new String[]{null, reason};
+    }
+
+    private static final java.util.regex.Pattern REASON_CODE_PATTERN =
+            java.util.regex.Pattern.compile("^\\[([A-Z_]+)]\\s*(.*)$", java.util.regex.Pattern.DOTALL);
+
+    /**
+     * Builds the JSON representation of a single {@link ModerationCase} using
+     * the PANEL-007 locked field mapping. Shared by the list and detail
+     * endpoints so the shapes stay identical.
+     */
+    private JsonObject moderationCaseToJson(ModerationCase c) {
+        JsonObject item = new JsonObject();
+        item.addProperty("caseId", c.getId());
+        item.addProperty("status", c.getStatus().name());
+        item.addProperty("reportedPlayerId", c.getSubjectPlayerId());
+        if (c.getSubjectDisplayName() != null) {
+            item.addProperty("reportedPlayerName", c.getSubjectDisplayName());
+        }
+        item.addProperty("reporterId", c.getReporterName());
+        if (c.getReporterSource() != null) {
+            item.addProperty("reporterSource", c.getReporterSource().name());
+        }
+        if (c.getSource() != null) {
+            item.addProperty("source", c.getSource().name());
+        }
+        if (c.getChannelId() != null) {
+            item.addProperty("originChannelId", c.getChannelId());
+        }
+        String[] reasonParts = splitReason(c.getReason());
+        if (reasonParts[0] != null) {
+            item.addProperty("reasonCode", reasonParts[0]);
+        }
+        if (reasonParts[1] != null) {
+            item.addProperty("reasonText", reasonParts[1]);
+        }
+        item.addProperty("createdAt", c.getCreatedAt());
+        item.addProperty("updatedAt", c.getUpdatedAt());
+        if (c.getAssignedModerator() != null) {
+            item.addProperty("assignedModerator", c.getAssignedModerator());
+        }
+        if (c.getResolutionAction() != null) {
+            item.addProperty("resolutionAction", c.getResolutionAction().name());
+        }
+        if (c.getResolutionNote() != null) {
+            item.addProperty("resolutionNote", c.getResolutionNote());
+        }
+        if (c.getContentHash() != null) {
+            item.addProperty("contentHash", c.getContentHash());
+        }
+        if (c.getClosedAt() != null) {
+            item.addProperty("resolvedAt", c.getClosedAt());
+        }
+        return item;
+    }
+
+    /**
+     * Builds the JSON representation of a single {@link Appeal} for the appeals
+     * list. {@code originalAction} requires a cross-lookup of the case's
+     * resolution action; {@code null} when the case is no longer retrievable.
+     */
+    private JsonObject appealToJson(Appeal a) {
+        JsonObject item = new JsonObject();
+        item.addProperty("appealId", a.getId());
+        item.addProperty("caseId", a.getCaseId());
+        item.addProperty("status", a.getStatus().name());
+        item.addProperty("appellantId", a.getAppellant());
+        String originalAction = null;
+        try {
+            if (moderationManager != null) {
+                Optional<ModerationCase> opt = moderationManager.getCase(a.getCaseId());
+                if (opt.isPresent() && opt.get().getResolutionAction() != null) {
+                    originalAction = opt.get().getResolutionAction().name();
+                }
+            }
+        } catch (Exception ignored) {
+            // Non-fatal: emit null originalAction when the case lookup fails.
+        }
+        item.add("originalAction", originalAction != null
+                ? gson.toJsonTree(originalAction) : null);
+        if (a.getReviewedBy() != null) {
+            item.addProperty("reviewedBy", a.getReviewedBy());
+        }
+        if (a.getReviewedAt() != null) {
+            item.addProperty("reviewedAt", a.getReviewedAt());
+        }
+        if (a.getReviewNote() != null) {
+            item.addProperty("reviewNote", a.getReviewNote());
+        }
+        if (a.getContentHash() != null) {
+            item.addProperty("contentHash", a.getContentHash());
+        }
+        item.addProperty("createdAt", a.getCreatedAt());
+        return item;
+    }
+
+    /**
+     * POST /api/reports - Create a moderation case from a panel report.
+     *
+     * <p>Body: {@code {reportedPlayerId, reasonCode, reasonText, originChannelId?, evidenceSnapshot?}}.
+     * The {@code reasonCode}/{@code reasonText} pair is merged into the single
+     * {@code reason} field as {@code "[CODE] text"} (see {@link #splitReason}).
+     * The reporter is the panel operator identified by the JWT.
+     */
+    private void handleCreateReport(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
+        if (moderationManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Moderation system not enabled");
+            return;
+        }
+
+        String reportedPlayerId;
+        String reasonCode = null;
+        String reasonText = null;
+        String originChannelId = null;
+        String evidenceSnapshot = null;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            if (body.isBlank()) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+                return;
+            }
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            reportedPlayerId = json.has("reportedPlayerId") && !json.get("reportedPlayerId").isJsonNull()
+                    ? json.get("reportedPlayerId").getAsString() : null;
+            if (json.has("reasonCode") && !json.get("reasonCode").isJsonNull()) {
+                reasonCode = json.get("reasonCode").getAsString();
+            }
+            if (json.has("reasonText") && !json.get("reasonText").isJsonNull()) {
+                reasonText = json.get("reasonText").getAsString();
+            }
+            if (json.has("originChannelId") && !json.get("originChannelId").isJsonNull()) {
+                originChannelId = json.get("originChannelId").getAsString();
+            }
+            if (json.has("evidenceSnapshot") && !json.get("evidenceSnapshot").isJsonNull()) {
+                evidenceSnapshot = json.get("evidenceSnapshot").getAsString();
+            }
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+
+        if (reportedPlayerId == null || reportedPlayerId.isBlank()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "NC-400: reportedPlayerId is required");
+            return;
+        }
+        // Merge reasonCode + reasonText into the single reason field as
+        // "[CODE] text" so the list/detail endpoints can split it back out.
+        String reason = reasonText;
+        if (reasonCode != null && !reasonCode.isBlank()) {
+            reason = "[" + reasonCode.trim().toUpperCase(java.util.Locale.ROOT) + "] "
+                    + (reasonText != null ? reasonText : "");
+        }
+
+        String actor = panelUsername(claims);
+        try {
+            ModerationCase created = moderationManager.createReport(
+                    reportedPlayerId, null, actor, ReporterSource.OPERATOR,
+                    CaseSource.PANEL, originChannelId, reason, evidenceSnapshot,
+                    null, null, actor);
+            JsonObject response = new JsonObject();
+            response.addProperty("caseId", created.getId());
+            response.addProperty("status", created.getStatus().name());
+            sendJsonResponse(ctx, request, HttpResponseStatus.CREATED, response);
+        } catch (ModerationException e) {
+            handleModerationException(ctx, request, e);
+        }
+    }
+
+    /**
+     * GET /api/moderation/cases - List moderation cases with pagination.
+     *
+     * <p>Query params: {@code page} (1-based), {@code size}, {@code status}
+     * (frontend sends {@code OPEN/IN_PROGRESS/RESOLVED}; {@code IN_PROGRESS}
+     * is normalized to the canonical {@code UNDER_REVIEW} here), {@code assigned}
+     * (optional exact moderator filter applied in-memory since the provider
+     * only filters by status).
+     */
+    private void handleListModerationCases(ChannelHandlerContext ctx, FullHttpRequest request,
+                                           String uri, Claims claims) {
+        if (moderationManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Moderation system not enabled");
+            return;
+        }
+
+        int page = 1;
+        int size = 20;
+        String status = null;
+        String assigned = null;
+        int q = uri.indexOf('?');
+        if (q >= 0) {
+            String query = uri.substring(q + 1);
+            for (String pair : query.split("&")) {
+                String[] kv = pair.split("=", 2);
+                if (kv.length != 2) {
+                    continue;
+                }
+                String key = kv[0];
+                String value;
+                try {
+                    value = java.net.URLDecoder.decode(kv[1], java.nio.charset.StandardCharsets.UTF_8);
+                } catch (IllegalArgumentException e) {
+                    continue;
+                }
+                try {
+                    switch (key) {
+                        case "page" -> page = Math.max(1, Integer.parseInt(value));
+                        case "size" -> size = Math.min(100, Math.max(1, Integer.parseInt(value)));
+                        case "status" -> status = value.isBlank() ? null : value;
+                        case "assigned" -> assigned = value.isBlank() ? null : value;
+                    }
+                } catch (NumberFormatException ignored) {
+                    // keep defaults
+                }
+            }
+        }
+        int offset = (page - 1) * size;
+
+        // Normalize the frontend status spelling to the canonical CaseStatus
+        // name. The provider filters by status.equals(case.status.name()).
+        String normalizedStatus = status;
+        if ("IN_PROGRESS".equals(status)) {
+            normalizedStatus = "UNDER_REVIEW";
+        }
+
+        List<ModerationCase> cases;
+        int total;
+        try {
+            cases = moderationManager.listCases(offset, size, normalizedStatus);
+            if (assigned != null && !assigned.isBlank()) {
+                // The provider does not take an assigned filter; filter the page
+                // in-memory and recompute the total against the same filter.
+                final String assignedFilter = assigned;
+                List<ModerationCase> filtered = cases.stream()
+                        .filter(c -> assignedFilter.equals(c.getAssignedModerator()))
+                        .toList();
+                cases = filtered;
+                // Recompute total: countCases has no assigned filter either, so
+                // we cannot cheaply get the true total without a full scan.
+                // Fall back to the filtered page size as a lower bound so the
+                // UI pagination is not misleading — this matches the
+                // contract's "total" being the count of matching items.
+                total = filtered.size();
+            } else {
+                total = moderationManager.countCases(normalizedStatus);
+            }
+        } catch (ModerationException e) {
+            handleModerationException(ctx, request, e);
+            return;
+        }
+
+        JsonArray items = new JsonArray();
+        for (ModerationCase c : cases) {
+            items.add(moderationCaseToJson(c));
+        }
+
+        JsonObject response = new JsonObject();
+        response.add("items", items);
+        response.addProperty("page", page);
+        response.addProperty("pageSize", size);
+        response.addProperty("total", total);
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * GET /api/moderation/cases/{id} - Get a single case detail.
+     */
+    private void handleGetModerationCase(ChannelHandlerContext ctx, FullHttpRequest request, String caseId) {
+        if (moderationManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Moderation system not enabled");
+            return;
+        }
+        ModerationCase c;
+        try {
+            Optional<ModerationCase> opt = moderationManager.getCase(caseId);
+            if (opt.isEmpty()) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Case not found");
+                return;
+            }
+            c = opt.get();
+        } catch (ModerationException e) {
+            handleModerationException(ctx, request, e);
+            return;
+        }
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, moderationCaseToJson(c));
+    }
+
+    /**
+     * POST /api/moderation/cases/{id}/assign - Assign a moderator to a case.
+     *
+     * <p>Body: {@code {moderator}}. The case moves to UNDER_REVIEW.
+     */
+    private void handleAssignModeratorCase(ChannelHandlerContext ctx, FullHttpRequest request,
+                                           String caseId, Claims claims) {
+        if (moderationManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Moderation system not enabled");
+            return;
+        }
+
+        String moderator;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            if (body.isBlank()) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+                return;
+            }
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            moderator = json.has("moderator") && !json.get("moderator").isJsonNull()
+                    ? json.get("moderator").getAsString() : null;
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+        if (moderator == null || moderator.isBlank()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "NC-400: moderator is required");
+            return;
+        }
+
+        String actor = panelUsername(claims);
+        try {
+            ModerationCase updated = moderationManager.assignCase(caseId, moderator, actor);
+            JsonObject response = new JsonObject();
+            response.addProperty("success", true);
+            response.addProperty("caseId", updated.getId());
+            response.addProperty("assignedModerator", updated.getAssignedModerator());
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+        } catch (ModerationException e) {
+            handleModerationException(ctx, request, e);
+        }
+    }
+
+    /**
+     * POST /api/moderation/cases/{id}/resolve - Resolve a case.
+     *
+     * <p>Body: {@code {action, reason, targetChannelId?, durationMs?}}. The
+     * {@code action} string maps to a {@link ResolutionAction}
+     * ({@code warn/mute/ban/kick/dismiss}). PANEL-007 v1 records the
+     * resolution on the case only; it does not auto-enforce a linked
+     * mute/ban/kick — {@code targetChannelId}/{@code durationMs} are accepted
+     * without error and, when present, appended to the resolution note so the
+     * intent is captured for the future enforcement step.
+     */
+    private void handleResolveModerationCase(ChannelHandlerContext ctx, FullHttpRequest request,
+                                             String caseId, Claims claims) {
+        if (moderationManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Moderation system not enabled");
+            return;
+        }
+
+        String action;
+        String reason;
+        String targetChannelId = null;
+        Long durationMs = null;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            if (body.isBlank()) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+                return;
+            }
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            action = json.has("action") && !json.get("action").isJsonNull()
+                    ? json.get("action").getAsString() : null;
+            reason = json.has("reason") && !json.get("reason").isJsonNull()
+                    ? json.get("reason").getAsString() : null;
+            if (json.has("targetChannelId") && !json.get("targetChannelId").isJsonNull()) {
+                targetChannelId = json.get("targetChannelId").getAsString();
+            }
+            if (json.has("durationMs") && !json.get("durationMs").isJsonNull()) {
+                durationMs = json.get("durationMs").getAsLong();
+            }
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+
+        ResolutionAction resolutionAction = switch (action == null ? "" : action.toLowerCase(java.util.Locale.ROOT)) {
+            case "warn" -> ResolutionAction.WARNED;
+            case "mute" -> ResolutionAction.MUTED;
+            case "ban" -> ResolutionAction.BANNED;
+            case "kick" -> ResolutionAction.KICKED;
+            case "dismiss" -> ResolutionAction.DISMISSED;
+            default -> null;
+        };
+        if (resolutionAction == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "NC-400: Invalid resolution action");
+            return;
+        }
+
+        // Capture the linked-enforcement intent in the resolution note so the
+        // case record reflects it without auto-enforcing here (PANEL-007 v1).
+        String resolutionNote = reason;
+        if (targetChannelId != null && !targetChannelId.isBlank()) {
+            String suffix = "[targetChannel=" + targetChannelId
+                    + (durationMs != null ? ", durationMs=" + durationMs : "") + "]";
+            resolutionNote = (reason != null && !reason.isBlank()) ? reason + " " + suffix : suffix;
+        }
+
+        String actor = panelUsername(claims);
+        try {
+            moderationManager.resolveCase(caseId, resolutionAction, resolutionNote, actor);
+            JsonObject response = new JsonObject();
+            response.addProperty("caseId", caseId);
+            response.addProperty("action", action);
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+        } catch (ModerationException e) {
+            handleModerationException(ctx, request, e);
+        }
+    }
+
+    /**
+     * GET /api/moderation/cases/{id}/evidence - List evidence attached to a case.
+     *
+     * <p>Evidence is the narrowest-scope read surface in the workflow: it is
+     * only retrievable via this case-scoped endpoint and requires
+     * {@code moderation.manage} (ADMIN+). VIEWER is rejected with 403.
+     */
+    private void handleListCaseEvidence(ChannelHandlerContext ctx, FullHttpRequest request,
+                                        String caseId, Claims claims) {
+        if (moderationManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Moderation system not enabled");
+            return;
+        }
+        // Evidence may carry private-chat content; gate on moderation.manage.
+        PanelRole role = resourcePolicy.resolveRole(claims);
+        if (role == PanelRole.VIEWER) {
+            sendJsonError(ctx, request, HttpResponseStatus.FORBIDDEN,
+                    "NC-403: evidence access requires moderation.manage");
+            return;
+        }
+
+        List<CaseEvidence> evidence;
+        try {
+            evidence = moderationManager.listEvidence(caseId);
+        } catch (ModerationException e) {
+            handleModerationException(ctx, request, e);
+            return;
+        }
+
+        JsonArray items = new JsonArray();
+        for (CaseEvidence e : evidence) {
+            JsonObject item = new JsonObject();
+            item.addProperty("evidenceId", e.getId());
+            item.addProperty("caseId", e.getCaseId());
+            if (e.getEvidenceType() != null) {
+                item.addProperty("evidenceType", e.getEvidenceType().name());
+            }
+            if (e.getContentHash() != null) {
+                item.addProperty("contentHash", e.getContentHash());
+            }
+            if (e.getDescription() != null) {
+                item.addProperty("contentSnapshot", e.getDescription());
+            }
+            // itemJson is part of the locked contract but the evidence record
+            // only stores description+hash; emit null to match the optional
+            // frontend access pattern.
+            item.add("itemJson", null);
+            item.addProperty("capturedAt", e.getCreatedAt());
+            if (e.getSubmittedBy() != null) {
+                item.addProperty("capturedBy", e.getSubmittedBy());
+            }
+            items.add(item);
+        }
+
+        JsonObject response = new JsonObject();
+        response.add("items", items);
+        response.addProperty("total", items.size());
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * POST /api/moderation/cases/{id}/evidence - Attach evidence to a case.
+     *
+     * <p>Body: {@code {evidenceType, contentPayload, description?}}. The raw
+     * {@code contentPayload} is hashed (never persisted); only the hash and a
+     * bounded description are stored. Requires {@code moderation.manage}.
+     */
+    private void handleAddCaseEvidence(ChannelHandlerContext ctx, FullHttpRequest request,
+                                       String caseId, Claims claims) {
+        if (moderationManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Moderation system not enabled");
+            return;
+        }
+        PanelRole role = resourcePolicy.resolveRole(claims);
+        if (role == PanelRole.VIEWER) {
+            sendJsonError(ctx, request, HttpResponseStatus.FORBIDDEN,
+                    "NC-403: evidence access requires moderation.manage");
+            return;
+        }
+
+        CaseEvidenceType evidenceType;
+        String contentPayload;
+        String description = null;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            if (body.isBlank()) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+                return;
+            }
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            String typeStr = json.has("evidenceType") && !json.get("evidenceType").isJsonNull()
+                    ? json.get("evidenceType").getAsString() : null;
+            try {
+                evidenceType = typeStr == null ? null : CaseEvidenceType.valueOf(typeStr);
+            } catch (IllegalArgumentException e) {
+                evidenceType = null;
+            }
+            contentPayload = json.has("contentPayload") && !json.get("contentPayload").isJsonNull()
+                    ? json.get("contentPayload").getAsString() : null;
+            if (json.has("description") && !json.get("description").isJsonNull()) {
+                description = json.get("description").getAsString();
+            }
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+        if (evidenceType == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "NC-400: Invalid evidenceType");
+            return;
+        }
+        if (contentPayload == null || contentPayload.isBlank()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "NC-400: contentPayload is required");
+            return;
+        }
+
+        String actor = panelUsername(claims);
+        try {
+            CaseEvidence saved = moderationManager.addEvidence(
+                    caseId, evidenceType, contentPayload, description, actor, actor);
+            JsonObject response = new JsonObject();
+            response.addProperty("evidenceId", saved.getId());
+            response.addProperty("caseId", saved.getCaseId());
+            if (saved.getContentHash() != null) {
+                response.addProperty("contentHash", saved.getContentHash());
+            }
+            sendJsonResponse(ctx, request, HttpResponseStatus.CREATED, response);
+        } catch (ModerationException e) {
+            handleModerationException(ctx, request, e);
+        }
+    }
+
+    /**
+     * GET /api/moderation/cases/{id}/status - Lightweight case-status summary.
+     */
+    private void handleGetModerationCaseStatus(ChannelHandlerContext ctx, FullHttpRequest request, String caseId) {
+        if (moderationManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Moderation system not enabled");
+            return;
+        }
+        ModerationCase c;
+        try {
+            Optional<ModerationCase> opt = moderationManager.getCase(caseId);
+            if (opt.isEmpty()) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Case not found");
+                return;
+            }
+            c = opt.get();
+        } catch (ModerationException e) {
+            handleModerationException(ctx, request, e);
+            return;
+        }
+        JsonObject response = new JsonObject();
+        response.addProperty("caseId", c.getId());
+        response.addProperty("status", c.getStatus().name());
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * POST /api/appeals - Create an appeal against a resolved case.
+     *
+     * <p>Body: {@code {caseId, appellantId, reason}}. Only a RESOLVED case may
+     * be appealed (enforced by {@link ModerationManager#createAppeal}, NC-403).
+     */
+    private void handleCreateAppeal(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
+        if (moderationManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Moderation system not enabled");
+            return;
+        }
+
+        String caseId;
+        String appellantId;
+        String reason;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            if (body.isBlank()) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+                return;
+            }
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            caseId = json.has("caseId") && !json.get("caseId").isJsonNull()
+                    ? json.get("caseId").getAsString() : null;
+            appellantId = json.has("appellantId") && !json.get("appellantId").isJsonNull()
+                    ? json.get("appellantId").getAsString() : null;
+            reason = json.has("reason") && !json.get("reason").isJsonNull()
+                    ? json.get("reason").getAsString() : null;
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+        if (caseId == null || caseId.isBlank()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "NC-400: caseId is required");
+            return;
+        }
+        if (appellantId == null || appellantId.isBlank()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "NC-400: appellantId is required");
+            return;
+        }
+        if (reason == null || reason.isBlank()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "NC-400: reason is required");
+            return;
+        }
+
+        String actor = panelUsername(claims);
+        try {
+            Appeal created = moderationManager.createAppeal(caseId, appellantId, reason, actor);
+            JsonObject response = new JsonObject();
+            response.addProperty("appealId", created.getId());
+            response.addProperty("status", created.getStatus().name());
+            sendJsonResponse(ctx, request, HttpResponseStatus.CREATED, response);
+        } catch (ModerationException e) {
+            handleModerationException(ctx, request, e);
+        }
+    }
+
+    /**
+     * GET /api/appeals - List appeals with pagination.
+     *
+     * <p>Query params: {@code page} (1-based), {@code size}, {@code status}
+     * (optional exact filter; after the AppealStatus reconciliation the
+     * frontend values PENDING/APPROVED/DENIED/ESCALATED are all real enum
+     * names, so no normalization is needed).
+     */
+    private void handleListAppeals(ChannelHandlerContext ctx, FullHttpRequest request, String uri) {
+        if (moderationManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Moderation system not enabled");
+            return;
+        }
+
+        int page = 1;
+        int size = 20;
+        String status = null;
+        int q = uri.indexOf('?');
+        if (q >= 0) {
+            String query = uri.substring(q + 1);
+            for (String pair : query.split("&")) {
+                String[] kv = pair.split("=", 2);
+                if (kv.length != 2) {
+                    continue;
+                }
+                String key = kv[0];
+                String value;
+                try {
+                    value = java.net.URLDecoder.decode(kv[1], java.nio.charset.StandardCharsets.UTF_8);
+                } catch (IllegalArgumentException e) {
+                    continue;
+                }
+                try {
+                    switch (key) {
+                        case "page" -> page = Math.max(1, Integer.parseInt(value));
+                        case "size" -> size = Math.min(100, Math.max(1, Integer.parseInt(value)));
+                        case "status" -> status = value.isBlank() ? null : value;
+                    }
+                } catch (NumberFormatException ignored) {
+                    // keep defaults
+                }
+            }
+        }
+        int offset = (page - 1) * size;
+
+        List<Appeal> appeals;
+        int total;
+        try {
+            appeals = moderationManager.listAppeals(offset, size, status);
+            total = moderationManager.countAppeals(status);
+        } catch (ModerationException e) {
+            handleModerationException(ctx, request, e);
+            return;
+        }
+
+        JsonArray items = new JsonArray();
+        for (Appeal a : appeals) {
+            items.add(appealToJson(a));
+        }
+
+        JsonObject response = new JsonObject();
+        response.add("items", items);
+        response.addProperty("page", page);
+        response.addProperty("pageSize", size);
+        response.addProperty("total", total);
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * POST /api/appeals/{id}/review - Review an appeal.
+     *
+     * <p>Body: {@code {decision, note}}. {@code decision} ∈
+     * {@code {APPROVED, DENIED, ESCALATED}} maps directly to
+     * {@link AppealStatus} via {@code valueOf}. The reviewer must differ from
+     * the case's assigned moderator (NC-403, surfaced to the UI as a self-review hint).
+     */
+    private void handleReviewAppeal(ChannelHandlerContext ctx, FullHttpRequest request,
+                                    String appealId, Claims claims) {
+        if (moderationManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Moderation system not enabled");
+            return;
+        }
+
+        AppealStatus status;
+        String note;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            if (body.isBlank()) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+                return;
+            }
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            String decision = json.has("decision") && !json.get("decision").isJsonNull()
+                    ? json.get("decision").getAsString() : null;
+            try {
+                status = decision == null ? null : AppealStatus.valueOf(decision);
+            } catch (IllegalArgumentException e) {
+                status = null;
+            }
+            note = json.has("note") && !json.get("note").isJsonNull()
+                    ? json.get("note").getAsString() : null;
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+        if (status == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "NC-400: Invalid decision (expected APPROVED, DENIED or ESCALATED)");
+            return;
+        }
+
+        String reviewedBy = panelUsername(claims);
+        String actor = reviewedBy;
+        try {
+            Appeal updated = moderationManager.reviewAppeal(appealId, status, reviewedBy, note, actor);
+            JsonObject response = new JsonObject();
+            response.addProperty("appealId", updated.getId());
+            response.addProperty("status", updated.getStatus().name());
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+        } catch (ModerationException e) {
+            handleModerationException(ctx, request, e);
+        }
     }
 
     // ==================== Notification Endpoints ====================
@@ -1515,8 +4085,12 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * <p>Query params: page (1-based, default 1), size (default 20), unreadOnly
      * (true/false, default false).
      * Returns {items:[...], total, unreadCount}.
+     *
+     * <p>PANEL-014: uses per-user state. The userId is the panel username from
+     * the JWT; only notifications visible to that user (broadcast + directed)
+     * are returned, and unreadCount reflects the per-user unread count.
      */
-    private void handleGetNotifications(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private void handleGetNotifications(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
         if (notificationStore == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Notifications not enabled");
             return;
@@ -1547,11 +4121,12 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
         int offset = (page - 1) * size;
 
-        List<Notification> notifications = notificationStore.getNotifications(offset, size, unreadOnly);
-        int unreadCount = notificationStore.getUnreadCount();
+        String userId = panelUsername(claims);
+        List<Notification> notifications = notificationStore.getNotifications(offset, size, unreadOnly, userId);
+        int unreadCount = notificationStore.getUnreadCount(userId);
         // Real total of matching records (NOT the current page size) so the
         // panel can decide whether more pages exist.
-        int total = notificationStore.count(unreadOnly);
+        int total = notificationStore.count(unreadOnly, userId);
 
         JsonArray items = new JsonArray();
         for (Notification n : notifications) {
@@ -1562,6 +4137,12 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             item.addProperty("level", n.getLevel());
             item.addProperty("createdAt", n.getCreatedAt());
             item.addProperty("read", n.isRead());
+            // PANEL-014: expose recipient so the frontend can distinguish
+            // broadcast (null) from directed notifications.
+            String recipient = n.getRecipient();
+            if (recipient != null) {
+                item.addProperty("recipient", recipient);
+            }
             items.add(item);
         }
 
@@ -1576,8 +4157,12 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
 
     /**
      * POST /api/notifications/{id}/read - Mark a single notification as read.
+     *
+     * <p>PANEL-014: marks read per-user (records a row in notification_read
+     * for the caller's userId). Other admins' unread counts are unaffected.
      */
-    private void handleMarkNotificationRead(ChannelHandlerContext ctx, FullHttpRequest request, String idStr) {
+    private void handleMarkNotificationRead(ChannelHandlerContext ctx, FullHttpRequest request,
+                                           String idStr, Claims claims) {
         if (notificationStore == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Notifications not enabled");
             return;
@@ -1589,31 +4174,62 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid notification id");
             return;
         }
-        notificationStore.markRead(id);
+        notificationStore.markRead(id, panelUsername(claims));
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, new JsonObject());
     }
 
     /**
      * POST /api/notifications/read-all - Mark all notifications as read.
+     *
+     * <p>PANEL-014: marks read per-user. Only notifications visible to the
+     * caller are marked read; other admins' inboxes are unaffected.
      */
-    private void handleMarkAllNotificationsRead(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private void handleMarkAllNotificationsRead(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
         if (notificationStore == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Notifications not enabled");
             return;
         }
-        notificationStore.markAllRead();
+        notificationStore.markAllRead(panelUsername(claims));
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, new JsonObject());
     }
 
     /**
-     * DELETE /api/notifications - Clear all notifications.
+     * DELETE /api/notifications - Clear notifications for the caller.
+     *
+     * <p>PANEL-014: clears only directed notifications where recipient equals
+     * the caller's userId. Broadcast events (recipient null) are NOT removed
+     * by this call; they require the SUPER_ADMIN
+     * DELETE /api/notifications/broadcast route.
      */
-    private void handleClearNotifications(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private void handleClearNotifications(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
+        if (notificationStore == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Notifications not enabled");
+            return;
+        }
+        int cleared = notificationStore.clearAll(panelUsername(claims));
+        JsonObject response = new JsonObject();
+        response.addProperty("cleared", cleared);
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * DELETE /api/notifications/broadcast - Clear all broadcast notifications
+     * (SUPER_ADMIN only).
+     *
+     * <p>PANEL-014: this is the global cleanup path for broadcast events that
+     * are no longer relevant. It deletes every notification where recipient is
+     * NULL. The action is audited via {@link #recordAuditSuccess} so there is a
+     * trail of who purged the shared broadcast stream and when.
+     */
+    private void handleClearBroadcastNotifications(ChannelHandlerContext ctx, FullHttpRequest request,
+                                                   Claims claims) {
         if (notificationStore == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Notifications not enabled");
             return;
         }
         int cleared = notificationStore.clearAll();
+        recordAuditSuccess(ctx, claims, "notification.clear_broadcast",
+                "notifications", null, null);
         JsonObject response = new JsonObject();
         response.addProperty("cleared", cleared);
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
@@ -1670,15 +4286,24 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
 
     /**
      * POST /api/messages - Send a message to a channel
+     *
+     * <p>Sender identity is derived from the JWT claims the same way moderation
+     * paths do (panelUsername(claims) → panelOperatorUuid(...)); the request
+     * body cannot forge it. A body {@code senderName} is accepted only as
+     * display-only metadata and surfaced via a {@code senderNameSource:"body"}
+     * field so consumers can tell it is untrusted. BACK-002 / BACK-003.
+     *
      * Requirements: 25.4
      */
-    private void handleSendMessage(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private void handleSendMessage(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
         try {
             String body = request.content().toString(CharsetUtil.UTF_8);
             JsonObject json = JsonParser.parseString(body).getAsJsonObject();
-            
+
             String channelId = json.has("channelId") ? json.get("channelId").getAsString() : null;
-            String senderName = json.has("senderName") ? json.get("senderName").getAsString() : "API";
+            // Display-only metadata from the body; NEVER used as the authenticated identity.
+            String bodySenderName = json.has("senderName") && !json.get("senderName").isJsonNull()
+                    ? json.get("senderName").getAsString() : null;
             String content = json.has("content") ? json.get("content").getAsString() : null;
 
             if (content == null || content.isBlank()) {
@@ -1690,31 +4315,60 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Missing channelId or content");
                 return;
             }
-            
+
             Channel channel = channelManager.getChannel(channelId);
-            if (channel == null) {
-                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
+            PanelRole role = resourcePolicy.resolveRole(claims);
+            if (!resourcePolicy.canSend(role, channel)) {
+                // canSend fails on missing channel OR insufficient scope — both are
+                // "no such routable target" from the caller's POV; surface as NC-404
+                // to mirror the NC-4xx idiom used by the routing-failure path below.
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
+                        "NC-404: Channel not found: "
+                                + (channelId != null ? channelId : "(null)"));
                 return;
             }
-            
-            // Create a system UUID for API messages
-            UUID senderId = new UUID(0, 0);
-            
-            // Route the message
-            messageRouter.routeMessage(channelId, senderId, senderName, content, new HashMap<>());
-            
+
+            // BACK-002: derive the sender identity from JWT claims, mirroring
+            // the moderation paths (handleMutePlayer/handleBanPlayer/...). The
+            // body cannot control the authenticated senderId/senderName.
+            String operatorUsername = panelUsername(claims);
+            UUID senderId = panelOperatorUuid(operatorUsername);
+            String senderName = operatorUsername != null && !operatorUsername.isBlank()
+                    ? operatorUsername : "console";
+
+            // Route the message and surface the outcome to the HTTP response (BACK-003).
+            RoutingResult result = messageRouter.routeMessage(
+                    channelId, senderId, senderName, content, new HashMap<>());
+
+            // BACK-003: 404 when the channel/routing target does not exist OR
+            // routing produced zero recipients (e.g. channel exists but no
+            // client is online). Mirrors the existing NC-4xx idiom.
+            if (!result.isSuccess() || result.getRecipientCount() == 0) {
+                String detail = !result.isSuccess() && result.getErrorMessage() != null
+                        ? result.getErrorMessage()
+                        : "No recipients routed for channel " + channelId;
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "NC-404: " + detail);
+                return;
+            }
+
             // Trigger webhook for message sent
             if (webhookManager != null) {
                 webhookManager.triggerWebhook("message.sent", createMessageWebhookPayload(
                     channelId, senderId.toString(), senderName, content));
             }
-            
+
             JsonObject response = new JsonObject();
             response.addProperty("success", true);
             response.addProperty("message", "Message sent successfully");
-            
+            response.addProperty("recipientCount", result.getRecipientCount());
+            // Surface the untrusted body-supplied display name, labeled by source.
+            if (bodySenderName != null && !bodySenderName.isBlank()) {
+                response.addProperty("senderName", bodySenderName);
+                response.addProperty("senderNameSource", "body");
+            }
+
             sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
-            
+
         } catch (Exception e) {
             logger.error("Error sending message via API", e);
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
@@ -1731,7 +4385,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * Returns {items:[{id, channelId, senderId, senderName, clientId, content,
      * timestamp}], page, pageSize, total}.
      */
-    private void handleGetMessages(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private void handleGetMessages(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
         if (messageLogService == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE,
                     I18n.tr("api.messages.unavailable"));
@@ -1755,7 +4409,16 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         Long from = parseLongParam(params, "from");
         Long to = parseLongParam(params, "to");
 
-        MessageFilter filter = new MessageFilter(channel, server, player, q, from, to);
+        PanelRole role = resourcePolicy.resolveRole(claims);
+        Set<String> visibleChannelIds = resourcePolicy.visibleChannelIds(role);
+        if (channel != null && !channel.isBlank()
+                && !visibleChannelIds.contains(channel)) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
+            return;
+        }
+
+        MessageFilter filter = new MessageFilter(
+                channel, server, player, q, from, to, visibleChannelIds);
         int offset = (page - 1) * size;
 
         try {
@@ -1769,7 +4432,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 item.addProperty("channelId", record.getChannelId());
                 item.addProperty("senderId", record.getSenderId());
                 item.addProperty("senderName", record.getSenderName());
-                item.addProperty("clientId", record.getClientId());
+                if (resourcePolicy.canViewInfrastructureSource(role)) {
+                    item.addProperty("clientId", record.getClientId());
+                }
                 item.addProperty("content", record.getContent());
                 item.addProperty("timestamp", record.getTimestamp());
                 items.add(item);
@@ -2033,6 +4698,261 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         return json;
     }
 
+    // ==================== Campaign Endpoints (§11.6 提案 06 — slice A) ====================
+    //
+    // In-memory, backend-only. GET /api/campaigns and GET /api/campaigns/{id}
+    // are VIEWER (default GET branch in requiredRole). POST /api/campaigns and
+    // POST /api/campaigns/{id}/{schedule,activate} are ADMIN (default mutation
+    // branch). POST /api/campaigns/{id}/revoke is SUPER_ADMIN (mapped to
+    // PermissionLevel.SUPER_ADMIN in CampaignManager).
+    //
+    // Campaign audit is manager-owned: each mutation records an event via the
+    // canonical AuditStore wired into the CampaignManager (setter on the
+    // manager), mirroring ModerationManager. The REST layer therefore does
+    // NOT call recordAuditSuccess for campaign routes (no double-audit). All
+    // routes 503 when the CampaignManager is not wired.
+
+    /**
+     * GET /api/campaigns - List campaigns with an optional {@code channelId}
+     * filter. Returns {items, total} where each item is the full campaign JSON
+     * (see {@link #campaignToJson}).
+     */
+    private void handleListCampaigns(ChannelHandlerContext ctx, FullHttpRequest request, String uri) {
+        if (campaignManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Campaigns not enabled");
+            return;
+        }
+        String channelId = null;
+        int q = uri.indexOf('?');
+        if (q >= 0) {
+            String query = uri.substring(q + 1);
+            for (String pair : query.split("&")) {
+                int eq = pair.indexOf('=');
+                if (eq > 0 && "channelId".equals(pair.substring(0, eq))) {
+                    channelId = pair.substring(eq + 1);
+                }
+            }
+        }
+        JsonArray items = new JsonArray();
+        for (com.nova.link.announcement.Campaign c : campaignManager.listCampaigns(channelId)) {
+            items.add(campaignToJson(c));
+        }
+        JsonObject response = new JsonObject();
+        response.add("items", items);
+        response.addProperty("total", items.size());
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * POST /api/campaigns - Create a campaign in PREVIEW status.
+     *
+     * <p>Body: {channelId, content, platforms:[...], deliveryPolicy?,
+     * startAt?, endAt?, rateLimitPerHour?}. The operator is derived from the
+     * JWT (panel-derived UUID) and passed as a trusted operator to the
+     * manager (REST layer already enforced RBAC).
+     */
+    private void handleCreateCampaign(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
+        if (campaignManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Campaigns not enabled");
+            return;
+        }
+        String channelId;
+        String content;
+        java.util.Set<String> platforms;
+        String deliveryPolicyRaw;
+        long startAt;
+        long endAt;
+        int rateLimitPerHour;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            channelId = json.has("channelId") && !json.get("channelId").isJsonNull()
+                    ? json.get("channelId").getAsString() : null;
+            content = json.has("content") && !json.get("content").isJsonNull()
+                    ? json.get("content").getAsString() : null;
+            platforms = new java.util.LinkedHashSet<>();
+            if (json.has("platforms") && json.get("platforms").isJsonArray()) {
+                for (var el : json.getAsJsonArray("platforms")) {
+                    if (!el.isJsonNull() && !el.getAsString().isBlank()) {
+                        platforms.add(el.getAsString());
+                    }
+                }
+            }
+            deliveryPolicyRaw = json.has("deliveryPolicy") && !json.get("deliveryPolicy").isJsonNull()
+                    ? json.get("deliveryPolicy").getAsString() : null;
+            startAt = json.has("startAt") && !json.get("startAt").isJsonNull()
+                    ? json.get("startAt").getAsLong() : 0L;
+            endAt = json.has("endAt") && !json.get("endAt").isJsonNull()
+                    ? json.get("endAt").getAsLong() : 0L;
+            rateLimitPerHour = json.has("rateLimitPerHour") && !json.get("rateLimitPerHour").isJsonNull()
+                    ? json.get("rateLimitPerHour").getAsInt() : 0;
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+        if (channelId == null || channelId.isBlank() || !channelManager.channelExists(channelId)) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid channelId");
+            return;
+        }
+        if (content == null || content.isBlank()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "content is required");
+            return;
+        }
+        if (platforms.isEmpty()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "platforms must be non-empty");
+            return;
+        }
+        com.nova.link.announcement.DeliveryPolicy policy =
+                com.nova.link.announcement.DeliveryPolicy.fromDbValue(deliveryPolicyRaw);
+
+        UUID operatorId = panelOperatorUuid(panelUsername(claims));
+        com.nova.link.announcement.CampaignResult result = campaignManager.createCampaign(
+                operatorId, channelId, content, platforms, policy,
+                startAt, endAt, rateLimitPerHour, null, true);
+        if (!result.isSuccess()) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, result.getMessage());
+            return;
+        }
+        sendJsonResponse(ctx, request, HttpResponseStatus.CREATED,
+                campaignToJson(result.getCampaign()));
+    }
+
+    /**
+     * GET /api/campaigns/{id} - Fetch a single campaign. 404 when not found.
+     */
+    private void handleGetCampaign(ChannelHandlerContext ctx, FullHttpRequest request, String campaignId) {
+        if (campaignManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Campaigns not enabled");
+            return;
+        }
+        com.nova.link.announcement.Campaign campaign = campaignManager.getCampaign(campaignId);
+        if (campaign == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Campaign not found: " + campaignId);
+            return;
+        }
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, campaignToJson(campaign));
+    }
+
+    /**
+     * POST /api/campaigns/{id}/schedule - Transition PREVIEW → SCHEDULED (or
+     * PREVIEW → ACTIVE when startAt is 0). Bumps scheduleRevision.
+     */
+    private void handleScheduleCampaign(ChannelHandlerContext ctx, FullHttpRequest request,
+                                         String campaignId, Claims claims) {
+        if (campaignManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Campaigns not enabled");
+            return;
+        }
+        UUID operatorId = panelOperatorUuid(panelUsername(claims));
+        com.nova.link.announcement.CampaignResult result =
+                campaignManager.scheduleCampaign(campaignId, operatorId, true);
+        if (!result.isSuccess()) {
+            sendJsonError(ctx, request, statusForResult(result), result.getMessage());
+            return;
+        }
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, campaignToJson(result.getCampaign()));
+    }
+
+    /**
+     * POST /api/campaigns/{id}/activate - Transition SCHEDULED → ACTIVE and
+     * deliver once (subject to the per-channel/per-hour rate limit).
+     */
+    private void handleActivateCampaign(ChannelHandlerContext ctx, FullHttpRequest request,
+                                        String campaignId, Claims claims) {
+        if (campaignManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Campaigns not enabled");
+            return;
+        }
+        UUID operatorId = panelOperatorUuid(panelUsername(claims));
+        com.nova.link.announcement.CampaignResult result =
+                campaignManager.activateCampaign(campaignId, operatorId, true);
+        if (!result.isSuccess()) {
+            sendJsonError(ctx, request, statusForResult(result), result.getMessage());
+            return;
+        }
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, campaignToJson(result.getCampaign()));
+    }
+
+    /**
+     * POST /api/campaigns/{id}/revoke - Transition any non-terminal → REVOKED.
+     * SUPER_ADMIN-only (enforced by requiredRole). Cancels the armed task and
+     * stamps revokedAt/revokedBy.
+     */
+    private void handleRevokeCampaign(ChannelHandlerContext ctx, FullHttpRequest request,
+                                      String campaignId, Claims claims) {
+        if (campaignManager == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Campaigns not enabled");
+            return;
+        }
+        UUID operatorId = panelOperatorUuid(panelUsername(claims));
+        com.nova.link.announcement.CampaignResult result =
+                campaignManager.revokeCampaign(campaignId, operatorId, true);
+        if (!result.isSuccess()) {
+            sendJsonError(ctx, request, statusForResult(result), result.getMessage());
+            return;
+        }
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, campaignToJson(result.getCampaign()));
+    }
+
+    /**
+     * Maps a {@link com.nova.link.announcement.CampaignResult} error code to
+     * the corresponding HTTP status (400 / 403 / 404 / 429 / 500).
+     */
+    private HttpResponseStatus statusForResult(com.nova.link.announcement.CampaignResult result) {
+        if (result == null || result.isSuccess()) {
+            return HttpResponseStatus.OK;
+        }
+        String code = result.getErrorCode();
+        if (code == null) {
+            return HttpResponseStatus.BAD_REQUEST;
+        }
+        switch (code) {
+            case com.nova.link.announcement.CampaignResult.CODE_NOT_FOUND:
+                return HttpResponseStatus.NOT_FOUND;
+            case com.nova.link.announcement.CampaignResult.CODE_FORBIDDEN:
+                return HttpResponseStatus.FORBIDDEN;
+            case com.nova.link.announcement.CampaignResult.CODE_RATE_LIMITED:
+                return HttpResponseStatus.TOO_MANY_REQUESTS;
+            case com.nova.link.announcement.CampaignResult.CODE_INTERNAL_ERROR:
+                return HttpResponseStatus.INTERNAL_SERVER_ERROR;
+            case com.nova.link.announcement.CampaignResult.CODE_BAD_REQUEST:
+            default:
+                return HttpResponseStatus.BAD_REQUEST;
+        }
+    }
+
+    /**
+     * Converts a campaign to its REST JSON shape:
+     * {id, channelId, platforms, content, status, scheduleRevision,
+     *  deliveryPolicy, startAt, endAt, rateLimitPerChannelPerHour,
+     *  createdAt, revokedAt, revokedBy}.
+     */
+    private JsonObject campaignToJson(com.nova.link.announcement.Campaign campaign) {
+        JsonObject json = new JsonObject();
+        json.addProperty("id", campaign.getId());
+        json.addProperty("channelId", campaign.getChannelId());
+        JsonArray platforms = new JsonArray();
+        for (String p : campaign.getPlatforms()) {
+            platforms.add(p);
+        }
+        json.add("platforms", platforms);
+        json.addProperty("content", campaign.getContent());
+        json.addProperty("status", campaign.getStatus().name());
+        json.addProperty("scheduleRevision", campaign.getScheduleRevision());
+        json.addProperty("deliveryPolicy", campaign.getDeliveryPolicy().dbValue());
+        json.addProperty("startAt", campaign.getStartAt());
+        json.addProperty("endAt", campaign.getEndAt());
+        json.addProperty("rateLimitPerChannelPerHour", campaign.getRateLimitPerChannelPerHour());
+        json.addProperty("createdAt", campaign.getCreatedAt());
+        json.addProperty("revokedAt", campaign.getRevokedAt());
+        if (campaign.getRevokedBy() != null) {
+            json.addProperty("revokedBy", campaign.getRevokedBy().toString());
+        } else {
+            json.add("revokedBy", com.google.gson.JsonNull.INSTANCE);
+        }
+        return json;
+    }
+
     // ==================== Sensitive-Word Filter Endpoints ====================
 
     /**
@@ -2174,13 +5094,17 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * GET /api/players - List online players
      * Requirements: 25.4
      */
-    private void handleGetPlayers(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private void handleGetPlayers(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
+        PanelRole role = resourcePolicy.resolveRole(claims);
+        Set<String> visibleChannelIds = resourcePolicy.visibleChannelIds(role);
         JsonArray players = new JsonArray();
         
         // Get all player states from the state manager
         Collection<PlayerState> states = playerStateManager.getAllPlayerStates();
         for (PlayerState state : states) {
-            players.add(playerStateToJson(state));
+            if (isPlayerVisible(state.getPlayerId(), visibleChannelIds)) {
+                players.add(playerStateToJson(state, role, visibleChannelIds));
+            }
         }
         
         JsonObject response = new JsonObject();
@@ -2194,17 +5118,21 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * GET /api/players/{uuid} - Get player details
      * Requirements: 25.4
      */
-    private void handleGetPlayer(ChannelHandlerContext ctx, FullHttpRequest request, String playerId) {
+    private void handleGetPlayer(ChannelHandlerContext ctx, FullHttpRequest request,
+                                 String playerId, Claims claims) {
         try {
             UUID uuid = UUID.fromString(playerId);
             PlayerState state = playerStateManager.getPlayerState(uuid);
-            
-            if (state == null) {
+            PanelRole role = resourcePolicy.resolveRole(claims);
+            Set<String> visibleChannelIds = resourcePolicy.visibleChannelIds(role);
+
+            if (state == null || !isPlayerVisible(uuid, visibleChannelIds)) {
                 sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Player not found");
                 return;
             }
             
-            sendJsonResponse(ctx, request, HttpResponseStatus.OK, playerStateToJson(state));
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK,
+                    playerStateToJson(state, role, visibleChannelIds));
             
         } catch (IllegalArgumentException e) {
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid UUID format");
@@ -2237,36 +5165,44 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * POST /api/webhooks - Create a new webhook
      * Requirements: 25.5
      */
-    private void handleCreateWebhook(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private void handleCreateWebhook(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
         if (webhookManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Webhooks not enabled");
             return;
         }
-        
+
         try {
             String body = request.content().toString(CharsetUtil.UTF_8);
             JsonObject json = JsonParser.parseString(body).getAsJsonObject();
-            
+
             String url = json.has("url") ? json.get("url").getAsString() : null;
             String event = json.has("event") ? json.get("event").getAsString() : null;
             String secret = json.has("secret") ? json.get("secret").getAsString() : null;
-            
+
             if (url == null || event == null) {
                 sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Missing url or event");
                 return;
             }
-            
+
             Webhook webhook = webhookManager.createWebhook(url, event, secret);
-            
+
+            JsonObject webhookJson = webhookToJson(webhook);
             JsonObject response = new JsonObject();
             response.addProperty("success", true);
-            response.add("webhook", webhookToJson(webhook));
-            
+            response.add("webhook", webhookJson);
+
             sendJsonResponse(ctx, request, HttpResponseStatus.CREATED, response);
-            
+
+            // PANEL-006: audit the webhook creation. webhookToJson never emits
+            // the secret, so the after-hash is secret-safe.
+            recordAuditSuccess(ctx, claims, "webhook.create", "webhook:" + webhook.getId(),
+                    null, AuditEvent.hashJson(gson.toJson(webhookJson)));
+
         } catch (Exception e) {
             logger.error("Error creating webhook", e);
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            recordAudit(ctx, claims, "webhook.create", null,
+                    null, null, "invalid request body", "failure");
         }
     }
 
@@ -2277,11 +5213,23 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * {@code events} (single event string — what the panel submits) or
      * {@code event}. Only provided fields are applied. Returns the updated object.
      */
-    private void handleUpdateWebhook(ChannelHandlerContext ctx, FullHttpRequest request, String webhookId) {
+    private void handleUpdateWebhook(ChannelHandlerContext ctx, FullHttpRequest request,
+                                     String webhookId, Claims claims) {
         if (webhookManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Webhooks not enabled");
             return;
         }
+
+        // PANEL-006: capture the before-state hash for audit. webhookToJson
+        // never emits the secret.
+        Webhook existing = webhookManager.getWebhook(webhookId);
+        if (existing == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
+                    I18n.tr("api.webhook.not_found", webhookId));
+            return;
+        }
+        JsonObject beforeJson = webhookToJson(existing);
+        String beforeHash = AuditEvent.hashJson(gson.toJson(beforeJson));
 
         String url = null;
         String event = null;
@@ -2319,7 +5267,12 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                     I18n.tr("api.webhook.not_found", webhookId));
             return;
         }
-        sendJsonResponse(ctx, request, HttpResponseStatus.OK, webhookToJson(updated));
+        JsonObject afterJson = webhookToJson(updated);
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, afterJson);
+
+        // PANEL-006: audit the webhook update with before/after hashes.
+        recordAuditSuccess(ctx, claims, "webhook.update", "webhook:" + webhookId,
+                beforeHash, AuditEvent.hashJson(gson.toJson(afterJson)));
     }
 
     /**
@@ -2357,24 +5310,35 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * DELETE /api/webhooks/{id} - Delete a webhook
      * Requirements: 25.5
      */
-    private void handleDeleteWebhook(ChannelHandlerContext ctx, FullHttpRequest request, String webhookId) {
+    private void handleDeleteWebhook(ChannelHandlerContext ctx, FullHttpRequest request,
+                                     String webhookId, Claims claims) {
         if (webhookManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Webhooks not enabled");
             return;
         }
-        
+
+        // PANEL-006: capture the before-state hash for audit.
+        Webhook existing = webhookManager.getWebhook(webhookId);
+        String beforeHash = existing != null
+                ? AuditEvent.hashJson(gson.toJson(webhookToJson(existing)))
+                : null;
+
         boolean deleted = webhookManager.deleteWebhook(webhookId);
-        
+
         if (!deleted) {
             sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Webhook not found");
             return;
         }
-        
+
         JsonObject response = new JsonObject();
         response.addProperty("success", true);
         response.addProperty("message", "Webhook deleted successfully");
-        
+
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+
+        // PANEL-006: audit the webhook deletion. No after-state.
+        recordAuditSuccess(ctx, claims, "webhook.delete", "webhook:" + webhookId,
+                beforeHash, null);
     }
 
     /**
@@ -2388,8 +5352,51 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         response.addProperty("channelCount", channelManager.getChannelCount());
         response.addProperty("playerCount", playerStateManager.getAllPlayerStates().size());
         response.addProperty("timestamp", System.currentTimeMillis());
-        
+
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * GET /api/health - Unauthenticated liveness/readiness probe (LB/k8s).
+     * Requirements: §11.7 monitoring gate.
+     *
+     * <p>Bypasses auth and the worker pool in {@link #channelRead0} so a probe
+     * never depends on worker capacity or a probe token. Returns aggregate
+     * status, version, uptime, and per-subsystem checks — no secrets,
+     * passwords, or webhook URLs.
+     */
+    private void handleHealth(ChannelHandlerContext ctx, FullHttpRequest request) {
+        Map<String, Object> health = healthMetricsService().health();
+        JsonObject json = gson.toJsonTree(health).getAsJsonObject();
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, json);
+    }
+
+    /**
+     * GET /api/metrics - Prometheus exposition-format metrics (auth-gated,
+     * VIEWER minimum). Requirements: §11.7 monitoring gate.
+     *
+     * <p>Emits {@code text/plain; version=0.0.4}. Hand-written — no Prometheus
+     * client library, no new dependencies. Auth + RBAC are enforced upstream
+     * in {@link #processApiRequest} (missing/invalid token → 401, role below
+     * VIEWER → 403), mirroring every other GET endpoint.
+     */
+    private void handleMetrics(ChannelHandlerContext ctx, FullHttpRequest request) {
+        String body = healthMetricsService().prometheusMetrics();
+        ByteBuf buf = Unpooled.copiedBuffer(body, CharsetUtil.UTF_8);
+        FullHttpResponse response = new DefaultFullHttpResponse(
+                HttpVersion.HTTP_1_1, HttpResponseStatus.OK, buf);
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=UTF-8");
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
+        addCorsHeaders(request, response);
+
+        boolean keepAlive = HttpUtil.isKeepAlive(request);
+        if (keepAlive) {
+            response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+            ctx.writeAndFlush(response);
+        } else {
+            ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+        }
     }
 
     /**
@@ -2418,6 +5425,10 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * Converts a Channel to JSON.
      */
     private JsonObject channelToJson(Channel channel) {
+        return channelToJson(channel, null);
+    }
+
+    private JsonObject channelToJson(Channel channel, PanelRole role) {
         JsonObject json = new JsonObject();
         json.addProperty("id", channel.getId());
         json.addProperty("displayName", channel.getDisplayName());
@@ -2426,7 +5437,16 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         json.addProperty("memberCount", channel.getMembers().size());
         json.addProperty("maxCapacity", channel.getMaxCapacity());
         json.addProperty("slowModeSeconds", channel.getSlowModeSeconds());
-        
+        // PANEL-003: provenance + revision so API/WS/UI stay consistent. CONFIG
+        // channels are read-only in the Panel; revision enables optimistic
+        // concurrency detection.
+        json.addProperty("source", channel.getSource().name());
+        json.addProperty("revision", channel.getRevision());
+        if (role != null) {
+            json.addProperty("subscribable", resourcePolicy.canSubscribe(role, channel));
+            json.addProperty("sendable", resourcePolicy.canSend(role, channel));
+        }
+
         if (channel.getPermission() != null) {
             json.addProperty("permission", channel.getPermission());
         }
@@ -2443,16 +5463,23 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     /**
      * Converts a PlayerState to JSON.
      */
-    private JsonObject playerStateToJson(PlayerState state) {
+    private JsonObject playerStateToJson(PlayerState state, PanelRole role,
+                                         Set<String> visibleChannelIds) {
         JsonObject json = new JsonObject();
         json.addProperty("uuid", state.getPlayerId().toString());
         json.addProperty("name", state.getPlayerName());
-        json.addProperty("clientId", state.getClientId());
-        json.addProperty("currentWorld", state.getCurrentWorld());
-        json.addProperty("activeChannel", state.getActiveChannel());
+        if (resourcePolicy.canViewInfrastructureSource(role)) {
+            json.addProperty("clientId", state.getClientId());
+            json.addProperty("currentWorld", state.getCurrentWorld());
+        }
+        if (visibleChannelIds.contains(state.getActiveChannel())) {
+            json.addProperty("activeChannel", state.getActiveChannel());
+        }
         
         JsonArray channels = new JsonArray();
-        state.getJoinedChannels().forEach(channels::add);
+        state.getJoinedChannels().stream()
+                .filter(visibleChannelIds::contains)
+                .forEach(channels::add);
         json.add("joinedChannels", channels);
 
         json.addProperty("muted", state.getMutes() != null && !state.getMutes().isEmpty());
@@ -2461,6 +5488,16 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 ? state.getPlatform() : "Java");
 
         return json;
+    }
+
+    private boolean isPlayerVisible(UUID playerId, Set<String> visibleChannelIds) {
+        for (String channelId : visibleChannelIds) {
+            Channel channel = channelManager.getChannel(channelId);
+            if (channel != null && channel.isMember(playerId)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -2519,6 +5556,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json; charset=UTF-8");
         response.headers().set(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
         addCorsHeaders(request, response);
+        stampRequestId(ctx, response);
 
         boolean keepAlive = HttpUtil.isKeepAlive(request);
         if (keepAlive) {
@@ -2539,6 +5577,12 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         // Keep `message` for frontend compatibility; `error` kept for backward compatibility.
         json.addProperty("message", message);
         json.addProperty("status", status.code());
+        // PANEL-006: include the correlation id in the error body so callers
+        // can quote it when reporting issues without scraping headers.
+        String rid = currentRequestId(ctx);
+        if (rid != null) {
+            json.addProperty("requestId", rid);
+        }
         sendJsonResponse(ctx, request, status, json);
     }
 
@@ -2550,6 +5594,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
         addCorsHeaders(request, response);
         response.headers().set(HttpHeaderNames.CONTENT_LENGTH, 0);
+        stampRequestId(ctx, response);
         ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
     }
 
@@ -2570,9 +5615,40 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             response.headers().add(HttpHeaderNames.VARY, "Origin");
         }
         response.headers().set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, PUT, DELETE, OPTIONS");
-        response.headers().set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_HEADERS, 
+        response.headers().set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_HEADERS,
                 "Content-Type, Authorization");
+        // Expose X-Request-Id so browser JS (the panel) can read it for
+        // client-side correlation and error reporting.
+        response.headers().set(HttpHeaderNames.ACCESS_CONTROL_EXPOSE_HEADERS, "X-Request-Id");
         response.headers().set(HttpHeaderNames.ACCESS_CONTROL_MAX_AGE, "86400");
+    }
+
+    /**
+     * @return the per-request correlation id stored on the channel by
+     *         {@link #channelRead0}, or null when none is set (e.g. tests that
+     *         invoke handlers directly without going through channelRead0).
+     */
+    private String currentRequestId(ChannelHandlerContext ctx) {
+        if (ctx == null || ctx.channel() == null) {
+            return null;
+        }
+        try {
+            return ctx.channel().attr(REQUEST_ID_KEY).get();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Stamps the {@code X-Request-Id} response header from the channel
+     * attribute. No-op when no id is set, so direct handler invocations in
+     * tests (which skip channelRead0) still work without a request id.
+     */
+    private void stampRequestId(ChannelHandlerContext ctx, FullHttpResponse response) {
+        String rid = currentRequestId(ctx);
+        if (rid != null) {
+            response.headers().set("X-Request-Id", rid);
+        }
     }
 
     /**

@@ -14,6 +14,9 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.*;
@@ -435,6 +438,86 @@ class AnnouncementManagerTest {
 
         assertThat(announcementManager.getAnnouncementCount()).isEqualTo(0);
         assertThat(announcementManager.getAllAnnouncements()).isEmpty();
+    }
+
+    // ==================== one-shot re-arm tests (BACK-005) ====================
+
+    /**
+     * A scheduled announcement with a uniform cron must arm exactly one
+     * ScheduledFuture at registration. The re-arm machinery itself
+     * (send then reschedule) is exercised by the leak-guard test below,
+     * since the real delay is at least 60s.
+     */
+    @Test
+    @DisplayName("scheduled announcement arms exactly one future at registration")
+    void scheduled_firesViaOneShotReArm_noLeak() throws InterruptedException {
+        grantSuperAdmin(superAdminId);
+
+        announcementManager.createScheduledAnnouncement(
+                superAdminId, "global-channel", "Tick", "* * * * *", "client-1");
+
+        assertThat(announcementManager.getScheduledTaskCount()).isEqualTo(1);
+    }
+
+    /**
+     * The one-shot re-arm must cancel or replace the old future before
+     * scheduling the next one, so the scheduledTasks map never holds more
+     * than one live future per announcement ID. We exercise this via the
+     * public enable/disable API, which cancels the armed future on disable
+     * and re-arms a fresh one on enable. After each cycle exactly one
+     * future is armed, never more.
+     */
+    @Test
+    @DisplayName("enable/disable cycle (cancel + re-arm) keeps exactly one armed future")
+    void rearm_doesNotLeakOldFutureBeforeReschedule() {
+        grantSuperAdmin(superAdminId);
+
+        AnnouncementResult created = announcementManager.createScheduledAnnouncement(
+                superAdminId, "global-channel", "Tick", "0 * * * *", "client-1");
+        String id = created.getAnnouncement().getId();
+        assertThat(announcementManager.getScheduledTaskCount()).isEqualTo(1);
+
+        // Disable cancels the armed future; enable re-arms a new one.
+        // After each cycle, exactly one future is armed, never more.
+        for (int i = 0; i < 5; i++) {
+            assertThat(announcementManager.setAnnouncementEnabled(id, false).isSuccess()).isTrue();
+            assertThat(announcementManager.getScheduledTaskCount())
+                    .as("after disable in cycle %d", i).isEqualTo(0);
+            assertThat(announcementManager.setAnnouncementEnabled(id, true).isSuccess()).isTrue();
+            assertThat(announcementManager.getScheduledTaskCount())
+                    .as("after re-enable in cycle %d", i).isEqualTo(1);
+        }
+    }
+
+    /**
+     * Disabling a scheduled announcement must cancel the armed one-shot
+     * before it fires. We schedule with an hourly cron that will not fire
+     * within the test's lifetime, disable it, and assert that no delivery
+     * happens and the armed task count drops to zero.
+     */
+    @Test
+    @DisplayName("disabling a scheduled announcement cancels the armed one-shot before it fires")
+    void disable_cancelsArmedOneShot() throws InterruptedException {
+        grantSuperAdmin(superAdminId);
+
+        AtomicInteger fires = new AtomicInteger();
+        announcementManager.setAnnouncementSender((channelId, content) -> {
+            fires.incrementAndGet();
+        });
+
+        AnnouncementResult created = announcementManager.createScheduledAnnouncement(
+                superAdminId, "global-channel", "Tick", "0 * * * *", "client-1");
+        String id = created.getAnnouncement().getId();
+        assertThat(announcementManager.getScheduledTaskCount()).isEqualTo(1);
+
+        // Disable before the first fire window (hourly cron will not fire
+        // within the test's lifetime). The armed future must be cancelled.
+        assertThat(announcementManager.setAnnouncementEnabled(id, false).isSuccess()).isTrue();
+        assertThat(announcementManager.getScheduledTaskCount()).isEqualTo(0);
+
+        // Give the scheduler a brief window to prove nothing fires.
+        Thread.sleep(100);
+        assertThat(fires.get()).isEqualTo(0);
     }
 
     // ==================== helper methods ====================

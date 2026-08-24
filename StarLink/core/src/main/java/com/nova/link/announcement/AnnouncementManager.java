@@ -706,6 +706,20 @@ public class AnnouncementManager {
 
     /**
      * Schedules an announcement based on its cron expression.
+     *
+     * <p>Uses a one-shot {@link ScheduledExecutorService#schedule} that, after
+     * firing, re-arms itself by recomputing the next-fire delay from the cron
+     * expression via {@link CronSchedule#getNextExecutionDelay()}. This keeps
+     * non-uniform schedules (monthly ≈ 28-31d, weekday-specific, DST-affected
+     * hourly) firing at the correct wall-clock time on every fire, instead of
+     * drifting under a fixed-rate {@code scheduleAtFixedRate} period.
+     *
+     * <p>The {@link ScheduledFuture} for the currently-armed one-shot is stored
+     * in {@link #scheduledTasks} keyed by announcement ID; the per-ID
+     * cancel/reschedule machinery ({@link #deleteAnnouncement},
+     * {@link #setAnnouncementEnabled}, {@link #shutdown}, {@link #clear})
+     * cancels that future before re-arming, so there is never more than one
+     * armed task per announcement and no leak across reschedules.
      */
     private void scheduleAnnouncement(Announcement announcement, CronSchedule schedule) {
         if (scheduler == null || scheduler.isShutdown()) {
@@ -713,21 +727,64 @@ public class AnnouncementManager {
             return;
         }
 
-        long delayMs = schedule.getNextExecutionDelay();
-        if (delayMs < 0) {
-            logger.warn("Invalid cron schedule for announcement: {}", announcement.getId());
+        ScheduledFuture<?> task = scheduler.schedule(
+                () -> fireAndReschedule(announcement, schedule),
+                schedule.getNextExecutionDelay(),
+                TimeUnit.MILLISECONDS);
+        scheduledTasks.put(announcement.getId(), task);
+    }
+
+    /**
+     * Sends the announcement, then re-arms a fresh one-shot scheduled task
+     * computed from the cron expression's next wall-clock fire time. Runs on the
+     * scheduler thread.
+     */
+    private void fireAndReschedule(Announcement announcement, CronSchedule schedule) {
+        try {
+            if (announcement.isEnabled() && announcementSender != null) {
+                announcementSender.accept(announcement.getChannelId(), announcement.getContent());
+                logger.debug("Scheduled announcement sent: {} to channel {}",
+                        announcement.getId(), announcement.getChannelId());
+            }
+        } catch (RuntimeException e) {
+            // Never let a send failure tear down the scheduler thread or
+            // prevent the next re-arm; log and keep ticking.
+            logger.warn("Scheduled announcement {} threw while sending: {}",
+                    announcement.getId(), e.toString());
+        }
+
+        // Re-arm only if still enabled and not cancelled while the task was
+        // running. A concurrent cancel/remove (delete/disable/shutdown) will
+        // have already cleared the map entry; the atomic computeIfPresent
+        // below ensures we either replace the just-fired entry with the next
+        // one-shot, or — if someone already removed it — cancel the task we
+        // just scheduled instead of resurrecting an orphan.
+        if (!announcement.isEnabled() || scheduler == null || scheduler.isShutdown()) {
             return;
         }
 
-        ScheduledFuture<?> task = scheduler.scheduleAtFixedRate(() -> {
-            if (announcement.isEnabled() && announcementSender != null) {
-                announcementSender.accept(announcement.getChannelId(), announcement.getContent());
-                logger.debug("Scheduled announcement sent: {} to channel {}", 
-                        announcement.getId(), announcement.getChannelId());
+        try {
+            long nextDelay = schedule.getNextExecutionDelay();
+            if (nextDelay < 0) {
+                logger.warn("Cannot re-arm announcement {} — invalid cron delay", announcement.getId());
+                return;
             }
-        }, delayMs, schedule.getPeriodMs(), TimeUnit.MILLISECONDS);
-
-        scheduledTasks.put(announcement.getId(), task);
+            ScheduledFuture<?> next = scheduler.schedule(
+                    () -> fireAndReschedule(announcement, schedule),
+                    nextDelay,
+                    TimeUnit.MILLISECONDS);
+            // Atomic replace: if the entry for this ID is still present (the
+            // common case), swap in the new one-shot. If a concurrent
+            // delete/disable/shutdown already removed it, cancel the task we
+            // just armed so it never fires and doesn't leak.
+            if (scheduledTasks.computeIfPresent(announcement.getId(), (k, v) -> next) == null) {
+                next.cancel(false);
+            }
+        } catch (RejectedExecutionException e) {
+            // Scheduler shutting down; nothing to re-arm.
+            logger.debug("Could not re-arm announcement {} — scheduler shutting down: {}",
+                    announcement.getId(), e.toString());
+        }
     }
 
     /**
