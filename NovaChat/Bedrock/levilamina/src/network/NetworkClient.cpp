@@ -1,10 +1,14 @@
 #include "NetworkClient.h"
 #include "../protocol/VarInt.h"
+#include "../protocol/ProtocolLimits.h"
 #include "../util/Sha256.h"
+#include "../util/HmacSha256.h"
 
 #include <ll/api/io/Logger.h>
 #include <chrono>
 #include <cstring>
+#include <cerrno>
+#include <random>
 
 #include <sstream>
 #include <iomanip>
@@ -28,12 +32,13 @@ void NetworkClient::initWsa() {
 
 NetworkClient::NetworkClient(const std::string& host, uint16_t port,
                              const std::string& username, const std::string& password,
-                             const std::string& serverVersion)
+                             const std::string& serverVersion, int reconnectDelay)
     : mHost(host)
     , mPort(port)
     , mUsername(username)
     , mPassword(password)
-    , mServerVersion(serverVersion) {
+    , mServerVersion(serverVersion)
+    , mReconnectDelay(reconnectDelay) {
 #ifdef _WIN32
     initWsa();
 #endif
@@ -49,9 +54,45 @@ bool NetworkClient::connect() {
         return false;
     }
 
+    mOutgoingQueue.clear();
+    mIncomingQueue.clear();
+    mOutgoingQueue.reset();
+    mIncomingQueue.reset();
     mRunning = true;
     mNetworkThread = std::make_unique<std::thread>(&NetworkClient::networkThreadFunc, this);
     return true;
+}
+
+bool NetworkClient::reconfigure(const std::string& host, uint16_t port,
+                                const std::string& username, const std::string& password,
+                                const std::string& serverVersion, int reconnectDelay) {
+    const bool wasRunning = mRunning.load();
+    disconnect();
+
+    mHost = host;
+    mPort = port;
+    mUsername = username;
+    mPassword = password;
+    mServerVersion = serverVersion;
+    mReconnectDelay = reconnectDelay;
+
+    return !wasRunning || connect();
+}
+
+void NetworkClient::setTlsConfig(bool tlsEnabled,
+                                 const std::string& caCertPath,
+                                 const std::string& clientCertPath,
+                                 const std::string& clientKeyPath) {
+    // AUTH-002 TLS: store the transport-encryption config. NOT yet applied in
+    // doConnect() — the backend still connects over plaintext TCP. This is the
+    // skeleton seam: the OpenSSL integration (SSL_CTX_new / SSL_connect /
+    // SSL_read / SSL_write wired into the select() loop) will read these
+    // members. Verification is enforced unconditionally once TLS is on (there
+    // is no mTlsInsecure / skipVerify member by design).
+    mTlsEnabled = tlsEnabled;
+    mTlsCaCertPath = caCertPath;
+    mTlsClientCertPath = clientCertPath;
+    mTlsClientKeyPath = clientKeyPath;
 }
 
 void NetworkClient::disconnect() {
@@ -107,7 +148,11 @@ void NetworkClient::networkThreadFunc() {
         FD_ZERO(&writeSet);
         FD_SET(mSocket, &readSet);
         
-        if (!mOutgoingQueue.empty()) {
+        // Request writable events whenever there are queued packets OR pending
+        // send-buffer bytes left from a previous short write / EAGAIN. Without
+        // the residual check, bytes stuck behind EAGAIN would only flush when a
+        // new packet happens to arrive.
+        if (!mOutgoingQueue.empty() || mSendOffset < mSendBuffer.size()) {
             FD_SET(mSocket, &writeSet);
         }
 
@@ -180,6 +225,30 @@ bool NetworkClient::doConnect() {
         return false;
     }
 
+    // TODO AUTH-002 TLS: when mTlsEnabled is true, wrap mSocket in an OpenSSL
+    // TLS session here. The integration requires: (1) an SSL_CTX configured
+    // for certificate verification (SSL_VERIFY_PEER with the configured
+    // ca_cert_path or the system store) — there is intentionally no option to
+    // disable verification; (2) an optional client cert/key pair loaded when
+    // both mTlsClientCertPath and mTlsClientKeyPath are non-empty; (3) a
+    // non-blocking SSL_connect state machine integrated into the select() loop
+    // in networkThreadFunc() — SSL_want_read / SSL_want_write drive which
+    // fd_set to subscribe to, and SSL_read / SSL_write replace the raw recv /
+    // send calls in receiveLoop() / sendLoop(). Because xmake is unavailable
+    // in this environment (no compile verification), the non-blocking SSL state
+    // machine is NOT written here — an unverified state machine is a larger
+    // risk than the documented gap. Until that lands, the backend connects
+    // over plaintext TCP even when TLS is configured (mTlsEnabled is stored
+    // but not yet applied). xmake.lua already declares the OpenSSL dependency
+    // so the symbols link once the implementation is added.
+    if (mTlsEnabled) {
+        // Skeleton seam: TLS connect not yet implemented (see TODO above).
+        // Fall through to the plaintext non-blocking setup so the client still
+        // operates; operators who set enable=true without a TLS listener get a
+        // working plaintext connection rather than a silent no-op. This gap is
+        // reported honestly in the AUTH-002 delivery report.
+    }
+
     // Set non-blocking mode
 #ifdef _WIN32
     u_long mode = 1;
@@ -191,6 +260,11 @@ bool NetworkClient::doConnect() {
 
     mConnected = true;
     mReceiveBuffer.clear();
+    // Reset the send buffer: a fresh socket must not transmit bytes left over
+    // from a prior connection (a short write would otherwise replay stale
+    // frames on the new fd).
+    mSendBuffer.clear();
+    mSendOffset = 0;
     mLastKeepAlive = std::chrono::steady_clock::now();
 
     return true;
@@ -207,6 +281,11 @@ void NetworkClient::doDisconnect() {
     mConnected = false;
     mAuthenticated = false;
     mReceiveBuffer.clear();
+    // Drop any unsent bytes — the fd is gone, and reconnection creates a new
+    // stream that must start clean (doConnect also clears, but clearing here
+    // keeps the state invariant true whenever mConnected is false).
+    mSendBuffer.clear();
+    mSendOffset = 0;
 }
 
 void NetworkClient::handleReconnect() {
@@ -248,7 +327,7 @@ void NetworkClient::processReceivedData() {
             break; // Incomplete length
         }
 
-        if (packetLength <= 0 || packetLength > 1048576) { // Max 1MB
+        if (packetLength <= 0 || packetLength > static_cast<int32_t>(ProtocolLimits::MAX_FRAME_LENGTH)) { // PROTO-002: unified 4 MiB ceiling
             doDisconnect();
             return;
         }
@@ -275,8 +354,16 @@ void NetworkClient::processReceivedData() {
             // Handle handshake response internally
             if (packet->getPacketId() == PacketIds::HANDSHAKE_RESPONSE) {
                 handleHandshakeResponse(static_cast<HandshakeResponsePacket&>(*packet));
+            } else if (packet->getPacketId() == PacketIds::HANDSHAKE_CHALLENGE) {
+                // AUTH-002: server's challenge. Drive the challenge-response
+                // here on the network thread; handleHandshakeChallenge queues
+                // the HandshakeAuthenticate reply via sendPacket so it leaves
+                // on the next sendLoop pass. Not forwarded to the incoming
+                // queue (it is a transport-layer handshake packet).
+                handleHandshakeChallenge(static_cast<HandshakeChallengePacket&>(*packet));
+                continue;
             }
-            
+
             // Queue for main thread processing
             mIncomingQueue.push(std::move(packet));
         }
@@ -296,6 +383,15 @@ std::unique_ptr<Packet> NetworkClient::decodePacket(PacketBuffer& buffer) {
     switch (packetId) {
         case PacketIds::HANDSHAKE_RESPONSE:
             packet = std::make_unique<HandshakeResponsePacket>();
+            break;
+        case PacketIds::HANDSHAKE_INIT:
+            packet = std::make_unique<HandshakeInitPacket>();
+            break;
+        case PacketIds::HANDSHAKE_CHALLENGE:
+            packet = std::make_unique<HandshakeChallengePacket>();
+            break;
+        case PacketIds::HANDSHAKE_AUTHENTICATE:
+            packet = std::make_unique<HandshakeAuthenticatePacket>();
             break;
         case PacketIds::CHAT_MESSAGE:
             packet = std::make_unique<ChatMessagePacket>();
@@ -334,14 +430,102 @@ std::unique_ptr<Packet> NetworkClient::decodePacket(PacketBuffer& buffer) {
 }
 
 void NetworkClient::sendLoop() {
-    while (auto packet = mOutgoingQueue.tryPop()) {
-        std::vector<uint8_t> data;
-        encodePacket(**packet, data);
+    // Drain the pending send buffer [mSendOffset, mSendBuffer.size()) directly
+    // to the socket. Returns one of:
+    //   Drained — buffer fully flushed and cleared;
+    //   Blocked — non-blocking send would block (EAGAIN/WSAEWOULDBLOCK),
+    //            residual retained for the next writable notification;
+    //   Fatal   — socket error (EPIPE/ECONNRESET/ENOTSOCK/...), caller
+    //            must disconnect.
+    enum class DrainResult { Drained, Blocked, Fatal };
 
-        std::lock_guard<std::mutex> lock(mSocketMutex);
-        if (mSocket != INVALID_SOCKET) {
-            send(mSocket, reinterpret_cast<const char*>(data.data()), static_cast<int>(data.size()), 0);
+    auto drain = [this]() -> DrainResult {
+        while (mSendOffset < mSendBuffer.size()) {
+            const size_t remaining = mSendBuffer.size() - mSendOffset;
+            auto sent = send(mSocket,
+                             reinterpret_cast<const char*>(mSendBuffer.data() + mSendOffset),
+                             static_cast<int>(remaining),
+                             0);
+            if (sent > 0) {
+                mSendOffset += static_cast<size_t>(sent);
+                continue;
+            }
+            // sent <= 0: distinguish backpressure from fatal errors.
+#ifdef _WIN32
+            const int err = WSAGetLastError();
+            if (err == WSAEWOULDBLOCK) {
+                return DrainResult::Blocked;
+            }
+            // WSAECONNRESET / WSAECONNABORTED / WSAENOTSOCK / WSAESHUTDOWN / ...
+            return DrainResult::Fatal;
+#else
+            // EINTR (signal interruption) is transient — retry the same send
+            // without dropping bytes or falling through to the fatal branch.
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return DrainResult::Blocked;
+            }
+            // EPIPE / ECONNRESET / ENOTSOCK / EBADF / ...
+            return DrainResult::Fatal;
+#endif
         }
+        // Fully flushed — drop the dead prefix and reset the offset.
+        mSendBuffer.clear();
+        mSendOffset = 0;
+        return DrainResult::Drained;
+    };
+
+    bool fatalError = false;
+    {
+        // Hold the socket lock for the whole pass so mSocket cannot be closed
+        // mid-drain. doDisconnect() is called *outside* this scope (after the
+        // guard releases) to avoid a self-deadlock on this non-recursive mutex.
+        std::lock_guard<std::mutex> lock(mSocketMutex);
+        if (mSocket == INVALID_SOCKET) {
+            return;
+        }
+
+        // Step 1: flush residual bytes from a prior short write / EAGAIN. If
+        // the kernel still won't take them, leave them buffered and wait for
+        // the next writable notification — do not pop new packets this pass.
+        DrainResult result = drain();
+        if (result == DrainResult::Fatal) {
+            fatalError = true;
+        } else if (result == DrainResult::Blocked) {
+            return;
+        }
+
+        // Step 2: residual is empty — pop new packets while below the high-water
+        // mark, appending each to the buffer and immediately attempting to flush.
+        // Stops on backpressure (residual retained), fatal error, empty queue, or
+        // when the high-water mark is reached (backpressure: remaining packets
+        // stay in mOutgoingQueue for the next sendLoop pass).
+        while (!fatalError &&
+               (mSendBuffer.size() - mSendOffset) < SEND_BUFFER_HIGH_WATER_MARK) {
+            auto packet = mOutgoingQueue.tryPop();
+            if (!packet) {
+                break;
+            }
+            std::vector<uint8_t> data;
+            encodePacket(**packet, data);
+            mSendBuffer.insert(mSendBuffer.end(), data.begin(), data.end());
+
+            result = drain();
+            if (result == DrainResult::Fatal) {
+                fatalError = true;
+                break;
+            }
+            if (result == DrainResult::Blocked) {
+                break;
+            }
+            // Drained: loop and pop the next packet.
+        }
+    } // mSocketMutex released
+
+    if (fatalError) {
+        doDisconnect();
     }
 }
 
@@ -362,20 +546,68 @@ void NetworkClient::encodePacket(const Packet& packet, std::vector<uint8_t>& out
 }
 
 void NetworkClient::sendHandshake() {
-    // SHA-256 hash the password (lowercase hex), matching Java's
-    // MessageDigest.getInstance("SHA-256") behaviour. Empty password stays empty.
-    std::string passwordHash;
-    if (!mPassword.empty()) {
-        passwordHash = novachat::util::Sha256::hex(mPassword);
+    // AUTH-002: protocol v3 challenge-response. Step 1 — send HandshakeInit
+    // (0x15) with a cryptographically-secure 16-byte client nonce (hex).
+    // The nonce is retained in mPendingClientNonce until the server's
+    // HandshakeChallenge arrives, at which point handleHandshakeChallenge
+    // computes the HMAC and sends HandshakeAuthenticate (0x17). The password
+    // is no longer sent as a static SHA-256 hash, closing the replay vector.
+    mPendingClientNonce.clear();
+
+    static constexpr size_t NONCE_BYTES = 16;
+    std::array<uint8_t, NONCE_BYTES> raw{};
+    // std::random_device is the standard CSPRNG-seeded source on MSVC (uses
+    // CryptGenRandom under the hood) and on libc++/libstdc++. Used only for
+    // the 16-byte nonce, never as a stream cipher keystream.
+    std::random_device rd;
+    for (size_t i = 0; i < NONCE_BYTES; ++i) {
+        raw[i] = static_cast<uint8_t>(rd());
     }
 
-    auto packet = std::make_unique<HandshakePacket>(
-        PROTOCOL_VERSION, // Protocol version 2 (v2 adds trailing serverVersion)
+    std::ostringstream oss;
+    oss << std::hex << std::setw(2) << std::setfill('0');
+    for (uint8_t b : raw) {
+        oss << static_cast<int>(b);
+    }
+    mPendingClientNonce = oss.str();
+
+    auto packet = std::make_unique<HandshakeInitPacket>(
+        PROTOCOL_VERSION, // Protocol version 3 (v3 AUTH-002 challenge-response)
         mUsername,
-        passwordHash,
         PlatformType::LEVILAMINA,
-        mServerVersion
+        mServerVersion,
+        mPendingClientNonce
     );
+    sendPacket(std::move(packet));
+}
+
+void NetworkClient::handleHandshakeChallenge(const HandshakeChallengePacket& challenge) {
+    // AUTH-002 step 2: the server replied with its nonce. Build the HMAC
+    // response keyed by sha256hex(password) over (serverNonce || clientNonce),
+    // matching the Java backend's HmacSHA256 expectation, and queue
+    // HandshakeAuthenticate (0x17). The pending client nonce is consumed and
+    // cleared; a missing/empty pending nonce means the init packet was never
+    // sent (or a duplicate challenge arrived) — bail out and let the server
+    // reject the (never-arriving) authenticate, which surfaces as a reconnect.
+    const std::string& serverNonce = challenge.getServerNonce();
+    if (mPendingClientNonce.empty()) {
+        return;
+    }
+
+    std::string key;
+    if (!mPassword.empty()) {
+        key = novachat::util::Sha256::hex(mPassword);
+    }
+
+    const std::string message = serverNonce + mPendingClientNonce;
+    const std::string hmac = novachat::util::HmacSha256::hex(key, message);
+
+    auto packet = std::make_unique<HandshakeAuthenticatePacket>(
+        mUsername,
+        mPendingClientNonce,
+        hmac
+    );
+    mPendingClientNonce.clear();
     sendPacket(std::move(packet));
 }
 

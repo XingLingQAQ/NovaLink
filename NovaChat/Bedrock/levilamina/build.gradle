@@ -117,6 +117,7 @@ tasks.register('xmakeBuild', Exec) {
     workingDir projectDir
     inputs.dir layout.projectDirectory.dir('src')
     inputs.file layout.projectDirectory.file('xmake.lua').asFile
+    inputs.dir layout.projectDirectory.dir('resources')
     outputs.dir layout.projectDirectory.dir('build').asFile
     onlyIf { xmakeAvailable }
     doFirst { if (!xmakeAvailable) logger.lifecycle(skipReason) }

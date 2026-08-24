@@ -4,7 +4,9 @@
 #include "../chat/ChatInterceptor.h"
 #include "../network/NetworkClient.h"
 #include "../protocol/Packet.h"
+#include "../protocol/PacketBuffer.h"
 #include "../i18n/I18n.h"
+#include "../util/Sha256.h"
 
 #include <ll/api/io/Logger.h>
 #include <ll/api/command/Command.h>
@@ -44,6 +46,23 @@ struct WhoParams {
 struct ToggleParams {};
 
 struct ReloadParams {};
+
+// FEATURE-002: /nc auth <password>. Player-only. The password is SHA-256
+// hashed (lowercase hex, matching the Java MessageDigest path) before it ever
+// leaves the client. The backend hasSuperAdminSession gate is the sole
+// authority on the resulting session — the client never tracks it locally.
+struct AuthParams {
+    std::string password;
+};
+
+// FEATURE-002: /nc announce <channel> <content>. Player + console. Sends an
+// AdminActionPacket(STATUS) with type=ANNOUNCE extra; the backend handleStatus
+// dispatch (handleAnnounce) broadcasts via routeMessage (0x03). Console/RCON
+// uses the all-zeros sentinel UUID + a "console"="true" extra.
+struct AnnounceParams {
+    std::string channelId;
+    std::string content;
+};
 
 CommandHandler::CommandHandler(NovaChatPlugin& plugin)
     : mPlugin(plugin) {}
@@ -167,6 +186,53 @@ void CommandHandler::registerCommands() {
             output.success();
         });
 
+    // /nc auth <password> — player-only. Hidden from /nc help (the help line
+    // is not appended for non-admins and the command has no usage hint in the
+    // standard help flow; it is surfaced only to admins via line_auth).
+    ncCommand.overload<AuthParams>()
+        .text("auth")
+        .required("password")
+        .execute([this](CommandOrigin const& origin, CommandOutput& output, AuthParams const& params) {
+            if (auto* player = origin.getEntity(); player && player->isPlayer()) {
+                auto* p = static_cast<Player*>(player);
+                handleAuth(p->getName(), p->getUuid().asString(),
+                           {params.password});
+            } else {
+                auto& i18n = i18n::I18n::getInstance();
+                output.error(i18n.get("chat.command.player_only", origin.getLocaleCode()));
+            }
+            output.success();
+        });
+
+    // /nc announce <channel> <content> — player + console/RCON. The content
+    // parameter is a single token here; multi-word content capture relies on
+    // LeviLamina's greedy string support, which needs host SDK verification
+    // (see the toolchain note in the final report).
+    ncCommand.overload<AnnounceParams>()
+        .text("announce")
+        .required("channelId")
+        .required("content")
+        .execute([this](CommandOrigin const& origin, CommandOutput& output, AnnounceParams const& params) {
+            std::string playerName;
+            std::string playerUuid;
+            bool isPlayer = false;
+            if (auto* entity = origin.getEntity(); entity && entity->isPlayer()) {
+                auto* p = static_cast<Player*>(entity);
+                playerName = p->getName();
+                playerUuid = p->getUuid().asString();
+                isPlayer = true;
+            } else {
+                // Console/RCON: use a stable display name and the all-zeros
+                // sentinel UUID so the backend (and our own
+                // handleAdminActionResponse) can recognise the console origin.
+                playerName = "Console";
+                playerUuid = "00000000-0000-0000-0000-000000000000";
+            }
+            handleAnnounce(playerName, playerUuid,
+                           {params.channelId, params.content, isPlayer ? "true" : "false"});
+            output.success();
+        });
+
     mCommandsRegistered = true;
     logger.info("Commands registered successfully.");
 }
@@ -209,6 +275,11 @@ void CommandHandler::handleHelp(const std::string& playerName, const std::string
     sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_list", locale)));
     sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_who", locale)));
     sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_toggle", locale)));
+    // FEATURE-002: /nc auth + /nc announce are only revealed to admins.
+    if (isAdmin) {
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_auth", locale)));
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_announce", locale)));
+    }
     // Mirror the Java/Python platforms: only reveal the reload line to admins.
     if (isAdmin) {
         sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_reload", locale)));
@@ -385,12 +456,15 @@ void CommandHandler::handleReload(const std::string& playerName, const std::stri
     if (auto* interceptor = mPlugin.getChatInterceptor()) {
         locale = interceptor->getPlayerLocale(playerUuid);
     }
-    std::string prefix = mPlugin.getConfig()->getPrefix();
-
-    if (mPlugin.getConfig()->reload()) {
+    if (mPlugin.reloadConfiguration()) {
+        std::string prefix = mPlugin.getConfig()->getPrefix();
         sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
             i18n.get("chat.command.reload.success", locale)));
     } else {
+        std::string prefix = mPlugin.getConfig()->getPrefix();
+        mPlugin.getSelf().getLogger().error(
+            "Configuration reload rejected; previous runtime values remain active: {}",
+            mPlugin.getConfig()->getLastError());
         sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
             i18n.get("chat.action.failed", locale)));
     }
@@ -420,6 +494,135 @@ void CommandHandler::sendMessage(const std::string& playerName, const std::strin
         }
         return true;
     });
+}
+
+// Parse a hyphenated Minecraft UUID string (xxxxxxxx-xxxx-xxxx-xxxx-
+// xxxxxxxxxxxx) into the protocol UUID struct. Mirrors the parse already used
+// in ChatInterceptor::sendToBackend. On any malformed input the nil UUID
+// (both bits zero) is returned, which the backend treats as the console
+// sentinel — so a bad player UUID degrades safely rather than masquerading as
+// another player.
+static protocol::UUID parsePlayerUuid(const std::string& playerUuid) {
+    protocol::UUID uuid{};
+    std::string hex = playerUuid;
+    hex.erase(std::remove(hex.begin(), hex.end(), '-'), hex.end());
+    if (hex.size() == 32 &&
+        hex.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos) {
+        uuid.mostSigBits  = std::stoull(hex.substr(0, 16),  nullptr, 16);
+        uuid.leastSigBits = std::stoull(hex.substr(16, 16), nullptr, 16);
+    }
+    return uuid;
+}
+
+void CommandHandler::handleAuth(const std::string& playerName, const std::string& playerUuid,
+                                const std::vector<std::string>& args) {
+    auto& i18n = i18n::I18n::getInstance();
+    std::string locale = "zh_CN";
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        locale = interceptor->getPlayerLocale(playerUuid);
+    }
+    std::string prefix = mPlugin.getConfig()->getPrefix();
+
+    // The /nc auth overload is declared .required("password"), so LeviLamina
+    // rejects an empty password before this lambda runs; this guard is pure
+    // defense and intentionally silent (there is no chat.auth.usage key in the
+    // FEATURE-002 i18n set, and reusing an unrelated key would mislead).
+    if (args.empty() || args[0].empty()) {
+        return;
+    }
+
+    auto* networkClient = mPlugin.getNetworkClient();
+    if (!networkClient || !networkClient->isConnected()) {
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.network.not_connected", locale)));
+        return;
+    }
+
+    // FEATURE-002: hash the password with SHA-256 lowercase hex before it
+    // leaves the client (parity with the Java MessageDigest path). The client
+    // never stores the hash or any super-admin session state — the backend
+    // hasSuperAdminSession gate is the sole authority.
+    std::string passwordHash = novachat::util::Sha256::hex(args[0]);
+
+    auto packet = std::make_unique<AdminActionPacket>();
+    packet->setAction(AdminAction::AUTH);
+    packet->setPlayerId(parsePlayerUuid(playerUuid));
+    packet->setPasswordHash(passwordHash);
+    packet->addExtra("playerName", playerName);
+
+    // Track the request so the async AdminActionResponse can be routed back
+    // to this player (handleAdminActionResponse pops by request UUID).
+    std::string reqId = packet->getRequestId().toString();
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        interceptor->registerPendingAdminAction(reqId, playerUuid);
+    }
+
+    networkClient->sendPacket(std::move(packet));
+
+    // Show PROGRESS, not success — the backend NC-403 gate is authoritative.
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+        i18n.get("chat.auth.progress", locale)));
+}
+
+void CommandHandler::handleAnnounce(const std::string& playerName, const std::string& playerUuid,
+                                    const std::vector<std::string>& args) {
+    auto& i18n = i18n::I18n::getInstance();
+    std::string locale = "zh_CN";
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        locale = interceptor->getPlayerLocale(playerUuid);
+    }
+    std::string prefix = mPlugin.getConfig()->getPrefix();
+
+    if (args.size() < 2 || args[0].empty() || args[1].empty()) {
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.announce.usage", locale)));
+        return;
+    }
+
+    std::string channelId = args[0];
+    std::string content = args[1];
+    bool isPlayer = (args.size() >= 3) ? (args[2] == "true") : true;
+
+    auto* networkClient = mPlugin.getNetworkClient();
+    if (!networkClient || !networkClient->isConnected()) {
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.network.not_connected", locale)));
+        return;
+    }
+
+    // Console/RCON uses the all-zeros sentinel UUID (both bits zero) plus a
+    // "console"="true" extra, matching the Java AnnounceCommand behaviour.
+    protocol::UUID playerId = isPlayer
+        ? parsePlayerUuid(playerUuid)
+        : protocol::UUID{};
+
+    auto packet = std::make_unique<AdminActionPacket>();
+    packet->setAction(AdminAction::STATUS);
+    packet->setPlayerId(playerId);
+    packet->setTarget(channelId);
+    packet->addExtra("type", "ANNOUNCE");
+    packet->addExtra("operatorName", playerName);
+    packet->addExtra("content", content);
+    if (!isPlayer) {
+        packet->addExtra("console", "true");
+    }
+
+    // Track the request so the async AdminActionResponse can be routed back
+    // (player UUID for in-game senders; the all-zeros sentinel string for
+    // console, which handleAdminActionResponse recognises as the console path).
+    std::string reqId = packet->getRequestId().toString();
+    std::string trackingUuid = isPlayer ? playerUuid
+                                        : "00000000-0000-0000-0000-000000000000";
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        interceptor->registerPendingAdminAction(reqId, trackingUuid);
+    }
+
+    networkClient->sendPacket(std::move(packet));
+
+    // Show PROGRESS, not success — the backend handleStatus/NC-403 gate is
+    // authoritative and the broadcast is only complete once routeMessage fires.
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+        i18n.get("chat.announce.progress", locale, {channelId})));
 }
 
 } // namespace novachat

@@ -16,6 +16,10 @@
   "chat.command.help.line_toggle": "&e/nc toggle &r- Toggle chat mode",
   "chat.command.help.line_reload": "&e/nc reload &r- Reload config",
   "chat.command.help.line_debug": "&e/nc debug &r- Toggle debug mode",
+  "chat.command.help.line_announce": "&e/nc announce <channel> <message> &r- Broadcast announcement",
+  "chat.command.help.line_auth": "&e/nc auth <password> &r- Super admin auth (hidden)",
+  "chat.command.usage.auth": "Usage: /nc auth <password>",
+  "chat.command.usage.announce": "Usage: /nc announce <channel> <message>",
   "chat.command.desc.help": "Show available commands",
   "chat.command.desc.join": "Join a channel",
   "chat.command.desc.leave": "Leave the current channel",
@@ -41,6 +45,9 @@
 
   "chat.mention.subtitle": "&7Mentioned you in channel &b{0}",
 
+  "chat.msg.sent": "&7You whisper to &e{0}&7: &f{1}",
+  "chat.msg.received": "&e{0} &7whispers to you: &f{1}",
+
   "chat.notice.kick_title": "&cYou have been kicked from the channel",
   "chat.notice.kick_subtitle": "&7Kicked from channel &b{1} &7by &e{0}",
   "chat.notice.kick_actionbar": "&cYou were kicked from channel {1} by {0}",
@@ -52,6 +59,14 @@
   "chat.action.failed": "Action failed",
   "chat.action.leave_simple": "Left channel &e{0}",
   "chat.action.already_default": "You are already in the default channel",
+
+  "chat.auth.progress": "Authenticating...",
+  "chat.auth.success": "Super admin authentication successful",
+  "chat.auth.failed": "Authentication failed",
+  "chat.announce.progress": "Sending announcement to channel &e{0}&7...",
+  "chat.announce.usage": "Usage: /nc announce <channel> <message>",
+  "chat.error.super_admin_required": "Super admin session required. Run /nc auth <password> first.",
+  "chat.error.super_admin_required_suggestion": "Authenticate with /nc auth <password>, then retry.",
 
   "chat.list.empty": "No known channels yet, waiting for the server to send the channel list",
 

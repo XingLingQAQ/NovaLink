@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace NovaChat\Command;
 
-use NovaChat\Chat\MessageRenderer;
 use NovaChat\NovaChatPlugin;
+use NovaChat\Protocol\AdminActionPacket;
 use NovaChat\Protocol\ChannelActionPacket;
 use pocketmine\command\Command;
 use pocketmine\command\CommandExecutor;
@@ -91,6 +91,7 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
             "toggle" => $this->handleToggle($sender),
             "mute" => $this->handleMute($sender, $args),
             "kick" => $this->handleKick($sender, $args),
+            "auth" => $this->handleAuth($sender, $args),
             "announce" => $this->handleAnnounce($sender, $args),
             "reload" => $this->handleReload($sender),
             "debug" => $this->handleDebug($sender),
@@ -162,7 +163,7 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
             $sender->sendMessage(TextFormat::GRAY . "/nc kick <player>" . TextFormat::WHITE . " - Kick player from channel");
         }
         if ($sender->hasPermission("novachat.admin.announce")) {
-            $sender->sendMessage(TextFormat::GRAY . "/nc announce <message>" . TextFormat::WHITE . " - Send announcement");
+            $sender->sendMessage(TextFormat::GRAY . "/nc announce <channel> <message>" . TextFormat::WHITE . " - Send announcement");
         }
         if ($sender->hasPermission("novachat.admin.reload")) {
             $sender->sendMessage(TextFormat::GRAY . "/nc reload" . TextFormat::WHITE . " - Reload configuration");
@@ -376,9 +377,16 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
             return true;
         }
         
-        $this->plugin->reload();
-        $prefix = $this->plugin->getConfigManager()->getPrefix();
-        $sender->sendMessage($prefix . TextFormat::GREEN . "Configuration reloaded.");
+        if ($this->plugin->reload()) {
+            $prefix = $this->plugin->getConfigManager()->getPrefix();
+            $sender->sendMessage($prefix . TextFormat::GREEN . "Configuration reloaded.");
+        } else {
+            $prefix = $this->plugin->getConfigManager()->getPrefix();
+            $sender->sendMessage(
+                $prefix . TextFormat::RED
+                . "Configuration reload rejected. Check the server log for the reason."
+            );
+        }
         
         return true;
     }
@@ -492,7 +500,9 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
         
         $targetName = $args[0];
         $chatHandler = $this->plugin->getChatHandler();
-        $currentChannel = $chatHandler !== null ? $chatHandler->getPlayerChannel($sender) : "local";
+        $currentChannel = $chatHandler !== null
+            ? $chatHandler->getPlayerChannel($sender)
+            : $this->plugin->getConfigManager()->getDefaultChannel();
         
         $networkClient = $this->plugin->getNetworkClient();
         if ($networkClient !== null && $networkClient->isAuthenticated()) {
@@ -657,10 +667,84 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
     }
     
     /**
-     * Handles the announce subcommand.
-     * 
+     * Console sentinel UUID. The backend AdminActionHandler reads playerId as
+     * the admin identity. Console has no Player UUID, so (mirroring the Java
+     * AnnounceCommand console path) we send the nil UUID and tag the request
+     * with extra["console"]="true" so the backend can attribute the action.
+     */
+    private const CONSOLE_SENTINEL_UUID = "00000000-0000-0000-0000-000000000000";
+
+    /**
+     * Handles the auth subcommand.
+     *
+     * Sends an AdminAction AUTH packet to the backend carrying the SHA-256
+     * (lowercase hex) of the typed password. The backend is the SOLE arbiter
+     * of super-admin session state — this client never tracks auth locally
+     * (mirrors the bukkit AuthCommand posture). Result is shown only when the
+     * backend's AdminActionResponse arrives; on send we show progress.
+     *
+     * Player-only: console cannot authenticate as a super admin (no player
+     * UUID to bind the session to).
+     *
      * @param CommandSender $sender Command sender
-     * @param array $args Arguments
+     * @param array $args Arguments (args[0] = password)
+     * @return bool True
+     */
+    private function handleAuth(CommandSender $sender, array $args): bool {
+        if (!$sender instanceof Player) {
+            $sender->sendMessage(TextFormat::RED . "This command can only be used by players.");
+            return true;
+        }
+
+        if (count($args) === 0) {
+            $sender->sendMessage(TextFormat::RED . "Usage: /nc auth <password>");
+            return true;
+        }
+
+        $password = (string) $args[0];
+        // PHP hash() returns lowercase hex by default — matches Java's
+        // Integer.toHexString(0xff & b) zero-padded lowercase output.
+        $passwordHash = hash("sha256", $password);
+
+        $networkClient = $this->plugin->getNetworkClient();
+        if ($networkClient === null || !$networkClient->isAuthenticated()) {
+            $sender->sendMessage(TextFormat::RED . "Not connected to backend server.");
+            return true;
+        }
+
+        $packet = new AdminActionPacket();
+        $packet->action = AdminActionPacket::ACTION_AUTH;
+        $packet->playerId = $sender->getUniqueId()->toString();
+        $packet->passwordHash = $passwordHash;
+        $packet->target = "";
+        $packet->extra = [
+            "playerName" => $sender->getName(),
+        ];
+
+        // Register the requestId -> player UUID correlation before send so the
+        // eventual AdminActionResponse can be routed back to this player.
+        $networkClient->sendAdminAction($packet, $sender->getUniqueId()->toString());
+
+        $prefix = $this->plugin->getConfigManager()->getPrefix();
+        $sender->sendMessage($prefix . TextFormat::YELLOW . "Authenticating...");
+        return true;
+    }
+
+    /**
+     * Handles the announce subcommand.
+     *
+     * Sends an AdminAction STATUS packet with extra["type"]="ANNOUNCE" to the
+     * backend (the backend handleStatus gate checks super-admin session, then
+     * dispatches to handleAnnounce which reads target=channelId + content +
+     * operatorName). The obsolete 0x0A AnnouncementPacket is deprecated and no
+     * longer sent. Result is shown only when the backend's
+     * AdminActionResponse arrives; on send we show progress.
+     *
+     * Console is allowed (playerId = sentinel UUID + extra["console"]="true"),
+     * mirroring the Java AnnounceCommand console path.
+     *
+     * @param CommandSender $sender Command sender
+     * @param array $args Arguments (args[0] = channelId, args[1+] = message)
      * @return bool True
      */
     private function handleAnnounce(CommandSender $sender, array $args): bool {
@@ -668,29 +752,52 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
             $sender->sendMessage(TextFormat::RED . "You don't have permission to send announcements.");
             return true;
         }
-        
-        if (count($args) === 0) {
-            $sender->sendMessage(TextFormat::RED . "Usage: /nc announce <message>");
+
+        if (count($args) < 2) {
+            $sender->sendMessage(TextFormat::RED . "Usage: /nc announce <channel> <message>");
             return true;
         }
-        
-        $message = implode(" ", $args);
-        
-        $networkClient = $this->plugin->getNetworkClient();
-        if ($networkClient !== null && $networkClient->isAuthenticated()) {
-            // Send announcement packet to backend
-            $packet = new \NovaChat\Protocol\AnnouncementPacket();
-            $packet->announcementId = uniqid("announce_", true);
-            $packet->content = $message;
-            $packet->type = \NovaChat\Protocol\AnnouncementPacket::TYPE_CHAT;
-            $networkClient->sendPacket($packet);
 
-            $prefix = $this->plugin->getConfigManager()->getPrefix();
-            $sender->sendMessage($prefix . TextFormat::GREEN . "Announcement sent.");
-        } else {
+        $channelId = (string) $args[0];
+        $content = implode(" ", array_slice($args, 1));
+
+        $networkClient = $this->plugin->getNetworkClient();
+        if ($networkClient === null || !$networkClient->isAuthenticated()) {
             $sender->sendMessage(TextFormat::RED . "Not connected to backend server.");
+            return true;
         }
-        
+
+        if ($sender instanceof Player) {
+            $playerId = $sender->getUniqueId()->toString();
+            $extra = [
+                "type" => "ANNOUNCE",
+                "operatorName" => $sender->getName(),
+                "content" => $content,
+            ];
+        } else {
+            // Console: no Player UUID — use the sentinel and tag as console so
+            // the backend attributes the announcement to the console operator.
+            $playerId = self::CONSOLE_SENTINEL_UUID;
+            $extra = [
+                "type" => "ANNOUNCE",
+                "operatorName" => $sender->getName(),
+                "content" => $content,
+                "console" => "true",
+            ];
+        }
+
+        $packet = new AdminActionPacket();
+        $packet->action = AdminActionPacket::ACTION_STATUS;
+        $packet->playerId = $playerId;
+        $packet->passwordHash = "";
+        $packet->target = $channelId;
+        $packet->extra = $extra;
+
+        // Register requestId -> playerId correlation before send.
+        $networkClient->sendAdminAction($packet, $playerId);
+
+        $prefix = $this->plugin->getConfigManager()->getPrefix();
+        $sender->sendMessage($prefix . TextFormat::YELLOW . "Sending announcement to channel " . $channelId . "...");
         return true;
     }
     

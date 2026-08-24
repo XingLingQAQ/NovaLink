@@ -17,14 +17,16 @@ from typing import TYPE_CHECKING, Dict, Optional, Any
 from novachat_endstone.protocol.packet import (
     PacketIds,
     ChannelAction,
+    AdminAction,
     ChatMessagePacket,
-    AnnouncementPacket,
     TitleMessagePacket,
     ChannelActionPacket,
     ChannelActionResponsePacket,
+    AdminActionResponsePacket,
     ConfigSyncPacket,
     MentionPacket,
     ItemDisplayPacket,
+    PrivateMessagePacket,
 )
 
 if TYPE_CHECKING:
@@ -106,9 +108,13 @@ class ChatHandler:
             PacketIds.CHAT_MESSAGE,
             self._handle_chat_message
         )
+        # FEATURE-002: the legacy ANNOUNCEMENT (0x0A) handler is gone. The
+        # backend never sends 0x0A; announcements arrive as AdminAction STATUS
+        # type=ANNOUNCE responses on ADMIN_ACTION_RESPONSE (0x0C), correlated
+        # by request_id against _pending_actions.
         self._network_client.register_handler(
-            PacketIds.ANNOUNCEMENT,
-            self._handle_announcement
+            PacketIds.ADMIN_ACTION_RESPONSE,
+            self._handle_admin_action_response
         )
         self._network_client.register_handler(
             PacketIds.TITLE,
@@ -129,6 +135,10 @@ class ChatHandler:
         self._network_client.register_handler(
             PacketIds.ITEM_DISPLAY,
             self._handle_item_display
+        )
+        self._network_client.register_handler(
+            PacketIds.PRIVATE_MESSAGE,
+            self._handle_private_message
         )
     
     def on_player_chat(self, event: Any) -> None:
@@ -280,38 +290,82 @@ class ChatHandler:
             # Fallback to all online players
             try:
                 recipients = list(self._plugin.server.online_players)
-            except Exception:
+            except Exception as e:
+                self._logger.debug(f"Fallback recipient list also failed: {e}")
                 pass
         
         return recipients
     
-    def _handle_announcement(self, packet: AnnouncementPacket) -> None:
+    def _handle_admin_action_response(self, packet: AdminActionResponsePacket) -> None:
         """
-        Handle incoming announcements from the backend.
-        
-        Args:
-            packet: The announcement packet
+        Route an AdminActionResponse back to the requesting player.
+
+        FEATURE-002: the backend gates STATUS (ANNOUNCE/TITLE) behind
+        ``permissionManager.hasSuperAdminSession`` and returns NC-403 when the
+        sender lacks an active super-admin session. The client does NOT track
+        super-admin session state locally (only the handshake-level
+        ``NetworkClient.is_authenticated`` flag exists), so the "run /nc auth"
+        guidance can only be surfaced here, on the async NC-403 response path
+        — never pre-emptively at send time.
+
+        Correlation is by request_id (written into the frame by
+        ``NetworkClient.send_packet`` and stamped back onto the decoded
+        response packet by ``NetworkClient._read_packet``), mirroring the
+        bukkit ``pendingAdminRequests`` flow.
         """
         try:
-            # Format announcement with type-specific styling
-            announcement_styles = {
-                0: "§6[公告] §f",  # Normal
-                1: "§c[紧急] §f",  # Urgent
-                2: "§a[系统] §f",  # System
-            }
-            prefix = announcement_styles.get(packet.announcement_type, "§6[公告] §f")
-            formatted = f"{prefix}{packet.message}"
-            
-            # Broadcast announcement to all players
-            for player in self._plugin.server.online_players:
-                try:
-                    player.send_message(formatted)
-                except Exception as e:
-                    self._logger.error(f"Failed to send announcement to {player.name}: {e}")
-                    
+            request_id = str(getattr(packet, "request_id", ""))
+            player_uuid = self._pending_actions.pop(request_id, None)
+            if not player_uuid:
+                self._logger.debug(
+                    f"AdminActionResponse with no pending request: action={packet.action}"
+                )
+                return
+
+            locale = self._player_locales.get(player_uuid, "zh_CN")
+
+            if packet.success:
+                # Prefer the backend's message; fall back to a generic ack.
+                msg = (
+                    packet.message
+                    if packet.message
+                    else self._i18n.get("chat.action.success", locale)
+                )
+            elif (
+                packet.action == AdminAction.STATUS
+                and packet.error_code == "NC-403"
+            ):
+                # Super-admin-session-required path: surface the auth
+                # guidance instead of the generic NC-403 "permission denied"
+                # text. Mirrors bukkit's isSuperAdminRequired branch.
+                msg = (
+                    self._i18n.get("chat.error.super_admin_required", locale)
+                    + " "
+                    + self._i18n.get(
+                        "chat.error.super_admin_required_suggestion", locale
+                    )
+                )
+            else:
+                msg = self._i18n.error_message(packet.error_code, locale)
+
+            self._send_to_player_by_uuid(player_uuid, msg)
         except Exception as e:
-            self._logger.error(f"Error handling announcement: {e}")
-    
+            self._logger.error(f"Error handling admin action response: {e}")
+
+    def register_pending_admin_action(
+        self, request_id: str, player_uuid: str
+    ) -> None:
+        """
+        Register a pending AdminAction request so the async response can be
+        routed back to the originating player by request_id.
+
+        Reuses the shared ``_pending_actions`` map (request_id -> player_uuid)
+        that ChannelActionResponse already uses, since both response types
+        carry a frame-level request_id and target a single player.
+        """
+        if request_id:
+            self._pending_actions[request_id] = player_uuid
+
     def _handle_title_message(self, packet: TitleMessagePacket) -> None:
         """
         Handle incoming title messages from the backend.
@@ -382,19 +436,79 @@ class ChatHandler:
         """
         Receive backend channel config sync -> update local known channel registry.
 
-        The configJson contains the channel list the backend wants this client to know.
+        Mirrors the Java ``ConfigSyncChannels.extract`` contract: the known
+        channel set is the union of ``global_channels`` keys and the
+        ``channels`` keys of the ``clients[]`` entry whose ``username`` matches
+        this client's configured backend username. Only the KNOWN channel
+        registry is touched; the active per-player channel
+        (``self._player_channels``) is never overwritten.
+
+        Parsing is best-effort: a bad payload or wrong type logs a warning and
+        leaves the existing registry intact rather than raising.
         """
+        import json
+
+        username = ""
         try:
-            import json
+            username = self._config_manager.backend_username
+        except Exception as e:  # config not loaded / missing key
+            self._logger.warning(f"ConfigSync: could not read backend username: {e}")
+
+        try:
             data = json.loads(packet.config_json or "{}")
-            channels = data.get("channels", [])
-            self._known_channels = [
-                (c.get("id", c) if isinstance(c, dict) else str(c))
-                for c in channels
-            ]
+            if not isinstance(data, dict):
+                self._logger.warning(
+                    f"ConfigSync: expected JSON object, got {type(data).__name__}"
+                )
+                return
+
+            channels: set[str] = set()
+
+            # Global channels: keys of the global_channels mapping.
+            globals_obj = data.get("global_channels")
+            if isinstance(globals_obj, dict):
+                channels.update(str(k) for k in globals_obj.keys())
+            elif globals_obj is not None:
+                self._logger.warning(
+                    f"ConfigSync: global_channels must be an object, got "
+                    f"{type(globals_obj).__name__}"
+                )
+
+            # Per-client channels for this client only (null/blank username
+            # -> globals only, matching the Java extractor).
+            if username and username.strip():
+                clients = data.get("clients")
+                if isinstance(clients, list):
+                    for entry in clients:
+                        if not isinstance(entry, dict):
+                            continue
+                        entry_username = entry.get("username")
+                        if not isinstance(entry_username, str):
+                            continue
+                        if entry_username != username:
+                            continue
+                        client_channels = entry.get("channels")
+                        if isinstance(client_channels, dict):
+                            channels.update(str(k) for k in client_channels.keys())
+                        elif client_channels is not None:
+                            self._logger.warning(
+                                f"ConfigSync: client.channels must be an object, "
+                                f"got {type(client_channels).__name__}"
+                            )
+                        break
+                elif clients is not None:
+                    self._logger.warning(
+                        f"ConfigSync: clients must be an array, got "
+                        f"{type(clients).__name__}"
+                    )
+
+            # Sorted for deterministic ordering (/nc list, tab completion).
+            self._known_channels = sorted(channels)
             self._logger.debug(
                 f"ConfigSync: updated known channels ({len(self._known_channels)})"
             )
+        except json.JSONDecodeError as e:
+            self._logger.warning(f"ConfigSync: malformed config JSON: {e}")
         except Exception as e:
             self._logger.error(f"Error handling config sync: {e}")
 
@@ -412,12 +526,14 @@ class ChatHandler:
             if player:
                 try:
                     player.send_title("§b§l@", subtitle, 10, 40, 20)
-                except Exception:
+                except Exception as e:
+                    self._logger.debug(f"Failed to send title to player: {e}")
                     pass
                 # Best-effort sound notification
                 try:
                     player.play_sound("random.orb", 1.0, 1.0)
-                except Exception:
+                except Exception as e:
+                    self._logger.debug(f"Failed to play sound: {e}")
                     pass
         except Exception as e:
             self._logger.error(f"Error handling mention: {e}")
@@ -434,10 +550,63 @@ class ChatHandler:
                     player.send_message(
                         f"§7{packet.sender_name} §f[§bitem§f]§7: {packet.item_json}"
                     )
-                except Exception:
+                except Exception as e:
+                    self._logger.debug(f"Failed to send message to player: {e}")
                     pass
         except Exception as e:
             self._logger.error(f"Error handling item display: {e}")
+
+    def _handle_private_message(self, packet: PrivateMessagePacket) -> None:
+        """
+        Receive-side rendering of an inbound private message (0x14).
+
+        The backend delivers a completed PrivateMessagePacket to BOTH the
+        sender's client (echo) and the target's client. When the local player
+        matches sender_id we render the "sent" line; when it matches target_id
+        (and target_id != sender_id) we render the "received" line. Private
+        chat is per-player directed, so this never broadcasts to a channel.
+
+        Endstone send_message emits the raw string (no & -> § conversion),
+        matching the idiom used by _handle_chat_message / _handle_item_display.
+        """
+        try:
+            nil_uuid = "00000000-0000-0000-0000-000000000000"
+            sender_uuid = str(packet.sender_id)
+            target_uuid = str(packet.target_id)
+
+            # Echo line: this local player is the sender.
+            if sender_uuid and sender_uuid != nil_uuid:
+                player = self._find_player_by_uuid(sender_uuid)
+                if player:
+                    locale = self._player_locales.get(sender_uuid, "zh_CN")
+                    message = self._i18n.get(
+                        "chat.msg.sent", locale, packet.target_name, packet.content
+                    )
+                    try:
+                        player.send_message(message)
+                    except Exception as e:
+                        self._logger.debug(f"Failed to send echo to player: {e}")
+                        pass
+
+            # Received line: this local player is the (distinct) target.
+            if (
+                target_uuid
+                and target_uuid != nil_uuid
+                and target_uuid != sender_uuid
+            ):
+                player = self._find_player_by_uuid(target_uuid)
+                if player:
+                    locale = self._player_locales.get(target_uuid, "zh_CN")
+                    message = self._i18n.get(
+                        "chat.msg.received", locale, packet.sender_name, packet.content
+                    )
+                    try:
+                        player.send_message(message)
+                    except Exception as e:
+                        self._logger.debug(f"Failed to send private msg to player: {e}")
+                        pass
+        except Exception as e:
+            self._logger.error(f"Error handling private message: {e}")
 
     def _send_to_player_by_uuid(self, player_uuid: str, message: str) -> None:
         """Send a message to a player by UUID (best-effort)."""
@@ -454,7 +623,8 @@ class ChatHandler:
             for player in self._plugin.server.online_players:
                 if str(player.unique_id) == player_uuid:
                     return player
-        except Exception:
+        except Exception as e:
+            self._logger.debug(f"Player lookup failed: {e}")
             pass
         return None
     
@@ -655,11 +825,13 @@ class ChatHandler:
         if player:
             try:
                 player.send_title(title, subtitle, 10, 70, 20)
-            except Exception:
+            except Exception as e:
+                self._logger.debug(f"Failed to send title to player: {e}")
                 pass
             try:
                 player.send_tip(actionbar)
-            except Exception:
+            except Exception as e:
+                self._logger.debug(f"Failed to send tip: {e}")
                 pass
 
     def notify_mute_target(
@@ -685,11 +857,13 @@ class ChatHandler:
         if player:
             try:
                 player.send_title(title, subtitle, 10, 70, 20)
-            except Exception:
+            except Exception as e:
+                self._logger.debug(f"Failed to send title to player: {e}")
                 pass
             try:
                 player.send_tip(actionbar)
-            except Exception:
+            except Exception as e:
+                self._logger.debug(f"Failed to send tip: {e}")
                 pass
     
     def on_player_join(self, player: Any) -> None:
@@ -724,7 +898,8 @@ class ChatHandler:
             client_locale = (getattr(player, "locale", None) or "").strip()
             if client_locale:
                 locale = self._normalize_locale(str(client_locale))
-        except Exception:
+        except Exception as e:
+            self._logger.debug(f"Locale read failed: {e}")
             pass
         self._player_locales[player_uuid] = locale
 

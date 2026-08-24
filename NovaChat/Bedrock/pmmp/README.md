@@ -19,11 +19,14 @@ Cross-server chat system for PocketMine-MP Bedrock servers.
 ## Configuration
 
 ```yaml
+config-version: 1
+
 backend:
   host: "127.0.0.1"
   port: 8888
   username: "PMMP_Server"
   password: "your-password-here"
+  server-version: "5.0.0"
   reconnect-delay: 5
 
 chat:

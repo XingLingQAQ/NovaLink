@@ -263,12 +263,44 @@ class PacketBuffer {
     
     /**
      * Reads a string from the buffer (VarInt length prefix + UTF-8 bytes).
-     * 
+     *
+     * PROTO-003: this overload is the bounded counterpart to the JVM
+     * `PacketBuffer.readString(buf, max)`. PHP has no arity overloading, so
+     * the optional `$maxLength` parameter selects the path:
+     *   - `readString()` / `readString(null)` preserves the legacy unbounded
+     *     path for backward compatibility (e.g. golden-byte decoders that
+     *     read arbitrary fields, and any external callers that do not yet
+     *     bound their fields).
+     *   - `readString($maxLength)` bounds the declared wire length before any
+     *     bytes are allocated, mirroring the JVM contract. An oversized field
+     *     is rejected with an `InvalidArgumentException` whose message contains
+     *     `"exceeds maximum"` so the non-JVM forks stay byte-for-byte
+     *     consistent with the Java error contract.
+     *
+     * A hard cap at `ProtocolLimits::MAX_FRAME_LENGTH` applies on both paths,
+     * mirroring the JVM `Varint21FrameDecoder` ceiling, so an absurd declared
+     * length is rejected before the `substr()` allocation.
+     *
+     * @param int|null $maxLength Optional maximum UTF-8 byte length for this field.
      * @return string The string value
+     * @throws InvalidArgumentException If the declared length is negative,
+     *         exceeds `MAX_FRAME_LENGTH`, exceeds `$maxLength` (when given),
+     *         or exceeds the remaining bytes.
      */
-    public function readString(): string {
+    public function readString(?int $maxLength = null): string {
         $length = $this->readVarInt();
-        if ($length < 0 || $this->remaining() < $length) {
+        // Hard cap at the frame ceiling so an absurd declared length is
+        // rejected before the `remaining()` / substr() path is reached,
+        // mirroring the JVM Varint21FrameDecoder ceiling.
+        if ($length < 0 || $length > ProtocolLimits::MAX_FRAME_LENGTH) {
+            throw new InvalidArgumentException("Invalid string length: $length");
+        }
+        if ($maxLength !== null && $length > $maxLength) {
+            throw new InvalidArgumentException(
+                "String length $length exceeds maximum $maxLength"
+            );
+        }
+        if ($this->remaining() < $length) {
             throw new InvalidArgumentException("Invalid string length: $length");
         }
         $value = substr($this->buffer, $this->position, $length);

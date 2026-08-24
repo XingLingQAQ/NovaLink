@@ -22,6 +22,7 @@ abstract class Packet {
     public const KEEP_ALIVE = 0x07;
     public const PLAYER_STATE = 0x08;
     public const TITLE = 0x09;
+    /** @deprecated 0x0A AnnouncementPacket is obsolete; announcements now ride AdminAction STATUS + type=ANNOUNCE. Kept for protocol-history reference only — no factory arm, so an incoming 0x0A is treated as unknown. */
     public const ANNOUNCEMENT = 0x0A;
     public const ADMIN_ACTION = 0x0B;
     public const ADMIN_ACTION_RESPONSE = 0x0C;
@@ -29,6 +30,14 @@ abstract class Packet {
     public const ITEM_DISPLAY = 0x10;
     public const MENTION = 0x12;
     public const PRIVATE_MESSAGE = 0x14;
+
+    // ==================== Challenge-response handshake (AUTH-002) ====================
+    /** Handshake init (Client → Server). */
+    public const HANDSHAKE_INIT = 0x15;
+    /** Handshake challenge (Server → Client). */
+    public const HANDSHAKE_CHALLENGE = 0x16;
+    /** Handshake authenticate (Client → Server). */
+    public const HANDSHAKE_AUTHENTICATE = 0x17;
 
     // Alias for backward compatibility
     public const TITLE_MESSAGE = self::TITLE;
@@ -126,12 +135,18 @@ abstract class Packet {
             self::KEEP_ALIVE => new KeepAlivePacket(),
             self::CHANNEL_UPDATE => new ChannelUpdatePacket(),
             self::TITLE => new TitleMessagePacket(),
-            self::ANNOUNCEMENT => new AnnouncementPacket(),
+            // 0x0A AnnouncementPacket is deprecated and removed from the
+            // factory: announcements are now sent as AdminAction STATUS with
+            // type=ANNOUNCE, so the obsolete 0x0A wire id is treated as an
+            // unknown packet by fromBytes().
             self::ADMIN_ACTION => new AdminActionPacket(),
             self::ADMIN_ACTION_RESPONSE => new AdminActionResponsePacket(),
             self::ITEM_DISPLAY => new ItemDisplayPacket(),
             self::MENTION => new MentionPacket(),
             self::PRIVATE_MESSAGE => new PrivateMessagePacket(),
+            self::HANDSHAKE_INIT => new HandshakeInitPacket(),
+            self::HANDSHAKE_CHALLENGE => new HandshakeChallengePacket(),
+            self::HANDSHAKE_AUTHENTICATE => new HandshakeAuthenticatePacket(),
             default => null,
         };
     }

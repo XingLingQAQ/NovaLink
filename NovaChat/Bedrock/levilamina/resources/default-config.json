@@ -1,0 +1,27 @@
+{
+    "config-version": 1,
+    "backend": {
+        "host": "127.0.0.1",
+        "port": 18888,
+        "username": "LeviLamina_Server",
+        "password": "your-password-here",
+        "server_version": "1.21.0",
+        "reconnect_delay": 5
+    },
+    "chat": {
+        "replace_vanilla": false,
+        "default_channel": "local"
+    },
+    "format": {
+        "prefix": "§8[§bNovaChat§8]§r ",
+        "error": "§c错误: {message}",
+        "success": "§a成功: {message}",
+        "default": "§7[{channel_name}] {player}§f: {message}",
+        "channels": {
+            "global": "§c[全服] §7{player}§f: {message}",
+            "local": "§e[本地] §7{player}§f: {message}",
+            "private_default": "§d[私聊] §7{player}§f: {message}"
+        }
+    },
+    "debug": false
+}

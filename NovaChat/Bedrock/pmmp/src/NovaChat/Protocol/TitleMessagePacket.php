@@ -41,9 +41,9 @@ class TitleMessagePacket extends Packet {
     }
     
     public function decode(PacketBuffer $buffer): void {
-        $this->channelId = $buffer->readString();
-        $this->title = $buffer->readString();
-        $this->subtitle = $buffer->readString();
+        $this->channelId = $buffer->readString(ProtocolLimits::MAX_CHANNEL_ID);
+        $this->title = $buffer->readString(ProtocolLimits::MAX_TITLE);
+        $this->subtitle = $buffer->readString(ProtocolLimits::MAX_SUBTITLE);
         $this->fadeIn = $buffer->readInt();
         $this->stay = $buffer->readInt();
         $this->fadeOut = $buffer->readInt();

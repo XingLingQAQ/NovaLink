@@ -28,7 +28,7 @@ class ConfigSyncPacket extends Packet {
     }
 
     public function decode(PacketBuffer $buffer): void {
-        $this->configJson = $buffer->readString();
+        $this->configJson = $buffer->readString(ProtocolLimits::MAX_CONFIG_SYNC_JSON);
         $this->timestamp = $buffer->readLong();
     }
 }

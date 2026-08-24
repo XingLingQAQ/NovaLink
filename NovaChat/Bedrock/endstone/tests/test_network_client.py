@@ -23,6 +23,8 @@ def make_client() -> NetworkClient:
         port=1,
         username="test",
         password="secret",
+        server_version="test",
+        reconnect_delay=1,
     )
 
 

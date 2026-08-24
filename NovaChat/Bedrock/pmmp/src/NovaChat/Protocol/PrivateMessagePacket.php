@@ -48,11 +48,11 @@ class PrivateMessagePacket extends Packet {
 
     public function decode(PacketBuffer $buffer): void {
         $this->senderId = $buffer->readUUID();
-        $this->senderName = $buffer->readString();
-        $this->senderClientId = $buffer->readString();
-        $this->targetName = $buffer->readString();
+        $this->senderName = $buffer->readString(ProtocolLimits::MAX_SENDER_NAME);
+        $this->senderClientId = $buffer->readString(ProtocolLimits::MAX_CLIENT_ID);
+        $this->targetName = $buffer->readString(ProtocolLimits::MAX_TARGET_NAME);
         $this->targetId = $buffer->readUUID();
-        $this->content = $buffer->readString();
+        $this->content = $buffer->readString(ProtocolLimits::MAX_MESSAGE_CONTENT);
         $this->timestamp = $buffer->readLong();
     }
 }

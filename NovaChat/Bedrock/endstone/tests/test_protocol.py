@@ -14,6 +14,7 @@ from hypothesis import given, strategies as st, settings
 
 from novachat_endstone.protocol.varint import VarInt
 from novachat_endstone.protocol.buffer import PacketBuffer
+from novachat_endstone.protocol import protocol_limits as _pl
 from novachat_endstone.protocol.packet import (
     PacketIds,
     ChannelAction,
@@ -26,7 +27,6 @@ from novachat_endstone.protocol.packet import (
     ChannelActionResponsePacket,
     ConfigSyncPacket,
     KeepAlivePacket,
-    AnnouncementPacket,
     TitleMessagePacket,
     ChannelUpdatePacket,
     AdminActionPacket,
@@ -34,6 +34,20 @@ from novachat_endstone.protocol.packet import (
     ItemDisplayPacket,
     MentionPacket,
 )
+
+
+def _bounded_text(byte_limit: int, min_size: int = 1):
+    """Printable text whose UTF-8 byte length is <= ``byte_limit``.
+
+    PROTO-003 bounds each string field by its on-wire UTF-8 byte count, so the
+    property tests must generate inputs that fit that byte budget. ``st.text``
+    bounds by *character* count, which lets multibyte chars (e.g. ``\\u0800``
+    is 3 bytes) overrun the field limit. Filtering by ``len(x.encode("utf-8"))``
+    keeps the unicode coverage while honouring the wire bound.
+    """
+    return st.text(min_size=min_size, max_size=byte_limit).filter(
+        lambda x: x.isprintable() and len(x.encode("utf-8")) <= byte_limit
+    )
 
 
 class TestVarInt:
@@ -168,10 +182,10 @@ class TestPacketProperties:
     
     @given(
         protocol_version=st.integers(min_value=1, max_value=100),
-        client_id=st.text(min_size=1, max_size=50).filter(lambda x: x.isprintable()),
-        password_hash=st.text(min_size=1, max_size=64).filter(lambda x: x.isprintable()),
+        client_id=_bounded_text(_pl.MAX_CLIENT_ID),
+        password_hash=_bounded_text(_pl.MAX_PASSWORD_HASH),
         platform=st.integers(min_value=0, max_value=255),
-        server_version=st.text(min_size=0, max_size=16).filter(lambda x: x.isprintable()),
+        server_version=_bounded_text(_pl.MAX_SERVER_VERSION, min_size=0),
     )
     @settings(max_examples=100)
     def test_handshake_packet_round_trip(
@@ -234,10 +248,10 @@ class TestPacketProperties:
         assert decoded.timestamp == original.timestamp
     
     @given(
-        sender_name=st.text(min_size=1, max_size=16).filter(lambda x: x.isprintable()),
-        client_id=st.text(min_size=1, max_size=50).filter(lambda x: x.isprintable()),
-        channel_id=st.text(min_size=1, max_size=50).filter(lambda x: x.isprintable()),
-        content=st.text(min_size=0, max_size=256).filter(lambda x: x.isprintable())
+        sender_name=_bounded_text(_pl.MAX_SENDER_NAME),
+        client_id=_bounded_text(_pl.MAX_CLIENT_ID),
+        channel_id=_bounded_text(_pl.MAX_CHANNEL_ID),
+        content=_bounded_text(_pl.MAX_MESSAGE_CONTENT, min_size=0),
     )
     @settings(max_examples=100)
     def test_chat_message_packet_round_trip(

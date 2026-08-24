@@ -21,7 +21,7 @@ public final class CoreClientChannelHandler extends SimpleChannelInboundHandler<
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, Packet packet) {
-        client.handlePacket(packet);
+        client.handlePacket(ctx.channel(), packet);
     }
 
     @Override
@@ -32,7 +32,7 @@ public final class CoreClientChannelHandler extends SimpleChannelInboundHandler<
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
         client.logger().debug("Channel inactive: " + ctx.channel().remoteAddress());
-        client.onDisconnect();
+        client.onDisconnect(ctx.channel());
     }
 
     @Override

@@ -52,13 +52,13 @@ class AdminActionPacket extends Packet {
     public function decode(PacketBuffer $buffer): void {
         $this->action = $buffer->readByte();
         $this->playerId = $buffer->readUUID();
-        $this->passwordHash = $buffer->readString();
-        $this->target = $buffer->readString();
+        $this->passwordHash = $buffer->readString(ProtocolLimits::MAX_PASSWORD_HASH);
+        $this->target = $buffer->readString(ProtocolLimits::MAX_CHANNEL_ID);
         $size = $buffer->readVarInt();
         $this->extra = [];
         for ($i = 0; $i < $size; $i++) {
-            $key = $buffer->readString();
-            $value = $buffer->readString();
+            $key = $buffer->readString(ProtocolLimits::MAX_METADATA_KEY);
+            $value = $buffer->readString(ProtocolLimits::MAX_METADATA_VALUE);
             $this->extra[$key] = $value;
         }
     }

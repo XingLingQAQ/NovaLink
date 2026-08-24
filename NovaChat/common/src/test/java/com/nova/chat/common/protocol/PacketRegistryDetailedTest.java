@@ -58,7 +58,12 @@ class PacketRegistryDetailedTest {
             PacketIds.ADMIN_ACTION,           // 0x0B
             PacketIds.ADMIN_ACTION_RESPONSE,  // 0x0C
             PacketIds.ITEM_DISPLAY,           // 0x10
-            PacketIds.MENTION                 // 0x12
+            PacketIds.MENTION,                // 0x12
+            PacketIds.PRIVATE_MESSAGE,        // 0x14
+            // AUTH-002 challenge-response handshake (3-packet dance).
+            PacketIds.HANDSHAKE_INIT,         // 0x15
+            PacketIds.HANDSHAKE_CHALLENGE,    // 0x16
+            PacketIds.HANDSHAKE_AUTHENTICATE  // 0x17
     };
 
     /**
@@ -89,6 +94,11 @@ class PacketRegistryDetailedTest {
         CORE_PACKET_CLASSES.put(PacketIds.ADMIN_ACTION_RESPONSE, AdminActionResponsePacket.class);
         CORE_PACKET_CLASSES.put(PacketIds.ITEM_DISPLAY, ItemDisplayPacket.class);
         CORE_PACKET_CLASSES.put(PacketIds.MENTION, MentionPacket.class);
+        CORE_PACKET_CLASSES.put(PacketIds.PRIVATE_MESSAGE, PrivateMessagePacket.class);
+        // AUTH-002 challenge-response handshake (3-packet dance).
+        CORE_PACKET_CLASSES.put(PacketIds.HANDSHAKE_INIT, HandshakeInitPacket.class);
+        CORE_PACKET_CLASSES.put(PacketIds.HANDSHAKE_CHALLENGE, HandshakeChallengePacket.class);
+        CORE_PACKET_CLASSES.put(PacketIds.HANDSHAKE_AUTHENTICATE, HandshakeAuthenticatePacket.class);
     }
 
     private PacketRegistry registry;
@@ -277,14 +287,14 @@ class PacketRegistryDetailedTest {
     class UnknownIds {
 
         @ParameterizedTest(name = "id={0}")
-        @ValueSource(ints = {0x00, 0x0E, 0x0F, 0x14, 0x20, 0x7F, 0xFE, 0xFF})
+        @ValueSource(ints = {0x00, 0x0E, 0x0F, 0x20, 0x7F, 0xFE, 0xFF})
         @DisplayName("isRegistered is false for unused ids")
         void isRegisteredFalse(int id) {
             assertThat(registry.isRegistered(id)).isFalse();
         }
 
         @ParameterizedTest(name = "id={0}")
-        @ValueSource(ints = {0x00, 0x0E, 0x0F, 0x14, 0x20, 0x7F, 0xFE, 0xFF})
+        @ValueSource(ints = {0x00, 0x0E, 0x0F, 0x20, 0x7F, 0xFE, 0xFF})
         @DisplayName("createPacket returns null for unused ids")
         void createReturnsNull(int id) {
             assertThat(registry.createPacket(id)).isNull();

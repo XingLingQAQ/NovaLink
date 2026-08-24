@@ -39,10 +39,10 @@ class MentionPacket extends Packet {
 
     public function decode(PacketBuffer $buffer): void {
         $this->mentionerId = $buffer->readUUID();
-        $this->mentionerName = $buffer->readString();
+        $this->mentionerName = $buffer->readString(ProtocolLimits::MAX_SENDER_NAME);
         $this->mentionedId = $buffer->readUUID();
-        $this->channelId = $buffer->readString();
-        $this->messagePreview = $buffer->readString();
+        $this->channelId = $buffer->readString(ProtocolLimits::MAX_CHANNEL_ID);
+        $this->messagePreview = $buffer->readString(ProtocolLimits::MAX_MESSAGE_PREVIEW);
         $this->timestamp = $buffer->readLong();
     }
 }

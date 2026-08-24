@@ -36,8 +36,8 @@ class ChannelUpdatePacket extends Packet {
     }
 
     public function decode(PacketBuffer $buffer): void {
-        $this->channelId = $buffer->readString();
+        $this->channelId = $buffer->readString(ProtocolLimits::MAX_CHANNEL_ID);
         $this->updateType = $buffer->readByte();
-        $this->dataJson = $buffer->readString();
+        $this->dataJson = $buffer->readString(ProtocolLimits::MAX_ACTION_JSON);
     }
 }

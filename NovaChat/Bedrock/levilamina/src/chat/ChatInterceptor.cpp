@@ -17,8 +17,11 @@
 #include <mc/network/packet/TextPacket.h>
 #include <mc/network/packet/SetTitlePacket.h>
 
+#include <nlohmann/json.hpp>
 #include <regex>
 #include <algorithm>
+#include <string>
+#include <unordered_set>
 
 namespace novachat {
 
@@ -199,7 +202,19 @@ void ChatInterceptor::registerPacketHandlers() {
         }
     );
 
-    // Handle ConfigSync — store the channel list as known channels.
+    // Handle ConfigSync — mirror Java ConfigSyncChannels.extract: build the
+    // known-channel set from global_channels keys + the matching clients[]
+    // entry's channels keys (filtered by this client's username), then replace
+    // the known-channel registry. Only mKnownChannels is touched; the active
+    // per-player channel (PlayerChatState::currentChannel) is never overwritten.
+    // Parsing is best-effort: a bad payload logs a warning and leaves the
+    // existing registry intact rather than throwing.
+    //
+    // TODO(no-toolchain): there is no xmake/MSVC on this host, so the C++ is
+    // NOT compiled. Verify against the shared fixture
+    // NovaChat/Bedrock/test-fixtures/config-sync-payload.json (plus the
+    // empty/malformed siblings) on a tooled host. The Endstone/PMMP siblings
+    // carry executable tests for the same contract.
     networkClient->registerHandler(PacketIds::CONFIG_SYNC,
         [this](std::unique_ptr<Packet> packet) {
             auto* sync = static_cast<ConfigSyncPacket*>(packet.get());
@@ -207,10 +222,88 @@ void ChatInterceptor::registerPacketHandlers() {
                 mPlugin.getSelf().getLogger().debug(
                     "Received config sync ({} bytes)", sync->getConfigJson().size());
             }
-            // The configJson is opaque to the client; known-channel parsing is
-            // best-effort and only used for tab completion / /nc list.
-            addKnownChannel("local");
-            addKnownChannel("global");
+
+            const std::string& configJson = sync->getConfigJson();
+            if (configJson.empty()) {
+                return;
+            }
+
+            std::unordered_set<std::string> channels;
+            try {
+                auto root = nlohmann::json::parse(configJson);
+                if (!root.is_object()) {
+                    mPlugin.getSelf().getLogger().warn(
+                        "ConfigSync: expected JSON object");
+                    return;
+                }
+
+                // Global channels: keys of the global_channels mapping.
+                if (root.contains("global_channels")) {
+                    const auto& gc = root.at("global_channels");
+                    if (gc.is_object()) {
+                        for (auto it = gc.begin(); it != gc.end(); ++it) {
+                            channels.insert(it.key());
+                        }
+                    } else if (!gc.is_null()) {
+                        mPlugin.getSelf().getLogger().warn(
+                            "ConfigSync: global_channels must be an object");
+                    }
+                }
+
+                // Per-client channels for this client only. Blank username
+                // -> globals only (matches the Java extractor).
+                const std::string& username = mPlugin.getConfig()->getUsername();
+                if (!username.empty()) {
+                    if (root.contains("clients")) {
+                        const auto& clients = root.at("clients");
+                        if (clients.is_array()) {
+                            for (const auto& entry : clients) {
+                                if (!entry.is_object() || !entry.contains("username")) {
+                                    continue;
+                                }
+                                const auto& entryUser = entry.at("username");
+                                if (!entryUser.is_string()) {
+                                    continue;
+                                }
+                                if (entryUser.get<std::string>() != username) {
+                                    continue;
+                                }
+                                if (entry.contains("channels")) {
+                                    const auto& cc = entry.at("channels");
+                                    if (cc.is_object()) {
+                                        for (auto it = cc.begin(); it != cc.end(); ++it) {
+                                            channels.insert(it.key());
+                                        }
+                                    } else if (!cc.is_null()) {
+                                        mPlugin.getSelf().getLogger().warn(
+                                            "ConfigSync: client.channels must be an object");
+                                    }
+                                }
+                                break;
+                            }
+                        } else if (!clients.is_null()) {
+                            mPlugin.getSelf().getLogger().warn(
+                                "ConfigSync: clients must be an array");
+                        }
+                    }
+                }
+
+                std::vector<std::string> sorted(channels.begin(), channels.end());
+                std::sort(sorted.begin(), sorted.end());
+                std::lock_guard<std::mutex> lock(mKnownChannelsMutex);
+                mKnownChannels = std::unordered_set<std::string>(
+                    sorted.begin(), sorted.end());
+                if (mPlugin.getConfig()->isDebug()) {
+                    mPlugin.getSelf().getLogger().debug(
+                        "ConfigSync: updated known channels ({})", mKnownChannels.size());
+                }
+            } catch (const nlohmann::json::exception& e) {
+                mPlugin.getSelf().getLogger().warn(
+                    "ConfigSync: malformed config JSON: {}", e.what());
+            } catch (...) {
+                mPlugin.getSelf().getLogger().warn(
+                    "ConfigSync: failed to parse config JSON");
+            }
         }
     );
 
@@ -316,11 +409,40 @@ void ChatInterceptor::registerPacketHandlers() {
         }
     );
 
-    // Handle Announcement packets from backend (reserved orphan id).
-    networkClient->registerHandler(PacketIds::ANNOUNCEMENT,
+    // Handle PrivateMessage packets — render the echo line to the sender and
+    // the received line to the target. The backend delivers a completed
+    // PrivateMessagePacket to BOTH the sender's client (echo) and the target's
+    // client; here we dispatch per local player. Per-player directed; never
+    // broadcasts to a channel.
+    networkClient->registerHandler(PacketIds::PRIVATE_MESSAGE,
         [this](std::unique_ptr<Packet> packet) {
+            auto* pm = static_cast<PrivateMessagePacket*>(packet.get());
+            handlePrivateMessage(*pm);
             if (mPlugin.getConfig()->isDebug()) {
-                mPlugin.getSelf().getLogger().debug("Received Announcement packet from backend");
+                mPlugin.getSelf().getLogger().debug(
+                    "PrivateMessage from {} to {}: {}",
+                    pm->getSenderName(), pm->getTargetName(), pm->getContent());
+            }
+        }
+    );
+
+    // Handle AdminActionResponse packets (0x0C) — route the async outcome of
+    // /nc auth and /nc announce back to the originating player. The request
+    // UUID is correlated via mPendingAdminActions (populated at send time in
+    // CommandHandler::handleAuth/handleAnnounce). Mirrors the bukkit
+    // handleAdminActionResponse path. FEATURE-002: the orphan 0x0A
+    // Announcement handler that used to live here is gone — the backend
+    // broadcasts announcements via AdminAction STATUS + type=ANNOUNCE extra
+    // -> routeMessage (0x03), never via 0x0A.
+    networkClient->registerHandler(PacketIds::ADMIN_ACTION_RESPONSE,
+        [this](std::unique_ptr<Packet> packet) {
+            auto* resp = static_cast<AdminActionResponsePacket*>(packet.get());
+            handleAdminActionResponse(*resp);
+            if (mPlugin.getConfig()->isDebug()) {
+                mPlugin.getSelf().getLogger().debug(
+                    "AdminActionResponse: action={} success={} code={}",
+                    static_cast<int>(resp->getAction()),
+                    resp->isSuccess(), resp->getErrorCode());
             }
         }
     );
@@ -483,6 +605,37 @@ void ChatInterceptor::displayMessageByUuid(const std::string& playerUuid, const 
         }
         return true;
     });
+}
+
+void ChatInterceptor::handlePrivateMessage(const protocol::PrivateMessagePacket& packet) {
+    // The backend delivers a completed PrivateMessagePacket to BOTH the
+    // sender's client (echo) and the target's client. Render the "sent" line
+    // to the local player matching senderId and the "received" line to the
+    // local player matching targetId (when distinct). Per-player directed;
+    // never broadcasts to a channel.
+    static const protocol::UUID nilUuid{};
+    auto& i18n = i18n::I18n::getInstance();
+
+    const auto& senderId = packet.getSenderId();
+    const auto& targetId = packet.getTargetId();
+
+    // Echo line: the local player is the sender.
+    if (!(senderId == nilUuid)) {
+        std::string senderUuidStr = senderId.toString();
+        std::string locale = getPlayerLocale(senderUuidStr);
+        std::string message = i18n.get("chat.msg.sent", locale,
+                                       {packet.getTargetName(), packet.getContent()});
+        displayMessageByUuid(senderUuidStr, convertColorCodes(message));
+    }
+
+    // Received line: the local player is the (distinct) target.
+    if (!(targetId == nilUuid) && !(targetId == senderId)) {
+        std::string targetUuidStr = targetId.toString();
+        std::string locale = getPlayerLocale(targetUuidStr);
+        std::string message = i18n.get("chat.msg.received", locale,
+                                       {packet.getSenderName(), packet.getContent()});
+        displayMessageByUuid(targetUuidStr, convertColorCodes(message));
+    }
 }
 
 void ChatInterceptor::broadcastToChannel(const std::string& channelId, const std::string& formattedMessage) {
@@ -916,6 +1069,78 @@ void ChatInterceptor::sendToBackend(const std::string& playerName, const std::st
     );
 
     networkClient->sendPacket(std::move(packet));
+}
+
+void ChatInterceptor::registerPendingAdminAction(const std::string& requestId, const std::string& playerUuid) {
+    if (requestId.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mPendingAdminActionsMutex);
+    mPendingAdminActions.emplace(requestId, playerUuid);
+}
+
+void ChatInterceptor::handleAdminActionResponse(const protocol::AdminActionResponsePacket& packet) {
+    // Correlate the async response back to the originating player by the request
+    // UUID generated at send time in CommandHandler::handleAuth/handleAnnounce
+    // and registered via registerPendingAdminAction. Mirrors the bukkit
+    // NetworkClient.pendingAdminRequests.remove(response.getRequestId()) path.
+    std::string playerUuid;
+    bool isConsole = false;
+    {
+        std::string reqId = packet.getRequestId().toString();
+        std::lock_guard<std::mutex> lock(mPendingAdminActionsMutex);
+        auto it = mPendingAdminActions.find(reqId);
+        if (it != mPendingAdminActions.end()) {
+            playerUuid = it->second;
+            mPendingAdminActions.erase(it);
+        }
+    }
+
+    // Default-constructed UUID (both bits 0) is the console sentinel used by
+    // /nc announce when originated from the server console / RCON. The tracking
+    // value stored by handleAnnounce is the sentinel's canonical hyphenated
+    // string form, so compare strings rather than re-parsing.
+    static const std::string consoleSentinelStr = protocol::UUID{}.toString();
+    if (playerUuid == consoleSentinelStr) {
+        isConsole = true;
+    }
+
+    auto& i18n = i18n::I18n::getInstance();
+    std::string locale = playerUuid.empty() ? "zh_CN" : getPlayerLocale(playerUuid);
+
+    // Console/RCON origin has no in-game player to message; route to the logger
+    // (parity with the bukkit console branch in handleAdminActionResponse).
+    auto routeOutcome = [&](const std::string& message) {
+        if (isConsole || playerUuid.empty()) {
+            mPlugin.getSelf().getLogger().info("AdminAction: {}", stripColorCodes(message));
+        } else {
+            displayMessageByUuid(playerUuid, convertColorCodes(message));
+        }
+    };
+
+    if (packet.isSuccess()) {
+        routeOutcome(i18n.get("chat.action.success", locale));
+        return;
+    }
+
+    // FEATURE-002: the backend NC-403 gate in AdminActionHandler.handleStatus
+    // is the sole authority on super-admin session state; the client never
+    // tracks it locally. A failure with action==STATUS && errorCode=="NC-403"
+    // means the player needs to /nc auth first.
+    bool needsSuperAdmin =
+        (packet.getAction() == protocol::AdminAction::STATUS) &&
+        (packet.getErrorCode() == "NC-403");
+
+    if (needsSuperAdmin) {
+        routeOutcome(i18n.get("chat.error.super_admin_required", locale));
+        routeOutcome(i18n.get("chat.error.super_admin_required_suggestion", locale));
+    } else {
+        std::string message = i18n.get("chat.action.failed", locale);
+        if (!packet.getMessage().empty()) {
+            message += ": " + packet.getMessage();
+        }
+        routeOutcome(message);
+    }
 }
 
 } // namespace novachat

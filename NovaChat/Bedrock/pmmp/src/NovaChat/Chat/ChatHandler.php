@@ -6,8 +6,6 @@ namespace NovaChat\Chat;
 
 use NovaChat\I18n\I18n;
 use NovaChat\NovaChatPlugin;
-use NovaChat\Protocol\AdminActionResponsePacket;
-use NovaChat\Protocol\AnnouncementPacket;
 use NovaChat\Protocol\ChannelActionPacket;
 use NovaChat\Protocol\ChannelActionResponsePacket;
 use NovaChat\Protocol\ChannelUpdatePacket;
@@ -255,42 +253,11 @@ class ChatHandler implements Listener {
     }
     
     /**
-     * Handles an incoming announcement packet from the backend.
-     * 
-     * Requirements:
-     * - 8.7: WHEN 收到后端消息 THEN NovaChat-PMMP SHALL 使用 TextFormat 类渲染颜色代码
-     * 
-     * @param AnnouncementPacket $packet The announcement packet
-     */
-    public function handleAnnouncement(AnnouncementPacket $packet): void {
-        $this->plugin->debug("Received announcement: [{$packet->announcementId}] {$packet->content}");
-        
-        $server = $this->plugin->getServer();
-        
-        switch ($packet->type) {
-            case AnnouncementPacket::TYPE_CHAT:
-                // Broadcast as chat message using MessageRenderer
-                MessageRenderer::broadcast($server, $packet->content);
-                break;
-                
-            case AnnouncementPacket::TYPE_TITLE:
-                // Display as title to all players using MessageRenderer
-                MessageRenderer::broadcastTitle($server, $packet->content);
-                break;
-                
-            case AnnouncementPacket::TYPE_ACTIONBAR:
-                // Display as action bar to all players using MessageRenderer
-                MessageRenderer::broadcastActionBar($server, $packet->content);
-                break;
-        }
-    }
-    
-    /**
      * Handles an incoming title message packet from the backend.
-     * 
+     *
      * Requirements:
      * - 8.7: WHEN 收到后端消息 THEN NovaChat-PMMP SHALL 使用 TextFormat 类渲染颜色代码
-     * 
+     *
      * @param TitleMessagePacket $packet The title message packet
      */
     public function handleTitleMessage(TitleMessagePacket $packet): void {
@@ -407,10 +374,76 @@ class ChatHandler implements Listener {
      */
     public function handleConfigSync(ConfigSyncPacket $packet): void {
         $this->plugin->debug("Received config sync ({$packet->configJson})");
-        // The configJson is opaque to the client; known-channel parsing is
-        // best-effort and only used for tab completion / /nc list.
-        $this->addKnownChannel("local");
-        $this->addKnownChannel("global");
+
+        // Mirrors Java ConfigSyncChannels.extract: build the known-channel set
+        // from global_channels keys + the matching clients[] entry's channels
+        // keys (filtered by this client's backend username), then REPLACE the
+        // known-channel registry. Only knownChannels is touched; the active
+        // per-player channel (playerChannels) is never overwritten. Parsing is
+        // best-effort: a bad payload logs a warning and leaves the existing
+        // registry intact rather than throwing.
+        $configJson = $packet->configJson;
+        if ($configJson === "" || trim($configJson) === "") {
+            return;
+        }
+
+        $decoded = json_decode($configJson, true);
+        if (!is_array($decoded)) {
+            $this->plugin->debug("ConfigSync: malformed or non-object config JSON");
+            return;
+        }
+
+        $channels = [];
+
+        // Global channels: keys of the global_channels mapping.
+        if (array_key_exists("global_channels", $decoded)) {
+            $globals = $decoded["global_channels"];
+            if (is_array($globals) && !array_is_list($globals)) {
+                foreach (array_keys($globals) as $id) {
+                    $channels[(string) $id] = true;
+                }
+            } elseif ($globals !== null) {
+                $this->plugin->debug("ConfigSync: global_channels must be a mapping");
+            }
+        }
+
+        // Per-client channels for this client only. Blank username -> globals
+        // only (matches the Java extractor).
+        $username = $this->plugin->getConfigManager()->getBackendUsername();
+        if ($username !== "" && trim($username) !== "") {
+            if (array_key_exists("clients", $decoded)) {
+                $clients = $decoded["clients"];
+                if (is_array($clients) && array_is_list($clients)) {
+                    foreach ($clients as $entry) {
+                        if (!is_array($entry) || !array_key_exists("username", $entry)) {
+                            continue;
+                        }
+                        $entryUsername = $entry["username"];
+                        if (!is_string($entryUsername) || $entryUsername !== $username) {
+                            continue;
+                        }
+                        if (array_key_exists("channels", $entry)) {
+                            $clientChannels = $entry["channels"];
+                            if (is_array($clientChannels) && !array_is_list($clientChannels)) {
+                                foreach (array_keys($clientChannels) as $id) {
+                                    $channels[(string) $id] = true;
+                                }
+                            } elseif ($clientChannels !== null) {
+                                $this->plugin->debug("ConfigSync: client.channels must be a mapping");
+                            }
+                        }
+                        break;
+                    }
+                } elseif ($clients !== null) {
+                    $this->plugin->debug("ConfigSync: clients must be an array");
+                }
+            }
+        }
+
+        $sorted = array_keys($channels);
+        sort($sorted);
+
+        $this->knownChannels = array_values($sorted);
     }
 
     /**
@@ -451,6 +484,49 @@ class ChatHandler implements Listener {
             $playerChannel = $this->getPlayerChannel($player);
             if ($playerChannel === $packet->channelId || $packet->channelId === "global") {
                 $player->sendMessage($formatted);
+            }
+        }
+    }
+
+    /**
+     * Handles an incoming private message packet from the backend.
+     *
+     * The backend delivers a completed PrivateMessagePacket to BOTH the
+     * sender's client (echo) and the target's client. The receiving plugin
+     * renders whichever line applies to a local player:
+     *  - local player == senderId              -> "sent" echo line
+     *  - local player == targetId, != senderId   -> "received" line
+     *
+     * Private chat is per-player directed; this method never broadcasts to a
+     * channel. UUID strings are compared against each online player's
+     * unique id; the nil UUID (all zeros) is guarded out per field.
+     *
+     * @param \NovaChat\Protocol\PrivateMessagePacket $packet The private message packet
+     */
+    public function handlePrivateMessage(\NovaChat\Protocol\PrivateMessagePacket $packet): void {
+        $this->plugin->debug("Received private message from {$packet->senderName} to {$packet->targetName}");
+
+        $i18n = new I18n();
+        $senderId = $packet->senderId;
+        $targetId = $packet->targetId;
+        $nilUuid = "00000000-0000-0000-0000-000000000000";
+
+        foreach ($this->plugin->getServer()->getOnlinePlayers() as $player) {
+            $playerUuid = $player->getUniqueId()->toString();
+
+            // Echo line: this local player is the sender.
+            if ($senderId !== "" && $senderId !== $nilUuid && $playerUuid === $senderId) {
+                $locale = $this->getPlayerLocale($playerUuid);
+                $message = $i18n->get("chat.msg.sent", $locale, [$packet->targetName, $packet->content]);
+                MessageRenderer::sendMessage($player, $message);
+                continue;
+            }
+
+            // Received line: this local player is the (distinct) target.
+            if ($targetId !== "" && $targetId !== $nilUuid && $playerUuid === $targetId) {
+                $locale = $this->getPlayerLocale($playerUuid);
+                $message = $i18n->get("chat.msg.received", $locale, [$packet->senderName, $packet->content]);
+                MessageRenderer::sendMessage($player, $message);
             }
         }
     }

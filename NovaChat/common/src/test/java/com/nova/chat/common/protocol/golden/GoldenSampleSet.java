@@ -392,6 +392,36 @@ public final class GoldenSampleSet {
                     reqId, false, true, null,
                     "管理员监听：SPY_START + 中文 target + 非空 extra（1 项）", f, frameOf(p)));
         }
+        {
+            // FEATURE-002: STATUS + type=ANNOUNCE — the unified broadcast path.
+            // Mirrors bukkit AnnounceCommand: action=STATUS, target=channelId,
+            // extra={type:ANNOUNCE, operatorName, content}.
+            AdminActionPacket p = new AdminActionPacket();
+            p.setAction(AdminAction.STATUS);
+            p.setPlayerId(UUID_A);
+            p.setPasswordHash("");
+            p.setTarget("global");
+            Map<String, String> extra = new LinkedHashMap<>();
+            extra.put("type", "ANNOUNCE");
+            extra.put("operatorName", "Alex");
+            extra.put("content", "服务器将在 5 分钟后维护 🔧");
+            p.setExtra(extra);
+            UUID reqId = rid(seq++);
+            p.setRequestId(reqId);
+            JsonObject ex = new JsonObject();
+            ex.addProperty("type", "ANNOUNCE");
+            ex.addProperty("operatorName", "Alex");
+            ex.addProperty("content", "服务器将在 5 分钟后维护 🔧");
+            JsonObject f = new JsonObject();
+            f.addProperty("action", AdminAction.STATUS.getId());
+            f.addProperty("playerId", UUID_A.toString());
+            f.addProperty("passwordHash", "");
+            f.addProperty("target", "global");
+            f.add("extra", ex);
+            out.add(make("admin_action_status_announce", "AdminActionPacket", PacketIds.ADMIN_ACTION,
+                    reqId, false, true, null,
+                    "管理公告：STATUS + type=ANNOUNCE + 中文 content + 3 项 extra（统一广播路径）", f, frameOf(p)));
+        }
 
         // ==================== 0x0C ADMIN_ACTION_RESPONSE ====================
         {

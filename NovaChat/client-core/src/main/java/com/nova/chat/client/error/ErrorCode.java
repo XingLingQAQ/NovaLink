@@ -51,6 +51,9 @@ public enum ErrorCode {
     /** Used - 邀请码已使用 */
     INVITE_USED("NC-411"),
 
+    /** Protocol Mismatch - 协议版本不兼容 */
+    PROTOCOL_MISMATCH("NC-420"),
+
     /** Too Many Requests - 请求过于频繁 */
     RATE_LIMITED("NC-429"),
 

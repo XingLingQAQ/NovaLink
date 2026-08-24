@@ -36,9 +36,9 @@ class ItemDisplayPacket extends Packet {
 
     public function decode(PacketBuffer $buffer): void {
         $this->senderId = $buffer->readUUID();
-        $this->senderName = $buffer->readString();
-        $this->channelId = $buffer->readString();
-        $this->itemJson = $buffer->readString();
+        $this->senderName = $buffer->readString(ProtocolLimits::MAX_SENDER_NAME);
+        $this->channelId = $buffer->readString(ProtocolLimits::MAX_CHANNEL_ID);
+        $this->itemJson = $buffer->readString(ProtocolLimits::MAX_ITEM_JSON);
         $this->timestamp = $buffer->readLong();
     }
 }

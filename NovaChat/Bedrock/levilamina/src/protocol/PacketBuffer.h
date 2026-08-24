@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VarInt.h"
+#include "ProtocolLimits.h"
 #include <cstdint>
 #include <vector>
 #include <string>
@@ -109,6 +110,52 @@ public:
         int32_t length = readVarInt();
         if (length < 0) {
             throw std::runtime_error("Negative string length");
+        }
+        // Hard cap at the frame ceiling so an absurd declared length is
+        // rejected before the allocation, mirroring the JVM
+        // Varint21FrameDecoder ceiling (PROTO-002).
+        if (static_cast<size_t>(length) > ProtocolLimits::MAX_FRAME_LENGTH) {
+            throw std::runtime_error("Invalid string length");
+        }
+        checkReadable(static_cast<size_t>(length));
+        std::string result(reinterpret_cast<const char*>(mData.data() + mReadPos), length);
+        mReadPos += length;
+        return result;
+    }
+
+    /**
+     * Reads a length-prefixed UTF-8 string, rejecting fields whose declared
+     * wire length exceeds `maxLength` before the bytes are allocated.
+     *
+     * PROTO-003: this is the bounded counterpart to the JVM
+     * `PacketBuffer.readString(buf, max)`. C++ overloads by arity, so the
+     * legacy zero-arg `readString()` above is preserved for backward
+     * compatibility (e.g. golden-byte decoders reading arbitrary fields)
+     * while packet `read()` methods call this overload with the matching
+     * `ProtocolLimits` constant. An oversized field is rejected with a
+     * `std::runtime_error` whose message contains "exceeds maximum" so the
+     * non-JVM forks stay byte-for-byte consistent with the Java error
+     * contract.
+     *
+     * @param maxLength Maximum UTF-8 byte length for this field.
+     * @return The decoded string.
+     * @throws std::runtime_error If the declared length is negative, exceeds
+     *         `ProtocolLimits::MAX_FRAME_LENGTH`, exceeds `maxLength`, or
+     *         exceeds the remaining bytes.
+     */
+    std::string readString(size_t maxLength) {
+        int32_t length = readVarInt();
+        if (length < 0) {
+            throw std::runtime_error("Negative string length");
+        }
+        if (static_cast<size_t>(length) > ProtocolLimits::MAX_FRAME_LENGTH) {
+            throw std::runtime_error("Invalid string length");
+        }
+        if (static_cast<size_t>(length) > maxLength) {
+            throw std::runtime_error(
+                "String length " + std::to_string(length) +
+                " exceeds maximum " + std::to_string(maxLength)
+            );
         }
         checkReadable(static_cast<size_t>(length));
         std::string result(reinterpret_cast<const char*>(mData.data() + mReadPos), length);

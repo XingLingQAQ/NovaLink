@@ -34,7 +34,7 @@ class AdminActionResponsePacket extends Packet {
     public function decode(PacketBuffer $buffer): void {
         $this->action = $buffer->readByte();
         $this->success = $buffer->readBoolean();
-        $this->errorCode = $buffer->readString();
-        $this->message = $buffer->readString();
+        $this->errorCode = $buffer->readString(ProtocolLimits::MAX_ERROR_CODE);
+        $this->message = $buffer->readString(ProtocolLimits::MAX_ERROR_MESSAGE);
     }
 }

@@ -60,6 +60,21 @@ public final class PacketIds {
     /** Private message packet (Bidirectional). Registered: {@code PrivateMessagePacket}. */
     public static final int PRIVATE_MESSAGE = 0x14;
 
+    // ==================== Challenge-response handshake (AUTH-002) ====================
+    // Three-packet HMAC-SHA-256 challenge-response handshake that replaces the
+    // replayable static SHA-256(password) handshake. Wire format MUST stay in
+    // lockstep with the non-JVM forks (PHP/Python/C++). See NovaProtocol
+    // javadoc for the files to update when these change.
+
+    /** Handshake init (Client → Server). Registered: {@code HandshakeInitPacket}. */
+    public static final int HANDSHAKE_INIT = 0x15;
+
+    /** Handshake challenge (Server → Client). Registered: {@code HandshakeChallengePacket}. */
+    public static final int HANDSHAKE_CHALLENGE = 0x16;
+
+    /** Handshake authenticate (Client → Server). Registered: {@code HandshakeAuthenticatePacket}. */
+    public static final int HANDSHAKE_AUTHENTICATE = 0x17;
+
     // ==================== Reserved / orphan IDs (no Java packet class yet) ====================
     // These constants are kept for protocol-ID stability with PHP/Python clients and
     // future Java support. They are intentionally NOT registered in NovaProtocol until

@@ -39,10 +39,17 @@ bool NovaChatPlugin::load() {
     logger.info("Loading NovaChat-LeviLamina...");
 
     // Load configuration
-    mConfig = std::make_unique<NovaChatConfig>(mSelf.getDataDir());
+    mConfig = std::make_unique<NovaChatConfig>(
+        mSelf.getDataDir(), mSelf.getResourceDir() / "default-config.json");
     if (!mConfig->load()) {
-        logger.error("Failed to load configuration!");
+        logger.error("Failed to load configuration: {}", mConfig->getLastError());
         return false;
+    }
+    if (mConfig->wasCreated()) {
+        logger.info("Created config.json from the bundled template.");
+    } else if (mConfig->wasUpdated()) {
+        logger.info("Added new configuration entries from the bundled template; backup: {}",
+                    mConfig->getBackupPath().string());
     }
 
     logger.info("NovaChat-LeviLamina loaded successfully.");
@@ -59,7 +66,18 @@ bool NovaChatPlugin::enable() {
         mConfig->getBackendPort(),
         mConfig->getUsername(),
         mConfig->getPassword(),
-        mConfig->getServerVersion()
+        mConfig->getServerVersion(),
+        mConfig->getReconnectDelay()
+    );
+    // AUTH-002 TLS: plumb the transport-encryption config into the client. The
+    // values are stored but not yet applied in doConnect() (skeleton seam —
+    // see the TODO in NetworkClient::doConnect). Called here so a future
+    // OpenSSL integration picks them up without re-plumbing the constructor.
+    mNetworkClient->setTlsConfig(
+        mConfig->isTlsEnabled(),
+        mConfig->getTlsCaCertPath(),
+        mConfig->getTlsClientCertPath(),
+        mConfig->getTlsClientKeyPath()
     );
 
     // Initialize chat interceptor
@@ -93,6 +111,36 @@ bool NovaChatPlugin::enable() {
 
     mEnabled = true;
     logger.info("NovaChat-LeviLamina enabled successfully.");
+    return true;
+}
+
+bool NovaChatPlugin::reloadConfiguration() {
+    if (!mConfig->reload()) {
+        return false;
+    }
+
+    if (mChatInterceptor) {
+        mChatInterceptor->setReplaceVanilla(mConfig->isReplaceVanilla());
+    }
+    if (mNetworkClient) {
+        mNetworkClient->reconfigure(
+            mConfig->getBackendHost(),
+            mConfig->getBackendPort(),
+            mConfig->getUsername(),
+            mConfig->getPassword(),
+            mConfig->getServerVersion(),
+            mConfig->getReconnectDelay()
+        );
+        // AUTH-002 TLS: re-apply the transport-encryption config after a reload
+        // so an operator toggle takes effect on the next reconnect. (Skeleton
+        // seam: stored but not yet applied — see NetworkClient::doConnect.)
+        mNetworkClient->setTlsConfig(
+            mConfig->isTlsEnabled(),
+            mConfig->getTlsCaCertPath(),
+            mConfig->getTlsClientCertPath(),
+            mConfig->getTlsClientKeyPath()
+        );
+    }
     return true;
 }
 

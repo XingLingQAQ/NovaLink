@@ -17,7 +17,7 @@ NovaChat plugin for Endstone - Cross-server chat integration for Minecraft Bedro
 
 ## Configuration
 
-Edit `resources/config.yml`:
+Edit `plugins/NovaChat/config.yml` after the first server start:
 
 ```yaml
 backend:

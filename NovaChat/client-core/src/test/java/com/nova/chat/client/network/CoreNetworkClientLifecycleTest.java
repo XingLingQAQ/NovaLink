@@ -1,6 +1,7 @@
 package com.nova.chat.client.network;
 
 import com.nova.chat.common.protocol.PlatformType;
+import com.nova.chat.common.protocol.packets.HandshakeResponsePacket;
 import com.nova.chat.common.protocol.packets.KeepAlivePacket;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -208,6 +209,7 @@ class CoreNetworkClientLifecycleTest {
             });
 
             EmbeddedChannel channel = new EmbeddedChannel(new CoreClientChannelHandler(client));
+            client.setChannelForTest(channel);
             try {
                 assertThatCode(() -> channel.writeInbound(new KeepAlivePacket(1L)))
                         .doesNotThrowAnyException();
@@ -242,6 +244,57 @@ class CoreNetworkClientLifecycleTest {
             assertThatCode(() -> client.handlePacket(new KeepAlivePacket(42L)))
                     .doesNotThrowAnyException();
             assertThat(logger.errors).anyMatch(m -> m.contains("handler failure"));
+        }
+    }
+
+    @Nested
+    @DisplayName("authentication failure lifecycle")
+    class AuthenticationFailureLifecycle {
+
+        @Test
+        @DisplayName("NC-401 is logged, closes the channel, and does not schedule reconnect")
+        void credentialFailureClosesWithoutReconnect() {
+            RecordingLogger logger = new RecordingLogger();
+            CapturingScheduler scheduler = new CapturingScheduler();
+            CoreNetworkClient client = new CoreNetworkClient(
+                    basicConfig(), PlatformType.BUKKIT, scheduler, logger
+            );
+            EmbeddedChannel channel = new EmbeddedChannel();
+            client.setChannelForTest(channel);
+
+            HandshakeResponsePacket failure = HandshakeResponsePacket.failure(
+                    "NC-401", "Invalid credentials");
+            client.handlePacket(failure);
+            client.onDisconnect(channel);
+
+            assertThat(channel.isActive()).isFalse();
+            assertThat(client.isAuthenticated()).isFalse();
+            assertThat(scheduler.scheduled).isEmpty();
+            assertThat(logger.errors).anyMatch(message -> message.contains("NC-401"));
+            assertThat(logger.warns).anyMatch(message -> message.contains("automatic reconnect is paused"));
+        }
+
+        @Test
+        @DisplayName("late channelInactive from an old channel does not clear the current generation")
+        void staleChannelInactiveIsIgnored() {
+            RecordingLogger logger = new RecordingLogger();
+            CapturingScheduler scheduler = new CapturingScheduler();
+            CoreNetworkClient client = new CoreNetworkClient(
+                    basicConfig(), PlatformType.BUKKIT, scheduler, logger
+            );
+            EmbeddedChannel oldChannel = new EmbeddedChannel();
+            EmbeddedChannel currentChannel = new EmbeddedChannel();
+            client.setChannelForTest(currentChannel);
+
+            client.onDisconnect(oldChannel);
+
+            assertThat(client.isConnected()).isTrue();
+            assertThat(currentChannel.isActive()).isTrue();
+            assertThat(scheduler.scheduled).isEmpty();
+            assertThat(logger.debugs).anyMatch(message -> message.contains("stale connection generation"));
+
+            oldChannel.close();
+            currentChannel.close();
         }
     }
 }

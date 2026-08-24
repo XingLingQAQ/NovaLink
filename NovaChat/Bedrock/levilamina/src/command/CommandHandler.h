@@ -13,8 +13,8 @@ class NovaChatPlugin;
  * Command handler for NovaChat commands.
  * Registers and handles /nc commands.
  *
- * Subcommands (parity with the 7 Java server-side platforms):
- *   help, join, leave, list, who, toggle, reload
+ * Subcommands (parity with the Java server-side platforms):
+ *   help, join, leave, list, who, toggle, reload, auth (hidden), announce
  */
 class CommandHandler {
 public:
@@ -56,6 +56,18 @@ private:
                       const std::vector<std::string>& args);
     void handleReload(const std::string& playerName, const std::string& playerUuid,
                       const std::vector<std::string>& args);
+    // FEATURE-002: super-admin authentication. Player-only. Sends an
+    // AdminActionPacket(AUTH) with SHA-256(password) hex; the backend
+    // hasSuperAdminSession gate is the sole authority, the client never
+    // tracks the session locally. Mirrors bukkit AuthCommand.
+    void handleAuth(const std::string& playerName, const std::string& playerUuid,
+                    const std::vector<std::string>& args);
+    // FEATURE-002: broadcast announcement. Sends an AdminActionPacket(STATUS)
+    // with type=ANNOUNCE extra; console/RCON uses the all-zeros sentinel UUID.
+    // Backend handleStatus -> handleAnnounce -> routeMessage. Mirrors bukkit
+    // AnnounceCommand.
+    void handleAnnounce(const std::string& playerName, const std::string& playerUuid,
+                        const std::vector<std::string>& args);
 
     // Send a localized message to a player by name.
     void sendLocalized(const std::string& playerName, const std::string& playerUuid,

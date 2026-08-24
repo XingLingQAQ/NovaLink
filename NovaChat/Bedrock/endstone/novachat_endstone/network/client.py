@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import logging
+import os
+import secrets
+import ssl
 import time
 import uuid
 from typing import TYPE_CHECKING, Optional, Callable, Dict, Any
@@ -22,6 +26,9 @@ from novachat_endstone.protocol.packet import (
     PlatformType,
     HandshakePacket,
     HandshakeResponsePacket,
+    HandshakeInitPacket,
+    HandshakeChallengePacket,
+    HandshakeAuthenticatePacket,
     KeepAlivePacket,
     decode_packet,
 )
@@ -33,7 +40,7 @@ if TYPE_CHECKING:
 class NetworkClient:
     """Asyncio-based network client for NovaLink communication."""
 
-    PROTOCOL_VERSION = 2
+    PROTOCOL_VERSION = 3
     PLATFORM_ENDSTONE = PlatformType.ENDSTONE  # 10 (must match Java PlatformType.ENDSTONE)
     KEEPALIVE_INTERVAL = 15  # seconds
     MAX_FRAME_LENGTH = 4 * 1024 * 1024  # 4 MiB (must match server-side limits)
@@ -45,7 +52,12 @@ class NetworkClient:
         port: int,
         username: str,
         password: str,
-        server_version: str = "",
+        server_version: str,
+        reconnect_delay: int,
+        tls_enabled: bool = False,
+        tls_ca_cert_path: str = "",
+        tls_client_cert_path: str = "",
+        tls_client_key_path: str = "",
     ):
         """
         Initialize the network client.
@@ -56,7 +68,18 @@ class NetworkClient:
             port: Backend server port
             username: Client username for authentication
             password: Client password for authentication
-            server_version: Minecraft server version reported in handshake (v2)
+            server_version: Minecraft server version reported in handshake (v3)
+            reconnect_delay: Initial reconnect delay in seconds
+            tls_enabled: When True, wrap the TCP transport in TLS (AUTH-002).
+                False keeps the plaintext path (zero regression against the
+                pre-TLS behavior).
+            tls_ca_cert_path: PEM file used to verify the backend certificate.
+                Empty string means use the system CA store. Verification is
+                always enforced when tls_enabled is True — there is no option
+                to disable it.
+            tls_client_cert_path: Optional mTLS client certificate (PEM). Must
+                be paired with tls_client_key_path.
+            tls_client_key_path: Optional mTLS client private key (PEM).
         """
         self._plugin = plugin
         self._host = host
@@ -64,6 +87,16 @@ class NetworkClient:
         self._username = username
         self._password = password
         self._server_version = server_version or ""
+
+        # AUTH-002 TLS: transport encryption. Built once (cheap) and reused on
+        # every reconnect so the SSLContext is not rebuilt per connection.
+        self._ssl_context: Optional[ssl.SSLContext] = None
+        if tls_enabled:
+            self._ssl_context = self._build_ssl_context(
+                ca_cert_path=tls_ca_cert_path,
+                client_cert_path=tls_client_cert_path,
+                client_key_path=tls_client_key_path,
+            )
         
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
@@ -78,7 +111,9 @@ class NetworkClient:
         # thread and raises RuntimeError otherwise).
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         
-        self._reconnect_delay = 5
+        if reconnect_delay <= 0:
+            raise ValueError("reconnect_delay must be greater than 0")
+        self._reconnect_delay = reconnect_delay
         self._max_reconnect_delay = 60
         self._current_reconnect_delay = self._reconnect_delay
         
@@ -95,7 +130,52 @@ class NetworkClient:
         self._closing = False
         
         self._logger = logging.getLogger("NovaChat.Network")
-    
+
+    @staticmethod
+    def _build_ssl_context(
+        ca_cert_path: str,
+        client_cert_path: str,
+        client_key_path: str,
+    ) -> ssl.SSLContext:
+        """Build a verified client SSLContext for the backend transport.
+
+        AUTH-002: the context is configured to ALWAYS verify the server
+        certificate. There is no flag to disable verification — the whole
+        point of enabling TLS is closing the passive-sniff / offline-brute-force
+        window on the HMAC key material, and disabling verification would
+        re-open it.
+
+        PROTOCOL_TLS_CLIENT negotiates the highest mutually supported TLS
+        version (TLS 1.2+ on CPython 3.10+, which has deprecated TLS 1.0/1.1
+        at the protocol level) and sets sane defaults: check_hostname=True and
+        verify_mode=CERT_REQUIRED out of the box. We re-assert them explicitly
+        so the intent is obvious and resilient to upstream default changes.
+        """
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        # check_hostname is redundant with CERT_REQUIRED for a client context,
+        # but asserted explicitly: the backend certificate MUST match the
+        # host we connect to.
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+
+        ca_path = ca_cert_path.strip()
+        if ca_path:
+            # Operator-supplied CA bundle (e.g. a private CA). load_verify_locations
+            # raises FileNotFoundError/SSLError if the path is bad, which
+            # surfaces at plugin enable — before any connection is attempted.
+            context.load_verify_locations(cafile=ca_path)
+        else:
+            # No explicit CA bundle: fall back to the system trust store.
+            context.load_default_certs()
+
+        cert_path = client_cert_path.strip()
+        key_path = client_key_path.strip()
+        if cert_path and key_path:
+            # mTLS: present a client certificate when the backend requests one.
+            context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+
+        return context
+
     async def connect(self) -> bool:
         """
         Connect to the backend server.
@@ -119,9 +199,10 @@ class NetworkClient:
         
         try:
             self._logger.info(f"Connecting to {self._host}:{self._port}...")
-            
+
             self._reader, self._writer = await asyncio.open_connection(
-                self._host, self._port
+                self._host, self._port,
+                ssl=self._ssl_context,
             )
             self._connected = True
             self._current_reconnect_delay = self._reconnect_delay
@@ -293,26 +374,62 @@ class NetworkClient:
     
     async def _authenticate(self) -> bool:
         """
-        Perform authentication handshake.
-        
+        Perform the AUTH-002 challenge-response authentication handshake.
+
+        Three-packet flow (replaces the replayable static-hash HandshakePacket):
+            1. Client -> Server: HandshakeInitPacket (0x15) carrying a fresh
+               cryptographically-secure random client nonce.
+            2. Server -> Client: HandshakeChallengePacket (0x16) with the
+               server's fresh random nonce.
+            3. Client -> Server: HandshakeAuthenticatePacket (0x17) echoing the
+               client id + client nonce and an HMAC-SHA-256 over
+               (serverNonce + clientNonce), keyed by sha256hex(password).
+        The server then replies with HandshakeResponsePacket (0x02).
+
         Returns:
             True if authentication succeeded
         """
-        # Hash the password
-        password_hash = hashlib.sha256(self._password.encode()).hexdigest()
-        
-        # Send handshake packet (protocol v2: includes server_version)
-        handshake = HandshakePacket(
+        # Fresh 16-byte cryptographically-secure random nonce, hex (32 chars).
+        # secrets.token_hex uses the OS CSPRNG; never a weak PRNG.
+        client_nonce = secrets.token_hex(16)
+
+        # 1) Send init.
+        init = HandshakeInitPacket(
             protocol_version=self.PROTOCOL_VERSION,
             client_id=self._username,
-            password_hash=password_hash,
             platform=self.PLATFORM_ENDSTONE,
             server_version=self._server_version,
+            client_nonce=client_nonce,
         )
-        
-        await self.send_packet(handshake)
-        
-        # Wait for response
+        await self.send_packet(init)
+
+        # 2) Await the server challenge.
+        try:
+            challenge = await self._read_packet()
+        except Exception as e:
+            self._logger.error(f"Error reading handshake challenge: {e}")
+            return False
+        if not isinstance(challenge, HandshakeChallengePacket):
+            self._logger.error("Unexpected response to handshake init (expected challenge)")
+            return False
+        server_nonce = challenge.server_nonce or ""
+
+        # 3) Compute the HMAC and authenticate.
+        #    key      = utf-8 bytes of sha256hex(password)   (stored credential hash)
+        #    message  = utf-8 bytes of (server_nonce_hex + client_nonce_hex)
+        #    output   = HMAC-SHA-256(key, message) as lowercase hex
+        key = hashlib.sha256(self._password.encode()).hexdigest().encode()
+        message = (server_nonce + client_nonce).encode()
+        auth_hmac = hmac.new(key, message, hashlib.sha256).hexdigest()
+
+        authenticate = HandshakeAuthenticatePacket(
+            client_id=self._username,
+            client_nonce=client_nonce,
+            hmac=auth_hmac,
+        )
+        await self.send_packet(authenticate)
+
+        # 4) Await the final response.
         try:
             packet = await self._read_packet()
             if isinstance(packet, HandshakeResponsePacket):
@@ -332,7 +449,7 @@ class NetworkClient:
                         self._logger.error("=================================================")
                     return False
             else:
-                self._logger.error("Unexpected response to handshake")
+                self._logger.error("Unexpected response to handshake authenticate")
                 return False
         except Exception as e:
             self._logger.error(f"Error during authentication: {e}")

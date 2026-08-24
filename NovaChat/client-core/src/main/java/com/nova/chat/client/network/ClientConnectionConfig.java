@@ -27,6 +27,14 @@ public final class ClientConnectionConfig {
     private final int maxReconnectDelaySeconds;
     private final long requestTimeoutMs;
     private final boolean autoReconnect;
+    /**
+     * AUTH-002: TLS material for the client side. When non-null the pipeline
+     * prepends an {@code SslHandler} so the challenge-response handshake runs
+     * inside an encrypted channel. {@code null} keeps the legacy plaintext
+     * transport (operators opt in via the backend's
+     * {@code insecure-allow-plaintext} gate).
+     */
+    private final ClientTlsConfig tls;
 
     private ClientConnectionConfig(Builder builder) {
         this.host = builder.host;
@@ -39,6 +47,7 @@ public final class ClientConnectionConfig {
         this.maxReconnectDelaySeconds = builder.maxReconnectDelaySeconds;
         this.requestTimeoutMs = builder.requestTimeoutMs;
         this.autoReconnect = builder.autoReconnect;
+        this.tls = builder.tls;
     }
 
     public String getHost() {
@@ -82,6 +91,14 @@ public final class ClientConnectionConfig {
     }
 
     /**
+     * @return the client-side TLS configuration, or {@code null} when the client
+     *         connects in plaintext (AUTH-002).
+     */
+    public ClientTlsConfig getTls() {
+        return tls;
+    }
+
+    /**
      * Creates a {@link ReconnectPolicy} configured from this connection config.
      */
     public ReconnectPolicy toReconnectPolicy() {
@@ -103,7 +120,8 @@ public final class ClientConnectionConfig {
                 .initialReconnectDelaySeconds(initialReconnectDelaySeconds)
                 .maxReconnectDelaySeconds(maxReconnectDelaySeconds)
                 .requestTimeoutMs(requestTimeoutMs)
-                .autoReconnect(autoReconnect);
+                .autoReconnect(autoReconnect)
+                .tls(tls);
     }
 
     public static Builder builder() {
@@ -121,6 +139,7 @@ public final class ClientConnectionConfig {
         private int maxReconnectDelaySeconds = DEFAULT_MAX_RECONNECT_DELAY_SECONDS;
         private long requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS;
         private boolean autoReconnect = true;
+        private ClientTlsConfig tls;
 
         public Builder host(String host) {
             this.host = Objects.requireNonNull(host, "host");
@@ -191,6 +210,18 @@ public final class ClientConnectionConfig {
         }
 
         /**
+         * AUTH-002: configures client-side TLS. When set, the network pipeline
+         * prepends an {@code SslHandler} so the challenge-response handshake runs
+         * inside an encrypted channel. {@code null} (the default) keeps plaintext.
+         *
+         * @param tls client TLS config, or {@code null} for plaintext
+         */
+        public Builder tls(ClientTlsConfig tls) {
+            this.tls = tls;
+            return this;
+        }
+
+        /**
          * Builds the immutable config. Validates that {@code host} is non-blank
          * and {@code maxReconnectDelaySeconds >= initialReconnectDelaySeconds}.
          *
@@ -231,7 +262,8 @@ public final class ClientConnectionConfig {
                 && autoReconnect == that.autoReconnect
                 && Objects.equals(host, that.host)
                 && Objects.equals(username, that.username)
-                && Objects.equals(password, that.password);
+                && Objects.equals(password, that.password)
+                && Objects.equals(tls, that.tls);
     }
 
     @Override
@@ -239,7 +271,7 @@ public final class ClientConnectionConfig {
         return Objects.hash(
                 host, port, username, password, connectTimeoutMs,
                 maxReconnectAttempts, initialReconnectDelaySeconds,
-                maxReconnectDelaySeconds, requestTimeoutMs, autoReconnect
+                maxReconnectDelaySeconds, requestTimeoutMs, autoReconnect, tls
         );
     }
 
@@ -256,6 +288,7 @@ public final class ClientConnectionConfig {
                 + ", maxReconnectDelaySeconds=" + maxReconnectDelaySeconds
                 + ", requestTimeoutMs=" + requestTimeoutMs
                 + ", autoReconnect=" + autoReconnect
+                + ", tls=" + tls
                 + '}';
     }
 }

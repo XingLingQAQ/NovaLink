@@ -27,9 +27,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ProtocolConsistencyTest {
 
     @Test
-    @DisplayName("PROTOCOL_VERSION is 2 and shared with NovaConstants")
+    @DisplayName("PROTOCOL_VERSION is 3 and shared with NovaConstants")
     void protocolVersionAligned() {
-        assertThat(NovaProtocol.PROTOCOL_VERSION).isEqualTo(2);
+        assertThat(NovaProtocol.PROTOCOL_VERSION).isEqualTo(3);
         assertThat(NovaConstants.PROTOCOL_VERSION).isEqualTo(NovaProtocol.PROTOCOL_VERSION);
     }
 

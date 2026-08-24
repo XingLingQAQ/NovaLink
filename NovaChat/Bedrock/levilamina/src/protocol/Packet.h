@@ -2,6 +2,7 @@
 
 #include "PacketBuffer.h"
 #include "PacketIds.h"
+#include "ProtocolLimits.h"
 #include <memory>
 #include <unordered_map>
 #include <string>
@@ -67,12 +68,12 @@ public:
 
     void read(PacketBuffer& buf) override {
         mProtocolVersion = buf.readVarInt();
-        mClientId = buf.readString();
-        mPasswordHash = buf.readString();
+        mClientId = buf.readString(ProtocolLimits::MAX_CLIENT_ID);
+        mPasswordHash = buf.readString(ProtocolLimits::MAX_PASSWORD_HASH);
         mPlatform = static_cast<PlatformType>(buf.readByte());
         // Optional trailing field (protocol v2+); old v1 peers omit it.
         if (buf.readableBytes() > 0) {
-            mServerVersion = buf.readString();
+            mServerVersion = buf.readString(ProtocolLimits::MAX_SERVER_VERSION);
         } else {
             mServerVersion.clear();
         }
@@ -90,6 +91,146 @@ private:
     std::string mPasswordHash;
     PlatformType mPlatform = PlatformType::LEVILAMINA;
     std::string mServerVersion;
+};
+
+/**
+ * Handshake init (Client -> Server), protocol v3 AUTH-002.
+ * Packet ID: 0x15
+ *
+ * Wire: varint protocolVersion | string clientId | byte platform |
+ *       string serverVersion | string clientNonce
+ *
+ * Replaces the legacy 0x01 HandshakePacket. The clientNonce is 16
+ * cryptographically-secure random bytes hex (32 chars); the HMAC exchanged
+ * in HandshakeAuthenticate binds it to the server's challenge nonce so the
+ * password is never replayed as a static hash.
+ *
+ * Field order and types must match the Java HandshakeInitPacket exactly.
+ * platform is the PlatformType wire ID (getId(), not ordinal).
+ */
+class HandshakeInitPacket : public Packet {
+public:
+    HandshakeInitPacket() = default;
+    HandshakeInitPacket(int32_t protocolVersion, const std::string& clientId,
+                        PlatformType platform, const std::string& serverVersion,
+                        const std::string& clientNonce)
+        : mProtocolVersion(protocolVersion)
+        , mClientId(clientId)
+        , mPlatform(platform)
+        , mServerVersion(serverVersion)
+        , mClientNonce(clientNonce) {}
+
+    [[nodiscard]] uint8_t getPacketId() const override { return PacketIds::HANDSHAKE_INIT; }
+
+    void write(PacketBuffer& buf) const override {
+        buf.writeVarInt(mProtocolVersion);
+        buf.writeString(mClientId);
+        buf.writeByte(static_cast<uint8_t>(mPlatform));
+        buf.writeString(mServerVersion);
+        buf.writeString(mClientNonce);
+    }
+
+    void read(PacketBuffer& buf) override {
+        mProtocolVersion = buf.readVarInt();
+        mClientId = buf.readString(ProtocolLimits::MAX_CLIENT_ID);
+        mPlatform = static_cast<PlatformType>(buf.readByte());
+        // serverVersion + clientNonce are optional trailing fields (tolerant
+        // decode mirrors the Java reader so a partial frame still decodes).
+        if (buf.readableBytes() > 0) {
+            mServerVersion = buf.readString(ProtocolLimits::MAX_SERVER_VERSION);
+            if (buf.readableBytes() > 0) {
+                mClientNonce = buf.readString(ProtocolLimits::MAX_NONCE);
+            } else {
+                mClientNonce.clear();
+            }
+        } else {
+            mServerVersion.clear();
+            mClientNonce.clear();
+        }
+    }
+
+    [[nodiscard]] int32_t getProtocolVersion() const { return mProtocolVersion; }
+    [[nodiscard]] const std::string& getClientId() const { return mClientId; }
+    [[nodiscard]] PlatformType getPlatform() const { return mPlatform; }
+    [[nodiscard]] const std::string& getServerVersion() const { return mServerVersion; }
+    [[nodiscard]] const std::string& getClientNonce() const { return mClientNonce; }
+
+private:
+    int32_t mProtocolVersion = PROTOCOL_VERSION;
+    std::string mClientId;
+    PlatformType mPlatform = PlatformType::LEVILAMINA;
+    std::string mServerVersion;
+    std::string mClientNonce;
+};
+
+/**
+ * Handshake challenge (Server -> Client), protocol v3 AUTH-002.
+ * Packet ID: 0x16
+ *
+ * Wire: string serverNonce (16 random bytes hex, 32 chars)
+ */
+class HandshakeChallengePacket : public Packet {
+public:
+    HandshakeChallengePacket() = default;
+    explicit HandshakeChallengePacket(const std::string& serverNonce)
+        : mServerNonce(serverNonce) {}
+
+    [[nodiscard]] uint8_t getPacketId() const override { return PacketIds::HANDSHAKE_CHALLENGE; }
+
+    void write(PacketBuffer& buf) const override {
+        buf.writeString(mServerNonce);
+    }
+
+    void read(PacketBuffer& buf) override {
+        mServerNonce = buf.readString(ProtocolLimits::MAX_NONCE);
+    }
+
+    [[nodiscard]] const std::string& getServerNonce() const { return mServerNonce; }
+
+private:
+    std::string mServerNonce;
+};
+
+/**
+ * Handshake authenticate (Client -> Server), protocol v3 AUTH-002.
+ * Packet ID: 0x17
+ *
+ * Wire: string clientId | string clientNonce | string hmac
+ *
+ * hmac = HMAC-SHA256(key = sha256hex(password), message = serverNonce || clientNonce),
+ * output lowercase hex (see util/HmacSha256). The clientNonce here echoes the
+ * nonce the client sent in HandshakeInit; the server pairs it with the
+ * serverNonce it issued in HandshakeChallenge.
+ */
+class HandshakeAuthenticatePacket : public Packet {
+public:
+    HandshakeAuthenticatePacket() = default;
+    HandshakeAuthenticatePacket(const std::string& clientId, const std::string& clientNonce,
+                                const std::string& hmac)
+        : mClientId(clientId), mClientNonce(clientNonce), mHmac(hmac) {}
+
+    [[nodiscard]] uint8_t getPacketId() const override { return PacketIds::HANDSHAKE_AUTHENTICATE; }
+
+    void write(PacketBuffer& buf) const override {
+        buf.writeString(mClientId);
+        buf.writeString(mClientNonce);
+        buf.writeString(mHmac);
+    }
+
+    void read(PacketBuffer& buf) override {
+        mClientId = buf.readString(ProtocolLimits::MAX_CLIENT_ID);
+        mClientNonce = buf.readString(ProtocolLimits::MAX_NONCE);
+        mHmac = buf.readString(ProtocolLimits::MAX_HMAC);
+    }
+
+    [[nodiscard]] const std::string& getClientId() const { return mClientId; }
+    [[nodiscard]] const std::string& getClientNonce() const { return mClientNonce; }
+    [[nodiscard]] const std::string& getHmac() const { return mHmac; }
+
+private:
+    std::string mClientId;
+    std::string mClientNonce;
+    std::string mHmac;
 };
 
 /**
@@ -113,8 +254,8 @@ public:
 
     void read(PacketBuffer& buf) override {
         mSuccess = buf.readBoolean();
-        mErrorCode = buf.readString();
-        mMessage = buf.readString();
+        mErrorCode = buf.readString(ProtocolLimits::MAX_ERROR_CODE);
+        mMessage = buf.readString(ProtocolLimits::MAX_ERROR_MESSAGE);
     }
 
     [[nodiscard]] bool isSuccess() const { return mSuccess; }
@@ -165,10 +306,10 @@ public:
 
     void read(PacketBuffer& buf) override {
         mSenderId = buf.readUUID();
-        mSenderName = buf.readString();
-        mClientId = buf.readString();
-        mChannelId = buf.readString();
-        mContent = buf.readString();
+        mSenderName = buf.readString(ProtocolLimits::MAX_SENDER_NAME);
+        mClientId = buf.readString(ProtocolLimits::MAX_CLIENT_ID);
+        mChannelId = buf.readString(ProtocolLimits::MAX_CHANNEL_ID);
+        mContent = buf.readString(ProtocolLimits::MAX_MESSAGE_CONTENT);
         // Placeholders map (optional for legacy peers), kept like Java does.
         // vector<pair> preserves wire order so re-encode is byte-stable.
         mPlaceholders.clear();
@@ -177,8 +318,8 @@ public:
             if (size >= 0 && size <= 1000) { // defensive bound, mirrors Java
                 mPlaceholders.reserve(static_cast<size_t>(size));
                 for (int32_t i = 0; i < size; ++i) {
-                    std::string key = buf.readString();
-                    std::string value = buf.readString();
+                    std::string key = buf.readString(ProtocolLimits::MAX_METADATA_KEY);
+                    std::string value = buf.readString(ProtocolLimits::MAX_METADATA_VALUE);
                     mPlaceholders.emplace_back(std::move(key), std::move(value));
                 }
             }
@@ -266,8 +407,8 @@ public:
 
     void read(PacketBuffer& buf) override {
         mAction = static_cast<ChannelAction>(buf.readByte());
-        mChannelId = buf.readString();
-        mPassword = buf.readString();
+        mChannelId = buf.readString(ProtocolLimits::MAX_CHANNEL_ID);
+        mPassword = buf.readString(ProtocolLimits::MAX_CHANNEL_PASSWORD);
         // Extra map (optional for legacy implementations).
         if (buf.readableBytes() <= 0) {
             mExtra.clear();
@@ -276,8 +417,8 @@ public:
         int32_t size = buf.readVarInt();
         mExtra.clear();
         for (int32_t i = 0; i < size; ++i) {
-            std::string key = buf.readString();
-            std::string value = buf.readString();
+            std::string key = buf.readString(ProtocolLimits::MAX_METADATA_KEY);
+            std::string value = buf.readString(ProtocolLimits::MAX_METADATA_VALUE);
             mExtra.emplace(std::move(key), std::move(value));
         }
     }
@@ -328,9 +469,9 @@ public:
     void read(PacketBuffer& buf) override {
         mSuccess = buf.readBoolean();
         mAction = static_cast<ChannelAction>(buf.readByte());
-        mChannelId = buf.readString();
-        mErrorCode = buf.readString();
-        mMessage = buf.readString();
+        mChannelId = buf.readString(ProtocolLimits::MAX_CHANNEL_ID);
+        mErrorCode = buf.readString(ProtocolLimits::MAX_ERROR_CODE);
+        mMessage = buf.readString(ProtocolLimits::MAX_ERROR_MESSAGE);
         if (buf.readableBytes() <= 0) {
             mExtra.clear();
             return;
@@ -338,8 +479,8 @@ public:
         int32_t size = buf.readVarInt();
         mExtra.clear();
         for (int32_t i = 0; i < size; ++i) {
-            std::string key = buf.readString();
-            std::string value = buf.readString();
+            std::string key = buf.readString(ProtocolLimits::MAX_METADATA_KEY);
+            std::string value = buf.readString(ProtocolLimits::MAX_METADATA_VALUE);
             mExtra.emplace(std::move(key), std::move(value));
         }
     }
@@ -381,7 +522,7 @@ public:
     }
 
     void read(PacketBuffer& buf) override {
-        mConfigJson = buf.readString();
+        mConfigJson = buf.readString(ProtocolLimits::MAX_CONFIG_SYNC_JSON);
         mTimestamp = buf.readLong();
     }
 
@@ -416,9 +557,9 @@ public:
     }
 
     void read(PacketBuffer& buf) override {
-        mChannelId = buf.readString();
-        mTitle = buf.readString();
-        mSubtitle = buf.readString();
+        mChannelId = buf.readString(ProtocolLimits::MAX_CHANNEL_ID);
+        mTitle = buf.readString(ProtocolLimits::MAX_TITLE);
+        mSubtitle = buf.readString(ProtocolLimits::MAX_SUBTITLE);
         mFadeIn = buf.readInt();
         mStay = buf.readInt();
         mFadeOut = buf.readInt();
@@ -470,13 +611,13 @@ public:
     void read(PacketBuffer& buf) override {
         mAction = static_cast<AdminAction>(buf.readByte());
         mPlayerId = buf.readUUID();
-        mPasswordHash = buf.readString();
-        mTarget = buf.readString();
+        mPasswordHash = buf.readString(ProtocolLimits::MAX_PASSWORD_HASH);
+        mTarget = buf.readString(ProtocolLimits::MAX_CHANNEL_ID);
         int32_t size = buf.readVarInt();
         mExtra.clear();
         for (int32_t i = 0; i < size; ++i) {
-            std::string key = buf.readString();
-            std::string value = buf.readString();
+            std::string key = buf.readString(ProtocolLimits::MAX_METADATA_KEY);
+            std::string value = buf.readString(ProtocolLimits::MAX_METADATA_VALUE);
             mExtra.emplace(std::move(key), std::move(value));
         }
     }
@@ -485,6 +626,19 @@ public:
     [[nodiscard]] const UUID& getPlayerId() const { return mPlayerId; }
     [[nodiscard]] const std::string& getPasswordHash() const { return mPasswordHash; }
     [[nodiscard]] const std::string& getTarget() const { return mTarget; }
+    // Extra map accessors (parity with ChannelActionPacket). The /nc announce
+    // path stashes type/operatorName/content here so the backend handleStatus
+    // dispatch (handleAnnounce) can route the broadcast without a dedicated
+    // announcement packet (FEATURE-002 deprecates the orphan 0x0A).
+    [[nodiscard]] const std::unordered_map<std::string, std::string>& getExtra() const { return mExtra; }
+    [[nodiscard]] std::string getExtra(const std::string& key) const {
+        auto it = mExtra.find(key);
+        return it != mExtra.end() ? it->second : "";
+    }
+    void addExtra(const std::string& key, const std::string& value) {
+        mExtra.emplace(key, value);
+    }
+    void setExtra(const std::unordered_map<std::string, std::string>& extra) { mExtra = extra; }
 
     void setAction(AdminAction action) { mAction = action; }
     void setPlayerId(const UUID& id) { mPlayerId = id; }
@@ -520,8 +674,8 @@ public:
     void read(PacketBuffer& buf) override {
         mAction = static_cast<AdminAction>(buf.readByte());
         mSuccess = buf.readBoolean();
-        mErrorCode = buf.readString();
-        mMessage = buf.readString();
+        mErrorCode = buf.readString(ProtocolLimits::MAX_ERROR_CODE);
+        mMessage = buf.readString(ProtocolLimits::MAX_ERROR_MESSAGE);
     }
 
     [[nodiscard]] AdminAction getAction() const { return mAction; }
@@ -566,9 +720,9 @@ public:
 
     void read(PacketBuffer& buf) override {
         mSenderId = buf.readUUID();
-        mSenderName = buf.readString();
-        mChannelId = buf.readString();
-        mItemJson = buf.readString();
+        mSenderName = buf.readString(ProtocolLimits::MAX_SENDER_NAME);
+        mChannelId = buf.readString(ProtocolLimits::MAX_CHANNEL_ID);
+        mItemJson = buf.readString(ProtocolLimits::MAX_ITEM_JSON);
         mTimestamp = buf.readLong();
     }
 
@@ -618,10 +772,10 @@ public:
 
     void read(PacketBuffer& buf) override {
         mMentionerId = buf.readUUID();
-        mMentionerName = buf.readString();
+        mMentionerName = buf.readString(ProtocolLimits::MAX_SENDER_NAME);
         mMentionedId = buf.readUUID();
-        mChannelId = buf.readString();
-        mMessagePreview = buf.readString();
+        mChannelId = buf.readString(ProtocolLimits::MAX_CHANNEL_ID);
+        mMessagePreview = buf.readString(ProtocolLimits::MAX_MESSAGE_PREVIEW);
         mTimestamp = buf.readLong();
     }
 
@@ -680,11 +834,11 @@ public:
 
     void read(PacketBuffer& buf) override {
         mSenderId = buf.readUUID();
-        mSenderName = buf.readString();
-        mSenderClientId = buf.readString();
-        mTargetName = buf.readString();
+        mSenderName = buf.readString(ProtocolLimits::MAX_SENDER_NAME);
+        mSenderClientId = buf.readString(ProtocolLimits::MAX_CLIENT_ID);
+        mTargetName = buf.readString(ProtocolLimits::MAX_TARGET_NAME);
         mTargetId = buf.readUUID();
-        mContent = buf.readString();
+        mContent = buf.readString(ProtocolLimits::MAX_MESSAGE_CONTENT);
         mTimestamp = buf.readLong();
     }
 

@@ -45,9 +45,9 @@ class ChannelActionResponsePacket extends Packet {
     public function decode(PacketBuffer $buffer): void {
         $this->success = $buffer->readBoolean();
         $this->action = $buffer->readByte();
-        $this->channelId = $buffer->readString();
-        $this->errorCode = $buffer->readString();
-        $this->message = $buffer->readString();
+        $this->channelId = $buffer->readString(ProtocolLimits::MAX_CHANNEL_ID);
+        $this->errorCode = $buffer->readString(ProtocolLimits::MAX_ERROR_CODE);
+        $this->message = $buffer->readString(ProtocolLimits::MAX_ERROR_MESSAGE);
         if ($buffer->remaining() <= 0) {
             $this->extra = [];
             return;
@@ -55,8 +55,8 @@ class ChannelActionResponsePacket extends Packet {
         $size = $buffer->readVarInt();
         $this->extra = [];
         for ($i = 0; $i < $size; $i++) {
-            $key = $buffer->readString();
-            $value = $buffer->readString();
+            $key = $buffer->readString(ProtocolLimits::MAX_METADATA_KEY);
+            $value = $buffer->readString(ProtocolLimits::MAX_METADATA_VALUE);
             $this->extra[$key] = $value;
         }
     }

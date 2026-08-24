@@ -42,6 +42,13 @@ if get_config("sdk") ~= "n" then
     add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
     add_requires("levilamina", {configs = {target_type = "server"}})
     add_requires("levibuildscript")
+    -- AUTH-002 TLS: OpenSSL is the TLS backend for the transport encryption
+    -- (SSL_CTX + non-blocking SSL_connect/SSL_read/SSL_write wired into the
+    -- select() loop in NetworkClient). Declared here so the symbols link once
+    -- the SSL state machine lands in doConnect(). The self-contained
+    -- HmacSha256/Sha256 utilities do NOT depend on OpenSSL (they have their
+    -- own bundled implementations); this dependency is transport-only.
+    add_requires("openssl")
 end
 
 -- Target: novachat-levilamina (the BDS plugin shared library)
@@ -64,6 +71,12 @@ target("novachat-levilamina")
     -- LeviLamina dependency (only when the SDK is enabled).
     if get_config("sdk") ~= "n" then
         add_packages("levilamina")
+        -- AUTH-002 TLS: expose the OpenSSL headers + link the OpenSSL runtime
+        -- to the plugin target. Only added under the SDK guard (the test
+        -- targets do not use the TLS transport and must stay free of the BDS
+        -- toolchain). Used by the forthcoming SSL state machine in
+        -- NetworkClient; harmless until then (an unused package import).
+        add_packages("openssl")
     end
 
     -- Source files
@@ -78,16 +91,24 @@ target("novachat-levilamina")
     -- Windows-specific settings
     if is_plat("windows") then
         add_defines("WIN32", "_WIN32", "_WINDOWS")
-        add_syslinks("ws2_32", "mswsock", "advapi32")
+        -- AUTH-002 TLS: link the OpenSSL libraries alongside the existing
+        -- winsock / advapi32 system libs. The openssl xmake package (declared
+        -- above) provides the import libs via add_packages; add_syslinks
+        -- keeps the link line explicit and matches the idiom of the existing
+        -- ws2_32/mswsock/advapi32 entries. The TLS transport is verified by
+        -- OpenSSL (SSL_VERIFY_PEER) — there is no option to disable cert
+        -- verification once TLS is enabled.
+        add_syslinks("ws2_32", "mswsock", "advapi32", "libssl", "libcrypto")
     end
 
-    -- After build: copy manifest + lang resources (fallback modpacker; harmless
+    -- After build: copy manifest + resources/lang (fallback modpacker; harmless
     -- if modpacker already packed them -- os.cp just overwrites with the same
     -- files). The lang/ directory ships next to the .dll so the I18n loader
     -- (which scans <module-dir>/lang/*.json) finds translations at runtime.
     after_build(function (target)
         local targetdir = target:targetdir()
         os.cp("manifest.json", targetdir)
+        os.cp("resources", targetdir .. "/resources")
         os.cp("src/i18n/lang", targetdir .. "/lang")
     end)
 target_end()
@@ -123,6 +144,7 @@ target("novachat-levilamina-tests")
     add_files("tests/test_protocol.cpp")
     add_files("src/protocol/PacketBuffer.cpp")
     add_files("src/util/Sha256.cpp")
+    add_files("src/util/HmacSha256.cpp")
     add_files("src/i18n/I18n.cpp")
 
     set_targetdir("$(buildir)/bin")

@@ -46,8 +46,28 @@ public:
 
     NetworkClient(const std::string& host, uint16_t port,
                   const std::string& username, const std::string& password,
-                  const std::string& serverVersion = "");
+                  const std::string& serverVersion, int reconnectDelay);
     ~NetworkClient();
+
+    /**
+     * AUTH-002 TLS: apply the backend transport-encryption settings. Kept as a
+     * separate setter rather than a constructor/reconfigure parameter so the
+     * existing 6-arg constructor + reconfigure signatures stay unchanged for
+     * the plaintext default (zero regression). When tlsEnabled is true the
+     * backend certificate is ALWAYS verified against caCertPath (or the system
+     * CA store when empty); there is no option to disable verification. The
+     * optional mTLS pair is loaded only when both clientCertPath and
+     * clientKeyPath are non-empty.
+     *
+     * NOTE: TLS transport is not yet implemented in doConnect() — the backend
+     * still connects over plaintext TCP even when TLS is configured. This
+     * stores the config so the (forthcoming) OpenSSL integration can consume
+     * it without re-plumbing the constructor. See the TODO in doConnect().
+     */
+    void setTlsConfig(bool tlsEnabled,
+                      const std::string& caCertPath,
+                      const std::string& clientCertPath,
+                      const std::string& clientKeyPath);
 
     // Non-copyable
     NetworkClient(const NetworkClient&) = delete;
@@ -58,6 +78,15 @@ public:
      * @return true if connection initiated successfully
      */
     bool connect();
+
+    /**
+     * Apply new connection settings and restart the client.
+     * The handler registry is retained, so the owning chat interceptor keeps
+     * receiving backend packets after a configuration reload.
+     */
+    bool reconfigure(const std::string& host, uint16_t port,
+                     const std::string& username, const std::string& password,
+                     const std::string& serverVersion, int reconnectDelay);
 
     /**
      * Disconnect from the backend server.
@@ -95,12 +124,6 @@ public:
      */
     void processIncomingPackets();
 
-    /**
-     * Set reconnect delay in seconds.
-     * @param seconds delay between reconnection attempts
-     */
-    void setReconnectDelay(int seconds) { mReconnectDelay = seconds; }
-
 private:
     // Network thread functions
     void networkThreadFunc();
@@ -118,6 +141,10 @@ private:
     // Authentication
     void sendHandshake();
     void handleHandshakeResponse(const HandshakeResponsePacket& response);
+    // AUTH-002 challenge-response: driven from processReceivedData on the
+    // network thread. mPendingClientNonce holds the nonce generated in
+    // sendHandshake until the server's challenge arrives.
+    void handleHandshakeChallenge(const HandshakeChallengePacket& challenge);
 
     // Keep-alive
     void sendKeepAlive();
@@ -128,7 +155,22 @@ private:
     std::string mUsername;
     std::string mPassword;
     std::string mServerVersion;
-    int mReconnectDelay = 5;
+    int mReconnectDelay;
+
+    // AUTH-002 TLS transport settings. Stored via setTlsConfig() but NOT yet
+    // applied in doConnect() — see the TODO there. Kept on the instance so the
+    // OpenSSL integration can consume them without re-plumbing the constructor
+    // signature (which is shared with the test target and the plugin wiring).
+    bool mTlsEnabled = false;
+    std::string mTlsCaCertPath;
+    std::string mTlsClientCertPath;
+    std::string mTlsClientKeyPath;
+
+    // AUTH-002: the client nonce sent in HandshakeInit, retained across select()
+    // loop iterations until the matching HandshakeChallenge arrives. Owned by
+    // the network thread (set in sendHandshake, consumed+cleared in
+    // handleHandshakeChallenge, both on the network thread).
+    std::string mPendingClientNonce;
 
     // Socket
     SOCKET mSocket = INVALID_SOCKET;
@@ -147,6 +189,15 @@ private:
     // Receive buffer
     std::vector<uint8_t> mReceiveBuffer;
     static constexpr size_t RECEIVE_BUFFER_SIZE = 65536;
+
+    // Send buffer — bytes pulled from mOutgoingQueue but not yet fully written
+    // to the socket. [mSendOffset, mSendBuffer.size()) is the range still
+    // pending. Survives across sendLoop() calls so a short write or a
+    // non-blocking EAGAIN no longer drops the tail of a packet. Owned by the
+    // network thread: sendLoop appends/drains; doConnect/doDisconnect clear.
+    std::vector<uint8_t> mSendBuffer;
+    size_t mSendOffset = 0;
+    static constexpr size_t SEND_BUFFER_HIGH_WATER_MARK = 1024 * 1024; // 1 MiB
 
     // Packet handlers
     std::unordered_map<uint8_t, PacketHandler> mHandlers;

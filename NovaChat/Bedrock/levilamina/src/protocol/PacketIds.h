@@ -35,7 +35,16 @@ struct PacketIds {
     /** Title message (Server -> Client) */
     static constexpr uint8_t TITLE = 0x09;
 
-    /** Announcement message (Server -> Client) - reserved orphan, no Java class yet */
+    /**
+     * Announcement message (Server -> Client).
+     *
+     * FEATURE-002: deprecated orphan. No Java class was ever written for this
+     * ID and the backend never sends it — announcements are broadcast via
+     * AdminAction STATUS + type=ANNOUNCE extra -> handleAnnounce ->
+     * routeMessage (0x03). The LeviLamina client used to register a log-only
+     * handler for 0x0A; that handler has been removed. The constant is kept
+     * only to preserve the packet-ID numbering; do not register a handler.
+     */
     static constexpr uint8_t ANNOUNCEMENT = 0x0A;
 
     /** Admin action (Client -> Server) */
@@ -55,6 +64,14 @@ struct PacketIds {
 
     /** Private message (Bidirectional) - cross-server /msg + /reply */
     static constexpr uint8_t PRIVATE_MESSAGE = 0x14;
+
+    // ==================== Challenge-response handshake (AUTH-002) ====================
+    /** Handshake init (Client -> Server). */
+    static constexpr uint8_t HANDSHAKE_INIT = 0x15;
+    /** Handshake challenge (Server -> Client). */
+    static constexpr uint8_t HANDSHAKE_CHALLENGE = 0x16;
+    /** Handshake authenticate (Client -> Server). */
+    static constexpr uint8_t HANDSHAKE_AUTHENTICATE = 0x17;
 };
 
 /**
@@ -123,8 +140,13 @@ enum class AdminAction : uint8_t {
 
 /**
  * Current NovaProtocol version. Must match Java NovaProtocol.PROTOCOL_VERSION.
- * v2 (2026-08): HandshakePacket adds trailing serverVersion field.
+ * v3 (2026-08): AUTH-002 — the replayable static SHA-256(password) handshake
+ * is replaced by the 3-packet challenge-response flow (HandshakeInit 0x15,
+ * HandshakeChallenge 0x16, HandshakeAuthenticate 0x17) keyed by an HMAC
+ * over the server+client nonces. Hard cutover; v2 clients can no longer
+ * authenticate. The legacy HandshakePacket class is retained for golden-byte
+ * decode compatibility only.
  */
-static constexpr int32_t PROTOCOL_VERSION = 2;
+static constexpr int32_t PROTOCOL_VERSION = 3;
 
 } // namespace novachat::protocol

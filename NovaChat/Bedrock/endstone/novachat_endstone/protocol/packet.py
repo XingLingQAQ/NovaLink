@@ -14,6 +14,7 @@ from enum import IntEnum
 from typing import Optional, Dict, Any
 
 from novachat_endstone.protocol.buffer import PacketBuffer
+from novachat_endstone.protocol import protocol_limits as _pl
 
 
 class ChannelAction:
@@ -74,13 +75,20 @@ class PacketIds(IntEnum):
     KEEP_ALIVE = 0x07
     PLAYER_STATE = 0x08  # reserved
     TITLE = 0x09
-    ANNOUNCEMENT = 0x0A  # optional (no Java class yet)
+    # 0x0A (ANNOUNCEMENT) is intentionally absent: the backend never sends an
+    # Announcement packet. Announcements are delivered as AdminAction STATUS
+    # with type=ANNOUNCE, routed to 0x03 ChatMessage by the backend. The
+    # client-side AnnouncementPacket + handler were dead code (FEATURE-002).
     ADMIN_ACTION = 0x0B
     ADMIN_ACTION_RESPONSE = 0x0C
     CHANNEL_UPDATE = 0x0D  # optional (no Java class yet)
     ITEM_DISPLAY = 0x10
     MENTION = 0x12
     PRIVATE_MESSAGE = 0x14
+    # ==================== Challenge-response handshake (AUTH-002) ====================
+    HANDSHAKE_INIT = 0x15  # Client -> Server
+    HANDSHAKE_CHALLENGE = 0x16  # Server -> Client
+    HANDSHAKE_AUTHENTICATE = 0x17  # Client -> Server
 
 
 class Packet(ABC):
@@ -128,14 +136,14 @@ class HandshakePacket(Packet):
     @classmethod
     def decode(cls, buffer: PacketBuffer) -> "HandshakePacket":
         protocol_version = buffer.read_varint()
-        client_id = buffer.read_string()
-        password_hash = buffer.read_string()
+        client_id = buffer.read_string(_pl.MAX_CLIENT_ID)
+        password_hash = buffer.read_string(_pl.MAX_PASSWORD_HASH)
         platform = buffer.read_byte()
         # Optional trailing serverVersion field (protocol v2+).
         server_version = ""
         if buffer.remaining() > 0:
             try:
-                server_version = buffer.read_string()
+                server_version = buffer.read_string(_pl.MAX_SERVER_VERSION)
             except Exception:
                 server_version = ""
         return cls(
@@ -150,26 +158,162 @@ class HandshakePacket(Packet):
 @dataclass
 class HandshakeResponsePacket(Packet):
     """Handshake response packet sent by server."""
-    
+
     success: bool
     error_code: str
     message: str
-    
+
     @property
     def packet_id(self) -> int:
         return PacketIds.HANDSHAKE_RESPONSE
-    
+
     def encode(self, buffer: PacketBuffer) -> None:
         buffer.write_boolean(self.success)
         buffer.write_string(self.error_code)
         buffer.write_string(self.message)
-    
+
     @classmethod
     def decode(cls, buffer: PacketBuffer) -> "HandshakeResponsePacket":
         return cls(
             success=buffer.read_boolean(),
-            error_code=buffer.read_string(),
-            message=buffer.read_string()
+            error_code=buffer.read_string(_pl.MAX_ERROR_CODE),
+            message=buffer.read_string(_pl.MAX_ERROR_MESSAGE)
+        )
+
+
+@dataclass
+class HandshakeInitPacket(Packet):
+    """Handshake init packet — first packet of the AUTH-002 challenge-response
+    handshake (Client -> Server). Packet ID: 0x15.
+
+    Replaces the replayable static-hash HandshakePacket. The client sends a
+    fresh cryptographically-secure random nonce; the server replies with
+    HandshakeChallengePacket carrying its own nonce, and the client proves
+    possession of the password via an HMAC in HandshakeAuthenticatePacket.
+
+    Wire (payload only; envelope written by send_packet):
+        VarInt  protocol_version  (== PROTOCOL_VERSION, currently 3)
+        String  client_id         (<= 64, VarInt-length UTF-8)
+        Byte    platform          (PlatformType id; ENDSTONE = 10)
+        String  server_version    (<= 64)
+        String  client_nonce      (<= 64, 16 random bytes lowercase-hex = 32 chars)
+
+    Field order MUST stay byte-for-byte in lockstep with the JVM
+    HandshakeInitPacket (NovaChat/common) and the PHP/C++ forks.
+    """
+
+    protocol_version: int
+    client_id: str
+    platform: int
+    server_version: str
+    client_nonce: str
+
+    @property
+    def packet_id(self) -> int:
+        return PacketIds.HANDSHAKE_INIT
+
+    def encode(self, buffer: PacketBuffer) -> None:
+        buffer.write_varint(self.protocol_version)
+        buffer.write_string(self.client_id or "")
+        buffer.write_byte(self.platform)
+        buffer.write_string(self.server_version or "")
+        buffer.write_string(self.client_nonce or "")
+
+    @classmethod
+    def decode(cls, buffer: PacketBuffer) -> "HandshakeInitPacket":
+        protocol_version = buffer.read_varint()
+        client_id = buffer.read_string(_pl.MAX_CLIENT_ID)
+        platform = buffer.read_byte()
+        # Trailing fields are optional on decode for partial-frame tolerance,
+        # mirroring the JVM HandshakeInitPacket#read.
+        server_version = ""
+        if buffer.remaining() > 0:
+            try:
+                server_version = buffer.read_string(_pl.MAX_SERVER_VERSION)
+            except Exception:
+                server_version = ""
+        client_nonce = ""
+        if buffer.remaining() > 0:
+            try:
+                client_nonce = buffer.read_string(_pl.MAX_NONCE)
+            except Exception:
+                client_nonce = ""
+        return cls(
+            protocol_version=protocol_version,
+            client_id=client_id,
+            platform=platform,
+            server_version=server_version,
+            client_nonce=client_nonce,
+        )
+
+
+@dataclass
+class HandshakeChallengePacket(Packet):
+    """Handshake challenge packet — second packet of the AUTH-002
+    challenge-response handshake (Server -> Client). Packet ID: 0x16.
+
+    The server generates a fresh 16-byte cryptographically-secure random nonce
+    and returns it to the client in response to HandshakeInitPacket. The client
+    combines this nonce with its own init nonce to compute the HMAC in
+    HandshakeAuthenticatePacket.
+
+    Wire (payload only):
+        String  server_nonce  (<= 64, 16 random bytes lowercase-hex = 32 chars)
+    """
+
+    server_nonce: str
+
+    @property
+    def packet_id(self) -> int:
+        return PacketIds.HANDSHAKE_CHALLENGE
+
+    def encode(self, buffer: PacketBuffer) -> None:
+        buffer.write_string(self.server_nonce or "")
+
+    @classmethod
+    def decode(cls, buffer: PacketBuffer) -> "HandshakeChallengePacket":
+        return cls(server_nonce=buffer.read_string(_pl.MAX_NONCE))
+
+
+@dataclass
+class HandshakeAuthenticatePacket(Packet):
+    """Handshake authenticate packet — third and final packet of the AUTH-002
+    challenge-response handshake (Client -> Server). Packet ID: 0x17.
+
+    The client echoes its own nonce (the one sent in HandshakeInitPacket) and
+    proves possession of the stored password hash by sending an HMAC-SHA-256
+    over (server_nonce + client_nonce), keyed by sha256hex(password).
+
+    Wire (payload only):
+        String  client_id       (<= 64, must match the init packet's client_id)
+        String  client_nonce    (<= 64, must echo the init packet's client_nonce)
+        String  hmac            (<= 128, lowercase-hex HMAC-SHA-256)
+
+    HMAC computation (must match JVM / PHP / C++ forks byte-for-byte):
+        key      = utf-8 bytes of sha256hex(password)   # stored credential hash
+        message  = utf-8 bytes of (server_nonce_hex + client_nonce_hex)  # concat
+        output   = hmac.new(key, message, sha256).hexdigest()  # lowercase hex
+    """
+
+    client_id: str
+    client_nonce: str
+    hmac: str
+
+    @property
+    def packet_id(self) -> int:
+        return PacketIds.HANDSHAKE_AUTHENTICATE
+
+    def encode(self, buffer: PacketBuffer) -> None:
+        buffer.write_string(self.client_id or "")
+        buffer.write_string(self.client_nonce or "")
+        buffer.write_string(self.hmac or "")
+
+    @classmethod
+    def decode(cls, buffer: PacketBuffer) -> "HandshakeAuthenticatePacket":
+        return cls(
+            client_id=buffer.read_string(_pl.MAX_CLIENT_ID),
+            client_nonce=buffer.read_string(_pl.MAX_NONCE),
+            hmac=buffer.read_string(_pl.MAX_HMAC),
         )
 
 
@@ -204,10 +348,10 @@ class ChatMessagePacket(Packet):
     @classmethod
     def decode(cls, buffer: PacketBuffer) -> "ChatMessagePacket":
         sender_id = buffer.read_uuid()
-        sender_name = buffer.read_string()
-        client_id = buffer.read_string()
-        channel_id = buffer.read_string()
-        content = buffer.read_string()
+        sender_name = buffer.read_string(_pl.MAX_SENDER_NAME)
+        client_id = buffer.read_string(_pl.MAX_CLIENT_ID)
+        channel_id = buffer.read_string(_pl.MAX_CHANNEL_ID)
+        content = buffer.read_string(_pl.MAX_MESSAGE_CONTENT)
 
         # Placeholders map (optional for legacy peers), kept like Java does.
         placeholders: Dict[str, str] = {}
@@ -219,8 +363,8 @@ class ChatMessagePacket(Packet):
                 size = 0
             if 0 <= size <= 1000:  # defensive bound, mirrors Java
                 for _ in range(size):
-                    key = buffer.read_string()
-                    placeholders[key] = buffer.read_string()
+                    key = buffer.read_string(_pl.MAX_METADATA_KEY)
+                    placeholders[key] = buffer.read_string(_pl.MAX_METADATA_VALUE)
 
         return cls(
             sender_id=sender_id,
@@ -257,16 +401,16 @@ class ChannelActionPacket(Packet):
     @classmethod
     def decode(cls, buffer: PacketBuffer) -> "ChannelActionPacket":
         action = buffer.read_byte()
-        channel_id = buffer.read_string()
-        password = buffer.read_string()
+        channel_id = buffer.read_string(_pl.MAX_CHANNEL_ID)
+        password = buffer.read_string(_pl.MAX_CHANNEL_PASSWORD)
 
         extra: Dict[str, str] = {}
         if buffer.remaining() > 0:
             try:
                 size = buffer.read_varint()
                 for _ in range(max(0, size)):
-                    k = buffer.read_string()
-                    v = buffer.read_string()
+                    k = buffer.read_string(_pl.MAX_METADATA_KEY)
+                    v = buffer.read_string(_pl.MAX_METADATA_VALUE)
                     extra[k] = v
             except Exception:
                 extra = {}
@@ -299,32 +443,9 @@ class ChannelUpdatePacket(Packet):
     @classmethod
     def decode(cls, buffer: PacketBuffer) -> "ChannelUpdatePacket":
         return cls(
-            channel_id=buffer.read_string(),
+            channel_id=buffer.read_string(_pl.MAX_CHANNEL_ID),
             update_type=buffer.read_byte(),
-            data_json=buffer.read_string()
-        )
-
-
-@dataclass
-class AnnouncementPacket(Packet):
-    """Server announcement packet."""
-    
-    announcement_type: int
-    message: str
-    
-    @property
-    def packet_id(self) -> int:
-        return PacketIds.ANNOUNCEMENT
-    
-    def encode(self, buffer: PacketBuffer) -> None:
-        buffer.write_byte(self.announcement_type)
-        buffer.write_string(self.message)
-    
-    @classmethod
-    def decode(cls, buffer: PacketBuffer) -> "AnnouncementPacket":
-        return cls(
-            announcement_type=buffer.read_byte(),
-            message=buffer.read_string()
+            data_json=buffer.read_string(_pl.MAX_ACTION_JSON)
         )
 
 
@@ -376,9 +497,9 @@ class TitleMessagePacket(Packet):
     @classmethod
     def decode(cls, buffer: PacketBuffer) -> "TitleMessagePacket":
         return cls(
-            channel_id=buffer.read_string(),
-            title=buffer.read_string(),
-            subtitle=buffer.read_string(),
+            channel_id=buffer.read_string(_pl.MAX_CHANNEL_ID),
+            title=buffer.read_string(_pl.MAX_TITLE),
+            subtitle=buffer.read_string(_pl.MAX_SUBTITLE),
             fade_in=buffer.read_int(),
             stay=buffer.read_int(),
             fade_out=buffer.read_int(),
@@ -416,17 +537,17 @@ class ChannelActionResponsePacket(Packet):
     def decode(cls, buffer: PacketBuffer) -> "ChannelActionResponsePacket":
         success = buffer.read_boolean()
         action = buffer.read_byte()
-        channel_id = buffer.read_string()
-        error_code = buffer.read_string()
-        message = buffer.read_string()
+        channel_id = buffer.read_string(_pl.MAX_CHANNEL_ID)
+        error_code = buffer.read_string(_pl.MAX_ERROR_CODE)
+        message = buffer.read_string(_pl.MAX_ERROR_MESSAGE)
 
         extra: Dict[str, str] = {}
         if buffer.remaining() > 0:
             try:
                 size = buffer.read_varint()
                 for _ in range(max(0, size)):
-                    k = buffer.read_string()
-                    v = buffer.read_string()
+                    k = buffer.read_string(_pl.MAX_METADATA_KEY)
+                    v = buffer.read_string(_pl.MAX_METADATA_VALUE)
                     extra[k] = v
             except Exception:
                 extra = {}
@@ -461,7 +582,7 @@ class ConfigSyncPacket(Packet):
     @classmethod
     def decode(cls, buffer: PacketBuffer) -> "ConfigSyncPacket":
         return cls(
-            config_json=buffer.read_string(),
+            config_json=buffer.read_string(_pl.MAX_CONFIG_SYNC_JSON),
             timestamp=buffer.read_long(),
         )
 
@@ -494,16 +615,16 @@ class AdminActionPacket(Packet):
     def decode(cls, buffer: PacketBuffer) -> "AdminActionPacket":
         action = buffer.read_byte()
         player_id = buffer.read_uuid()
-        password_hash = buffer.read_string()
-        target = buffer.read_string()
+        password_hash = buffer.read_string(_pl.MAX_PASSWORD_HASH)
+        target = buffer.read_string(_pl.MAX_CHANNEL_ID)
 
         extra: Dict[str, str] = {}
         if buffer.remaining() > 0:
             try:
                 size = buffer.read_varint()
                 for _ in range(max(0, size)):
-                    k = buffer.read_string()
-                    v = buffer.read_string()
+                    k = buffer.read_string(_pl.MAX_METADATA_KEY)
+                    v = buffer.read_string(_pl.MAX_METADATA_VALUE)
                     extra[k] = v
             except Exception:
                 extra = {}
@@ -541,8 +662,8 @@ class AdminActionResponsePacket(Packet):
         return cls(
             action=buffer.read_byte(),
             success=buffer.read_boolean(),
-            error_code=buffer.read_string(),
-            message=buffer.read_string(),
+            error_code=buffer.read_string(_pl.MAX_ERROR_CODE),
+            message=buffer.read_string(_pl.MAX_ERROR_MESSAGE),
         )
 
 
@@ -574,9 +695,9 @@ class ItemDisplayPacket(Packet):
     def decode(cls, buffer: PacketBuffer) -> "ItemDisplayPacket":
         return cls(
             sender_id=buffer.read_uuid(),
-            sender_name=buffer.read_string(),
-            channel_id=buffer.read_string(),
-            item_json=buffer.read_string(),
+            sender_name=buffer.read_string(_pl.MAX_SENDER_NAME),
+            channel_id=buffer.read_string(_pl.MAX_CHANNEL_ID),
+            item_json=buffer.read_string(_pl.MAX_ITEM_JSON),
             timestamp=buffer.read_long(),
         )
 
@@ -611,10 +732,10 @@ class MentionPacket(Packet):
     def decode(cls, buffer: PacketBuffer) -> "MentionPacket":
         return cls(
             mentioner_id=buffer.read_uuid(),
-            mentioner_name=buffer.read_string(),
+            mentioner_name=buffer.read_string(_pl.MAX_SENDER_NAME),
             mentioned_id=buffer.read_uuid(),
-            channel_id=buffer.read_string(),
-            message_preview=buffer.read_string(),
+            channel_id=buffer.read_string(_pl.MAX_CHANNEL_ID),
+            message_preview=buffer.read_string(_pl.MAX_MESSAGE_PREVIEW),
             timestamp=buffer.read_long(),
         )
 
@@ -657,11 +778,11 @@ class PrivateMessagePacket(Packet):
     def decode(cls, buffer: PacketBuffer) -> "PrivateMessagePacket":
         return cls(
             sender_id=buffer.read_uuid(),
-            sender_name=buffer.read_string(),
-            sender_client_id=buffer.read_string(),
-            target_name=buffer.read_string(),
+            sender_name=buffer.read_string(_pl.MAX_SENDER_NAME),
+            sender_client_id=buffer.read_string(_pl.MAX_CLIENT_ID),
+            target_name=buffer.read_string(_pl.MAX_TARGET_NAME),
             target_id=buffer.read_uuid(),
-            content=buffer.read_string(),
+            content=buffer.read_string(_pl.MAX_MESSAGE_CONTENT),
             timestamp=buffer.read_long(),
         )
 
@@ -688,9 +809,11 @@ class UnknownPacket(Packet):
 PACKET_REGISTRY: Dict[int, type] = {
     PacketIds.HANDSHAKE: HandshakePacket,
     PacketIds.HANDSHAKE_RESPONSE: HandshakeResponsePacket,
+    PacketIds.HANDSHAKE_INIT: HandshakeInitPacket,
+    PacketIds.HANDSHAKE_CHALLENGE: HandshakeChallengePacket,
+    PacketIds.HANDSHAKE_AUTHENTICATE: HandshakeAuthenticatePacket,
     PacketIds.CHAT_MESSAGE: ChatMessagePacket,
     PacketIds.CHANNEL_ACTION: ChannelActionPacket,
-    PacketIds.ANNOUNCEMENT: AnnouncementPacket,
     PacketIds.CHANNEL_ACTION_RESPONSE: ChannelActionResponsePacket,
     PacketIds.CONFIG_SYNC: ConfigSyncPacket,
     PacketIds.KEEP_ALIVE: KeepAlivePacket,

@@ -56,13 +56,13 @@ class ChannelActionPacket extends Packet {
 
     public function decode(PacketBuffer $buffer): void {
         $this->action = $buffer->readByte();
-        $this->channelId = $buffer->readString();
-        $this->password = $buffer->readString();
+        $this->channelId = $buffer->readString(ProtocolLimits::MAX_CHANNEL_ID);
+        $this->password = $buffer->readString(ProtocolLimits::MAX_CHANNEL_PASSWORD);
         $size = $buffer->readVarInt();
         $this->extra = [];
         for ($i = 0; $i < $size; $i++) {
-            $key = $buffer->readString();
-            $value = $buffer->readString();
+            $key = $buffer->readString(ProtocolLimits::MAX_METADATA_KEY);
+            $value = $buffer->readString(ProtocolLimits::MAX_METADATA_VALUE);
             $this->extra[$key] = $value;
         }
     }

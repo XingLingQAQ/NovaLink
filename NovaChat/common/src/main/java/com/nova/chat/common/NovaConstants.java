@@ -10,7 +10,10 @@ public final class NovaConstants {
     }
     
     // Protocol Version
-    public static final int PROTOCOL_VERSION = 2;
+    // v3 (AUTH-002): challenge-response handshake replaces the replayable
+    // static-hash 0x01 flow; see NovaProtocol for the change history. Kept in
+    // lockstep with NovaProtocol.PROTOCOL_VERSION.
+    public static final int PROTOCOL_VERSION = 3;
     
     // Default Ports
     public static final int DEFAULT_PORT = 8888;

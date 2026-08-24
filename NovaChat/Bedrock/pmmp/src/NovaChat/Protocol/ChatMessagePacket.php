@@ -45,10 +45,10 @@ class ChatMessagePacket extends Packet {
     
     public function decode(PacketBuffer $buffer): void {
         $this->senderId = $buffer->readUUID();
-        $this->senderName = $buffer->readString();
-        $this->clientId = $buffer->readString();
-        $this->channelId = $buffer->readString();
-        $this->content = $buffer->readString();
+        $this->senderName = $buffer->readString(ProtocolLimits::MAX_SENDER_NAME);
+        $this->clientId = $buffer->readString(ProtocolLimits::MAX_CLIENT_ID);
+        $this->channelId = $buffer->readString(ProtocolLimits::MAX_CHANNEL_ID);
+        $this->content = $buffer->readString(ProtocolLimits::MAX_MESSAGE_CONTENT);
 
         // Placeholders map (optional for legacy peers), kept like Java does.
         $this->placeholders = [];
@@ -66,8 +66,8 @@ class ChatMessagePacket extends Packet {
             return;
         }
         for ($i = 0; $i < $size; $i++) {
-            $key = $buffer->readString();
-            $this->placeholders[$key] = $buffer->readString();
+            $key = $buffer->readString(ProtocolLimits::MAX_METADATA_KEY);
+            $this->placeholders[$key] = $buffer->readString(ProtocolLimits::MAX_METADATA_VALUE);
         }
     }
 }

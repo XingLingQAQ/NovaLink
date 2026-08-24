@@ -35,6 +35,7 @@ classifiers = [
 # Pin >=0.11,<0.12 to stay on the stable API line the plugin is written against.
 dependencies = [
     "endstone>=0.11,<0.12",
+    "ruamel.yaml>=0.18.6,<0.19",
 ]
 
 # Entry point so Endstone's pip-based plugin loader discovers NovaChatPlugin.
@@ -52,6 +53,7 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["novachat_endstone"]
+artifacts = ["novachat_endstone/config/default_config.yml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -1,5 +1,6 @@
 package com.nova.chat.common.protocol.codec;
 
+import com.nova.chat.common.protocol.ProtocolLimits;
 import com.nova.chat.common.protocol.VarInt;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -11,7 +12,7 @@ import java.util.List;
 /**
  * Decodes incoming bytes into frames based on VarInt length prefix.
  * This decoder handles packet boundary detection for NovaProtocol.
- * 
+ *
  * Frame format: [Length (VarInt)] [Packet Data]
  */
 public class Varint21FrameDecoder extends ByteToMessageDecoder {
@@ -19,10 +20,13 @@ public class Varint21FrameDecoder extends ByteToMessageDecoder {
     /**
      * Hard limit for a single frame size to prevent memory exhaustion attacks.
      *
-     * NovaProtocol packets are expected to be small (chat/commands/config diffs).
-     * Keep this large enough for future extensions, but bounded.
+     * <p>Sourced from {@link ProtocolLimits#MAX_FRAME_LENGTH} so the Java
+     * decoder and the non-JVM receivers (LeviLamina/PMMP/Endstone) share one
+     * protocol-level constant (PROTO-002). NovaProtocol packets are expected
+     * to be small (chat/commands/config diffs); keep this large enough for
+     * future extensions, but bounded.
      */
-    private static final int MAX_FRAME_LENGTH = 4 * 1024 * 1024; // 4 MiB
+    private static final int MAX_FRAME_LENGTH = ProtocolLimits.MAX_FRAME_LENGTH;
 
     /**
      * Sentinel distinct from every possible decoded VarInt value (ints fit in a

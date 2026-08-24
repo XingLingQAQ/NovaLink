@@ -11,6 +11,7 @@ same client-core bundle keys.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from typing import TYPE_CHECKING, List, Optional, Any
 
@@ -34,8 +35,11 @@ class NovaChatCommand:
     - debug: Toggle debug mode (admin)
     """
 
-    # The 7 core subcommands aligned with the Java platforms.
-    SUBCOMMANDS = ["help", "join", "leave", "list", "who", "toggle", "reload"]
+    # The core subcommands aligned with the Java platforms. ``auth`` and
+    # ``announce`` (FEATURE-002) supersede the dead 0x0A announcement path:
+    # announcements are sent as AdminAction STATUS type=ANNOUNCE, gated by the
+    # backend super-admin session (NC-403 when absent).
+    SUBCOMMANDS = ["help", "join", "leave", "list", "who", "toggle", "reload", "auth", "announce"]
     ADMIN_SUBCOMMANDS = ["reload", "debug"]
 
     def __init__(self, plugin: "NovaChatPlugin"):
@@ -84,6 +88,8 @@ class NovaChatCommand:
                 "toggle": lambda: self._cmd_toggle(sender),
                 "reload": lambda: self._cmd_reload(sender),
                 "debug": lambda: self._cmd_debug(sender),
+                "auth": lambda: self._cmd_auth(sender, sub_args),
+                "announce": lambda: self._cmd_announce(sender, sub_args),
             }
 
             handler = handlers.get(subcommand)
@@ -177,10 +183,15 @@ class NovaChatCommand:
         self._i18n_send(sender, "chat.command.help.line_list")
         self._i18n_send(sender, "chat.command.help.line_who")
         self._i18n_send(sender, "chat.command.help.line_toggle")
+        self._i18n_send(sender, "chat.command.help.line_announce")
 
         if self._has_permission(sender, "novachat.admin"):
             self._i18n_send(sender, "chat.command.help.line_reload")
             self._i18n_send(sender, "chat.command.help.line_debug")
+            # auth is admin-only and hidden from non-admin help, mirroring
+            # bukkit AuthCommand.isHidden(). The real authz gate is the
+            # backend super-admin session, surfaced via NC-403.
+            self._i18n_send(sender, "chat.command.help.line_auth")
 
         return True
 
@@ -408,6 +419,164 @@ class NovaChatCommand:
 
         return True
 
+    def _cmd_auth(self, sender: Any, args: List[str]) -> bool:
+        """
+        Super-admin authentication (FEATURE-002).
+
+        Sends an AdminAction AUTH packet carrying a SHA-256 lowercase-hex hash
+        of the password plus a ``playerName`` extra. The backend is the single
+        source of truth for super-admin session state; this command only kicks
+        off the request. The outcome (success / NC-403 / other error) is
+        surfaced asynchronously via AdminActionResponsePacket, correlated by
+        request_id. A PROGRESS message is shown immediately; we never claim
+        success before the backend replies.
+
+        Player-only: the backend super-admin session is keyed on a player UUID,
+        so console/RCON cannot authenticate.
+
+        Args:
+            sender: The command sender (must be a player)
+            args: Command arguments [password]
+
+        Returns:
+            True
+        """
+        if not self._is_player(sender):
+            self._i18n_send(sender, "chat.command.player_only")
+            return True
+
+        if not args:
+            self._i18n_send(sender, "chat.command.usage.auth")
+            return True
+
+        if not self._plugin.network_client or not self._plugin.network_client.is_connected:
+            self._i18n_send(sender, "chat.network.not_connected_retry")
+            return True
+
+        password = args[0]
+        # SHA-256 lowercase hex, matching bukkit AuthCommand.hashPassword.
+        password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+        player_uuid = str(sender.unique_id)
+
+        from novachat_endstone.protocol.packet import (
+            AdminActionPacket,
+            AdminAction,
+        )
+        packet = AdminActionPacket(
+            action=AdminAction.AUTH,
+            player_id=sender.unique_id,
+            password_hash=password_hash,
+            target="",
+            extra={"playerName": sender.name},
+        )
+
+        loop = self._plugin.network_client.loop
+        if loop is None:
+            self._send_message(sender, "§c网络不可用，请稍后重试。")
+            return True
+
+        # Register the pending request so the async AdminActionResponse can be
+        # routed back to this player by request_id. send_packet assigns the
+        # request_id onto the packet object; we capture it afterwards.
+        asyncio.run_coroutine_threadsafe(
+            self._send_admin_action(packet, player_uuid),
+            loop,
+        )
+
+        self._i18n_send(sender, "chat.auth.progress")
+        return True
+
+    async def _send_admin_action(self, packet: Any, player_uuid: str) -> None:
+        """Send an AdminAction packet and register its request_id as pending.
+
+        ``NetworkClient.send_packet`` assigns a fresh request_id onto the
+        packet object (uuid.UUID) before writing it to the wire. We capture
+        that id after send and register it against the originating player so
+        the async AdminActionResponse can be routed back. Registering AFTER
+        send is safe: the backend response arrives on a later loop tick.
+        """
+        try:
+            await self._plugin.network_client.send_packet(packet)
+            request_id = str(getattr(packet, "request_id", ""))
+            chat_handler = self._plugin.chat_handler
+            if chat_handler:
+                chat_handler.register_pending_admin_action(request_id, player_uuid)
+        except Exception as e:
+            self._logger.error(f"Failed to send admin action packet: {e}")
+
+    def _cmd_announce(self, sender: Any, args: List[str]) -> bool:
+        """
+        Broadcast an announcement to a channel (FEATURE-002).
+
+        Sends an AdminAction STATUS packet with type=ANNOUNCE extras
+        (operatorName, content). The backend gates STATUS/ANNOUNCE behind
+        ``permissionManager.hasSuperAdminSession``; on NC-403 the async
+        response handler surfaces the "run /nc auth" guidance. A PROGRESS
+        message is shown immediately; we never claim success before the
+        backend replies.
+
+        Console/RCON may also announce using the all-zeros sentinel UUID so
+        the backend can route the broadcast.
+
+        Args:
+            sender: The command sender (player or console)
+            args: Command arguments [channel_id, content...]
+
+        Returns:
+            True
+        """
+        if len(args) < 2:
+            self._i18n_send(sender, "chat.announce.usage")
+            return True
+
+        if not self._plugin.network_client or not self._plugin.network_client.is_connected:
+            self._i18n_send(sender, "chat.network.not_connected_retry")
+            return True
+
+        channel_id = args[0]
+        content = " ".join(args[1:])
+        if not content:
+            self._i18n_send(sender, "chat.announce.usage")
+            return True
+
+        # Player UUID, or the all-zeros console sentinel for console/RCON.
+        if self._is_player(sender):
+            player_id = sender.unique_id
+            player_uuid = str(sender.unique_id)
+        else:
+            import uuid as _uuid
+            player_id = _uuid.UUID("00000000-0000-0000-0000-000000000000")
+            player_uuid = "00000000-0000-0000-0000-000000000000"
+
+        from novachat_endstone.protocol.packet import (
+            AdminActionPacket,
+            AdminAction,
+        )
+        packet = AdminActionPacket(
+            action=AdminAction.STATUS,
+            player_id=player_id,
+            password_hash="",
+            target=channel_id,
+            extra={
+                "type": "ANNOUNCE",
+                "operatorName": getattr(sender, "name", "console"),
+                "content": content,
+            },
+        )
+
+        loop = self._plugin.network_client.loop
+        if loop is None:
+            self._send_message(sender, "§c网络不可用，请稍后重试。")
+            return True
+
+        asyncio.run_coroutine_threadsafe(
+            self._send_admin_action(packet, player_uuid),
+            loop,
+        )
+
+        self._i18n_send(sender, "chat.announce.progress", channel_id)
+        return True
+
     def on_tab_complete(
         self,
         sender: Any,
@@ -440,7 +609,7 @@ class NovaChatCommand:
                 prefix = args[0].lower()
                 return [s for s in subcommands if s.startswith(prefix)]
 
-            elif len(args) == 2 and args[0].lower() in ("join", "who", "leave"):
+            elif len(args) == 2 and args[0].lower() in ("join", "who", "leave", "announce"):
                 # Complete channel names from the known channel registry
                 chat_handler = self._plugin.chat_handler
                 channels = []

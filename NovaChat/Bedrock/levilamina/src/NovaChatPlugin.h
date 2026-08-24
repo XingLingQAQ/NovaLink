@@ -45,6 +45,7 @@ public:
     bool load();
     bool enable();
     bool disable();
+    bool reloadConfiguration();
 
     // Accessors
     [[nodiscard]] ll::mod::NativeMod& getSelf() const { return mSelf; }

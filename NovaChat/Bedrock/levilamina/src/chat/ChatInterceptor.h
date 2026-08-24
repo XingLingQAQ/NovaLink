@@ -15,6 +15,8 @@ class NovaChatPlugin;
 namespace protocol {
     struct UUID;
     class ChannelActionResponsePacket;
+    class PrivateMessagePacket;
+    class AdminActionResponsePacket;
 }
 
 /**
@@ -29,7 +31,7 @@ enum class ChatMode {
  * Player chat state
  */
 struct PlayerChatState {
-    std::string currentChannel = "local";
+    std::string currentChannel;
     ChatMode chatMode = ChatMode::HYBRID;
     bool muted = false;
     std::string locale = "zh_CN";
@@ -204,6 +206,19 @@ public:
     void addKnownChannel(const std::string& channelId);
 
     /**
+     * Track an outgoing admin-action request (e.g. /nc auth, /nc announce) so
+     * the ADMIN_ACTION_RESPONSE handler can route the outcome back to the
+     * originating player. Mirrors the bukkit NetworkClient.pendingAdminRequests
+     * map: request UUID -> player UUID (or the all-zeros console sentinel
+     * UUID when the request originated from the console).
+     *
+     * The client never tracks super-admin session state locally (the backend
+     * NC-403 gate in AdminActionHandler.handleStatus is the sole authority);
+     * this map only correlates the async response with the sender for UX.
+     */
+    void registerPendingAdminAction(const std::string& requestId, const std::string& playerUuid);
+
+    /**
      * Send a WHO channel action for a player.
      */
     void whoChannel(const std::string& playerUuid, const std::string& channelId);
@@ -273,6 +288,23 @@ private:
     void sendTitleByUuid(const std::string& playerUuid, const std::string& title,
                          const std::string& subtitle);
 
+    // Handle incoming private message (0x14) from backend.
+    // The backend delivers a completed PrivateMessagePacket to BOTH the
+    // sender's client (echo) and the target's client; this renders the
+    // "sent" line to the local player matching senderId and the "received"
+    // line to the local player matching targetId (when distinct). Per-player
+    // directed; never broadcasts to a channel.
+    void handlePrivateMessage(const protocol::PrivateMessagePacket& packet);
+
+    // Handle incoming AdminActionResponsePacket (0x0C) from backend. Pops the
+    // originating player UUID from mPendingAdminActions (correlated by request
+    // UUID at send time). Mirrors the bukkit handleAdminActionResponse +
+    // isSuperAdminRequired path: on success -> chat.action.success; on failure
+    // with action==STATUS && errorCode=="NC-403" -> chat.error.super_admin_required
+    // + _suggestion (the backend hasSuperAdminSession gate); otherwise the
+    // generic i18n error. The client never tracks super-admin session locally.
+    void handleAdminActionResponse(const protocol::AdminActionResponsePacket& packet);
+
     NovaChatPlugin& mPlugin;
     bool mReplaceVanilla = false;
     bool mHooksRegistered = false;
@@ -292,6 +324,13 @@ private:
     // Pending channel action request tracking: request UUID -> channel id
     std::unordered_map<std::string, std::string> mPendingActions;
     mutable std::mutex mPendingActionsMutex;
+
+    // Pending admin action request tracking: request UUID -> player UUID (or
+    // the all-zeros console sentinel UUID for console-originated /nc announce).
+    // Populated by registerPendingAdminAction at send time, consumed by
+    // handleAdminActionResponse to route the async outcome back to the sender.
+    std::unordered_map<std::string, std::string> mPendingAdminActions;
+    mutable std::mutex mPendingAdminActionsMutex;
 };
 
 } // namespace novachat

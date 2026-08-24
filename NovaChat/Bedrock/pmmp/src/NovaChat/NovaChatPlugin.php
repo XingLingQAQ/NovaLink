@@ -7,6 +7,7 @@ namespace NovaChat;
 use NovaChat\Chat\ChatHandler;
 use NovaChat\Command\NovaChatCommand;
 use NovaChat\Config\ConfigManager;
+use NovaChat\Config\YamlConfigUpdater;
 use NovaChat\Extension\ExtensionLoader;
 use NovaChat\Network\NetworkClient;
 use pocketmine\plugin\PluginBase;
@@ -50,11 +51,10 @@ class NovaChatPlugin extends PluginBase {
     protected function onEnable(): void {
         self::$instance = $this;
         
-        // Save default config if not exists
-        $this->savePluginDefaultConfig();
+        $this->updatePluginConfiguration();
         
         // Initialize configuration manager
-        $this->configManager = new ConfigManager($this);
+        $this->configManager = new ConfigManager($this->getConfig()->getAll());
         $this->debugMode = $this->configManager->isDebug();
         
         // Initialize chat handler
@@ -97,18 +97,35 @@ class NovaChatPlugin extends PluginBase {
         $this->getLogger()->info("NovaChat PMMP plugin disabled!");
     }
     
-    /**
-     * Saves the default configuration file if it doesn't exist.
-     *
-     * Renamed from saveDefaultConfig() because PluginBase::saveDefaultConfig()
-     * is declared public in pocketmine\plugin\PluginBase; a private override in
-     * a subclass narrows visibility, which PHP rejects as a fatal error at
-     * class load time ("Access level to NovaChat\NovaChatPlugin::saveDefaultConfig()
-     * must be public"). This only surfaces on a REAL PocketMine-MP server (the
-     * unit tests never load the PocketMine runtime), found by pmmp E2E 2026-08-11.
-     */
-    private function savePluginDefaultConfig(): void {
-        $this->saveResource("config.yml", false);
+    private function updatePluginConfiguration(): void {
+        $resource = $this->getResource("config.yml");
+        if ($resource === null) {
+            throw new \RuntimeException("Bundled configuration template config.yml is missing");
+        }
+        try {
+            $template = stream_get_contents($resource);
+        } finally {
+            fclose($resource);
+        }
+        if ($template === false) {
+            throw new \RuntimeException("Failed to read bundled configuration template");
+        }
+
+        $result = YamlConfigUpdater::update(
+            $this->getDataFolder() . "config.yml",
+            $template,
+            ["chat.channel-prefixes", "format.channels", "world-routing.mappings"],
+            [ConfigManager::class, "validate"]
+        );
+        if ($result->created) {
+            $this->getLogger()->info("Created config.yml from the bundled template");
+        } elseif ($result->updated) {
+            $this->getLogger()->info(
+                "Added new configuration entries from the bundled template; backup: "
+                . $result->backupPath
+            );
+        }
+        $this->reloadConfig();
     }
     
     /**
@@ -182,10 +199,19 @@ class NovaChatPlugin extends PluginBase {
     /**
      * Reloads the plugin configuration.
      */
-    public function reload(): void {
-        $this->reloadConfig();
-        $this->configManager = new ConfigManager($this);
-        $this->debugMode = $this->configManager->isDebug();
+    public function reload(): bool {
+        try {
+            $this->updatePluginConfiguration();
+            $loadedConfig = new ConfigManager($this->getConfig()->getAll());
+        } catch (\Throwable $throwable) {
+            $this->getLogger()->error(
+                "Configuration reload rejected; the previous runtime configuration remains active: "
+                . $throwable->getMessage()
+            );
+            return false;
+        }
+        $this->configManager = $loadedConfig;
+        $this->debugMode = $loadedConfig->isDebug();
         
         // Reconnect to backend
         if ($this->networkClient !== null) {
@@ -194,6 +220,7 @@ class NovaChatPlugin extends PluginBase {
         $this->initializeNetworkClient();
         
         $this->getLogger()->info("NovaChat configuration reloaded");
+        return true;
     }
     
     /**

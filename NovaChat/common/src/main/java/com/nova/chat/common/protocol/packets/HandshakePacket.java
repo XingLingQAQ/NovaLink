@@ -4,6 +4,7 @@ import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketBuffer;
 import com.nova.chat.common.protocol.PacketIds;
 import com.nova.chat.common.protocol.PlatformType;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import io.netty.buffer.ByteBuf;
 
 import java.util.UUID;
@@ -74,13 +75,16 @@ public class HandshakePacket extends Packet {
     @Override
     public void read(ByteBuf buf) {
         protocolVersion = PacketBuffer.readVarInt(buf);
-        clientId = PacketBuffer.readString(buf, 64);
-        passwordHash = PacketBuffer.readString(buf, 256);
+        // Bound field sizes to protocol limits (PROTO-003): the inline numeric
+        // literals now reference ProtocolLimits so non-JVM forks mirror the
+        // same values. Behavior is unchanged (same max lengths).
+        clientId = PacketBuffer.readString(buf, ProtocolLimits.MAX_CLIENT_ID);
+        passwordHash = PacketBuffer.readString(buf, ProtocolLimits.MAX_PASSWORD_HASH);
         int platformId = buf.readUnsignedByte();
         platform = PlatformType.fromId(platformId);
         // Optional trailing field: old clients/backends may not send serverVersion.
         if (buf.isReadable()) {
-            serverVersion = PacketBuffer.readString(buf, 64);
+            serverVersion = PacketBuffer.readString(buf, ProtocolLimits.MAX_SERVER_VERSION);
         } else {
             serverVersion = "";
         }

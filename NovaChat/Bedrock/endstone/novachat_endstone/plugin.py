@@ -225,7 +225,10 @@ class NovaChatPlugin:
         try:
             # Initialize configuration
             self._config_manager = ConfigManager(self)
-            self._config_manager.load()
+            if not self._config_manager.load():
+                raise RuntimeError(
+                    "Configuration could not be loaded; config.yml was left unchanged"
+                )
             self._logger.info("Configuration loaded")
             
             # Initialize network client
@@ -236,6 +239,11 @@ class NovaChatPlugin:
                 self._config_manager.backend_username,
                 self._config_manager.backend_password,
                 server_version=self._config_manager.server_version,
+                reconnect_delay=self._config_manager.reconnect_delay,
+                tls_enabled=self._config_manager.tls_enabled,
+                tls_ca_cert_path=self._config_manager.tls_ca_cert_path,
+                tls_client_cert_path=self._config_manager.tls_client_cert_path,
+                tls_client_key_path=self._config_manager.tls_client_key_path,
             )
             self._logger.info("Network client initialized")
             
@@ -472,7 +480,11 @@ class NovaChatPlugin:
         all components that depend on it.
         """
         if self._config_manager:
-            self._config_manager.load()
+            if not self._config_manager.load():
+                self._logger.warning(
+                    "Configuration reload rejected; the previous runtime configuration remains active"
+                )
+                return
             self._logger.info("Configuration reloaded!")
             
             # Update logging level based on debug setting

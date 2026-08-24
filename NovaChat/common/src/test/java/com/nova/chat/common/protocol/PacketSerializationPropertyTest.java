@@ -27,13 +27,18 @@ class PacketSerializationPropertyTest {
 
     @Provide
     Arbitrary<String> validStrings() {
+        // PROTO-003: every string field is now bounded by a ProtocolLimits
+        // constant. The tightest bound any field read by these round-trip
+        // properties uses is 64 (channelId / errorCode), so cap the shared
+        // generator at 64 to stay valid for every field. Exact boundary
+        // coverage (max-1 / max / max+1) lives in StringFieldLimitTest.
         return Arbitraries.strings()
                 .withCharRange('a', 'z')
                 .withCharRange('A', 'Z')
                 .withCharRange('0', '9')
                 .withChars('_', '-', '.')
                 .ofMinLength(1)
-                .ofMaxLength(100);
+                .ofMaxLength(64);
     }
 
     /**
@@ -148,15 +153,15 @@ class PacketSerializationPropertyTest {
             @ForAll @From("validStrings") String message) {
         
         HandshakeResponsePacket original = new HandshakeResponsePacket(success, errorCode, message);
-        
+
         ByteBuf buf = Unpooled.buffer();
         try {
             registry.encode(original, buf);
             Packet decoded = registry.decode(buf);
-            
+
             assertThat(decoded).isInstanceOf(HandshakeResponsePacket.class);
             HandshakeResponsePacket result = (HandshakeResponsePacket) decoded;
-            
+
             assertThat(result.isSuccess()).isEqualTo(success);
             assertThat(result.getErrorCode()).isEqualTo(errorCode);
             assertThat(result.getMessage()).isEqualTo(message);

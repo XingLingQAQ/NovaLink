@@ -9,6 +9,9 @@ import com.nova.chat.common.protocol.codec.PacketEncoder;
 import com.nova.chat.common.protocol.codec.Varint21FrameDecoder;
 import com.nova.chat.common.protocol.codec.Varint21LengthFieldPrepender;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
+import com.nova.chat.common.protocol.packets.HandshakeAuthenticatePacket;
+import com.nova.chat.common.protocol.packets.HandshakeChallengePacket;
+import com.nova.chat.common.protocol.packets.HandshakeInitPacket;
 import com.nova.chat.common.protocol.packets.HandshakePacket;
 import com.nova.chat.common.protocol.packets.HandshakeResponsePacket;
 import com.nova.chat.common.protocol.packets.KeepAlivePacket;
@@ -22,7 +25,12 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 
+import javax.net.ssl.SSLException;
+import java.io.File;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -62,6 +70,12 @@ public final class CoreNetworkClient {
 
     private final PacketRegistry packetRegistry;
     private final ReconnectPolicy reconnectPolicy;
+    /**
+     * AUTH-002: built once at construction from {@link ClientConnectionConfig#getTls()}.
+     * When non-null an {@code SslHandler} is prepended at the HEAD of the client
+     * pipeline so the challenge-response handshake runs inside TLS.
+     */
+    private final SslContext sslContext;
 
     /**
      * Correlates in-flight {@link ChannelActionPacket}s to their originating
@@ -79,6 +93,13 @@ public final class CoreNetworkClient {
     private final AtomicBoolean authenticated = new AtomicBoolean(false);
     private final AtomicBoolean reconnecting = new AtomicBoolean(false);
     private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
+
+    /**
+     * Non-null after the backend has explicitly rejected credentials or the
+     * protocol. These errors are logged and closed, but are not retried until
+     * an explicit connect/reload re-arms the client.
+     */
+    private volatile String terminalAuthFailureCode;
 
     /**
      * Set by {@link #disconnect()} and cleared by an explicit {@link #connect(String, int)}.
@@ -99,6 +120,15 @@ public final class CoreNetworkClient {
 
     private final Map<Class<? extends Packet>, Consumer<Packet>> packetHandlers =
             new ConcurrentHashMap<>();
+
+    /**
+     * Client nonce for the in-flight AUTH-002 challenge-response handshake.
+     * Generated when the init packet is sent and echoed in the authenticate
+     * packet. Volatile because the init is built on the event loop and read
+     * from a different handler invocation; only one handshake is in flight per
+     * connection generation.
+     */
+    private volatile String pendingClientNonce;
 
     /**
      * In-flight authentication future. Initialized atomically via CAS so that
@@ -179,6 +209,7 @@ public final class CoreNetworkClient {
         this.reconnectPolicy = connectionConfig.toReconnectPolicy();
         this.lastHost = connectionConfig.getHost();
         this.lastPort = connectionConfig.getPort();
+        this.sslContext = buildClientSslContext(connectionConfig.getTls());
         registerDefaultHandlers();
     }
 
@@ -195,6 +226,7 @@ public final class CoreNetworkClient {
      */
     public CompletableFuture<Boolean> connect(String host, int port) {
         shutdown = false;
+        terminalAuthFailureCode = null;
         return doConnect(host, port);
     }
 
@@ -253,6 +285,13 @@ public final class CoreNetworkClient {
                         @Override
                         protected void initChannel(SocketChannel ch) {
                             ChannelPipeline pipeline = ch.pipeline();
+                            // AUTH-002: TLS must be the outermost transport so
+                            // every subsequent handler operates on decrypted
+                            // bytes. SslHandler goes first.
+                            if (sslContext != null) {
+                                pipeline.addLast("ssl",
+                                        sslContext.newHandler(ch.alloc(), host, port));
+                            }
                             pipeline.addLast("frameDecoder", new Varint21FrameDecoder());
                             pipeline.addLast("framePrepender", new Varint21LengthFieldPrepender());
                             pipeline.addLast("packetDecoder", new PacketDecoder(packetRegistry));
@@ -445,10 +484,84 @@ public final class CoreNetworkClient {
     }
 
     /**
+     * Builds the client {@link SslContext} from {@link ClientTlsConfig}, or
+     * returns {@code null} when TLS is not configured.
+     *
+     * <p>Trust:
+     * <ul>
+     *   <li>When {@code caCertFile} is set, the server cert is verified against
+     *       that CA (typical for self-signed private deployments).</li>
+     *   <li>When {@code caCertFile} is blank, the JVM default trust store is
+     *       used — appropriate when the server presents a public-CA chain.</li>
+     * </ul>
+     * Client identity (mutual TLS): when {@code clientCertFile} and
+     * {@code clientKeyFile} are both set they are presented to the server.
+     */
+    private static SslContext buildClientSslContext(ClientTlsConfig tls) {
+        if (tls == null) {
+            return null;
+        }
+        try {
+            SslContextBuilder builder = SslContextBuilder.forClient();
+            String caCert = tls.getCaCertFile();
+            if (caCert != null && !caCert.isBlank()) {
+                File caFile = new File(caCert);
+                if (!caFile.isFile()) {
+                    throw new IllegalStateException(
+                            "AUTH-002: client tls.ca-cert-file not found or not a file: " + caFile);
+                }
+                builder.trustManager(caFile);
+            }
+            // When no explicit CA is provided we rely on the JDK default trust
+            // store; InsecureTrustManagerFactory is intentionally NOT used in
+            // production paths. Tests that need to bypass verification supply
+            // the self-signed CA explicitly.
+            if (tls.hasClientIdentity()) {
+                File cert = new File(tls.getClientCertFile());
+                File key = new File(tls.getClientKeyFile());
+                if (!cert.isFile()) {
+                    throw new IllegalStateException(
+                            "AUTH-002: client tls.client-cert-file not found or not a file: " + cert);
+                }
+                if (!key.isFile()) {
+                    throw new IllegalStateException(
+                            "AUTH-002: client tls.client-key-file not found or not a file: " + key);
+                }
+                builder.keyManager(cert, key);
+            }
+            return builder.build();
+        } catch (SSLException e) {
+            throw new IllegalStateException("AUTH-002: failed to build client SslContext", e);
+        }
+    }
+
+    /** Package-visible for tests that assert TLS wiring. */
+    SslContext getSslContext() {
+        return sslContext;
+    }
+
+    /** Test hook for deterministic channel-generation lifecycle tests. */
+    void setChannelForTest(Channel channel) {
+        this.channel = channel;
+        connected.set(channel != null && channel.isActive());
+    }
+
+    /**
      * Dispatches an inbound packet to the registered handler, if any.
      */
     public void handlePacket(Packet packet) {
+        handlePacket(null, packet);
+    }
+
+    /** Dispatches a packet only when it belongs to the current channel generation. */
+    void handlePacket(Channel source, Packet packet) {
         if (packet == null) {
+            return;
+        }
+        Channel current = channel;
+        if (source != null && source != current) {
+            logger.debug("Ignoring packet from a stale connection generation: "
+                    + packet.getClass().getSimpleName());
             return;
         }
         logger.debug("Received packet: " + packet.getClass().getSimpleName());
@@ -481,19 +594,42 @@ public final class CoreNetworkClient {
      * future was already completed.
      */
     public void onDisconnect() {
+        onDisconnect(null);
+    }
+
+    /** Applies channelInactive only to the channel generation that is current. */
+    void onDisconnect(Channel closedChannel) {
+        if (closedChannel != null && channel != closedChannel) {
+            logger.debug("Ignoring channelInactive from a stale connection generation");
+            return;
+        }
+        channel = null;
         connected.set(false);
         authenticated.set(false);
         completeAuth(false);
 
-        if (!reconnecting.get()) {
+        String terminalFailure = terminalAuthFailureCode;
+        if (terminalFailure != null) {
+            logger.warn("Connection closed after authentication failure " + terminalFailure
+                    + "; automatic reconnect is paused until an explicit reconnect");
+            EventLoopGroup group = workerGroup;
+            if (group != null && !group.isShutdown()) {
+                group.shutdownGracefully();
+            }
+            workerGroup = null;
+        } else if (!reconnecting.get()) {
             logger.warn("Lost connection to NovaLink backend");
             scheduleReconnect();
         }
     }
 
     /**
-     * Builds the handshake packet that would be sent after TCP connect.
-     * Package-visible pure helper for unit tests.
+     * Builds the legacy single-packet handshake. Retained for backward
+     * compatibility with {@link CoreNetworkClientTest} and any external caller
+     * that still asserts on the v2 shape; the live connect path uses
+     * {@link #sendHandshakeInit()} (the AUTH-002 3-packet dance) instead.
+     *
+     * <p>Package-visible pure helper for unit tests.
      */
     HandshakePacket buildHandshakePacket() {
         String passwordHash = PasswordHasher.sha256Hex(connectionConfig.getPassword());
@@ -504,6 +640,22 @@ public final class CoreNetworkClient {
                 passwordHash,
                 platformType,
                 serverVersion
+        );
+    }
+
+    /**
+     * Builds the AUTH-002 init packet (0x15) carrying a fresh client nonce.
+     * Package-visible pure helper for unit tests.
+     */
+    HandshakeInitPacket buildHandshakeInitPacket() {
+        String username = usernameTransformer.apply(connectionConfig.getUsername());
+        String clientNonce = ChallengeHmac.generateNonceHex();
+        return new HandshakeInitPacket(
+                NovaProtocol.PROTOCOL_VERSION,
+                username,
+                platformType,
+                serverVersion,
+                clientNonce
         );
     }
 
@@ -569,11 +721,42 @@ public final class CoreNetworkClient {
     }
 
     private void sendHandshake() {
-        sendPacket(buildHandshakePacket());
+        // AUTH-002: kick off the 3-packet challenge-response dance by sending
+        // the init packet (0x15). The server replies with a challenge (0x16);
+        // {@link #handleHandshakeChallenge} then sends the authenticate (0x17).
+        sendHandshakeInit();
+    }
+
+    /** Sends the AUTH-002 init packet and records the client nonce for echo. */
+    private void sendHandshakeInit() {
+        HandshakeInitPacket init = buildHandshakeInitPacket();
+        pendingClientNonce = init.getClientNonce();
+        sendPacket(init);
+    }
+
+    /**
+     * Handles the AUTH-002 challenge (0x16): compute the HMAC over
+     * {@code serverNonce + clientNonce} keyed by the stored password hash,
+     * then send the authenticate (0x17) echoing the client nonce.
+     */
+    private void handleHandshakeChallenge(HandshakeChallengePacket challenge) {
+        String clientNonce = pendingClientNonce;
+        if (clientNonce == null) {
+            logger.warn("Received handshake challenge without a pending init; ignoring");
+            return;
+        }
+        String passwordHash = PasswordHasher.sha256Hex(connectionConfig.getPassword());
+        String username = usernameTransformer.apply(connectionConfig.getUsername());
+        String hmac = ChallengeHmac.compute(passwordHash, challenge.getServerNonce(), clientNonce);
+        HandshakeAuthenticatePacket auth = new HandshakeAuthenticatePacket(
+                username, clientNonce, hmac
+        );
+        sendPacket(auth);
     }
 
     private void registerDefaultHandlers() {
         registerHandler(HandshakeResponsePacket.class, this::handleHandshakeResponse);
+        registerHandler(HandshakeChallengePacket.class, this::handleHandshakeChallenge);
         registerHandler(KeepAlivePacket.class, this::handleKeepAlive);
     }
 
@@ -589,9 +772,12 @@ public final class CoreNetworkClient {
         logger.error(
                 "Authentication failed: " + response.getErrorCode() + " - " + response.getMessage()
         );
+        String code = response.getErrorCode();
+        if ("NC-401".equals(code) || "NC-420".equals(code)) {
+            terminalAuthFailureCode = code;
+        }
         completeAuth(false);
 
-        String code = response.getErrorCode();
         if ("NC-401".equals(code)) {
             logger.error(
                     "Please check your username and password in " + credentialsConfigFile
@@ -609,6 +795,20 @@ public final class CoreNetworkClient {
                     "Current plugin protocol version: " + NovaProtocol.PROTOCOL_VERSION
             );
             logger.error("=================================================");
+        }
+
+        // The response has already been decoded and logged. Closing here
+        // releases the unauthenticated channel immediately; channelInactive
+        // then records the normal lifecycle transition without scheduling a
+        // credential/protocol reconnect loop.
+        Channel current = channel;
+        if (current != null && current.isActive()) {
+            current.close().addListener((ChannelFutureListener) future -> {
+                if (!future.isSuccess()) {
+                    logger.warn("Error closing authentication-failed connection: "
+                            + (future.cause() != null ? future.cause().getMessage() : "unknown"));
+                }
+            });
         }
     }
 

@@ -39,10 +39,13 @@ xmake
 The built plugin will be located at:
 - `build/bin/novachat-levilamina.dll`
 - `build/bin/manifest.json`
+- `build/bin/resources/default-config.json`
+- `build/bin/lang/`
 
 ## Installation
 
-1. Copy `novachat-levilamina.dll` and `manifest.json` to your LeviLamina plugins directory:
+1. Copy `novachat-levilamina.dll`, `manifest.json`, the `resources` directory, and the
+   `lang` directory from `build/bin` to your LeviLamina plugin directory:
    ```
    bedrock_server/plugins/novachat-levilamina/
    ```
@@ -57,11 +60,13 @@ The built plugin will be located at:
 
 ```json
 {
+    "config-version": 1,
     "backend": {
         "host": "127.0.0.1",
         "port": 8888,
         "username": "LeviLamina_Server",
         "password": "your-password-here",
+        "server_version": "1.21.0",
         "reconnect_delay": 5
     },
     "chat": {

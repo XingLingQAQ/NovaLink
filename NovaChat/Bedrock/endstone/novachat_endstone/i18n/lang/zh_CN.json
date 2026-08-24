@@ -16,6 +16,10 @@
   "chat.command.help.line_toggle": "&e/nc toggle &r- 切换聊天模式",
   "chat.command.help.line_reload": "&e/nc reload &r- 重载配置",
   "chat.command.help.line_debug": "&e/nc debug &r- 切换调试模式",
+  "chat.command.help.line_announce": "&e/nc announce <频道> <内容> &r- 广播公告",
+  "chat.command.help.line_auth": "&e/nc auth <密码> &r- 超管认证（隐藏）",
+  "chat.command.usage.auth": "用法: /nc auth <密码>",
+  "chat.command.usage.announce": "用法: /nc announce <频道> <内容>",
   "chat.command.desc.help": "显示可用命令列表",
   "chat.command.desc.join": "加入一个频道",
   "chat.command.desc.leave": "离开当前频道",
@@ -41,6 +45,9 @@
 
   "chat.mention.subtitle": "&7在频道 &b{0} &7提到了你",
 
+  "chat.msg.sent": "&7你悄悄对 &e{0} &7说: &f{1}",
+  "chat.msg.received": "&e{0} &7悄悄对你说: &f{1}",
+
   "chat.notice.kick_title": "&c你已被踢出频道",
   "chat.notice.kick_subtitle": "&7被 &e{0} &7踢出频道 &b{1}",
   "chat.notice.kick_actionbar": "&c你已被 {0} 踢出频道 {1}",
@@ -52,6 +59,14 @@
   "chat.action.failed": "操作失败",
   "chat.action.leave_simple": "已离开频道 &e{0}",
   "chat.action.already_default": "你已经在默认频道中",
+
+  "chat.auth.progress": "正在认证...",
+  "chat.auth.success": "超级管理员认证成功",
+  "chat.auth.failed": "认证失败",
+  "chat.announce.progress": "正在向频道 &e{0} &7发送公告...",
+  "chat.announce.usage": "用法: /nc announce <频道> <内容>",
+  "chat.error.super_admin_required": "需要超级管理员会话，请先运行 /nc auth <密码>",
+  "chat.error.super_admin_required_suggestion": "使用 /nc auth <密码> 认证后重试",
 
   "chat.list.empty": "暂无已知频道，请等待服务器下发频道列表",
 
