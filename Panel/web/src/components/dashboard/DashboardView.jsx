@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next';
 import Card from '../ui/Card';
 import Badge from '../ui/Badge';
 import Avatar from '../ui/Avatar';
+import { platformLabel, isBedrockPlatform } from '../../utils/adapters';
 
 function DashboardView({ theme: _theme, mode: _mode, txtMain: _txtMain, txtSec: _txtSec, servers, channels, players, chatMessages, dashboardStats, statIconMap }) {
   void _theme; void _mode; void _txtMain; void _txtSec;
@@ -111,7 +112,7 @@ function ServerStatusCard({ servers }) {
                 <div className={`w-1.5 h-1.5 rounded-full ${server.status === 'online' ? 'bg-emerald-500' : 'bg-destructive'}`} />
                 <div>
                   <p className="text-sm font-medium text-foreground">{server.name}</p>
-                  <p className="text-xs text-muted-foreground">{server.platform} · {server.version}</p>
+                  <p className="text-xs text-muted-foreground">{platformLabel(server.platform)} · {server.version}</p>
                 </div>
               </div>
               <div className="text-right">
@@ -234,8 +235,8 @@ function OnlinePlayersCard({ players = [] }) {
                   <p className="text-xs text-muted-foreground">{player.server}</p>
                 </div>
               </div>
-              <Badge variant={player.platform === 'Java' ? 'success' : 'warning'}>
-                {player.platform}
+              <Badge variant={isBedrockPlatform(player.platform) ? 'warning' : 'success'}>
+                {platformLabel(player.platform)}
               </Badge>
             </div>
           ))

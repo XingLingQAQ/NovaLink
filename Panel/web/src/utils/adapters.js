@@ -75,6 +75,87 @@ export function channelColorForType(type) {
 }
 
 /**
+ * Mapping of backend PlatformType enum names (the raw `platform` string the
+ * backend sends over WS/REST) to i18n keys for human-readable display names.
+ *
+ * Backend platform values (confirmed from PlatformType.java + the WS handler):
+ *   BUKKIT, VELOCITY, BUNGEECORD, NUKKIT, LEVILAMINA, FABRIC, NEOFORGE, QUILT,
+ *   FORGE, POCKETMINE, ENDSTONE, POWERNUKKITX, FOLIA, SPONGE.
+ * The backend also emits the literal "Java" (player_update fallback when the
+ * player's platform is null) and "Unknown" (server_status fallback when the
+ * client connection has no platform).
+ *
+ * `platform` is kept as the raw enum value on adapted objects because
+ * downstream grouping / filtering (PLATFORM_BUCKETS in DashboardView, the
+ * platform filter in PlayerManagement, serversByPlatform in ClientStatus)
+ * matches against the raw enum name. Display sites call platformLabel() at
+ * render time so the label re-localizes when the UI language changes.
+ */
+const PLATFORM_LABEL_KEYS = {
+  BUKKIT: 'platform.bukkit',
+  FOLIA: 'platform.folia',
+  SPONGE: 'platform.sponge',
+  VELOCITY: 'platform.velocity',
+  BUNGEECORD: 'platform.bungeecord',
+  NUKKIT: 'platform.nukkit',
+  POWERNUKKITX: 'platform.powernukkitx',
+  POCKETMINE: 'platform.pocketmine',
+  ENDSTONE: 'platform.endstone',
+  LEVILAMINA: 'platform.levilamina',
+  FABRIC: 'platform.fabric',
+  NEOFORGE: 'platform.neoforge',
+  QUILT: 'platform.quilt',
+  FORGE: 'platform.forge',
+};
+
+/**
+ * Resolve the i18n key for a platform's display name.
+ *   - null/undefined/empty/'Java' -> 'platform.java' (the backend's Java
+ *     fallback sentinel and our own adapter fallback).
+ *   - 'Unknown' -> 'platform.unknown' (the backend's server_status fallback).
+ *   - any other non-empty, non-enum string -> 'platform.unknown' (never
+ *     masquerade an unknown value as Java).
+ *   - a known PlatformType enum name -> its specific platform.* key.
+ */
+export function platformLabelKey(platform) {
+  if (platform == null || platform === '' || platform === 'Java') {
+    return 'platform.java';
+  }
+  if (platform === 'Unknown') {
+    return 'platform.unknown';
+  }
+  return PLATFORM_LABEL_KEYS[platform] || 'platform.unknown';
+}
+
+/**
+ * Return the localized human-readable name for a platform. Call this at render
+ * time (not at adapt time) so the label re-localizes when the UI language
+ * changes; mirrors how buildDashboardStats stores i18n keys and lets the
+ * consuming component translate them. Unknown values resolve to the localized
+ * "unknown" label rather than being mislabeled as Java.
+ */
+export function platformLabel(platform) {
+  return i18n.t(platformLabelKey(platform));
+}
+
+/**
+ * Bedrock-side platform enum names (from PlatformType.java). Used by the
+ * message stat counters and the message-line color so Bedrock-origin messages
+ * are tallied/styled correctly once the backend forwards a platform field on
+ * chat payloads. Today the backend omits platform on chat messages so every
+ * message resolves to Java; this keeps the classification ready and correct.
+ */
+const BEDROCK_PLATFORMS = ['NUKKIT', 'POWERNUKKITX', 'POCKETMINE', 'ENDSTONE', 'LEVILAMINA'];
+
+/**
+ * True when the raw platform value identifies a Bedrock-family client.
+ * null/empty/'Java' (the chat-message / player fallback) is NOT Bedrock.
+ */
+export function isBedrockPlatform(platform) {
+  return BEDROCK_PLATFORMS.includes(platform);
+}
+
+/**
  * Map the current i18next language (zh_CN / en_US / bare "zh"/"en") to a
  * BCP-47 locale tag (zh-CN / en-US) for toLocale*String formatting.
  */
@@ -98,11 +179,20 @@ function msToTime(ms) {
 /**
  * Adapt a REST /api/channels channel JSON object to the component channel shape.
  * Backend does not expose a "format" field in the REST JSON, so we leave it blank.
+ *
+ * PANEL-003: source (CONFIG/DATABASE/RUNTIME) and revision (long) are carried
+ * through so the UI can render config-managed channels as read-only and detect
+ * staleness. Missing source defaults to RUNTIME (dynamic/editable).
  */
 export function adaptChannel(channelJson) {
   if (!channelJson) return null;
   const type = scopeToType(channelJson.scope);
   const parsedSlowMode = Number(channelJson.slowModeSeconds);
+  const rawSource = channelJson.source;
+  const source = rawSource === 'CONFIG' || rawSource === 'DATABASE' || rawSource === 'RUNTIME'
+    ? rawSource
+    : 'RUNTIME';
+  const parsedRevision = Number(channelJson.revision);
   return {
     id: channelJson.id,
     name: channelJson.displayName || channelJson.id,
@@ -114,16 +204,24 @@ export function adaptChannel(channelJson) {
     memberCount: channelJson.memberCount || 0,
     maxCapacity: channelJson.maxCapacity || 0,
     clientId: channelJson.clientId || null,
+    subscribable: channelJson.subscribable === true,
+    sendable: channelJson.sendable === true,
     slowModeSeconds: Number.isInteger(parsedSlowMode) && parsedSlowMode >= 0
       ? parsedSlowMode
       : 0,
+    source,
+    revision: Number.isInteger(parsedRevision) ? parsedRevision : 0,
   };
 }
 
 /**
  * Adapt a REST /api/players player state JSON object to the component player shape.
- * Backend has no "platform" or "muted" field; we default platform to 'Java' and muted to false
- * (mute state is managed by the backend MuteManager, which is not exposed via REST).
+ * Backend has no "muted" field; we default muted to false (mute state is managed
+ * by the backend MuteManager, which is not exposed via REST). `platform` is the
+ * PlatformType enum name (e.g. "BUKKIT", "NUKKIT") or null; we keep null/blank
+ * mapped to the "Java" sentinel (the backend's own player_update fallback) so
+ * platformLabel() treats missing values as Java rather than "unknown". The raw
+ * enum value is preserved for the platform filter; render sites translate it.
  */
 export function adaptPlayer(playerJson) {
   if (!playerJson) return null;
@@ -188,8 +286,13 @@ export function adaptClient(clientJson) {
  * Adapt a WS chat message to the component chatMessage shape.
  * Backend chat payload: { channelId, senderId, senderName, content, timestamp,
  * server }. server is the originating client id, or an empty string when the
- * sender is not a known game-server client (shown as 'unknown'). platform is
- * not yet provided per-message by the backend, so it stays as a 'Java' placeholder.
+ * sender is not a known game-server client (shown as 'unknown'). The backend
+ * does not currently attach a `platform` field to chat payloads, so we keep
+ * the adapter's 'Java' fallback (the same sentinel the backend uses for
+ * players with no platform) — render sites call platformLabel() to map it to
+ * a localized name, and the Java/Bedrock stat counters use isBedrockPlatform()
+ * so future Bedrock-origin chat traffic counts correctly once the backend
+ * starts forwarding a platform field.
  */
 export function adaptChatMessage(msgJson) {
   if (!msgJson) return null;

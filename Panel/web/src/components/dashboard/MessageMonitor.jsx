@@ -13,6 +13,7 @@ import Card from '../ui/Card';
 import Button from '../ui/Button';
 import CustomSelect from '../ui/CustomSelect';
 import { can } from '../../lib/permissions';
+import { isBedrockPlatform } from '../../utils/adapters';
 
 function MessageMonitor({
   theme,
@@ -21,6 +22,7 @@ function MessageMonitor({
   txtSec: _txtSec,
   messages = [],
   channels = [],
+  onChannelSelectionChange,
   onClearMessages,
   onSendMessage,
   chatContainerRef: externalChatContainerRef,
@@ -103,7 +105,10 @@ function MessageMonitor({
                 mode={mode}
                 options={['all', ...channels.map((c) => c.id)]}
                 defaultValue={chatFilter}
-                onChange={setChatFilter}
+                onChange={(value) => {
+                  setChatFilter(value);
+                  if (onChannelSelectionChange) onChannelSelectionChange(value);
+                }}
               />
             </div>
           </div>
@@ -206,12 +211,12 @@ function MessageMonitor({
         <StatCard label={t('messages.stat_total')} value={messages.length} />
         <StatCard
           label={t('messages.stat_java')}
-          value={messages.filter((m) => m.platform === 'Java').length}
+          value={messages.filter((m) => !isBedrockPlatform(m.platform)).length}
           color="text-emerald-600 dark:text-emerald-400"
         />
         <StatCard
           label={t('messages.stat_bedrock')}
-          value={messages.filter((m) => m.platform === 'Bedrock').length}
+          value={messages.filter((m) => isBedrockPlatform(m.platform)).length}
           color="text-amber-600 dark:text-amber-400"
         />
         <StatCard
@@ -226,7 +231,7 @@ function MessageMonitor({
 
 // Individual Message Line
 function MessageLine({ message }) {
-  const platformColor = message.platform === 'Bedrock' ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400';
+  const platformColor = isBedrockPlatform(message.platform) ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400';
 
   return (
     <div className="flex items-start gap-2 p-1.5 rounded-md hover:bg-muted/40 transition-colors">

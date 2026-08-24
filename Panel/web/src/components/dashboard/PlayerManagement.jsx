@@ -32,7 +32,7 @@ import Modal from '../ui/Modal';
 import CustomSelect from '../ui/CustomSelect';
 import Avatar from '../ui/Avatar';
 import { api } from '../../services/api';
-import { formatRemainingMs } from '../../utils/adapters';
+import { formatRemainingMs, platformLabel, isBedrockPlatform } from '../../utils/adapters';
 import { can } from '../../lib/permissions';
 
 function PlayerManagement({
@@ -105,8 +105,12 @@ function PlayerManagement({
 
   // Platform filter options derived from the live player data — the backend
   // sends PlatformType enum names (e.g. BUKKIT, VELOCITY, NUKKIT), so a
-  // hardcoded list would never match.
-  const uniquePlatforms = [...new Set(players.map((p) => p && p.platform).filter(Boolean))];
+  // hardcoded list would never match. We surface the localized label for each
+  // raw platform value while keeping the underlying value (the raw enum name)
+  // as the option's value so the equality filter in matchesPlatform still
+  // compares against the same field on each player.
+  const uniquePlatforms = [...new Set(players.map((p) => p && p.platform).filter(Boolean))]
+    .map((raw) => ({ value: raw, label: platformLabel(raw) }));
 
   // Channel options for the mute modal (all + each channel id).
   const channelOptions = ['all', ...channels.map((c) => c.id).filter(Boolean)];
@@ -456,8 +460,8 @@ function PlayerManagement({
                       <span className="rounded-md bg-muted px-1.5 py-0.5 text-xs">#{player.channel}</span>
                     </td>
                     <td className="p-3">
-                      <Badge variant={player.platform === 'Java' ? 'success' : 'warning'}>
-                        {player.platform}
+                      <Badge variant={isBedrockPlatform(player.platform) ? 'warning' : 'success'}>
+                        {platformLabel(player.platform)}
                       </Badge>
                     </td>
                     <td className="p-3 text-right">

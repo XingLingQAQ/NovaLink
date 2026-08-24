@@ -19,6 +19,12 @@ import {
   History,
   Megaphone,
   Filter,
+  ScrollText,
+  ShieldAlert,
+  Gavel,
+  Activity,
+  GitBranch,
+  Send,
 } from 'lucide-react';
 
 import { can } from '../../lib/permissions';
@@ -36,9 +42,26 @@ function Sidebar({ activeTab, onTabChange, sidebarOpen, isMobile, onOverlayClick
     { id: 'channels', icon: Hash, label: t('common.nav_channels') },
     { id: 'players', icon: Users, label: t('common.nav_players') },
     { id: 'announcements', icon: Megaphone, label: t('common.nav_announcements'), capability: 'announcements.manage' },
+    // §11.6 提案 06 (item 19): campaign orchestration. Visible to ADMIN+ under
+    // the announcements capability (create/schedule/activate are ADMIN-level
+    // mutations; the revoke action is SUPER_ADMIN-only, gated inside the view).
+    { id: 'campaigns', icon: Send, label: t('common.nav_campaigns'), capability: 'announcements.manage' },
     { id: 'filter', icon: Filter, label: t('common.nav_filter'), capability: 'filter.manage' },
+    { id: 'audit', icon: ScrollText, label: t('common.nav_audit'), capability: 'audit.view' },
+    // PANEL-007: moderation + appeals. Both are ADMIN+ only; VIEWER never
+    // sees these entries (a default admin must not browse private-chat content).
+    { id: 'moderation', icon: ShieldAlert, label: t('common.nav_moderation'), capability: 'moderation.view' },
+    { id: 'appeals', icon: Gavel, label: t('common.nav_appeals'), capability: 'appeals.review' },
     { id: 'webhooks', icon: Bell, label: t('common.nav_webhooks') },
     { id: 'settings', icon: Settings, label: t('common.nav_settings') },
+    // §11.6 Project 20 / PANEL proposal 10: masked config snapshot browse +
+    // diff + rollback. ADMIN+ see it; the rollback action is SUPER_ADMIN-only
+    // (gated inside the view).
+    { id: 'configHistory', icon: GitBranch, label: t('common.nav_config_history'), capability: 'settings.history' },
+    // Proposal 09 status page: read-only observability aggregate. No capability
+    // gate — every role (including VIEWER) can see it, mirroring the unauth
+    // /api/health + VIEWER-readable /api/metrics backend contract.
+    { id: 'status', icon: Activity, label: t('status.nav_status') },
   ].filter((item) => !item.capability || can(role, item.capability));
 
   return (

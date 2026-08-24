@@ -1,24 +1,20 @@
 /**
- * WebSocket Service for NovaPanel
- * Handles real-time communication with NovaLink backend
- * 
- * Requirements: 24.1, 24.4
+ * Generation-aware WebSocket lifecycle for NovaPanel.
+ * Subscription intent survives reconnects; socket-local work never does.
  */
 
-import authService from './auth';
-import { getApiBaseUrl } from './api';
+import authService from './auth.js';
+import { getApiBaseUrl } from './connectionUrls.js';
 
-// WebSocket connection states
 export const ConnectionState = {
   DISCONNECTED: 'disconnected',
   CONNECTING: 'connecting',
   CONNECTED: 'connected',
   AUTHENTICATED: 'authenticated',
   RECONNECTING: 'reconnecting',
-  ERROR: 'error'
+  ERROR: 'error',
 };
 
-// Message types based on design document
 export const MessageType = {
   AUTH: 'auth',
   AUTH_RESPONSE: 'auth_response',
@@ -28,480 +24,620 @@ export const MessageType = {
   SERVER_STATUS: 'server_status',
   PLAYER_UPDATE: 'player_update',
   CHANNEL_UPDATE: 'channel_update',
+  SETTINGS_UPDATE: 'settings_update',
   NOTIFICATION: 'notification',
   ERROR: 'error',
   PING: 'ping',
-  PONG: 'pong'
+  PONG: 'pong',
 };
 
+const SOCKET_OPEN = 1;
+const SNAPSHOT_TYPES = new Set(['get_clients', 'get_players', 'get_channels']);
+
 /**
- * WebSocket Service class for managing connection to NovaLink backend
+ * PANEL-008: message types whose payloads replace entity state (not
+ * append-only). For these, an out-of-order update with a revision older
+ * than the last-applied revision for that type is discarded before any
+ * listener sees it. Chat and notification are intentionally excluded —
+ * they are append-only events where dropping a stale revision would lose
+ * data. The server stamps a revision on every outbound payload regardless.
  */
-class WebSocketService {
-  constructor() {
+const REVISION_GUARDED_TYPES = new Set([
+  MessageType.SERVER_STATUS,
+  MessageType.CHANNEL_UPDATE,
+  MessageType.PLAYER_UPDATE,
+  // §11.6 提案 10 / item 20: settings is a full state-replacement payload
+  // (the live config object), so an out-of-order update with an older
+  // revision would clobber a newer local state. Guard it the same way as
+  // SERVER_STATUS / CHANNEL_UPDATE — the server stamps a revision on every
+  // settings_update emit and the client discards anything older than the
+  // last-applied revision. Append-only types (chat, notification) remain
+  // intentionally unguarded.
+  MessageType.SETTINGS_UPDATE,
+]);
+
+export class WebSocketLifecycleError extends Error {
+  constructor(message, code) {
+    super(message);
+    this.name = 'WebSocketLifecycleError';
+    this.code = code;
+  }
+}
+
+export function isWebSocketLifecycleCancellation(error) {
+  return error instanceof WebSocketLifecycleError
+    && ['WS_CONNECTION_REPLACED', 'WS_DISCONNECTED', 'WS_DESTROYED'].includes(error.code);
+}
+
+export class WebSocketService {
+  constructor({
+    auth = authService,
+    webSocketFactory = (url) => new WebSocket(url),
+    apiUrlResolver = getApiBaseUrl,
+    authTimeoutMs = 10000,
+    reconnectDelay = 1000,
+    maxReconnectDelay = 30000,
+    maxReconnectAttempts = 5,
+    pingIntervalMs = 30000,
+    pingTimeoutMs = 5000,
+  } = {}) {
+    this.auth = auth;
+    this.webSocketFactory = webSocketFactory;
+    this.apiUrlResolver = apiUrlResolver;
+    this.authTimeoutMs = authTimeoutMs;
+    this.reconnectDelay = reconnectDelay;
+    this.maxReconnectDelay = maxReconnectDelay;
+    this.maxReconnectAttempts = maxReconnectAttempts;
+    this.pingIntervalMs = pingIntervalMs;
+    this.pingTimeoutMs = pingTimeoutMs;
+
     this.socket = null;
     this.state = ConnectionState.DISCONNECTED;
-    this.token = null;
     this.url = null;
+    this.token = null;
+    this.generation = 0;
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 5;
-    this.reconnectDelay = 1000; // Start with 1 second
-    this.maxReconnectDelay = 30000; // Max 30 seconds
+    this.reconnectTimer = null;
     this.pingInterval = null;
     this.pingTimeout = null;
+    this.pendingAuth = null;
+    this.pendingConnect = null;
+    this.connectionPromise = null;
     this.listeners = new Map();
+    this.desiredSubscriptions = new Set();
     this.subscribedChannels = new Set();
-    // Channels awaiting re-subscription after an unexpected disconnect: the
-    // backend's new session has no subscription record, so they must be
-    // replayed once re-authenticated.
-    this.pendingResubscribeChannels = new Set();
-    this.reconnectTimer = null;
     this.messageQueue = [];
+    this.queueStats = { droppedStale: 0, sentCurrent: 0 };
+    this.snapshotRequestedGeneration = null;
+    this.destroyed = false;
+
+    // PANEL-008: last-applied revision per guarded entity type. An update
+    // whose revision is older than the recorded value is discarded. A
+    // missing/zero revision on the payload bypasses the guard (legacy
+    // server compatibility) — the update is applied and its revision
+    // recorded.
+    this.lastAppliedRevisions = Object.create(null);
+
+    this.authUnsubscribe = this.auth?.onAuthChange?.((state) => {
+      this._handleAuthChange(state);
+    }) || null;
   }
 
-  /**
-   * Connect to WebSocket server
-   * @param {string} url - WebSocket server URL
-   * @param {string} token - JWT authentication token
-   * @returns {Promise<boolean>} - Connection success
-   */
   connect(url, token) {
-    return new Promise((resolve, reject) => {
-      // Already connected (or connecting to the same URL): reuse the in-flight
-      // connection instead of opening a second socket. Without this guard, React
-      // StrictMode's dev double-invoke of the WS effect opens a duplicate socket
-      // whose later close surfaces as a spurious "ws connection failed" error.
-      if (this.socket && (this.state === ConnectionState.CONNECTED || this.state === ConnectionState.AUTHENTICATED)) {
-        resolve(true);
-        return;
-      }
-      if (this.socket && this.state === ConnectionState.CONNECTING && this.url === url) {
-        // A connection to the same URL is already being established; don't open another.
-        resolve(true);
-        return;
-      }
+    if (this.destroyed) {
+      return Promise.reject(new WebSocketLifecycleError(
+        'WebSocket service has been destroyed',
+        'WS_DESTROYED',
+      ));
+    }
+    if (!url || !token) return Promise.reject(new Error('WebSocket URL and token are required'));
 
-      this.url = url;
-      this.token = token;
-      this.state = ConnectionState.CONNECTING;
-      this._notifyStateChange();
+    const sameConnection = this.socket && this.url === url && this.token === token;
+    if (sameConnection && this.connectionPromise) return this.connectionPromise;
+    if (sameConnection && this.state === ConnectionState.AUTHENTICATED) {
+      return Promise.resolve(true);
+    }
 
-      try {
-        this.socket = new WebSocket(url);
-
-        this.socket.onopen = () => {
-          console.log('[WebSocket] Connection established');
-          this.state = ConnectionState.CONNECTED;
-          this.reconnectAttempts = 0;
-          this._notifyStateChange();
-          
-          // Authenticate immediately after connection
-          this._authenticate(token)
-            .then(() => {
-              this._startPingInterval();
-              this._resubscribePending();
-              this._flushMessageQueue();
-              resolve(true);
-            })
-            .catch((error) => {
-              console.error('[WebSocket] Authentication failed:', error);
-              this.disconnect();
-              reject(error);
-            });
-        };
-
-        this.socket.onmessage = (event) => {
-          this._handleMessage(event.data);
-        };
-
-        this.socket.onerror = (error) => {
-          console.error('[WebSocket] Error:', error);
-          this.state = ConnectionState.ERROR;
-          this._notifyStateChange();
-          reject(error);
-        };
-
-        this.socket.onclose = (event) => {
-          console.log('[WebSocket] Connection closed:', event.code, event.reason);
-          this._stopPingInterval();
-          
-          if (this.state !== ConnectionState.DISCONNECTED) {
-            // Unexpected close: the backend session (and its subscription
-            // records) is gone. Save the channels for replay after reconnect
-            // and reset the local "already subscribed" state so subscribe()
-            // doesn't filter them out.
-            this.subscribedChannels.forEach((c) => this.pendingResubscribeChannels.add(c));
-            this.subscribedChannels.clear();
-            this.state = ConnectionState.DISCONNECTED;
-            this._notifyStateChange();
-            this._attemptReconnect();
-          }
-        };
-      } catch (error) {
-        console.error('[WebSocket] Failed to create connection:', error);
-        this.state = ConnectionState.ERROR;
-        this._notifyStateChange();
-        reject(error);
-      }
-    });
+    this.url = url;
+    this.token = token;
+    this.reconnectAttempts = 0;
+    return this._startConnection(false);
   }
 
-  /**
-   * Disconnect from WebSocket server
-   */
-  disconnect() {
-    this.state = ConnectionState.DISCONNECTED;
-    this._stopPingInterval();
-
-    // Clear a pending auth timeout + its listener so disconnect-during-auth
-    // doesn't leak a dangling setTimeout / AUTH_RESPONSE handler.
-    if (this._authTimeoutId) {
-      clearTimeout(this._authTimeoutId);
-      this._authTimeoutId = null;
+  reconnectWithToken(token) {
+    if (!this.url) {
+      return Promise.reject(new WebSocketLifecycleError(
+        'No previous connection to restore',
+        'WS_DISCONNECTED',
+      ));
     }
+    this.token = token;
+    this.reconnectAttempts = 0;
+    return this._startConnection(false);
+  }
 
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+  _startConnection(isReconnect) {
+    this._clearReconnectTimer();
+    this._retireSocket(new WebSocketLifecycleError(
+      'WebSocket connection was replaced',
+      'WS_CONNECTION_REPLACED',
+    ));
 
-    if (this.socket) {
-      this.socket.close(1000, 'Client disconnect');
-      this.socket = null;
-    }
-
-    // Clear connection params so a stale token/url can't be reused after
-    // logout — a pending reconnect that slipped through would otherwise fire
-    // connect(this.url, this.token) with the old credentials.
-    this.url = null;
-    this.token = null;
-
+    const generation = ++this.generation;
+    this._dropQueuedMessages();
+    this.snapshotRequestedGeneration = null;
     this.subscribedChannels.clear();
-    this.pendingResubscribeChannels.clear();
-    this.messageQueue = [];
-    this._notifyStateChange();
-  }
+    // PANEL-008: revisions from the retired socket must not block updates
+    // from the new connection — reset the guard at the start of each
+    // connection attempt.
+    this.resetRevisions();
+    this._setState(isReconnect ? ConnectionState.RECONNECTING : ConnectionState.CONNECTING);
 
-  /**
-   * Replay subscriptions saved from before an unexpected disconnect.
-   * Called after a successful (re)authentication.
-   */
-  _resubscribePending() {
-    if (this.pendingResubscribeChannels.size === 0) return;
-    const channels = Array.from(this.pendingResubscribeChannels);
-    this.pendingResubscribeChannels.clear();
-    this.subscribe(channels);
-  }
-
-  /**
-   * Send authentication message with JWT token
-   * @param {string} token - JWT token
-   * @returns {Promise<object>} - Authentication response
-   */
-  _authenticate(token) {
-    return new Promise((resolve, reject) => {
-      const authMessage = {
-        type: MessageType.AUTH,
-        token: token,
-        timestamp: Date.now()
-      };
-
-      // Set up one-time listener for auth response
-      const authHandler = (data) => {
-        if (data.type === MessageType.AUTH_RESPONSE) {
-          this.off(MessageType.AUTH_RESPONSE, authHandler);
-          if (this._authTimeoutId) {
-            clearTimeout(this._authTimeoutId);
-            this._authTimeoutId = null;
-          }
-
-          if (data.success) {
-            this.state = ConnectionState.AUTHENTICATED;
-            this._notifyStateChange();
-            resolve(data);
-          } else {
-            reject(new Error(data.error || 'Authentication failed'));
-          }
-        }
-      };
-
-      this.on(MessageType.AUTH_RESPONSE, authHandler);
-
-      // Send auth message
-      this._send(authMessage);
-
-      // Timeout for auth response
-      this._authTimeoutId = setTimeout(() => {
-        this._authTimeoutId = null;
-        this.off(MessageType.AUTH_RESPONSE, authHandler);
-        if (this.state !== ConnectionState.AUTHENTICATED) {
-          reject(new Error('Authentication timeout'));
-        }
-      }, 10000);
-    });
-  }
-
-  /**
-   * Subscribe to channel messages
-   * @param {string[]} channels - Array of channel IDs to subscribe
-   */
-  subscribe(channels) {
-    const newChannels = channels.filter(c => !this.subscribedChannels.has(c));
-    
-    if (newChannels.length === 0) return;
-
-    const message = {
-      type: MessageType.SUBSCRIBE,
-      channels: newChannels,
-      timestamp: Date.now()
-    };
-
-    this._send(message);
-    newChannels.forEach(c => this.subscribedChannels.add(c));
-  }
-
-  /**
-   * Unsubscribe from channel messages
-   * @param {string[]} channels - Array of channel IDs to unsubscribe
-   */
-  unsubscribe(channels) {
-    const existingChannels = channels.filter(c => this.subscribedChannels.has(c));
-    
-    if (existingChannels.length === 0) return;
-
-    const message = {
-      type: MessageType.UNSUBSCRIBE,
-      channels: existingChannels,
-      timestamp: Date.now()
-    };
-
-    this._send(message);
-    existingChannels.forEach(c => this.subscribedChannels.delete(c));
-  }
-
-  /**
-   * Send a message through WebSocket
-   * @param {object} message - Message object to send
-   */
-  _send(message) {
-    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify(message));
-    } else {
-      // Queue message for later
-      this.messageQueue.push(message);
-    }
-  }
-
-  /**
-   * Flush queued messages after reconnection
-   */
-  _flushMessageQueue() {
-    while (this.messageQueue.length > 0) {
-      const message = this.messageQueue.shift();
-      this._send(message);
-    }
-  }
-
-  /**
-   * Handle incoming WebSocket message
-   * @param {string} data - Raw message data
-   */
-  _handleMessage(data) {
+    let socket;
     try {
-      const message = JSON.parse(data);
-      
-      // Handle pong response
+      socket = this.webSocketFactory(this.url);
+    } catch (error) {
+      this._setState(ConnectionState.ERROR);
+      return Promise.reject(error);
+    }
+    this.socket = socket;
+
+    this.connectionPromise = new Promise((resolve, reject) => {
+      this.pendingConnect = { generation, resolve, reject, settled: false };
+    });
+    const result = this.connectionPromise;
+
+    socket.onopen = () => {
+      if (!this._isCurrent(generation, socket)) return;
+      this._setState(ConnectionState.CONNECTED);
+      this._authenticate(this.token, generation, socket).then(() => {
+        if (!this._isCurrent(generation, socket)) return;
+        this.reconnectAttempts = 0;
+        this._setState(ConnectionState.AUTHENTICATED);
+        this._applyDesiredSubscriptions(generation, socket);
+        this._flushMessageQueue(generation, socket);
+        this._startPingInterval(generation, socket);
+        this._settleConnect(generation, true, true);
+      }).catch((error) => {
+        if (!this._isCurrent(generation, socket)) return;
+        this._settleConnect(generation, false, error);
+        this._retireSocket(error);
+        this._setState(ConnectionState.ERROR);
+      });
+    };
+
+    socket.onmessage = (event) => {
+      if (!this._isCurrent(generation, socket)) return;
+      this._handleMessage(event.data, generation, socket);
+    };
+
+    socket.onerror = (error) => {
+      if (!this._isCurrent(generation, socket)) return;
+      console.error('[WebSocket] Socket error:', error);
+    };
+
+    socket.onclose = () => {
+      if (!this._isCurrent(generation, socket)) return;
+      const error = new WebSocketLifecycleError(
+        'WebSocket disconnected',
+        'WS_CONNECTION_CLOSED',
+      );
+      this._cancelAuthentication(generation, error);
+      this._settleConnect(generation, false, error);
+      this._detachSocket(socket);
+      this.socket = null;
+      this.connectionPromise = null;
+      this.subscribedChannels.clear();
+      this._dropQueuedMessages();
+      this.snapshotRequestedGeneration = null;
+      // PANEL-008: reset revisions on close so the reconnect does not reject
+      // the fresh server state (server revision counter resets on restart
+      // and we want a clean slate on a new socket).
+      this.resetRevisions();
+      this._stopPingInterval();
+      this.generation += 1;
+      this._attemptReconnect(this.generation);
+    };
+
+    return result;
+  }
+
+  _authenticate(token, generation, socket) {
+    const authMessage = { type: MessageType.AUTH, token, timestamp: Date.now() };
+
+    const promise = new Promise((resolve, reject) => {
+      const handler = (data) => {
+        if (!this._isCurrent(generation, socket)) return;
+        if (data.success) this._settleAuthentication(generation, true, data);
+        else this._settleAuthentication(
+          generation,
+          false,
+          new Error(data.error || 'Authentication failed'),
+        );
+      };
+      const timeoutId = setTimeout(() => {
+        this._settleAuthentication(
+          generation,
+          false,
+          new Error('Authentication timeout'),
+        );
+      }, this.authTimeoutMs);
+
+      this.pendingAuth = {
+        generation,
+        socket,
+        handler,
+        timeoutId,
+        resolve,
+        reject,
+        settled: false,
+      };
+      this.on(MessageType.AUTH_RESPONSE, handler);
+    });
+
+    if (!this._sendNow(authMessage, generation, socket)) {
+      this._settleAuthentication(generation, false, new Error('Authentication socket is not open'));
+    }
+    return promise;
+  }
+
+  _settleAuthentication(generation, succeeded, value) {
+    const pending = this.pendingAuth;
+    if (!pending || pending.generation !== generation || pending.settled) return false;
+    pending.settled = true;
+    clearTimeout(pending.timeoutId);
+    this.off(MessageType.AUTH_RESPONSE, pending.handler);
+    this.pendingAuth = null;
+    if (succeeded) pending.resolve(value);
+    else pending.reject(value);
+    return true;
+  }
+
+  _cancelAuthentication(generation, error) {
+    return this._settleAuthentication(generation, false, error);
+  }
+
+  _settleConnect(generation, succeeded, value) {
+    const pending = this.pendingConnect;
+    if (!pending || pending.generation !== generation || pending.settled) return false;
+    pending.settled = true;
+    this.pendingConnect = null;
+    if (succeeded) pending.resolve(value);
+    else pending.reject(value);
+    return true;
+  }
+
+  _handleAuthChange({ isAuthenticated, token, previousToken }) {
+    if (this.destroyed) return;
+    if (!isAuthenticated) {
+      if (this.socket || this.reconnectTimer || this.url) this.disconnect();
+      return;
+    }
+    if (token && previousToken && token !== previousToken && this.url) {
+      this.reconnectWithToken(token).catch((error) => {
+        if (!isWebSocketLifecycleCancellation(error)) {
+          console.error('[WebSocket] Token rotation reconnect failed:', error);
+        }
+      });
+    }
+  }
+
+  setSubscriptions(channels) {
+    this.desiredSubscriptions = new Set(
+      (Array.isArray(channels) ? channels : []).filter(Boolean),
+    );
+    if (this.state === ConnectionState.AUTHENTICATED && this.socket) {
+      this._applyDesiredSubscriptions(this.generation, this.socket);
+    }
+  }
+
+  subscribe(channels) {
+    const desired = new Set(this.desiredSubscriptions);
+    for (const channel of channels || []) if (channel) desired.add(channel);
+    this.setSubscriptions([...desired]);
+  }
+
+  unsubscribe(channels) {
+    const desired = new Set(this.desiredSubscriptions);
+    for (const channel of channels || []) desired.delete(channel);
+    this.setSubscriptions([...desired]);
+  }
+
+  _applyDesiredSubscriptions(generation, socket) {
+    if (!this._isAuthenticatedCurrent(generation, socket)) return;
+    const unsubscribe = [...this.subscribedChannels]
+      .filter((channel) => !this.desiredSubscriptions.has(channel));
+    const subscribe = [...this.desiredSubscriptions]
+      .filter((channel) => !this.subscribedChannels.has(channel));
+
+    if (unsubscribe.length > 0 && this._sendNow({
+      type: MessageType.UNSUBSCRIBE,
+      channels: unsubscribe,
+      timestamp: Date.now(),
+    }, generation, socket)) {
+      unsubscribe.forEach((channel) => this.subscribedChannels.delete(channel));
+    }
+    if (subscribe.length > 0 && this._sendNow({
+      type: MessageType.SUBSCRIBE,
+      channels: subscribe,
+      timestamp: Date.now(),
+    }, generation, socket)) {
+      subscribe.forEach((channel) => this.subscribedChannels.add(channel));
+    }
+  }
+
+  requestSnapshot() {
+    if (this.snapshotRequestedGeneration === this.generation) return;
+    this.snapshotRequestedGeneration = this.generation;
+    const messages = ['get_clients', 'get_players', 'get_channels']
+      .map((type) => ({ type, timestamp: Date.now() }));
+    if (this.state === ConnectionState.AUTHENTICATED && this.socket) {
+      messages.forEach((message) => {
+        if (this._sendNow(message, this.generation, this.socket)) {
+          this.queueStats.sentCurrent += 1;
+        }
+      });
+      return;
+    }
+
+    const queuedTypes = new Set(
+      this.messageQueue
+        .filter((entry) => entry.generation === this.generation)
+        .map((entry) => entry.message.type),
+    );
+    for (const message of messages) {
+      if (!queuedTypes.has(message.type)) {
+        this.messageQueue.push({ generation: this.generation, message });
+      }
+    }
+  }
+
+  _flushMessageQueue(generation, socket) {
+    const queued = this.messageQueue;
+    this.messageQueue = [];
+    for (const entry of queued) {
+      if (entry.generation !== generation || !SNAPSHOT_TYPES.has(entry.message.type)) {
+        this.queueStats.droppedStale += 1;
+      } else if (this._sendNow(entry.message, generation, socket)) {
+        this.queueStats.sentCurrent += 1;
+      }
+    }
+  }
+
+  _dropQueuedMessages() {
+    this.queueStats.droppedStale += this.messageQueue.length;
+    this.messageQueue = [];
+  }
+
+  // Generic messages are deliberately never queued for a future session.
+  _send(message) {
+    if (this.state !== ConnectionState.AUTHENTICATED || !this.socket) return false;
+    return this._sendNow(message, this.generation, this.socket);
+  }
+
+  _sendNow(message, generation, socket) {
+    if (!this._isCurrent(generation, socket) || socket.readyState !== SOCKET_OPEN) return false;
+    socket.send(JSON.stringify(message));
+    return true;
+  }
+
+  _handleMessage(rawData, generation, socket) {
+    try {
+      const message = JSON.parse(rawData);
+      if (!this._isCurrent(generation, socket)) return;
       if (message.type === MessageType.PONG) {
         this._handlePong();
         return;
       }
-
-      // Notify listeners
+      // PANEL-008: discard stale state-replacing updates. If the payload
+      // carries a revision and we have already applied a newer revision for
+      // this entity type, the update is out-of-order (e.g. a delayed packet
+      // from before the latest snapshot) and is dropped before any listener
+      // sees it. Append-only types (chat, notification, auth_response,
+      // pong) are never filtered here.
+      if (REVISION_GUARDED_TYPES.has(message.type) && message.revision != null) {
+        const last = this.lastAppliedRevisions[message.type] || 0;
+        if (message.revision < last) {
+          return;
+        }
+        this.lastAppliedRevisions[message.type] = message.revision;
+      }
       this._notifyListeners(message.type, message);
-      
-      // Also notify 'all' listeners
       this._notifyListeners('all', message);
     } catch (error) {
       console.error('[WebSocket] Failed to parse message:', error);
     }
   }
 
-  /**
-   * Start ping interval for keep-alive
-   */
-  _startPingInterval() {
+  _startPingInterval(generation, socket) {
     this._stopPingInterval();
-    
     this.pingInterval = setInterval(() => {
-      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-        this._send({ type: MessageType.PING, timestamp: Date.now() });
-        
-        // Set timeout for pong response
-        this.pingTimeout = setTimeout(() => {
-          console.warn('[WebSocket] Ping timeout, reconnecting...');
-          this.socket.close();
-        }, 5000);
-      }
-    }, 30000); // Ping every 30 seconds
+      if (!this._isAuthenticatedCurrent(generation, socket)) return;
+      if (!this._sendNow({ type: MessageType.PING, timestamp: Date.now() }, generation, socket)) return;
+      if (this.pingTimeout) clearTimeout(this.pingTimeout);
+      this.pingTimeout = setTimeout(() => {
+        if (this._isCurrent(generation, socket)) socket.close();
+      }, this.pingTimeoutMs);
+    }, this.pingIntervalMs);
   }
 
-  /**
-   * Stop ping interval
-   */
   _stopPingInterval() {
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
-    }
-    if (this.pingTimeout) {
-      clearTimeout(this.pingTimeout);
-      this.pingTimeout = null;
-    }
+    if (this.pingInterval) clearInterval(this.pingInterval);
+    if (this.pingTimeout) clearTimeout(this.pingTimeout);
+    this.pingInterval = null;
+    this.pingTimeout = null;
   }
 
-  /**
-   * Handle pong response
-   */
   _handlePong() {
-    if (this.pingTimeout) {
-      clearTimeout(this.pingTimeout);
-      this.pingTimeout = null;
-    }
+    if (this.pingTimeout) clearTimeout(this.pingTimeout);
+    this.pingTimeout = null;
   }
 
-  /**
-   * Attempt to reconnect with exponential backoff
-   */
-  _attemptReconnect() {
+  _attemptReconnect(closedGeneration) {
+    if (!this.url || !this.token || this.destroyed) {
+      this._setState(ConnectionState.DISCONNECTED);
+      return;
+    }
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('[WebSocket] Max reconnect attempts reached');
-      this.state = ConnectionState.ERROR;
-      this._notifyStateChange();
+      this._setState(ConnectionState.ERROR);
       return;
     }
 
-    this.state = ConnectionState.RECONNECTING;
-    this._notifyStateChange();
-
+    this._setState(ConnectionState.RECONNECTING);
     const delay = Math.min(
-      this.reconnectDelay * Math.pow(2, this.reconnectAttempts),
-      this.maxReconnectDelay
+      this.reconnectDelay * (2 ** this.reconnectAttempts),
+      this.maxReconnectDelay,
     );
-
-    console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts + 1})`);
-
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
-      this.reconnectAttempts++;
-      // Refresh the access token if it is expiring/expired, then always read
-      // the latest token from the auth store — the token captured at connect
-      // time may be long expired (access tokens live 24h).
-      await authService.maybeRefreshToken(getApiBaseUrl());
-      const token = authService.getToken() || this.token;
-      this.connect(this.url, token).catch(() => {
-        // Will trigger another reconnect attempt via onclose
-      });
+      if (this.generation !== closedGeneration || !this.url || this.destroyed) return;
+      this.reconnectAttempts += 1;
+      try {
+        await this.auth?.maybeRefreshToken?.(this.apiUrlResolver());
+        if (this.generation !== closedGeneration || !this.url || this.destroyed) return;
+        this.token = this.auth?.getToken?.() || this.token;
+        this._startConnection(true).catch(() => {});
+      } catch {
+        if (this.url && !this.destroyed) this._setState(ConnectionState.ERROR);
+      }
     }, delay);
   }
 
-  /**
-   * Manually reconnect after the ERROR terminal state (max retries reached).
-   * Resets the retry counter and connects with a fresh token.
-   * @returns {Promise<boolean>}
-   */
   async manualReconnect() {
-    if (!this.url) {
-      throw new Error('No previous connection to restore');
-    }
+    if (!this.url) throw new Error('No previous connection to restore');
     this.reconnectAttempts = 0;
-    await authService.maybeRefreshToken(getApiBaseUrl());
-    const token = authService.getToken() || this.token;
-    return this.connect(this.url, token);
+    await this.auth?.maybeRefreshToken?.(this.apiUrlResolver());
+    const token = this.auth?.getToken?.() || this.token;
+    return this.reconnectWithToken(token);
   }
 
-  /**
-   * Request immediate on-demand snapshots from the backend instead of waiting
-   * for the 30s periodic broadcast. Responses arrive as server_status /
-   * player_update / channel_update messages (handlers already registered).
-   */
-  requestSnapshot() {
-    this._send({ type: 'get_clients', timestamp: Date.now() });
-    this._send({ type: 'get_players', timestamp: Date.now() });
-    this._send({ type: 'get_channels', timestamp: Date.now() });
+  disconnect() {
+    const error = new WebSocketLifecycleError('WebSocket disconnected', 'WS_DISCONNECTED');
+    this._clearReconnectTimer();
+    this._retireSocket(error);
+    this._dropQueuedMessages();
+    this.snapshotRequestedGeneration = null;
+    this.desiredSubscriptions.clear();
+    this.subscribedChannels.clear();
+    this.resetRevisions();
+    this.url = null;
+    this.token = null;
+    this.generation += 1;
+    this._setState(ConnectionState.DISCONNECTED);
   }
 
-  /**
-   * Add event listener
-   * @param {string} type - Message type to listen for
-   * @param {function} callback - Callback function
-   */
+  _retireSocket(error) {
+    this._stopPingInterval();
+    if (this.pendingAuth) this._cancelAuthentication(this.pendingAuth.generation, error);
+    if (this.pendingConnect) this._settleConnect(this.pendingConnect.generation, false, error);
+    const socket = this.socket;
+    if (socket) {
+      this._detachSocket(socket);
+      this.socket = null;
+      try {
+        if (socket.readyState < 2) socket.close(1000, 'Connection retired');
+      } catch {
+        // The generation guard already makes a failed close harmless.
+      }
+    }
+    this.connectionPromise = null;
+    this.subscribedChannels.clear();
+  }
+
+  _detachSocket(socket) {
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+  }
+
+  _clearReconnectTimer() {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  _isCurrent(generation, socket) {
+    return !this.destroyed && this.generation === generation && this.socket === socket;
+  }
+
+  _isAuthenticatedCurrent(generation, socket) {
+    return this.state === ConnectionState.AUTHENTICATED && this._isCurrent(generation, socket);
+  }
+
   on(type, callback) {
-    if (!this.listeners.has(type)) {
-      this.listeners.set(type, new Set());
-    }
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
     this.listeners.get(type).add(callback);
+    return () => this.off(type, callback);
   }
 
-  /**
-   * Remove event listener
-   * @param {string} type - Message type
-   * @param {function} callback - Callback function to remove
-   */
   off(type, callback) {
-    if (this.listeners.has(type)) {
-      this.listeners.get(type).delete(callback);
-    }
+    const callbacks = this.listeners.get(type);
+    if (!callbacks) return;
+    callbacks.delete(callback);
+    if (callbacks.size === 0) this.listeners.delete(type);
   }
 
-  /**
-   * Notify listeners of a message
-   * @param {string} type - Message type
-   * @param {object} data - Message data
-   */
   _notifyListeners(type, data) {
-    if (this.listeners.has(type)) {
-      this.listeners.get(type).forEach(callback => {
-        try {
-          callback(data);
-        } catch (error) {
-          console.error('[WebSocket] Listener error:', error);
-        }
-      });
+    for (const callback of [...(this.listeners.get(type) || [])]) {
+      try {
+        callback(data);
+      } catch (error) {
+        console.error('[WebSocket] Listener error:', error);
+      }
     }
   }
 
-  /**
-   * Notify state change listeners
-   */
-  _notifyStateChange() {
-    this._notifyListeners('stateChange', { state: this.state });
+  _setState(state) {
+    if (this.state === state) return;
+    this.state = state;
+    this._notifyListeners('stateChange', { state, generation: this.generation });
   }
 
-  /**
-   * Get current connection state
-   * @returns {string} - Current state
-   */
   getState() {
     return this.state;
   }
 
-  /**
-   * Check if connected and authenticated
-   * @returns {boolean}
-   */
   isAuthenticated() {
     return this.state === ConnectionState.AUTHENTICATED;
   }
 
-  /**
-   * Get subscribed channels
-   * @returns {string[]}
-   */
   getSubscribedChannels() {
-    return Array.from(this.subscribedChannels);
+    return [...this.subscribedChannels];
+  }
+
+  getDesiredSubscriptions() {
+    return [...this.desiredSubscriptions];
+  }
+
+  getQueueStats() {
+    return { ...this.queueStats, queued: this.messageQueue.length };
+  }
+
+  /**
+   * PANEL-008: returns the last-applied revision for a guarded entity type,
+   * or 0 when none has been applied yet. Exposed for diagnostics/tests.
+   */
+  getLastAppliedRevision(type) {
+    return this.lastAppliedRevisions[type] || 0;
+  }
+
+  /**
+   * PANEL-008: resets the recorded revisions (used on hard reconnect /
+   * destroy so a fresh session does not carry stale ordering state).
+   */
+  resetRevisions() {
+    this.lastAppliedRevisions = Object.create(null);
+  }
+
+  destroy() {
+    if (this.destroyed) return;
+    this.disconnect();
+    this.authUnsubscribe?.();
+    this.authUnsubscribe = null;
+    this.listeners.clear();
+    this.destroyed = true;
   }
 }
 
-// Export singleton instance
 export const websocketService = new WebSocketService();
 export default websocketService;

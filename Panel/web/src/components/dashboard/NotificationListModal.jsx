@@ -112,24 +112,23 @@ const NotificationListModal = ({
     }
   }, [onToast, onUnreadCountChange, t]);
 
-  // Clear all notifications (after confirm).
+  // Clear notifications (after confirm). PANEL-014: the backend only deletes
+  // the caller's directed notifications — broadcast events remain. Refresh the
+  // page so the list reflects reality rather than optimistically wiping it.
   const handleClearAll = useCallback(async () => {
     setActionPending(true);
     try {
       await api.clearNotifications();
-      setItems([]);
-      setTotal(0);
-      setUnreadCount(0);
-      setHasMore(false);
       setShowClearConfirm(false);
-      if (onUnreadCountChange) onUnreadCountChange(0);
       if (onToast) onToast(t('notifications.toast_cleared'), 'success');
+      // Re-fetch the current page so broadcast notifications still show.
+      await fetchPage(page, false);
     } catch (err) {
       if (onToast) onToast(t('notifications.toast_clear_failed', { error: err.message }), 'error');
     } finally {
       setActionPending(false);
     }
-  }, [onToast, onUnreadCountChange, t]);
+  }, [onToast, onUnreadCountChange, t, fetchPage, page]);
 
   // Load next page.
   const handleLoadMore = useCallback(() => {

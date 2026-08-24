@@ -56,7 +56,9 @@ export function isValidSettingsValue(key, value) {
 
 /**
  * Maps GET /api/settings into the panel shape while feature-detecting fields
- * that older backends do not expose.
+ * that older backends do not expose. PANEL-010: captures the server-reported
+ * `revision` so the next update can send it back as baseRevision for
+ * optimistic-concurrency protection.
  */
 export function adaptSettingsResponse(response) {
   const source = response && typeof response === 'object' ? response : {};
@@ -73,6 +75,10 @@ export function adaptSettingsResponse(response) {
       settings.supported[key] = true;
     }
   }
+
+  // PANEL-010: stash the server revision so the next update can send it back
+  // as baseRevision. Undefined on older backends (no concurrency protection).
+  settings.revision = typeof source.revision === 'number' ? source.revision : undefined;
 
   return settings;
 }

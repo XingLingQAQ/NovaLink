@@ -13,6 +13,7 @@ import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import authService from '../../services/auth';
 import { getApiBaseUrl, getWsUrl, setConnectionUrls } from '../../services/api';
+import { validateApiUrl, validateWsUrl } from '../../services/connectionPolicy';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Label from '../ui/Label';
@@ -31,6 +32,20 @@ export default function LoginScreen({ onLoginSuccess }) {
     e.preventDefault();
     if (!username || !password) {
       setError(t('login.error_empty'));
+      return;
+    }
+    // PANEL-011: validate transport policy before persisting. Production must
+    // reject plaintext http/ws, and an HTTPS page must never downgrade to
+    // ws/http. On failure we surface the reason and abort WITHOUT writing
+    // localStorage, so the unsafe value cannot stick.
+    const apiCheck = validateApiUrl(apiUrl);
+    if (!apiCheck.ok) {
+      setError(apiCheck.error);
+      return;
+    }
+    const wsCheck = validateWsUrl(wsUrl);
+    if (!wsCheck.ok) {
+      setError(wsCheck.error);
       return;
     }
     setLoading(true);

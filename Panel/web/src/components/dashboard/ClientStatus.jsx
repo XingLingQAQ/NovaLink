@@ -24,6 +24,7 @@ import Card from '../ui/Card';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
 import { can } from '../../lib/permissions';
+import { platformLabel } from '../../utils/adapters';
 
 function ClientStatus({
   theme,
@@ -204,7 +205,7 @@ function ClientStatus({
                         <span className="font-medium">{server.name}</span>
                       </div>
                     </td>
-                    <td className="p-3 text-muted-foreground">{server.platform}</td>
+                    <td className="p-3 text-muted-foreground">{platformLabel(server.platform)}</td>
                     <td className="p-3 text-muted-foreground">{server.version}</td>
                     <td className="p-3">{server.players}</td>
                     <td className="p-3 text-muted-foreground">{server.status === 'online' ? `${server.ping}ms` : '-'}</td>
@@ -260,7 +261,7 @@ function ClientStatus({
               return (
                 <div key={platform} className="p-3 rounded-md bg-muted/40">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-foreground">{platform}</span>
+                    <span className="text-sm font-medium text-foreground">{platformLabel(platform)}</span>
                     <span className="text-xs text-muted-foreground">{t('common.online_ratio', { online, total })}</span>
                   </div>
                   <div className="h-1.5 rounded-full bg-muted">
@@ -343,7 +344,7 @@ function ServerCard({ server, theme, mode, onViewDetails, onDisconnect, canDisco
           </div>
           <div>
             <h3 className="text-sm font-medium text-foreground">{server.name}</h3>
-            <p className="text-xs text-muted-foreground">{server.platform}</p>
+            <p className="text-xs text-muted-foreground">{platformLabel(server.platform)}</p>
           </div>
         </div>
         <Badge variant={server.status === 'online' ? 'success' : 'destructive'}>

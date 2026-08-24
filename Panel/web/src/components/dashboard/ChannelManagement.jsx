@@ -80,18 +80,27 @@ function ChannelManagement({
   const [inviteCopied, setInviteCopied] = useState(false);
 
   // New channel form — aligned with backend POST /api/channels body.
-  // { id?, displayName, scope, maxCapacity, permission, slowModeSeconds }
+  // { id?, displayName, scope, clientId?, maxCapacity, permission?, slowModeSeconds }
+  // PANEL-003: clientId is REQUIRED for SERVER/PRIVATE scope (must reference a
+  // real connected client); GLOBAL omits it.
   const emptyChannel = {
     id: '',
     name: '',
     scope: 'GLOBAL',
+    clientId: '',
     maxCapacity: 100,
     permission: '',
     slowModeSeconds: 0,
   };
   const [newChannel, setNewChannel] = useState(emptyChannel);
   const newSlowModeSeconds = parseSlowModeSeconds(newChannel.slowModeSeconds);
+  const newMaxCapacity = Number(newChannel.maxCapacity);
+  const newMaxCapacityValid = Number.isInteger(newMaxCapacity) && newMaxCapacity > 0;
+  const newClientIdRequired = newChannel.scope === 'SERVER' || newChannel.scope === 'PRIVATE';
+  const newClientIdValid = !newClientIdRequired || !!(newChannel.clientId && newChannel.clientId.trim());
   const editingSlowModeSeconds = parseSlowModeSeconds(editingChannel?.slowModeSeconds);
+  const editingMaxCapacity = Number(editingChannel?.maxCapacity);
+  const editingMaxCapacityValid = Number.isInteger(editingMaxCapacity) && editingMaxCapacity > 0;
 
   // Filter channels.
   const filteredChannels = channels.filter((c) => {
@@ -126,14 +135,21 @@ function ChannelManagement({
 
   // Handle create channel — calls App handler with backend-shaped body.
   const handleCreate = async () => {
-    if (!newChannel.name || newSlowModeSeconds == null) return;
+    // PANEL-003: validate before submit so the user gets immediate feedback
+    // instead of a 400 round-trip. maxCapacity must be a positive integer;
+    // SERVER/PRIVATE scope requires a non-empty clientId (the backend will
+    // additionally verify the client is currently connected).
+    if (!newChannel.name || newSlowModeSeconds == null || !newMaxCapacityValid || !newClientIdValid) return;
     const body = {
       displayName: newChannel.name,
       scope: newChannel.scope,
-      maxCapacity: Number(newChannel.maxCapacity) || 100,
+      maxCapacity: newMaxCapacity,
       slowModeSeconds: newSlowModeSeconds,
     };
     if (newChannel.id && newChannel.id.trim()) body.id = newChannel.id.trim();
+    // GLOBAL scope must not carry a clientId (backend rejects it); SERVER /
+    // PRIVATE must carry the user-entered clientId.
+    if (newClientIdRequired) body.clientId = newChannel.clientId.trim();
     if (newChannel.permission && newChannel.permission.trim()) body.permission = newChannel.permission.trim();
     setSubmitting(true);
     try {
@@ -156,6 +172,7 @@ function ChannelManagement({
       maxCapacity: channel.maxCapacity || 100,
       permission: channel.permission || '',
       slowModeSeconds: channel.slowModeSeconds ?? 0,
+      source: channel.source || 'RUNTIME',
     });
     setShowEditModal(true);
   };
@@ -167,7 +184,12 @@ function ChannelManagement({
     if (editingChannel.name) body.displayName = editingChannel.name;
     body.maxCapacity = Number(editingChannel.maxCapacity) || 100;
     body.slowModeSeconds = editingSlowModeSeconds;
-    if (editingChannel.permission !== undefined) body.permission = editingChannel.permission || null;
+    // PANEL-003: explicitly signal that the permission field is being set so
+    // the backend applies it (including clearing it to null). Without
+    // permissionPresent the backend's legacy overload treats null as
+    // "leave untouched" and the old value survives a clear.
+    body.permissionPresent = true;
+    body.permission = (editingChannel.permission && editingChannel.permission.trim()) || null;
     setSubmitting(true);
     try {
       await onEditChannel(editingChannel.id, body);
@@ -305,21 +327,35 @@ function ChannelManagement({
             />
           </div>
 
-          {/* Type Filter */}
-          <div className="flex gap-1">
-            {['all', 'GLOBAL', 'SERVER', 'PRIVATE'].map((type) => (
-              <button
-                key={type}
-                onClick={() => setFilterType(type)}
-                className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
-                  filterType === type
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-                }`}
-              >
-                {type === 'all' ? t('channels.filter_all') : type}
-              </button>
-            ))}
+          {/* Type Filter — PANEL-009: real <button> toggles with aria-pressed
+              and a labeled group so assistive tech announces the filter state.
+              Group is allowed to wrap on small screens (flex-wrap). */}
+          <div
+            role="group"
+            aria-label={t('channels.title')}
+            className="flex flex-wrap gap-1"
+          >
+            {['all', 'GLOBAL', 'SERVER', 'PRIVATE'].map((type) => {
+              const pressed = filterType === type;
+              // Visible text is the accessible name; "all" uses the existing
+              // translated label, typed filters use the scope string.
+              const label = type === 'all' ? t('channels.filter_all') : type;
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  aria-pressed={pressed}
+                  onClick={() => setFilterType(type)}
+                  className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+                    pressed
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
           </div>
         </div>
       </Card>
@@ -328,6 +364,11 @@ function ChannelManagement({
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filteredChannels.map((channel) => {
           const Icon = getChannelIcon(channel.type);
+          // PANEL-003: CONFIG channels are managed by config reload and are
+          // read-only in the panel — hide edit/delete/invite and surface a
+          // read-only badge + hint. DATABASE/RUNTIME (or missing source)
+          // remain fully editable dynamic channels.
+          const isConfigManaged = channel.source === 'CONFIG';
           return (
             <Card key={channel.id} className="p-4">
               <div className="flex items-start justify-between mb-3">
@@ -340,7 +381,12 @@ function ChannelManagement({
                     <p className="text-xs text-muted-foreground">#{channel.id}</p>
                   </div>
                 </div>
-                <Badge variant={getTypeVariant(channel.type)}>{channel.type}</Badge>
+                <div className="flex flex-col items-end gap-1">
+                  <Badge variant={getTypeVariant(channel.type)}>{channel.type}</Badge>
+                  <Badge variant={isConfigManaged ? 'secondary' : 'outline'} title={isConfigManaged ? t('channels.source_config_hint') : undefined}>
+                    {isConfigManaged ? t('channels.source_config') : t('channels.source_dynamic')}
+                  </Badge>
+                </div>
               </div>
 
               {/* Channel Details */}
@@ -363,6 +409,9 @@ function ChannelManagement({
                   <span className="text-muted-foreground">{t('channels.field_slow_mode')}: </span>
                   <span className="text-foreground">{formatSlowMode(t, channel.slowModeSeconds)}</span>
                 </div>
+                {isConfigManaged && (
+                  <p className="text-[11px] text-muted-foreground italic">{t('channels.source_config_hint')}</p>
+                )}
               </div>
 
               {/* Actions */}
@@ -377,7 +426,7 @@ function ChannelManagement({
                 >
                   <Eye size={12} /> {t('channels.details')}
                 </Button>
-                {canManage && (
+                {canManage && !isConfigManaged && (
                   <>
                     <Button
                       theme={theme}
@@ -412,6 +461,9 @@ function ChannelManagement({
                       <Trash2 size={12} />
                     </Button>
                   </>
+                )}
+                {canManage && isConfigManaged && (
+                  <span className="text-[11px] text-muted-foreground self-center">{t('channels.config_readonly')}</span>
                 )}
               </div>
             </Card>
@@ -489,6 +541,29 @@ function ChannelManagement({
             </div>
           </div>
 
+          {/* Client ID — PANEL-003: required for SERVER/PRIVATE scope (must
+              reference a real connected client), hidden for GLOBAL. */}
+          {newClientIdRequired && (
+            <div className="space-y-2">
+              <label className="text-xs font-normal leading-none text-muted-foreground">
+                {t('channels.field_client_id')} <span className="text-destructive">*</span>
+              </label>
+              <input
+                type="text"
+                value={newChannel.clientId}
+                onChange={(e) => setNewChannel({ ...newChannel, clientId: e.target.value })}
+                placeholder={t('channels.field_client_id_placeholder')}
+                className={inputClass}
+              />
+              <p className="text-[11px] text-muted-foreground">{t('channels.field_client_id_hint')}</p>
+              {!newClientIdValid && (
+                <p className="text-[11px] text-destructive" role="alert">
+                  {t('channels.validation_client_id_required')}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Max Capacity */}
           <div className="space-y-2">
             <label className="text-xs font-normal leading-none text-muted-foreground">
@@ -497,11 +572,17 @@ function ChannelManagement({
             <input
               type="number"
               min="1"
+              step="1"
               value={newChannel.maxCapacity}
               onChange={(e) => setNewChannel({ ...newChannel, maxCapacity: e.target.value })}
               placeholder={t('channels.field_max_capacity_placeholder')}
               className={inputClass}
             />
+            {!newMaxCapacityValid && (
+              <p className="text-[11px] text-destructive" role="alert">
+                {t('channels.validation_max_capacity_invalid')}
+              </p>
+            )}
           </div>
 
           {/* Slow Mode */}
@@ -564,7 +645,7 @@ function ChannelManagement({
             theme={theme}
             mode={mode}
             onClick={handleCreate}
-            disabled={submitting || !newChannel.name || newSlowModeSeconds == null}
+            disabled={submitting || !newChannel.name || newSlowModeSeconds == null || !newMaxCapacityValid || !newClientIdValid}
           >
             {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
             {t('common.create')}
@@ -617,11 +698,17 @@ function ChannelManagement({
               <input
                 type="number"
                 min="1"
+                step="1"
                 value={editingChannel.maxCapacity}
                 onChange={(e) => setEditingChannel({ ...editingChannel, maxCapacity: e.target.value })}
                 placeholder={t('channels.field_max_capacity_placeholder')}
                 className={inputClass}
               />
+              {!editingMaxCapacityValid && (
+                <p className="text-[11px] text-destructive" role="alert">
+                  {t('channels.validation_max_capacity_invalid')}
+                </p>
+              )}
             </div>
 
             {/* Slow Mode */}
@@ -685,7 +772,7 @@ function ChannelManagement({
             theme={theme}
             mode={mode}
             onClick={handleSaveEdit}
-            disabled={submitting || editingSlowModeSeconds == null}
+            disabled={submitting || editingSlowModeSeconds == null || !editingMaxCapacityValid}
           >
             {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
             {t('common.save')}

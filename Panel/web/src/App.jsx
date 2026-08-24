@@ -38,6 +38,13 @@ import FilterManagement from './components/dashboard/FilterManagement';
 import ClientStatus from './components/dashboard/ClientStatus';
 import WebhookManagement from './components/dashboard/WebhookManagement';
 import SettingsView from './components/dashboard/SettingsView';
+import AuditLog from './components/dashboard/AuditLog';
+import ModerationManagement from './components/dashboard/ModerationManagement';
+import AppealQueue from './components/dashboard/AppealQueue';
+import ReportCreateModal from './components/dashboard/ReportCreateModal';
+import StatusPage from './components/dashboard/StatusPage';
+import ConfigHistory from './components/dashboard/ConfigHistory';
+import CampaignManagement from './components/dashboard/CampaignManagement';
 
 import LoginScreen from './components/auth/LoginScreen';
 
@@ -104,6 +111,7 @@ function Dashboard({ currentUser, onLogout }) {
     }
   });
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [liveChannelSelection, setLiveChannelSelection] = useState('all');
 
   // Sync the `.dark` class on <html> with the mode state so the oklch CSS
   // variables (card/border/primary/muted-foreground/...) switch automatically.
@@ -131,6 +139,8 @@ function Dashboard({ currentUser, onLogout }) {
   const [serverDetailTarget, setServerDetailTarget] = useState(null);
   // Disconnect confirm modal (opened from ClientStatus "disconnect").
   const [disconnectTarget, setDisconnectTarget] = useState(null);
+  // PANEL-007: report-create modal (opened from the moderation page).
+  const [showReportModal, setShowReportModal] = useState(false);
 
   // --- Toasts ---
   const addToast = useCallback((message, type = 'success') => {
@@ -147,11 +157,14 @@ function Dashboard({ currentUser, onLogout }) {
   // --- WebSocket orchestration (connect / auth / subscribe / snapshot) ---
   const { wsState, handleManualReconnect } = useWsOrchestration({
     channels: data.channels,
+    activeTab,
+    selectedChannelId: liveChannelSelection,
     setServers,
     setChannels: data.setChannels,
     setPlayers: data.setPlayers,
     setChatMessages,
     onNotification: data.handleWsNotification,
+    onSettingsUpdate: data.handleWsSettingsUpdate,
     addToast,
   });
 
@@ -188,6 +201,7 @@ function Dashboard({ currentUser, onLogout }) {
 
   const handleTabChange = useCallback((tab) => {
     setActiveTab(tab);
+    if (tab !== 'messages') setLiveChannelSelection('all');
     if (isMobile) setSidebarOpen(false);
     // Lazy-load webhooks when the tab is first opened.
     if (tab === 'webhooks') {
@@ -282,6 +296,7 @@ function Dashboard({ currentUser, onLogout }) {
                       txtSec={txtSec}
                       messages={chatMessages}
                       channels={data.channels}
+                      onChannelSelectionChange={setLiveChannelSelection}
                       onClearMessages={() => setChatMessages([])}
                       onSendMessage={data.handleSendMessage}
                       chatContainerRef={chatContainerRef}
@@ -413,6 +428,79 @@ function Dashboard({ currentUser, onLogout }) {
                       role={role}
                     />
                   )}
+
+                  {/* Audit Log (ADMIN / SUPER_ADMIN) */}
+                  {activeTab === 'audit' && can(role, 'audit.view') && (
+                    <AuditLog theme="clean" mode={mode} />
+                  )}
+
+                  {/* Config history (§11.6 Project 20 / PANEL proposal 10) —
+                      masked snapshot browse + diff + rollback. ADMIN+ see it;
+                      rollback is SUPER_ADMIN-only (gated inside the view). */}
+                  {activeTab === 'configHistory' && can(role, 'settings.history') && (
+                    <ConfigHistory theme="clean" mode={mode} role={role} />
+                  )}
+
+                  {/* Campaigns (§11.6 提案 06 / item 19) — orchestrated,
+                      scheduled, revocable announcements. ADMIN+ entry under the
+                      announcements capability; create/schedule/activate are
+                      ADMIN mutations, revoke is SUPER_ADMIN-only (gated inside
+                      the view via the `campaign.revoke` capability). */}
+                  {activeTab === 'campaigns' && can(role, 'announcements.manage') && (
+                    <CampaignManagement
+                      theme="clean"
+                      mode={mode}
+                      channels={data.channels}
+                      onToast={addToast}
+                      role={role}
+                    />
+                  )}
+
+                  {/* Moderation cases (PANEL-007, ADMIN / SUPER_ADMIN).
+                      VIEWER never reaches this: sidebar entry + this route are
+                      both capability-gated. The page holds the report-create
+                      modal trigger. */}
+                  {activeTab === 'moderation' && can(role, 'moderation.view') && (
+                    <>
+                      <div className="flex justify-end">
+                        {can(role, 'moderation.manage') && (
+                          <Button
+                            variant="outline"
+                            theme="clean"
+                            mode={mode}
+                            onClick={() => setShowReportModal(true)}
+                          >
+                            {t('moderation.new_report')}
+                          </Button>
+                        )}
+                      </div>
+                      <ModerationManagement
+                        theme="clean"
+                        mode={mode}
+                        onToast={addToast}
+                        role={role}
+                      />
+                    </>
+                  )}
+
+                  {/* Appeals queue (PANEL-007, ADMIN / SUPER_ADMIN). */}
+                  {activeTab === 'appeals' && can(role, 'appeals.review') && (
+                    <AppealQueue
+                      theme="clean"
+                      mode={mode}
+                      onToast={addToast}
+                      role={role}
+                    />
+                  )}
+
+                  {/* Status page (proposal 09 / §11.6 project 17). Read-only
+                      observability aggregate. No capability gate — every role
+                      (including VIEWER) can see it, mirroring the unauth
+                      /api/health + VIEWER-readable /api/metrics backend
+                      contract. */}
+                  {activeTab === 'status' && (
+                    <StatusPage theme="clean" mode={mode} />
+                  )}
                 </>
               )}
             </div>
@@ -440,6 +528,15 @@ function Dashboard({ currentUser, onLogout }) {
             theme="clean"
             mode={mode}
             onUnreadCountChange={handleUnreadCountChange}
+            onToast={addToast}
+          />
+
+          {/* PANEL-007: report-create modal (opened from the moderation page). */}
+          <ReportCreateModal
+            isOpen={showReportModal}
+            onClose={() => setShowReportModal(false)}
+            theme="clean"
+            mode={mode}
             onToast={addToast}
           />
         </main>

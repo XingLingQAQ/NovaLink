@@ -1,201 +1,273 @@
 /**
- * Authentication Service for NovaPanel
- * Handles JWT token management and authentication state
- * 
- * Requirements: 24.4
+ * Authentication service for NovaPanel.
+ * Owns the rotating access/refresh pair and emits explicit lifecycle reasons.
  */
 
-import { getApiBaseUrl } from './api';
+import { getApiBaseUrl } from './connectionUrls.js';
 
-// Storage keys
 const TOKEN_KEY = 'nova_panel_token';
 const USER_KEY = 'nova_panel_user';
 const REFRESH_TOKEN_KEY = 'nova_panel_refresh_token';
+const AUTH_STORAGE_KEYS = new Set([TOKEN_KEY, USER_KEY, REFRESH_TOKEN_KEY]);
 
-/**
- * Authentication Service class
- */
-class AuthService {
+export class AuthRequestError extends Error {
+  constructor(message, status = 0, data = null) {
+    super(message);
+    this.name = 'AuthRequestError';
+    this.status = status;
+    this.data = data;
+  }
+}
+
+class AuthSessionChangedError extends Error {
   constructor() {
+    super('Authentication session changed while the request was in flight');
+    this.name = 'AuthSessionChangedError';
+  }
+}
+
+async function readResponseData(response) {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
+  }
+}
+
+export class AuthService {
+  constructor({ storage, fetchImpl, syncWindow, autoRefresh = true } = {}) {
+    this.storage = storage === undefined
+      ? (typeof localStorage !== 'undefined' ? localStorage : null)
+      : storage;
+    this.fetchImpl = fetchImpl || ((...args) => fetch(...args));
+    this.syncWindow = syncWindow === undefined
+      ? (typeof window !== 'undefined' ? window : null)
+      : syncWindow;
+    this.autoRefresh = autoRefresh;
+
     this.token = null;
     this.refreshToken = null;
     this.user = null;
     this.listeners = new Set();
     this._refreshPromise = null;
+    this._logoutPromise = null;
+    this._sessionGeneration = 0;
+    this._storageHandler = (event) => this._handleStorageEvent(event);
+
     this._loadFromStorage();
+    this.syncWindow?.addEventListener?.('storage', this._storageHandler);
   }
 
-  /**
-   * Load authentication state from localStorage
-   */
   _loadFromStorage() {
+    if (!this.storage) return;
     try {
-      const token = localStorage.getItem(TOKEN_KEY);
-      const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
-      const userJson = localStorage.getItem(USER_KEY);
+      const token = this.storage.getItem(TOKEN_KEY);
+      const refreshToken = this.storage.getItem(REFRESH_TOKEN_KEY);
+      const userJson = this.storage.getItem(USER_KEY);
 
-      if (token) {
-        this.token = token;
-        this.refreshToken = refreshToken;
+      this.token = token || null;
+      this.refreshToken = refreshToken || null;
+      this.user = userJson ? JSON.parse(userJson) : null;
 
-        if (userJson) {
-          this.user = JSON.parse(userJson);
-        }
-
-        // If the token is already expired, try to refresh once before kicking
-        // the user out. Only logout if refresh also fails (no refresh token or
-        // the backend rejects it). This avoids a hard logout on a stale tab.
-        if (this._isTokenExpired(token)) {
-          // Defer the refresh attempt so construction isn't blocked by a network
-          // call; listeners are notified after the result resolves.
-          this.refreshAccessToken(getApiBaseUrl()).catch(() => this.logout());
-        }
+      if (this.autoRefresh && token && this._isTokenExpired(token)) {
+        void this.refreshAccessToken(getApiBaseUrl()).catch(() => {});
       }
     } catch (error) {
       console.error('[Auth] Failed to load from storage:', error);
-      this.logout();
+      this._clearLocalSession('storage_invalid');
     }
   }
 
-  /**
-   * Save authentication state to localStorage
-   */
-  _saveToStorage() {
+  _handleStorageEvent(event) {
+    if (event?.key && !AUTH_STORAGE_KEYS.has(event.key)) return;
+    if (!this.storage) return;
+
     try {
-      if (this.token) {
-        localStorage.setItem(TOKEN_KEY, this.token);
-      } else {
-        localStorage.removeItem(TOKEN_KEY);
+      const previousToken = this.token;
+      const nextToken = this.storage.getItem(TOKEN_KEY) || null;
+      const nextRefreshToken = this.storage.getItem(REFRESH_TOKEN_KEY) || null;
+      const userJson = this.storage.getItem(USER_KEY);
+      const nextUser = userJson ? JSON.parse(userJson) : null;
+
+      if (previousToken === nextToken
+          && this.refreshToken === nextRefreshToken
+          && JSON.stringify(this.user) === JSON.stringify(nextUser)) {
+        return;
       }
 
-      if (this.refreshToken) {
-        localStorage.setItem(REFRESH_TOKEN_KEY, this.refreshToken);
-      } else {
-        localStorage.removeItem(REFRESH_TOKEN_KEY);
-      }
+      this.token = nextToken;
+      this.refreshToken = nextRefreshToken;
+      this.user = nextUser;
+      this._sessionGeneration += 1;
+      this._notifyListeners(nextToken ? 'storage_sync' : 'storage_logout', previousToken);
+    } catch (error) {
+      console.error('[Auth] Failed to synchronize auth storage:', error);
+      this._clearLocalSession('storage_invalid');
+    }
+  }
 
-      if (this.user) {
-        localStorage.setItem(USER_KEY, JSON.stringify(this.user));
-      } else {
-        localStorage.removeItem(USER_KEY);
-      }
+  _saveToStorage() {
+    if (!this.storage) return;
+    try {
+      if (this.token) this.storage.setItem(TOKEN_KEY, this.token);
+      else this.storage.removeItem(TOKEN_KEY);
+
+      if (this.refreshToken) this.storage.setItem(REFRESH_TOKEN_KEY, this.refreshToken);
+      else this.storage.removeItem(REFRESH_TOKEN_KEY);
+
+      if (this.user) this.storage.setItem(USER_KEY, JSON.stringify(this.user));
+      else this.storage.removeItem(USER_KEY);
     } catch (error) {
       console.error('[Auth] Failed to save to storage:', error);
     }
   }
 
-  /**
-   * Login with username and password
-   * @param {string} username - Username
-   * @param {string} password - Password
-   * @param {string} apiUrl - API base URL
-   * @returns {Promise<object>} - Login result
-   */
   async login(username, password, apiUrl = '/api') {
-    try {
-      const response = await fetch(`${apiUrl}/auth/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ username, password })
-      });
+    const response = await this.fetchImpl(`${apiUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await readResponseData(response);
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || 'Login failed');
-      }
-
-      const data = await response.json();
-      
-      this.token = data.token;
-      this.refreshToken = data.refreshToken;
-      this.user = data.user;
-      
-      this._saveToStorage();
-      this._notifyListeners();
-
-      return {
-        success: true,
-        user: this.user
-      };
-    } catch (error) {
-      console.error('[Auth] Login failed:', error);
-      throw error;
+    if (!response.ok) {
+      throw new AuthRequestError(
+        data?.message || data?.error || 'Login failed',
+        response.status,
+        data,
+      );
     }
-  }
 
-  /**
-   * Login with JWT token directly (for development/testing)
-   * @param {string} token - JWT token
-   * @param {object} user - User info
-   */
-  loginWithToken(token, user = null) {
-    this.token = token;
-    this.user = user || this._parseToken(token);
+    const previousToken = this.token;
+    this.token = data.token;
+    this.refreshToken = data.refreshToken;
+    this.user = data.user;
+    this._sessionGeneration += 1;
     this._saveToStorage();
-    this._notifyListeners();
+    this._notifyListeners('login', previousToken);
+    return { success: true, user: this.user };
+  }
+
+  loginWithToken(token, user = null, refreshToken = null) {
+    const previousToken = this.token;
+    this.token = token;
+    this.refreshToken = refreshToken;
+    this.user = user || this._parseToken(token);
+    this._sessionGeneration += 1;
+    this._saveToStorage();
+    this._notifyListeners('login', previousToken);
   }
 
   /**
-   * Logout and clear authentication state
+   * Starts remote revocation with captured credentials, then clears local state
+   * immediately. Concurrent/repeated callers share one best-effort request.
    */
-  logout() {
+  logout(apiUrl = '/api', { revoke = true, reason = 'logout' } = {}) {
+    if (this._logoutPromise) {
+      this._clearLocalSession(reason);
+      return this._logoutPromise;
+    }
+
+    const accessToken = this.token;
+    const refreshToken = this.refreshToken;
+    const shouldRevoke = revoke && !!accessToken;
+
+    const remoteLogout = shouldRevoke
+      ? this.fetchImpl(`${apiUrl}/auth/logout`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ refreshToken }),
+        }).then(async (response) => {
+          const data = await readResponseData(response);
+          if (!response.ok) {
+            throw new AuthRequestError(
+              data?.message || data?.error || `Logout failed (${response.status})`,
+              response.status,
+              data,
+            );
+          }
+          return { revoked: true, error: null };
+        })
+      : Promise.resolve({ revoked: false, error: null });
+
+    this._clearLocalSession(reason);
+
+    this._logoutPromise = remoteLogout.catch((error) => {
+      console.warn('[Auth] Server session revocation was not confirmed:', error);
+      return { revoked: false, error };
+    }).finally(() => {
+      this._logoutPromise = null;
+    });
+    return this._logoutPromise;
+  }
+
+  _clearLocalSession(reason) {
+    if (!this.token && !this.refreshToken && !this.user) return false;
+    const previousToken = this.token;
     this.token = null;
     this.refreshToken = null;
     this.user = null;
+    this._sessionGeneration += 1;
     this._saveToStorage();
-    this._notifyListeners();
+    this._notifyListeners(reason, previousToken);
+    return true;
   }
 
   /**
-   * Refresh the access token using refresh token.
-   * On failure the caller is responsible for any logout decision (e.g. the
-   * apiFetch 401-retry path logs out only after a refresh failure). This method
-   * does NOT auto-logout so that a transient refresh error doesn't cascade.
-   * @param {string} apiUrl - API base URL
-   * @returns {Promise<string>} - New access token
+   * Rotates the token pair. A single promise is shared by every concurrent
+   * caller, which is required because the backend revokes the old refresh
+   * token as soon as it is used.
    */
-  async refreshAccessToken(apiUrl = '/api') {
+  refreshAccessToken(apiUrl = '/api') {
+    if (this._refreshPromise) return this._refreshPromise;
     if (!this.refreshToken) {
-      throw new Error('No refresh token available');
+      const error = new AuthRequestError('No refresh token available');
+      void this.logout(apiUrl, { revoke: false, reason: 'refresh_failed' });
+      return Promise.reject(error);
     }
 
-    // Deduplicate concurrent refresh requests: if a refresh is already in
-    // flight, every caller shares the same promise instead of firing a
-    // second POST /auth/refresh. This prevents a refresh storm when many
-    // API requests get 401 simultaneously (e.g. dashboard loads).
-    if (this._refreshPromise) {
-      return this._refreshPromise;
-    }
+    const refreshToken = this.refreshToken;
+    const requestGeneration = this._sessionGeneration;
 
     this._refreshPromise = (async () => {
       try {
-        const response = await fetch(`${apiUrl}/auth/refresh`, {
+        const response = await this.fetchImpl(`${apiUrl}/auth/refresh`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ refreshToken: this.refreshToken })
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken }),
         });
+        const data = await readResponseData(response);
 
         if (!response.ok) {
-          throw new Error('Token refresh failed');
+          throw new AuthRequestError(
+            data?.message || data?.error || `Token refresh failed (${response.status})`,
+            response.status,
+            data,
+          );
+        }
+        if (!data?.token || !data?.refreshToken) {
+          throw new AuthRequestError('Token refresh returned an incomplete token pair', response.status, data);
+        }
+        if (this._sessionGeneration !== requestGeneration || this.refreshToken !== refreshToken) {
+          throw new AuthSessionChangedError();
         }
 
-        const data = await response.json();
-
+        const previousToken = this.token;
         this.token = data.token;
-        if (data.refreshToken) {
-          this.refreshToken = data.refreshToken;
-        }
-
+        this.refreshToken = data.refreshToken;
+        this._sessionGeneration += 1;
         this._saveToStorage();
-        this._notifyListeners();
-
+        this._notifyListeners('refresh', previousToken);
         return this.token;
       } catch (error) {
-        console.error('[Auth] Token refresh failed:', error);
+        if (!(error instanceof AuthSessionChangedError)) {
+          void this.logout(apiUrl, { revoke: false, reason: 'refresh_failed' });
+        }
         throw error;
       } finally {
         this._refreshPromise = null;
@@ -205,139 +277,69 @@ class AuthService {
     return this._refreshPromise;
   }
 
-  /**
-   * Get current JWT token
-   * @returns {string|null}
-   */
   getToken() {
     return this.token;
   }
 
-  /**
-   * Get current user info
-   * @returns {object|null}
-   */
+  getRefreshToken() {
+    return this.refreshToken;
+  }
+
   getUser() {
     return this.user;
   }
 
-  /**
-   * Check if user is authenticated
-   * @returns {boolean}
-   */
   isAuthenticated() {
     return !!this.token && !this._isTokenExpired(this.token);
   }
 
-  /**
-   * Check if token is expired
-   * @param {string} token - JWT token
-   * @returns {boolean}
-   */
   _isTokenExpired(token) {
-    try {
-      const payload = this._parseToken(token);
-      if (!payload || !payload.exp) {
-        return true;
-      }
-
-      // Check if expired (with 60 second buffer)
-      return Date.now() >= (payload.exp * 1000) - 60000;
-    } catch {
-      return true;
-    }
+    const payload = this._parseToken(token);
+    if (!payload?.exp) return true;
+    return Date.now() >= (payload.exp * 1000) - 60000;
   }
 
-  /**
-   * Check if the token will expire within the given number of milliseconds.
-   * Used by the proactive refresh path to refresh before expiry.
-   * @param {number} withinMs - milliseconds window (default 5 minutes)
-   * @returns {boolean}
-   */
   _isTokenExpiringSoon(withinMs = 5 * 60 * 1000) {
-    if (!this.token) return false;
-    try {
-      const payload = this._parseToken(this.token);
-      if (!payload || !payload.exp) return false;
-      return Date.now() >= (payload.exp * 1000) - withinMs;
-    } catch {
-      return false;
-    }
+    const payload = this.token ? this._parseToken(this.token) : null;
+    if (!payload?.exp) return false;
+    return Date.now() >= (payload.exp * 1000) - withinMs;
   }
 
-  /**
-   * Proactively refresh the access token if it is expiring soon (within 5 min).
-   * Safe to call repeatedly — no-ops when the token is still fresh or there is
-   * no refresh token. Returns the (possibly new) token, or null if no refresh
-   * was performed.
-   * @param {string} apiUrl - API base URL
-   * @returns {Promise<string|null>}
-   */
   async maybeRefreshToken(apiUrl = '/api') {
-    if (!this.token || !this.refreshToken) return null;
-    if (!this._isTokenExpiringSoon()) return null;
-    try {
-      return await this.refreshAccessToken(apiUrl);
-    } catch {
-      // Refresh failed — let the next real request's 401 path handle logout.
-      return null;
-    }
+    if (!this.token || !this.refreshToken || !this._isTokenExpiringSoon()) return null;
+    return this.refreshAccessToken(apiUrl);
   }
 
-  /**
-   * Parse JWT token payload
-   * @param {string} token - JWT token
-   * @returns {object|null}
-   */
   _parseToken(token) {
     try {
       const parts = token.split('.');
-      if (parts.length !== 3) {
-        return null;
-      }
-      
-      const payload = parts[1];
-      const decoded = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
-      return JSON.parse(decoded);
-    } catch (error) {
-      console.error('[Auth] Failed to parse token:', error);
+      if (parts.length !== 3) return null;
+      const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      return JSON.parse(atob(payload));
+    } catch {
       return null;
     }
   }
 
-  /**
-   * Get token expiration time
-   * @returns {Date|null}
-   */
   getTokenExpiration() {
-    if (!this.token) return null;
-    
-    const payload = this._parseToken(this.token);
-    if (!payload || !payload.exp) return null;
-    
-    return new Date(payload.exp * 1000);
+    const payload = this.token ? this._parseToken(this.token) : null;
+    return payload?.exp ? new Date(payload.exp * 1000) : null;
   }
 
-  /**
-   * Add authentication state change listener
-   * @param {function} callback - Callback function
-   */
   onAuthChange(callback) {
     this.listeners.add(callback);
     return () => this.listeners.delete(callback);
   }
 
-  /**
-   * Notify listeners of authentication state change
-   */
-  _notifyListeners() {
+  _notifyListeners(reason, previousToken = null) {
     const state = {
       isAuthenticated: this.isAuthenticated(),
       user: this.user,
-      token: this.token
+      token: this.token,
+      previousToken,
+      reason,
     };
-    
-    this.listeners.forEach(callback => {
+    this.listeners.forEach((callback) => {
       try {
         callback(state);
       } catch (error) {
@@ -346,20 +348,15 @@ class AuthService {
     });
   }
 
-  /**
-   * Create authorization header
-   * @returns {object}
-   */
   getAuthHeader() {
-    if (!this.token) {
-      return {};
-    }
-    return {
-      'Authorization': `Bearer ${this.token}`
-    };
+    return this.token ? { Authorization: `Bearer ${this.token}` } : {};
+  }
+
+  destroy() {
+    this.syncWindow?.removeEventListener?.('storage', this._storageHandler);
+    this.listeners.clear();
   }
 }
 
-// Export singleton instance
 export const authService = new AuthService();
 export default authService;

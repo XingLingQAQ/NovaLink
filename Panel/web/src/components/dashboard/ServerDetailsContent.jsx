@@ -5,6 +5,7 @@
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { platformLabel } from '../../utils/adapters';
 
 function ServerDetailsContent({ server }) {
   const { t } = useTranslation();
@@ -49,7 +50,7 @@ function ServerDetailsContent({ server }) {
       </div>
       <div className={rowClass}>
         <span className="text-muted-foreground">{t('players.col_platform')}</span>
-        <span className="text-foreground">{s.platform || '-'}</span>
+        <span className="text-foreground">{platformLabel(s.platform)}</span>
       </div>
       <div className={rowClass}>
         <span className="text-muted-foreground">{t('common.col_version')}</span>
