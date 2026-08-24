@@ -44,6 +44,42 @@ public class JwtService {
     private volatile long lastPurgeAt = 0L;
 
     /**
+     * Token-family records for refresh-token epoch revocation
+     * (PANEL-012). Each login creates a family; each refresh rotates the
+     * epoch; reuse of an older refresh token in the same family triggers
+     * family-wide revocation. Family records are in-memory (like
+     * {@link #revokedJtis}) and do NOT survive a server restart — after a
+     * restart every refresh token's family is absent, so refresh fails and
+     * the user must re-login. This is acceptable per the audit spec.
+     */
+    private final ConcurrentHashMap<String, FamilyRecord> tokenFamilies = new ConcurrentHashMap<>();
+
+    /** Epoch value used as a tombstone marking a family as revoked. */
+    private static final long FAMILY_REVOKED = Long.MAX_VALUE;
+
+    /**
+     * Result of validating a refresh token against its family's current epoch.
+     */
+    public enum FamilyValidation {
+        /** Token epoch matches family epoch — proceed with rotation. */
+        VALID,
+        /** Token epoch is older (stolen/replayed) or family is revoked — reject + revoke family. */
+        REJECT,
+        /** Family record not found (server restart) — reject, cannot validate. */
+        UNKNOWN
+    }
+
+    /** In-memory record of a token family's current epoch. */
+    private static final class FamilyRecord {
+        // volatile: read/written across threads; mutations guarded by synchronizing on the record.
+        volatile long currentEpoch;
+
+        FamilyRecord(long initialEpoch) {
+            this.currentEpoch = initialEpoch;
+        }
+    }
+
+    /**
      * Creates a new JwtService with the given secret key.
      *
      * @param secretKey the secret key for signing tokens (min 32 characters)
@@ -100,6 +136,26 @@ public class JwtService {
      * @return the generated refresh token
      */
     public String generateRefreshToken(String userId, String username, String role) {
+        return generateRefreshToken(userId, username, role, null, 0L);
+    }
+
+    /**
+     * Generates a refresh token bound to a token family (PANEL-012).
+     *
+     * <p>When {@code familyId} is non-null, the token carries {@code fid} and
+     * {@code fep} (family epoch) claims. The first refresh token in a family
+     * is issued with epoch {@code 0}; each successful rotation issues a new
+     * token with the incremented epoch.
+     *
+     * @param userId   the user ID (JWT subject)
+     * @param username the username claim
+     * @param role     the role claim
+     * @param familyId the token-family id (nullable for legacy callers)
+     * @param epoch    the family epoch this token belongs to
+     * @return the generated refresh token
+     */
+    public String generateRefreshToken(String userId, String username, String role,
+                                       String familyId, long epoch) {
         Date now = new Date();
         Date expiration = new Date(now.getTime() + REFRESH_EXPIRATION_MS);
 
@@ -118,10 +174,131 @@ public class JwtService {
         if (role != null) {
             builder.claim("role", role);
         }
+        if (familyId != null && !familyId.isBlank()) {
+            builder.claim("fid", familyId);
+            builder.claim("fep", epoch);
+        }
 
         return builder
                 .signWith(secretKey)
                 .compact();
+    }
+
+    /**
+     * Creates a new token family and returns its id. Used on login.
+     *
+     * @return the new family id (UUID)
+     */
+    public String createFamily() {
+        String familyId = UUID.randomUUID().toString();
+        tokenFamilies.put(familyId, new FamilyRecord(0L));
+        return familyId;
+    }
+
+    /**
+     * Validates a refresh token's family epoch (PANEL-012).
+     *
+     * <p>Must be called with the parsed claims of the refresh token presented
+     * for rotation. When the token's epoch is older than the family's current
+     * epoch, or the family has been revoked, this returns {@link FamilyValidation#REJECT}
+     * and the family is revoked (so the legitimate holder is also forced
+     * re-login — stolen-token reuse invalidates the whole family).
+     *
+     * @param claims the refresh token claims (must carry {@code fid} and {@code fep})
+     * @return VALID when the token is the current family epoch, REJECT when
+     *         stolen/replayed/revoked, UNKNOWN when the family record is absent
+     */
+    public FamilyValidation validateRefreshFamily(Claims claims) {
+        if (claims == null) {
+            return FamilyValidation.UNKNOWN;
+        }
+        String familyId = claims.get("fid", String.class);
+        Long tokenEpoch = claims.get("fep", Long.class);
+        if (familyId == null || tokenEpoch == null) {
+            // Legacy refresh token without a family: cannot validate.
+            return FamilyValidation.UNKNOWN;
+        }
+        FamilyRecord record = tokenFamilies.get(familyId);
+        if (record == null) {
+            return FamilyValidation.UNKNOWN;
+        }
+        synchronized (record) {
+            if (record.currentEpoch == FAMILY_REVOKED) {
+                return FamilyValidation.REJECT;
+            }
+            if (tokenEpoch < record.currentEpoch) {
+                // Stolen/replayed older refresh token — revoke the family.
+                record.currentEpoch = FAMILY_REVOKED;
+                logger.warn("Refresh token family {} revoked: presented epoch {} < current {} (possible token theft)",
+                        familyId, tokenEpoch, record.currentEpoch);
+                return FamilyValidation.REJECT;
+            }
+            return FamilyValidation.VALID;
+        }
+    }
+
+    /**
+     * Increments the family epoch and returns the new epoch value to stamp on
+     * the freshly issued refresh token. The caller must have already validated
+     * the presented token via {@link #validateRefreshFamily}.
+     *
+     * @param familyId the family id
+     * @return the new epoch, or {@code -1} when the family is unknown/revoked
+     */
+    public long rotateFamilyEpoch(String familyId) {
+        if (familyId == null) {
+            return -1;
+        }
+        FamilyRecord record = tokenFamilies.get(familyId);
+        if (record == null) {
+            return -1;
+        }
+        synchronized (record) {
+            if (record.currentEpoch == FAMILY_REVOKED) {
+                return -1;
+            }
+            record.currentEpoch += 1;
+            return record.currentEpoch;
+        }
+    }
+
+    /**
+     * Revokes an entire token family (PANEL-012). All refresh tokens in the
+     * family become invalid for rotation: {@link #validateRefreshFamily} will
+     * return REJECT for any token carrying this family id. Used on logout to
+     * kill every token in the family, and on stolen-token detection.
+     *
+     * @param familyId the family id to revoke
+     */
+    public void revokeFamily(String familyId) {
+        if (familyId == null) {
+            return;
+        }
+        FamilyRecord record = tokenFamilies.get(familyId);
+        if (record == null) {
+            // Record may be absent after restart; install a tombstone so a
+            // later-presented token from this family is also rejected.
+            tokenFamilies.put(familyId, new FamilyRecord(FAMILY_REVOKED));
+            return;
+        }
+        synchronized (record) {
+            record.currentEpoch = FAMILY_REVOKED;
+        }
+        logger.info("Refresh token family {} revoked", familyId);
+    }
+
+    /**
+     * Extracts the family id from a token's claims (without validating the
+     * family). Returns null for legacy tokens without a family.
+     *
+     * @param claims the parsed token claims
+     * @return the family id or null
+     */
+    public String extractFamilyId(Claims claims) {
+        if (claims == null) {
+            return null;
+        }
+        return claims.get("fid", String.class);
     }
 
     /**
@@ -164,6 +341,20 @@ public class JwtService {
             logger.debug("Invalid token: {}", e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Parses and cryptographically verifies a token WITHOUT consulting the
+     * revocation blacklist. Used by the refresh/logout flows (PANEL-012) so
+     * that family-epoch validation can run on a token whose jti was already
+     * revoked by a prior rotation — detecting stolen older tokens requires
+     * reading the family/epoch claims even after the jti is blacklisted.
+     *
+     * @param token the JWT to parse
+     * @return the verified claims, or null if the signature/expiry is invalid
+     */
+    public Claims parseClaimsUnchecked(String token) {
+        return parseClaims(token);
     }
 
     /**

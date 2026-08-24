@@ -25,7 +25,18 @@ import java.util.function.BooleanSupplier;
  *   <li>the target is resolved by name (case-insensitive exact match) across
  *       the whole network via {@link PlayerStateManager}; an unknown name or
  *       an offline target answers NC-404;</li>
- *   <li>self-messaging is rejected (NC-403).</li>
+ *   <li>the target's per-player DM toggle must be on (NC-403
+ *       {@code target_dm_disabled});</li>
+ *   <li>self-messaging is rejected (NC-403);</li>
+ *   <li><b>server-authoritative ignore (item-18, 提案 08):</b> if the target
+ *       ignores the sender the DM is rejected with NC-404 {@code not_online}
+ *       — indistinguishable from the target being offline so the target's
+ *       ignore list is never leaked; if instead the sender ignores the target
+ *       (and the target does not ignore the sender) the DM is rejected with
+ *       NC-403 {@code ignored_by_sender} (the sender's own choice, no leak).
+ *       On a mutual block the target-privacy path wins (NC-404). This check
+ *       runs only when a non-null {@link IgnoreLookup} is wired; a null or
+ *       throwing lookup fails open (the DM is still delivered).</li>
  * </ul>
  *
  * <p><b>Privacy (P0-5):</b> after the target is resolved, the backend checks
@@ -63,8 +74,13 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
     private final RateLimiter rateLimiter;
     private final BooleanSupplier privateMessagesEnabled;
     private final ChatLogger chatLogger;
+    private final IgnoreLookup ignoreLookup;
 
     /**
+     * Legacy constructor (NovaLinkMain wiring). Delegates to the 7-arg
+     * overload with a null {@code ignoreLookup}, so no ignore filtering is
+     * applied. Existing callers keep compiling unchanged.
+     *
      * @param networkHandler         connection registry for delivery
      * @param playerStateManager     network-wide player cache (name -> state)
      * @param muteManager            nullable; global-mute lookups skipped when null
@@ -79,12 +95,40 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
                                  RateLimiter rateLimiter,
                                  BooleanSupplier privateMessagesEnabled,
                                  ChatLogger chatLogger) {
+        this(networkHandler, playerStateManager, muteManager, rateLimiter,
+                privateMessagesEnabled, chatLogger, null);
+    }
+
+    /**
+     * @param networkHandler         connection registry for delivery
+     * @param playerStateManager     network-wide player cache (name -> state)
+     * @param muteManager            nullable; global-mute lookups skipped when null
+     * @param rateLimiter            nullable; the shared per-connection token
+     *                               bucket (same instance as the chat handler)
+     * @param privateMessagesEnabled live view of features.private-messages-enabled
+     * @param chatLogger             nullable; [DM] audit sink
+     * @param ignoreLookup           nullable; directional ignore lookup used by
+     *                               the item-18 social-relations slice. When
+     *                               null (legacy wiring) no ignore filtering
+     *                               is applied; otherwise a sender ignoring the
+     *                               target (or vice versa) rejects the DM before
+     *                               delivery. The lookup must be non-throwing
+     *                               and fail-open (see {@link IgnoreLookup}).
+     */
+    public PrivateMessageHandler(ServerNetworkHandler networkHandler,
+                                 PlayerStateManager playerStateManager,
+                                 MuteManager muteManager,
+                                 RateLimiter rateLimiter,
+                                 BooleanSupplier privateMessagesEnabled,
+                                 ChatLogger chatLogger,
+                                 IgnoreLookup ignoreLookup) {
         this.networkHandler = networkHandler;
         this.playerStateManager = playerStateManager;
         this.muteManager = muteManager;
         this.rateLimiter = rateLimiter;
         this.privateMessagesEnabled = privateMessagesEnabled != null ? privateMessagesEnabled : () -> true;
         this.chatLogger = chatLogger;
+        this.ignoreLookup = ignoreLookup;
     }
 
     @Override
@@ -154,6 +198,43 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
         if (targetState.getPlayerId().equals(packet.getSenderId())) {
             sendError(connection, packet, "NC-403",
                     I18n.tr("network.error.private_message_self"), "self");
+            return;
+        }
+
+        // Server-authoritative ignore enforcement (item-18, 提案 08): reject the
+        // DM before delivery when either party ignores the other. This mirrors
+        // the client-side IgnoreListService.isIgnored semantics but runs on the
+        // backend so it cannot be bypassed. Directional: each direction is
+        // queried independently (A->B does not imply B->A).
+        //
+        // Privacy split (per spec): the two directions are NOT interchangeable.
+        //  1. Target ignores sender: must be indistinguishable from the target
+        //     being offline, otherwise the sender could probe the target's
+        //     ignore list. NC-404 reusing the existing `not_online` detail +
+        //     `player_not_online` message — no new detail, no new key, same code
+        //     path as the offline branch. This branch is checked FIRST so that
+        //     on a mutual block the target's privacy wins: even though the
+        //     sender also ignores the target, the sender still gets NC-404
+        //     not_online and never learns the target blocked them back.
+        //  2. Sender ignores target (only reached when the target does NOT
+        //     ignore the sender): the sender initiated this DM, so telling
+        //     them it is their own choice leaks nothing — NC-403 with a fresh
+        //     `ignored_by_sender` detail and a sender-facing message.
+        if (targetIgnoresSender(targetState.getPlayerId(), packet.getSenderId())) {
+            logger.debug("PrivateMessage drop: target {} ignores sender {} (no-leak NC-404)",
+                    targetState.getPlayerId(), packet.getSenderId());
+            sendError(connection, packet, "NC-404",
+                    I18n.tr("network.error.player_not_online", targetName != null ? targetName : ""),
+                    "not_online");
+            return;
+        }
+        if (senderIgnoresTarget(packet.getSenderId(), targetState.getPlayerId())) {
+            logger.debug("PrivateMessage drop: sender {} ignores target {}",
+                    packet.getSenderId(), targetState.getPlayerId());
+            sendError(connection, packet, "NC-403",
+                    I18n.tr("network.error.private_message_ignored_by_sender",
+                            targetName != null ? targetName : ""),
+                    "ignored_by_sender");
             return;
         }
 
@@ -240,5 +321,66 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
             response.addExtra("targetName", packet.getTargetName());
         }
         connection.sendPacket(response);
+    }
+
+    /**
+     * Server-authoritative directional ignore check (item-18). Returns true iff
+     * {@code sourceId} ignores {@code targetId}. Never throws — any null id, a
+     * null {@code ignoreLookup} (legacy wiring), a self-relation, or any
+     * exception from the lookup (UOE stub on providers without social
+     * relations, DatabaseException on a JDBC failure, any other
+     * RuntimeException) collapses to {@code false}. This is fail-open: a
+     * persistence gap must never block DM delivery, per plan "没有持久化关系能力
+     * 的平台使用 session 内存" — at the handler level there is no session
+     * fallback, so the absence of a reliable answer is treated as "no ignore
+     * known" and the message is allowed.
+     *
+     * <p>Self-relations ({@code sourceId.equals(targetId)}) return false so the
+     * ignore check never short-circuits ahead of the clearer self-message error
+     * path; {@code isIgnored(self, self)} is semantically meaningless.
+     */
+    private boolean safeIsIgnored(UUID sourceId, UUID targetId) {
+        if (ignoreLookup == null || sourceId == null || targetId == null
+                || sourceId.equals(targetId)) {
+            return false;
+        }
+        try {
+            return ignoreLookup.isIgnored(sourceId, targetId);
+        } catch (Exception e) {
+            logger.debug("Ignore lookup failed src={} tgt={}: {}",
+                    sourceId, targetId, e.getMessage());
+            return false;
+        }
+    }
+
+    /** Sender-initiated ignore (sender ignores target). */
+    private boolean senderIgnoresTarget(UUID senderId, UUID targetId) {
+        return safeIsIgnored(senderId, targetId);
+    }
+
+    /** Receiver-initiated ignore (target ignores sender). */
+    private boolean targetIgnoresSender(UUID targetId, UUID senderId) {
+        return safeIsIgnored(targetId, senderId);
+    }
+
+    /**
+     * Nullable directional ignore lookup used by the item-18 social-relations
+     * slice. The handler never references the storage layer directly: the
+     * coordinator wires this to {@code db::isIgnored} (or an equivalent session
+     * fallback) at NovaLinkMain integration time, wrapping any
+     * {@code DatabaseException} into a {@code false} return so this interface
+     * stays non-throwing and the handler stays decoupled from the persistence
+     * API. Mirrors {@code MentionResolver.IgnoreLookup}.
+     */
+    @FunctionalInterface
+    public interface IgnoreLookup {
+        /**
+         * @param sourceId the player who may be ignoring (null → false)
+         * @param targetId the player who may be ignored (null → false)
+         * @return true iff {@code sourceId} holds an IGNORE relation toward
+         *         {@code targetId}; must never throw — return {@code false} on
+         *         any persistence gap instead
+         */
+        boolean isIgnored(UUID sourceId, UUID targetId);
     }
 }

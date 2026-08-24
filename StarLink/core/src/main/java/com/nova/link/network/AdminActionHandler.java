@@ -447,8 +447,10 @@ public class AdminActionHandler {
         // (super-admin session check in handleStatus), who is authorized to
         // broadcast to any channel including cross-client PRIVATE/SERVER scopes.
         // Non-super-admin callers can never reach this path.
-        messageRouter.routeMessage(channelId, packet.getPlayerId(), senderName, message, placeholders);
-        logger.info("Announcement sent to channel {} by {}", channelId, senderName);
+        com.nova.link.channel.RoutingResult routeResult = messageRouter.routeMessage(
+                channelId, packet.getPlayerId(), senderName, message, placeholders);
+        logger.info("Announcement sent to channel {} by {} (recipients={})",
+                channelId, senderName, routeResult.getRecipientCount());
         // Surface the announcement to the web panel notification feed.
         if (notificationStore != null) {
             try {

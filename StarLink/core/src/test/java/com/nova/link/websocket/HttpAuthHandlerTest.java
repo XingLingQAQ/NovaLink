@@ -350,6 +350,65 @@ class HttpAuthHandlerTest {
         }
     }
 
+    // ====================== refresh: token-family revocation (PANEL-012) ======================
+
+    @Nested
+    @DisplayName("refresh token-family epoch (PANEL-012)")
+    class TokenFamilyRevocation {
+
+        @Test
+        @DisplayName("a stolen OLDER refresh token in the same family is rejected on rotation and revokes the family")
+        void stolenOlderRefreshRejectedOnRotation() {
+            JsonObject loginJson = login("root", "rootpass").asJson();
+            String firstRefresh = loginJson.get("refreshToken").getAsString();
+
+            // Legitimate rotation: firstRefresh -> pair2.
+            Response resp2 = post("/api/auth/refresh",
+                    "{\"refreshToken\":\"" + firstRefresh + "\"}");
+            assertThat(resp2.status()).isEqualTo(HttpResponseStatus.OK);
+            String secondRefresh = resp2.asJson().get("refreshToken").getAsString();
+
+            // Attacker replays the stolen OLDER refresh (firstRefresh) after the
+            // legitimate user already rotated past it. The family-epoch guard
+            // must reject it AND revoke the whole family, so secondRefresh
+            // (the current legitimate token) also dies.
+            Response stolenResp = post("/api/auth/refresh",
+                    "{\"refreshToken\":\"" + firstRefresh + "\"}");
+            assertThat(stolenResp.status()).isEqualTo(HttpResponseStatus.UNAUTHORIZED);
+
+            // The legitimate current token in the same family is now dead.
+            Response secondUseResp = post("/api/auth/refresh",
+                    "{\"refreshToken\":\"" + secondRefresh + "\"}");
+            assertThat(secondUseResp.status()).isEqualTo(HttpResponseStatus.UNAUTHORIZED);
+        }
+
+        @Test
+        @DisplayName("logout revokes the whole family: the current refresh token becomes unusable")
+        void logoutRevokesWholeFamily() {
+            JsonObject loginJson = login("root", "rootpass").asJson();
+            String accessToken = loginJson.get("token").getAsString();
+            String refreshToken = loginJson.get("refreshToken").getAsString();
+
+            // Rotate once so there is a "current but not the one presented at
+            // logout" refresh token in the family.
+            Response rotated = post("/api/auth/refresh",
+                    "{\"refreshToken\":\"" + refreshToken + "\"}");
+            assertThat(rotated.status()).isEqualTo(HttpResponseStatus.OK);
+            String currentRefresh = rotated.asJson().get("refreshToken").getAsString();
+
+            // Logout presents the access token + the original refresh token.
+            // The handler must revoke the family, so the STILL-CURRENT refresh
+            // token (currentRefresh) also dies — not just the presented one.
+            Response logoutResp = dispatch(handler, HttpMethod.POST, "/api/auth/logout",
+                    "{\"refreshToken\":\"" + refreshToken + "\"}", accessToken, null);
+            assertThat(logoutResp.status()).isEqualTo(HttpResponseStatus.OK);
+
+            Response afterLogout = post("/api/auth/refresh",
+                    "{\"refreshToken\":\"" + currentRefresh + "\"}");
+            assertThat(afterLogout.status()).isEqualTo(HttpResponseStatus.UNAUTHORIZED);
+        }
+    }
+
     @Test
     @DisplayName("unknown auth path gets 404")
     void unknownPath() {

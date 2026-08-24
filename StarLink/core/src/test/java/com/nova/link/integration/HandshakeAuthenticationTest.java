@@ -73,6 +73,9 @@ class HandshakeAuthenticationTest {
         assertThat(response.isSuccess()).isFalse();
         assertThat(response.getErrorCode()).isEqualTo("NC-401");
         assertThat(client.isAuthenticated()).isFalse();
+        assertThat(awaitDisconnected(client, 2, TimeUnit.SECONDS))
+                .as("server must close the channel after writing NC-401")
+                .isTrue();
         
         client.disconnect();
     }
@@ -211,5 +214,15 @@ class HandshakeAuthenticationTest {
         // Different password should produce different hash
         String differentHash = IntegrationTestHelper.hashPassword("different-password");
         assertThat(hash).isNotEqualTo(differentHash);
+    }
+
+    private static boolean awaitDisconnected(IntegrationTestHelper.TestClient client,
+                                             long timeout,
+                                             TimeUnit unit) throws InterruptedException {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (client.isConnected() && System.nanoTime() < deadline) {
+            Thread.sleep(10L);
+        }
+        return !client.isConnected();
     }
 }

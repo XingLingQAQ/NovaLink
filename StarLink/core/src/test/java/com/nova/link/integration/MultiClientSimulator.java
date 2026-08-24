@@ -9,6 +9,7 @@ import com.nova.chat.common.protocol.codec.PacketEncoder;
 import com.nova.chat.common.protocol.codec.Varint21FrameDecoder;
 import com.nova.chat.common.protocol.codec.Varint21LengthFieldPrepender;
 import com.nova.chat.common.protocol.packets.*;
+import com.nova.link.auth.AuthManager;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -231,18 +232,46 @@ public class MultiClientSimulator {
         }
 
         /**
-         * Authenticates with the server.
+         * Authenticates with the server via the AUTH-002 3-packet
+         * challenge-response handshake:
+         * <ol>
+         *   <li>send {@link HandshakeInitPacket} with a fresh client nonce,</li>
+         *   <li>await {@link HandshakeChallengePacket} (registered below),</li>
+         *   <li>compute {@code HMAC-SHA256(sha256(password), serverNonce+clientNonce)}
+         *       and send {@link HandshakeAuthenticatePacket},</li>
+         *   <li>await {@link HandshakeResponsePacket} (completes the returned future).</li>
+         * </ol>
          */
         public CompletableFuture<HandshakeResponsePacket> authenticate(String password) {
             authFuture = new CompletableFuture<>();
 
-            HandshakePacket handshake = new HandshakePacket(
-                NovaProtocol.PROTOCOL_VERSION,
-                clientId,
-                EmbeddedNovaLinkServer.hashPassword(password),
-                platform
+            final String clientNonce = EmbeddedNovaLinkServer.generateNonceHex();
+            final String passwordHash = EmbeddedNovaLinkServer.hashPassword(password);
+
+            // One-shot challenge handler: when the server nonce arrives, compute
+            // the HMAC and send the authenticate packet. Registered before the
+            // init is sent so the challenge cannot arrive before we listen.
+            final java.util.concurrent.atomic.AtomicBoolean challengeHandled = new java.util.concurrent.atomic.AtomicBoolean(false);
+            registerHandler(HandshakeChallengePacket.class, (HandshakeChallengePacket challenge) -> {
+                if (!challengeHandled.compareAndSet(false, true)) {
+                    // A replayed or duplicate challenge must not re-send auth.
+                    return;
+                }
+                String serverNonce = challenge.getServerNonce();
+                String hmac = AuthManager.computeChallengeHmac(passwordHash, serverNonce, clientNonce);
+                HandshakeAuthenticatePacket auth = new HandshakeAuthenticatePacket(
+                        clientId, clientNonce, hmac);
+                sendPacket(auth);
+            });
+
+            HandshakeInitPacket init = new HandshakeInitPacket(
+                    NovaProtocol.PROTOCOL_VERSION,
+                    clientId,
+                    platform,
+                    "",
+                    clientNonce
             );
-            sendPacket(handshake);
+            sendPacket(init);
 
             return authFuture;
         }

@@ -9,6 +9,8 @@ import java.net.InetSocketAddress;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.BooleanSupplier;
 
 /**
  * Represents a client connection to the NovaLink server.
@@ -23,6 +25,16 @@ public class ClientConnection {
     // Authentication state
     private volatile boolean authenticated = false;
     private volatile String clientId;
+    /** Monotonic server generation assigned when this connection authenticates. */
+    private volatile long generation;
+    /** Cleared when a newer generation takes over or the channel is closed. */
+    private volatile boolean writesEnabled = true;
+    /** Once retired, this physical connection can never become active again. */
+    private boolean generationRetired;
+    /** Fences in-flight business work and writes against generation changes. */
+    private final ReentrantReadWriteLock generationLock = new ReentrantReadWriteLock(true);
+    /** Claimed once before dispatching the first handshake on this channel. */
+    private boolean authenticationStarted;
     private volatile UUID superAdminUuid;
 
     // Runtime metadata reported by the client (for panel display)
@@ -50,13 +62,17 @@ public class ClientConnection {
      */
     public CompletableFuture<Void> sendPacket(Packet packet) {
         CompletableFuture<Void> future = new CompletableFuture<>();
-        
-        if (!channel.isActive()) {
-            future.completeExceptionally(new IllegalStateException("Channel is not active"));
-            return future;
+        ChannelFuture writeFuture;
+        generationLock.readLock().lock();
+        try {
+            if (!writesEnabled || !channel.isActive()) {
+                future.completeExceptionally(new IllegalStateException("Channel is not active"));
+                return future;
+            }
+            writeFuture = channel.writeAndFlush(packet);
+        } finally {
+            generationLock.readLock().unlock();
         }
-
-        ChannelFuture writeFuture = channel.writeAndFlush(packet);
         writeFuture.addListener(f -> {
             if (f.isSuccess()) {
                 future.complete(null);
@@ -155,6 +171,106 @@ public class ClientConnection {
         this.authenticated = authenticated;
     }
 
+    /** Prepares an indexed generation without exposing it to business traffic. */
+    void prepareGeneration(String clientId, long generation) {
+        generationLock.writeLock().lock();
+        try {
+            this.clientId = clientId;
+            this.generation = generation;
+            this.authenticated = false;
+            this.writesEnabled = false;
+        } finally {
+            generationLock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * Exposes a prepared generation only after its active-index update is
+     * visible. A concurrent newer takeover makes the identity check fail.
+     */
+    boolean activatePreparedGeneration(BooleanSupplier currentGeneration) {
+        generationLock.writeLock().lock();
+        try {
+            if (generationRetired || !channel.isActive() || !currentGeneration.getAsBoolean()) {
+                return false;
+            }
+            this.authenticated = true;
+            this.writesEnabled = true;
+            return true;
+        } finally {
+            generationLock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * Invalidates this connection before a newer generation is closed in.
+     * Keeping this separate from channel close prevents stale handlers from
+     * sending while their Netty channelInactive callback is still pending.
+     */
+    void supersede() {
+        generationLock.writeLock().lock();
+        try {
+            this.generationRetired = true;
+            this.authenticated = false;
+            this.writesEnabled = false;
+        } finally {
+            generationLock.writeLock().unlock();
+        }
+    }
+
+    /** Marks the physical connection closed and blocks any late writes. */
+    void markDisconnected() {
+        generationLock.writeLock().lock();
+        try {
+            this.generationRetired = true;
+            this.authenticated = false;
+            this.writesEnabled = false;
+        } finally {
+            generationLock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * Atomically claims the one authentication attempt allowed for this
+     * physical channel. This prevents concurrent handshake tasks from both
+     * entering authentication before either one assigns a generation.
+     */
+    boolean tryBeginAuthentication() {
+        generationLock.writeLock().lock();
+        try {
+            if (authenticationStarted || generation != 0L || authenticated
+                    || !writesEnabled || !channel.isActive()) {
+                return false;
+            }
+            authenticationStarted = true;
+            return true;
+        } finally {
+            generationLock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * Runs business work under a shared generation lease. A takeover acquires
+     * the corresponding write lease, so it waits for already-started work and
+     * prevents any stale work from starting after the generation changes.
+     */
+    boolean executeWithGenerationLease(BooleanSupplier currentGeneration, Runnable action) {
+        generationLock.readLock().lock();
+        try {
+            boolean allowed = generation == 0L
+                    ? writesEnabled && channel.isActive()
+                    : authenticated && writesEnabled && channel.isActive()
+                            && currentGeneration.getAsBoolean();
+            if (!allowed) {
+                return false;
+            }
+            action.run();
+            return true;
+        } finally {
+            generationLock.readLock().unlock();
+        }
+    }
+
     /**
      * Gets the client ID (set after authentication).
      *
@@ -171,6 +287,15 @@ public class ClientConnection {
      */
     public void setClientId(String clientId) {
         this.clientId = clientId;
+    }
+
+    /**
+     * Gets the server-assigned active generation.
+     *
+     * @return the generation, or {@code 0} before authentication
+     */
+    public long getGeneration() {
+        return generation;
     }
 
     /**

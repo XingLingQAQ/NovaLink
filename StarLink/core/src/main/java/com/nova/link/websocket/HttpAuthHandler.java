@@ -176,7 +176,10 @@ public class HttpAuthHandler extends SimpleChannelInboundHandler<FullHttpRequest
             String role = result.getCredentials().getRole().name();
             // Subject is the username: stable operator attribution across sessions.
             String token = jwtService.generateToken(username, username, role);
-            String refreshToken = jwtService.generateRefreshToken(username, username, role);
+            // PANEL-012: create a new token family for this login session so
+            // later rotation/logout can revoke the whole family.
+            String familyId = jwtService.createFamily();
+            String refreshToken = jwtService.generateRefreshToken(username, username, role, familyId, 0L);
             
             // Build response (contract: {token, refreshToken, user:{username, role}}).
             JsonObject response = new JsonObject();
@@ -234,6 +237,26 @@ public class HttpAuthHandler extends SimpleChannelInboundHandler<FullHttpRequest
             
             Claims claims = jwtService.validateToken(refreshToken);
             if (claims == null) {
+                // PANEL-012: validateToken consults the jti blacklist, so a
+                // stolen OLDER refresh token (whose jti was revoked by a prior
+                // legitimate rotation) would be rejected here WITHOUT the
+                // family-epoch check running. Re-parse the token without the
+                // blacklist so the family guard can detect the theft signal
+                // (token epoch < family current epoch) and revoke the family.
+                Claims unchecked = jwtService.parseClaimsUnchecked(refreshToken);
+                if (unchecked != null && "refresh".equals(unchecked.get("type", String.class))) {
+                    String fid = jwtService.extractFamilyId(unchecked);
+                    JwtService.FamilyValidation fs = jwtService.validateRefreshFamily(unchecked);
+                    if (fs == JwtService.FamilyValidation.REJECT) {
+                        logger.warn("Refresh rejected: stolen token detected for family {} (jti already revoked)",
+                                fid);
+                    } else if (fid != null) {
+                        // jti is revoked but epoch is current — exact replay of
+                        // an already-rotated token. Revoke the family too.
+                        jwtService.revokeFamily(fid);
+                        logger.warn("Refresh rejected: replayed refresh token (jti revoked); family {} revoked", fid);
+                    }
+                }
                 sendJsonError(ctx, request, HttpResponseStatus.UNAUTHORIZED,
                         I18n.tr("auth.refresh.invalid"));
                 return;
@@ -250,15 +273,46 @@ public class HttpAuthHandler extends SimpleChannelInboundHandler<FullHttpRequest
             String userId = claims.getSubject();
             String username = claims.get("username", String.class);
             String role = claims.get("role", String.class);
-            
+
             if (userId == null || username == null || role == null) {
                 sendJsonError(ctx, request, HttpResponseStatus.UNAUTHORIZED,
                         I18n.tr("auth.refresh.invalid"));
                 return;
             }
-            
+
+            // PANEL-012: token-family epoch validation. A stolen OLDER refresh
+            // token in the same family is rejected and the whole family is
+            // revoked, forcing the legitimate user to re-login.
+            JwtService.FamilyValidation familyState = jwtService.validateRefreshFamily(claims);
+            String familyId = jwtService.extractFamilyId(claims);
+            long tokenEpoch = claims.get("fep", Long.class) != null
+                    ? claims.get("fep", Long.class) : 0L;
+            if (familyState == JwtService.FamilyValidation.REJECT) {
+                logger.warn("Refresh rejected: token family {} revoked (stolen token detected)", familyId);
+                sendJsonError(ctx, request, HttpResponseStatus.UNAUTHORIZED,
+                        I18n.tr("auth.refresh.invalid"));
+                return;
+            }
+            if (familyState == JwtService.FamilyValidation.UNKNOWN) {
+                // Family record absent (server restart) or legacy token: cannot
+                // safely validate. Reject and force re-login.
+                logger.warn("Refresh rejected: token family {} unknown (server restart or legacy token)", familyId);
+                sendJsonError(ctx, request, HttpResponseStatus.UNAUTHORIZED,
+                        I18n.tr("auth.refresh.invalid"));
+                return;
+            }
+
+            // Family is VALID: rotate the epoch and issue a new pair.
+            long newEpoch = jwtService.rotateFamilyEpoch(familyId);
+            if (newEpoch < 0) {
+                // Family was revoked concurrently — reject.
+                sendJsonError(ctx, request, HttpResponseStatus.UNAUTHORIZED,
+                        I18n.tr("auth.refresh.invalid"));
+                return;
+            }
+
             String newToken = jwtService.generateToken(userId, username, role);
-            String newRefreshToken = jwtService.generateRefreshToken(userId, username, role);
+            String newRefreshToken = jwtService.generateRefreshToken(userId, username, role, familyId, newEpoch);
 
             // Rotation: the old refresh token must not be usable again.
             jwtService.revokeToken(refreshToken);
@@ -298,16 +352,33 @@ public class HttpAuthHandler extends SimpleChannelInboundHandler<FullHttpRequest
             jwtService.revokeToken(accessToken);
 
             // Optionally revoke the submitted refresh token too.
+            String revokedFamilyId = null;
             try {
                 String body = request.content().toString(CharsetUtil.UTF_8);
                 if (body != null && !body.isBlank()) {
                     JsonObject json = JsonParser.parseString(body).getAsJsonObject();
                     if (json.has("refreshToken") && !json.get("refreshToken").isJsonNull()) {
-                        jwtService.revokeToken(json.get("refreshToken").getAsString());
+                        String refreshToken = json.get("refreshToken").getAsString();
+                        // PANEL-012: extract the family id via the unrevoked
+                        // parse path. The presented refresh token may already
+                        // have been rotated (its jti revoked), so validateToken
+                        // (which consults the blacklist) would return null and
+                        // we'd lose the family id. parseClaimsUnchecked reads
+                        // claims regardless of blacklist state.
+                        Claims refreshClaims = jwtService.parseClaimsUnchecked(refreshToken);
+                        if (refreshClaims != null) {
+                            revokedFamilyId = jwtService.extractFamilyId(refreshClaims);
+                        }
+                        jwtService.revokeToken(refreshToken);
                     }
                 }
             } catch (Exception e) {
                 logger.debug("Ignoring malformed logout body: {}", e.getMessage());
+            }
+            // PANEL-012: revoke the whole family so every token issued in
+            // this login session dies, not just the presented refresh token.
+            if (revokedFamilyId != null) {
+                jwtService.revokeFamily(revokedFamilyId);
             }
 
             logger.info("User '{}' logged out (token revoked)", claims.get("username", String.class));

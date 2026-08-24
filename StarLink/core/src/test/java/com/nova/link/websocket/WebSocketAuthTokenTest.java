@@ -92,4 +92,64 @@ class WebSocketAuthTokenTest {
         JsonObject response = authenticate("garbage.token.value");
         assertThat(response.get("success").getAsBoolean()).isFalse();
     }
+
+    // ====================== PANEL-008: revision guard ======================
+
+    /**
+     * Authenticates a session and returns it together with its channel so the
+     * test can drive further messages and read outbound frames.
+     */
+    private AuthenticatedSession authenticateSession(String role) {
+        EmbeddedChannel channel = new EmbeddedChannel();
+        WebSocketSession session = new WebSocketSession(channel);
+        messageHandler.registerSession(session);
+        String token = jwtService.generateToken("user-" + role, "user-" + role, role);
+        messageHandler.handleMessage(session,
+                "{\"type\":\"auth\",\"token\":\"" + token + "\"}");
+        // Drain the auth_response so subsequent reads see only the payloads
+        // produced by the test.
+        TextWebSocketFrame authFrame = channel.readOutbound();
+        assertThat(authFrame).isNotNull();
+        authFrame.release();
+        return new AuthenticatedSession(channel, session);
+    }
+
+    private record AuthenticatedSession(EmbeddedChannel channel, WebSocketSession session) {
+        JsonObject readJson() {
+            TextWebSocketFrame frame = channel.readOutbound();
+            assertThat(frame).isNotNull();
+            try {
+                return JsonParser.parseString(frame.text()).getAsJsonObject();
+            } finally {
+                frame.release();
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("PANEL-008: every state snapshot carries a strictly increasing revision")
+    void snapshotsCarryMonotonicRevision() {
+        AuthenticatedSession root = authenticateSession("SUPER_ADMIN");
+
+        root.session.subscribe("global");
+
+        messageHandler.handleMessage(root.session, "{\"type\":\"get_players\"}");
+        long playersRev1 = root.readJson().get("revision").getAsLong();
+
+        messageHandler.handleMessage(root.session, "{\"type\":\"get_channels\"}");
+        long channelsRev1 = root.readJson().get("revision").getAsLong();
+
+        messageHandler.handleMessage(root.session, "{\"type\":\"get_clients\"}");
+        long clientsRev1 = root.readJson().get("revision").getAsLong();
+
+        // Every snapshot must carry a positive, strictly-increasing revision.
+        assertThat(playersRev1).isPositive();
+        assertThat(channelsRev1).isGreaterThan(playersRev1);
+        assertThat(clientsRev1).isGreaterThan(channelsRev1);
+
+        // A second round must keep increasing — never reuse or go backwards.
+        messageHandler.handleMessage(root.session, "{\"type\":\"get_players\"}");
+        long playersRev2 = root.readJson().get("revision").getAsLong();
+        assertThat(playersRev2).isGreaterThan(clientsRev1);
+    }
 }

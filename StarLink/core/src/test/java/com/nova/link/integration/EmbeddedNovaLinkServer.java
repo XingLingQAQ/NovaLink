@@ -6,6 +6,7 @@ import com.nova.link.auth.AuthManager;
 import com.nova.link.auth.AuthResult;
 import com.nova.link.auth.ClientCredentials;
 import com.nova.link.auth.ClientPermissionRegistry;
+import com.nova.link.auth.NonceCache;
 import com.nova.link.auth.PermissionManager;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelConfig;
@@ -72,6 +73,7 @@ public class EmbeddedNovaLinkServer {
     private ChannelActionHandler channelActionHandler;
     private AdminActionHandler adminActionHandler;
     private SpyManager spyManager;
+    private NonceCache nonceCache;
 
     private volatile boolean running = false;
 
@@ -144,9 +146,9 @@ public class EmbeddedNovaLinkServer {
         messageRouter.setSensitiveWordFilter(sensitiveWordFilter);
         messageRouter.setPermissionChecker(clientPermissionRegistry.asChecker());
 
-        networkHandler.setDisconnectListener(connection -> {
+        networkHandler.setDisconnectListener((connection, activeGenerationEnded) -> {
             String clientId = connection != null ? connection.getClientId() : null;
-            if (clientId != null && !clientId.isBlank()) {
+            if (activeGenerationEnded && clientId != null && !clientId.isBlank()) {
                 clientPermissionRegistry.clearClient(clientId);
             }
         });
@@ -170,6 +172,10 @@ public class EmbeddedNovaLinkServer {
                 permissionManager,
                 muteManager
         );
+
+        // AUTH-002: pending-challenge cache for the 3-packet challenge-response
+        // handshake. One per embedded server; entries self-expire (30s TTL).
+        nonceCache = new NonceCache();
 
         registerPacketHandlers();
 
@@ -386,7 +392,92 @@ public class EmbeddedNovaLinkServer {
     }
 
     private void registerPacketHandlers() {
-        // Handshake handler (auth + version check + wildcard GLOBAL grants for tests)
+        // ==================== AUTH-002 challenge-response handshake ====================
+        // Replaces the replayable static-hash HandshakePacket (0x01) flow with a
+        // 3-packet dance: HandshakeInit (0x15) → HandshakeChallenge (0x16) →
+        // HandshakeAuthenticate (0x17). The legacy 0x01 handler below is kept
+        // for compile compatibility; live clients use the new path.
+        networkHandler.registerHandler(HandshakeInitPacket.class, (connection, packet) -> {
+            int clientProtocolVersion = packet.getProtocolVersion();
+            if (clientProtocolVersion != NovaProtocol.PROTOCOL_VERSION) {
+                HandshakeResponsePacket response = HandshakeResponsePacket.failure(
+                        "NC-420",
+                        String.format(
+                                "Protocol version mismatch: client=%d, server=%d. Please update your client.",
+                                clientProtocolVersion,
+                                NovaProtocol.PROTOCOL_VERSION
+                        )
+                );
+                response.setRequestId(packet.getRequestId());
+                sendResponseAndClose(connection, response);
+                logger.warn("Protocol version mismatch from client {}: client={}, server={}",
+                        packet.getClientId(), clientProtocolVersion, NovaProtocol.PROTOCOL_VERSION);
+                return;
+            }
+
+            String clientId = packet.getClientId();
+            String clientNonce = packet.getClientNonce();
+            if (clientId == null || clientId.isEmpty() || clientNonce == null || clientNonce.isEmpty()) {
+                HandshakeResponsePacket response = HandshakeResponsePacket.failure(
+                        "NC-401", "Invalid handshake init");
+                response.setRequestId(packet.getRequestId());
+                sendResponseAndClose(connection, response);
+                return;
+            }
+
+            connection.setPlatform(packet.getPlatform());
+            connection.setServerVersion(packet.getServerVersion());
+
+            String serverNonce = generateNonceHex();
+            nonceCache.put(clientId, clientNonce, serverNonce);
+
+            HandshakeChallengePacket challenge = new HandshakeChallengePacket(serverNonce);
+            challenge.setRequestId(packet.getRequestId());
+            connection.sendPacket(challenge);
+        });
+
+        networkHandler.registerHandler(HandshakeAuthenticatePacket.class, (connection, packet) -> {
+            String clientId = packet.getClientId();
+            String clientNonce = packet.getClientNonce();
+            String hmac = packet.getHmac();
+
+            AuthResult authResult = authManager.authenticateChallenge(
+                    clientId,
+                    clientNonce,
+                    hmac,
+                    nonceCache,
+                    connection.getRemoteAddress()
+            );
+
+            HandshakeResponsePacket response;
+            if (authResult.isSuccess()) {
+                if (!networkHandler.activateAuthenticated(
+                        connection,
+                        clientId,
+                        () -> clientPermissionRegistry.grant(
+                                clientId, ClientPermissionRegistry.WILDCARD))) {
+                    return;
+                }
+                response = HandshakeResponsePacket.success("Authentication successful");
+                logger.debug("Client authenticated: {}", clientId);
+            } else {
+                response = HandshakeResponsePacket.failure(
+                        authResult.getErrorCode() != null ? authResult.getErrorCode() : "NC-401",
+                        authResult.getMessage() != null ? authResult.getMessage() : "Invalid credentials"
+                );
+                logger.debug("Challenge authentication failed for client: {}", clientId);
+            }
+            response.setRequestId(packet.getRequestId());
+            if (authResult.isSuccess()) {
+                connection.sendPacket(response);
+            } else {
+                sendResponseAndClose(connection, response);
+            }
+        });
+
+        // ==================== Legacy handshake handler (0x01) ====================
+        // Kept for compile compatibility; live clients use the challenge-response
+        // path above. Old v2 clients that still send 0x01 are rejected with NC-420.
         networkHandler.registerHandler(HandshakePacket.class, (connection, packet) -> {
             int clientProtocolVersion = packet.getProtocolVersion();
             if (clientProtocolVersion != NovaProtocol.PROTOCOL_VERSION) {
@@ -399,36 +490,22 @@ public class EmbeddedNovaLinkServer {
                         )
                 );
                 response.setRequestId(packet.getRequestId());
-                connection.sendPacket(response);
+                sendResponseAndClose(connection, response);
                 logger.warn("Protocol version mismatch from client {}: client={}, server={}",
                         packet.getClientId(), clientProtocolVersion, NovaProtocol.PROTOCOL_VERSION);
                 return;
             }
 
-            AuthResult authResult = authManager.authenticate(
-                    packet.getClientId(),
-                    packet.getPasswordHash(),
-                    connection.getRemoteAddress()
+            // Legacy static-hash auth is no longer accepted: the protocol bumped
+            // to v3 and the challenge-response path is now mandatory.
+            HandshakeResponsePacket response = HandshakeResponsePacket.failure(
+                    "NC-420",
+                    "Legacy handshake is no longer supported. Please update your client to use the challenge-response handshake."
             );
-
-            HandshakeResponsePacket response;
-            if (authResult.isSuccess()) {
-                connection.setAuthenticated(true);
-                connection.setClientId(packet.getClientId());
-                // Test clients get full GLOBAL fan-out (wildcard), matching production
-                // bootstrap when no explicit permission list is configured.
-                clientPermissionRegistry.grant(packet.getClientId(), ClientPermissionRegistry.WILDCARD);
-                response = HandshakeResponsePacket.success("Authentication successful");
-                logger.debug("Client authenticated: {}", packet.getClientId());
-            } else {
-                response = HandshakeResponsePacket.failure(
-                        authResult.getErrorCode() != null ? authResult.getErrorCode() : "NC-401",
-                        authResult.getMessage() != null ? authResult.getMessage() : "Invalid credentials"
-                );
-                logger.debug("Authentication failed for client: {}", packet.getClientId());
-            }
             response.setRequestId(packet.getRequestId());
-            connection.sendPacket(response);
+            sendResponseAndClose(connection, response);
+            logger.warn("Rejected legacy HandshakePacket (0x01) from client {}; protocol now requires challenge-response",
+                    packet.getClientId());
         });
 
         // Chat message handler — production path (not raw broadcast)
@@ -496,6 +573,34 @@ public class EmbeddedNovaLinkServer {
     /**
      * Hashes a password using SHA-256.
      */
+    private static void sendResponseAndClose(ClientConnection connection, HandshakeResponsePacket response) {
+        connection.sendPacket(response).whenComplete((ignored, error) -> connection.close());
+    }
+
+    /**
+     * Generates a fresh server nonce for the AUTH-002 challenge-response
+     * handshake: 16 cryptographically-random bytes, lowercase-hex-encoded
+     * (32 characters). Matches the production {@code NovaLinkMain} helper.
+     */
+    /**
+     * Generates a fresh nonce for the AUTH-002 challenge-response handshake:
+     * 16 cryptographically-random bytes, lowercase-hex-encoded (32 characters).
+     * Used for both server-side challenges and client-side nonces in tests.
+     */
+    static String generateNonceHex() {
+        byte[] bytes = new byte[16];
+        new java.security.SecureRandom().nextBytes(bytes);
+        StringBuilder hex = new StringBuilder(32);
+        for (byte b : bytes) {
+            String h = Integer.toHexString(0xff & b);
+            if (h.length() == 1) {
+                hex.append('0');
+            }
+            hex.append(h);
+        }
+        return hex.toString();
+    }
+
     public static String hashPassword(String password) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");

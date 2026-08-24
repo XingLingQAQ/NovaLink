@@ -6,15 +6,22 @@ import com.nova.chat.common.protocol.codec.PacketDecoder;
 import com.nova.chat.common.protocol.codec.PacketEncoder;
 import com.nova.chat.common.protocol.codec.Varint21FrameDecoder;
 import com.nova.chat.common.protocol.codec.Varint21LengthFieldPrepender;
+import com.nova.link.config.TlsConfig;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslHandler;
+import io.netty.handler.ssl.ClientAuth;
 import io.netty.handler.timeout.IdleStateHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.net.ssl.SSLException;
+import java.io.File;
 import java.net.InetSocketAddress;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -28,6 +35,7 @@ import java.util.concurrent.TimeUnit;
 public class NettyServer {
 
     private static final Logger logger = LoggerFactory.getLogger(NettyServer.class);
+    private static final int LEGACY_IDLE_TIMEOUT_SECONDS = 90;
 
     private final String bindAddress;
     private final int port;
@@ -35,6 +43,14 @@ public class NettyServer {
     private final int idleTimeoutSeconds;
     private final PacketRegistry packetRegistry;
     private final ServerNetworkHandler networkHandler;
+    /**
+     * AUTH-002: built once at construction from {@link TlsConfig}. When non-null
+     * an {@link SslHandler} is prepended at the HEAD of every accepted channel's
+     * pipeline so the challenge-response handshake runs inside TLS.
+     */
+    private final SslContext sslContext;
+    /** AUTH-002: when {@code true}, client certs are required + verified. */
+    private final boolean mutualTls;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -51,7 +67,7 @@ public class NettyServer {
      */
     public NettyServer(String bindAddress, int port, int workerThreads, ServerNetworkHandler networkHandler) {
         this(bindAddress, port, workerThreads,
-                com.nova.link.config.ServerConfig.DEFAULT_IDLE_TIMEOUT_SECONDS, networkHandler);
+                LEGACY_IDLE_TIMEOUT_SECONDS, networkHandler);
     }
 
     /**
@@ -67,12 +83,74 @@ public class NettyServer {
      */
     public NettyServer(String bindAddress, int port, int workerThreads, int idleTimeoutSeconds,
                        ServerNetworkHandler networkHandler) {
+        this(bindAddress, port, workerThreads, idleTimeoutSeconds, networkHandler, null);
+    }
+
+    /**
+     * Creates a new NettyServer instance with an explicit idle timeout and
+     * optional TLS (AUTH-002).
+     *
+     * <p>When {@code tls} is non-null and {@link TlsConfig#isConfigured()} the
+     * server builds a Netty {@link SslContext} from the configured cert/key
+     * files and prepends an {@link SslHandler} at the HEAD of every accepted
+     * channel pipeline. If {@code tls} is non-null but missing its cert/key,
+     * the constructor throws {@link IllegalStateException} — fail-closed rather
+     * than silently degrading to plaintext.
+     *
+     * @param bindAddress        the address to bind to
+     * @param port               the port to listen on
+     * @param workerThreads      the number of worker threads
+     * @param idleTimeoutSeconds read-idle timeout in seconds; {@code 0} disables
+     *                           idle detection (write-idle heartbeats fire at a
+     *                           third of this value)
+     * @param networkHandler     the handler for processing packets
+     * @param tls                optional TLS configuration; {@code null} for plaintext
+     */
+    public NettyServer(String bindAddress, int port, int workerThreads, int idleTimeoutSeconds,
+                       ServerNetworkHandler networkHandler, TlsConfig tls) {
         this.bindAddress = bindAddress;
         this.port = port;
         this.workerThreads = workerThreads;
         this.idleTimeoutSeconds = Math.max(0, idleTimeoutSeconds);
         this.networkHandler = networkHandler;
         this.packetRegistry = NovaProtocol.createRegistry();
+        this.sslContext = buildSslContext(tls);
+        this.mutualTls = tls != null && tls.isConfigured() && tls.isMutualTls();
+    }
+
+    /**
+     * Builds the {@link SslContext} from {@link TlsConfig}, or returns
+     * {@code null} when TLS is not configured. Throws on a misconfigured
+     * TLS block so the server fails to start rather than running plaintext.
+     */
+    private static SslContext buildSslContext(TlsConfig tls) {
+        if (tls == null || !tls.isConfigured()) {
+            return null;
+        }
+        File certChain = new File(tls.getCertChainFile());
+        File privateKey = new File(tls.getPrivateKeyFile());
+        if (!certChain.isFile()) {
+            throw new IllegalStateException(
+                    "AUTH-002: server.tls.cert-chain-file not found or not a file: " + certChain);
+        }
+        if (!privateKey.isFile()) {
+            throw new IllegalStateException(
+                    "AUTH-002: server.tls.private-key-file not found or not a file: " + privateKey);
+        }
+        try {
+            SslContextBuilder builder = SslContextBuilder.forServer(certChain, privateKey);
+            if (tls.isMutualTls() && tls.getCaCertFile() != null && !tls.getCaCertFile().isBlank()) {
+                File caCert = new File(tls.getCaCertFile());
+                if (!caCert.isFile()) {
+                    throw new IllegalStateException(
+                            "AUTH-002: server.tls.ca-cert-file not found or not a file: " + caCert);
+                }
+                builder.trustManager(caCert).clientAuth(ClientAuth.REQUIRE);
+            }
+            return builder.build();
+        } catch (SSLException e) {
+            throw new IllegalStateException("AUTH-002: failed to build server SslContext", e);
+        }
     }
 
     /**
@@ -109,6 +187,17 @@ public class NettyServer {
                         @Override
                         protected void initChannel(SocketChannel ch) {
                             ChannelPipeline pipeline = ch.pipeline();
+
+                            // AUTH-002: TLS is the outermost transport. The SslHandler
+                            // must sit at the HEAD of the pipeline so every subsequent
+                            // handler sees decrypted bytes and every outbound write is
+                            // encrypted on the way out. When mutualTls is configured the
+                            // SslContext already has ClientAuth.REQUIRE wired, so the
+                            // handshake simply fails for clients without a trusted cert.
+                            if (sslContext != null) {
+                                SslHandler sslHandler = sslContext.newHandler(ch.alloc());
+                                pipeline.addLast("ssl", sslHandler);
+                            }
 
                             // Idle detection: reader-idle closes dead connections;
                             // writer-idle (timeout/3) triggers a server-initiated

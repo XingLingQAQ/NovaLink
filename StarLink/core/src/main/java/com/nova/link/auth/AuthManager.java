@@ -3,6 +3,8 @@ package com.nova.link.auth;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -21,6 +23,7 @@ public class AuthManager {
 
     private static final Logger logger = LoggerFactory.getLogger(AuthManager.class);
     private static final String HASH_ALGORITHM = "SHA-256";
+    private static final String HMAC_ALGORITHM = "HmacSHA256";
 
     // Client credentials storage: username -> credentials
     private final Map<String, ClientCredentials> clientCredentials = new ConcurrentHashMap<>();
@@ -163,6 +166,130 @@ public class AuthManager {
         ipBanManager.clearFailures(ipAddress);
         logger.info("Authentication successful for user: {} from IP: {}", username, ipAddress);
         return AuthResult.success(credentials);
+    }
+
+    /**
+     * Authenticates a client via the AUTH-002 challenge-response handshake.
+     *
+     * <p>The caller (server handshake handler) is responsible for:
+     * <ol>
+     *   <li>generating a fresh server nonce on receipt of {@code HandshakeInit},</li>
+     *   <li>storing it in {@link NonceCache} keyed by
+     *       {@code (clientId, clientNonce)}, and</li>
+     *   <li>passing the {@code clientNonce} that the {@code HandshakeAuthenticate}
+     *       packet carries so this method can look up (and atomically consume)
+     *       the pending challenge.</li>
+     * </ol>
+     *
+     * <p>HMAC verification:
+     * <ul>
+     *   <li>key = UTF-8 bytes of {@code sha256hex(password)}
+     *       ({@link ClientCredentials#getPasswordHash()})</li>
+     *   <li>message = UTF-8 bytes of {@code serverNonce + clientNonce}
+     *       (string concatenation) — the serverNonce is the one this server
+     *       generated and stored at init time</li>
+     *   <li>expected = lowercase-hex HMAC-SHA-256</li>
+     * </ul>
+     * compared in constant time via {@link #constantTimeEqualsIgnoreCase}.
+     *
+     * <p>The pending challenge is consumed from the {@link NonceCache} exactly
+     * once, so a replayed authenticate packet (same nonce pair) finds no entry
+     * and fails with {@code NC-401}. The clientNonce echoed by the client must
+     * match the one from the init packet or the lookup misses.
+     *
+     * @param username     the client id (from the authenticate packet)
+     * @param clientNonce  the client nonce (from the authenticate packet; must
+     *                     match the init packet's nonce)
+     * @param hmac         the HMAC the client sent in the authenticate packet
+     * @param nonceCache   the pending-challenge cache (consumed atomically)
+     * @param ipAddress    the IP address of the connecting client
+     * @return the authentication result
+     */
+    public AuthResult authenticateChallenge(String username,
+                                            String clientNonce,
+                                            String hmac,
+                                            NonceCache nonceCache,
+                                            String ipAddress) {
+        // Check if IP is banned
+        if (ipBanManager.isBanned(ipAddress)) {
+            long remainingSeconds = ipBanManager.getRemainingBanTime(ipAddress) / 1000;
+            logger.warn("Challenge authentication attempt from banned IP: {}", ipAddress);
+            return AuthResult.ipBanned("IP temporarily banned. Try again in " + remainingSeconds + " seconds.");
+        }
+
+        // Validate input
+        if (username == null || username.isEmpty()) {
+            ipBanManager.recordFailure(ipAddress);
+            return AuthResult.unauthorized("Username is required");
+        }
+        if (clientNonce == null || clientNonce.isEmpty() || hmac == null || hmac.isEmpty()) {
+            ipBanManager.recordFailure(ipAddress);
+            return AuthResult.unauthorized("Invalid challenge response");
+        }
+
+        // Atomically consume the pending challenge. A replay (same nonce pair
+        // reused) or an expired/missing entry finds nothing here and is rejected.
+        String serverNonce = nonceCache.consume(username, clientNonce);
+        if (serverNonce == null) {
+            ipBanManager.recordFailure(ipAddress);
+            logger.warn("Challenge authentication failed for user: {} from IP: {} (no/expired/replayed nonce)",
+                    username, ipAddress);
+            return AuthResult.unauthorized("Invalid credentials");
+        }
+
+        // Look up credentials
+        ClientCredentials credentials = clientCredentials.get(username);
+        if (credentials == null) {
+            ipBanManager.recordFailure(ipAddress);
+            logger.warn("Challenge authentication failed for unknown user: {} from IP: {}", username, ipAddress);
+            return AuthResult.unauthorized("Invalid credentials");
+        }
+
+        // Recompute the expected HMAC over (serverNonce + clientNonce) keyed by
+        // the stored password hash, and compare in constant time.
+        String expectedHmac = computeChallengeHmac(credentials.getPasswordHash(), serverNonce, clientNonce);
+        if (expectedHmac == null || !constantTimeEqualsIgnoreCase(expectedHmac, hmac)) {
+            ipBanManager.recordFailure(ipAddress);
+            logger.warn("Challenge authentication failed for user: {} from IP: {} (HMAC mismatch)",
+                    username, ipAddress);
+            return AuthResult.unauthorized("Invalid credentials");
+        }
+
+        // Authentication successful - clear any failure records
+        ipBanManager.clearFailures(ipAddress);
+        logger.info("Challenge authentication successful for user: {} from IP: {}", username, ipAddress);
+        return AuthResult.success(credentials);
+    }
+
+    /**
+     * Computes the AUTH-002 challenge-response HMAC.
+     *
+     * <p>{@code key = utf8(sha256hex(password))},
+     * {@code message = utf8(serverNonce + clientNonce)},
+     * output is lowercase-hex HMAC-SHA-256.
+     *
+     * @param passwordHash the stored credential hash (sha256hex of the password)
+     * @param serverNonce  the server nonce (hex)
+     * @param clientNonce  the client nonce (hex)
+     * @return the lowercase-hex HMAC, or {@code null} if the algorithm is missing
+     */
+    public static String computeChallengeHmac(String passwordHash,
+                                              String serverNonce,
+                                              String clientNonce) {
+        if (passwordHash == null || serverNonce == null || clientNonce == null) {
+            return null;
+        }
+        try {
+            Mac mac = Mac.getInstance(HMAC_ALGORITHM);
+            mac.init(new SecretKeySpec(passwordHash.getBytes(StandardCharsets.UTF_8), HMAC_ALGORITHM));
+            byte[] hmacBytes = mac.doFinal((serverNonce + clientNonce).getBytes(StandardCharsets.UTF_8));
+            return bytesToHex(hmacBytes);
+        } catch (NoSuchAlgorithmException | java.security.InvalidKeyException e) {
+            // HmacSHA256 is guaranteed by the JCA; a bad key only happens if
+            // the stored hash is somehow the wrong length, which is a config bug.
+            logger.error("Failed to compute challenge HMAC", e);
+            return null;
+        }
     }
 
     /**

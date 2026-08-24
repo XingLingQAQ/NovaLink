@@ -4,6 +4,7 @@ import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.PrivateMessagePacket;
 import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
+import com.nova.link.i18n.I18n;
 import com.nova.link.log.ChatLogger;
 import com.nova.link.mute.MuteManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,6 +31,15 @@ import static org.mockito.Mockito.when;
  * target resolution (case-insensitive; offline -> NC-404), self-message
  * rejection, packet completion (targetId / senderClientId / timestamp) and the
  * target + sender-echo delivery set, plus [DM] audit.
+ *
+ * <p>Item-18 (提案 08) server-authoritative ignore enforcement: when an
+ * {@link PrivateMessageHandler.IgnoreLookup} is injected the DM is rejected
+ * before delivery if either party ignores the other. Sender-ignores-target
+ * answers NC-403 {@code ignored_by_sender} (the sender's own choice, no leak);
+ * target-ignores-sender answers NC-404 {@code not_online} reusing the existing
+ * offline wording so it is indistinguishable from the target being offline
+ * (no-leak). A null lookup (legacy 6-arg wiring) and a lookup that throws both
+ * fail open: the DM is still delivered, never blocked on a persistence gap.
  */
 @DisplayName("PrivateMessageHandler routing")
 class PrivateMessageHandlerTest {
@@ -83,6 +93,13 @@ class PrivateMessageHandlerTest {
     private PrivateMessageHandler handler(RateLimiter rateLimiter) {
         return new PrivateMessageHandler(networkHandler, playerStateManager, muteManager,
                 rateLimiter, featureEnabled::get, chatLogger);
+    }
+
+    /** 7-arg overload with an injected {@link PrivateMessageHandler.IgnoreLookup}. */
+    private PrivateMessageHandler handler(RateLimiter rateLimiter,
+                                          PrivateMessageHandler.IgnoreLookup ignoreLookup) {
+        return new PrivateMessageHandler(networkHandler, playerStateManager, muteManager,
+                rateLimiter, featureEnabled::get, chatLogger, ignoreLookup);
     }
 
     /** C->S form packet: nil targetId, no timestamp, Steve -> targetName. */
@@ -265,5 +282,110 @@ class PrivateMessageHandlerTest {
 
         verify(chatLogger, never()).logPrivateMessage(anyString(), anyString(),
                 anyString(), anyString(), anyString());
+    }
+
+    // ==================== item-18 server-authoritative ignore enforcement ====================
+
+    @Test
+    @DisplayName("sender ignoring target is rejected with NC-403 ignored_by_sender")
+    void senderIgnoresTargetRejected() {
+        // Only the sender->target direction is blocked.
+        PrivateMessageHandler.IgnoreLookup lookup = (src, tgt) ->
+                steveId.equals(src) && alexId.equals(tgt);
+
+        handler(null, lookup).handle(survivalConn, packet("Alex"));
+
+        ChannelActionResponsePacket error = capturedError(survivalConn);
+        assertThat(error.isSuccess()).isFalse();
+        assertThat(error.getErrorCode()).isEqualTo("NC-403");
+        assertThat(error.getExtra("reason")).isEqualTo("private_message");
+        assertThat(error.getExtra("detail")).isEqualTo("ignored_by_sender");
+        assertThat(error.getMessage()).contains("Alex");
+        // Target is never disturbed and the DM is never audited.
+        verify(creativeConn, never()).sendPacket(any());
+        verify(chatLogger, never()).logPrivateMessage(anyString(), anyString(),
+                anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("target ignoring sender is rejected as NC-404 not_online (no leak)")
+    void targetIgnoresSenderNoLeak() {
+        // Only the target->sender direction is blocked; sender does not ignore target.
+        PrivateMessageHandler.IgnoreLookup lookup = (src, tgt) ->
+                alexId.equals(src) && steveId.equals(tgt);
+
+        handler(null, lookup).handle(survivalConn, packet("Alex"));
+
+        ChannelActionResponsePacket error = capturedError(survivalConn);
+        assertThat(error.getErrorCode()).isEqualTo("NC-404");
+        assertThat(error.getExtra("detail")).isEqualTo("not_online");
+        // Reuses the offline wording — no distinct "you are blocked" message.
+        assertThat(error.getMessage()).isEqualTo(I18n.tr("network.error.player_not_online", "Alex"));
+        // No delivery, no audit — same observables as the offline branch.
+        verify(creativeConn, never()).sendPacket(any());
+        verify(chatLogger, never()).logPrivateMessage(anyString(), anyString(),
+                anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("mutual block still answers NC-404 not_online (target privacy wins)")
+    void mutualBlockNoLeak() {
+        // Both directions blocked: the target-privacy path must win so the
+        // sender never learns the target blocked them back.
+        PrivateMessageHandler.IgnoreLookup lookup = (src, tgt) -> true;
+
+        handler(null, lookup).handle(survivalConn, packet("Alex"));
+
+        ChannelActionResponsePacket error = capturedError(survivalConn);
+        assertThat(error.getErrorCode()).isEqualTo("NC-404");
+        assertThat(error.getExtra("detail")).isEqualTo("not_online");
+        verify(creativeConn, never()).sendPacket(any());
+        verify(chatLogger, never()).logPrivateMessage(anyString(), anyString(),
+                anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("null ignoreLookup (legacy 6-arg wiring) still delivers the DM")
+    void nullIgnoreLookupLegacyDelivers() {
+        // Construct via the 6-arg factory (null lookup) — identical to the
+        // existing success path, asserting legacy wiring is unaffected.
+        handler(null).handle(survivalConn, packet("Alex"));
+
+        verify(creativeConn).sendPacket(any(PrivateMessagePacket.class));
+        verify(chatLogger).logPrivateMessage(steveId.toString(), "Steve",
+                alexId.toString(), "Alex", "hi there");
+    }
+
+    @Test
+    @DisplayName("ignoreLookup that throws still delivers (fail-open, never block DM)")
+    void ignoreLookupThrowsFailOpen() {
+        // Non-throwing IgnoreLookup cannot declare DatabaseException, so the
+        // caller wraps it in a RuntimeException inside the lambda. The handler
+        // must swallow it and treat the relation as unknown (allow delivery).
+        PrivateMessageHandler.IgnoreLookup lookup = (src, tgt) -> {
+            throw new RuntimeException("simulated persistence gap");
+        };
+
+        handler(null, lookup).handle(survivalConn, packet("Alex"));
+
+        verify(creativeConn).sendPacket(any(PrivateMessagePacket.class));
+        verify(chatLogger).logPrivateMessage(steveId.toString(), "Steve",
+                alexId.toString(), "Alex", "hi there");
+    }
+
+    @Test
+    @DisplayName("self-message still answers NC-403 self when the lookup would match")
+    void selfMessageStillBeforeIgnore() {
+        // senderId == targetId; the ignore check guards against self-relations
+        // (safeIsIgnored returns false for sourceId.equals(targetId)), so the
+        // clearer self-message error wins.
+        PrivateMessageHandler.IgnoreLookup lookup = (src, tgt) -> true;
+
+        handler(null, lookup).handle(survivalConn, packet("Steve"));
+
+        ChannelActionResponsePacket error = capturedError(survivalConn);
+        assertThat(error.getErrorCode()).isEqualTo("NC-403");
+        assertThat(error.getExtra("detail")).isEqualTo("self");
+        verify(creativeConn, never()).sendPacket(any());
     }
 }
