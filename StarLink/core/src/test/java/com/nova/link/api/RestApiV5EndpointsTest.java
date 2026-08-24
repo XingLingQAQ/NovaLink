@@ -89,6 +89,18 @@ class RestApiV5EndpointsTest {
                 .displayName("Global")
                 .scope(ChannelScope.GLOBAL)
                 .build());
+        channelManager.createChannel(com.nova.link.channel.ChannelConfig.builder()
+                .id("server-chat")
+                .displayName("Server Chat")
+                .scope(ChannelScope.SERVER)
+                .clientId("Survival")
+                .build());
+        channelManager.createChannel(com.nova.link.channel.ChannelConfig.builder()
+                .id("staff")
+                .displayName("Staff")
+                .scope(ChannelScope.PRIVATE)
+                .clientId("Survival")
+                .build());
 
         PlayerStateManager playerStateManager = new PlayerStateManager(db);
         PermissionManager permissionManager = new PermissionManager();
@@ -157,12 +169,20 @@ class RestApiV5EndpointsTest {
     // ====================== helpers ======================
 
     private Response dispatch(HttpMethod method, String uri, String body) {
+        return dispatch(validToken, method, uri, body);
+    }
+
+    private Response dispatch(String token, HttpMethod method, String uri, String body) {
         FullHttpRequest request = new DefaultFullHttpRequest(
                 HttpVersion.HTTP_1_1, method, uri,
                 body != null ? Unpooled.copiedBuffer(body, CharsetUtil.UTF_8) : Unpooled.EMPTY_BUFFER);
-        request.headers().set(HttpHeaderNames.AUTHORIZATION, "Bearer " + validToken);
+        request.headers().set(HttpHeaderNames.AUTHORIZATION, "Bearer " + token);
 
         ChannelHandlerContext ctx = mock(ChannelHandlerContext.class);
+        // RestApiHandler.channelRead0 stores the per-request id as a channel
+        // attribute, so the mock must return a real channel that supports
+        // AttributeMap. An EmbeddedChannel is the lightest such implementation.
+        when(ctx.channel()).thenReturn(new io.netty.channel.embedded.EmbeddedChannel());
         AtomicReference<Object> captured = new AtomicReference<>();
         ChannelPromise promise = mock(ChannelPromise.class);
         doAnswer(inv -> {
@@ -258,6 +278,48 @@ class RestApiV5EndpointsTest {
             handler.setMessageLogService(null);
             Response resp = dispatch(HttpMethod.GET, "/api/messages", null);
             assertThat(resp.status()).isEqualTo(HttpResponseStatus.SERVICE_UNAVAILABLE);
+        }
+
+        @Test
+        @DisplayName("history filtering and total use the authorized channel set")
+        void historyUsesAuthorizedChannelSet() throws Exception {
+            seed();
+            db.saveMessage(new ChatMessageRecord(
+                    "server-chat", null, "Carol", "Survival", "server only", 4000));
+
+            String viewer = jwtService.generateToken("viewer", "viewer", "VIEWER");
+            String admin = jwtService.generateToken("admin", "admin", "ADMIN");
+
+            Response viewerAll = dispatch(viewer, HttpMethod.GET, "/api/messages?size=20", null);
+            assertThat(viewerAll.status()).isEqualTo(HttpResponseStatus.OK);
+            assertThat(viewerAll.asJson().get("total").getAsInt()).isEqualTo(2);
+            assertThat(viewerAll.asJson().getAsJsonArray("items"))
+                    .allSatisfy(element -> {
+                        JsonObject item = element.getAsJsonObject();
+                        assertThat(item.get("channelId").getAsString()).isEqualTo("global");
+                        assertThat(item.has("clientId")).isFalse();
+                    });
+
+            Response adminAll = dispatch(admin, HttpMethod.GET, "/api/messages?size=20", null);
+            assertThat(adminAll.asJson().get("total").getAsInt()).isEqualTo(3);
+
+            Response superAll = dispatch(HttpMethod.GET, "/api/messages?size=20", null);
+            assertThat(superAll.asJson().get("total").getAsInt()).isEqualTo(4);
+
+            Response forbiddenPrivate = dispatch(
+                    viewer, HttpMethod.GET, "/api/messages?channel=staff", null);
+            Response missing = dispatch(
+                    viewer, HttpMethod.GET, "/api/messages?channel=missing", null);
+            assertThat(forbiddenPrivate.status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
+            assertThat(missing.status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
+            // Both 404 bodies carry the same error/message/status, but the
+            // requestId field differs per request (PANEL-006 correlation id),
+            // so compare the body minus the requestId field.
+            JsonObject forbiddenJson = forbiddenPrivate.asJson();
+            JsonObject missingJson = missing.asJson();
+            forbiddenJson.remove("requestId");
+            missingJson.remove("requestId");
+            assertThat(forbiddenJson).isEqualTo(missingJson);
         }
     }
 
@@ -462,7 +524,7 @@ class RestApiV5EndpointsTest {
         @Test
         @DisplayName("GET includes active and lastTriggered (null when never triggered)")
         void getIncludesActiveAndLastTriggered() {
-            webhookManager.createWebhook("https://example.com/h", "message.sent", null);
+            webhookManager.createWebhook("https://8.8.8.8/h", "message.sent", null);
             Response resp = dispatch(HttpMethod.GET, "/api/webhooks", null);
             assertThat(resp.status()).isEqualTo(HttpResponseStatus.OK);
             JsonObject hook = resp.asJson().getAsJsonArray("webhooks").get(0).getAsJsonObject();
@@ -473,7 +535,7 @@ class RestApiV5EndpointsTest {
         @Test
         @DisplayName("PUT accepts the events key (panel contract) and the event key")
         void putAcceptsBothEventKeys() {
-            String id = webhookManager.createWebhook("https://example.com/h", "message.sent", null).getId();
+            String id = webhookManager.createWebhook("https://8.8.8.8/h", "message.sent", null).getId();
 
             Response viaEvents = dispatch(HttpMethod.PUT, "/api/webhooks/" + id,
                     "{\"events\":\"player.join\",\"active\":false}");
@@ -482,10 +544,10 @@ class RestApiV5EndpointsTest {
             assertThat(viaEvents.asJson().get("active").getAsBoolean()).isFalse();
 
             Response viaEvent = dispatch(HttpMethod.PUT, "/api/webhooks/" + id,
-                    "{\"event\":\"player.leave\",\"url\":\"https://example.com/x\"}");
+                    "{\"event\":\"player.leave\",\"url\":\"https://8.8.8.8/x\"}");
             assertThat(viaEvent.status()).isEqualTo(HttpResponseStatus.OK);
             assertThat(viaEvent.asJson().get("event").getAsString()).isEqualTo("player.leave");
-            assertThat(viaEvent.asJson().get("url").getAsString()).isEqualTo("https://example.com/x");
+            assertThat(viaEvent.asJson().get("url").getAsString()).isEqualTo("https://8.8.8.8/x");
             // active untouched by the second update.
             assertThat(viaEvent.asJson().get("active").getAsBoolean()).isFalse();
         }
@@ -508,16 +570,27 @@ class RestApiV5EndpointsTest {
             });
             server.start();
             try {
-                String okId = webhookManager.createWebhook(
-                        "http://127.0.0.1:" + server.getAddress().getPort() + "/hook",
-                        "message.sent", null).getId();
+                // The sink must be a public IP to pass UrlGuard at creation,
+                // then retargeted to the in-process 127.0.0.1 server and
+                // allow-loopback-for-test enabled for the actual delivery.
+                Webhook okHook = webhookManager.createWebhook(
+                        "http://8.8.8.8/hook",
+                        "message.sent", null);
+                okHook.setUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/hook");
+                webhookManager.allowLoopbackForTest();
+                String okId = okHook.getId();
                 Response ok = dispatch(HttpMethod.POST, "/api/webhooks/" + okId + "/test", null);
                 assertThat(ok.status()).isEqualTo(HttpResponseStatus.OK);
                 assertThat(ok.asJson().get("success").getAsBoolean()).isTrue();
                 assertThat(ok.asJson().get("statusCode").getAsInt()).isEqualTo(200);
 
-                String badId = webhookManager.createWebhook("ht!tp://not a url",
+                String badId = webhookManager.createWebhook("http://8.8.8.8/x",
                         "message.sent", null).getId();
+                // Retarget to a syntactically-broken URL to exercise sendTest's
+                // own validation path (createWebhook now itself rejects malformed
+                // URLs at the guard layer, so the hook must be created with a
+                // valid public URL first).
+                webhookManager.getWebhook(badId).setUrl("ht!tp://not a url");
                 Response bad = dispatch(HttpMethod.POST, "/api/webhooks/" + badId + "/test", null);
                 assertThat(bad.status()).isEqualTo(HttpResponseStatus.OK);
                 assertThat(bad.asJson().get("success").getAsBoolean()).isFalse();

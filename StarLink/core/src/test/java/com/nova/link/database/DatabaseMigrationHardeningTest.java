@@ -141,7 +141,7 @@ class DatabaseMigrationHardeningTest {
     }
 
     @Test
-    void upgradesLegacyV1MetadataThroughV7AndRerunDoesNothing() throws Exception {
+    void upgradesLegacyV1MetadataThroughV13AndRerunDoesNothing() throws Exception {
         SQLiteDialect baseDialect = new SQLiteDialect();
         try (HikariDataSource dataSource = sqliteDataSource(tempDir.resolve("legacy-v1.db"), 2)) {
             try (Connection connection = dataSource.getConnection()) {
@@ -174,12 +174,12 @@ class DatabaseMigrationHardeningTest {
 
             migration.migrate();
 
-            assertThat(migration.getVersion()).isEqualTo(7);
+            assertThat(migration.getVersion()).isEqualTo(13);
             assertThat(queryInts(dataSource,
                     "SELECT version FROM migration_execution_probe ORDER BY version"))
-                    .containsExactly(2, 3, 4, 5, 6, 7);
+                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13);
             assertThat(queryInt(dataSource,
-                    "SELECT COUNT(*) FROM novalink_migrations WHERE status = 'COMPLETED'")).isEqualTo(7);
+                    "SELECT COUNT(*) FROM novalink_migrations WHERE status = 'COMPLETED'")).isEqualTo(13);
             assertThat(queryInt(dataSource,
                     "SELECT COUNT(*) FROM novalink_migrations WHERE checksum IS NULL")).isZero();
             assertThat(queryInt(dataSource,
@@ -188,13 +188,48 @@ class DatabaseMigrationHardeningTest {
             assertThat(queryInt(dataSource,
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN " +
                             "('messages', 'announcements', 'webhooks')")).isEqualTo(3);
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'notification_read'"))
+                    .isEqualTo(1);
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM pragma_table_info('notifications') WHERE name = 'recipient'"))
+                    .isEqualTo(1);
+            // PANEL-007: migration v11 creates the moderation case/appeal tables.
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'moderation_cases'"))
+                    .isEqualTo(1);
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'case_evidence'"))
+                    .isEqualTo(1);
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'appeals'"))
+                    .isEqualTo(1);
+            // §11.6 Project 20: migration v12 creates the config_history table
+            // (append-only masked snapshots + rollback active flag).
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'config_history'"))
+                    .isEqualTo(1);
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_config_history_created_at'"))
+                    .isEqualTo(1);
+            // §11.6 item-18 / PANEL proposal 08: migration v13 creates the
+            // social_relations + notification_preferences tables.
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'social_relations'"))
+                    .isEqualTo(1);
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_social_relations_target_id'"))
+                    .isEqualTo(1);
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'notification_preferences'"))
+                    .isEqualTo(1);
 
             migration.migrate();
 
             assertThat(queryInts(dataSource,
                     "SELECT version FROM migration_execution_probe ORDER BY version"))
-                    .containsExactly(2, 3, 4, 5, 6, 7);
-            assertThat(queryInt(dataSource, "SELECT COUNT(*) FROM novalink_migrations")).isEqualTo(7);
+                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13);
+            assertThat(queryInt(dataSource, "SELECT COUNT(*) FROM novalink_migrations")).isEqualTo(13);
         }
     }
 

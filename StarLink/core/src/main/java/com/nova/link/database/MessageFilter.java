@@ -1,6 +1,9 @@
 package com.nova.link.database;
 
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * Filter criteria for message history queries (GET /api/messages).
@@ -25,15 +28,29 @@ public class MessageFilter {
     private final String contentQuery;
     private final Long from;
     private final Long to;
+    private final Set<String> allowedChannelIds;
 
     public MessageFilter(String channelId, String clientId, String senderName,
                          String contentQuery, Long from, Long to) {
+        this(channelId, clientId, senderName, contentQuery, from, to, null);
+    }
+
+    /**
+     * Creates a filter constrained to an authorized channel set.
+     * A {@code null} set means unrestricted; an empty set matches no rows.
+     */
+    public MessageFilter(String channelId, String clientId, String senderName,
+                         String contentQuery, Long from, Long to,
+                         Set<String> allowedChannelIds) {
         this.channelId = blankToNull(channelId);
         this.clientId = blankToNull(clientId);
         this.senderName = blankToNull(senderName);
         this.contentQuery = blankToNull(contentQuery);
         this.from = from;
         this.to = to;
+        this.allowedChannelIds = allowedChannelIds == null
+                ? null
+                : Collections.unmodifiableSet(new LinkedHashSet<>(allowedChannelIds));
     }
 
     /** @return a filter with no constraints (matches everything) */
@@ -69,6 +86,10 @@ public class MessageFilter {
         return to;
     }
 
+    public Set<String> getAllowedChannelIds() {
+        return allowedChannelIds;
+    }
+
     /**
      * In-memory evaluation of this filter against a record — used by the
      * Memory and Redis providers (the JDBC providers translate to SQL).
@@ -81,6 +102,9 @@ public class MessageFilter {
             return false;
         }
         if (channelId != null && !channelId.equals(record.getChannelId())) {
+            return false;
+        }
+        if (allowedChannelIds != null && !allowedChannelIds.contains(record.getChannelId())) {
             return false;
         }
         if (clientId != null && !clientId.equals(record.getClientId())) {

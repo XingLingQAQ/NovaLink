@@ -16,8 +16,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -238,6 +240,16 @@ public abstract class AbstractJdbcProvider implements DatabaseProvider {
             conditions.add("channel_id = ?");
             params.add(filter.getChannelId());
         }
+        Set<String> allowedChannelIds = filter.getAllowedChannelIds();
+        if (allowedChannelIds != null) {
+            if (allowedChannelIds.isEmpty()) {
+                conditions.add("1 = 0");
+            } else {
+                conditions.add("channel_id IN ("
+                        + String.join(", ", Collections.nCopies(allowedChannelIds.size(), "?")) + ")");
+                params.addAll(allowedChannelIds);
+            }
+        }
         if (filter.getClientId() != null) {
             conditions.add("client_id = ?");
             params.add(filter.getClientId());
@@ -439,6 +451,841 @@ public abstract class AbstractJdbcProvider implements DatabaseProvider {
             return results;
         } catch (SQLException e) {
             throw new DatabaseException("Failed to load webhooks", e);
+        }
+    }
+
+    // ==================== Audit Events (schema v9) ====================
+    //
+    // Like the message-history SQL above, the audit CRUD is fully
+    // dialect-neutral: LOWER()+LIKE with an explicit ESCAPE char, LIMIT/OFFSET,
+    // and straight INSERT (audit events are append-only — no upsert). One
+    // implementation serves MySQL, PostgreSQL and SQLite alike.
+
+    @Override
+    public void saveAuditEvent(com.nova.link.audit.AuditEvent event) throws DatabaseException {
+        String sql = """
+                INSERT INTO audit_events (event_id, request_id, actor, role, origin,
+                                         action, resource, before_hash, after_hash,
+                                         reason, result, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """;
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            stmt.setString(1, event.getEventId());
+            stmt.setString(2, event.getRequestId());
+            stmt.setString(3, event.getActor());
+            stmt.setString(4, event.getRole());
+            stmt.setString(5, event.getOrigin());
+            stmt.setString(6, event.getAction());
+            stmt.setString(7, event.getResource());
+            stmt.setString(8, event.getBeforeHash());
+            stmt.setString(9, event.getAfterHash());
+            stmt.setString(10, event.getReason());
+            stmt.setString(11, event.getResult());
+            stmt.setLong(12, event.getCreatedAt());
+            stmt.executeUpdate();
+            try (ResultSet rs = stmt.getGeneratedKeys()) {
+                if (rs.next()) {
+                    long generatedId = rs.getLong(1);
+                    try {
+                        java.lang.reflect.Field f = com.nova.link.audit.AuditEvent.class.getDeclaredField("id");
+                        f.setAccessible(true);
+                        f.setLong(event, generatedId);
+                    } catch (ReflectiveOperationException e) {
+                        logger.debug("Could not stamp generated audit event id: {}", e.getMessage());
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to save audit event", e);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.audit.AuditEvent> getAuditEvents(int offset, int limit, String actor, String action) throws DatabaseException {
+        StringBuilder sql = new StringBuilder(
+                "SELECT id, event_id, request_id, actor, role, origin, action, resource, "
+                        + "before_hash, after_hash, reason, result, created_at FROM audit_events");
+        List<Object> params = new ArrayList<>();
+        appendAuditFilter(sql, params, actor, action);
+        sql.append(" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?");
+        params.add(limit);
+        params.add(offset);
+
+        List<com.nova.link.audit.AuditEvent> results = new ArrayList<>();
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
+            bindParams(stmt, params);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    results.add(new com.nova.link.audit.AuditEvent(
+                            rs.getLong("id"),
+                            rs.getString("event_id"),
+                            rs.getString("request_id"),
+                            rs.getString("actor"),
+                            rs.getString("role"),
+                            rs.getString("origin"),
+                            rs.getString("action"),
+                            rs.getString("resource"),
+                            rs.getString("before_hash"),
+                            rs.getString("after_hash"),
+                            rs.getString("reason"),
+                            rs.getString("result"),
+                            rs.getLong("created_at")
+                    ));
+                }
+            }
+            return results;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to list audit events", e);
+        }
+    }
+
+    @Override
+    public int countAuditEvents(String actor, String action) throws DatabaseException {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM audit_events");
+        List<Object> params = new ArrayList<>();
+        appendAuditFilter(sql, params, actor, action);
+
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
+            bindParams(stmt, params);
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to count audit events", e);
+        }
+    }
+
+    /**
+     * Appends the WHERE clause for optional actor/action filters and collects
+     * the bind parameters. A null or empty argument means "no filter on that
+     * column". Substring matches are case-insensitive via LOWER() and use
+     * {@code !} as the LIKE escape character, mirroring
+     * {@link #appendMessageFilter}.
+     */
+    private static void appendAuditFilter(StringBuilder sql, List<Object> params, String actor, String action) {
+        List<String> conditions = new ArrayList<>();
+        if (actor != null && !actor.isEmpty()) {
+            conditions.add("LOWER(actor) LIKE ? ESCAPE '!'");
+            params.add(likePattern(actor));
+        }
+        if (action != null && !action.isEmpty()) {
+            conditions.add("LOWER(action) LIKE ? ESCAPE '!'");
+            params.add(likePattern(action));
+        }
+        if (!conditions.isEmpty()) {
+            sql.append(" WHERE ").append(String.join(" AND ", conditions));
+        }
+    }
+
+    // ==================== Moderation (schema v11) ====================
+    //
+    // PANEL-007: moderation case/appeal workflow. The SQL here is dialect-
+    // neutral in the same spirit as the audit CRUD above — straight INSERT/
+    // upsert-by-DELETE+INSERT, LOWER()+LIKE ESCAPE '!', LIMIT/OFFSET — so one
+    // implementation serves MySQL, PostgreSQL and SQLite. Cases and appeals are
+    // keyed by a caller-assigned UUID string (stored in a VARCHAR column), so
+    // persistence is upsert-style on id. Evidence is append-only with an
+    // auto-incremented bigint id stamped by reflection, mirroring the audit-
+    // event id-stamping pattern.
+
+    @Override
+    public void saveModerationCase(com.nova.link.moderation.ModerationCase moderationCase) throws DatabaseException {
+        // DELETE + INSERT upsert (portable across dialects; case writes are rare).
+        try (Connection conn = getDataSource().getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement delete = conn.prepareStatement(
+                        "DELETE FROM moderation_cases WHERE id = ?")) {
+                    delete.setString(1, moderationCase.getId());
+                    delete.executeUpdate();
+                }
+                try (PreparedStatement insert = conn.prepareStatement("""
+                        INSERT INTO moderation_cases (id, subject_player_id, subject_display_name,
+                            reporter_name, reporter_source, source, channel_id, reason, snapshot,
+                            status, assigned_moderator, resolution_action, resolution_note,
+                            content_hash, created_at, updated_at, closed_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """)) {
+                    insert.setString(1, moderationCase.getId());
+                    insert.setString(2, moderationCase.getSubjectPlayerId());
+                    insert.setString(3, moderationCase.getSubjectDisplayName());
+                    insert.setString(4, moderationCase.getReporterName());
+                    insert.setString(5, moderationCase.getReporterSource().name());
+                    insert.setString(6, moderationCase.getSource().name());
+                    insert.setString(7, moderationCase.getChannelId());
+                    insert.setString(8, moderationCase.getReason());
+                    insert.setString(9, moderationCase.getSnapshot());
+                    insert.setString(10, moderationCase.getStatus().name());
+                    insert.setString(11, moderationCase.getAssignedModerator());
+                    insert.setString(12, moderationCase.getResolutionAction() != null
+                            ? moderationCase.getResolutionAction().name() : null);
+                    insert.setString(13, moderationCase.getResolutionNote());
+                    insert.setString(14, moderationCase.getContentHash());
+                    insert.setLong(15, moderationCase.getCreatedAt());
+                    insert.setLong(16, moderationCase.getUpdatedAt());
+                    if (moderationCase.getClosedAt() != null) {
+                        insert.setLong(17, moderationCase.getClosedAt());
+                    } else {
+                        insert.setNull(17, java.sql.Types.BIGINT);
+                    }
+                    insert.executeUpdate();
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to save moderation case: " + moderationCase.getId(), e);
+        }
+    }
+
+    @Override
+    public java.util.Optional<com.nova.link.moderation.ModerationCase> getModerationCase(String caseId) throws DatabaseException {
+        String sql = """
+                SELECT id, subject_player_id, subject_display_name, reporter_name, reporter_source,
+                    source, channel_id, reason, snapshot, status, assigned_moderator,
+                    resolution_action, resolution_note, content_hash, created_at, updated_at, closed_at
+                FROM moderation_cases WHERE id = ?
+                """;
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, caseId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return java.util.Optional.of(hydrateCase(rs));
+                }
+                return java.util.Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load moderation case: " + caseId, e);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.moderation.ModerationCase> listModerationCases(int offset, int limit, String status) throws DatabaseException {
+        StringBuilder sql = new StringBuilder(
+                "SELECT id, subject_player_id, subject_display_name, reporter_name, reporter_source, "
+                        + "source, channel_id, reason, snapshot, status, assigned_moderator, "
+                        + "resolution_action, resolution_note, content_hash, created_at, updated_at, closed_at "
+                        + "FROM moderation_cases");
+        List<Object> params = new ArrayList<>();
+        if (status != null && !status.isEmpty()) {
+            sql.append(" WHERE status = ?");
+            params.add(status);
+        }
+        sql.append(" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?");
+        params.add(limit);
+        params.add(offset);
+
+        List<com.nova.link.moderation.ModerationCase> results = new ArrayList<>();
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
+            bindParams(stmt, params);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    results.add(hydrateCase(rs));
+                }
+            }
+            return results;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to list moderation cases", e);
+        }
+    }
+
+    @Override
+    public int countModerationCases(String status) throws DatabaseException {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM moderation_cases");
+        List<Object> params = new ArrayList<>();
+        if (status != null && !status.isEmpty()) {
+            sql.append(" WHERE status = ?");
+            params.add(status);
+        }
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
+            bindParams(stmt, params);
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to count moderation cases", e);
+        }
+    }
+
+    @Override
+    public void saveCaseEvidence(com.nova.link.moderation.CaseEvidence evidence) throws DatabaseException {
+        String sql = """
+                INSERT INTO case_evidence (case_id, evidence_type, content_hash, description,
+                                           submitted_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """;
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            stmt.setString(1, evidence.getCaseId());
+            stmt.setString(2, evidence.getEvidenceType().name());
+            stmt.setString(3, evidence.getContentHash());
+            stmt.setString(4, evidence.getDescription());
+            stmt.setString(5, evidence.getSubmittedBy());
+            stmt.setLong(6, evidence.getCreatedAt());
+            stmt.executeUpdate();
+            try (ResultSet rs = stmt.getGeneratedKeys()) {
+                if (rs.next()) {
+                    long generatedId = rs.getLong(1);
+                    try {
+                        java.lang.reflect.Field f = com.nova.link.moderation.CaseEvidence.class.getDeclaredField("id");
+                        f.setAccessible(true);
+                        f.setLong(evidence, generatedId);
+                    } catch (ReflectiveOperationException e) {
+                        logger.debug("Could not stamp generated case evidence id: {}", e.getMessage());
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to save case evidence", e);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.moderation.CaseEvidence> listCaseEvidence(String caseId) throws DatabaseException {
+        String sql = """
+                SELECT id, case_id, evidence_type, content_hash, description, submitted_by, created_at
+                FROM case_evidence WHERE case_id = ? ORDER BY created_at ASC, id ASC
+                """;
+        List<com.nova.link.moderation.CaseEvidence> results = new ArrayList<>();
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, caseId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    results.add(new com.nova.link.moderation.CaseEvidence(
+                            rs.getLong("id"),
+                            rs.getString("case_id"),
+                            com.nova.link.moderation.CaseEvidenceType.valueOf(rs.getString("evidence_type")),
+                            rs.getString("content_hash"),
+                            rs.getString("description"),
+                            rs.getString("submitted_by"),
+                            rs.getLong("created_at")
+                    ));
+                }
+            }
+            return results;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to list case evidence", e);
+        }
+    }
+
+    @Override
+    public void saveAppeal(com.nova.link.moderation.Appeal appeal) throws DatabaseException {
+        // DELETE + INSERT upsert, mirroring saveModerationCase.
+        try (Connection conn = getDataSource().getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement delete = conn.prepareStatement(
+                        "DELETE FROM appeals WHERE id = ?")) {
+                    delete.setString(1, appeal.getId());
+                    delete.executeUpdate();
+                }
+                try (PreparedStatement insert = conn.prepareStatement("""
+                        INSERT INTO appeals (id, case_id, appellant, appeal_reason, status,
+                            reviewed_by, review_note, reviewed_at, content_hash, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """)) {
+                    insert.setString(1, appeal.getId());
+                    insert.setString(2, appeal.getCaseId());
+                    insert.setString(3, appeal.getAppellant());
+                    insert.setString(4, appeal.getAppealReason());
+                    insert.setString(5, appeal.getStatus().name());
+                    insert.setString(6, appeal.getReviewedBy());
+                    insert.setString(7, appeal.getReviewNote());
+                    if (appeal.getReviewedAt() != null) {
+                        insert.setLong(8, appeal.getReviewedAt());
+                    } else {
+                        insert.setNull(8, java.sql.Types.BIGINT);
+                    }
+                    insert.setString(9, appeal.getContentHash());
+                    insert.setLong(10, appeal.getCreatedAt());
+                    insert.executeUpdate();
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to save appeal: " + appeal.getId(), e);
+        }
+    }
+
+    @Override
+    public java.util.Optional<com.nova.link.moderation.Appeal> getAppeal(String appealId) throws DatabaseException {
+        String sql = """
+                SELECT id, case_id, appellant, appeal_reason, status, reviewed_by,
+                    review_note, reviewed_at, content_hash, created_at
+                FROM appeals WHERE id = ?
+                """;
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, appealId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return java.util.Optional.of(hydrateAppeal(rs));
+                }
+                return java.util.Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load appeal: " + appealId, e);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.moderation.Appeal> listAppeals(int offset, int limit, String status) throws DatabaseException {
+        StringBuilder sql = new StringBuilder(
+                "SELECT id, case_id, appellant, appeal_reason, status, reviewed_by, "
+                        + "review_note, reviewed_at, content_hash, created_at FROM appeals");
+        List<Object> params = new ArrayList<>();
+        if (status != null && !status.isEmpty()) {
+            sql.append(" WHERE status = ?");
+            params.add(status);
+        }
+        sql.append(" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?");
+        params.add(limit);
+        params.add(offset);
+
+        List<com.nova.link.moderation.Appeal> results = new ArrayList<>();
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
+            bindParams(stmt, params);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    results.add(hydrateAppeal(rs));
+                }
+            }
+            return results;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to list appeals", e);
+        }
+    }
+
+    @Override
+    public int countAppeals(String status) throws DatabaseException {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM appeals");
+        List<Object> params = new ArrayList<>();
+        if (status != null && !status.isEmpty()) {
+            sql.append(" WHERE status = ?");
+            params.add(status);
+        }
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
+            bindParams(stmt, params);
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to count appeals", e);
+        }
+    }
+
+    @Override
+    public void updateAppealReview(String appealId, com.nova.link.moderation.AppealStatus status,
+                                   String reviewedBy, String reviewNote, long reviewedAt)
+            throws DatabaseException {
+        String sql = """
+                UPDATE appeals SET status = ?, reviewed_by = ?, review_note = ?, reviewed_at = ?
+                WHERE id = ?
+                """;
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, status.name());
+            stmt.setString(2, reviewedBy);
+            stmt.setString(3, reviewNote);
+            stmt.setLong(4, reviewedAt);
+            stmt.setString(5, appealId);
+            stmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to update appeal review: " + appealId, e);
+        }
+    }
+
+    private static com.nova.link.moderation.ModerationCase hydrateCase(ResultSet rs) throws SQLException {
+        String resolutionActionName = rs.getString("resolution_action");
+        long closedAtLong = rs.getLong("closed_at");
+        Long closedAt = rs.wasNull() ? null : closedAtLong;
+        return new com.nova.link.moderation.ModerationCase(
+                rs.getString("id"),
+                rs.getString("subject_player_id"),
+                rs.getString("subject_display_name"),
+                rs.getString("reporter_name"),
+                com.nova.link.moderation.ReporterSource.valueOf(rs.getString("reporter_source")),
+                com.nova.link.moderation.CaseSource.valueOf(rs.getString("source")),
+                rs.getString("channel_id"),
+                rs.getString("reason"),
+                rs.getString("snapshot"),
+                com.nova.link.moderation.CaseStatus.valueOf(rs.getString("status")),
+                rs.getString("assigned_moderator"),
+                resolutionActionName != null
+                        ? com.nova.link.moderation.ResolutionAction.valueOf(resolutionActionName) : null,
+                rs.getString("resolution_note"),
+                rs.getString("content_hash"),
+                rs.getLong("created_at"),
+                rs.getLong("updated_at"),
+                closedAt
+        );
+    }
+
+    private static com.nova.link.moderation.Appeal hydrateAppeal(ResultSet rs) throws SQLException {
+        long reviewedAtLong = rs.getLong("reviewed_at");
+        Long reviewedAt = rs.wasNull() ? null : reviewedAtLong;
+        return new com.nova.link.moderation.Appeal(
+                rs.getString("id"),
+                rs.getString("case_id"),
+                rs.getString("appellant"),
+                rs.getString("appeal_reason"),
+                com.nova.link.moderation.AppealStatus.valueOf(rs.getString("status")),
+                rs.getString("reviewed_by"),
+                rs.getString("review_note"),
+                reviewedAt,
+                rs.getString("content_hash"),
+                rs.getLong("created_at")
+        );
+    }
+
+    // ==================== Config History (schema v12) ====================
+    //
+    // §11.6 Project 20 / PANEL proposal 10. The config_history CRUD is fully
+    // dialect-neutral: straight INSERT with RETURN_GENERATED_KEYS, LIMIT, and a
+    // single-row UPDATE for the active-flag flip. One implementation serves
+    // MySQL, PostgreSQL and SQLite alike — the only dialect-specific bit
+    // (AUTO_INCREMENT vs GENERATED ALWAYS AS IDENTITY) is handled by the
+    // schema migration, not by this code. Active-flag management: the new row
+    // is inserted with active=TRUE and every prior row is flipped to FALSE
+    // inside the same transaction so history stays consistent even if the
+    // connection drops mid-write.
+
+    @Override
+    public void saveConfigSnapshot(com.nova.link.config.ConfigSnapshot snapshot) throws DatabaseException {
+        if (snapshot == null) {
+            throw new DatabaseException("Cannot save a null config snapshot", null);
+        }
+        String insertSql = """
+                INSERT INTO config_history (revision, snapshot_json, created_at, created_by, active)
+                VALUES (?, ?, ?, ?, ?)
+                """;
+        try (Connection conn = getDataSource().getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                // Flip every prior row inactive inside the same transaction so
+                // the table never has two active rows even on a crash. The new
+                // row is inserted with active=TRUE below.
+                try (PreparedStatement deactivate = conn.prepareStatement(
+                        "UPDATE config_history SET active = FALSE")) {
+                    deactivate.executeUpdate();
+                }
+                try (PreparedStatement stmt = conn.prepareStatement(insertSql, Statement.RETURN_GENERATED_KEYS)) {
+                    stmt.setLong(1, snapshot.getRevision());
+                    stmt.setString(2, snapshot.getSnapshotJson());
+                    stmt.setLong(3, snapshot.getCreatedAt());
+                    stmt.setString(4, snapshot.getCreatedBy());
+                    stmt.setBoolean(5, true);
+                    stmt.executeUpdate();
+                    try (ResultSet rs = stmt.getGeneratedKeys()) {
+                        if (rs.next()) {
+                            long generatedId = rs.getLong(1);
+                            snapshot.setId(generatedId);
+                            snapshot.setActive(true);
+                        }
+                    }
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to save config snapshot revision=" + snapshot.getRevision(), e);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.config.ConfigSnapshot> getConfigHistory(int limit) throws DatabaseException {
+        String sql = "SELECT id, revision, created_at, created_by, active FROM config_history "
+                + "ORDER BY created_at DESC, id DESC LIMIT ?";
+        List<com.nova.link.config.ConfigSnapshot> results = new ArrayList<>();
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setInt(1, limit);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    // snapshot_json deliberately NOT selected — the history
+                    // list is metadata-only; callers fetch payloads lazily.
+                    results.add(new com.nova.link.config.ConfigSnapshot(
+                            rs.getLong("id"),
+                            rs.getLong("revision"),
+                            null,
+                            rs.getLong("created_at"),
+                            rs.getString("created_by"),
+                            rs.getBoolean("active")
+                    ));
+                }
+            }
+            return results;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to list config history", e);
+        }
+    }
+
+    @Override
+    public java.util.Optional<com.nova.link.config.ConfigSnapshot> getConfigSnapshot(long revision) throws DatabaseException {
+        String sql = "SELECT id, revision, snapshot_json, created_at, created_by, active FROM config_history "
+                + "WHERE revision = ? ORDER BY id DESC LIMIT 1";
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setLong(1, revision);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    return java.util.Optional.empty();
+                }
+                return java.util.Optional.of(new com.nova.link.config.ConfigSnapshot(
+                        rs.getLong("id"),
+                        rs.getLong("revision"),
+                        rs.getString("snapshot_json"),
+                        rs.getLong("created_at"),
+                        rs.getString("created_by"),
+                        rs.getBoolean("active")
+                ));
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load config snapshot revision=" + revision, e);
+        }
+    }
+
+    @Override
+    public int countConfigSnapshots() throws DatabaseException {
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement("SELECT COUNT(*) FROM config_history");
+             ResultSet rs = stmt.executeQuery()) {
+            return rs.next() ? rs.getInt(1) : 0;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to count config snapshots", e);
+        }
+    }
+
+    @Override
+    public int deactivateOtherSnapshots(long activeRevision) throws DatabaseException {
+        // Negative sentinel means "deactivate all rows"; otherwise keep the
+        // row matching activeRevision active and flip every other row off. The
+        // rollback path calls this with the freshly-written rollback revision.
+        String sql = activeRevision < 0
+                ? "UPDATE config_history SET active = FALSE"
+                : "UPDATE config_history SET active = FALSE WHERE revision <> ?";
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            if (activeRevision >= 0) {
+                stmt.setLong(1, activeRevision);
+            }
+            return stmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to deactivate config snapshots", e);
+        }
+    }
+
+    // ==================== Social Relations (schema v13 / 提案 08) ====================
+    //
+    // §11.6 item-18 / PANEL proposal 08. The social_relations + notification_preferences
+    // CRUD is dialect-neutral: straight DELETE+INSERT upsert on the composite key,
+    // a SELECT for isIgnored / list, and single-row upsert for preferences. One
+    // implementation serves MySQL, PostgreSQL and SQLite alike. The upsert uses
+    // DELETE-then-INSERT inside a transaction so a crash never leaves two rows
+    // for the same composite key. Relation type is stored as the enum name
+    // (VARCHAR(16)); UUIDs are VARCHAR(36) strings via setString/parseUuid.
+
+    @Override
+    public boolean isIgnored(UUID sourceId, UUID targetId) throws DatabaseException {
+        if (sourceId == null || targetId == null) {
+            return false;
+        }
+        String sql = "SELECT COUNT(*) FROM social_relations "
+                + "WHERE source_id = ? AND target_id = ? AND type = ?";
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, sourceId.toString());
+            stmt.setString(2, targetId.toString());
+            stmt.setString(3, com.nova.link.social.SocialRelation.RelationType.IGNORE.name());
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next() && rs.getInt(1) > 0;
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to check ignore relation", e);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.social.SocialRelation> getSocialRelations(
+            UUID sourceId, com.nova.link.social.SocialRelation.RelationType type) throws DatabaseException {
+        if (sourceId == null || type == null) {
+            return new ArrayList<>();
+        }
+        String sql = "SELECT source_id, target_id, type, created_at, updated_at FROM social_relations "
+                + "WHERE source_id = ? AND type = ? ORDER BY created_at DESC";
+        List<com.nova.link.social.SocialRelation> results = new ArrayList<>();
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, sourceId.toString());
+            stmt.setString(2, type.name());
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    results.add(new com.nova.link.social.SocialRelation(
+                            parseUuid(rs.getString("source_id")),
+                            parseUuid(rs.getString("target_id")),
+                            com.nova.link.social.SocialRelation.RelationType.valueOf(rs.getString("type")),
+                            rs.getLong("created_at"),
+                            rs.getLong("updated_at")
+                    ));
+                }
+            }
+            return results;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to list social relations", e);
+        }
+    }
+
+    @Override
+    public void saveSocialRelation(com.nova.link.social.SocialRelation relation) throws DatabaseException {
+        if (relation == null) {
+            throw new DatabaseException("Cannot save a null social relation", null);
+        }
+        if (relation.getSourceId() == null || relation.getTargetId() == null || relation.getType() == null) {
+            throw new DatabaseException("Social relation sourceId/targetId/type must not be null", null);
+        }
+        String deleteSql = "DELETE FROM social_relations "
+                + "WHERE source_id = ? AND target_id = ? AND type = ?";
+        String insertSql = """
+                INSERT INTO social_relations (source_id, target_id, type, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """;
+        try (Connection conn = getDataSource().getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement stmt = conn.prepareStatement(deleteSql)) {
+                    stmt.setString(1, relation.getSourceId().toString());
+                    stmt.setString(2, relation.getTargetId().toString());
+                    stmt.setString(3, relation.getType().name());
+                    stmt.executeUpdate();
+                }
+                try (PreparedStatement stmt = conn.prepareStatement(insertSql)) {
+                    stmt.setString(1, relation.getSourceId().toString());
+                    stmt.setString(2, relation.getTargetId().toString());
+                    stmt.setString(3, relation.getType().name());
+                    stmt.setLong(4, relation.getCreatedAt());
+                    stmt.setLong(5, relation.getUpdatedAt());
+                    stmt.executeUpdate();
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to save social relation", e);
+        }
+    }
+
+    @Override
+    public void removeSocialRelation(UUID sourceId, UUID targetId,
+                                      com.nova.link.social.SocialRelation.RelationType type) throws DatabaseException {
+        if (sourceId == null || targetId == null || type == null) {
+            return;
+        }
+        String sql = "DELETE FROM social_relations WHERE source_id = ? AND target_id = ? AND type = ?";
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, sourceId.toString());
+            stmt.setString(2, targetId.toString());
+            stmt.setString(3, type.name());
+            stmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to remove social relation", e);
+        }
+    }
+
+    @Override
+    public com.nova.link.social.NotificationPreference getNotificationPreference(UUID playerId) throws DatabaseException {
+        if (playerId == null) {
+            return com.nova.link.social.NotificationPreference.defaults(null);
+        }
+        String sql = "SELECT player_id, mentions_enabled, updated_at FROM notification_preferences "
+                + "WHERE player_id = ?";
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, playerId.toString());
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    return com.nova.link.social.NotificationPreference.defaults(playerId);
+                }
+                return new com.nova.link.social.NotificationPreference(
+                        parseUuid(rs.getString("player_id")),
+                        rs.getBoolean("mentions_enabled"),
+                        rs.getLong("updated_at")
+                );
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load notification preference", e);
+        }
+    }
+
+    @Override
+    public void saveNotificationPreference(com.nova.link.social.NotificationPreference preference) throws DatabaseException {
+        if (preference == null) {
+            throw new DatabaseException("Cannot save a null notification preference", null);
+        }
+        if (preference.getPlayerId() == null) {
+            throw new DatabaseException("Notification preference playerId must not be null", null);
+        }
+        // Upsert on player_id. The three dialects differ on upsert syntax, so
+        // mirror the config-history pattern: DELETE then INSERT inside a single
+        // transaction. This is safe because player_id is the primary key.
+        String deleteSql = "DELETE FROM notification_preferences WHERE player_id = ?";
+        String insertSql = """
+                INSERT INTO notification_preferences (player_id, mentions_enabled, updated_at)
+                VALUES (?, ?, ?)
+                """;
+        try (Connection conn = getDataSource().getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement stmt = conn.prepareStatement(deleteSql)) {
+                    stmt.setString(1, preference.getPlayerId().toString());
+                    stmt.executeUpdate();
+                }
+                try (PreparedStatement stmt = conn.prepareStatement(insertSql)) {
+                    stmt.setString(1, preference.getPlayerId().toString());
+                    stmt.setBoolean(2, preference.isMentionsEnabled());
+                    stmt.setLong(3, preference.getUpdatedAt());
+                    stmt.executeUpdate();
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to save notification preference", e);
         }
     }
 }

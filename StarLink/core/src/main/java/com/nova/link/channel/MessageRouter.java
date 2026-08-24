@@ -171,13 +171,21 @@ public class MessageRouter {
     /**
      * Routes a message to a channel by channel ID.
      * Convenience method for REST API integration (trusted path, no boundary re-check).
+     *
+     * <p>Returns a {@link RoutingResult} so callers can distinguish a missing
+     * channel/routing target (failure) from a successful fan-out — including
+     * the zero-recipient case (channel exists but no client is online). The
+     * recipient set is available via {@link RoutingResult#getRecipientClientIds()}.
+     *
+     * @return a routing result (never null); {@link RoutingResult#isSuccess()}
+     *         is false when the channel does not exist
      */
-    public Set<String> routeMessage(String channelId, UUID senderId, String senderName,
-                                    String content, Map<String, String> placeholders) {
+    public RoutingResult routeMessage(String channelId, UUID senderId, String senderName,
+                                     String content, Map<String, String> placeholders) {
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
             logger.warn("Cannot route message: channel '{}' not found", channelId);
-            return Collections.emptySet();
+            return RoutingResult.failure(channelId, "Channel not found: " + channelId);
         }
 
         ChatMessagePacket message = new ChatMessagePacket(
@@ -192,6 +200,7 @@ public class MessageRouter {
             message.setPlaceholders(placeholders);
         }
 
-        return routeToChannel(channel, message);
+        Set<String> recipients = routeToChannel(channel, message);
+        return RoutingResult.success(channelId, channel.getScope(), recipients);
     }
 }

@@ -43,6 +43,9 @@ public class RedisProvider implements DatabaseProvider {
     private static final String ANNOUNCEMENT_INDEX = KEY_PREFIX + "announcements";
     private static final String WEBHOOK_PREFIX = KEY_PREFIX + "webhook:";
     private static final String WEBHOOK_INDEX = KEY_PREFIX + "webhooks";
+    private static final String AUDIT_PREFIX = KEY_PREFIX + "audit:";
+    private static final String AUDIT_INDEX = KEY_PREFIX + "audit_events";
+    private static final String AUDIT_SEQ = KEY_PREFIX + "audit:seq";
 
     private final String host;
     private final int port;
@@ -672,6 +675,107 @@ public class RedisProvider implements DatabaseProvider {
         }
     }
 
+    // ==================== Audit Operations ====================
+
+    @Override
+    public void saveAuditEvent(com.nova.link.audit.AuditEvent event) throws DatabaseException {
+        if (event == null) {
+            throw new DatabaseException("AuditEvent cannot be null");
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            long id = jedis.incr(AUDIT_SEQ);
+            try {
+                java.lang.reflect.Field f = com.nova.link.audit.AuditEvent.class.getDeclaredField("id");
+                f.setAccessible(true);
+                f.setLong(event, id);
+            } catch (ReflectiveOperationException e) {
+                logger.debug("Could not stamp audit event id: {}", e.getMessage());
+            }
+            String key = AUDIT_PREFIX + id;
+            String json = gson.toJson(new AuditEventDto(event));
+            jedis.set(key, json);
+            // Index by createdAt in a ZSET so we can paginate in descending order.
+            jedis.zadd(AUDIT_INDEX, event.getCreatedAt(), String.valueOf(id));
+            logger.debug("Saved audit event id={} action={}", id, event.getAction());
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to save audit event to Redis", e);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.audit.AuditEvent> getAuditEvents(int offset, int limit, String actor, String action) throws DatabaseException {
+        if (limit <= 0) {
+            return Collections.emptyList();
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<String> ids = jedis.zrevrangeByScore(AUDIT_INDEX, "+inf", "-inf");
+            boolean filterActor = actor != null && !actor.isEmpty();
+            boolean filterAction = action != null && !action.isEmpty();
+            List<com.nova.link.audit.AuditEvent> result = new ArrayList<>();
+            int collected = 0;
+            int skipped = 0;
+            for (String idStr : ids) {
+                String json = jedis.get(AUDIT_PREFIX + idStr);
+                if (json == null) {
+                    continue;
+                }
+                AuditEventDto dto = gson.fromJson(json, AuditEventDto.class);
+                if (filterActor && (dto.actor == null || !actor.equalsIgnoreCase(dto.actor))) {
+                    continue;
+                }
+                if (filterAction && (dto.action == null || !action.equalsIgnoreCase(dto.action))) {
+                    continue;
+                }
+                if (skipped < offset) {
+                    skipped++;
+                    continue;
+                }
+                result.add(dto.toAuditEvent());
+                collected++;
+                if (collected >= limit) {
+                    break;
+                }
+            }
+            return result;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to load audit events from Redis", e);
+        }
+    }
+
+    @Override
+    public int countAuditEvents(String actor, String action) throws DatabaseException {
+        boolean filterActor = actor != null && !actor.isEmpty();
+        boolean filterAction = action != null && !action.isEmpty();
+        if (!filterActor && !filterAction) {
+            try (Jedis jedis = jedisPool.getResource()) {
+                return (int) jedis.zcard(AUDIT_INDEX);
+            } catch (Exception e) {
+                throw new DatabaseException("Failed to count audit events in Redis", e);
+            }
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<String> ids = jedis.zrangeByScore(AUDIT_INDEX, "-inf", "+inf");
+            int count = 0;
+            for (String idStr : ids) {
+                String json = jedis.get(AUDIT_PREFIX + idStr);
+                if (json == null) {
+                    continue;
+                }
+                AuditEventDto dto = gson.fromJson(json, AuditEventDto.class);
+                if (filterActor && (dto.actor == null || !actor.equalsIgnoreCase(dto.actor))) {
+                    continue;
+                }
+                if (filterAction && (dto.action == null || !action.equalsIgnoreCase(dto.action))) {
+                    continue;
+                }
+                count++;
+            }
+            return count;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to count audit events in Redis", e);
+        }
+    }
+
     // ==================== Invitation Operations ====================
 
     @Override
@@ -776,6 +880,64 @@ public class RedisProvider implements DatabaseProvider {
             }
         } catch (Exception e) {
             throw new DatabaseException("Failed to mark invitation as used in Redis", e);
+        }
+    }
+
+    @Override
+    public int claimInvitationUse(String code, UUID playerId, long now) throws DatabaseException {
+        if (code == null) {
+            return 0;
+        }
+
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = INVITATION_PREFIX + code;
+            // Same WATCH/MULTI/EXEC race guard as markInvitationUsed, but for a
+            // multi-use claim: we only commit if the dto is still claimable
+            // (not used, not revoked, usedCount < maxUses). On commit we advance
+            // usedCount, stamp the accepter/timestamp, and flip used=true once
+            // usedCount reaches maxUses. If EXEC aborts (another writer moved
+            // the key underneath us) we return 0 and let the caller retry or
+            // reject — consistent with the SQL providers' affected-row count.
+            jedis.watch(key);
+            try {
+                String json = jedis.get(key);
+                if (json == null) {
+                    jedis.unwatch();
+                    return 0;
+                }
+                InvitationDto dto = gson.fromJson(json, InvitationDto.class);
+                int maxUses = dto.maxUses > 0 ? dto.maxUses : 1;
+                if (dto.used || dto.revokedAt != null || dto.usedCount >= maxUses) {
+                    // Exhausted, revoked, or raced past the quota — do not
+                    // overwrite; another caller already holds the slot.
+                    jedis.unwatch();
+                    logger.debug("claimInvitationUse({}) rejected — exhausted/revoked/raced", code);
+                    return 0;
+                }
+                dto.usedCount = dto.usedCount + 1;
+                dto.usedBy = playerId != null ? playerId.toString() : null;
+                dto.usedAt = now;
+                dto.used = dto.usedCount >= maxUses;
+                long ttl = jedis.ttl(key);
+                Transaction tx = jedis.multi();
+                tx.set(key, gson.toJson(dto));
+                if (ttl > 0) {
+                    tx.expire(key, ttl);
+                }
+                java.util.List<Object> execResult = tx.exec();
+                if (execResult == null || execResult.isEmpty()) {
+                    // EXEC aborted: a concurrent writer claimed the slot first.
+                    logger.debug("Concurrent claimInvitationUse on {}; aborted in favor of earlier writer", code);
+                    return 0;
+                }
+                logger.debug("Claimed one use of invitation {} for player {}", code, playerId);
+                return 1;
+            } catch (Exception e) {
+                jedis.unwatch();
+                throw e;
+            }
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to claim invitation use in Redis", e);
         }
     }
 
@@ -1261,6 +1423,45 @@ public class RedisProvider implements DatabaseProvider {
         }
     }
 
+    private static class AuditEventDto {
+        long id;
+        String eventId;
+        String requestId;
+        String actor;
+        String role;
+        String origin;
+        String action;
+        String resource;
+        String beforeHash;
+        String afterHash;
+        String reason;
+        String result;
+        long createdAt;
+
+        AuditEventDto() {}
+
+        AuditEventDto(com.nova.link.audit.AuditEvent e) {
+            this.id = e.getId();
+            this.eventId = e.getEventId();
+            this.requestId = e.getRequestId();
+            this.actor = e.getActor();
+            this.role = e.getRole();
+            this.origin = e.getOrigin();
+            this.action = e.getAction();
+            this.resource = e.getResource();
+            this.beforeHash = e.getBeforeHash();
+            this.afterHash = e.getAfterHash();
+            this.reason = e.getReason();
+            this.result = e.getResult();
+            this.createdAt = e.getCreatedAt();
+        }
+
+        com.nova.link.audit.AuditEvent toAuditEvent() {
+            return new com.nova.link.audit.AuditEvent(id, eventId, requestId, actor, role,
+                    origin, action, resource, beforeHash, afterHash, reason, result, createdAt);
+        }
+    }
+
     private static class InvitationDto {
         String code;
         String channelId;
@@ -1270,9 +1471,11 @@ public class RedisProvider implements DatabaseProvider {
         boolean used;
         String usedBy;
         long usedAt;
+        int maxUses;
+        int usedCount;
+        Long revokedAt;
 
         InvitationDto() {}
-
         InvitationDto(Invitation invitation) {
             this.code = invitation.getCode();
             this.channelId = invitation.getChannelId();
@@ -1282,12 +1485,17 @@ public class RedisProvider implements DatabaseProvider {
             this.used = invitation.isUsed();
             this.usedBy = invitation.getUsedBy() != null ? invitation.getUsedBy().toString() : null;
             this.usedAt = invitation.getUsedAt();
+            this.maxUses = invitation.getMaxUses();
+            this.usedCount = invitation.getUsedCount();
+            this.revokedAt = invitation.getRevokedAt();
         }
 
         Invitation toInvitation() {
             UUID usedById = usedBy != null ? UUID.fromString(usedBy) : null;
-            return new Invitation(code, channelId, UUID.fromString(inviterId), expireTime, 
-                    createdAt, used, usedById, usedAt);
+            int resolvedMaxUses = maxUses > 0 ? maxUses : 1;
+            return new Invitation(code, channelId, UUID.fromString(inviterId), expireTime,
+                    createdAt, used, usedById, usedAt,
+                    resolvedMaxUses, usedCount, revokedAt);
         }
     }
 }

@@ -44,6 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * REST worker-pool offload tests for {@link RestApiHandler}: default inline
@@ -98,6 +99,10 @@ class RestApiWorkerPoolTest {
 
     private ChannelHandlerContext mockContext(AtomicReference<Object> captured, CountDownLatch latch) {
         ChannelHandlerContext ctx = mock(ChannelHandlerContext.class);
+        // RestApiHandler.channelRead0 stores the per-request id as a channel
+        // attribute, so the mock must return a real channel that supports
+        // AttributeMap. An EmbeddedChannel is the lightest such implementation.
+        when(ctx.channel()).thenReturn(new io.netty.channel.embedded.EmbeddedChannel());
         ChannelPromise promise = mock(ChannelPromise.class);
         doAnswer(inv -> {
             captured.set(inv.getArgument(0));
@@ -232,6 +237,10 @@ class RestApiWorkerPoolTest {
                 HttpVersion.HTTP_1_1, HttpMethod.POST, "/api/auth/login", Unpooled.buffer(0));
         AtomicReference<Object> fired = new AtomicReference<>();
         ChannelHandlerContext ctx = mock(ChannelHandlerContext.class);
+        // RestApiHandler.channelRead0 stores the per-request id as a channel
+        // attribute before the auth-passthrough branch; supply an EmbeddedChannel
+        // so the attribute write does not NPE.
+        when(ctx.channel()).thenReturn(new io.netty.channel.embedded.EmbeddedChannel());
         doAnswer(inv -> {
             fired.set(inv.getArgument(0));
             return null;

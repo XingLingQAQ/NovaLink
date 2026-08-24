@@ -65,6 +65,9 @@ import static org.mockito.Mockito.when;
 @DisplayName("ConsoleCommandHandler")
 class ConsoleCommandTest {
 
+    @org.junit.jupiter.api.io.TempDir
+    Path tempDir;
+
     private ChannelManager channelManager;
     private PlayerStateManager playerStateManager;
     private PermissionManager permissionManager;
@@ -151,7 +154,7 @@ class ConsoleCommandTest {
         // are not exercised by these commands (reload uses a real ConfigManager
         // created lazily per-test where needed).
         BackendContext ctx = new BackendContext(
-                new com.nova.link.config.ConfigManager(Path.of("novalink-test.yml")),
+                new com.nova.link.config.ConfigManager(tempDir.resolve("novalink-test.yml")),
                 new AuthManager(new IpBanManager(5, 60000)),
                 permissionManager,
                 new ClientPermissionRegistry(),
@@ -468,8 +471,8 @@ class ConsoleCommandTest {
     @Test
     @DisplayName("reload increments config reload count")
     void reloadIncrementsCount() {
-        // The test ConfigManager points at novalink-test.yml which doesn't exist;
-        // reload() creates a default file + reloads it, so reloadCount increments.
+        // The test ConfigManager points at a temporary file which does not exist;
+        // reload() creates it from the template, so reloadCount increments.
         int before = handler.context().getConfigManager().getReloadCount();
         String out = handler.dispatch("reload");
         assertThat(out).contains("Configuration reloaded");

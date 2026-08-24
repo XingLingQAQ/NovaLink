@@ -26,6 +26,7 @@ public class MemoryProvider implements DatabaseProvider {
     private final Map<UUID, Map<String, MuteInfo>> mutes = new ConcurrentHashMap<>();
     private final Map<UUID, Map<String, BanInfo>> bans = new ConcurrentHashMap<>();
     private final List<Notification> notifications = Collections.synchronizedList(new ArrayList<>());
+    private final List<com.nova.link.audit.AuditEvent> auditEvents = Collections.synchronizedList(new ArrayList<>());
     private final Map<String, Invitation> invitations = new ConcurrentHashMap<>();
     private final Deque<ChatMessageRecord> messages = new ArrayDeque<>();
     private final Map<String, com.nova.link.announcement.Announcement> announcements = new ConcurrentHashMap<>();
@@ -48,12 +49,18 @@ public class MemoryProvider implements DatabaseProvider {
         mutes.clear();
         bans.clear();
         notifications.clear();
+        auditEvents.clear();
         invitations.clear();
         synchronized (messages) {
             messages.clear();
         }
         announcements.clear();
         persistedWebhooks.clear();
+        moderationCases.clear();
+        caseEvidence.clear();
+        appeals.clear();
+        socialRelationsBySource.clear();
+        notificationPreferences.clear();
         logger.info("MemoryProvider shutdown - all data cleared");
     }
 
@@ -428,6 +435,503 @@ public class MemoryProvider implements DatabaseProvider {
         return notifications.size();
     }
 
+    // --- Per-user notification state (PANEL-014) ---
+    // Model: notifications is the immutable event stream (recipient null =
+    // broadcast, non-null = directed). notificationReadState stores per-user
+    // read flags keyed by (notificationId, userId). A notification is "read"
+    // for a user if there is a notificationReadState row with read=true; a
+    // directed notification is also considered read if the legacy global
+    // Notification.read flag is true (migration-period double-read fallback).
+
+    private final java.util.Map<Long, java.util.Map<String, Boolean>> notificationReadState =
+            java.util.Collections.synchronizedMap(new java.util.HashMap<>());
+
+    private boolean isNotificationReadForUser(Notification n, String userId) {
+        if (n.isRead()) {
+            return true; // legacy global flag fallback (double-read)
+        }
+        java.util.Map<String, Boolean> users = notificationReadState.get(n.getId());
+        return users != null && Boolean.TRUE.equals(users.get(userId));
+    }
+
+    private boolean isNotificationVisibleToUser(Notification n, String userId) {
+        String recipient = n.getRecipient();
+        return recipient == null || recipient.equals(userId);
+    }
+
+    @Override
+    public List<Notification> getNotifications(int offset, int limit, boolean unreadOnly, String userId)
+            throws DatabaseException {
+        checkConnection();
+        if (userId == null) {
+            return getNotifications(offset, limit, unreadOnly);
+        }
+        List<Notification> result = new ArrayList<>();
+        synchronized (notifications) {
+            List<Notification> sorted = new ArrayList<>(notifications);
+            sorted.sort((a, b) -> Long.compare(b.getCreatedAt(), a.getCreatedAt()));
+            int start = Math.max(0, offset);
+            int effectiveLimit = Math.max(0, limit);
+            if (unreadOnly) {
+                int skipped = 0;
+                int collected = 0;
+                for (Notification n : sorted) {
+                    if (!isNotificationVisibleToUser(n, userId)) {
+                        continue;
+                    }
+                    if (isNotificationReadForUser(n, userId)) {
+                        continue;
+                    }
+                    if (skipped < start) {
+                        skipped++;
+                        continue;
+                    }
+                    if (collected >= effectiveLimit) {
+                        break;
+                    }
+                    result.add(n);
+                    collected++;
+                }
+            } else {
+                int skipped = 0;
+                int collected = 0;
+                for (Notification n : sorted) {
+                    if (!isNotificationVisibleToUser(n, userId)) {
+                        continue;
+                    }
+                    if (skipped < start) {
+                        skipped++;
+                        continue;
+                    }
+                    if (collected >= effectiveLimit) {
+                        break;
+                    }
+                    result.add(n);
+                    collected++;
+                }
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public void markNotificationRead(long id, String userId) throws DatabaseException {
+        checkConnection();
+        if (userId == null) {
+            markNotificationRead(id);
+            return;
+        }
+        synchronized (notifications) {
+            for (Notification n : notifications) {
+                if (n.getId() == id) {
+                    notificationReadState
+                            .computeIfAbsent(id, k -> java.util.Collections.synchronizedMap(new java.util.HashMap<>()))
+                            .put(userId, Boolean.TRUE);
+                    logger.debug("Marked notification {} as read for user {}", id, userId);
+                    return;
+                }
+            }
+        }
+    }
+
+    @Override
+    public void markAllNotificationsRead(String userId) throws DatabaseException {
+        checkConnection();
+        if (userId == null) {
+            markAllNotificationsRead();
+            return;
+        }
+        int count = 0;
+        synchronized (notifications) {
+            for (Notification n : notifications) {
+                if (!isNotificationVisibleToUser(n, userId)) {
+                    continue;
+                }
+                if (isNotificationReadForUser(n, userId)) {
+                    continue;
+                }
+                notificationReadState
+                        .computeIfAbsent(n.getId(), k -> java.util.Collections.synchronizedMap(new java.util.HashMap<>()))
+                        .put(userId, Boolean.TRUE);
+                count++;
+            }
+        }
+        if (count > 0) {
+            logger.debug("Marked {} notifications as read for user {}", count, userId);
+        }
+    }
+
+    @Override
+    public int getUnreadCount(String userId) throws DatabaseException {
+        checkConnection();
+        if (userId == null) {
+            return getUnreadCount();
+        }
+        int count = 0;
+        synchronized (notifications) {
+            for (Notification n : notifications) {
+                if (!isNotificationVisibleToUser(n, userId)) {
+                    continue;
+                }
+                if (!isNotificationReadForUser(n, userId)) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    @Override
+    public int countNotifications(boolean unreadOnly, String userId) throws DatabaseException {
+        checkConnection();
+        if (userId == null) {
+            return countNotifications(unreadOnly);
+        }
+        int count = 0;
+        synchronized (notifications) {
+            for (Notification n : notifications) {
+                if (!isNotificationVisibleToUser(n, userId)) {
+                    continue;
+                }
+                if (unreadOnly && isNotificationReadForUser(n, userId)) {
+                    continue;
+                }
+                count++;
+            }
+        }
+        return count;
+    }
+
+    @Override
+    public int clearNotifications(String userId) throws DatabaseException {
+        checkConnection();
+        if (userId == null) {
+            return clearNotifications();
+        }
+        int count = 0;
+        synchronized (notifications) {
+            java.util.Iterator<Notification> it = notifications.iterator();
+            while (it.hasNext()) {
+                Notification n = it.next();
+                if (userId.equals(n.getRecipient())) {
+                    it.remove();
+                    notificationReadState.remove(n.getId());
+                    count++;
+                }
+            }
+        }
+        if (count > 0) {
+            logger.debug("Cleared {} directed notifications for user {}", count, userId);
+        }
+        return count;
+    }
+
+    // ==================== Audit Operations ====================
+
+    private long auditIdSeq = 0;
+
+    @Override
+    public void saveAuditEvent(com.nova.link.audit.AuditEvent event) throws DatabaseException {
+        checkConnection();
+        if (event == null) {
+            throw new DatabaseException("AuditEvent cannot be null");
+        }
+        synchronized (auditEvents) {
+            long id = ++auditIdSeq;
+            try {
+                java.lang.reflect.Field f = com.nova.link.audit.AuditEvent.class.getDeclaredField("id");
+                f.setAccessible(true);
+                f.setLong(event, id);
+            } catch (ReflectiveOperationException e) {
+                logger.debug("Could not stamp audit event id: {}", e.getMessage());
+            }
+            auditEvents.add(event);
+        }
+        logger.debug("Saved audit event: {}", event.getAction());
+    }
+
+    @Override
+    public List<com.nova.link.audit.AuditEvent> getAuditEvents(int offset, int limit, String actor, String action) throws DatabaseException {
+        checkConnection();
+        List<com.nova.link.audit.AuditEvent> result = new ArrayList<>();
+        synchronized (auditEvents) {
+            // Build a descending-by-createdAt view.
+            List<com.nova.link.audit.AuditEvent> sorted = new ArrayList<>(auditEvents);
+            sorted.sort((a, b) -> Long.compare(b.getCreatedAt(), a.getCreatedAt()));
+            int start = Math.max(0, offset);
+            int effectiveLimit = Math.max(0, limit);
+            boolean filterActor = actor != null && !actor.isEmpty();
+            boolean filterAction = action != null && !action.isEmpty();
+            if (filterActor || filterAction) {
+                // Collect matching rows from the full descending list, then
+                // apply offset/limit to the filtered set.
+                int skipped = 0;
+                int collected = 0;
+                for (com.nova.link.audit.AuditEvent e : sorted) {
+                    if (filterActor && !actor.equals(e.getActor())) {
+                        continue;
+                    }
+                    if (filterAction && !action.equals(e.getAction())) {
+                        continue;
+                    }
+                    if (skipped < start) {
+                        skipped++;
+                        continue;
+                    }
+                    if (collected >= effectiveLimit) {
+                        break;
+                    }
+                    result.add(e);
+                    collected++;
+                }
+            } else {
+                int end = Math.min(sorted.size(), start + effectiveLimit);
+                for (com.nova.link.audit.AuditEvent e : sorted.subList(start, end)) {
+                    result.add(e);
+                }
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public int countAuditEvents(String actor, String action) throws DatabaseException {
+        checkConnection();
+        boolean filterActor = actor != null && !actor.isEmpty();
+        boolean filterAction = action != null && !action.isEmpty();
+        if (!filterActor && !filterAction) {
+            return auditEvents.size();
+        }
+        int count = 0;
+        synchronized (auditEvents) {
+            for (com.nova.link.audit.AuditEvent e : auditEvents) {
+                if (filterActor && !actor.equals(e.getActor())) {
+                    continue;
+                }
+                if (filterAction && !action.equals(e.getAction())) {
+                    continue;
+                }
+                count++;
+            }
+        }
+        return count;
+    }
+
+    // ==================== Moderation Operations (schema v11) ====================
+    // PANEL-007: moderation case/appeal workflow. Cases are keyed by their UUID id
+    // (assigned by the caller, not a sequence) so transitions can upsert in place.
+    // Evidence uses a database-style long id stamped by reflection, mirroring the
+    // audit-event and notification id-stamping pattern.
+
+    private final Map<String, com.nova.link.moderation.ModerationCase> moderationCases = new ConcurrentHashMap<>();
+    private final List<com.nova.link.moderation.CaseEvidence> caseEvidence = Collections.synchronizedList(new ArrayList<>());
+    private final Map<String, com.nova.link.moderation.Appeal> appeals = new ConcurrentHashMap<>();
+    private long caseEvidenceIdSeq = 0;
+
+    @Override
+    public void saveModerationCase(com.nova.link.moderation.ModerationCase moderationCase) throws DatabaseException {
+        checkConnection();
+        if (moderationCase == null || moderationCase.getId() == null) {
+            throw new DatabaseException("ModerationCase and id cannot be null");
+        }
+        moderationCases.put(moderationCase.getId(), moderationCase);
+        logger.debug("Saved moderation case: {}", moderationCase.getId());
+    }
+
+    @Override
+    public Optional<com.nova.link.moderation.ModerationCase> getModerationCase(String caseId) throws DatabaseException {
+        checkConnection();
+        if (caseId == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(moderationCases.get(caseId));
+    }
+
+    @Override
+    public List<com.nova.link.moderation.ModerationCase> listModerationCases(int offset, int limit, String status) throws DatabaseException {
+        checkConnection();
+        List<com.nova.link.moderation.ModerationCase> sorted = new ArrayList<>(moderationCases.values());
+        sorted.sort((a, b) -> {
+            int byCreated = Long.compare(b.getCreatedAt(), a.getCreatedAt());
+            return byCreated != 0 ? byCreated : b.getId().compareTo(a.getId());
+        });
+        boolean filterStatus = status != null && !status.isEmpty();
+        List<com.nova.link.moderation.ModerationCase> result = new ArrayList<>();
+        int start = Math.max(0, offset);
+        int effectiveLimit = Math.max(0, limit);
+        if (filterStatus) {
+            int skipped = 0;
+            int collected = 0;
+            for (com.nova.link.moderation.ModerationCase c : sorted) {
+                if (!status.equals(c.getStatus().name())) {
+                    continue;
+                }
+                if (skipped < start) {
+                    skipped++;
+                    continue;
+                }
+                if (collected >= effectiveLimit) {
+                    break;
+                }
+                result.add(c);
+                collected++;
+            }
+        } else {
+            int end = Math.min(sorted.size(), start + effectiveLimit);
+            for (com.nova.link.moderation.ModerationCase c : sorted.subList(start, end)) {
+                result.add(c);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public int countModerationCases(String status) throws DatabaseException {
+        checkConnection();
+        boolean filterStatus = status != null && !status.isEmpty();
+        if (!filterStatus) {
+            return moderationCases.size();
+        }
+        int count = 0;
+        for (com.nova.link.moderation.ModerationCase c : moderationCases.values()) {
+            if (status.equals(c.getStatus().name())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    @Override
+    public void saveCaseEvidence(com.nova.link.moderation.CaseEvidence evidence) throws DatabaseException {
+        checkConnection();
+        if (evidence == null || evidence.getCaseId() == null) {
+            throw new DatabaseException("CaseEvidence and caseId cannot be null");
+        }
+        synchronized (caseEvidence) {
+            long id = ++caseEvidenceIdSeq;
+            try {
+                java.lang.reflect.Field f = com.nova.link.moderation.CaseEvidence.class.getDeclaredField("id");
+                f.setAccessible(true);
+                f.setLong(evidence, id);
+            } catch (ReflectiveOperationException e) {
+                logger.debug("Could not stamp case evidence id: {}", e.getMessage());
+            }
+            caseEvidence.add(evidence);
+        }
+        logger.debug("Saved case evidence for case: {}", evidence.getCaseId());
+    }
+
+    @Override
+    public List<com.nova.link.moderation.CaseEvidence> listCaseEvidence(String caseId) throws DatabaseException {
+        checkConnection();
+        if (caseId == null) {
+            return Collections.emptyList();
+        }
+        List<com.nova.link.moderation.CaseEvidence> result = new ArrayList<>();
+        synchronized (caseEvidence) {
+            for (com.nova.link.moderation.CaseEvidence e : caseEvidence) {
+                if (caseId.equals(e.getCaseId())) {
+                    result.add(e);
+                }
+            }
+        }
+        result.sort(Comparator.comparingLong(com.nova.link.moderation.CaseEvidence::getCreatedAt));
+        return result;
+    }
+
+    @Override
+    public void saveAppeal(com.nova.link.moderation.Appeal appeal) throws DatabaseException {
+        checkConnection();
+        if (appeal == null || appeal.getId() == null) {
+            throw new DatabaseException("Appeal and id cannot be null");
+        }
+        appeals.put(appeal.getId(), appeal);
+        logger.debug("Saved appeal: {}", appeal.getId());
+    }
+
+    @Override
+    public Optional<com.nova.link.moderation.Appeal> getAppeal(String appealId) throws DatabaseException {
+        checkConnection();
+        if (appealId == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(appeals.get(appealId));
+    }
+
+    @Override
+    public List<com.nova.link.moderation.Appeal> listAppeals(int offset, int limit, String status) throws DatabaseException {
+        checkConnection();
+        List<com.nova.link.moderation.Appeal> sorted = new ArrayList<>(appeals.values());
+        sorted.sort((a, b) -> {
+            int byCreated = Long.compare(b.getCreatedAt(), a.getCreatedAt());
+            return byCreated != 0 ? byCreated : b.getId().compareTo(a.getId());
+        });
+        boolean filterStatus = status != null && !status.isEmpty();
+        List<com.nova.link.moderation.Appeal> result = new ArrayList<>();
+        int start = Math.max(0, offset);
+        int effectiveLimit = Math.max(0, limit);
+        if (filterStatus) {
+            int skipped = 0;
+            int collected = 0;
+            for (com.nova.link.moderation.Appeal a : sorted) {
+                if (!status.equals(a.getStatus().name())) {
+                    continue;
+                }
+                if (skipped < start) {
+                    skipped++;
+                    continue;
+                }
+                if (collected >= effectiveLimit) {
+                    break;
+                }
+                result.add(a);
+                collected++;
+            }
+        } else {
+            int end = Math.min(sorted.size(), start + effectiveLimit);
+            for (com.nova.link.moderation.Appeal a : sorted.subList(start, end)) {
+                result.add(a);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public int countAppeals(String status) throws DatabaseException {
+        checkConnection();
+        boolean filterStatus = status != null && !status.isEmpty();
+        if (!filterStatus) {
+            return appeals.size();
+        }
+        int count = 0;
+        for (com.nova.link.moderation.Appeal a : appeals.values()) {
+            if (status.equals(a.getStatus().name())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    @Override
+    public void updateAppealReview(String appealId, com.nova.link.moderation.AppealStatus status,
+                                   String reviewedBy, String reviewNote, long reviewedAt)
+            throws DatabaseException {
+        checkConnection();
+        if (appealId == null) {
+            throw new DatabaseException("Appeal id cannot be null");
+        }
+        com.nova.link.moderation.Appeal existing = appeals.get(appealId);
+        if (existing == null) {
+            throw new DatabaseException("Appeal not found: " + appealId);
+        }
+        com.nova.link.moderation.Appeal updated = new com.nova.link.moderation.Appeal(
+                existing.getId(), existing.getCaseId(), existing.getAppellant(),
+                existing.getAppealReason(), status, reviewedBy, reviewNote, reviewedAt,
+                existing.getContentHash(), existing.getCreatedAt());
+        appeals.put(appealId, updated);
+        logger.debug("Updated appeal {} review status={}", appealId, status);
+    }
+
     // ==================== Invitation Operations ====================
 
     @Override
@@ -467,6 +971,36 @@ public class MemoryProvider implements DatabaseProvider {
             invitation.markUsed(usedBy);
             logger.debug("Marked invitation {} as used by {}", code, usedBy);
             return true;
+        }
+    }
+
+    @Override
+    public int claimInvitationUse(String code, UUID playerId, long now) throws DatabaseException {
+        checkConnection();
+        Invitation invitation = invitations.get(code);
+        if (invitation == null) {
+            return 0;
+        }
+        // Atomic check-and-claim mirroring the SQL guard: the whole predicate
+        // (not used, not revoked, usedCount < maxUses) is evaluated under the
+        // invitation's monitor, so two concurrent claims cannot both advance
+        // usedCount past maxUses. On success we record one use via incrementUse.
+        //
+        // Note: `now` is honored by the JDBC/Redis providers (bound to the
+        // used_at column). The in-memory provider cannot stamp an arbitrary
+        // timestamp without a setter on Invitation (intentionally frozen), so
+        // it records used_at through incrementUse's own clock — consistent with
+        // how markInvitationUsed above uses markUsed. Tests do not assert exact
+        // used_at values against MemoryProvider.
+        synchronized (invitation) {
+            if (invitation.isUsed() || invitation.isRevoked()
+                    || invitation.getUsedCount() >= invitation.getMaxUses()) {
+                logger.debug("claimInvitationUse({}) rejected — exhausted/revoked/raced", code);
+                return 0;
+            }
+            invitation.incrementUse(playerId);
+            logger.debug("Claimed one use of invitation {} for player {}", code, playerId);
+            return 1;
         }
     }
 
@@ -656,5 +1190,238 @@ public class MemoryProvider implements DatabaseProvider {
      */
     public int getInvitationCount() {
         return invitations.size();
+    }
+
+    // ==================== Config History (schema v12) ====================
+    //
+    // §11.6 Project 20 / PANEL proposal 10 — in-memory mirror of the JDBC
+    // config_history store. The list is append-only; the active flag is flipped
+    // on insert. Id sequence stamps the snapshot via reflection, matching the
+    // audit-event / evidence id-stamping pattern.
+
+    private final List<com.nova.link.config.ConfigSnapshot> configSnapshots = Collections.synchronizedList(new ArrayList<>());
+    private long configSnapshotIdSeq = 0;
+
+    @Override
+    public void saveConfigSnapshot(com.nova.link.config.ConfigSnapshot snapshot) throws DatabaseException {
+        checkConnection();
+        if (snapshot == null) {
+            throw new DatabaseException("Cannot save a null config snapshot");
+        }
+        synchronized (configSnapshots) {
+            long id = ++configSnapshotIdSeq;
+            snapshot.setId(id);
+            snapshot.setActive(true);
+            for (com.nova.link.config.ConfigSnapshot existing : configSnapshots) {
+                existing.setActive(false);
+            }
+            configSnapshots.add(snapshot);
+        }
+        logger.debug("Saved config snapshot revision={} (active=true)", snapshot.getRevision());
+    }
+
+    @Override
+    public List<com.nova.link.config.ConfigSnapshot> getConfigHistory(int limit) throws DatabaseException {
+        checkConnection();
+        int effectiveLimit = Math.max(0, limit);
+        List<com.nova.link.config.ConfigSnapshot> sorted = new ArrayList<>();
+        synchronized (configSnapshots) {
+            for (com.nova.link.config.ConfigSnapshot s : configSnapshots) {
+                // Metadata-only copy: snapshot_json deliberately omitted so the
+                // history list never leaks the (masked) payload.
+                sorted.add(new com.nova.link.config.ConfigSnapshot(
+                        s.getId(), s.getRevision(), null,
+                        s.getCreatedAt(), s.getCreatedBy(), s.isActive()));
+            }
+        }
+        sorted.sort((a, b) -> {
+            int byCreated = Long.compare(b.getCreatedAt(), a.getCreatedAt());
+            return byCreated != 0 ? byCreated : Long.compare(b.getId(), a.getId());
+        });
+        if (sorted.size() > effectiveLimit) {
+            sorted = new ArrayList<>(sorted.subList(0, effectiveLimit));
+        }
+        return sorted;
+    }
+
+    @Override
+    public Optional<com.nova.link.config.ConfigSnapshot> getConfigSnapshot(long revision) throws DatabaseException {
+        checkConnection();
+        synchronized (configSnapshots) {
+            // If multiple rows share a revision (the rollback path appends a
+            // new active row with the freshly-bumped revision, but revisions
+            // are monotonic so duplicates are unexpected), prefer the newest.
+            com.nova.link.config.ConfigSnapshot match = null;
+            for (com.nova.link.config.ConfigSnapshot s : configSnapshots) {
+                if (s.getRevision() == revision) {
+                    if (match == null || s.getId() > match.getId()) {
+                        match = s;
+                    }
+                }
+            }
+            if (match == null) {
+                return Optional.empty();
+            }
+            return Optional.of(new com.nova.link.config.ConfigSnapshot(
+                    match.getId(), match.getRevision(), match.getSnapshotJson(),
+                    match.getCreatedAt(), match.getCreatedBy(), match.isActive()));
+        }
+    }
+
+    @Override
+    public int countConfigSnapshots() throws DatabaseException {
+        checkConnection();
+        synchronized (configSnapshots) {
+            return configSnapshots.size();
+        }
+    }
+
+    @Override
+    public int deactivateOtherSnapshots(long activeRevision) throws DatabaseException {
+        checkConnection();
+        int deactivated = 0;
+        synchronized (configSnapshots) {
+            for (com.nova.link.config.ConfigSnapshot s : configSnapshots) {
+                if (activeRevision < 0 || s.getRevision() != activeRevision) {
+                    if (s.isActive()) {
+                        s.setActive(false);
+                        deactivated++;
+                    }
+                }
+            }
+        }
+        return deactivated;
+    }
+
+    // ==================== Social Relations (schema v13 / 提案 08) ====================
+    //
+    // §11.6 item-18 / PANEL proposal 08 — in-memory mirror of the JDBC
+    // social_relations + notification_preferences stores. Relations are
+    // directional and upserted on the composite key (sourceId, targetId, type)
+    // inside a per-source ConcurrentHashMap.compute, mirroring the
+    // IgnoreListService thread-safety idiom: the compute lambda removes any
+    // prior matching relation then adds the new one, so concurrent saves of
+    // the same key are linearized. The per-source set is a synchronized Set so
+    // the read paths (isIgnored / getSocialRelations) can iterate safely.
+    // Platforms without persistence (RedisProvider) inherit the throwing
+    // DatabaseProvider defaults and degrade safely; this MemoryProvider is the
+    // session-memory fallback the proposal calls for, and warns (via the
+    // initialize() log line) that data does not persist across restarts.
+
+    private final java.util.concurrent.ConcurrentHashMap<java.util.UUID, java.util.Set<com.nova.link.social.SocialRelation>> socialRelationsBySource = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentHashMap<java.util.UUID, com.nova.link.social.NotificationPreference> notificationPreferences = new java.util.concurrent.ConcurrentHashMap<>();
+
+    @Override
+    public boolean isIgnored(java.util.UUID sourceId, java.util.UUID targetId) {
+        // Null-safe: unresolved player ids short-circuit to false instead of
+        // throwing — callers can pass freshly-resolved ids without a try/catch.
+        if (sourceId == null || targetId == null) {
+            return false;
+        }
+        java.util.Set<com.nova.link.social.SocialRelation> relations = socialRelationsBySource.get(sourceId);
+        if (relations == null) {
+            return false;
+        }
+        com.nova.link.social.SocialRelation.RelationType ignore = com.nova.link.social.SocialRelation.RelationType.IGNORE;
+        synchronized (relations) {
+            for (com.nova.link.social.SocialRelation relation : relations) {
+                if (relation.getType() == ignore
+                        && java.util.Objects.equals(relation.getTargetId(), targetId)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public java.util.List<com.nova.link.social.SocialRelation> getSocialRelations(
+            java.util.UUID sourceId, com.nova.link.social.SocialRelation.RelationType type) {
+        java.util.List<com.nova.link.social.SocialRelation> results = new java.util.ArrayList<>();
+        if (sourceId == null || type == null) {
+            return results;
+        }
+        java.util.Set<com.nova.link.social.SocialRelation> relations = socialRelationsBySource.get(sourceId);
+        if (relations == null) {
+            return results;
+        }
+        synchronized (relations) {
+            for (com.nova.link.social.SocialRelation relation : relations) {
+                if (relation.getType() == type) {
+                    results.add(relation);
+                }
+            }
+        }
+        // Newest-first by createdAt, matching the JDBC ORDER BY created_at DESC.
+        results.sort((a, b) -> Long.compare(b.getCreatedAt(), a.getCreatedAt()));
+        return results;
+    }
+
+    @Override
+    public void saveSocialRelation(com.nova.link.social.SocialRelation relation) throws DatabaseException {
+        checkConnection();
+        if (relation == null) {
+            throw new DatabaseException("Cannot save a null social relation");
+        }
+        if (relation.getSourceId() == null || relation.getTargetId() == null || relation.getType() == null) {
+            throw new DatabaseException("Social relation sourceId/targetId/type must not be null");
+        }
+        // Upsert on the composite key: remove any prior matching relation for
+        // the same (sourceId, targetId, type) then add the new one, atomically
+        // under the per-source compute. Mirrors IgnoreListService.compute.
+        socialRelationsBySource.compute(relation.getSourceId(), (id, existing) -> {
+            java.util.Set<com.nova.link.social.SocialRelation> set = existing;
+            if (set == null) {
+                set = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+            }
+            synchronized (set) {
+                set.remove(relation); // equals/hashCode are the composite key
+                set.add(relation);
+            }
+            return set;
+        });
+        logger.debug("Saved social relation source={} target={} type={}",
+                relation.getSourceId(), relation.getTargetId(), relation.getType());
+    }
+
+    @Override
+    public void removeSocialRelation(java.util.UUID sourceId, java.util.UUID targetId,
+                                     com.nova.link.social.SocialRelation.RelationType type) {
+        if (sourceId == null || targetId == null || type == null) {
+            return;
+        }
+        socialRelationsBySource.computeIfPresent(sourceId, (id, set) -> {
+            synchronized (set) {
+                set.removeIf(relation ->
+                        relation.getType() == type
+                                && java.util.Objects.equals(relation.getTargetId(), targetId));
+            }
+            // Drop the source entry entirely when empty so isIgnored/getSocialRelations
+            // see no stale empty sets (and shutdown().clear() stays simple).
+            return set.isEmpty() ? null : set;
+        });
+    }
+
+    @Override
+    public com.nova.link.social.NotificationPreference getNotificationPreference(java.util.UUID playerId) {
+        if (playerId == null) {
+            return com.nova.link.social.NotificationPreference.defaults(null);
+        }
+        com.nova.link.social.NotificationPreference stored = notificationPreferences.get(playerId);
+        return stored != null ? stored : com.nova.link.social.NotificationPreference.defaults(playerId);
+    }
+
+    @Override
+    public void saveNotificationPreference(com.nova.link.social.NotificationPreference preference) throws DatabaseException {
+        checkConnection();
+        if (preference == null) {
+            throw new DatabaseException("Cannot save a null notification preference");
+        }
+        if (preference.getPlayerId() == null) {
+            throw new DatabaseException("Notification preference playerId must not be null");
+        }
+        notificationPreferences.put(preference.getPlayerId(), preference);
+        logger.debug("Saved notification preference player={} mentionsEnabled={}",
+                preference.getPlayerId(), preference.isMentionsEnabled());
     }
 }

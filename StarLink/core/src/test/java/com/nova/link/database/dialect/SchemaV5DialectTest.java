@@ -23,13 +23,26 @@ class SchemaV5DialectTest {
     private final SQLiteDialect sqlite = new SQLiteDialect();
 
     @Test
-    @DisplayName("all three dialects report current version 7 with a description")
-    void currentVersionIsSeven() {
+    @DisplayName("all three dialects report current version 13 with a description")
+    void currentVersionIsThirteen() {
         for (MigrationDialect dialect : List.of(mysql, postgres, sqlite)) {
             assertThat(dialect.getCurrentVersion())
                     .as("%s current version", dialect.getClass().getSimpleName())
-                    .isEqualTo(7);
-            assertThat(dialect.getMigrationDescription(7)).doesNotContain("Unknown");
+                    .isEqualTo(13);
+            assertThat(dialect.getMigrationDescription(13)).doesNotContain("Unknown");
+        }
+    }
+
+    @Test
+    @DisplayName("v13 creates social_relations and notification_preferences in every dialect")
+    void v13CreatesSocialRelationsTables() {
+        for (MigrationDialect dialect : List.of(mysql, postgres, sqlite)) {
+            String all = String.join("\n", dialect.getMigrationStatements(13));
+            assertThat(all)
+                    .as("%s v13 DDL", dialect.getClass().getSimpleName())
+                    .contains("CREATE TABLE IF NOT EXISTS social_relations")
+                    .contains("CREATE TABLE IF NOT EXISTS notification_preferences")
+                    .contains("idx_social_relations_target_id");
         }
     }
 
@@ -77,6 +90,19 @@ class SchemaV5DialectTest {
                     .as("%s v6 DDL", dialect.getClass().getSimpleName())
                     .contains("dm_enabled")
                     .contains("players");
+        }
+    }
+
+    @Test
+    @DisplayName("v8 adds max_uses, used_count and revoked_at to invitations in every dialect")
+    void v8AddsInvitationMultiUseColumns() {
+        for (MigrationDialect dialect : List.of(mysql, postgres, sqlite)) {
+            String all = String.join("\n", dialect.getMigrationStatements(8));
+            String name = dialect.getClass().getSimpleName();
+            assertThat(all).as("%s v8 max_uses", name).contains("max_uses");
+            assertThat(all).as("%s v8 used_count", name).contains("used_count");
+            assertThat(all).as("%s v8 revoked_at", name).contains("revoked_at");
+            assertThat(all).as("%s v8 invitations table", name).contains("invitations");
         }
     }
 }

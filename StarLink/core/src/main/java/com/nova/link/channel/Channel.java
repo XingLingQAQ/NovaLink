@@ -42,6 +42,19 @@ public class Channel {
     /** Slow mode: minimum seconds between two messages from the same player (0 = disabled) */
     private volatile int slowModeSeconds;
 
+    /**
+     * Provenance tag describing how this channel entered the registry.
+     * CONFIG channels are managed by config reload and are read-only in the
+     * Panel; DATABASE/RUNTIME channels are dynamic and survive restart.
+     */
+    private volatile ChannelSource source;
+
+    /**
+     * Monotonic revision counter bumped on every mutating update. Used for
+     * optimistic concurrency so API/WS/UI consumers can detect staleness.
+     */
+    private volatile long revision;
+
     /** Set of member UUIDs currently in this channel */
     private final Set<UUID> members;
     
@@ -68,6 +81,8 @@ public class Channel {
         this.password = other.password;
         this.ownerId = other.ownerId;
         this.slowModeSeconds = other.slowModeSeconds;
+        this.source = other.source;
+        this.revision = other.revision;
         this.members = ConcurrentHashMap.newKeySet();
         if (other.members != null) {
             this.members.addAll(other.members);
@@ -78,12 +93,30 @@ public class Channel {
     /**
      * Creates a new channel with the specified parameters.
      *
+     * <p>The channel is tagged as {@link ChannelSource#RUNTIME} by default.
+     * Loaders that hydrate channels from config or the persistence store
+     * should use {@link #Channel(String, String, ChannelScope, String, ChannelSource)}
+     * to record the correct provenance.</p>
+     *
      * @param id the unique channel ID
      * @param displayName the display name
      * @param scope the channel scope
      * @param clientId the owning client ID (null for GLOBAL)
      */
     public Channel(String id, String displayName, ChannelScope scope, String clientId) {
+        this(id, displayName, scope, clientId, ChannelSource.RUNTIME);
+    }
+
+    /**
+     * Creates a new channel with explicit provenance.
+     *
+     * @param id the unique channel ID
+     * @param displayName the display name
+     * @param scope the channel scope
+     * @param clientId the owning client ID (null for GLOBAL)
+     * @param source provenance tag (CONFIG/DATABASE/RUNTIME)
+     */
+    public Channel(String id, String displayName, ChannelScope scope, String clientId, ChannelSource source) {
         this.id = Objects.requireNonNull(id, "Channel ID cannot be null");
         this.displayName = displayName != null ? displayName : id;
         this.scope = Objects.requireNonNull(scope, "Channel scope cannot be null");
@@ -92,12 +125,14 @@ public class Channel {
         this.allowedWorlds = new ArrayList<>();
         this.members = ConcurrentHashMap.newKeySet();
         this.createdAt = System.currentTimeMillis();
-        
+        this.source = source != null ? source : ChannelSource.RUNTIME;
+        this.revision = 0L;
+
         // Validate: GLOBAL channels should not have a clientId
         if (scope == ChannelScope.GLOBAL && clientId != null) {
             throw new IllegalArgumentException("GLOBAL channels cannot have a clientId");
         }
-        
+
         // Validate: SERVER and PRIVATE channels must have a clientId
         if ((scope == ChannelScope.SERVER || scope == ChannelScope.PRIVATE) && clientId == null) {
             throw new IllegalArgumentException("SERVER and PRIVATE channels must have a clientId");
@@ -217,7 +252,17 @@ public class Channel {
         return maxCapacity;
     }
 
+    /**
+     * Sets the maximum member capacity. Must be a positive integer; a
+     * non-positive value is rejected with {@link IllegalArgumentException}
+     * so callers cannot store a channel with an invalid capacity.
+     *
+     * @param maxCapacity the new capacity (must be &gt; 0)
+     */
     public void setMaxCapacity(int maxCapacity) {
+        if (maxCapacity <= 0) {
+            throw new IllegalArgumentException("maxCapacity must be a positive integer, got " + maxCapacity);
+        }
         this.maxCapacity = maxCapacity;
     }
 
@@ -259,6 +304,51 @@ public class Channel {
 
     public long getCreatedAt() {
         return createdAt;
+    }
+
+    /**
+     * @return the provenance tag (CONFIG/DATABASE/RUNTIME)
+     */
+    public ChannelSource getSource() {
+        return source;
+    }
+
+    /**
+     * Overrides the provenance tag. Used by loaders when hydrating channels
+     * from config or the persistence store.
+     *
+     * @param source the new provenance tag (null falls back to RUNTIME)
+     */
+    public void setSource(ChannelSource source) {
+        this.source = source != null ? source : ChannelSource.RUNTIME;
+    }
+
+    /**
+     * @return the monotonic revision counter
+     */
+    public long getRevision() {
+        return revision;
+    }
+
+    /**
+     * Bumps the revision counter and returns the new value. Should be called
+     * by {@link ChannelManager} whenever a mutation is applied so consumers
+     * can detect staleness.
+     *
+     * @return the new revision
+     */
+    public synchronized long bumpRevision() {
+        return ++revision;
+    }
+
+    /**
+     * Sets the revision counter directly. Used by the persistence loader when
+     * restoring a channel — runtime mutations should use {@link #bumpRevision()}.
+     *
+     * @param revision the revision to restore
+     */
+    public void setRevision(long revision) {
+        this.revision = revision;
     }
 
     @Override

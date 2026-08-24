@@ -38,9 +38,26 @@ class MySQLDialectTest {
     }
 
     @Test
-    @DisplayName("current version is 7 and every version yields statements")
+    @DisplayName("v13 migration creates social_relations and notification_preferences")
+    void v13CreatesSocialRelationsTables() {
+        List<String> statements = dialect.getMigrationStatements(13);
+        String ddl = String.join("\n", statements);
+
+        assertThat(ddl).contains("CREATE TABLE IF NOT EXISTS social_relations");
+        assertThat(ddl).contains("CREATE TABLE IF NOT EXISTS notification_preferences");
+        // Composite natural key.
+        assertThat(ddl).contains("PRIMARY KEY (source_id, target_id, type)");
+        // Reverse-lookup index for "who is ignoring me".
+        assertThat(ddl).contains("idx_social_relations_target_id");
+        // Preferences default mentions to enabled.
+        assertThat(ddl).contains("player_id VARCHAR(36) NOT NULL PRIMARY KEY");
+        assertThat(ddl).contains("mentions_enabled BOOLEAN NOT NULL DEFAULT TRUE");
+    }
+
+    @Test
+    @DisplayName("current version is 13 and every version yields statements")
     void allVersionsYieldStatements() {
-        assertThat(dialect.getCurrentVersion()).isEqualTo(7);
+        assertThat(dialect.getCurrentVersion()).isEqualTo(13);
         for (int version = 1; version <= dialect.getCurrentVersion(); version++) {
             assertThat(dialect.getMigrationStatements(version)).isNotEmpty();
             assertThat(dialect.getMigrationDescription(version)).doesNotContain("Unknown");

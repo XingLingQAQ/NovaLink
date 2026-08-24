@@ -81,13 +81,31 @@ public class ChannelManager {
     }
 
     /**
-     * Creates a new channel with the given configuration.
+     * Creates a new channel with the given configuration, tagged as
+     * {@link ChannelSource#RUNTIME}. Equivalent to
+     * {@link #createChannel(ChannelConfig, ChannelSource)} with {@code RUNTIME}.
      *
      * @param config the channel configuration
      * @return the created channel
      * @throws IllegalArgumentException if a channel with the same ID already exists
      */
     public Channel createChannel(ChannelConfig config) {
+        return createChannel(config, ChannelSource.RUNTIME);
+    }
+
+    /**
+     * Creates a new channel with the given configuration and provenance tag.
+     *
+     * <p>The {@code source} tag governs reload semantics: config reload skips
+     * channels whose source is not {@link ChannelSource#CONFIG}, and the Panel
+     * treats {@code CONFIG} channels as read-only.</p>
+     *
+     * @param config the channel configuration
+     * @param source provenance tag (CONFIG/DATABASE/RUNTIME)
+     * @return the created channel
+     * @throws IllegalArgumentException if a channel with the same ID already exists
+     */
+    public Channel createChannel(ChannelConfig config, ChannelSource source) {
         Objects.requireNonNull(config, "Channel config cannot be null");
 
         String channelId = config.getId();
@@ -97,7 +115,8 @@ public class ChannelManager {
             channelId = generatePrivateChannelId();
         }
 
-        Channel channel = new Channel(channelId, config.getDisplayName(), config.getScope(), config.getClientId());
+        Channel channel = new Channel(channelId, config.getDisplayName(), config.getScope(),
+                config.getClientId(), source != null ? source : ChannelSource.RUNTIME);
         channel.setPermission(config.getPermission());
         channel.setMaxCapacity(config.getMaxCapacity());
         channel.setAllowedWorlds(config.getAllowedWorlds());
@@ -120,7 +139,8 @@ public class ChannelManager {
                     .add(channelId);
         }
 
-        logger.info("Created channel: {} (scope={}, client={})", channelId, config.getScope(), config.getClientId());
+        logger.info("Created channel: {} (scope={}, client={}, source={})",
+                channelId, config.getScope(), config.getClientId(), channel.getSource());
         persistChannel(channel);
         return channel;
     }
@@ -252,32 +272,72 @@ public class ChannelManager {
     /**
      * Updates an existing channel's mutable properties (displayName, maxCapacity,
      * permission). Only non-null/non-default arguments are applied; null fields
-     * leave the existing value untouched. Mirrors the field-by-field update in
-     * {@code NovaLinkMain.upsertConfiguredChannel}.
+     * leave the existing value untouched. To explicitly <b>clear</b> the
+     * permission (set it to null), use
+     * {@link #updateChannel(String, String, Integer, String, boolean)} with
+     * {@code permissionPresent=true} and {@code permission=null}. Mirrors the
+     * field-by-field update in {@code NovaLinkMain.upsertConfiguredChannel}.
+     *
+     * <p>This overload treats a {@code null} permission as "leave untouched"
+     * (backward compatible with the 4-arg contract). The revision is bumped
+     * only when at least one field actually changes.</p>
      *
      * @param channelId the channel ID to update
      * @param displayName the new display name (null to keep existing)
-     * @param maxCapacity the new max capacity (<=0 to keep existing)
+     * @param maxCapacity the new max capacity (null or &lt;=0 to keep existing)
      * @param permission the new permission node (null to keep existing)
      * @return the updated channel, or null if the channel was not found
      */
     public Channel updateChannel(String channelId, String displayName,
                                  Integer maxCapacity, String permission) {
+        return updateChannel(channelId, displayName, maxCapacity, permission, permission != null);
+    }
+
+    /**
+     * Updates an existing channel's mutable properties with explicit control
+     * over whether the {@code permission} field is being set (including cleared
+     * to null). When {@code permissionPresent} is {@code false}, the permission
+     * is left untouched regardless of the {@code permission} argument; when
+     * {@code true}, the permission is set to {@code permission} (which may be
+     * null, clearing it). The revision is bumped when any field changes.
+     *
+     * @param channelId the channel ID to update
+     * @param displayName the new display name (null to keep existing)
+     * @param maxCapacity the new max capacity (null or &lt;=0 to keep existing)
+     * @param permission the new permission node (ignored when permissionPresent is false)
+     * @param permissionPresent when true, apply {@code permission} (may clear it); when false, leave untouched
+     * @return the updated channel, or null if the channel was not found
+     * @throws IllegalArgumentException when {@code maxCapacity} is a non-null, non-positive value
+     */
+    public Channel updateChannel(String channelId, String displayName,
+                                 Integer maxCapacity, String permission, boolean permissionPresent) {
         Channel channel = channels.get(channelId);
         if (channel == null) {
             return null;
         }
+        boolean changed = false;
         if (displayName != null) {
             channel.setDisplayName(displayName);
+            changed = true;
         }
-        if (maxCapacity != null && maxCapacity > 0) {
+        if (maxCapacity != null) {
+            if (maxCapacity <= 0) {
+                // Non-positive is an explicit error for a supplied value — do not
+                // silently ignore, since callers expect the supplied capacity to apply.
+                throw new IllegalArgumentException("maxCapacity must be a positive integer, got " + maxCapacity);
+            }
             channel.setMaxCapacity(maxCapacity);
+            changed = true;
         }
-        if (permission != null) {
+        if (permissionPresent) {
             channel.setPermission(permission);
+            changed = true;
         }
-        logger.info("Updated channel: {} (displayName={}, maxCapacity={}, permission={})",
-                channelId, displayName, maxCapacity, permission);
+        if (changed) {
+            channel.bumpRevision();
+        }
+        logger.info("Updated channel: {} (displayName={}, maxCapacity={}, permission={}, permissionPresent={})",
+                channelId, displayName, maxCapacity, permission, permissionPresent);
         persistChannel(channel);
         return channel;
     }

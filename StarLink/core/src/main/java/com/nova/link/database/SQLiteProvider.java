@@ -2,6 +2,7 @@ package com.nova.link.database;
 
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelScope;
+import com.nova.link.channel.ChannelSource;
 import com.nova.link.database.dialect.MigrationDialect;
 import com.nova.link.database.dialect.SQLiteDialect;
 import com.zaxxer.hikari.HikariConfig;
@@ -271,11 +272,14 @@ public class SQLiteProvider extends AbstractJdbcProvider {
             try (ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) {
                     ChannelScope scope = ChannelScope.valueOf(rs.getString("scope"));
+                    // Restored channels are tagged DATABASE so config reload does
+                    // not overwrite them. Source is provenance, not persisted state.
                     Channel channel = new Channel(
                             rs.getString("channel_id"),
                             rs.getString("display_name"),
                             scope,
-                            rs.getString("client_id")
+                            rs.getString("client_id"),
+                            ChannelSource.DATABASE
                     );
 
                     channel.setPermission(rs.getString("permission"));
@@ -663,7 +667,11 @@ public class SQLiteProvider extends AbstractJdbcProvider {
             throw new DatabaseException("Notification cannot be null");
         }
 
-        String sql = "INSERT INTO notifications (title, message, level, created_at, read) VALUES (?, ?, ?, ?, ?)";
+        // PANEL-014: recipient column added in schema v10. NULL = broadcast.
+        // The column is nullable and defaults to NULL, so older callers that do
+        // not set recipient still work (broadcast).
+        String sql = "INSERT INTO notifications (title, message, level, created_at, read, recipient) "
+                + "VALUES (?, ?, ?, ?, ?, ?)";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql, java.sql.Statement.RETURN_GENERATED_KEYS)) {
@@ -673,6 +681,7 @@ public class SQLiteProvider extends AbstractJdbcProvider {
             stmt.setString(3, notification.getLevel());
             stmt.setLong(4, notification.getCreatedAt());
             stmt.setBoolean(5, notification.isRead());
+            stmt.setString(6, notification.getRecipient());
 
             stmt.executeUpdate();
 
@@ -799,6 +808,207 @@ public class SQLiteProvider extends AbstractJdbcProvider {
         }
     }
 
+    // --- Per-user notification state (PANEL-014) ---
+    // notification_read is keyed by (notification_id, user_id). A notification
+    // is "read" for a user when a row exists with read=TRUE. The legacy global
+    // notifications.read column is kept as a fallback (double-read): if a
+    // notification has read=TRUE globally, it is considered read for everyone
+    // (broadcast default). A notification is "visible" to a user when
+    // recipient IS NULL (broadcast) or recipient = userId.
+
+    private static final String SQL_GET_PER_USER_UNREAD = """
+            SELECT n.id, n.title, n.message, n.level, n.created_at, n.read, n.recipient
+            FROM notifications n
+            LEFT JOIN notification_read nr ON nr.notification_id = n.id AND nr.user_id = ?
+            WHERE (n.recipient IS NULL OR n.recipient = ?)
+              AND (n.read = TRUE OR (nr.read IS NOT NULL AND nr.read = TRUE)) = FALSE
+            ORDER BY n.created_at DESC, n.id DESC
+            LIMIT ? OFFSET ?
+            """;
+
+    private static final String SQL_GET_PER_USER_ALL = """
+            SELECT n.id, n.title, n.message, n.level, n.created_at, n.read, n.recipient,
+                   COALESCE(nr.read, FALSE) AS per_user_read
+            FROM notifications n
+            LEFT JOIN notification_read nr ON nr.notification_id = n.id AND nr.user_id = ?
+            WHERE n.recipient IS NULL OR n.recipient = ?
+            ORDER BY n.created_at DESC, n.id DESC
+            LIMIT ? OFFSET ?
+            """;
+
+    private static Notification mapNotification(ResultSet rs) throws SQLException {
+        return new Notification(
+                rs.getLong("id"),
+                rs.getString("title"),
+                rs.getString("message"),
+                rs.getString("level"),
+                rs.getLong("created_at"),
+                rs.getBoolean("read"),
+                rs.getString("recipient")
+        );
+    }
+
+    @Override
+    public List<Notification> getNotifications(int offset, int limit, boolean unreadOnly, String userId)
+            throws DatabaseException {
+        if (userId == null) {
+            return getNotifications(offset, limit, unreadOnly);
+        }
+        List<Notification> notifications = new ArrayList<>();
+        String sql = unreadOnly ? SQL_GET_PER_USER_UNREAD : SQL_GET_PER_USER_ALL;
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, userId);
+            stmt.setString(2, userId);
+            stmt.setInt(3, Math.max(0, limit));
+            stmt.setInt(4, Math.max(0, offset));
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    notifications.add(mapNotification(rs));
+                }
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load per-user notifications", e);
+        }
+        return notifications;
+    }
+
+    @Override
+    public void markNotificationRead(long id, String userId) throws DatabaseException {
+        if (userId == null) {
+            markNotificationRead(id);
+            return;
+        }
+        // Upsert into notification_read. SQLite 3.24+ supports ON CONFLICT.
+        String sql = "INSERT INTO notification_read (notification_id, user_id, read, read_at) "
+                + "VALUES (?, ?, TRUE, ?) "
+                + "ON CONFLICT(notification_id, user_id) DO UPDATE SET read = TRUE, read_at = excluded.read_at";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setLong(1, id);
+            stmt.setString(2, userId);
+            stmt.setLong(3, System.currentTimeMillis());
+            stmt.executeUpdate();
+            logger.debug("Marked notification {} as read for user {}", id, userId);
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to mark per-user notification as read", e);
+        }
+    }
+
+    @Override
+    public void markAllNotificationsRead(String userId) throws DatabaseException {
+        if (userId == null) {
+            markAllNotificationsRead();
+            return;
+        }
+        // Insert a notification_read row for every visible unread notification.
+        String sql = "INSERT INTO notification_read (notification_id, user_id, read, read_at) "
+                + "SELECT n.id, ?, TRUE, ? FROM notifications n "
+                + "WHERE (n.recipient IS NULL OR n.recipient = ?) "
+                + "AND NOT EXISTS ("
+                + "  SELECT 1 FROM notification_read nr "
+                + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.read = TRUE"
+                + ") "
+                + "ON CONFLICT(notification_id, user_id) DO UPDATE SET read = TRUE, read_at = excluded.read_at";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            long now = System.currentTimeMillis();
+            stmt.setString(1, userId);
+            stmt.setLong(2, now);
+            stmt.setString(3, userId);
+            stmt.setString(4, userId);
+            int count = stmt.executeUpdate();
+            if (count > 0) {
+                logger.debug("Marked {} notifications as read for user {}", count, userId);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to mark all per-user notifications as read", e);
+        }
+    }
+
+    @Override
+    public int getUnreadCount(String userId) throws DatabaseException {
+        if (userId == null) {
+            return getUnreadCount();
+        }
+        String sql = "SELECT COUNT(*) FROM notifications n "
+                + "WHERE (n.recipient IS NULL OR n.recipient = ?) "
+                + "AND n.read = FALSE "
+                + "AND NOT EXISTS ("
+                + "  SELECT 1 FROM notification_read nr "
+                + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.read = TRUE"
+                + ")";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, userId);
+            stmt.setString(2, userId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt(1);
+                }
+                return 0;
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to get per-user unread count", e);
+        }
+    }
+
+    @Override
+    public int countNotifications(boolean unreadOnly, String userId) throws DatabaseException {
+        if (userId == null) {
+            return countNotifications(unreadOnly);
+        }
+        String sql;
+        if (unreadOnly) {
+            sql = "SELECT COUNT(*) FROM notifications n "
+                    + "WHERE (n.recipient IS NULL OR n.recipient = ?) "
+                    + "AND n.read = FALSE "
+                    + "AND NOT EXISTS ("
+                    + "  SELECT 1 FROM notification_read nr "
+                    + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.read = TRUE"
+                    + ")";
+        } else {
+            sql = "SELECT COUNT(*) FROM notifications n "
+                    + "WHERE n.recipient IS NULL OR n.recipient = ?";
+        }
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, userId);
+            if (unreadOnly) {
+                stmt.setString(2, userId);
+            }
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt(1);
+                }
+                return 0;
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to count per-user notifications", e);
+        }
+    }
+
+    @Override
+    public int clearNotifications(String userId) throws DatabaseException {
+        if (userId == null) {
+            return clearNotifications();
+        }
+        // Only directed notifications where recipient = userId are deleted.
+        // Broadcast events (recipient IS NULL) are never removed by this call.
+        String sql = "DELETE FROM notifications WHERE recipient = ?";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, userId);
+            int count = stmt.executeUpdate();
+            if (count > 0) {
+                logger.debug("Cleared {} directed notifications for user {}", count, userId);
+            }
+            return count;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to clear per-user notifications", e);
+        }
+    }
+
     // ==================== Invitation Operations ====================
 
     @Override
@@ -808,13 +1018,20 @@ public class SQLiteProvider extends AbstractJdbcProvider {
         }
 
         String sql = """
-            INSERT INTO invitations (code, channel_id, inviter_id, expire_time, created_at, used, used_by, used_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO invitations (code, channel_id, inviter_id, expire_time, created_at, used, used_by, used_at,
+                                    max_uses, used_count, revoked_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(code) DO UPDATE SET
                 channel_id = excluded.channel_id,
                 inviter_id = excluded.inviter_id,
                 expire_time = excluded.expire_time,
-                created_at = excluded.created_at
+                created_at = excluded.created_at,
+                used = excluded.used,
+                used_by = excluded.used_by,
+                used_at = excluded.used_at,
+                max_uses = excluded.max_uses,
+                used_count = excluded.used_count,
+                revoked_at = excluded.revoked_at
             """;
 
         try (Connection conn = dataSource.getConnection();
@@ -828,6 +1045,13 @@ public class SQLiteProvider extends AbstractJdbcProvider {
             stmt.setBoolean(6, invitation.isUsed());
             stmt.setString(7, invitation.getUsedBy() != null ? invitation.getUsedBy().toString() : null);
             stmt.setLong(8, invitation.getUsedAt());
+            stmt.setInt(9, invitation.getMaxUses());
+            stmt.setInt(10, invitation.getUsedCount());
+            if (invitation.getRevokedAt() != null) {
+                stmt.setLong(11, invitation.getRevokedAt());
+            } else {
+                stmt.setNull(11, java.sql.Types.INTEGER);
+            }
 
             stmt.executeUpdate();
             logger.debug("Saved invitation: {}", invitation.getCode());
@@ -859,7 +1083,10 @@ public class SQLiteProvider extends AbstractJdbcProvider {
                             rs.getLong("created_at"),
                             rs.getBoolean("used"),
                             parseUuid(rs.getString("used_by")),
-                            rs.getLong("used_at")
+                            rs.getLong("used_at"),
+                            rs.getInt("max_uses"),
+                            rs.getInt("used_count"),
+                            rs.getObject("revoked_at") != null ? rs.getLong("revoked_at") : null
                     );
                     return Optional.of(invitation);
                 }
@@ -898,6 +1125,46 @@ public class SQLiteProvider extends AbstractJdbcProvider {
             return affected > 0;
         } catch (SQLException e) {
             throw new DatabaseException("Failed to mark invitation as used", e);
+        }
+    }
+
+    @Override
+    public int claimInvitationUse(String code, UUID playerId, long now) throws DatabaseException {
+        if (code == null) {
+            return 0;
+        }
+
+        // Single atomic UPDATE that claims one quota slot. The WHERE clause is
+        // the whole race guard: used = 0 (not yet exhausted), revoked_at IS NULL
+        // (not revoked), and used_count < max_uses (quota remaining). If any
+        // guard fails, 0 rows update and this caller loses the claim. On
+        // success, used_count advances and used flips to true exactly when the
+        // new used_count reaches max_uses — unifying single-use (maxUses=1,
+        // used becomes true on the first claim) and multi-use paths.
+        //
+        // SQLite stores BOOLEAN as INTEGER (0/1); the expression
+        // (used_count + 1 >= max_uses) evaluates to 1/0 in SQLite, which maps
+        // correctly onto the INTEGER column.
+        String sql = "UPDATE invitations SET used_count = used_count + 1, used_by = ?, used_at = ?, "
+                + "used = (used_count + 1 >= max_uses) "
+                + "WHERE code = ? AND used = 0 AND revoked_at IS NULL AND used_count < max_uses";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, playerId != null ? playerId.toString() : null);
+            stmt.setLong(2, now);
+            stmt.setString(3, code);
+
+            int affected = stmt.executeUpdate();
+            if (affected == 0) {
+                logger.debug("claimInvitationUse({}) affected 0 rows — exhausted/revoked/missing or raced", code);
+            } else {
+                logger.debug("Claimed one use of invitation {} for player {}", code, playerId);
+            }
+            return affected;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to claim invitation use", e);
         }
     }
 

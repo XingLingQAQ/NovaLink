@@ -177,4 +177,118 @@ public class NotificationStore {
             return 0;
         }
     }
+
+    // ==================== Per-user state (PANEL-014) ====================
+
+    /**
+     * Lists notifications visible to a specific user with pagination and
+     * per-user read state. Visible = broadcast (recipient null) or directed to
+     * this user.
+     *
+     * @param offset 0-based offset
+     * @param limit max results
+     * @param unreadOnly when true, only notifications this user has not read
+     * @param userId the per-user identity (panel username)
+     * @return list of notifications (newest first), never null
+     */
+    public List<Notification> getNotifications(int offset, int limit, boolean unreadOnly, String userId) {
+        if (databaseProvider == null || userId == null) {
+            return Collections.emptyList();
+        }
+        try {
+            return databaseProvider.getNotifications(offset, limit, unreadOnly, userId);
+        } catch (DatabaseException e) {
+            logger.error("Failed to load notifications for user {}: {}", userId, e.getMessage());
+            return Collections.emptyList();
+        } catch (UnsupportedOperationException e) {
+            // Provider not upgraded (e.g. RedisProvider) — fall back to global.
+            return getNotifications(offset, limit, unreadOnly);
+        }
+    }
+
+    /**
+     * Marks a single notification as read for a specific user.
+     */
+    public void markRead(long id, String userId) {
+        if (databaseProvider == null || userId == null) {
+            return;
+        }
+        try {
+            databaseProvider.markNotificationRead(id, userId);
+        } catch (DatabaseException e) {
+            logger.error("Failed to mark notification {} as read for user {}: {}", id, userId, e.getMessage());
+        } catch (UnsupportedOperationException e) {
+            markRead(id);
+        }
+    }
+
+    /**
+     * Marks all notifications visible to a user as read (per-user state).
+     */
+    public void markAllRead(String userId) {
+        if (databaseProvider == null || userId == null) {
+            return;
+        }
+        try {
+            databaseProvider.markAllNotificationsRead(userId);
+        } catch (DatabaseException e) {
+            logger.error("Failed to mark all notifications as read for user {}: {}", userId, e.getMessage());
+        } catch (UnsupportedOperationException e) {
+            markAllRead();
+        }
+    }
+
+    /**
+     * Clears directed notifications for a specific user. Broadcast events are
+     * never cleared by this call.
+     *
+     * @return number of directed notifications deleted
+     */
+    public int clearAll(String userId) {
+        if (databaseProvider == null || userId == null) {
+            return 0;
+        }
+        try {
+            return databaseProvider.clearNotifications(userId);
+        } catch (DatabaseException e) {
+            logger.error("Failed to clear notifications for user {}: {}", userId, e.getMessage());
+            return 0;
+        } catch (UnsupportedOperationException e) {
+            return clearAll();
+        }
+    }
+
+    /**
+     * Counts notifications visible to a user matching the filter.
+     */
+    public int count(boolean unreadOnly, String userId) {
+        if (databaseProvider == null || userId == null) {
+            return 0;
+        }
+        try {
+            return databaseProvider.countNotifications(unreadOnly, userId);
+        } catch (DatabaseException e) {
+            logger.error("Failed to count notifications for user {}: {}", userId, e.getMessage());
+            return 0;
+        } catch (UnsupportedOperationException e) {
+            return count(unreadOnly);
+        }
+    }
+
+    /**
+     * Gets the per-user unread count.
+     */
+    public int getUnreadCount(String userId) {
+        if (databaseProvider == null || userId == null) {
+            return 0;
+        }
+        try {
+            return databaseProvider.getUnreadCount(userId);
+        } catch (DatabaseException e) {
+            logger.error("Failed to get unread count for user {}: {}", userId, e.getMessage());
+            return 0;
+        } catch (UnsupportedOperationException e) {
+            return getUnreadCount();
+        }
+    }
 }

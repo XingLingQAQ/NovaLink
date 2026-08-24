@@ -678,7 +678,10 @@ public class MySQLProvider extends AbstractJdbcProvider {
             throw new DatabaseException("Notification cannot be null");
         }
 
-        String sql = "INSERT INTO notifications (title, message, level, created_at, `read`) VALUES (?, ?, ?, ?, ?)";
+        // PANEL-014: recipient column added in schema v10. NULL = broadcast.
+        // `read` is backtick-quoted because it is a MySQL reserved word.
+        String sql = "INSERT INTO notifications (title, message, level, created_at, `read`, recipient) "
+                + "VALUES (?, ?, ?, ?, ?, ?)";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql, java.sql.Statement.RETURN_GENERATED_KEYS)) {
@@ -688,6 +691,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
             stmt.setString(3, notification.getLevel());
             stmt.setLong(4, notification.getCreatedAt());
             stmt.setBoolean(5, notification.isRead());
+            stmt.setString(6, notification.getRecipient());
 
             stmt.executeUpdate();
 
@@ -816,6 +820,230 @@ public class MySQLProvider extends AbstractJdbcProvider {
         }
     }
 
+    // --- Per-user notification state (PANEL-014) ---
+    // See SQLiteProvider for the semantic model. MySQL uses ON DUPLICATE KEY
+    // UPDATE for upsert (the primary key of notification_read is
+    // (notification_id, user_id), so a duplicate on either column triggers the
+    // update). `read` is backtick-quoted because it is a MySQL reserved word.
+
+    private static final String SQL_GET_PER_USER_UNREAD_MYSQL = """
+            SELECT n.id, n.title, n.message, n.level, n.created_at, n.`read` AS `read`, n.recipient
+            FROM notifications n
+            LEFT JOIN notification_read nr ON nr.notification_id = n.id AND nr.user_id = ?
+            WHERE (n.recipient IS NULL OR n.recipient = ?)
+              AND (n.`read` = TRUE OR (nr.`read` IS NOT NULL AND nr.`read` = TRUE)) = FALSE
+            ORDER BY n.created_at DESC, n.id DESC
+            LIMIT ? OFFSET ?
+            """;
+
+    private static final String SQL_GET_PER_USER_ALL_MYSQL = """
+            SELECT n.id, n.title, n.message, n.level, n.created_at, n.`read` AS `read`, n.recipient,
+                   COALESCE(nr.`read`, FALSE) AS per_user_read
+            FROM notifications n
+            LEFT JOIN notification_read nr ON nr.notification_id = n.id AND nr.user_id = ?
+            WHERE n.recipient IS NULL OR n.recipient = ?
+            ORDER BY n.created_at DESC, n.id DESC
+            LIMIT ? OFFSET ?
+            """;
+
+    private static Notification mapNotification(ResultSet rs) throws SQLException {
+        return new Notification(
+                rs.getLong("id"),
+                rs.getString("title"),
+                rs.getString("message"),
+                rs.getString("level"),
+                rs.getLong("created_at"),
+                rs.getBoolean("read"),
+                rs.getString("recipient")
+        );
+    }
+
+    @Override
+    public List<Notification> getNotifications(int offset, int limit, boolean unreadOnly, String userId)
+            throws DatabaseException {
+        if (userId == null) {
+            return getNotifications(offset, limit, unreadOnly);
+        }
+        List<Notification> notifications = new ArrayList<>();
+        String sql = unreadOnly ? SQL_GET_PER_USER_UNREAD_MYSQL : SQL_GET_PER_USER_ALL_MYSQL;
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, userId);
+            stmt.setString(2, userId);
+            stmt.setInt(3, Math.max(0, limit));
+            stmt.setInt(4, Math.max(0, offset));
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    notifications.add(mapNotification(rs));
+                }
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load per-user notifications", e);
+        }
+        return notifications;
+    }
+
+    @Override
+    public void markNotificationRead(long id, String userId) throws DatabaseException {
+        if (userId == null) {
+            markNotificationRead(id);
+            return;
+        }
+        String sql = "INSERT INTO notification_read (notification_id, user_id, `read`, read_at) "
+                + "VALUES (?, ?, TRUE, ?) "
+                + "ON DUPLICATE KEY UPDATE `read` = TRUE, read_at = VALUES(read_at)";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setLong(1, id);
+            stmt.setString(2, userId);
+            stmt.setLong(3, System.currentTimeMillis());
+            stmt.executeUpdate();
+            logger.debug("Marked notification {} as read for user {}", id, userId);
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to mark per-user notification as read", e);
+        }
+    }
+
+    @Override
+    public void markAllNotificationsRead(String userId) throws DatabaseException {
+        if (userId == null) {
+            markAllNotificationsRead();
+            return;
+        }
+        // MySQL does not allow INSERT ... SELECT ... ON DUPLICATE KEY UPDATE
+        // referencing the same target table in the SELECT without a derived
+        // table, so we first select candidate ids, then upsert per row. For
+        // simplicity and bounded work, we load the visible-unread ids and
+        // upsert them in a single batched statement.
+        String selectSql = "SELECT n.id FROM notifications n "
+                + "WHERE (n.recipient IS NULL OR n.recipient = ?) "
+                + "AND n.`read` = FALSE "
+                + "AND NOT EXISTS ("
+                + "  SELECT 1 FROM notification_read nr "
+                + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.`read` = TRUE"
+                + ")";
+        String upsertSql = "INSERT INTO notification_read (notification_id, user_id, `read`, read_at) "
+                + "VALUES (?, ?, TRUE, ?) "
+                + "ON DUPLICATE KEY UPDATE `read` = TRUE, read_at = VALUES(read_at)";
+        try (Connection conn = dataSource.getConnection()) {
+            List<Long> ids = new ArrayList<>();
+            try (PreparedStatement selectStmt = conn.prepareStatement(selectSql)) {
+                selectStmt.setString(1, userId);
+                selectStmt.setString(2, userId);
+                try (ResultSet rs = selectStmt.executeQuery()) {
+                    while (rs.next()) {
+                        ids.add(rs.getLong(1));
+                    }
+                }
+            }
+            if (ids.isEmpty()) {
+                return;
+            }
+            long now = System.currentTimeMillis();
+            try (PreparedStatement upsertStmt = conn.prepareStatement(upsertSql)) {
+                for (Long id : ids) {
+                    upsertStmt.setLong(1, id);
+                    upsertStmt.setString(2, userId);
+                    upsertStmt.setLong(3, now);
+                    upsertStmt.addBatch();
+                }
+                int[] counts = upsertStmt.executeBatch();
+                int total = 0;
+                for (int c : counts) {
+                    if (c > 0) {
+                        total += c;
+                    }
+                }
+                if (total > 0) {
+                    logger.debug("Marked {} notifications as read for user {}", total, userId);
+                }
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to mark all per-user notifications as read", e);
+        }
+    }
+
+    @Override
+    public int getUnreadCount(String userId) throws DatabaseException {
+        if (userId == null) {
+            return getUnreadCount();
+        }
+        String sql = "SELECT COUNT(*) FROM notifications n "
+                + "WHERE (n.recipient IS NULL OR n.recipient = ?) "
+                + "AND n.`read` = FALSE "
+                + "AND NOT EXISTS ("
+                + "  SELECT 1 FROM notification_read nr "
+                + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.`read` = TRUE"
+                + ")";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, userId);
+            stmt.setString(2, userId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt(1);
+                }
+                return 0;
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to get per-user unread count", e);
+        }
+    }
+
+    @Override
+    public int countNotifications(boolean unreadOnly, String userId) throws DatabaseException {
+        if (userId == null) {
+            return countNotifications(unreadOnly);
+        }
+        String sql;
+        if (unreadOnly) {
+            sql = "SELECT COUNT(*) FROM notifications n "
+                    + "WHERE (n.recipient IS NULL OR n.recipient = ?) "
+                    + "AND n.`read` = FALSE "
+                    + "AND NOT EXISTS ("
+                    + "  SELECT 1 FROM notification_read nr "
+                    + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.`read` = TRUE"
+                    + ")";
+        } else {
+            sql = "SELECT COUNT(*) FROM notifications n "
+                    + "WHERE n.recipient IS NULL OR n.recipient = ?";
+        }
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, userId);
+            if (unreadOnly) {
+                stmt.setString(2, userId);
+            }
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt(1);
+                }
+                return 0;
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to count per-user notifications", e);
+        }
+    }
+
+    @Override
+    public int clearNotifications(String userId) throws DatabaseException {
+        if (userId == null) {
+            return clearNotifications();
+        }
+        String sql = "DELETE FROM notifications WHERE recipient = ?";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, userId);
+            int count = stmt.executeUpdate();
+            if (count > 0) {
+                logger.debug("Cleared {} directed notifications for user {}", count, userId);
+            }
+            return count;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to clear per-user notifications", e);
+        }
+    }
+
     // ==================== Invitation Operations ====================
 
     @Override
@@ -825,13 +1053,20 @@ public class MySQLProvider extends AbstractJdbcProvider {
         }
 
         String sql = """
-            INSERT INTO invitations (code, channel_id, inviter_id, expire_time, created_at, used, used_by, used_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO invitations (code, channel_id, inviter_id, expire_time, created_at, used, used_by, used_at,
+                                    max_uses, used_count, revoked_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 channel_id = VALUES(channel_id),
                 inviter_id = VALUES(inviter_id),
                 expire_time = VALUES(expire_time),
-                created_at = VALUES(created_at)
+                created_at = VALUES(created_at),
+                used = VALUES(used),
+                used_by = VALUES(used_by),
+                used_at = VALUES(used_at),
+                max_uses = VALUES(max_uses),
+                used_count = VALUES(used_count),
+                revoked_at = VALUES(revoked_at)
             """;
 
         try (Connection conn = dataSource.getConnection();
@@ -845,6 +1080,13 @@ public class MySQLProvider extends AbstractJdbcProvider {
             stmt.setBoolean(6, invitation.isUsed());
             stmt.setString(7, invitation.getUsedBy() != null ? invitation.getUsedBy().toString() : null);
             stmt.setLong(8, invitation.getUsedAt());
+            stmt.setInt(9, invitation.getMaxUses());
+            stmt.setInt(10, invitation.getUsedCount());
+            if (invitation.getRevokedAt() != null) {
+                stmt.setLong(11, invitation.getRevokedAt());
+            } else {
+                stmt.setNull(11, java.sql.Types.BIGINT);
+            }
 
             stmt.executeUpdate();
             logger.debug("Saved invitation: {}", invitation.getCode());
@@ -876,7 +1118,10 @@ public class MySQLProvider extends AbstractJdbcProvider {
                             rs.getLong("created_at"),
                             rs.getBoolean("used"),
                             parseUuid(rs.getString("used_by")),
-                            rs.getLong("used_at")
+                            rs.getLong("used_at"),
+                            rs.getInt("max_uses"),
+                            rs.getInt("used_count"),
+                            rs.getObject("revoked_at") != null ? rs.getLong("revoked_at") : null
                     );
                     return Optional.of(invitation);
                 }
@@ -915,6 +1160,42 @@ public class MySQLProvider extends AbstractJdbcProvider {
             return affected > 0;
         } catch (SQLException e) {
             throw new DatabaseException("Failed to mark invitation as used", e);
+        }
+    }
+
+    @Override
+    public int claimInvitationUse(String code, UUID playerId, long now) throws DatabaseException {
+        if (code == null) {
+            return 0;
+        }
+
+        // Single atomic UPDATE that claims one quota slot. The WHERE clause is
+        // the race guard: used = FALSE (not exhausted), revoked_at IS NULL (not
+        // revoked), and used_count < max_uses (quota remaining). On success,
+        // used_count advances and used flips to TRUE exactly when the new
+        // used_count reaches max_uses — unifying single-use (maxUses=1, used
+        // becomes TRUE on the first claim) and multi-use paths. MySQL evaluates
+        // the boolean expression to 1/0, which maps onto TINYINT(1).
+        String sql = "UPDATE invitations SET used_count = used_count + 1, used_by = ?, used_at = ?, "
+                + "used = (used_count + 1 >= max_uses) "
+                + "WHERE code = ? AND used = FALSE AND revoked_at IS NULL AND used_count < max_uses";
+
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, playerId != null ? playerId.toString() : null);
+            stmt.setLong(2, now);
+            stmt.setString(3, code);
+
+            int affected = stmt.executeUpdate();
+            if (affected == 0) {
+                logger.debug("claimInvitationUse({}) affected 0 rows — exhausted/revoked/missing or raced", code);
+            } else {
+                logger.debug("Claimed one use of invitation {} for player {}", code, playerId);
+            }
+            return affected;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to claim invitation use", e);
         }
     }
 

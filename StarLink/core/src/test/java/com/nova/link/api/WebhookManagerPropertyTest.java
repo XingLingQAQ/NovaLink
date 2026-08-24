@@ -142,7 +142,7 @@ public class WebhookManagerPropertyTest {
             
             for (int i = 0; i < count; i++) {
                 Webhook webhook = manager.createWebhook(
-                        "http://example.com/webhook" + i,
+                        "http://8.8.8.8/webhook" + i,
                         "event.type." + i,
                         null
                 );
@@ -172,8 +172,8 @@ public class WebhookManagerPropertyTest {
     void webhookMatchesExactEventType(
             @ForAll("eventTypes") String eventType
     ) {
-        Webhook webhook = new Webhook("test-id", "http://example.com", eventType, null);
-        
+        Webhook webhook = new Webhook("test-id", "http://8.8.8.8", eventType, null);
+
         assertThat(webhook.matchesEvent(eventType)).isTrue();
         assertThat(webhook.matchesEvent(eventType + ".extra")).isFalse();
         assertThat(webhook.matchesEvent("different." + eventType)).isFalse();
@@ -193,7 +193,7 @@ public class WebhookManagerPropertyTest {
             @ForAll("eventSuffixes") String suffix
     ) {
         String wildcardEvent = prefix + ".*";
-        Webhook webhook = new Webhook("test-id", "http://example.com", wildcardEvent, null);
+        Webhook webhook = new Webhook("test-id", "http://8.8.8.8", wildcardEvent, null);
         
         String matchingEvent = prefix + "." + suffix;
         String nonMatchingEvent = "other." + suffix;
@@ -213,8 +213,8 @@ public class WebhookManagerPropertyTest {
     void webhookDoesNotMatchNullEvent(
             @ForAll("eventTypes") String eventType
     ) {
-        Webhook webhook = new Webhook("test-id", "http://example.com", eventType, null);
-        
+        Webhook webhook = new Webhook("test-id", "http://8.8.8.8", eventType, null);
+
         assertThat(webhook.matchesEvent(null)).isFalse();
     }
 
@@ -229,8 +229,8 @@ public class WebhookManagerPropertyTest {
     void webhookWithNullEventDoesNotMatch(
             @ForAll("eventTypes") String eventType
     ) {
-        Webhook webhook = new Webhook("test-id", "http://example.com", null, null);
-        
+        Webhook webhook = new Webhook("test-id", "http://8.8.8.8", null, null);
+
         assertThat(webhook.matchesEvent(eventType)).isFalse();
     }
 
@@ -251,7 +251,7 @@ public class WebhookManagerPropertyTest {
             
             for (int i = 0; i < count; i++) {
                 Webhook webhook = manager.createWebhook(
-                        "http://example.com/webhook" + i,
+                        "http://8.8.8.8/webhook" + i,
                         "event.type",
                         null
                 );
@@ -321,12 +321,16 @@ public class WebhookManagerPropertyTest {
 
     @Provide
     Arbitrary<String> validUrls() {
+        // UrlGuard rejects internal/private hosts, so the provider's "valid"
+        // URLs must all be publicly routable literals. 8.8.8.8 / 1.1.1.1 are
+        // never connected during property tests (no event is triggered); the
+        // host literal only needs to pass the SSRF check at create time.
         return Arbitraries.of(
-                "http://example.com/webhook",
-                "https://api.example.com/hooks/notify",
-                "http://localhost:8080/callback",
-                "https://webhook.site/test",
-                "http://192.168.1.1:3000/api/webhook"
+                "http://8.8.8.8/webhook",
+                "https://1.1.1.1/hooks/notify",
+                "http://8.8.4.4/callback",
+                "https://9.9.9.9/test",
+                "http://8.8.8.8:3000/api/webhook"
         );
     }
 

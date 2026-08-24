@@ -325,12 +325,13 @@ public class InvitationCodeValidityPropertyTest {
         // Revoke the invitation
         boolean revoked = invitationManager.revokeInvitation(code, inviterId);
         assertThat(revoked).isTrue();
-        
-        // Validate should now fail with NC-404 (not found, since it's deleted)
+
+        // Validate should now fail with NC-410 (revoked). The invitation is
+        // marked revoked rather than deleted, so it remains queryable but invalid.
         InvitationResult result = invitationManager.validateInvitation(code);
         assertThat(result.isSuccess()).isFalse();
-        assertThat(result.getErrorCode()).isEqualTo("NC-404");
-        
+        assertThat(result.getErrorCode()).isEqualTo("NC-410");
+
         db.shutdown();
     }
 }

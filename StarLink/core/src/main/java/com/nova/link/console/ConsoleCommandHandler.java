@@ -567,10 +567,12 @@ public class ConsoleCommandHandler {
             Map<String, String> placeholders = new HashMap<>();
             placeholders.put("_announcement", "true");
             placeholders.put("_operator", ConsoleSentinel.CONSOLE_NAME);
-            Set<String> recipients = ctx.getMessageRouter().routeMessage(
+            com.nova.link.channel.RoutingResult routeResult = ctx.getMessageRouter().routeMessage(
                     channel, ConsoleSentinel.CONSOLE_SENTINEL, ConsoleSentinel.CONSOLE_NAME,
                     message, placeholders);
-            return nl(I18n.tr("console.announce.success", channel, recipients.size()));
+            int recipientCount = routeResult.isSuccess()
+                    ? routeResult.getRecipientCount() : 0;
+            return nl(I18n.tr("console.announce.success", channel, recipientCount));
         }
         ensureConsoleSuperAdminSession();
         String message = I18n.tr("console.announce.prefix", content);

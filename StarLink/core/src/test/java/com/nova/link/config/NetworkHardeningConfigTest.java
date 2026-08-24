@@ -62,37 +62,36 @@ class NetworkHardeningConfigTest {
     }
 
     @Test
-    @DisplayName("missing fields fall back to documented defaults")
-    void defaults() throws Exception {
+    @DisplayName("missing fields are supplied by the bundled template")
+    void defaultsComeFromTemplate() throws Exception {
         NovaLinkConfig config = load("""
                 server:
                   port: 8888
                 """);
 
         assertThat(config.getServer().getIdleTimeoutSeconds())
-                .isEqualTo(ServerConfig.DEFAULT_IDLE_TIMEOUT_SECONDS);
+                .isEqualTo(90);
         assertThat(config.getServer().getRestWorkerThreads())
-                .isEqualTo(ServerConfig.DEFAULT_REST_WORKER_THREADS);
+                .isEqualTo(4);
         assertThat(config.getServer().getRateLimitMessagesPerSecond())
-                .isEqualTo(ServerConfig.DEFAULT_RATE_LIMIT_MESSAGES_PER_SECOND);
+                .isEqualTo(10);
         assertThat(config.getServer().getRateLimitBurst())
-                .isEqualTo(ServerConfig.DEFAULT_RATE_LIMIT_BURST);
+                .isEqualTo(20);
     }
 
     @Test
-    @DisplayName("negative values are normalized to safe defaults")
-    void negativeValuesNormalized() {
-        ServerConfig server = new ServerConfig();
-        server.setIdleTimeoutSeconds(-5);
-        server.setRateLimitMessagesPerSecond(-1);
-        server.setRateLimitBurst(-1);
-        server.setRestWorkerThreads(0);
+    @DisplayName("negative values reject the configuration instead of silently changing it")
+    void negativeValuesAreRejected() throws Exception {
+        Path file = tempDir.resolve("invalid-values.yml");
+        Files.writeString(file, """
+                server:
+                  idle-timeout-seconds: -5
+                """);
 
-        assertThat(server.getIdleTimeoutSeconds()).isEqualTo(ServerConfig.DEFAULT_IDLE_TIMEOUT_SECONDS);
-        assertThat(server.getRateLimitMessagesPerSecond())
-                .isEqualTo(ServerConfig.DEFAULT_RATE_LIMIT_MESSAGES_PER_SECOND);
-        assertThat(server.getRateLimitBurst()).isEqualTo(ServerConfig.DEFAULT_RATE_LIMIT_BURST);
-        assertThat(server.getRestWorkerThreads()).isEqualTo(ServerConfig.DEFAULT_REST_WORKER_THREADS);
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> new ConfigLoader(file).load())
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("must not be negative");
     }
 
     @Test
@@ -102,9 +101,11 @@ class NetworkHardeningConfigTest {
                 global_channels:
                   global:
                     display_name: Global
+                    max_capacity: 1000
                     slow_mode: 5
                   free:
                     display_name: Free
+                    max_capacity: 1000
                 clients:
                   - username: Survival
                     password: pw
@@ -140,6 +141,7 @@ class NetworkHardeningConfigTest {
                 global_channels:
                   global:
                     display_name: Global
+                    max_capacity: 1000
                     slow_mode: 9
                 """.getBytes(StandardCharsets.UTF_8));
 

@@ -9,6 +9,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -148,6 +149,22 @@ class MessageHistoryPersistenceTest {
             assertThat(page2).extracting(ChatMessageRecord::getTimestamp).containsExactly(3000L, 2000L);
             assertThat(page3).extracting(ChatMessageRecord::getTimestamp).containsExactly(1000L);
             assertThat(provider.countMessages(MessageFilter.any())).isEqualTo(5);
+        }
+
+        @Test
+        @DisplayName("authorized channel set is applied before pagination and count")
+        void authorizedChannelsConstrainPaginationAndCount() throws DatabaseException {
+            MessageFilter globalOnly = new MessageFilter(
+                    null, null, null, null, null, null, Set.of("global"));
+            assertThat(provider.searchMessages(globalOnly, 0, 2))
+                    .extracting(ChatMessageRecord::getTimestamp)
+                    .containsExactly(4000L, 2000L);
+            assertThat(provider.countMessages(globalOnly)).isEqualTo(3);
+
+            MessageFilter noChannels = new MessageFilter(
+                    null, null, null, null, null, null, Set.of());
+            assertThat(provider.searchMessages(noChannels, 0, 100)).isEmpty();
+            assertThat(provider.countMessages(noChannels)).isZero();
         }
 
         @Test

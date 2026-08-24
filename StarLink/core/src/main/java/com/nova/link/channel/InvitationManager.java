@@ -79,26 +79,51 @@ public class InvitationManager {
      * @throws DatabaseException if saving fails
      */
     public Invitation createInvitation(String channelId, UUID inviterId, long ttlMillis) throws DatabaseException {
+        return createInvitation(channelId, inviterId, ttlMillis, 1);
+    }
+
+    /**
+     * Creates a new invitation for a channel with custom TTL and a configurable
+     * maximum number of uses. {@code maxUses = 1} reproduces the historical
+     * single-use behaviour; {@code maxUses > 1} allows the code to be accepted
+     * multiple times until exhausted.
+     *
+     * @param channelId the channel ID to invite to
+     * @param inviterId the UUID of the player creating the invitation
+     * @param ttlMillis the time-to-live in milliseconds
+     * @param maxUses   the maximum number of times this invitation can be used
+     * @return the created invitation
+     * @throws IllegalArgumentException if the channel doesn't exist or maxUses &lt; 1
+     * @throws DatabaseException if saving fails
+     */
+    public Invitation createInvitation(String channelId, UUID inviterId, long ttlMillis, int maxUses) throws DatabaseException {
         Objects.requireNonNull(channelId, "Channel ID cannot be null");
         Objects.requireNonNull(inviterId, "Inviter ID cannot be null");
-        
+        if (maxUses < 1) {
+            throw new IllegalArgumentException("maxUses must be at least 1");
+        }
+
         // Verify channel exists
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
             throw new IllegalArgumentException("Channel not found: " + channelId);
         }
-        
+
         // Generate unique code
         String code = generateUniqueCode();
-        
+
         // Calculate expiration time
-        long expireTime = System.currentTimeMillis() + ttlMillis;
-        
-        // Create and save invitation
-        Invitation invitation = new Invitation(code, channelId, inviterId, expireTime);
+        long now = System.currentTimeMillis();
+        long expireTime = now + ttlMillis;
+
+        // Create and save invitation. The full constructor fixes maxUses up
+        // front; usedCount starts at 0 and revokedAt is null.
+        Invitation invitation = new Invitation(code, channelId, inviterId, expireTime,
+                now, false, null, 0L,
+                maxUses, 0, null);
         databaseProvider.saveInvitation(invitation);
-        
-        logger.info("Created invitation {} for channel {} by {}", code, channelId, inviterId);
+
+        logger.info("Created invitation {} for channel {} by {} (maxUses={})", code, channelId, inviterId, maxUses);
         return invitation;
     }
 
@@ -144,7 +169,11 @@ public class InvitationManager {
         if (invitation.isUsed()) {
             return InvitationResult.invalid("NC-411", "Invitation has already been used");
         }
-        
+
+        if (invitation.isRevoked()) {
+            return InvitationResult.invalid("NC-410", "Invitation has been revoked");
+        }
+
         if (invitation.isExpired()) {
             return InvitationResult.invalid("NC-410", "Invitation has expired");
         }
@@ -163,39 +192,61 @@ public class InvitationManager {
      */
     public InvitationResult acceptInvitation(String code, UUID playerId, String playerClientId) throws DatabaseException {
         Objects.requireNonNull(playerId, "Player ID cannot be null");
-        
-        // First validate the invitation
+
+        // First validate the invitation (empty / not found / used / revoked /
+        // expired). This is a best-effort pre-check — even if it passes, the
+        // atomic claim below is the real race guard.
         InvitationResult validation = validateInvitation(code);
         if (!validation.isSuccess()) {
             return validation;
         }
-        
+
         Invitation invitation = validation.getInvitation();
         String channelId = invitation.getChannelId();
-        
+
         // Get the channel
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
             return InvitationResult.invalid("NC-404", "Channel no longer exists");
         }
-        
+
         // For private channels, verify client isolation
         if (channel.getScope() == ChannelScope.PRIVATE) {
             if (playerClientId == null || !playerClientId.equals(channel.getClientId())) {
                 return InvitationResult.invalid("NC-403", "Cannot join private channel from different client");
             }
         }
-        
+
         // Check channel capacity
         if (channel.getMaxCapacity() > 0 && channel.getMemberCount() >= channel.getMaxCapacity()) {
             return InvitationResult.invalid("NC-409", "Channel is full");
         }
-        
-        // Mark invitation as used. The provider makes the used=false → used=true
-        // flip atomic; a false return means another caller already consumed the
-        // invitation, so we must NOT add this player to the channel.
-        boolean marked = databaseProvider.markInvitationUsed(code, playerId);
-        if (!marked) {
+
+        // Atomically claim one use of the invitation. A single provider
+        // statement advances usedCount, stamps the accepter/timestamp, and
+        // flips used=true once the quota is exhausted — unified across the
+        // single-use (maxUses=1) and multi-use (maxUses>1) paths. The claim
+        // succeeds (returns 1) only when this caller actually advanced the
+        // count; 0 means exhausted/revoked/missing or lost the race.
+        //
+        // Previously the multi-use branch did load -> incrementUse -> save,
+        // which is NOT atomic: under concurrency N concurrent accepts could
+        // each pass the precheck and each increment, over-accepting beyond
+        // maxUses. The atomic UPDATE (synchronized block for MemoryProvider,
+        // WATCH/MULTI/EXEC for Redis) closes that hole.
+        int claimed = databaseProvider.claimInvitationUse(code, playerId, System.currentTimeMillis());
+        if (claimed != 1) {
+            // Diagnostic re-load to pick the right rejection code. This load
+            // only decides the error path (never accepts), so a stale read
+            // here cannot reintroduce the race.
+            Optional<Invitation> current = databaseProvider.loadInvitation(code);
+            if (current.isEmpty()) {
+                return InvitationResult.invalid("NC-404", "Invitation not found");
+            }
+            Invitation state = current.get();
+            if (state.isRevoked() || state.isExpired()) {
+                return InvitationResult.invalid("NC-410", "Invitation has been revoked or expired");
+            }
             return InvitationResult.invalid("NC-411", "Invitation has already been used");
         }
 
@@ -204,14 +255,16 @@ public class InvitationManager {
         if (!added) {
             return InvitationResult.invalid("NC-500", "Failed to add member to channel");
         }
-        
+
         logger.info("Player {} accepted invitation {} and joined channel {}", playerId, code, channelId);
         return InvitationResult.accepted(invitation, channelId);
     }
 
 
     /**
-     * Revokes an invitation.
+     * Revokes an invitation. The invitation is marked revoked (revokedAt set)
+     * rather than deleted, so audit/history can still query it. A revoked
+     * invitation is permanently invalid regardless of remaining uses.
      *
      * @param code the invitation code to revoke
      * @param revokerId the UUID of the player revoking (must be inviter or admin)
@@ -222,28 +275,30 @@ public class InvitationManager {
         if (code == null || code.isEmpty()) {
             return false;
         }
-        
+
         Optional<Invitation> optInvitation = databaseProvider.loadInvitation(code);
         if (optInvitation.isEmpty()) {
             return false;
         }
-        
+
         Invitation invitation = optInvitation.get();
-        
+
         // Only the inviter can revoke (admin check should be done at higher level)
         if (!invitation.getInviterId().equals(revokerId)) {
-            logger.warn("Player {} attempted to revoke invitation {} created by {}", 
+            logger.warn("Player {} attempted to revoke invitation {} created by {}",
                     revokerId, code, invitation.getInviterId());
             return false;
         }
-        
-        databaseProvider.deleteInvitation(code);
+
+        invitation.markRevoked(revokerId);
+        databaseProvider.saveInvitation(invitation);
         logger.info("Invitation {} revoked by {}", code, revokerId);
         return true;
     }
 
     /**
-     * Force revokes an invitation (for admins).
+     * Force revokes an invitation (for admins). The invitation is marked revoked
+     * (revokedAt set) rather than deleted, so audit/history can still query it.
      *
      * @param code the invitation code to revoke
      * @return true if revoked successfully
@@ -253,13 +308,15 @@ public class InvitationManager {
         if (code == null || code.isEmpty()) {
             return false;
         }
-        
+
         Optional<Invitation> optInvitation = databaseProvider.loadInvitation(code);
         if (optInvitation.isEmpty()) {
             return false;
         }
-        
-        databaseProvider.deleteInvitation(code);
+
+        Invitation invitation = optInvitation.get();
+        invitation.markRevoked(null);
+        databaseProvider.saveInvitation(invitation);
         logger.info("Invitation {} force revoked", code);
         return true;
     }

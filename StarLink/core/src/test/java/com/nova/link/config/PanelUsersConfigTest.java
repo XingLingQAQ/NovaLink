@@ -172,10 +172,15 @@ class PanelUsersConfigTest {
     }
 
     @Test
-    @DisplayName("absent cors-allowed-origins defaults to [\"*\"] (backward compat)")
+    @DisplayName("absent cors-allowed-origins defaults to an explicit example origin (PANEL-011)")
     void corsOriginsDefault() throws Exception {
+        // PANEL-011: the bundled template no longer ships ["*"] (wildcard).
+        // An absent section inherits the template default, which is an explicit
+        // example origin rather than a wildcard. The runtime still accepts "*"
+        // if an operator sets it explicitly, but it is no longer the default.
         NovaLinkConfig config = loadFromYaml(BASE_SERVER);
-        assertThat(config.getServer().getCorsAllowedOrigins()).containsExactly("*");
+        assertThat(config.getServer().getCorsAllowedOrigins())
+                .containsExactly("https://panel.example.com");
     }
 
     @Test

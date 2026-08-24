@@ -5,6 +5,7 @@ import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.link.auth.PermissionLevel;
 import com.nova.link.auth.PermissionManager;
 import com.nova.link.ban.BanManager;
+import com.nova.link.chat.MentionResolver;
 import com.nova.link.console.ConsoleSentinel;
 import com.nova.link.database.ChatMessageRecord;
 import com.nova.link.filter.FilterResult;
@@ -57,10 +58,15 @@ public class MessagePipeline {
     private MessageRouter.WebSocketBroadcaster webSocketBroadcaster;
     private ChatLogger chatLogger;
     private MessageLogService messageLogService;
+    private MentionResolver mentionResolver;
 
     // Feature switches (FeatureConfig §3.5) — volatile for hot-reload visibility.
     private volatile boolean crossServerChatEnabled = true;
     private volatile boolean messageLogEnabled = false;
+    // §11.6 Proposal 05 sub-slice: backend MentionPacket emit. Default true so
+    // @mention notifications reach cross-server recipients without an explicit
+    // config opt-in; flip to false to suppress backend mention delivery.
+    private volatile boolean mentionsEnabled = true;
 
     public MessagePipeline(ChannelManager channelManager, ServerNetworkHandler networkHandler) {
         this(channelManager, networkHandler, new SlowModeTracker());
@@ -143,6 +149,30 @@ public class MessagePipeline {
 
     public void setMessageLogEnabled(boolean messageLogEnabled) {
         this.messageLogEnabled = messageLogEnabled;
+    }
+
+    /**
+     * Wires the §11.6 Proposal 05 mention resolver. When non-null and
+     * {@link #mentionsEnabled} is true, successful fan-out is followed by a
+     * best-effort emit of backend {@code MentionPacket}s to mentioned
+     * players' connections. Nullable: when unset (tests, partial wiring) the
+     * mention stage is skipped entirely so existing pipeline behavior is
+     * unchanged.
+     */
+    public void setMentionResolver(MentionResolver mentionResolver) {
+        this.mentionResolver = mentionResolver;
+    }
+
+    public MentionResolver getMentionResolver() {
+        return mentionResolver;
+    }
+
+    public void setMentionsEnabled(boolean mentionsEnabled) {
+        this.mentionsEnabled = mentionsEnabled;
+    }
+
+    public boolean isMentionsEnabled() {
+        return mentionsEnabled;
     }
 
     /**
@@ -296,6 +326,22 @@ public class MessagePipeline {
         if (recipients.isEmpty()) {
             return MessagePipelineResult.dropped(
                     MessagePipelineResult.DropReason.NO_RECIPIENTS, message, channel);
+        }
+
+        // --- Stage 7b: mention emit (§11.6 Proposal 05 sub-slice) ---
+        // After successful fan-out, resolve @name/@all mentions and deliver
+        // backend MentionPackets to the mentioned players' connections so
+        // cross-server recipients get sound/title notifications. Best-effort:
+        // any failure is caught and logged at debug so chat delivery is never
+        // affected. Skipped when the resolver is not wired (tests) or the
+        // feature switch is off.
+        if (mentionsEnabled && mentionResolver != null) {
+            try {
+                mentionResolver.emitMentions(message, channel, recipients);
+            } catch (Exception e) {
+                logger.debug("Mention emit failed for channel={}: {}",
+                        channel.getId(), e.getMessage());
+            }
         }
 
         // --- Stage 8: async persistence (only after successful fan-out) ---

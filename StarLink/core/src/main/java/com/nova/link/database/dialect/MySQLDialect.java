@@ -22,7 +22,7 @@ public class MySQLDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
     private static final String MIGRATION_LOCK_NAME = "novalink_schema_migration";
-    private static final int CURRENT_VERSION = 7;
+    private static final int CURRENT_VERSION = 13;
 
     @Override
     public int getCurrentVersion() {
@@ -85,7 +85,6 @@ public class MySQLDialect implements MigrationDialect {
                         allowed_worlds TEXT,
                         password VARCHAR(128),
                         owner_id VARCHAR(36),
-                        slow_mode_seconds INT NOT NULL DEFAULT 0,
                         created_at BIGINT,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         INDEX idx_scope (scope),
@@ -306,6 +305,250 @@ public class MySQLDialect implements MigrationDialect {
                 statements.add("DROP PROCEDURE IF EXISTS novalink_add_slow_mode_seconds_column");
             }
 
+            case 8 -> {
+                // Add invitation multi-use / revocation fields:
+                //   max_uses   INT NOT NULL DEFAULT 1  (default 1 preserves the
+                //                                       historical single-use behaviour)
+                //   used_count INT NOT NULL DEFAULT 0  (0 uses so far)
+                //   revoked_at BIGINT NULL            (NULL = not revoked)
+                // Same information_schema-guarded procedure pattern as v2/v6/v7:
+                // standard MySQL 8.0 has no "ADD COLUMN IF NOT EXISTS". ADD COLUMN
+                // with DEFAULT fills existing rows with the default.
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_invitation_multi_use_columns");
+                statements.add("""
+                    CREATE PROCEDURE novalink_add_invitation_multi_use_columns()
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = DATABASE()
+                              AND table_name = 'invitations'
+                              AND column_name = 'max_uses'
+                        ) THEN
+                            ALTER TABLE invitations ADD COLUMN max_uses INT NOT NULL DEFAULT 1 AFTER used_at;
+                        END IF;
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = DATABASE()
+                              AND table_name = 'invitations'
+                              AND column_name = 'used_count'
+                        ) THEN
+                            ALTER TABLE invitations ADD COLUMN used_count INT NOT NULL DEFAULT 0 AFTER max_uses;
+                        END IF;
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = DATABASE()
+                              AND table_name = 'invitations'
+                              AND column_name = 'revoked_at'
+                        ) THEN
+                            ALTER TABLE invitations ADD COLUMN revoked_at BIGINT NULL AFTER used_count;
+                        END IF;
+                    END
+                    """);
+                statements.add("CALL novalink_add_invitation_multi_use_columns()");
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_invitation_multi_use_columns");
+            }
+
+            case 9 -> {
+                // Audit events table — append-only audit log (PANEL-006).
+                // before_hash/after_hash hold SHA-256 hex of the resource JSON
+                // after secrets are stripped; they may be NULL for create (no
+                // before) / delete (no after). `action` and `result` are
+                // backtick-quoted because they are MySQL reserved words.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS audit_events (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        event_id VARCHAR(64) NOT NULL,
+                        request_id VARCHAR(64),
+                        actor VARCHAR(128),
+                        role VARCHAR(32),
+                        origin VARCHAR(128),
+                        `action` VARCHAR(64) NOT NULL,
+                        resource VARCHAR(255),
+                        before_hash VARCHAR(64),
+                        after_hash VARCHAR(64),
+                        reason TEXT,
+                        `result` VARCHAR(16) NOT NULL,
+                        created_at BIGINT NOT NULL,
+                        INDEX idx_audit_events_created_at (created_at),
+                        INDEX idx_audit_events_actor (actor),
+                        INDEX idx_audit_events_action (`action`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+            }
+
+            case 10 -> {
+                // Per-user notification state (PANEL-014). notifications becomes
+                // an immutable event stream: recipient=NULL = broadcast; a
+                // non-NULL recipient marks a directed notification. The new
+                // notification_read table tracks per-user read state so one
+                // admin's read/clear never affects another's inbox. Same
+                // information_schema-guarded procedure pattern as v2/v6/v7/v8:
+                // standard MySQL 8.0 has no "ADD COLUMN IF NOT EXISTS". `read`
+                // is backtick-quoted because it is a MySQL reserved word.
+                // Existing notifications default recipient=NULL (broadcast).
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_notification_recipient_column");
+                statements.add("""
+                    CREATE PROCEDURE novalink_add_notification_recipient_column()
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = DATABASE()
+                              AND table_name = 'notifications'
+                              AND column_name = 'recipient'
+                        ) THEN
+                            ALTER TABLE notifications ADD COLUMN recipient VARCHAR(64) NULL AFTER `read`;
+                        END IF;
+                    END
+                    """);
+                statements.add("CALL novalink_add_notification_recipient_column()");
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_notification_recipient_column");
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS notification_read (
+                        notification_id BIGINT NOT NULL,
+                        user_id VARCHAR(64) NOT NULL,
+                        `read` BOOLEAN NOT NULL DEFAULT TRUE,
+                        read_at BIGINT NULL,
+                        PRIMARY KEY (notification_id, user_id),
+                        INDEX idx_notification_read_user_read (user_id, `read`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+                statements.add("CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications (recipient)");
+            }
+
+            case 11 -> {
+                // Moderation case/appeal workflow (PANEL-007). Three new tables:
+                //   moderation_cases  one row per report/moderation action
+                //   case_evidence     append-only evidence attached to a case
+                //   appeals           appeals against resolved cases
+                // content_hash holds the SHA-256 hex of the case/appeal payload
+                // (secrets are never persisted — only the hash). `status` is a
+                // MySQL non-reserved keyword (the novalink_migrations table uses
+                // it un-quoted at v1), so it is left bare here for consistency.
+                // `read`/`action`/`result` are reserved words and are not used
+                // by these tables. CREATE TABLE IF NOT EXISTS is idempotent in
+                // MySQL so no information_schema guard is needed.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS moderation_cases (
+                        id VARCHAR(64) PRIMARY KEY,
+                        subject_player_id VARCHAR(64) NOT NULL,
+                        subject_display_name VARCHAR(128),
+                        reporter_name VARCHAR(128),
+                        reporter_source VARCHAR(16) NOT NULL,
+                        source VARCHAR(16) NOT NULL,
+                        channel_id VARCHAR(64),
+                        reason VARCHAR(1024),
+                        snapshot VARCHAR(1024),
+                        status VARCHAR(16) NOT NULL,
+                        assigned_moderator VARCHAR(128),
+                        resolution_action VARCHAR(16),
+                        resolution_note VARCHAR(1024),
+                        content_hash VARCHAR(64),
+                        created_at BIGINT NOT NULL,
+                        updated_at BIGINT NOT NULL,
+                        closed_at BIGINT NULL,
+                        INDEX idx_moderation_cases_status (status),
+                        INDEX idx_moderation_cases_subject (subject_player_id),
+                        INDEX idx_moderation_cases_created_at (created_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS case_evidence (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        case_id VARCHAR(64) NOT NULL,
+                        evidence_type VARCHAR(32) NOT NULL,
+                        content_hash VARCHAR(64),
+                        description VARCHAR(512),
+                        submitted_by VARCHAR(128),
+                        created_at BIGINT NOT NULL,
+                        INDEX idx_case_evidence_case_id (case_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS appeals (
+                        id VARCHAR(64) PRIMARY KEY,
+                        case_id VARCHAR(64) NOT NULL,
+                        appellant VARCHAR(128),
+                        appeal_reason VARCHAR(1024),
+                        status VARCHAR(16) NOT NULL,
+                        reviewed_by VARCHAR(128),
+                        review_note VARCHAR(1024),
+                        reviewed_at BIGINT NULL,
+                        content_hash VARCHAR(64),
+                        created_at BIGINT NOT NULL,
+                        INDEX idx_appeals_case_id (case_id),
+                        INDEX idx_appeals_status (status)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+            }
+
+            case 12 -> {
+                // Config history / rollback (§11.6 Project 20 / PANEL proposal 10).
+                //   config_history — append-only masked snapshots of the full NovaLink
+                //                   config keyed by the monotonic settings revision
+                //                   (PANEL-010). Only one row is active at a time
+                //                   (active=TRUE); rollback appends a new row and
+                //                   flips the active flag rather than mutating or
+                //                   deleting prior history. snapshot_json holds the
+                //                   MASKED config (secrets replaced with "***") so the
+                //                   table never stores plaintext secrets — same
+                //                   posture as audit_events.content_hash. `active`
+                //   is a non-reserved word in MySQL (the moderation tables already
+                //   use `status` bare for the same reason), so it is left un-quoted.
+                //   CREATE TABLE IF NOT EXISTS is idempotent in MySQL so no
+                //   information_schema guard is needed.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS config_history (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        revision BIGINT NOT NULL,
+                        snapshot_json TEXT NOT NULL,
+                        created_at BIGINT NOT NULL,
+                        created_by VARCHAR(64),
+                        active BOOLEAN NOT NULL DEFAULT FALSE,
+                        INDEX idx_config_history_created_at (created_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+            }
+
+            case 13 -> {
+                // Social relations & ignore (§11.6 item-18 / PANEL proposal 08).
+                //   social_relations — directional per-player relations keyed by
+                //                     the composite (source_id, target_id, type).
+                //                     Initial scope: IGNORE + FAVORITE. One row of
+                //                     each type may exist per ordered pair; the
+                //                     provider upserts by deleting the prior
+                //                     matching row before inserting. Relations gate
+                //                     notifications + default sorting only — they
+                //                     never bypass channel permission, ban, or
+                //                     audit; ignore is NOT a server-side ban.
+                //   notification_preferences — per-player notification knobs
+                //                     (mentions opt-in). Deliberately does NOT
+                //                     carry dm_enabled (that lives on players via
+                //                     schema v6). `type` is a non-reserved word in
+                //                     MySQL (moderation uses `status` bare for the
+                //                     same reason) so it is left un-quoted. UUIDs
+                //   are VARCHAR(36) strings; timestamps are BIGINT epoch millis.
+                //   CREATE TABLE IF NOT EXISTS is idempotent so no information_schema
+                //   guard is needed.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS social_relations (
+                        source_id VARCHAR(36) NOT NULL,
+                        target_id VARCHAR(36) NOT NULL,
+                        type VARCHAR(16) NOT NULL,
+                        created_at BIGINT NOT NULL,
+                        updated_at BIGINT NOT NULL,
+                        PRIMARY KEY (source_id, target_id, type),
+                        INDEX idx_social_relations_target_id (target_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS notification_preferences (
+                        player_id VARCHAR(36) NOT NULL PRIMARY KEY,
+                        mentions_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                        updated_at BIGINT NOT NULL
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+            }
+
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -322,6 +565,12 @@ public class MySQLDialect implements MigrationDialect {
             case 5 -> "Add messages, announcements and webhooks tables for persistence";
             case 6 -> "Add dm_enabled column to players table to persist DM opt-out";
             case 7 -> "Add slow_mode_seconds column to channels table to persist slow-mode config";
+            case 8 -> "Add max_uses, used_count and revoked_at columns to invitations for multi-use and revocation";
+            case 9 -> "Add audit_events table for append-only admin audit log (PANEL-006)";
+            case 10 -> "Add per-user notification state (recipient column + notification_read table) (PANEL-014)";
+            case 11 -> "Add moderation_cases, case_evidence and appeals tables (PANEL-007)";
+            case 12 -> "Add config_history table for masked config snapshots and rollback (PANEL proposal 10)";
+            case 13 -> "Add social_relations and notification_preferences tables for ignore/favorite/mentions (PANEL proposal 08)";
             default -> "Unknown migration";
         };
     }

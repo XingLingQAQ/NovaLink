@@ -101,9 +101,10 @@ class MessageRouterBoundaryPipelineTest {
 
         // Trusted REST helper stamps clientId from the channel itself; still delivers
         // even if caller only provides channelId (no client ownership check needed).
-        Set<String> recipients = router.routeMessage(
+        com.nova.link.channel.RoutingResult result = router.routeMessage(
                 "local", senderId, "API", "announce", null);
-        assertThat(recipients).containsExactly("Survival");
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getRecipientClientIds()).containsExactly("Survival");
         verify(owner).sendPacket(any());
     }
 

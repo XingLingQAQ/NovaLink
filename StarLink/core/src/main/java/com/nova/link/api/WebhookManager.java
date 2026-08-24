@@ -2,6 +2,7 @@ package com.nova.link.api;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import com.nova.link.security.UrlGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -112,8 +113,14 @@ public class WebhookManager {
         }
         this.retryDelayMillis = retryDelayMillis;
         this.webhooks = new ConcurrentHashMap<>();
+        // NEVER follow redirects: an operator could register a public URL that
+        // 30x-redirects to an internal/metadata endpoint, bypassing the SSRF
+        // guard. No proxy override: a system-wide proxy could also route the
+        // request around the validated destination.
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(HTTP_TIMEOUT)
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .proxy(java.net.ProxySelector.of(null))
                 .build();
         this.deliveryExecutor = new ThreadPoolExecutor(
                 workerThreads,
@@ -176,6 +183,7 @@ public class WebhookManager {
      * @return the created webhook
      */
     public Webhook createWebhook(String url, String event, String secret) {
+        UrlGuard.validateSink(url);
         String id = generateId();
         Webhook webhook = new Webhook(id, url, event, secret);
         webhooks.put(id, webhook);
@@ -202,6 +210,7 @@ public class WebhookManager {
             return null;
         }
         if (url != null) {
+            UrlGuard.validateSink(url);
             webhook.setUrl(url);
         }
         if (event != null) {
@@ -267,7 +276,14 @@ public class WebhookManager {
             }
             if (webhook.matchesEvent(eventType)) {
                 try {
-                    submitInitial(createDelivery(webhook, eventType, payload));
+                    Delivery delivery = createDelivery(webhook, eventType, payload);
+                    if (delivery == null) {
+                        // Blocked by the SSRF guard — drop without retrying,
+                        // since the URL cannot be made reachable by a retry.
+                        failedDeliveryCount.incrementAndGet();
+                        continue;
+                    }
+                    submitInitial(delivery);
                 } catch (IllegalArgumentException e) {
                     rejectedDeliveryCount.incrementAndGet();
                     failedDeliveryCount.incrementAndGet();
@@ -333,6 +349,16 @@ public class WebhookManager {
     }
 
     /**
+     * Test-only escape hatch: permits {@link UrlGuard} to accept loopback sink
+     * URLs so focused tests can drive an actual HTTP delivery against an
+     * in-process 127.0.0.1 server. Has no effect in production wiring; never
+     * called outside tests.
+     */
+    void allowLoopbackForTest() {
+        UrlGuard.setLoopbackAllowedForTest(true);
+    }
+
+    /**
      * Synchronously sends a test payload ({@code event=test}) to a webhook.
      * No retries; 5-second timeout. Used by POST /api/webhooks/{id}/test.
      *
@@ -353,14 +379,18 @@ public class WebhookManager {
 
         HttpRequest.Builder requestBuilder;
         try {
+            URI checked = UrlGuard.validateSink(webhook.getUrl());
             requestBuilder = HttpRequest.newBuilder()
-                    .uri(URI.create(webhook.getUrl()))
+                    .uri(checked)
                     .timeout(TEST_TIMEOUT)
                     .header("Content-Type", "application/json")
                     .header("User-Agent", "NovaLink-Webhook/1.0")
                     .header("X-NovaLink-Event", "test")
                     .header("X-NovaLink-Webhook-Id", webhook.getId())
                     .POST(HttpRequest.BodyPublishers.ofString(body));
+        } catch (SecurityException e) {
+            return TestResult.failure(
+                    "Webhook URL rejected by SSRF guard: " + e.getMessage());
         } catch (IllegalArgumentException e) {
             return TestResult.failure("Invalid webhook URL: " + e.getMessage());
         }
@@ -433,8 +463,16 @@ public class WebhookManager {
         fullPayload.add("data", payload);
 
         String body = gson.toJson(fullPayload);
+        URI checked;
+        try {
+            checked = UrlGuard.validateSink(webhook.getUrl());
+        } catch (SecurityException e) {
+            logger.warn("Webhook {} rejected by SSRF guard: {}",
+                    webhook.getId(), e.getMessage());
+            return null;
+        }
         HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
-                .uri(URI.create(webhook.getUrl()))
+                .uri(checked)
                 .timeout(HTTP_TIMEOUT)
                 .header("Content-Type", "application/json")
                 .header("User-Agent", "NovaLink-Webhook/1.0")

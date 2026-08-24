@@ -1,5 +1,6 @@
 package com.nova.link.api;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.nova.link.auth.AuthManager;
@@ -29,6 +30,7 @@ import com.nova.link.websocket.WebSocketGateway;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
+import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.util.CharsetUtil;
 import org.junit.jupiter.api.AfterEach;
@@ -39,6 +41,8 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
@@ -72,6 +76,12 @@ class RestApiRbacTest {
     void setUp() throws Exception {
         db = new MemoryProvider();
         db.initialize();
+        // PANEL-006: some RBAC tests create webhooks against http://example.com.
+        // In this environment example.com resolves to the RFC 2544 benchmark
+        // range (198.18.0.0/15), which UrlGuard rejects as a non-public SSRF
+        // sink. The loopback test escape hatch also covers benchmark addresses,
+        // enabling the webhook-creation assertions without disabling the guard.
+        com.nova.link.security.UrlGuard.setLoopbackAllowedForTest(true);
 
         channelManager = new ChannelManager();
         PlayerStateManager playerStateManager = new PlayerStateManager(db);
@@ -88,12 +98,32 @@ class RestApiRbacTest {
                 .displayName("Staff")
                 .scope(ChannelScope.GLOBAL)
                 .build());
+        channelManager.createChannel(com.nova.link.channel.ChannelConfig.builder()
+                .id("survival")
+                .displayName("Survival")
+                .scope(ChannelScope.SERVER)
+                .clientId("Survival")
+                .build());
+        channelManager.createChannel(com.nova.link.channel.ChannelConfig.builder()
+                .id("private-staff")
+                .displayName("Private Staff")
+                .scope(ChannelScope.PRIVATE)
+                .clientId("Survival")
+                .build());
 
         ServerNetworkHandler networkHandler = mock(ServerNetworkHandler.class);
         com.nova.link.network.ClientConnection connection = mock(com.nova.link.network.ClientConnection.class);
         when(connection.getClientId()).thenReturn("Survival");
+        when(connection.isAuthenticated()).thenReturn(true);
+        when(connection.isActive()).thenReturn(true);
         when(connection.close()).thenReturn(CompletableFuture.completedFuture(null));
         when(networkHandler.findByClientId("Survival")).thenReturn(connection);
+        // BACK-003: handleSendMessage now treats zero recipients as NC-404. The
+        // RBAC matrix tests assert that an ADMIN can SEND to a GLOBAL channel
+        // and expects 200 OK — the routing fan-out must reach at least one
+        // online, authenticated, active client, so expose the Survival
+        // connection via getConnections() and mark it authenticated+active.
+        when(networkHandler.getConnections()).thenReturn(java.util.Set.of(connection));
 
         MessageRouter messageRouter = new MessageRouter(channelManager, networkHandler);
         messageRouter.setMuteManager(muteManager);
@@ -159,6 +189,7 @@ class RestApiRbacTest {
     void tearDown() {
         muteManager.shutdown();
         banManager.shutdown();
+        com.nova.link.security.UrlGuard.setLoopbackAllowedForTest(false);
     }
 
     // ====================== helpers ======================
@@ -180,6 +211,10 @@ class RestApiRbacTest {
         }
 
         ChannelHandlerContext ctx = mock(ChannelHandlerContext.class);
+        // PANEL-006: channelRead0 stores the per-request id as a channel
+        // attribute, so the mock must return a real channel that supports
+        // AttributeMap. An EmbeddedChannel is the lightest such implementation.
+        when(ctx.channel()).thenReturn(new EmbeddedChannel());
         AtomicReference<Object> captured = new AtomicReference<>();
         ChannelPromise promise = mock(ChannelPromise.class);
         doAnswer(inv -> {
@@ -205,6 +240,13 @@ class RestApiRbacTest {
         JsonObject asJson() {
             return JsonParser.parseString(body).getAsJsonObject();
         }
+    }
+
+    private static Set<String> channelIds(Response response) {
+        JsonArray channels = response.asJson().getAsJsonArray("channels");
+        Set<String> ids = new LinkedHashSet<>();
+        channels.forEach(element -> ids.add(element.getAsJsonObject().get("id").getAsString()));
+        return ids;
     }
 
     // ====================== requiredRole matrix (unit) ======================
@@ -284,6 +326,36 @@ class RestApiRbacTest {
                     .isEqualTo(HttpResponseStatus.OK);
             assertThat(dispatch(viewerToken, HttpMethod.GET, "/api/status", null).status())
                     .isEqualTo(HttpResponseStatus.OK);
+        }
+
+        @Test
+        @DisplayName("sees only GLOBAL and cannot enumerate SERVER/PRIVATE details or members")
+        void viewerChannelResourcesAreFiltered() {
+            Response list = dispatch(viewerToken, HttpMethod.GET, "/api/channels", null);
+            assertThat(channelIds(list)).containsExactly("staff");
+            assertThat(list.asJson().getAsJsonArray("subscribableChannelIds"))
+                    .extracting(element -> element.getAsString())
+                    .containsExactly("staff");
+
+            Response privateDetail = dispatch(
+                    viewerToken, HttpMethod.GET, "/api/channels/private-staff", null);
+            Response privateMembers = dispatch(
+                    viewerToken, HttpMethod.GET, "/api/channels/private-staff/members", null);
+            Response missingDetail = dispatch(
+                    viewerToken, HttpMethod.GET, "/api/channels/missing", null);
+            assertThat(privateDetail.status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
+            assertThat(privateMembers.status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
+            // PANEL-006: each response now carries a unique requestId for
+            // tracing, so the raw bodies will not be byte-identical. The
+            // viewer must still be unable to distinguish "channel exists but
+            // is private" from "channel does not exist": compare the fields
+            // that carry the semantic meaning.
+            assertThat(privateDetail.asJson().get("error").getAsString())
+                    .isEqualTo(missingDetail.asJson().get("error").getAsString());
+            assertThat(privateDetail.asJson().get("message").getAsString())
+                    .isEqualTo(missingDetail.asJson().get("message").getAsString());
+            assertThat(privateDetail.asJson().get("status").getAsInt())
+                    .isEqualTo(missingDetail.asJson().get("status").getAsInt());
         }
 
         @Test
@@ -367,6 +439,28 @@ class RestApiRbacTest {
         }
 
         @Test
+        @DisplayName("sees/sends GLOBAL and SERVER but not PRIVATE")
+        void adminChannelResourcesAreFiltered() {
+            assertThat(channelIds(dispatch(adminToken, HttpMethod.GET, "/api/channels", null)))
+                    .containsExactlyInAnyOrder("staff", "survival");
+            assertThat(dispatch(adminToken, HttpMethod.POST, "/api/messages",
+                    "{\"channelId\":\"private-staff\",\"content\":\"secret\"}").status())
+                    .isEqualTo(HttpResponseStatus.NOT_FOUND);
+
+            assertThat(dispatch(adminToken, HttpMethod.POST, "/api/channels",
+                    "{\"id\":\"admin-private\",\"displayName\":\"Private\",\"scope\":\"private\"}")
+                    .status()).isEqualTo(HttpResponseStatus.FORBIDDEN);
+            assertThat(dispatch(adminToken, HttpMethod.PUT, "/api/channels/private-staff",
+                    "{\"displayName\":\"Leaked edit\"}").status())
+                    .isEqualTo(HttpResponseStatus.NOT_FOUND);
+            assertThat(dispatch(adminToken, HttpMethod.POST, "/api/channels/private-staff/invite", "{}")
+                    .status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
+            assertThat(dispatch(adminToken, HttpMethod.DELETE, "/api/channels/private-staff", null)
+                    .status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
+            assertThat(channelManager.getChannel("private-staff")).isNotNull();
+        }
+
+        @Test
         @DisplayName("gets 403 for console (SUPER_ADMIN only)")
         void adminCannotConsole() {
             Response resp = dispatch(adminToken, HttpMethod.POST, "/api/console",
@@ -426,6 +520,13 @@ class RestApiRbacTest {
 
             assertThat(dispatch(superAdminToken, HttpMethod.DELETE, "/api/clients/Survival", null).status())
                     .isEqualTo(HttpResponseStatus.OK);
+        }
+
+        @Test
+        @DisplayName("sees GLOBAL, SERVER and PRIVATE channel resources")
+        void superAdminSeesEveryScope() {
+            assertThat(channelIds(dispatch(superAdminToken, HttpMethod.GET, "/api/channels", null)))
+                    .containsExactlyInAnyOrder("staff", "survival", "private-staff");
         }
     }
 
