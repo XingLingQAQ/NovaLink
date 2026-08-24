@@ -9,7 +9,7 @@ import java.util.Objects;
  */
 public class DatabaseConfig {
 
-    private String type = "memory";
+    private String type;
     private MySQLConfig mysql;
     private PostgreSQLConfig postgresql;
     private SQLiteConfig sqlite;
@@ -27,7 +27,7 @@ public class DatabaseConfig {
     }
 
     public void setType(String type) {
-        this.type = type != null ? type : "memory";
+        this.type = type;
     }
 
     public MySQLConfig getMysql() {
@@ -35,7 +35,7 @@ public class DatabaseConfig {
     }
 
     public void setMysql(MySQLConfig mysql) {
-        this.mysql = mysql != null ? mysql : new MySQLConfig();
+        this.mysql = mysql;
     }
 
     public PostgreSQLConfig getPostgresql() {
@@ -43,7 +43,7 @@ public class DatabaseConfig {
     }
 
     public void setPostgresql(PostgreSQLConfig postgresql) {
-        this.postgresql = postgresql != null ? postgresql : new PostgreSQLConfig();
+        this.postgresql = postgresql;
     }
 
     public SQLiteConfig getSqlite() {
@@ -51,7 +51,7 @@ public class DatabaseConfig {
     }
 
     public void setSqlite(SQLiteConfig sqlite) {
-        this.sqlite = sqlite != null ? sqlite : new SQLiteConfig();
+        this.sqlite = sqlite;
     }
 
     public RedisConfig getRedis() {
@@ -59,7 +59,7 @@ public class DatabaseConfig {
     }
 
     public void setRedis(RedisConfig redis) {
-        this.redis = redis != null ? redis : new RedisConfig();
+        this.redis = redis;
     }
 
     @Override
@@ -83,19 +83,19 @@ public class DatabaseConfig {
      * MySQL configuration.
      */
     public static class MySQLConfig {
-        private String host = "127.0.0.1";
-        private int port = 3306;
-        private String database = "novalink";
-        private String username = "root";
-        private String password = "";
-        private int poolSize = 10;
+        private String host;
+        private int port;
+        private String database;
+        private String username;
+        private String password;
+        private int poolSize;
 
         public String getHost() {
             return host;
         }
 
         public void setHost(String host) {
-            this.host = host != null ? host : "127.0.0.1";
+            this.host = host;
         }
 
         public int getPort() {
@@ -103,7 +103,7 @@ public class DatabaseConfig {
         }
 
         public void setPort(int port) {
-            this.port = port > 0 ? port : 3306;
+            this.port = port;
         }
 
         public String getDatabase() {
@@ -111,7 +111,7 @@ public class DatabaseConfig {
         }
 
         public void setDatabase(String database) {
-            this.database = database != null ? database : "novalink";
+            this.database = database;
         }
 
         public String getUsername() {
@@ -119,7 +119,7 @@ public class DatabaseConfig {
         }
 
         public void setUsername(String username) {
-            this.username = username != null ? username : "root";
+            this.username = username;
         }
 
         public String getPassword() {
@@ -127,7 +127,7 @@ public class DatabaseConfig {
         }
 
         public void setPassword(String password) {
-            this.password = password != null ? password : "";
+            this.password = password;
         }
 
         public int getPoolSize() {
@@ -135,7 +135,7 @@ public class DatabaseConfig {
         }
 
         public void setPoolSize(int poolSize) {
-            this.poolSize = poolSize > 0 ? poolSize : 10;
+            this.poolSize = poolSize;
         }
 
         @Override
@@ -158,23 +158,22 @@ public class DatabaseConfig {
     }
 
     /**
-     * PostgreSQL configuration. Mirrors the MySQL connection fields with
-     * PostgreSQL-appropriate defaults (port 5432).
+     * PostgreSQL configuration. Mirrors the MySQL connection fields.
      */
     public static class PostgreSQLConfig {
-        private String host = "127.0.0.1";
-        private int port = 5432;
-        private String database = "novalink";
-        private String username = "postgres";
-        private String password = "";
-        private int poolSize = 10;
+        private String host;
+        private int port;
+        private String database;
+        private String username;
+        private String password;
+        private int poolSize;
 
         public String getHost() {
             return host;
         }
 
         public void setHost(String host) {
-            this.host = host != null ? host : "127.0.0.1";
+            this.host = host;
         }
 
         public int getPort() {
@@ -182,7 +181,7 @@ public class DatabaseConfig {
         }
 
         public void setPort(int port) {
-            this.port = port > 0 ? port : 5432;
+            this.port = port;
         }
 
         public String getDatabase() {
@@ -190,7 +189,7 @@ public class DatabaseConfig {
         }
 
         public void setDatabase(String database) {
-            this.database = database != null ? database : "novalink";
+            this.database = database;
         }
 
         public String getUsername() {
@@ -198,7 +197,7 @@ public class DatabaseConfig {
         }
 
         public void setUsername(String username) {
-            this.username = username != null ? username : "postgres";
+            this.username = username;
         }
 
         public String getPassword() {
@@ -206,7 +205,7 @@ public class DatabaseConfig {
         }
 
         public void setPassword(String password) {
-            this.password = password != null ? password : "";
+            this.password = password;
         }
 
         public int getPoolSize() {
@@ -214,7 +213,7 @@ public class DatabaseConfig {
         }
 
         public void setPoolSize(int poolSize) {
-            this.poolSize = poolSize > 0 ? poolSize : 10;
+            this.poolSize = poolSize;
         }
 
         @Override
@@ -241,15 +240,15 @@ public class DatabaseConfig {
      * file path and (optional) pool size are needed.
      */
     public static class SQLiteConfig {
-        private String filePath = "data/novalink.db";
-        private int poolSize = 5;
+        private String filePath;
+        private int poolSize;
 
         public String getFilePath() {
             return filePath;
         }
 
         public void setFilePath(String filePath) {
-            this.filePath = filePath != null && !filePath.isBlank() ? filePath : "data/novalink.db";
+            this.filePath = filePath;
         }
 
         public int getPoolSize() {
@@ -257,7 +256,7 @@ public class DatabaseConfig {
         }
 
         public void setPoolSize(int poolSize) {
-            this.poolSize = poolSize > 0 ? poolSize : 5;
+            this.poolSize = poolSize;
         }
 
         @Override
@@ -279,10 +278,10 @@ public class DatabaseConfig {
      * Redis configuration.
      */
     public static class RedisConfig {
-        private boolean enabled = false;
-        private String host = "127.0.0.1";
-        private int port = 6379;
-        private String password = "";
+        private boolean enabled;
+        private String host;
+        private int port;
+        private String password;
 
         public boolean isEnabled() {
             return enabled;
@@ -297,7 +296,7 @@ public class DatabaseConfig {
         }
 
         public void setHost(String host) {
-            this.host = host != null ? host : "127.0.0.1";
+            this.host = host;
         }
 
         public int getPort() {
@@ -305,7 +304,7 @@ public class DatabaseConfig {
         }
 
         public void setPort(int port) {
-            this.port = port > 0 ? port : 6379;
+            this.port = port;
         }
 
         public String getPassword() {
@@ -313,7 +312,7 @@ public class DatabaseConfig {
         }
 
         public void setPassword(String password) {
-            this.password = password != null ? password : "";
+            this.password = password;
         }
 
         @Override

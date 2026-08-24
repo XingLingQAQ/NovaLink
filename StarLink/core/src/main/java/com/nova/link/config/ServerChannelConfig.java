@@ -13,12 +13,12 @@ public class ServerChannelConfig {
 
     private String useTemplate;
     private String displayName;
-    private String scope = "SERVER";
+    private String scope;
     private String permission;
     private Integer maxCapacity;
     private List<String> allowedWorlds;
     /** Minimum seconds between two messages from the same player (0 = disabled). */
-    private int slowModeSeconds = 0;
+    private int slowModeSeconds;
 
     public ServerChannelConfig() {}
 
@@ -75,7 +75,7 @@ public class ServerChannelConfig {
     }
 
     public void setSlowModeSeconds(int slowModeSeconds) {
-        this.slowModeSeconds = Math.max(0, slowModeSeconds);
+        this.slowModeSeconds = slowModeSeconds;
     }
 
     @Override

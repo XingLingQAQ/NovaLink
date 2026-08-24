@@ -16,23 +16,22 @@ import java.util.Objects;
  */
 public class FeatureConfig {
 
-    /** Whether the sensitive-word filter is active. Default true. */
-    private boolean filterEnabled = true;
+    /** Whether the sensitive-word filter is active. */
+    private boolean filterEnabled;
 
-    /** Whether chat messages are written to the chat log. Default false. */
-    private boolean messageLogEnabled = false;
+    /** Whether chat messages are written to the chat log. */
+    private boolean messageLogEnabled;
 
-    /** Whether cross-server chat fan-out is active. Default true. */
-    private boolean crossServerChatEnabled = true;
+    /** Whether cross-server chat fan-out is active. */
+    private boolean crossServerChatEnabled;
 
-    /** Whether cross-server private messages (/msg, /reply) are active. Default true. */
-    private boolean privateMessagesEnabled = true;
+    /** Whether cross-server private messages (/msg, /reply) are active. */
+    private boolean privateMessagesEnabled;
 
     /**
-     * How many days persisted chat messages are retained; 0 keeps them
-     * forever. Default 30.
+     * How many days persisted chat messages are retained; 0 keeps them forever.
      */
-    private int messageLogRetentionDays = 30;
+    private int messageLogRetentionDays;
 
     public FeatureConfig() {}
 
@@ -73,7 +72,7 @@ public class FeatureConfig {
     }
 
     public void setMessageLogRetentionDays(int messageLogRetentionDays) {
-        this.messageLogRetentionDays = Math.max(0, messageLogRetentionDays);
+        this.messageLogRetentionDays = messageLogRetentionDays;
     }
 
     @Override

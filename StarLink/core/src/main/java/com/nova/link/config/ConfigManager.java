@@ -9,7 +9,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.security.MessageDigest;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
@@ -50,10 +52,35 @@ public class ConfigManager {
     // Debounce for file changes
     private volatile long lastReloadTime;
     private static final long DEBOUNCE_MS = 1000;
-    
+
     // Reload statistics
     private volatile int reloadCount = 0;
     private volatile long lastSuccessfulReload = 0;
+
+    // PANEL-010: settings revision for optimistic-concurrency control.
+    // Incremented atomically every time a settings mutation lands (save() or
+    // a panel-driven update that changes the FeatureConfig). GET /api/settings
+    // exposes this as revision + ETag; PUT /api/settings requires the client
+    // to echo it back via If-Match / baseRevision and rejects a stale write
+    // with 409 Conflict + the current server values.
+    private final java.util.concurrent.atomic.AtomicLong settingsRevision =
+            new java.util.concurrent.atomic.AtomicLong(0);
+
+    // SHA-256 of the file content we wrote ourselves. When the watcher
+    // fires for a change whose hash matches this, it was our own save; skip
+    // the reload to avoid the self-trigger loop (save -> reload -> broadcast).
+    private volatile String lastWrittenFileHash;
+    private volatile long lastWrittenAt;
+    private final Object fileOperationLock = new Object();
+    private static final long SELF_WRITE_EVENT_WINDOW_MS = 10_000;
+
+    // §11.6 Project 20 / PANEL proposal 10 — config diff + atomic rollback.
+    // Setter-injected (NOT constructor-injected) to avoid a wiring cycle and to
+    // keep NovaLinkMain untouched (the service is lazily assembled from the db
+    // + this manager by the REST layer). When null, save() simply skips the
+    // snapshot recording — the live config is still written and the revision
+    // bumped. The service masks secrets before persisting.
+    private volatile com.nova.link.api.ConfigHistoryService configHistoryService;
 
     public ConfigManager(Path configPath) {
         this.configLoader = new ConfigLoader(configPath);
@@ -88,6 +115,22 @@ public class ConfigManager {
     }
 
     /**
+     * Sets the config-history service used to record a masked snapshot after
+     * every successful save (§11.6 Project 20). Setter-injected rather than
+     * constructor-injected to avoid a wiring cycle and to keep NovaLinkMain
+     * untouched — the REST layer wires this once the service is assembled.
+     * When null (or never set), {@link #save()} skips the snapshot and the
+     * live config is still written normally.
+     *
+     * @param configHistoryService the history service, or null to disable
+     */
+    public void setConfigHistoryService(com.nova.link.api.ConfigHistoryService configHistoryService) {
+        this.configHistoryService = configHistoryService;
+        logger.debug("Config history service {} for config snapshot recording",
+                configHistoryService == null ? "cleared" : "set");
+    }
+
+    /**
      * Loads the configuration from file.
      *
      * @return the loaded configuration
@@ -100,10 +143,44 @@ public class ConfigManager {
     /**
      * Saves the current configuration to file.
      *
+     * <p>After writing, records the SHA-256 of the written content so the file
+     * watcher in {@link #pollFileChanges()} can recognise this save as our own
+     * write and skip the reload, avoiding a save -> reload -> broadcast loop.
+     *
      * @throws ConfigException if saving fails
      */
     public void save() throws ConfigException {
-        configLoader.save();
+        synchronized (fileOperationLock) {
+            configLoader.save();
+            try {
+                lastWrittenFileHash = sha256(
+                        Files.readString(configLoader.getConfigPath(), StandardCharsets.UTF_8));
+                lastWrittenAt = System.currentTimeMillis();
+            } catch (IOException e) {
+                // Non-fatal: worst case the watcher treats our own write as external.
+                logger.debug("Could not hash config file after save: {}", e.getMessage());
+            }
+            // PANEL-010: a successful save is a settings mutation; bump the
+            // revision so concurrent panel edits can detect staleness.
+            long revision = settingsRevision.incrementAndGet();
+
+            // §11.6 Project 20: record a masked snapshot of the just-written
+            // config so the panel can diff/rollback later. Best-effort — a
+            // failure here must NOT undo the save that just succeeded. The
+            // service masks secrets itself; the live config passed in is the
+            // unmasked in-memory form.
+            com.nova.link.api.ConfigHistoryService history = configHistoryService;
+            if (history != null) {
+                try {
+                    NovaLinkConfig live = configLoader.getConfig();
+                    if (live != null) {
+                        history.recordSnapshot(revision, gson.toJson(live), null);
+                    }
+                } catch (Exception e) {
+                    logger.debug("Config history snapshot recording failed: {}", e.getMessage());
+                }
+            }
+        }
     }
 
     /**
@@ -129,10 +206,15 @@ public class ConfigManager {
         long startTime = System.currentTimeMillis();
         NovaLinkConfig config = configLoader.reload();
         lastReloadTime = System.currentTimeMillis();
-        
+
         // Update statistics
         reloadCount++;
         lastSuccessfulReload = System.currentTimeMillis();
+
+        // PANEL-010: reload replaces the in-memory config, so any concurrent
+        // panel edit based on the pre-reload state must be rejected. Bump the
+        // revision so stale If-Match / baseRevision values conflict.
+        settingsRevision.incrementAndGet();
         
         // Notify listeners
         int listenerErrors = 0;
@@ -440,12 +522,34 @@ public class ConfigManager {
                     if (now - lastReloadTime < DEBOUNCE_MS) {
                         continue;
                     }
-                    
-                    logger.info("Configuration file changed, triggering reload");
-                    try {
-                        reload();
-                    } catch (ConfigException e) {
-                        logger.error("Failed to reload configuration after file change", e);
+
+                    synchronized (fileOperationLock) {
+                        // If the file's current content matches what we last
+                        // wrote, this change was our own save. The lock closes
+                        // the window between the atomic move and hash capture.
+                        try {
+                            String currentHash = sha256(Files.readString(
+                                    configLoader.getConfigPath(), StandardCharsets.UTF_8));
+                            if (lastWrittenFileHash != null
+                                    && currentHash.equals(lastWrittenFileHash)
+                                    && now - lastWrittenAt <= SELF_WRITE_EVENT_WINDOW_MS) {
+                                logger.debug("Config file change was our own write, skipping reload");
+                                continue;
+                            }
+                            if (lastWrittenFileHash != null && !currentHash.equals(lastWrittenFileHash)) {
+                                lastWrittenFileHash = null;
+                            }
+                        } catch (IOException hashErr) {
+                            // Can't verify; proceed with reload.
+                            logger.debug("Could not hash config file before reload: {}", hashErr.getMessage());
+                        }
+
+                        logger.info("Configuration file changed, triggering reload");
+                        try {
+                            reload();
+                        } catch (ConfigException e) {
+                            logger.error("Failed to reload configuration after file change", e);
+                        }
                     }
                 }
             }
@@ -454,6 +558,26 @@ public class ConfigManager {
             
         } catch (Exception e) {
             logger.error("Error polling file changes", e);
+        }
+    }
+
+    /**
+     * Computes the SHA-256 hex digest of the given content.
+     */
+    private static String sha256(String content) {
+        if (content == null) return null;
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(content.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                sb.append(Character.forDigit((b >> 4) & 0xF, 16));
+                sb.append(Character.forDigit(b & 0xF, 16));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            // SHA-256 is mandated by the JLS; this should never happen.
+            return null;
         }
     }
 
@@ -494,6 +618,35 @@ public class ConfigManager {
     public long getLastSuccessfulReload() {
         return lastSuccessfulReload;
     }
+
+    /**
+     * Returns the current settings revision (PANEL-010).
+     *
+     * <p>The revision is incremented atomically on every {@link #save()} and
+     * {@link #reload(boolean)} call. Panel clients read it via
+     * {@code GET /api/settings} (where it is also rendered as the ETag) and
+     * must echo it back on {@code PUT /api/settings} via {@code If-Match} or
+     * {@code baseRevision}; a stale value yields {@code 409 Conflict} with the
+     * current server values.
+     *
+     * @return the monotonic settings revision
+     */
+    public long getSettingsRevision() {
+        return settingsRevision.get();
+    }
+
+    /**
+     * Returns a weak ETag for the current settings revision (PANEL-010).
+     *
+     * <p>A weak ETag is appropriate because semantically-equivalent settings
+     * states can serialize to different byte strings (map ordering, whitespace);
+     * the revision is the authoritative change indicator.
+     *
+     * @return an ETag string of the form {@code W/"<revision>"}
+     */
+    public String settingsETag() {
+        return "W/\"" + settingsRevision.get() + "\"";
+    }
     
     /**
      * Gets the configuration file path.
@@ -503,7 +656,24 @@ public class ConfigManager {
     public Path getConfigPath() {
         return configLoader.getConfigPath();
     }
-    
+
+    /**
+     * Validates a candidate YAML document without persisting it or mutating
+     * the live config. Delegates to {@link ConfigLoader#validateYaml(String)};
+     * this thin pass-through is the shortest path that exposes the loader's
+     * validation to {@code RestApiHandler.handleValidateConfig} without adding
+     * a {@code getConfigLoader()} accessor (which would widen the ConfigManager
+     * surface and touch save/reload internals — forbidden by the guard list).
+     *
+     * <p>§11.6 Project 20 (proposal 10): backs {@code POST /api/settings/validate}.
+     *
+     * @param yaml the candidate YAML document
+     * @return an immutable {@link ConfigValidationResult}; never {@code null}
+     */
+    public ConfigValidationResult validateYaml(String yaml) {
+        return configLoader.validateYaml(yaml);
+    }
+
     /**
      * Gets the number of registered reload listeners.
      *

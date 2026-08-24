@@ -12,7 +12,7 @@ import java.util.Objects;
 public class ChannelTemplateConfig {
 
     private String displayName;
-    private String scope = "SERVER";
+    private String scope;
     private String permission;
     private Integer maxCapacity;
     private List<String> allowedWorlds;
@@ -32,7 +32,7 @@ public class ChannelTemplateConfig {
     }
 
     public void setScope(String scope) {
-        this.scope = scope != null ? scope : "SERVER";
+        this.scope = scope;
     }
 
     public String getPermission() {

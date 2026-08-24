@@ -1,9 +1,6 @@
 package com.nova.link.config;
 
-import com.nova.link.auth.ClientCredentials;
 import com.nova.link.auth.SuperAdminCredentials;
-import com.nova.link.channel.ChannelScope;
-import com.nova.link.channel.ChannelTemplate;
 
 import java.util.*;
 
@@ -63,42 +60,13 @@ public class NovaLinkConfig {
         this.filter = new FilterConfig();
     }
 
-    /**
-     * Creates a default configuration with sensible defaults.
-     */
+    /** Creates a configuration from the bundled {@code novalink.yml} template. */
     public static NovaLinkConfig createDefault() {
-        NovaLinkConfig config = new NovaLinkConfig();
-        
-        // Default server config
-        config.server.setBindAddress("0.0.0.0");
-        config.server.setPort(8888);
-        config.server.setWebsocketPort(8889);
-        config.server.setSecretKey("change-me-in-production");
-        config.server.setWorkerThreads(4);
-        config.server.setLocale("zh_CN");
-        
-        // Default database config
-        config.database.setType("memory");
-        
-        // Default security config
-        config.security.setAllowedIps(Arrays.asList("127.0.0.1"));
-        config.security.setIpBanDuration(300);
-        
-        // Default global channel
-        GlobalChannelConfig globalChannel = new GlobalChannelConfig();
-        globalChannel.setDisplayName("全服");
-        globalChannel.setPermission("novachat.channel.global");
-        globalChannel.setMaxCapacity(1000);
-        config.globalChannels.put("global", globalChannel);
-        
-        // Default template
-        ChannelTemplateConfig template = new ChannelTemplateConfig();
-        template.setDisplayName("本地");
-        template.setScope("SERVER");
-        template.setMaxCapacity(100);
-        config.templates.put("standard_local", template);
-        
-        return config;
+        try {
+            return ConfigLoader.loadBundledDefaults();
+        } catch (ConfigException e) {
+            throw new IllegalStateException("Bundled novalink.yml is invalid", e);
+        }
     }
 
     // Getters and setters
@@ -184,7 +152,7 @@ public class NovaLinkConfig {
     }
 
     public void setFeatures(FeatureConfig features) {
-        this.features = features != null ? features : new FeatureConfig();
+        this.features = features;
     }
 
     /**
@@ -195,7 +163,7 @@ public class NovaLinkConfig {
     }
 
     public void setFilter(FilterConfig filter) {
-        this.filter = filter != null ? filter : new FilterConfig();
+        this.filter = filter;
     }
 
     @Override

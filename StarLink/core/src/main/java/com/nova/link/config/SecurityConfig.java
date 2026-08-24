@@ -12,7 +12,7 @@ import java.util.Objects;
 public class SecurityConfig {
 
     private List<String> allowedIps = new ArrayList<>();
-    private int ipBanDuration = 300; // seconds
+    private int ipBanDuration;
 
     public SecurityConfig() {}
 
@@ -29,7 +29,7 @@ public class SecurityConfig {
     }
 
     public void setIpBanDuration(int ipBanDuration) {
-        this.ipBanDuration = ipBanDuration > 0 ? ipBanDuration : 300;
+        this.ipBanDuration = ipBanDuration;
     }
 
     @Override

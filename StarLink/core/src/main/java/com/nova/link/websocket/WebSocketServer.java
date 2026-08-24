@@ -1,6 +1,7 @@
 package com.nova.link.websocket;
 
 import com.nova.link.api.RestApiHandler;
+import com.nova.link.config.TlsConfig;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -10,10 +11,16 @@ import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler;
 import io.netty.handler.codec.http.websocketx.extensions.compression.WebSocketServerCompressionHandler;
+import io.netty.handler.ssl.ClientAuth;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.timeout.IdleStateHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.net.ssl.SSLException;
+import java.io.File;
 import java.net.InetSocketAddress;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -45,6 +52,14 @@ public class WebSocketServer {
     private final WebSocketMessageHandler messageHandler;
     private final HttpAuthHandler httpAuthHandler;
     private final RestApiHandler restApiHandler;
+    /**
+     * PANEL-011 / AUTH-002: built once at construction from {@link TlsConfig}.
+     * When non-null an {@link SslHandler} is prepended at the HEAD of every
+     * accepted channel's pipeline so the WebSocket upgrade and the REST/auth
+     * HTTP traffic run inside TLS. {@code null} = plaintext (which the
+     * {@code InsecureModeGate} blocks at startup unless explicitly opted in).
+     */
+    private final SslContext sslContext;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -52,7 +67,7 @@ public class WebSocketServer {
     private volatile boolean running = false;
 
     /**
-     * Creates a new WebSocket server.
+     * Creates a new WebSocket server (plaintext legacy constructor).
      *
      * @param bindAddress     the address to bind to
      * @param port            the port to listen on
@@ -62,11 +77,73 @@ public class WebSocketServer {
      */
     public WebSocketServer(String bindAddress, int port, WebSocketMessageHandler messageHandler,
                            HttpAuthHandler httpAuthHandler, RestApiHandler restApiHandler) {
+        this(bindAddress, port, messageHandler, httpAuthHandler, restApiHandler, null);
+    }
+
+    /**
+     * Creates a new WebSocket server with optional TLS (PANEL-011 / AUTH-002).
+     *
+     * <p>When {@code tls} is non-null and {@link TlsConfig#isConfigured()} the
+     * server builds a Netty {@link SslContext} from the configured cert/key
+     * files and prepends an {@link SslHandler} at the HEAD of every accepted
+     * channel pipeline, mirroring {@link com.nova.link.network.NettyServer}.
+     * If {@code tls} is non-null but missing its cert/key, the constructor
+     * throws {@link IllegalStateException} — fail-closed rather than silently
+     * degrading to plaintext. {@code tls == null} keeps the legacy plaintext
+     * behaviour (the caller is still subject to {@code InsecureModeGate}).
+     *
+     * @param bindAddress     the address to bind to
+     * @param port            the port to listen on
+     * @param messageHandler  the message handler
+     * @param httpAuthHandler the HTTP authentication handler
+     * @param restApiHandler  the REST API handler (optional)
+     * @param tls             optional TLS configuration; {@code null} for plaintext
+     */
+    public WebSocketServer(String bindAddress, int port, WebSocketMessageHandler messageHandler,
+                           HttpAuthHandler httpAuthHandler, RestApiHandler restApiHandler,
+                           TlsConfig tls) {
         this.bindAddress = bindAddress;
         this.port = port;
         this.messageHandler = messageHandler;
         this.httpAuthHandler = httpAuthHandler;
         this.restApiHandler = restApiHandler;
+        this.sslContext = buildSslContext(tls);
+    }
+
+    /**
+     * Builds the {@link SslContext} from {@link TlsConfig}, or returns
+     * {@code null} when TLS is not configured. Throws on a misconfigured TLS
+     * block so the server fails to start rather than running plaintext. Mirrors
+     * {@link com.nova.link.network.NettyServer#buildSslContext}.
+     */
+    private static SslContext buildSslContext(TlsConfig tls) {
+        if (tls == null || !tls.isConfigured()) {
+            return null;
+        }
+        File certChain = new File(tls.getCertChainFile());
+        File privateKey = new File(tls.getPrivateKeyFile());
+        if (!certChain.isFile()) {
+            throw new IllegalStateException(
+                    "AUTH-002: server.tls.cert-chain-file not found or not a file: " + certChain);
+        }
+        if (!privateKey.isFile()) {
+            throw new IllegalStateException(
+                    "AUTH-002: server.tls.private-key-file not found or not a file: " + privateKey);
+        }
+        try {
+            SslContextBuilder builder = SslContextBuilder.forServer(certChain, privateKey);
+            if (tls.isMutualTls() && tls.getCaCertFile() != null && !tls.getCaCertFile().isBlank()) {
+                File caCert = new File(tls.getCaCertFile());
+                if (!caCert.isFile()) {
+                    throw new IllegalStateException(
+                            "AUTH-002: server.tls.ca-cert-file not found or not a file: " + caCert);
+                }
+                builder.trustManager(caCert).clientAuth(ClientAuth.REQUIRE);
+            }
+            return builder.build();
+        } catch (SSLException e) {
+            throw new IllegalStateException("AUTH-002: failed to build WebSocket/REST SslContext", e);
+        }
     }
 
     /**
@@ -97,9 +174,21 @@ public class WebSocketServer {
                         @Override
                         protected void initChannel(SocketChannel ch) {
                             ChannelPipeline pipeline = ch.pipeline();
-                            
+
+                            // PANEL-011 / AUTH-002: TLS is the outermost transport.
+                            // The SslHandler must sit at the HEAD of the pipeline so
+                            // every subsequent handler (HTTP codec, REST, auth, WS
+                            // upgrade) sees decrypted bytes and every outbound write is
+                            // encrypted on the way out. When mutualTls is configured the
+                            // SslContext already has ClientAuth.REQUIRE wired, so the
+                            // handshake simply fails for clients without a trusted cert.
+                            if (sslContext != null) {
+                                SslHandler sslHandler = sslContext.newHandler(ch.alloc());
+                                pipeline.addLast("ssl", sslHandler);
+                            }
+
                             // Idle state handler for connection timeout
-                            pipeline.addLast("idleStateHandler", 
+                            pipeline.addLast("idleStateHandler",
                                     new IdleStateHandler(IDLE_TIMEOUT_SECONDS, 0, 0, TimeUnit.SECONDS));
                             
                             // HTTP codec for WebSocket handshake
@@ -249,5 +338,20 @@ public class WebSocketServer {
      */
     public WebSocketMessageHandler getMessageHandler() {
         return messageHandler;
+    }
+
+    /**
+     * PANEL-011 / AUTH-002: whether TLS is configured for this server. Exposed
+     * for tests so the fail-closed wiring (SslContext built at construction,
+     * SslHandler prepended at pipeline HEAD) can be asserted without a real
+     * bind. Production callers should not branch on this — the gate is
+     * {@link com.nova.link.network.InsecureModeGate}, invoked by the caller
+     * before {@link #start()}.
+     *
+     * @return {@code true} when an {@link SslContext} was built from the
+     *         configured {@link TlsConfig}; {@code false} for plaintext
+     */
+    public boolean isSslConfigured() {
+        return sslContext != null;
     }
 }

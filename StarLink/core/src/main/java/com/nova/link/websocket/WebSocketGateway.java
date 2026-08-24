@@ -2,12 +2,14 @@ package com.nova.link.websocket;
 
 import com.nova.link.api.RestApiHandler;
 import com.nova.link.api.WebhookManager;
+import com.nova.link.audit.AuditStore;
 import com.nova.link.auth.AuthManager;
 import com.nova.link.ban.BanManager;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.InvitationManager;
 import com.nova.link.channel.MessageRouter;
 import com.nova.link.config.ConfigManager;
+import com.nova.link.config.TlsConfig;
 import com.nova.link.console.ConsoleCommandHandler;
 import com.nova.link.database.PlayerStateManager;
 import com.nova.link.mute.MuteManager;
@@ -69,7 +71,7 @@ public class WebSocketGateway {
         this(bindAddress, port, secretKey, authManager, channelManager, playerStateManager,
                 messageRouter, webhookManager, networkHandler, muteManager, banManager,
                 invitationManager, configManager, consoleCommandHandler, notificationStore,
-                java.util.List.of("*"));
+                java.util.List.of("*"), null, null);
     }
 
     public WebSocketGateway(String bindAddress, int port, String secretKey,
@@ -82,6 +84,60 @@ public class WebSocketGateway {
                             ConfigManager configManager, ConsoleCommandHandler consoleCommandHandler,
                             NotificationStore notificationStore,
                             java.util.List<String> corsAllowedOrigins) {
+        this(bindAddress, port, secretKey, authManager, channelManager, playerStateManager,
+                messageRouter, webhookManager, networkHandler, muteManager, banManager,
+                invitationManager, configManager, consoleCommandHandler, notificationStore,
+                corsAllowedOrigins, null, null);
+    }
+
+    /**
+     * Creates a new WebSocket gateway with optional TLS (PANEL-011 / AUTH-002).
+     *
+     * <p>{@code tls} is forwarded to the underlying {@link WebSocketServer} so the
+     * WebSocket/REST port wraps its traffic in TLS when configured, mirroring the
+     * TCP listener. The caller is still responsible for invoking
+     * {@code InsecureModeGate.requireTlsOrExplicitInsecure} before bind so a
+     * plaintext WS/REST port only starts under an explicit insecure opt-in.
+     *
+     * @param tls optional TLS configuration; {@code null} for plaintext
+     */
+    public WebSocketGateway(String bindAddress, int port, String secretKey,
+                            AuthManager authManager, ChannelManager channelManager,
+                            PlayerStateManager playerStateManager, MessageRouter messageRouter,
+                            WebhookManager webhookManager,
+                            ServerNetworkHandler networkHandler,
+                            MuteManager muteManager, BanManager banManager,
+                            InvitationManager invitationManager,
+                            ConfigManager configManager, ConsoleCommandHandler consoleCommandHandler,
+                            NotificationStore notificationStore,
+                            java.util.List<String> corsAllowedOrigins,
+                            TlsConfig tls) {
+        this(bindAddress, port, secretKey, authManager, channelManager, playerStateManager,
+                messageRouter, webhookManager, networkHandler, muteManager, banManager,
+                invitationManager, configManager, consoleCommandHandler, notificationStore,
+                corsAllowedOrigins, tls, null);
+    }
+
+    /**
+     * Full constructor with an {@link AuditStore} (PANEL-006). The audit store is
+     * forwarded to {@link RestApiHandler} so every P1 admin mutation is recorded.
+     * The legacy constructors above delegate here with a null store (audit
+     * silently disabled) so existing call sites keep compiling.
+     *
+     * @param auditStore the append-only audit store, or null to disable audit
+     */
+    public WebSocketGateway(String bindAddress, int port, String secretKey,
+                            AuthManager authManager, ChannelManager channelManager,
+                            PlayerStateManager playerStateManager, MessageRouter messageRouter,
+                            WebhookManager webhookManager,
+                            ServerNetworkHandler networkHandler,
+                            MuteManager muteManager, BanManager banManager,
+                            InvitationManager invitationManager,
+                            ConfigManager configManager, ConsoleCommandHandler consoleCommandHandler,
+                            NotificationStore notificationStore,
+                            java.util.List<String> corsAllowedOrigins,
+                            TlsConfig tls,
+                            AuditStore auditStore) {
         this.bindAddress = bindAddress;
         this.port = port;
         this.secretKey = secretKey;
@@ -111,12 +167,14 @@ public class WebSocketGateway {
                 networkHandler,
                 consoleCommandHandler,
                 notificationStore,
+                auditStore,
                 corsAllowedOrigins
         );
 
-        // Initialize WebSocket server
+        // Initialize WebSocket server (PANEL-011: forward TLS so the WS/REST
+        // port is encrypted when configured, mirroring the TCP listener).
         this.webSocketServer = new WebSocketServer(
-                bindAddress, port, messageHandler, httpAuthHandler, restApiHandler);
+                bindAddress, port, messageHandler, httpAuthHandler, restApiHandler, tls);
     }
 
     /**

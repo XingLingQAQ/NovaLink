@@ -1,0 +1,121 @@
+# NovaLink backend configuration
+#
+# Existing installations are upgraded from this template on startup. Values
+# already present in novalink.yml are kept; newly introduced keys and their
+# comments are copied into the existing file automatically.
+
+server:
+  # TCP listener used by NovaChat clients.
+  # Production: bind to 127.0.0.1 (loopback) or a controlled internal address
+  # and put the panel/TCP port behind a TLS-terminating reverse proxy. Binding
+  # 0.0.0.0 exposes the listener on every interface; only do that on a trusted
+  # network with firewall rules + TLS configured below.
+  bind-address: 0.0.0.0
+  port: 8888
+  websocket-port: 8889
+  secret-key: change-me-in-production
+  worker-threads: 4
+  locale: zh_CN
+
+  # CORS allowlist for the panel HTTP endpoints. "*" is accepted at runtime
+  # for backward compatibility but is NOT the default — a wildcard lets any
+  # origin issue authenticated requests against the panel. In production set
+  # the exact panel origin(s). An origin not in this list is rejected.
+  cors-allowed-origins:
+    - "https://panel.example.com"
+
+  # 0 disables idle detection or the per-connection message rate limit.
+  idle-timeout-seconds: 90
+  rest-worker-threads: 4
+  rate-limit:
+    messages-per-second: 10
+    burst: 20
+
+  # AUTH-002 transport security.
+  # Both the TCP listener (port) and the WebSocket/REST listener
+  # (websocket-port) run in plaintext unless a tls: block is configured.
+  # The challenge-response handshake protects the stored password hash either
+  # way, but only TLS hides the handshake from a network observer. Setting
+  # insecure-allow-plaintext: true explicitly acknowledges the risk and lets
+  # the backend start without TLS on BOTH ports. Defaults to false
+  # (fail-closed) — the backend refuses to start unless TLS is configured or
+  # the flag is set.
+  insecure-allow-plaintext: false
+  # tls:
+  #   cert-chain-file: certs/server.crt
+  #   private-key-file: certs/server.key
+  #   # Set ca-cert-file + mutual-tls to require client certificates.
+  #   ca-cert-file: certs/ca.crt
+  #   mutual-tls: false
+  # The same tls: block is reused by the WebSocket/REST port: when configured,
+  # the WS/REST listener prepends an SslHandler at the pipeline HEAD and
+  # serves wss:// and https:// on websocket-port.
+
+database:
+  # Supported values: memory, mysql, postgresql, sqlite.
+  type: memory
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    database: novalink
+    username: root
+    password: ""
+    pool-size: 10
+  postgresql:
+    host: 127.0.0.1
+    port: 5432
+    database: novalink
+    username: postgres
+    password: ""
+    pool-size: 10
+  sqlite:
+    file-path: data/novalink.db
+    pool-size: 5
+  redis:
+    enabled: false
+    host: 127.0.0.1
+    port: 6379
+    password: ""
+
+security:
+  allowed-ips:
+    - 127.0.0.1
+  ip-ban-duration: 300
+
+# Web panel super administrators. A plain `password` is accepted once and is
+# replaced with `password-hash` on the next save.
+super-admins: []
+
+# Additional web panel accounts. Allowed roles: ADMIN and VIEWER.
+panel-users: []
+
+debug: false
+
+# User-defined channel maps are preserved during template upgrades.
+global_channels:
+  global:
+    display_name: 全服
+    permission: novachat.channel.global
+    max_capacity: 1000
+    slow_mode: 0
+
+templates:
+  standard_local:
+    display_name: 本地
+    scope: SERVER
+    max_capacity: 100
+
+# Minecraft server credentials and their local channel definitions.
+clients: []
+
+features:
+  filter-enabled: true
+  message-log-enabled: false
+  cross-server-chat-enabled: true
+  private-messages-enabled: true
+  # 0 keeps message logs forever.
+  message-log-retention-days: 30
+
+filter:
+  words: []
+  patterns: []

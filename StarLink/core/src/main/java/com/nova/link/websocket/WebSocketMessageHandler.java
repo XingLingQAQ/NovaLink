@@ -4,7 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.nova.link.auth.AuthManager;
-import com.nova.link.auth.AuthResult;
+import com.nova.link.auth.PanelResourcePolicy;
+import com.nova.link.auth.PanelRole;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.database.PlayerState;
@@ -17,6 +18,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /**
@@ -31,6 +33,7 @@ public class WebSocketMessageHandler {
     
     private final JwtService jwtService;
     private final AuthManager authManager;
+    private final PanelResourcePolicy resourcePolicy;
     private final ChannelManager channelManager;
     private final ServerNetworkHandler networkHandler;
     private final PlayerStateManager playerStateManager;
@@ -39,12 +42,25 @@ public class WebSocketMessageHandler {
     // Session management
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
 
+    /**
+     * Server-wide monotonic revision counter (PANEL-008). Every outbound WS
+     * snapshot/event payload built by this handler is stamped with
+     * {@code revisionCounter.incrementAndGet()}. Clients use it to discard
+     * out-of-order/stale updates: any update whose revision is older than the
+     * last-applied revision for that entity type is ignored. A single global
+     * counter is sufficient because it preserves causal ordering across all
+     * entity types and sessions — if payload B was built after payload A, B's
+     * revision is greater than A's, so clients always keep the newer state.
+     */
+    private final AtomicLong revisionCounter = new AtomicLong(0);
+
     public WebSocketMessageHandler(JwtService jwtService, AuthManager authManager,
                                    ChannelManager channelManager, ServerNetworkHandler networkHandler,
                                    PlayerStateManager playerStateManager) {
         this.jwtService = jwtService;
         this.authManager = authManager;
         this.channelManager = channelManager;
+        this.resourcePolicy = new PanelResourcePolicy(authManager, channelManager);
         this.networkHandler = networkHandler;
         this.playerStateManager = playerStateManager;
         this.gson = new Gson();
@@ -154,11 +170,19 @@ public class WebSocketMessageHandler {
             return;
         }
         
-        // Set session as authenticated
-        session.setAuthenticated(userId, username, role);
+        PanelRole effectiveRole = resourcePolicy.resolveRole(username, role);
+        if (effectiveRole == null) {
+            sendAuthResponse(session, false, "Invalid panel role");
+            return;
+        }
+
+        // Set session as authenticated with the current account role. The
+        // policy resolves it again before every resource operation so a later
+        // role change also takes effect without reconnecting.
+        session.setAuthenticated(userId, username, effectiveRole.name());
         
         logger.info("WebSocket session authenticated: {} as {} ({})", 
-                session.getSessionId(), username, role);
+                session.getSessionId(), username, effectiveRole);
         
         sendAuthResponse(session, true, null);
     }
@@ -173,24 +197,44 @@ public class WebSocketMessageHandler {
             return;
         }
         
-        if (!json.has("channels")) {
+        if (!json.has("channels") || !json.get("channels").isJsonArray()) {
             sendError(session, "Missing channels array");
             return;
         }
-        
-        List<String> channels = new ArrayList<>();
-        json.getAsJsonArray("channels").forEach(e -> channels.add(e.getAsString()));
-        
-        for (String channelId : channels) {
-            session.subscribe(channelId);
+
+        PanelRole role = effectiveRole(session);
+        List<String> accepted = new ArrayList<>();
+        List<String> rejected = new ArrayList<>();
+        for (var element : json.getAsJsonArray("channels")) {
+            if (!element.isJsonPrimitive() || !element.getAsJsonPrimitive().isString()) {
+                rejected.add("<invalid>");
+                continue;
+            }
+            String channelId = element.getAsString();
+            Channel channel = channelManager.getChannel(channelId);
+            if (resourcePolicy.canSubscribe(role, channel)) {
+                session.subscribe(channelId);
+                accepted.add(channelId);
+            } else {
+                session.unsubscribe(channelId);
+                rejected.add(channelId);
+            }
         }
-        
-        logger.debug("Session {} subscribed to channels: {}", session.getSessionId(), channels);
+
+        if (!rejected.isEmpty()) {
+            logger.warn("Rejected unauthorized channel subscriptions for session {} (user={}): {}",
+                    session.getSessionId(), session.getUsername(), rejected);
+        }
+        logger.debug("Session {} subscribed to channels: {}", session.getSessionId(), accepted);
         
         // Send confirmation
         JsonObject response = new JsonObject();
         response.addProperty("type", "subscribed");
-        response.add("channels", gson.toJsonTree(channels));
+        response.add("channels", gson.toJsonTree(accepted));
+        response.add("rejectedChannels", gson.toJsonTree(rejected));
+        if (!rejected.isEmpty()) {
+            response.addProperty("errorCode", "CHANNEL_NOT_ACCESSIBLE");
+        }
         session.send(gson.toJson(response));
     }
 
@@ -203,7 +247,7 @@ public class WebSocketMessageHandler {
             return;
         }
         
-        if (!json.has("channels")) {
+        if (!json.has("channels") || !json.get("channels").isJsonArray()) {
             sendError(session, "Missing channels array");
             return;
         }
@@ -244,23 +288,7 @@ public class WebSocketMessageHandler {
             return;
         }
         
-        List<Map<String, Object>> channelList = new ArrayList<>();
-        for (Channel channel : channelManager.getAllChannels()) {
-            Map<String, Object> channelData = new HashMap<>();
-            channelData.put("id", channel.getId());
-            channelData.put("displayName", channel.getDisplayName());
-            channelData.put("scope", channel.getScope().name());
-            channelData.put("clientId", channel.getClientId());
-            channelData.put("memberCount", channel.getMembers().size());
-            channelData.put("maxCapacity", channel.getMaxCapacity());
-            channelList.add(channelData);
-        }
-        
-        JsonObject response = new JsonObject();
-        response.addProperty("type", "channel_update");
-        response.add("channels", gson.toJsonTree(channelList));
-        response.addProperty("timestamp", System.currentTimeMillis());
-        session.send(gson.toJson(response));
+        session.send(gson.toJson(buildChannelUpdate(session)));
     }
 
     /**
@@ -273,32 +301,7 @@ public class WebSocketMessageHandler {
             return;
         }
         
-        List<Map<String, Object>> clientList = new ArrayList<>();
-        for (ClientConnection connection : networkHandler.getConnections()) {
-            if (connection.isAuthenticated()) {
-                Map<String, Object> clientData = new HashMap<>();
-                clientData.put("id", connection.getClientId());
-                clientData.put("connectionId", connection.getConnectionId());
-                clientData.put("remoteAddress", connection.getRemoteAddress());
-                clientData.put("connectedAt", connection.getConnectedAt());
-                clientData.put("active", connection.isActive());
-                clientData.put("platform", connection.getPlatform() != null
-                        ? connection.getPlatform().name() : "Unknown");
-                clientData.put("version", connection.getServerVersion() != null
-                        && !connection.getServerVersion().isEmpty()
-                        ? connection.getServerVersion() : "-");
-                clientData.put("ping", connection.getPing());
-                clientData.put("players", countPlayersByClient(connection.getClientId()));
-                clientList.add(clientData);
-            }
-        }
-
-        JsonObject response = new JsonObject();
-        response.addProperty("type", "server_status");
-        response.add("clients", gson.toJsonTree(clientList));
-        response.addProperty("totalConnections", networkHandler.getConnectionCount());
-        response.addProperty("timestamp", System.currentTimeMillis());
-        session.send(gson.toJson(response));
+        session.send(gson.toJson(buildServerStatus(effectiveRole(session))));
     }
 
     /**
@@ -329,19 +332,22 @@ public class WebSocketMessageHandler {
             return;
         }
 
-        session.send(gson.toJson(buildPlayerUpdate()));
+        session.send(gson.toJson(buildPlayerUpdate(effectiveRole(session))));
     }
 
     /**
      * Builds the {@code player_update} payload shared by the on-demand
      * {@code get_players} request and the event-triggered broadcast.
      */
-    private JsonObject buildPlayerUpdate() {
+    private JsonObject buildPlayerUpdate(PanelRole role) {
         // Collect all players from all channels
         Set<UUID> allPlayers = new HashSet<>();
         Map<UUID, Set<String>> playerChannels = new HashMap<>();
 
         for (Channel channel : channelManager.getAllChannels()) {
+            if (!resourcePolicy.canViewChannel(role, channel)) {
+                continue;
+            }
             for (UUID playerId : channel.getMembers()) {
                 allPlayers.add(playerId);
                 playerChannels.computeIfAbsent(playerId, k -> new HashSet<>())
@@ -361,14 +367,18 @@ public class WebSocketMessageHandler {
             if (state != null) {
                 playerData.put("name", state.getPlayerName() != null
                         ? state.getPlayerName() : playerId.toString());
-                playerData.put("server", state.getClientId());
+                if (resourcePolicy.canViewInfrastructureSource(role)) {
+                    playerData.put("server", state.getClientId());
+                }
                 playerData.put("muted", state.getMutes() != null && !state.getMutes().isEmpty());
                 playerData.put("platform", state.getPlatform() != null
                         && !state.getPlatform().isEmpty()
                         ? state.getPlatform() : "Java");
             } else {
                 playerData.put("name", playerId.toString());
-                playerData.put("server", null);
+                if (resourcePolicy.canViewInfrastructureSource(role)) {
+                    playerData.put("server", null);
+                }
                 playerData.put("muted", false);
                 playerData.put("platform", "Java");
             }
@@ -379,6 +389,7 @@ public class WebSocketMessageHandler {
         response.addProperty("type", "player_update");
         response.add("players", gson.toJsonTree(playerList));
         response.addProperty("totalPlayers", allPlayers.size());
+        response.addProperty("revision", revisionCounter.incrementAndGet());
         response.addProperty("timestamp", System.currentTimeMillis());
         return response;
     }
@@ -390,21 +401,9 @@ public class WebSocketMessageHandler {
      * Skips building the payload entirely when no panel session is listening.
      */
     public void broadcastPlayerUpdate() {
-        boolean hasListener = false;
         for (WebSocketSession session : sessions.values()) {
             if (session.isAuthenticated() && session.isActive()) {
-                hasListener = true;
-                break;
-            }
-        }
-        if (!hasListener) {
-            return;
-        }
-
-        String json = gson.toJson(buildPlayerUpdate());
-        for (WebSocketSession session : sessions.values()) {
-            if (session.isAuthenticated() && session.isActive()) {
-                session.send(json);
+                session.send(gson.toJson(buildPlayerUpdate(effectiveRole(session))));
             }
         }
     }
@@ -449,15 +448,13 @@ public class WebSocketMessageHandler {
      * @param content     the message content
      */
     public void broadcastChatMessage(String channelId, String senderId, String senderName, String content) {
-        JsonObject message = new JsonObject();
-        message.addProperty("type", "chat");
-        message.addProperty("channelId", channelId);
-        message.addProperty("senderId", senderId);
-        message.addProperty("senderName", senderName);
-        message.addProperty("content", content);
-        message.addProperty("timestamp", System.currentTimeMillis());
-        // Attach the originating server (client id) so the panel can show
-        // which game server the message came from.
+        Channel channel = channelManager.getChannel(channelId);
+        long timestamp = System.currentTimeMillis();
+        // PANEL-008: one revision per broadcast — every recipient sees the
+        // same monotonic revision for this message, so a client that receives
+        // it out of order (e.g. after a later snapshot via a reordered queue)
+        // can still apply the monotonic guard consistently.
+        long revision = revisionCounter.incrementAndGet();
         String senderClient = null;
         if (senderId != null && playerStateManager != null) {
             try {
@@ -470,14 +467,30 @@ public class WebSocketMessageHandler {
                 // senderId not a UUID — leave server null
             }
         }
-        message.addProperty("server", senderClient != null ? senderClient : "");
-        
-        String json = gson.toJson(message);
-        
+        final String resolvedSenderClient = senderClient;
+
         for (WebSocketSession session : sessions.values()) {
-            if (session.isAuthenticated() && session.isActive() && session.isSubscribed(channelId)) {
-                session.send(json);
+            if (!session.isAuthenticated() || !session.isActive() || !session.isSubscribed(channelId)) {
+                continue;
             }
+            PanelRole role = effectiveRole(session);
+            if (!resourcePolicy.canSubscribe(role, channel)) {
+                session.unsubscribe(channelId);
+                continue;
+            }
+
+            JsonObject message = new JsonObject();
+            message.addProperty("type", "chat");
+            message.addProperty("channelId", channelId);
+            message.addProperty("senderId", senderId);
+            message.addProperty("senderName", senderName);
+            message.addProperty("content", content);
+            message.addProperty("revision", revision);
+            message.addProperty("timestamp", timestamp);
+            if (resourcePolicy.canViewInfrastructureSource(role)) {
+                message.addProperty("server", resolvedSenderClient != null ? resolvedSenderClient : "");
+            }
+            session.send(gson.toJson(message));
         }
     }
 
@@ -486,37 +499,58 @@ public class WebSocketMessageHandler {
      * Requirements: 24.2
      */
     public void broadcastServerStatus() {
-        List<Map<String, Object>> clientList = new ArrayList<>();
-        for (ClientConnection connection : networkHandler.getConnections()) {
-            if (connection.isAuthenticated()) {
-                Map<String, Object> clientData = new HashMap<>();
-                clientData.put("id", connection.getClientId());
-                clientData.put("connectionId", connection.getConnectionId());
-                clientData.put("remoteAddress", connection.getRemoteAddress());
-                clientData.put("connectedAt", connection.getConnectedAt());
-                clientData.put("active", connection.isActive());
-                clientData.put("platform", connection.getPlatform() != null
-                        ? connection.getPlatform().name() : "Unknown");
-                clientData.put("version", connection.getServerVersion() != null
-                        && !connection.getServerVersion().isEmpty()
-                        ? connection.getServerVersion() : "-");
-                clientData.put("ping", connection.getPing());
-                clientData.put("players", countPlayersByClient(connection.getClientId()));
-                clientList.add(clientData);
-            }
-        }
-
-        JsonObject message = new JsonObject();
-        message.addProperty("type", "server_status");
-        message.add("clients", gson.toJsonTree(clientList));
-        message.addProperty("totalConnections", networkHandler.getConnectionCount());
-        message.addProperty("timestamp", System.currentTimeMillis());
-        
-        String json = gson.toJson(message);
-        
         for (WebSocketSession session : sessions.values()) {
             if (session.isAuthenticated() && session.isActive()) {
-                session.send(json);
+                session.send(gson.toJson(buildServerStatus(effectiveRole(session))));
+            }
+        }
+    }
+
+    /**
+     * Broadcasts a {@code settings_update} event to every authenticated,
+     * active panel session (§11.6 Project 20, proposal 10).
+     *
+     * <p>Mirrors {@link #broadcastServerStatus()}: same session filter, same
+     * revision-counter stamping via {@link #revisionCounter} so the PANEL-008
+     * stale-discard guard on the client covers this payload too. Fired after
+     * successful {@code handleUpdateSettings}, {@code handleRollbackConfig},
+     * and {@code handleReload} in {@link RestApiHandler} so panel clients can
+     * refresh their cached settings revision and feature flags without polling.
+     *
+     * <p>The top-level {@code revision} is the per-message monotonic counter
+     * (stale-discard); {@code settingsRevision} is the PANEL-010 optimistic-
+     * concurrency token the caller echoes back on {@code PUT /api/settings}.
+     * Both are included so the client can order messages and decide whether
+     * to refetch the full settings object.
+     *
+     * @param settingsRevision the post-mutation settings revision (from
+     *                         {@link com.nova.link.config.ConfigManager#getSettingsRevision()})
+     * @param features         the post-mutation feature flags; when {@code null}
+     *                         the broadcast is skipped (no NPE) — the live
+     *                         config may be mid-reload and its features not yet
+     *                         re-read, so we prefer silence over a misleading
+     *                         payload that could flip the panel to defaults.
+     */
+    public void broadcastSettingsUpdate(long settingsRevision,
+                                        com.nova.link.config.FeatureConfig features) {
+        if (features == null) {
+            logger.debug("broadcastSettingsUpdate: features null, skipping broadcast");
+            return;
+        }
+        JsonObject payload = new JsonObject();
+        payload.addProperty("type", "settings_update");
+        payload.addProperty("revision", revisionCounter.incrementAndGet());
+        payload.addProperty("settingsRevision", settingsRevision);
+        payload.addProperty("filterEnabled", features.isFilterEnabled());
+        payload.addProperty("messageLogEnabled", features.isMessageLogEnabled());
+        payload.addProperty("crossServerChatEnabled", features.isCrossServerChatEnabled());
+        payload.addProperty("privateMessagesEnabled", features.isPrivateMessagesEnabled());
+        payload.addProperty("messageLogRetentionDays", features.getMessageLogRetentionDays());
+        payload.addProperty("timestamp", System.currentTimeMillis());
+        String message = gson.toJson(payload);
+        for (WebSocketSession session : sessions.values()) {
+            if (session.isAuthenticated() && session.isActive()) {
+                session.send(message);
             }
         }
     }
@@ -526,30 +560,96 @@ public class WebSocketMessageHandler {
      * Requirements: 24.2
      */
     public void broadcastChannelUpdate() {
+        for (WebSocketSession session : sessions.values()) {
+            if (session.isAuthenticated() && session.isActive()) {
+                session.send(gson.toJson(buildChannelUpdate(session)));
+            }
+        }
+    }
+
+    private PanelRole effectiveRole(WebSocketSession session) {
+        return resourcePolicy.resolveRole(session.getUsername(), session.getRole());
+    }
+
+    private JsonObject buildChannelUpdate(WebSocketSession session) {
+        PanelRole role = effectiveRole(session);
         List<Map<String, Object>> channelList = new ArrayList<>();
+        List<String> subscribableChannelIds = new ArrayList<>();
+
         for (Channel channel : channelManager.getAllChannels()) {
-            Map<String, Object> channelData = new HashMap<>();
+            if (!resourcePolicy.canViewChannel(role, channel)) {
+                continue;
+            }
+            Map<String, Object> channelData = new LinkedHashMap<>();
             channelData.put("id", channel.getId());
             channelData.put("displayName", channel.getDisplayName());
             channelData.put("scope", channel.getScope().name());
+            // PANEL-003: per-channel provenance + revision so the WS channel_update
+            // payload matches the REST channelToJson shape. Without these the
+            // frontend adapter defaults source to RUNTIME/revision 0, which
+            // overwrites CONFIG-managed channels on every 30s broadcast and
+            // makes the read-only badge flicker. Do NOT confuse with the
+            // top-level snapshot revision stamped below.
+            channelData.put("source", channel.getSource().name());
+            channelData.put("revision", channel.getRevision());
             channelData.put("clientId", channel.getClientId());
             channelData.put("memberCount", channel.getMembers().size());
             channelData.put("maxCapacity", channel.getMaxCapacity());
+            channelData.put("slowModeSeconds", channel.getSlowModeSeconds());
+            channelData.put("subscribable", resourcePolicy.canSubscribe(role, channel));
+            channelData.put("sendable", resourcePolicy.canSend(role, channel));
             channelList.add(channelData);
+            if (resourcePolicy.canSubscribe(role, channel)) {
+                subscribableChannelIds.add(channel.getId());
+            }
         }
-        
+
+        for (String subscribed : session.getSubscribedChannels()) {
+            if (!subscribableChannelIds.contains(subscribed)) {
+                session.unsubscribe(subscribed);
+            }
+        }
+
         JsonObject message = new JsonObject();
         message.addProperty("type", "channel_update");
         message.add("channels", gson.toJsonTree(channelList));
+        message.add("subscribableChannelIds", gson.toJsonTree(subscribableChannelIds));
+        message.addProperty("revision", revisionCounter.incrementAndGet());
         message.addProperty("timestamp", System.currentTimeMillis());
-        
-        String json = gson.toJson(message);
-        
-        for (WebSocketSession session : sessions.values()) {
-            if (session.isAuthenticated() && session.isActive()) {
-                session.send(json);
+        return message;
+    }
+
+    private JsonObject buildServerStatus(PanelRole role) {
+        List<Map<String, Object>> clientList = new ArrayList<>();
+        for (ClientConnection connection : networkHandler.getConnections()) {
+            if (!connection.isAuthenticated()) {
+                continue;
             }
+            Map<String, Object> clientData = new LinkedHashMap<>();
+            clientData.put("id", connection.getClientId());
+            if (resourcePolicy.canViewConnectionDetails(role)) {
+                clientData.put("connectionId", connection.getConnectionId());
+                clientData.put("remoteAddress", connection.getRemoteAddress());
+            }
+            clientData.put("connectedAt", connection.getConnectedAt());
+            clientData.put("active", connection.isActive());
+            clientData.put("platform", connection.getPlatform() != null
+                    ? connection.getPlatform().name() : "Unknown");
+            clientData.put("version", connection.getServerVersion() != null
+                    && !connection.getServerVersion().isEmpty()
+                    ? connection.getServerVersion() : "-");
+            clientData.put("ping", connection.getPing());
+            clientData.put("players", countPlayersByClient(connection.getClientId()));
+            clientList.add(clientData);
         }
+
+        JsonObject message = new JsonObject();
+        message.addProperty("type", "server_status");
+        message.add("clients", gson.toJsonTree(clientList));
+        message.addProperty("totalConnections", networkHandler.getConnectionCount());
+        message.addProperty("revision", revisionCounter.incrementAndGet());
+        message.addProperty("timestamp", System.currentTimeMillis());
+        return message;
     }
 
     /**
@@ -565,6 +665,7 @@ public class WebSocketMessageHandler {
         notification.addProperty("title", title);
         notification.addProperty("message", message);
         notification.addProperty("level", level);
+        notification.addProperty("revision", revisionCounter.incrementAndGet());
         notification.addProperty("timestamp", System.currentTimeMillis());
         
         String json = gson.toJson(notification);

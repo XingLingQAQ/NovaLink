@@ -11,36 +11,27 @@ import java.util.Objects;
  */
 public class ServerConfig {
 
-    /** Default TCP read-idle timeout (seconds). Must stay >= 3x the client
-     * heartbeat period: Bedrock clients send a KeepAlive every 15s; Java-side
-     * clients never send on their own (they only echo), so the backend pings
-     * them on write-idle at timeout/3 (30s by default) and expects the echo. */
-    public static final int DEFAULT_IDLE_TIMEOUT_SECONDS = 90;
-    /** Default per-connection chat/item-display rate limit (messages per second). */
-    public static final int DEFAULT_RATE_LIMIT_MESSAGES_PER_SECOND = 10;
-    /** Default token-bucket burst capacity. */
-    public static final int DEFAULT_RATE_LIMIT_BURST = 20;
-    /** Default REST worker pool size (business logic off the Netty IO threads). */
-    public static final int DEFAULT_REST_WORKER_THREADS = 4;
-
-    private String bindAddress = "0.0.0.0";
-    private int port = 8888;
-    private int websocketPort = 8889;
-    private String secretKey = "change-me-in-production";
-    private int workerThreads = 4;
-    private String locale = "zh_CN";
-    // CORS origin whitelist for the REST/WS HTTP endpoints. The default ["*"]
-    // keeps backward compatibility (allow all); configure explicit origins to
-    // lock the panel API down.
-    private List<String> corsAllowedOrigins = new ArrayList<>(List.of("*"));
-    // TCP read-idle timeout in seconds (0 = disabled).
-    private int idleTimeoutSeconds = DEFAULT_IDLE_TIMEOUT_SECONDS;
-    // Per-connection message rate limit (token bucket); 0 = disabled.
-    private int rateLimitMessagesPerSecond = DEFAULT_RATE_LIMIT_MESSAGES_PER_SECOND;
-    private int rateLimitBurst = DEFAULT_RATE_LIMIT_BURST;
-    // Dedicated REST worker pool size (fixed); requests are rejected with 503
-    // when the pool + queue are saturated.
-    private int restWorkerThreads = DEFAULT_REST_WORKER_THREADS;
+    private String bindAddress;
+    private int port;
+    private int websocketPort;
+    private String secretKey;
+    private int workerThreads;
+    private String locale;
+    private List<String> corsAllowedOrigins = new ArrayList<>();
+    private int idleTimeoutSeconds;
+    private int rateLimitMessagesPerSecond;
+    private int rateLimitBurst;
+    private int restWorkerThreads;
+    /**
+     * AUTH-002: when {@code true}, the operator has explicitly acknowledged
+     * that the TCP listener runs without TLS and passwords traverse the wire
+     * (challenge-response HMAC still protects the stored hash, but the
+     * challenge itself is observable). The backend refuses to start in
+     * plaintext unless this flag is set. Defaults to {@code false}.
+     */
+    private boolean insecureAllowPlaintext;
+    /** AUTH-002: optional TLS configuration for the TCP listener. {@code null} = no TLS. */
+    private TlsConfig tls;
 
     public ServerConfig() {}
 
@@ -49,7 +40,7 @@ public class ServerConfig {
     }
 
     public void setBindAddress(String bindAddress) {
-        this.bindAddress = bindAddress != null ? bindAddress : "0.0.0.0";
+        this.bindAddress = bindAddress;
     }
 
     public int getPort() {
@@ -57,7 +48,7 @@ public class ServerConfig {
     }
 
     public void setPort(int port) {
-        this.port = port > 0 ? port : 8888;
+        this.port = port;
     }
 
     public int getWebsocketPort() {
@@ -65,7 +56,7 @@ public class ServerConfig {
     }
 
     public void setWebsocketPort(int websocketPort) {
-        this.websocketPort = websocketPort > 0 ? websocketPort : 8889;
+        this.websocketPort = websocketPort;
     }
 
     public String getSecretKey() {
@@ -73,7 +64,7 @@ public class ServerConfig {
     }
 
     public void setSecretKey(String secretKey) {
-        this.secretKey = secretKey != null ? secretKey : "change-me-in-production";
+        this.secretKey = secretKey;
     }
 
     public int getWorkerThreads() {
@@ -81,61 +72,52 @@ public class ServerConfig {
     }
 
     public void setWorkerThreads(int workerThreads) {
-        this.workerThreads = workerThreads > 0 ? workerThreads : 4;
+        this.workerThreads = workerThreads;
     }
 
     /**
      * @return the backend console locale string (e.g. {@code "zh_CN"},
-     *         {@code "en_US"}); never null — defaults to {@code "zh_CN"}.
+     *         {@code "en_US"})
      */
     public String getLocale() {
         return locale;
     }
 
     public void setLocale(String locale) {
-        this.locale = locale != null && !locale.isBlank() ? locale : "zh_CN";
+        this.locale = locale;
     }
 
     /**
-     * @return the CORS origin whitelist; never null/empty — defaults to
-     *         {@code ["*"]} (allow all, backward compatible)
+     * @return the configured CORS origin whitelist
      */
     public List<String> getCorsAllowedOrigins() {
         return corsAllowedOrigins;
     }
 
     public void setCorsAllowedOrigins(List<String> corsAllowedOrigins) {
-        this.corsAllowedOrigins = (corsAllowedOrigins != null && !corsAllowedOrigins.isEmpty())
-                ? new ArrayList<>(corsAllowedOrigins)
-                : new ArrayList<>(List.of("*"));
+        this.corsAllowedOrigins = new ArrayList<>(corsAllowedOrigins);
     }
 
     /**
-     * @return the TCP read-idle timeout in seconds; {@code 0} disables idle
-     *         detection. Never negative.
+     * @return the TCP read-idle timeout in seconds; {@code 0} disables idle detection
      */
     public int getIdleTimeoutSeconds() {
         return idleTimeoutSeconds;
     }
 
     public void setIdleTimeoutSeconds(int idleTimeoutSeconds) {
-        this.idleTimeoutSeconds = idleTimeoutSeconds >= 0
-                ? idleTimeoutSeconds
-                : DEFAULT_IDLE_TIMEOUT_SECONDS;
+        this.idleTimeoutSeconds = idleTimeoutSeconds;
     }
 
     /**
-     * @return the per-connection message rate limit (tokens per second);
-     *         {@code 0} disables rate limiting. Never negative.
+     * @return the per-connection message rate limit; {@code 0} disables it
      */
     public int getRateLimitMessagesPerSecond() {
         return rateLimitMessagesPerSecond;
     }
 
     public void setRateLimitMessagesPerSecond(int rateLimitMessagesPerSecond) {
-        this.rateLimitMessagesPerSecond = rateLimitMessagesPerSecond >= 0
-                ? rateLimitMessagesPerSecond
-                : DEFAULT_RATE_LIMIT_MESSAGES_PER_SECOND;
+        this.rateLimitMessagesPerSecond = rateLimitMessagesPerSecond;
     }
 
     /**
@@ -146,20 +128,42 @@ public class ServerConfig {
     }
 
     public void setRateLimitBurst(int rateLimitBurst) {
-        this.rateLimitBurst = rateLimitBurst > 0 ? rateLimitBurst : DEFAULT_RATE_LIMIT_BURST;
+        this.rateLimitBurst = rateLimitBurst;
     }
 
     /**
-     * @return the fixed size of the dedicated REST worker pool (>= 1).
+     * @return the fixed size of the dedicated REST worker pool
      */
     public int getRestWorkerThreads() {
         return restWorkerThreads;
     }
 
     public void setRestWorkerThreads(int restWorkerThreads) {
-        this.restWorkerThreads = restWorkerThreads > 0
-                ? restWorkerThreads
-                : DEFAULT_REST_WORKER_THREADS;
+        this.restWorkerThreads = restWorkerThreads;
+    }
+
+    /**
+     * @return {@code true} only if the operator has explicitly opted into
+     *         running the TCP listener without TLS (AUTH-002 insecure mode).
+     */
+    public boolean isInsecureAllowPlaintext() {
+        return insecureAllowPlaintext;
+    }
+
+    public void setInsecureAllowPlaintext(boolean insecureAllowPlaintext) {
+        this.insecureAllowPlaintext = insecureAllowPlaintext;
+    }
+
+    /**
+     * @return the TLS configuration for the TCP listener, or {@code null} when
+     *         TLS is disabled (AUTH-002).
+     */
+    public TlsConfig getTls() {
+        return tls;
+    }
+
+    public void setTls(TlsConfig tls) {
+        this.tls = tls;
     }
 
     @Override
@@ -174,16 +178,18 @@ public class ServerConfig {
                rateLimitMessagesPerSecond == that.rateLimitMessagesPerSecond &&
                rateLimitBurst == that.rateLimitBurst &&
                restWorkerThreads == that.restWorkerThreads &&
+               insecureAllowPlaintext == that.insecureAllowPlaintext &&
                Objects.equals(bindAddress, that.bindAddress) &&
                Objects.equals(secretKey, that.secretKey) &&
                Objects.equals(locale, that.locale) &&
-               Objects.equals(corsAllowedOrigins, that.corsAllowedOrigins);
+               Objects.equals(corsAllowedOrigins, that.corsAllowedOrigins) &&
+               Objects.equals(tls, that.tls);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(bindAddress, port, websocketPort, secretKey, workerThreads, locale,
                 corsAllowedOrigins, idleTimeoutSeconds, rateLimitMessagesPerSecond, rateLimitBurst,
-                restWorkerThreads);
+                restWorkerThreads, insecureAllowPlaintext, tls);
     }
 }

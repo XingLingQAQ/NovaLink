@@ -11,9 +11,9 @@ public class GlobalChannelConfig {
 
     private String displayName;
     private String permission;
-    private int maxCapacity = 1000;
+    private int maxCapacity;
     /** Minimum seconds between two messages from the same player (0 = disabled). */
-    private int slowModeSeconds = 0;
+    private int slowModeSeconds;
 
     public GlobalChannelConfig() {}
 
@@ -38,7 +38,7 @@ public class GlobalChannelConfig {
     }
 
     public void setMaxCapacity(int maxCapacity) {
-        this.maxCapacity = maxCapacity > 0 ? maxCapacity : 1000;
+        this.maxCapacity = maxCapacity;
     }
 
     public int getSlowModeSeconds() {
@@ -46,7 +46,7 @@ public class GlobalChannelConfig {
     }
 
     public void setSlowModeSeconds(int slowModeSeconds) {
-        this.slowModeSeconds = Math.max(0, slowModeSeconds);
+        this.slowModeSeconds = slowModeSeconds;
     }
 
     @Override
