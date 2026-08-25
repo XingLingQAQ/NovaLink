@@ -149,8 +149,20 @@ public final class ConfigHistoryService {
         }
 
         maskArrayLeaf(obj, "clients", "password");
+        // §11.6 item-20: Gson serializes the live Java object fields
+        // {@code superAdmins}/{@code panelUsers} (camelCase) via the field
+        // names, while a reloaded-and-re-serialised YAML snapshot carries the
+        // same arrays under the kebab-case aliases {@code super-admins}/
+        // {@code panel-users}. Both spellings must be masked so neither leaks,
+        // regardless of whether the input JSON came from the live Gson form or
+        // a YAML round-trip. The same applies to the {@code password-hash}/
+        // {@code passwordHash} leaf: the live object's field is
+        // {@code passwordHash} (camelCase); the YAML alias is
+        // {@code password-hash} (kebab-case). Both are masked here.
         maskArrayLeaf(obj, "super-admins", "password-hash");
+        maskArrayLeaf(obj, "superAdmins", "passwordHash");
         maskArrayLeaf(obj, "panel-users", "password-hash");
+        maskArrayLeaf(obj, "panelUsers", "passwordHash");
 
         return gson.toJson(obj);
     }
@@ -469,7 +481,7 @@ public final class ConfigHistoryService {
         // Merge non-secret fields onto the live config in place. Secret fields
         // carry the MASK sentinel in the snapshot, so they are skipped and the
         // current live secret is preserved.
-        mergeNonSecret(live, targetConfig);
+        applySnapshot(live, targetConfig);
 
         // Atomic write + revision bump. Fail-closed: a save failure propagates
         // and the live config is left in the partially-merged state ONLY until
@@ -531,8 +543,16 @@ public final class ConfigHistoryService {
      * secret are touched; nested secret-bearing objects (server, database,
      * clients, super-admins, panel-users) are merged field-by-field so their
      * non-secret siblings survive while their secret is preserved.
+     *
+     * <p>This is the shared apply primitive used by rollback, publish-draft and
+     * restore-from-backup. Behaviour is unchanged from the former
+     * {@code mergeNonSecret} — mask fields are skipped and the live secret is
+     * preserved — only the name has been refactored to reflect its broader
+     * reuse. Package-private so the sibling {@link ConfigPublishService} (same
+     * package) can reuse it for draft-publish and restore-from-backup without
+     * duplicating the merge logic.
      */
-    private void mergeNonSecret(NovaLinkConfig target, NovaLinkConfig source) {
+    void applySnapshot(NovaLinkConfig target, NovaLinkConfig source) {
         if (source == null) {
             return;
         }

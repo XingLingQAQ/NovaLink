@@ -630,6 +630,128 @@ public interface DatabaseProvider {
         throw new UnsupportedOperationException("Config history not supported by this provider");
     }
 
+    // ==================== Config Drafts (schema v15 / proposal 10) ====================
+    // §11.6 item-20 / PANEL proposal 10 — staged configuration draft / approve /
+    // publish workflow. The config_drafts table stores MASKED drafts keyed by
+    // database id; the state machine (DRAFT → APPROVED → PUBLISHED) is driven
+    // by ConfigPublishService. All four methods share the DatabaseProvider
+    // optional-method convention: JDBC + Memory providers override them;
+    // RedisProvider inherits the UnsupportedOperationException default (safe
+    // stub). Drafts are masked at the service layer before they reach the
+    // provider, so the table never stores plaintext secrets.
+
+    /**
+     * Inserts a new config draft row. The provider stamps the row id back via
+     * reflection. The {@code draftJson} field MUST already be masked by the
+     * caller ({@link com.nova.link.api.ConfigHistoryService#maskSecrets}).
+     *
+     * @param draft the draft to persist (not null)
+     * @throws DatabaseException if the save fails
+     */
+    default void saveConfigDraft(com.nova.link.api.ConfigDraft draft) throws DatabaseException {
+        throw new UnsupportedOperationException("Config drafts not supported by this provider");
+    }
+
+    /**
+     * Loads a single config draft by id, including its masked draft_json payload.
+     *
+     * @param id the draft id
+     * @return the draft, or empty if not found
+     * @throws DatabaseException if the load fails
+     */
+    default java.util.Optional<com.nova.link.api.ConfigDraft> getConfigDraft(long id)
+            throws DatabaseException {
+        throw new UnsupportedOperationException("Config drafts not supported by this provider");
+    }
+
+    /**
+     * Lists config drafts newest-first, WITHOUT the full draft_json blob.
+     * Returns only the metadata columns needed to render a draft list.
+     *
+     * @param limit the maximum number of drafts to return
+     * @return the matching drafts (no payload), newest first
+     * @throws DatabaseException if the load fails
+     */
+    default java.util.List<com.nova.link.api.ConfigDraft> listConfigDrafts(int limit)
+            throws DatabaseException {
+        throw new UnsupportedOperationException("Config drafts not supported by this provider");
+    }
+
+    /**
+     * Updates the state of a config draft row (status, approved_by, approved_at,
+     * published_at). A no-op when no such draft exists.
+     *
+     * @param id          the draft id
+     * @param status      the new status (not null)
+     * @param approvedBy  the approver's username, or null
+     * @param approvedAt  the approval timestamp, or 0
+     * @param publishedAt the publish timestamp, or 0
+     * @throws DatabaseException if the update fails
+     */
+    default void updateConfigDraftStatus(long id, com.nova.link.api.ConfigDraft.Status status,
+                                         String approvedBy, long approvedAt, long publishedAt)
+            throws DatabaseException {
+        throw new UnsupportedOperationException("Config drafts not supported by this provider");
+    }
+
+    /**
+     * Deletes a config draft row by id. A no-op when no such draft exists.
+     *
+     * @param id the draft id
+     * @throws DatabaseException if the delete fails
+     */
+    default void deleteConfigDraft(long id) throws DatabaseException {
+        throw new UnsupportedOperationException("Config drafts not supported by this provider");
+    }
+
+    // ==================== Config Backups (schema v15 / proposal 10) ====================
+    // §11.6 item-20 / PANEL proposal 10 — explicit backup / restore mechanism.
+    // The config_backups table stores MASKED named backups keyed by database
+    // id; backups are created by ConfigPublishService.createBackup and
+    // restored by ConfigPublishService.restoreFromBackup. All three methods
+    // share the DatabaseProvider optional-method convention: JDBC + Memory
+    // providers override them; RedisProvider inherits the
+    // UnsupportedOperationException default (safe stub). Backups are masked at
+    // the service layer before they reach the provider, so the table never
+    // stores plaintext secrets.
+
+    /**
+     * Inserts a new config backup row. The provider stamps the row id back via
+     * reflection. The {@code backupJson} field MUST already be masked by the
+     * caller ({@link com.nova.link.api.ConfigHistoryService#maskSecrets}).
+     *
+     * @param backup the backup to persist (not null)
+     * @throws DatabaseException if the save fails
+     */
+    default void saveConfigBackup(com.nova.link.api.ConfigBackup backup) throws DatabaseException {
+        throw new UnsupportedOperationException("Config backups not supported by this provider");
+    }
+
+    /**
+     * Loads a single config backup by id, including its masked backup_json payload.
+     *
+     * @param id the backup id
+     * @return the backup, or empty if not found
+     * @throws DatabaseException if the load fails
+     */
+    default java.util.Optional<com.nova.link.api.ConfigBackup> getConfigBackup(long id)
+            throws DatabaseException {
+        throw new UnsupportedOperationException("Config backups not supported by this provider");
+    }
+
+    /**
+     * Lists config backups newest-first, WITHOUT the full backup_json blob.
+     * Returns only the metadata columns needed to render a backup list.
+     *
+     * @param limit the maximum number of backups to return
+     * @return the matching backups (no payload), newest first
+     * @throws DatabaseException if the load fails
+     */
+    default java.util.List<com.nova.link.api.ConfigBackup> listConfigBackups(int limit)
+            throws DatabaseException {
+        throw new UnsupportedOperationException("Config backups not supported by this provider");
+    }
+
     // ==================== Social Relation Operations (提案 08) ====================
     // §11.6 item-18 / PANEL proposal 08 — per-player social relations (initial
     // scope: IGNORE + FAVORITE) and notification preferences. All six methods

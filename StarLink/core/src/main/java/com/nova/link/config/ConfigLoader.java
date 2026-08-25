@@ -49,6 +49,32 @@ public class ConfigLoader {
     }
 
     /**
+     * Parses a candidate YAML document into a {@link NovaLinkConfig} without
+     * persisting anything or mutating any live in-memory config. Used by the
+     * draft workflow (§11.6 item-20 / proposal 10) to turn a candidate YAML
+     * payload into the JSON form stored in {@code config_drafts}; the result
+     * is then masked and persisted by {@link com.nova.link.api.ConfigPublishService}.
+     *
+     * <p>This is a pure parse: it does NOT touch the file system, does NOT
+     * mutate the live config, and does NOT require the config file to exist.
+     * The structural validation rules (required sections, port ranges,
+     * max_capacity&gt;0, scope enum, etc.) are exactly the same as a normal
+     * load, because this delegates to the same private {@link #parseYaml}
+     * entry point.
+     *
+     * @param content the candidate YAML document; must not be {@code null}
+     * @return the parsed config; never {@code null}
+     * @throws ConfigException if the YAML is structurally invalid
+     */
+    public static NovaLinkConfig parseYamlContent(String content) throws ConfigException {
+        if (content == null) {
+            throw new ConfigException("YAML content must not be null");
+        }
+        ConfigLoader loader = new ConfigLoader(Path.of("novalink.yml"));
+        return loader.parseYaml(content);
+    }
+
+    /**
      * Loads the configuration from file.
      * If the file doesn't exist, copies the bundled configuration template.
      * Missing fields introduced by newer templates are added automatically.

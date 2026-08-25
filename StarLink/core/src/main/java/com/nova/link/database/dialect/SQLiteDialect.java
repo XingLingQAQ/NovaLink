@@ -33,7 +33,7 @@ import java.util.List;
 public class SQLiteDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
-    private static final int CURRENT_VERSION = 14;
+    private static final int CURRENT_VERSION = 15;
 
     @Override
     public int getCurrentVersion() {
@@ -515,6 +515,42 @@ public class SQLiteDialect implements MigrationDialect {
                 statements.add("CREATE INDEX IF NOT EXISTS idx_campaigns_created_at ON campaigns (created_at)");
             }
 
+            case 15 -> {
+                // Config drafts + explicit backups (§11.6 item-20 / PANEL proposal 10
+                //   doc-deferred sub-items). config_drafts persists staged draft YAML
+                //   with a DRAFT -> APPROVED -> PUBLISHED state machine; approver must
+                //   differ from createdBy (permission separation enforced in
+                //   ConfigPublishService). draft_json stores the candidate YAML
+                //   (masked via ConfigHistoryService.maskSecrets). config_backups
+                //   captures explicit pre-publish / pre-restore snapshots of the live
+                //   config (masked) with a label and the originating settingsRevision
+                //   for correlation. CREATE TABLE IF NOT EXISTS keeps retry idempotent.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS config_drafts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        draft_json TEXT NOT NULL,
+                        created_by VARCHAR(36) NOT NULL,
+                        status VARCHAR(16) NOT NULL,
+                        approved_by VARCHAR(36),
+                        created_at BIGINT NOT NULL,
+                        approved_at BIGINT,
+                        published_at BIGINT
+                    )
+                    """);
+                statements.add("CREATE INDEX IF NOT EXISTS idx_config_drafts_status ON config_drafts (status)");
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS config_backups (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        label VARCHAR(255) NOT NULL,
+                        backup_json TEXT NOT NULL,
+                        settings_revision BIGINT NOT NULL,
+                        created_by VARCHAR(36) NOT NULL,
+                        created_at BIGINT NOT NULL
+                    )
+                    """);
+                statements.add("CREATE INDEX IF NOT EXISTS idx_config_backups_created_at ON config_backups (created_at)");
+            }
+
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -538,6 +574,7 @@ public class SQLiteDialect implements MigrationDialect {
             case 12 -> "Add config_history table for masked config snapshots and rollback (PANEL proposal 10)";
             case 13 -> "Add social_relations and notification_preferences tables for ignore/favorite/mentions (PANEL proposal 08)";
             case 14 -> "Add campaigns table for persisted campaign orchestration (PANEL proposal 06)";
+            case 15 -> "Add config_drafts and config_backups tables for staged draft/publish workflow and explicit backup/restore (PANEL proposal 10)";
             default -> "Unknown migration";
         };
     }

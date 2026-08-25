@@ -421,6 +421,42 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         return built;
     }
 
+    /**
+     * Lazily-assembled backing service for the §11.6 item-20 / PANEL proposal 10
+     * draft / approve / publish / backup / restore endpoints. Built on demand
+     * from the already-cached {@link #configHistoryService()} plus the same
+     * {@link ConfigManager} / {@link DatabaseProvider} / {@link AuditStore}.
+     * Same lazy pattern as {@code configHistoryService()}: when the DB is
+     * unavailable every endpoint 503s instead of NPE-ing. The constructor
+     * signature stays untouched so NovaLinkMain (edited by another agent) is
+     * not affected.
+     */
+    private volatile ConfigPublishService configPublishService;
+
+    private ConfigPublishService configPublishService() {
+        ConfigPublishService cached = configPublishService;
+        if (cached != null) {
+            return cached;
+        }
+        // configHistoryService() itself lazily wires into ConfigManager; call
+        // it first so the downstream null/503 checks align with the real
+        // backing service rather than a stale null.
+        ConfigHistoryService history = configHistoryService();
+        DatabaseProvider db = null;
+        try {
+            db = playerStateManager.getDatabaseProvider();
+        } catch (Exception ignored) {
+            // PlayerStateManager is always injected in production; a null DB
+            // here makes the config-publish endpoints 503.
+        }
+        if (db == null || configManager == null || history == null) {
+            return null;
+        }
+        ConfigPublishService built = new ConfigPublishService(db, configManager, history, auditStore);
+        configPublishService = built;
+        return built;
+    }
+
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
         String uri = request.uri();
@@ -575,6 +611,16 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                     || path.equals("/api/settings/diff")) {
                 return PanelRole.ADMIN;
             }
+            // §11.6 item-20 / PANEL proposal 10 (doc-deferred sub-items 1+2+3):
+            // the draft/backup list and draft-load endpoints stage masked config
+            // candidates that could become live, and the drafts/backups carry
+            // deployment topology (client usernames, admin rosters) even masked.
+            // SUPER_ADMIN-only — same posture as the POST counterparts below.
+            if (path.equals("/api/config/drafts")
+                    || path.matches("/api/config/drafts/[^/]+")
+                    || path.equals("/api/config/backups")) {
+                return PanelRole.SUPER_ADMIN;
+            }
             return PanelRole.VIEWER;
         }
         // SUPER_ADMIN-only mutations
@@ -604,6 +650,32 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         // owner to apply it.
         if (path.equals("/api/settings/validate") && method == HttpMethod.POST) {
             return PanelRole.ADMIN;
+        }
+        // §11.6 item-20 / PANEL proposal 10 (doc-deferred sub-items 1+2+3):
+        // the draft/approve/publish/backup/restore endpoints rewrite the live
+        // config or stage a masked candidate that could become live. All 9
+        // routes are SUPER_ADMIN-only — same posture as /api/settings PUT and
+        // /api/settings/rollback. Approver != createdBy is a SECOND
+        // authorization layer enforced inside ConfigPublishService.approveDraft
+        // (403 if same), not covered here. The GET entries for these routes
+        // (list/load drafts and backups) are gated in the GET branch above.
+        if (path.equals("/api/config/drafts") && method == HttpMethod.POST) {
+            return PanelRole.SUPER_ADMIN;
+        }
+        if (path.matches("/api/config/drafts/[^/]+/approve") && method == HttpMethod.POST) {
+            return PanelRole.SUPER_ADMIN;
+        }
+        if (path.matches("/api/config/drafts/[^/]+/publish") && method == HttpMethod.POST) {
+            return PanelRole.SUPER_ADMIN;
+        }
+        if (path.matches("/api/config/drafts/[^/]+") && method == HttpMethod.DELETE) {
+            return PanelRole.SUPER_ADMIN;
+        }
+        if (path.equals("/api/config/backups") && method == HttpMethod.POST) {
+            return PanelRole.SUPER_ADMIN;
+        }
+        if (path.equals("/api/config/restore-from-backup") && method == HttpMethod.POST) {
+            return PanelRole.SUPER_ADMIN;
         }
         if (path.equals("/api/webhooks") && method == HttpMethod.POST) {
             return PanelRole.SUPER_ADMIN;
@@ -941,6 +1013,34 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         // body is missing the "yaml" field or is unparseable JSON.
         else if (path.equals("/api/settings/validate") && method == HttpMethod.POST) {
             handleValidateConfig(ctx, request, uri);
+        }
+        // §11.6 item-20 / PANEL proposal 10 (doc-deferred sub-items 1+2+3):
+        // staged draft / approve / publish workflow + independent
+        // /config/publish endpoint + explicit backup / restore. All 9 routes
+        // are SUPER_ADMIN-only (requiredRole enforces). Every handler 503s
+        // when the backing ConfigPublishService is unavailable (no DB).
+        else if (path.equals("/api/config/drafts") && method == HttpMethod.POST) {
+            handleCreateDraft(ctx, request, claims);
+        } else if (path.equals("/api/config/drafts") && method == HttpMethod.GET) {
+            handleListDrafts(ctx, request, uri);
+        } else if (path.matches("/api/config/drafts/[^/]+") && method == HttpMethod.GET) {
+            String idStr = path.substring("/api/config/drafts/".length());
+            handleGetDraft(ctx, request, idStr);
+        } else if (path.matches("/api/config/drafts/[^/]+/approve") && method == HttpMethod.POST) {
+            String idStr = path.substring("/api/config/drafts/".length(), path.lastIndexOf("/approve"));
+            handleApproveDraft(ctx, request, idStr, claims);
+        } else if (path.matches("/api/config/drafts/[^/]+/publish") && method == HttpMethod.POST) {
+            String idStr = path.substring("/api/config/drafts/".length(), path.lastIndexOf("/publish"));
+            handlePublishDraft(ctx, request, idStr, claims);
+        } else if (path.matches("/api/config/drafts/[^/]+") && method == HttpMethod.DELETE) {
+            String idStr = path.substring("/api/config/drafts/".length());
+            handleDiscardDraft(ctx, request, idStr, claims);
+        } else if (path.equals("/api/config/backups") && method == HttpMethod.POST) {
+            handleCreateBackup(ctx, request, claims);
+        } else if (path.equals("/api/config/backups") && method == HttpMethod.GET) {
+            handleListBackups(ctx, request, uri);
+        } else if (path.equals("/api/config/restore-from-backup") && method == HttpMethod.POST) {
+            handleRestoreFromBackup(ctx, request, claims);
         }
         // Audit log endpoint (PANEL-006): ADMIN+ paginated listing with
         // optional actor/action filters. Read access is deliberately separate
@@ -3236,6 +3336,428 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         response.addProperty("revision", configManager.getSettingsRevision());
         response.addProperty("checkedAt", System.currentTimeMillis());
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    // ==================== Config Draft / Publish / Backup Endpoints
+    //         (§11.6 item-20 / PANEL proposal 10 doc-deferred sub-items 1+2+3) ====================
+
+    /**
+     * POST /api/config/drafts {"yaml":"..."} — creates a new DRAFT. The YAML is
+     * validated and masked at create time; the stored {@code draft_json} is the
+     * masked JSON form. SUPER_ADMIN only (requiredRole enforces). 400 when the
+     * body is missing the {@code yaml} field or YAML validation fails; 503 when
+     * the backing service is unavailable; 500/NC-510 when persistence fails.
+     */
+    private void handleCreateDraft(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
+        ConfigPublishService service = configPublishService();
+        if (service == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config publish not enabled");
+            return;
+        }
+        String yaml;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            if (!json.has("yaml") || json.get("yaml").isJsonNull()) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Missing required field: yaml");
+                return;
+            }
+            yaml = json.get("yaml").getAsString();
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+        String actor = panelUsername(claims);
+        try {
+            ConfigDraft draft = service.createDraft(yaml, actor);
+            JsonObject response = draftToJson(draft, true);
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+        } catch (IllegalArgumentException e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, e.getMessage());
+        } catch (IllegalStateException e) {
+            logger.error("Create draft failed (fail-closed)", e);
+            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                    "NC-510: " + e.getMessage());
+        }
+    }
+
+    /**
+     * GET /api/config/drafts?limit=N — lists drafts newest-first, metadata
+     * only (no draft_json payload). Default limit 50, clamped to 200.
+     * SUPER_ADMIN only.
+     */
+    private void handleListDrafts(ChannelHandlerContext ctx, FullHttpRequest request, String uri) {
+        ConfigPublishService service = configPublishService();
+        if (service == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config publish not enabled");
+            return;
+        }
+        int limit = 50;
+        int q = uri.indexOf('?');
+        if (q >= 0) {
+            Map<String, List<String>> params = parseQueryParams(uri.substring(q + 1));
+            limit = parseIntParam(params, "limit", 50);
+        }
+        limit = Math.min(200, Math.max(1, limit));
+        List<ConfigDraft> drafts = service.listDrafts(limit);
+        JsonArray items = new JsonArray();
+        for (ConfigDraft d : drafts) {
+            items.add(draftToJson(d, false));
+        }
+        JsonObject response = new JsonObject();
+        response.add("items", items);
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * GET /api/config/drafts/{id} — loads a single draft including its masked
+     * draft_json payload. 404 when the id is absent or unparseable.
+     */
+    private void handleGetDraft(ChannelHandlerContext ctx, FullHttpRequest request, String idStr) {
+        ConfigPublishService service = configPublishService();
+        if (service == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config publish not enabled");
+            return;
+        }
+        long id;
+        try {
+            id = Long.parseLong(idStr);
+        } catch (NumberFormatException e) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Draft not found");
+            return;
+        }
+        Optional<ConfigDraft> draft = service.getDraft(id);
+        if (draft.isEmpty()) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Draft not found");
+            return;
+        }
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, draftToJson(draft.get(), true));
+    }
+
+    /**
+     * POST /api/config/drafts/{id}/approve — approves a DRAFT. Approver must
+     * differ from createdBy (permission separation, 403 if same). 404 when the
+     * draft is absent; 409 when the draft is not in DRAFT state.
+     */
+    private void handleApproveDraft(ChannelHandlerContext ctx, FullHttpRequest request,
+                                    String idStr, Claims claims) {
+        ConfigPublishService service = configPublishService();
+        if (service == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config publish not enabled");
+            return;
+        }
+        long id;
+        try {
+            id = Long.parseLong(idStr);
+        } catch (NumberFormatException e) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Draft not found");
+            return;
+        }
+        String approver = panelUsername(claims);
+        try {
+            Optional<ConfigDraft> draft = service.approveDraft(id, approver);
+            if (draft.isEmpty()) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Draft not found");
+                return;
+            }
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK, draftToJson(draft.get(), true));
+        } catch (IllegalStateException e) {
+            if (e.getMessage() != null && e.getMessage().contains("Approver must differ from createdBy")) {
+                sendJsonError(ctx, request, HttpResponseStatus.FORBIDDEN, e.getMessage());
+            } else if (e.getMessage() != null && e.getMessage().contains("not in DRAFT state")) {
+                sendJsonError(ctx, request, HttpResponseStatus.CONFLICT, e.getMessage());
+            } else {
+                logger.error("Approve draft {} failed (fail-closed)", id, e);
+                sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                        "NC-510: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * POST /api/config/drafts/{id}/publish — publishes an APPROVED draft to the
+     * live config via {@link ConfigManager#save()} (fail-closed). Broadcasts a
+     * {@code settings_update} WS event on success (same as rollback). 404 when
+     * the draft is absent; 409 when the draft is not APPROVED; 500/NC-510 when
+     * save fails (live config untouched, draft stays APPROVED).
+     */
+    private void handlePublishDraft(ChannelHandlerContext ctx, FullHttpRequest request,
+                                    String idStr, Claims claims) {
+        ConfigPublishService service = configPublishService();
+        if (service == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config publish not enabled");
+            return;
+        }
+        long id;
+        try {
+            id = Long.parseLong(idStr);
+        } catch (NumberFormatException e) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Draft not found");
+            return;
+        }
+        String actor = panelUsername(claims);
+        try {
+            long newRevision = service.publishDraft(id, actor);
+            if (newRevision == -1L) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Draft not found");
+                return;
+            }
+            if (newRevision == -2L) {
+                sendJsonError(ctx, request, HttpResponseStatus.CONFLICT,
+                        "Draft is not in APPROVED state");
+                return;
+            }
+            JsonObject response = new JsonObject();
+            response.addProperty("success", true);
+            response.addProperty("draftId", id);
+            response.addProperty("revision", newRevision);
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+
+            // Broadcast settings_update so panel clients refresh without
+            // polling (same pattern as rollback).
+            if (webSocketGateway != null) {
+                try {
+                    com.nova.link.config.FeatureConfig publishedFeatures =
+                            configManager.getConfig() != null
+                                    ? configManager.getConfig().getFeatures()
+                                    : null;
+                    webSocketGateway.getMessageHandler().broadcastSettingsUpdate(
+                            newRevision, publishedFeatures);
+                } catch (Exception e) {
+                    logger.debug("settings_update broadcast after publish failed: {}",
+                            e.getMessage());
+                }
+            }
+        } catch (IllegalStateException e) {
+            logger.error("Publish draft {} failed (fail-closed)", id, e);
+            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                    "NC-510: " + e.getMessage());
+        }
+    }
+
+    /**
+     * DELETE /api/config/drafts/{id} — discards a DRAFT. Only a DRAFT can be
+     * discarded; APPROVED/PUBLISHED drafts cannot (audit trail). 404 when
+     * absent; 409 when not in DRAFT state.
+     */
+    private void handleDiscardDraft(ChannelHandlerContext ctx, FullHttpRequest request,
+                                    String idStr, Claims claims) {
+        ConfigPublishService service = configPublishService();
+        if (service == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config publish not enabled");
+            return;
+        }
+        long id;
+        try {
+            id = Long.parseLong(idStr);
+        } catch (NumberFormatException e) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Draft not found");
+            return;
+        }
+        String actor = panelUsername(claims);
+        try {
+            boolean discarded = service.discardDraft(id, actor);
+            if (!discarded) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Draft not found");
+                return;
+            }
+            JsonObject response = new JsonObject();
+            response.addProperty("success", true);
+            response.addProperty("draftId", id);
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+        } catch (IllegalStateException e) {
+            if (e.getMessage() != null && e.getMessage().contains("Only a DRAFT can be discarded")) {
+                sendJsonError(ctx, request, HttpResponseStatus.CONFLICT, e.getMessage());
+            } else {
+                logger.error("Discard draft {} failed (fail-closed)", id, e);
+                sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                        "NC-510: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * POST /api/config/backups {"label":"..."} — creates a named backup of the
+     * current live config (masked). SUPER_ADMIN only. 400 when the body is
+     * missing the {@code label} field; 503 when the service is unavailable.
+     */
+    private void handleCreateBackup(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
+        ConfigPublishService service = configPublishService();
+        if (service == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config publish not enabled");
+            return;
+        }
+        String label;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            if (!json.has("label") || json.get("label").isJsonNull()) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Missing required field: label");
+                return;
+            }
+            label = json.get("label").getAsString();
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+        String actor = panelUsername(claims);
+        try {
+            ConfigBackup backup = service.createBackup(label, actor);
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK, backupToJson(backup, true));
+        } catch (IllegalArgumentException e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, e.getMessage());
+        } catch (IllegalStateException e) {
+            logger.error("Create backup failed (fail-closed)", e);
+            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                    "NC-510: " + e.getMessage());
+        }
+    }
+
+    /**
+     * GET /api/config/backups?limit=N — lists backups newest-first, metadata
+     * only (no backup_json payload). Default limit 50, clamped to 200.
+     */
+    private void handleListBackups(ChannelHandlerContext ctx, FullHttpRequest request, String uri) {
+        ConfigPublishService service = configPublishService();
+        if (service == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config publish not enabled");
+            return;
+        }
+        int limit = 50;
+        int q = uri.indexOf('?');
+        if (q >= 0) {
+            Map<String, List<String>> params = parseQueryParams(uri.substring(q + 1));
+            limit = parseIntParam(params, "limit", 50);
+        }
+        limit = Math.min(200, Math.max(1, limit));
+        List<ConfigBackup> backups = service.listBackups(limit);
+        JsonArray items = new JsonArray();
+        for (ConfigBackup b : backups) {
+            items.add(backupToJson(b, false));
+        }
+        JsonObject response = new JsonObject();
+        response.add("items", items);
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+    }
+
+    /**
+     * POST /api/config/restore-from-backup {"backupId":N} — restores the live
+     * config from a named backup (fail-closed). Broadcasts a
+     * {@code settings_update} WS event on success (same as rollback/publish).
+     * 400 when the body is missing {@code backupId}; 404 when the backup is
+     * absent; 500/NC-510 when save fails (live config untouched, backup
+     * retained).
+     */
+    private void handleRestoreFromBackup(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
+        ConfigPublishService service = configPublishService();
+        if (service == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Config publish not enabled");
+            return;
+        }
+        long backupId;
+        try {
+            String body = request.content().toString(CharsetUtil.UTF_8);
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            if (!json.has("backupId") || json.get("backupId").isJsonNull()) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                        "Missing required field: backupId");
+                return;
+            }
+            backupId = json.get("backupId").getAsLong();
+        } catch (Exception e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
+            return;
+        }
+        String actor = panelUsername(claims);
+        try {
+            long newRevision = service.restoreFromBackup(backupId, actor);
+            if (newRevision == -1L) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Backup not found");
+                return;
+            }
+            JsonObject response = new JsonObject();
+            response.addProperty("success", true);
+            response.addProperty("backupId", backupId);
+            response.addProperty("revision", newRevision);
+            sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+
+            // Broadcast settings_update so panel clients refresh without
+            // polling (same pattern as rollback/publish).
+            if (webSocketGateway != null) {
+                try {
+                    com.nova.link.config.FeatureConfig restoredFeatures =
+                            configManager.getConfig() != null
+                                    ? configManager.getConfig().getFeatures()
+                                    : null;
+                    webSocketGateway.getMessageHandler().broadcastSettingsUpdate(
+                            newRevision, restoredFeatures);
+                } catch (Exception e) {
+                    logger.debug("settings_update broadcast after restore failed: {}",
+                            e.getMessage());
+                }
+            }
+        } catch (IllegalStateException e) {
+            logger.error("Restore from backup {} failed (fail-closed)", backupId, e);
+            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                    "NC-510: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Serialises a {@link ConfigDraft} to JSON. When {@code includePayload} is
+     * true the masked {@code draft_json} is parsed back to a structured object
+     * and emitted under {@code draft}; otherwise the payload is omitted (list
+     * view). The {@code draft_json} is already masked at create time, so no
+     * further masking is needed here.
+     */
+    private JsonObject draftToJson(ConfigDraft d, boolean includePayload) {
+        JsonObject o = new JsonObject();
+        o.addProperty("id", d.getId());
+        o.addProperty("createdBy", d.getCreatedBy());
+        o.addProperty("status", d.getStatus().name());
+        o.addProperty("createdAt", d.getCreatedAt());
+        if (d.getApprovedBy() != null) {
+            o.addProperty("approvedBy", d.getApprovedBy());
+        }
+        // approvedAt/publishedAt are primitive longs (0 = unset); emit only when stamped.
+        if (d.getApprovedAt() > 0) {
+            o.addProperty("approvedAt", d.getApprovedAt());
+        }
+        if (d.getPublishedAt() > 0) {
+            o.addProperty("publishedAt", d.getPublishedAt());
+        }
+        if (includePayload && d.getDraftJson() != null) {
+            try {
+                o.add("draft", JsonParser.parseString(d.getDraftJson()));
+            } catch (Exception e) {
+                o.addProperty("draft", d.getDraftJson());
+            }
+        }
+        return o;
+    }
+
+    /**
+     * Serialises a {@link ConfigBackup} to JSON. When {@code includePayload} is
+     * true the masked {@code backup_json} is parsed back to a structured
+     * object and emitted under {@code backup}; otherwise the payload is
+     * omitted (list view). The {@code backup_json} is already masked at create
+     * time, so no further masking is needed here.
+     */
+    private JsonObject backupToJson(ConfigBackup b, boolean includePayload) {
+        JsonObject o = new JsonObject();
+        o.addProperty("id", b.getId());
+        o.addProperty("label", b.getLabel());
+        o.addProperty("settingsRevision", b.getSettingsRevision());
+        o.addProperty("createdBy", b.getCreatedBy());
+        o.addProperty("createdAt", b.getCreatedAt());
+        if (includePayload && b.getBackupJson() != null) {
+            try {
+                o.add("backup", JsonParser.parseString(b.getBackupJson()));
+            } catch (Exception e) {
+                o.addProperty("backup", b.getBackupJson());
+            }
+        }
+        return o;
     }
 
     /**

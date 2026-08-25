@@ -1467,4 +1467,240 @@ public abstract class AbstractJdbcProvider implements DatabaseProvider {
                 parseUuid(rs.getString("revoked_by"))
         );
     }
+
+    // ==================== Config Drafts (schema v15 / proposal 10) ====================
+    //
+    // §11.6 item-20 / PANEL proposal 10 — staged configuration draft / approve /
+    // publish workflow. The config_drafts CRUD is dialect-neutral: straight
+    // INSERT with RETURN_GENERATED_KEYS, a SELECT for single/list, an UPDATE
+    // for the state-machine transition, and a DELETE for discard. One
+    // implementation serves MySQL, PostgreSQL and SQLite alike. The
+    // draft_json payload is stored masked (the service masks before calling
+    // saveConfigDraft); status is the ConfigDraft.Status enum name.
+
+    @Override
+    public void saveConfigDraft(com.nova.link.api.ConfigDraft draft) throws DatabaseException {
+        if (draft == null) {
+            throw new DatabaseException("Cannot save a null config draft", null);
+        }
+        String insertSql = """
+                INSERT INTO config_drafts (draft_json, created_by, status, approved_by,
+                                            created_at, approved_at, published_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """;
+        try (Connection conn = getDataSource().getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement stmt = conn.prepareStatement(insertSql, Statement.RETURN_GENERATED_KEYS)) {
+                    stmt.setString(1, draft.getDraftJson());
+                    stmt.setString(2, draft.getCreatedBy());
+                    stmt.setString(3, draft.getStatus().name());
+                    stmt.setString(4, draft.getApprovedBy());
+                    stmt.setLong(5, draft.getCreatedAt());
+                    stmt.setLong(6, draft.getApprovedAt());
+                    stmt.setLong(7, draft.getPublishedAt());
+                    stmt.executeUpdate();
+                    try (ResultSet rs = stmt.getGeneratedKeys()) {
+                        if (rs.next()) {
+                            draft.setId(rs.getLong(1));
+                        }
+                    }
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to save config draft", e);
+        }
+    }
+
+    @Override
+    public java.util.Optional<com.nova.link.api.ConfigDraft> getConfigDraft(long id) throws DatabaseException {
+        String sql = "SELECT id, draft_json, created_by, status, approved_by, "
+                + "created_at, approved_at, published_at FROM config_drafts WHERE id = ?";
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setLong(1, id);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    return java.util.Optional.empty();
+                }
+                return java.util.Optional.of(mapDraftRow(rs));
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load config draft id=" + id, e);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.api.ConfigDraft> listConfigDrafts(int limit) throws DatabaseException {
+        // Metadata-only: draft_json deliberately NOT selected so the list
+        // path never leaks the (masked) payload — same posture as
+        // getConfigHistory. Callers fetch the payload via getConfigDraft(id).
+        String sql = "SELECT id, NULL AS draft_json, created_by, status, approved_by, "
+                + "created_at, approved_at, published_at FROM config_drafts "
+                + "ORDER BY created_at DESC, id DESC LIMIT ?";
+        List<com.nova.link.api.ConfigDraft> results = new ArrayList<>();
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setInt(1, limit);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    results.add(mapDraftRow(rs));
+                }
+            }
+            return results;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to list config drafts", e);
+        }
+    }
+
+    @Override
+    public void updateConfigDraftStatus(long id, com.nova.link.api.ConfigDraft.Status status,
+                                         String approvedBy, long approvedAt, long publishedAt)
+            throws DatabaseException {
+        if (status == null) {
+            return;
+        }
+        String sql = "UPDATE config_drafts SET status = ?, approved_by = ?, "
+                + "approved_at = ?, published_at = ? WHERE id = ?";
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, status.name());
+            stmt.setString(2, approvedBy);
+            stmt.setLong(3, approvedAt);
+            stmt.setLong(4, publishedAt);
+            stmt.setLong(5, id);
+            stmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to update config draft status id=" + id, e);
+        }
+    }
+
+    @Override
+    public void deleteConfigDraft(long id) throws DatabaseException {
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement("DELETE FROM config_drafts WHERE id = ?")) {
+            stmt.setLong(1, id);
+            stmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to delete config draft id=" + id, e);
+        }
+    }
+
+    private com.nova.link.api.ConfigDraft mapDraftRow(ResultSet rs) throws SQLException {
+        String statusName = rs.getString("status");
+        return new com.nova.link.api.ConfigDraft(
+                rs.getLong("id"),
+                rs.getString("draft_json"),
+                rs.getString("created_by"),
+                statusName == null ? null : com.nova.link.api.ConfigDraft.Status.valueOf(statusName),
+                rs.getString("approved_by"),
+                rs.getLong("created_at"),
+                rs.getLong("approved_at"),
+                rs.getLong("published_at")
+        );
+    }
+
+    // ==================== Config Backups (schema v15 / proposal 10) ====================
+    //
+    // §11.6 item-20 / PANEL proposal 10 — explicit backup / restore mechanism.
+    // The config_backups CRUD is dialect-neutral: straight INSERT with
+    // RETURN_GENERATED_KEYS and a SELECT for single/list. One implementation
+    // serves MySQL, PostgreSQL and SQLite alike. The backup_json payload is
+    // stored masked (the service masks before calling saveConfigBackup).
+
+    @Override
+    public void saveConfigBackup(com.nova.link.api.ConfigBackup backup) throws DatabaseException {
+        if (backup == null) {
+            throw new DatabaseException("Cannot save a null config backup", null);
+        }
+        String insertSql = """
+                INSERT INTO config_backups (label, backup_json, settings_revision, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """;
+        try (Connection conn = getDataSource().getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement stmt = conn.prepareStatement(insertSql, Statement.RETURN_GENERATED_KEYS)) {
+                    stmt.setString(1, backup.getLabel());
+                    stmt.setString(2, backup.getBackupJson());
+                    stmt.setLong(3, backup.getSettingsRevision());
+                    stmt.setString(4, backup.getCreatedBy());
+                    stmt.setLong(5, backup.getCreatedAt());
+                    stmt.executeUpdate();
+                    try (ResultSet rs = stmt.getGeneratedKeys()) {
+                        if (rs.next()) {
+                            backup.setId(rs.getLong(1));
+                        }
+                    }
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to save config backup", e);
+        }
+    }
+
+    @Override
+    public java.util.Optional<com.nova.link.api.ConfigBackup> getConfigBackup(long id) throws DatabaseException {
+        String sql = "SELECT id, label, backup_json, settings_revision, created_by, created_at "
+                + "FROM config_backups WHERE id = ?";
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setLong(1, id);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    return java.util.Optional.empty();
+                }
+                return java.util.Optional.of(mapBackupRow(rs));
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load config backup id=" + id, e);
+        }
+    }
+
+    @Override
+    public List<com.nova.link.api.ConfigBackup> listConfigBackups(int limit) throws DatabaseException {
+        // Metadata-only: backup_json deliberately NOT selected so the list
+        // path never leaks the (masked) payload — same posture as
+        // getConfigHistory / listConfigDrafts.
+        String sql = "SELECT id, label, NULL AS backup_json, settings_revision, created_by, created_at "
+                + "FROM config_backups ORDER BY created_at DESC, id DESC LIMIT ?";
+        List<com.nova.link.api.ConfigBackup> results = new ArrayList<>();
+        try (Connection conn = getDataSource().getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setInt(1, limit);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    results.add(mapBackupRow(rs));
+                }
+            }
+            return results;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to list config backups", e);
+        }
+    }
+
+    private com.nova.link.api.ConfigBackup mapBackupRow(ResultSet rs) throws SQLException {
+        return new com.nova.link.api.ConfigBackup(
+                rs.getLong("id"),
+                rs.getString("label"),
+                rs.getString("backup_json"),
+                rs.getLong("settings_revision"),
+                rs.getString("created_by"),
+                rs.getLong("created_at")
+        );
+    }
 }

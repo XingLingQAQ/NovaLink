@@ -35,7 +35,7 @@ class ConfigHistoryMigrationTest {
             DatabaseMigration migration = new DatabaseMigration(dataSource, new SQLiteDialect());
             migration.migrate();
 
-            assertThat(migration.getVersion()).isEqualTo(14);
+            assertThat(migration.getVersion()).isEqualTo(15);
             assertThat(tableExists(dataSource, "config_history")).isTrue();
             assertThat(indexExists(dataSource, "idx_config_history_created_at")).isTrue();
             // Column shape sanity-check: the snapshot payload column is TEXT and
@@ -56,7 +56,7 @@ class ConfigHistoryMigrationTest {
             DatabaseMigration migration = new DatabaseMigration(dataSource, new SQLiteDialect());
             migration.migrate();
             int firstCompleted = completedMigrationCount(dataSource);
-            assertThat(firstCompleted).isEqualTo(14);
+            assertThat(firstCompleted).isEqualTo(15);
 
             // A second migrate() must not apply any new versions.
             migration.migrate();

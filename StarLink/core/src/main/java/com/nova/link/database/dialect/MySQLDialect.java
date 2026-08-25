@@ -22,7 +22,7 @@ public class MySQLDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
     private static final String MIGRATION_LOCK_NAME = "novalink_schema_migration";
-    private static final int CURRENT_VERSION = 14;
+    private static final int CURRENT_VERSION = 15;
 
     @Override
     public int getCurrentVersion() {
@@ -591,6 +591,45 @@ public class MySQLDialect implements MigrationDialect {
                     """);
             }
 
+            case 15 -> {
+                // Config drafts + explicit backups (§11.6 item-20 / PANEL proposal 10
+                //   doc-deferred sub-items). config_drafts persists staged draft YAML
+                //   with a DRAFT -> APPROVED -> PUBLISHED state machine; approver must
+                //   differ from createdBy (permission separation enforced in
+                //   ConfigPublishService). draft_json stores the candidate YAML
+                //   (masked via ConfigHistoryService.maskSecrets). config_backups
+                //   captures explicit pre-publish / pre-restore snapshots of the live
+                //   config (masked) with a label and the originating settingsRevision
+                //   for correlation. CREATE TABLE IF NOT EXISTS is idempotent so no
+                //   information_schema guard is needed.
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS config_drafts (
+                        id BIGINT NOT NULL AUTO_INCREMENT,
+                        draft_json TEXT NOT NULL,
+                        created_by VARCHAR(36) NOT NULL,
+                        status VARCHAR(16) NOT NULL,
+                        approved_by VARCHAR(36),
+                        created_at BIGINT NOT NULL,
+                        approved_at BIGINT,
+                        published_at BIGINT,
+                        PRIMARY KEY (id),
+                        INDEX idx_config_drafts_status (status)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+                statements.add("""
+                    CREATE TABLE IF NOT EXISTS config_backups (
+                        id BIGINT NOT NULL AUTO_INCREMENT,
+                        label VARCHAR(255) NOT NULL,
+                        backup_json TEXT NOT NULL,
+                        settings_revision BIGINT NOT NULL,
+                        created_by VARCHAR(36) NOT NULL,
+                        created_at BIGINT NOT NULL,
+                        PRIMARY KEY (id),
+                        INDEX idx_config_backups_created_at (created_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """);
+            }
+
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -614,6 +653,7 @@ public class MySQLDialect implements MigrationDialect {
             case 12 -> "Add config_history table for masked config snapshots and rollback (PANEL proposal 10)";
             case 13 -> "Add social_relations and notification_preferences tables for ignore/favorite/mentions (PANEL proposal 08)";
             case 14 -> "Add campaigns table for persisted campaign orchestration (PANEL proposal 06)";
+            case 15 -> "Add config_drafts and config_backups tables for staged draft/publish workflow and explicit backup/restore (PANEL proposal 10)";
             default -> "Unknown migration";
         };
     }

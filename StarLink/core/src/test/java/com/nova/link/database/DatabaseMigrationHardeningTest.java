@@ -174,12 +174,12 @@ class DatabaseMigrationHardeningTest {
 
             migration.migrate();
 
-            assertThat(migration.getVersion()).isEqualTo(14);
+            assertThat(migration.getVersion()).isEqualTo(15);
             assertThat(queryInts(dataSource,
                     "SELECT version FROM migration_execution_probe ORDER BY version"))
-                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);
+                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
             assertThat(queryInt(dataSource,
-                    "SELECT COUNT(*) FROM novalink_migrations WHERE status = 'COMPLETED'")).isEqualTo(14);
+                    "SELECT COUNT(*) FROM novalink_migrations WHERE status = 'COMPLETED'")).isEqualTo(15);
             assertThat(queryInt(dataSource,
                     "SELECT COUNT(*) FROM novalink_migrations WHERE checksum IS NULL")).isZero();
             assertThat(queryInt(dataSource,
@@ -237,13 +237,27 @@ class DatabaseMigrationHardeningTest {
             assertThat(queryInt(dataSource,
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_campaigns_created_at'"))
                     .isEqualTo(1);
+            // §11.6 item-20 / PANEL proposal 10: migration v15 creates the
+            // config_drafts + config_backups tables and their indexes.
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'config_drafts'"))
+                    .isEqualTo(1);
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_config_drafts_status'"))
+                    .isEqualTo(1);
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'config_backups'"))
+                    .isEqualTo(1);
+            assertThat(queryInt(dataSource,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_config_backups_created_at'"))
+                    .isEqualTo(1);
 
             migration.migrate();
 
             assertThat(queryInts(dataSource,
                     "SELECT version FROM migration_execution_probe ORDER BY version"))
-                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);
-            assertThat(queryInt(dataSource, "SELECT COUNT(*) FROM novalink_migrations")).isEqualTo(14);
+                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+            assertThat(queryInt(dataSource, "SELECT COUNT(*) FROM novalink_migrations")).isEqualTo(15);
         }
     }
 

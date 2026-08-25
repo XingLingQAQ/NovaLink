@@ -1506,4 +1506,187 @@ public class MemoryProvider implements DatabaseProvider {
         }
         logger.debug("Updated campaign status: {} -> {}", id, status);
     }
+
+    // ==================== Config Drafts (schema v15 / proposal 10) ====================
+    //
+    // §11.6 item-20 / PANEL proposal 10 — in-memory mirror of the JDBC
+    // config_drafts store. A synchronized list keyed by id provides the same
+    // CRUD semantics as the JDBC provider; the id sequence stamps the draft
+    // via reflection, matching the config_snapshot id-stamping pattern.
+
+    private final List<com.nova.link.api.ConfigDraft> configDrafts = Collections.synchronizedList(new ArrayList<>());
+    private long configDraftIdSeq = 0;
+
+    @Override
+    public void saveConfigDraft(com.nova.link.api.ConfigDraft draft) throws DatabaseException {
+        checkConnection();
+        if (draft == null) {
+            throw new DatabaseException("Cannot save a null config draft");
+        }
+        synchronized (configDrafts) {
+            long id = ++configDraftIdSeq;
+            draft.setId(id);
+            configDrafts.add(draft);
+        }
+        logger.debug("Saved config draft id={} status={}", draft.getId(), draft.getStatus());
+    }
+
+    @Override
+    public java.util.Optional<com.nova.link.api.ConfigDraft> getConfigDraft(long id) throws DatabaseException {
+        checkConnection();
+        synchronized (configDrafts) {
+            for (com.nova.link.api.ConfigDraft d : configDrafts) {
+                if (d.getId() == id) {
+                    return java.util.Optional.of(new com.nova.link.api.ConfigDraft(
+                            d.getId(), d.getDraftJson(), d.getCreatedBy(), d.getStatus(),
+                            d.getApprovedBy(), d.getCreatedAt(), d.getApprovedAt(), d.getPublishedAt()));
+                }
+            }
+        }
+        return java.util.Optional.empty();
+    }
+
+    @Override
+    public List<com.nova.link.api.ConfigDraft> listConfigDrafts(int limit) throws DatabaseException {
+        checkConnection();
+        int effectiveLimit = Math.max(0, limit);
+        List<com.nova.link.api.ConfigDraft> sorted = new ArrayList<>();
+        synchronized (configDrafts) {
+            for (com.nova.link.api.ConfigDraft d : configDrafts) {
+                // Metadata-only copy: draft_json deliberately omitted so the
+                // history list never leaks the (masked) payload.
+                sorted.add(new com.nova.link.api.ConfigDraft(
+                        d.getId(), null, d.getCreatedBy(), d.getStatus(),
+                        d.getApprovedBy(), d.getCreatedAt(), d.getApprovedAt(), d.getPublishedAt()));
+            }
+        }
+        sorted.sort((a, b) -> {
+            int byCreated = Long.compare(b.getCreatedAt(), a.getCreatedAt());
+            return byCreated != 0 ? byCreated : Long.compare(b.getId(), a.getId());
+        });
+        if (sorted.size() > effectiveLimit) {
+            sorted = new ArrayList<>(sorted.subList(0, effectiveLimit));
+        }
+        return sorted;
+    }
+
+    @Override
+    public void updateConfigDraftStatus(long id, com.nova.link.api.ConfigDraft.Status status,
+                                         String approvedBy, long approvedAt, long publishedAt)
+            throws DatabaseException {
+        checkConnection();
+        if (status == null) {
+            return;
+        }
+        synchronized (configDrafts) {
+            for (com.nova.link.api.ConfigDraft d : configDrafts) {
+                if (d.getId() == id) {
+                    // ConfigDraft state-transition methods are package-private;
+                    // MemoryProvider lives in a different package than
+                    // ConfigDraft (com.nova.link.database vs com.nova.link.api),
+                    // so reflection is used to apply the state transition. This
+                    // is a blind persistence mirror; state-machine validity is
+                    // ConfigPublishService's responsibility.
+                    try {
+                        if (status == com.nova.link.api.ConfigDraft.Status.APPROVED) {
+                            java.lang.reflect.Method m = com.nova.link.api.ConfigDraft.class
+                                    .getDeclaredMethod("markApproved", String.class, long.class);
+                            m.setAccessible(true);
+                            m.invoke(d, approvedBy, approvedAt);
+                        } else if (status == com.nova.link.api.ConfigDraft.Status.PUBLISHED) {
+                            java.lang.reflect.Method m = com.nova.link.api.ConfigDraft.class
+                                    .getDeclaredMethod("markPublished", long.class);
+                            m.setAccessible(true);
+                            m.invoke(d, publishedAt);
+                        } else {
+                            // DRAFT transition (not used by the service) —
+                            // fall back to a raw reflection set on the status
+                            // field so the mirror stays consistent.
+                            java.lang.reflect.Field f = com.nova.link.api.ConfigDraft.class
+                                    .getDeclaredField("status");
+                            f.setAccessible(true);
+                            f.set(d, status);
+                        }
+                    } catch (ReflectiveOperationException e) {
+                        logger.warn("Could not apply draft state transition id={} status={}: {}",
+                                id, status, e.getMessage());
+                    }
+                    break;
+                }
+            }
+        }
+        logger.debug("Updated config draft status: {} -> {}", id, status);
+    }
+
+    @Override
+    public void deleteConfigDraft(long id) throws DatabaseException {
+        checkConnection();
+        synchronized (configDrafts) {
+            configDrafts.removeIf(d -> d.getId() == id);
+        }
+        logger.debug("Deleted config draft id={}", id);
+    }
+
+    // ==================== Config Backups (schema v15 / proposal 10) ====================
+    //
+    // §11.6 item-20 / PANEL proposal 10 — in-memory mirror of the JDBC
+    // config_backups store. A synchronized list keyed by id provides the same
+    // CRUD semantics as the JDBC provider; the id sequence stamps the backup
+    // via reflection, matching the config_snapshot id-stamping pattern.
+
+    private final List<com.nova.link.api.ConfigBackup> configBackups = Collections.synchronizedList(new ArrayList<>());
+    private long configBackupIdSeq = 0;
+
+    @Override
+    public void saveConfigBackup(com.nova.link.api.ConfigBackup backup) throws DatabaseException {
+        checkConnection();
+        if (backup == null) {
+            throw new DatabaseException("Cannot save a null config backup");
+        }
+        synchronized (configBackups) {
+            long id = ++configBackupIdSeq;
+            backup.setId(id);
+            configBackups.add(backup);
+        }
+        logger.debug("Saved config backup id={} label={}", backup.getId(), backup.getLabel());
+    }
+
+    @Override
+    public java.util.Optional<com.nova.link.api.ConfigBackup> getConfigBackup(long id) throws DatabaseException {
+        checkConnection();
+        synchronized (configBackups) {
+            for (com.nova.link.api.ConfigBackup b : configBackups) {
+                if (b.getId() == id) {
+                    return java.util.Optional.of(new com.nova.link.api.ConfigBackup(
+                            b.getId(), b.getLabel(), b.getBackupJson(),
+                            b.getSettingsRevision(), b.getCreatedBy(), b.getCreatedAt()));
+                }
+            }
+        }
+        return java.util.Optional.empty();
+    }
+
+    @Override
+    public List<com.nova.link.api.ConfigBackup> listConfigBackups(int limit) throws DatabaseException {
+        checkConnection();
+        int effectiveLimit = Math.max(0, limit);
+        List<com.nova.link.api.ConfigBackup> sorted = new ArrayList<>();
+        synchronized (configBackups) {
+            for (com.nova.link.api.ConfigBackup b : configBackups) {
+                // Metadata-only copy: backup_json deliberately omitted so the
+                // history list never leaks the (masked) payload.
+                sorted.add(new com.nova.link.api.ConfigBackup(
+                        b.getId(), b.getLabel(), null,
+                        b.getSettingsRevision(), b.getCreatedBy(), b.getCreatedAt()));
+            }
+        }
+        sorted.sort((a, b) -> {
+            int byCreated = Long.compare(b.getCreatedAt(), a.getCreatedAt());
+            return byCreated != 0 ? byCreated : Long.compare(b.getId(), a.getId());
+        });
+        if (sorted.size() > effectiveLimit) {
+            sorted = new ArrayList<>(sorted.subList(0, effectiveLimit));
+        }
+        return sorted;
+    }
 }

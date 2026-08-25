@@ -55,9 +55,9 @@ class MySQLDialectTest {
     }
 
     @Test
-    @DisplayName("current version is 14 and every version yields statements")
+    @DisplayName("current version is 15 and every version yields statements")
     void allVersionsYieldStatements() {
-        assertThat(dialect.getCurrentVersion()).isEqualTo(14);
+        assertThat(dialect.getCurrentVersion()).isEqualTo(15);
         for (int version = 1; version <= dialect.getCurrentVersion(); version++) {
             assertThat(dialect.getMigrationStatements(version)).isNotEmpty();
             assertThat(dialect.getMigrationDescription(version)).doesNotContain("Unknown");
