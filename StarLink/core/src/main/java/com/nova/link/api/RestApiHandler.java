@@ -3007,9 +3007,17 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 }
             }
         }
-        int offset = (page - 1) * size;
+        // Compute the offset in long to avoid int overflow on large page*size;
+        // an overflowed/negative value passed straight to OFFSET corrupts
+        // pagination. An overflowing page number is a valid empty page
+        // (matching the notifications endpoint); the real total is still
+        // reported.
+        long offsetLong = (long) (page - 1) * size;
 
-        List<AuditEvent> events = auditStore.list(offset, size, actor, action);
+        List<AuditEvent> events =
+                offsetLong < 0 || offsetLong > Integer.MAX_VALUE
+                        ? Collections.emptyList()
+                        : auditStore.list((int) offsetLong, size, actor, action);
         int total = auditStore.count(actor, action);
 
         JsonArray items = new JsonArray();
@@ -4064,7 +4072,10 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 }
             }
         }
-        int offset = (page - 1) * size;
+        // Compute the offset in long to avoid int overflow on large page*size;
+        // out-of-range pages are a valid empty page, matching the notifications
+        // endpoint.
+        long offsetLong = (long) (page - 1) * size;
 
         // Normalize the frontend status spelling to the canonical CaseStatus
         // name. The provider filters by status.equals(case.status.name()).
@@ -4076,23 +4087,30 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         List<ModerationCase> cases;
         int total;
         try {
-            cases = moderationManager.listCases(offset, size, normalizedStatus);
-            if (assigned != null && !assigned.isBlank()) {
-                // The provider does not take an assigned filter; filter the page
-                // in-memory and recompute the total against the same filter.
-                final String assignedFilter = assigned;
-                List<ModerationCase> filtered = cases.stream()
-                        .filter(c -> assignedFilter.equals(c.getAssignedModerator()))
-                        .toList();
-                cases = filtered;
-                // Recompute total: countCases has no assigned filter either, so
-                // we cannot cheaply get the true total without a full scan.
-                // Fall back to the filtered page size as a lower bound so the
-                // UI pagination is not misleading — this matches the
-                // contract's "total" being the count of matching items.
-                total = filtered.size();
-            } else {
+            if (offsetLong < 0 || offsetLong > Integer.MAX_VALUE) {
+                // Overflowing page number: a valid empty page (matches the
+                // notifications endpoint); still report the real total.
+                cases = Collections.emptyList();
                 total = moderationManager.countCases(normalizedStatus);
+            } else {
+                cases = moderationManager.listCases((int) offsetLong, size, normalizedStatus);
+                if (assigned != null && !assigned.isBlank()) {
+                    // The provider does not take an assigned filter; filter the page
+                    // in-memory and recompute the total against the same filter.
+                    final String assignedFilter = assigned;
+                    List<ModerationCase> filtered = cases.stream()
+                            .filter(c -> assignedFilter.equals(c.getAssignedModerator()))
+                            .toList();
+                    cases = filtered;
+                    // Recompute total: countCases has no assigned filter either, so
+                    // we cannot cheaply get the true total without a full scan.
+                    // Fall back to the filtered page size as a lower bound so the
+                    // UI pagination is not misleading — this matches the
+                    // contract's "total" being the count of matching items.
+                    total = filtered.size();
+                } else {
+                    total = moderationManager.countCases(normalizedStatus);
+                }
             }
         } catch (ModerationException e) {
             handleModerationException(ctx, request, e);
@@ -4518,13 +4536,23 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 }
             }
         }
-        int offset = (page - 1) * size;
+        // Compute the offset in long to avoid int overflow on large page*size;
+        // out-of-range pages are a valid empty page, matching the notifications
+        // endpoint.
+        long offsetLong = (long) (page - 1) * size;
 
         List<Appeal> appeals;
         int total;
         try {
-            appeals = moderationManager.listAppeals(offset, size, status);
-            total = moderationManager.countAppeals(status);
+            if (offsetLong < 0 || offsetLong > Integer.MAX_VALUE) {
+                // Overflowing page number: a valid empty page (matches the
+                // notifications endpoint); still report the real total.
+                appeals = Collections.emptyList();
+                total = moderationManager.countAppeals(status);
+            } else {
+                appeals = moderationManager.listAppeals((int) offsetLong, size, status);
+                total = moderationManager.countAppeals(status);
+            }
         } catch (ModerationException e) {
             handleModerationException(ctx, request, e);
             return;
@@ -4954,11 +4982,23 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
 
         MessageFilter filter = new MessageFilter(
                 channel, server, player, q, from, to, visibleChannelIds);
-        int offset = (page - 1) * size;
+        // Compute the offset in long to avoid int overflow on large page*size;
+        // out-of-range pages are a valid empty page, matching the notifications
+        // endpoint.
+        long offsetLong = (long) (page - 1) * size;
 
         try {
-            List<ChatMessageRecord> records = messageLogService.search(filter, offset, size);
-            int total = messageLogService.count(filter);
+            List<ChatMessageRecord> records;
+            int total;
+            if (offsetLong < 0 || offsetLong > Integer.MAX_VALUE) {
+                // Overflowing page number: a valid empty page (matches the
+                // notifications endpoint); still report the real total.
+                records = Collections.emptyList();
+                total = messageLogService.count(filter);
+            } else {
+                records = messageLogService.search(filter, (int) offsetLong, size);
+                total = messageLogService.count(filter);
+            }
 
             JsonArray items = new JsonArray();
             for (ChatMessageRecord record : records) {

@@ -1634,4 +1634,153 @@ class RestApiHandlerTest {
                 "{\"decision\":\"DENIED\",\"note\":\"upheld\"}");
         assertThat(resp.status).isEqualTo(HttpResponseStatus.FORBIDDEN);
     }
+
+    // ====================== pagination offset overflow ======================
+
+    /**
+     * Builds a handler wired like the production one (moderation manager +
+     * audit store over the shared MemoryProvider) so the audit/cases/appeals
+     * pagination endpoints are exercisable. The default setUp() handler has no
+     * AuditStore, and GET /api/audit 503s without one.
+     */
+    private RestApiHandler newFullyWiredHandler() {
+        com.nova.link.audit.AuditStore auditStore = new com.nova.link.audit.AuditStore(db);
+        RestApiHandler wired = new RestApiHandler(
+                jwtService,
+                new AuthManager(new IpBanManager(5, 60000)),
+                channelManager,
+                playerStateManager,
+                messageRouter,
+                new WebhookManager(),
+                muteManager,
+                banManager,
+                invitationManager,
+                configManager,
+                networkHandler,
+                consoleCommandHandler,
+                notificationStore,
+                auditStore,
+                java.util.List.of("*")
+        );
+        wired.setModerationManager(
+                new com.nova.link.moderation.ModerationManager(db, auditStore));
+        return wired;
+    }
+
+    @Test
+    @DisplayName("GET /api/audit with an overflowing page returns 200 with an empty list, not a negative OFFSET")
+    void auditListingOverflowPageReturnsEmptyPage() {
+        RestApiHandler wired = newFullyWiredHandler();
+        // (page-1)*size = 21474837*100 = 2147483700 overflows int and wraps to
+        // -2147483596; the endpoint must return an empty page (HTTP 200),
+        // never pass the wrapped negative value into the store.
+        Response resp = dispatch(wired, HttpMethod.GET, "/api/audit?page=21474838&size=100", null);
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        JsonObject json = resp.asJson();
+        assertThat(json.getAsJsonArray("items")).isEmpty();
+
+        // Regression: a normal page still lists events (the moderation manager
+        // records its own audit on the filed case).
+        dispatch(wired, HttpMethod.POST, "/api/reports",
+                "{\"reportedPlayerId\":\"player-of\",\"reasonText\":\"overflow fixture\"}");
+        Response normal = dispatch(wired, HttpMethod.GET, "/api/audit?page=1&size=10", null);
+        assertThat(normal.status).isEqualTo(HttpResponseStatus.OK);
+        assertThat(normal.asJson().getAsJsonArray("items").size()).isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("GET /api/audit with a huge in-range page returns 200 with an empty list")
+    void auditListingOutOfRangePageReturnsEmptyPage() {
+        RestApiHandler wired = newFullyWiredHandler();
+        // offset 2147483*100 = 214,748,300 fits an int but exceeds any real
+        // result count; the endpoint must return 200 + empty items.
+        Response resp = dispatch(wired, HttpMethod.GET, "/api/audit?page=2147484&size=100", null);
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        JsonObject json = resp.asJson();
+        assertThat(json.getAsJsonArray("items")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("GET /api/moderation/cases with an overflowing page returns 200 with an empty list")
+    void casesListingOverflowPageReturnsEmptyPage() {
+        RestApiHandler wired = newFullyWiredHandler();
+        dispatch(wired, HttpMethod.POST, "/api/reports",
+                "{\"reportedPlayerId\":\"player-cf\",\"reasonText\":\"fixture\"}");
+
+        Response resp = dispatch(wired, HttpMethod.GET, "/api/moderation/cases?page=21474838&size=100", null);
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        JsonObject json = resp.asJson();
+        assertThat(json.getAsJsonArray("items")).isEmpty();
+
+        // Regression: page 1 still lists the filed case.
+        Response normal = dispatch(wired, HttpMethod.GET, "/api/moderation/cases?page=1&size=10", null);
+        assertThat(normal.status).isEqualTo(HttpResponseStatus.OK);
+        JsonObject body = normal.asJson();
+        assertThat(body.getAsJsonArray("items").size()).isGreaterThan(0);
+        assertThat(body.get("total").getAsInt()).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("GET /api/appeals with an overflowing page returns 200 with an empty list")
+    void appealsListingOverflowPageReturnsEmptyPage() {
+        RestApiHandler wired = newFullyWiredHandler();
+        Response resp = dispatch(wired, HttpMethod.GET, "/api/appeals?page=21474838&size=100", null);
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        JsonObject json = resp.asJson();
+        assertThat(json.getAsJsonArray("items")).isEmpty();
+
+        // Regression: a normal page still works after the change.
+        String caseId = dispatch(wired, HttpMethod.POST, "/api/reports",
+                "{\"reportedPlayerId\":\"player-af\",\"reasonText\":\"r\"}")
+                .asJson().get("caseId").getAsString();
+        dispatch(wired, HttpMethod.POST, "/api/moderation/cases/" + caseId + "/resolve",
+                "{\"action\":\"warn\",\"reason\":\"warning issued\"}");
+        dispatch(wired, HttpMethod.POST, "/api/appeals",
+                "{\"caseId\":\"" + caseId + "\",\"appellantId\":\"player-af\","
+                        + "\"reason\":\"please review\"}");
+        Response normal = dispatch(wired, HttpMethod.GET, "/api/appeals?page=1&size=10", null);
+        assertThat(normal.status).isEqualTo(HttpResponseStatus.OK);
+        assertThat(normal.asJson().getAsJsonArray("items").size()).isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("GET /api/messages with an overflowing page returns 200 with an empty list")
+    void messagesListingOverflowPageReturnsEmptyPage() throws Exception {
+        // The default handler has no MessageLogService wired; use the same
+        // settings-handler harness as updateSettingsAppliesAndPersistsWithoutReload.
+        java.nio.file.Path configPath = tempDir.resolve("novalink-msg.yml");
+        ConfigManager liveConfigManager = new ConfigManager(configPath);
+        liveConfigManager.load();
+        RestApiHandler messagesHandler = new RestApiHandler(
+                jwtService,
+                new AuthManager(new IpBanManager(5, 60000)),
+                channelManager,
+                playerStateManager,
+                messageRouter,
+                new WebhookManager(),
+                muteManager,
+                banManager,
+                invitationManager,
+                liveConfigManager,
+                networkHandler,
+                consoleCommandHandler,
+                notificationStore
+        );
+        com.nova.link.log.MessageLogService messageLogService =
+                new com.nova.link.log.MessageLogService(db, 30);
+        messagesHandler.setMessageLogService(messageLogService);
+
+        Response resp = dispatch(messagesHandler, HttpMethod.GET,
+                "/api/messages?page=21474838&size=100", null);
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        JsonObject json = resp.asJson();
+        assertThat(json.getAsJsonArray("items")).isEmpty();
+
+        // Regression: a normal page still works (empty log => 200 with empty
+        // items; the overflow request must behave identically, not 500).
+        Response normal = dispatch(messagesHandler, HttpMethod.GET,
+                "/api/messages?page=1&size=50", null);
+        assertThat(normal.status).isEqualTo(HttpResponseStatus.OK);
+        assertThat(normal.asJson().getAsJsonArray("items")).isEmpty();
+    }
 }
