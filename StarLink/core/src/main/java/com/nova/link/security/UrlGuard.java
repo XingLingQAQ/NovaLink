@@ -107,6 +107,17 @@ public final class UrlGuard {
         }
         String normalizedHost = stripBrackets(host);
 
+        // Ambiguous-IPv4 fast path: reject dotted-decimal hosts whose
+        // segments contain leading zeros (e.g. 0177.0.0.1) before any DNS
+        // lookup. The JDK's InetAddress.getAllByName parses such segments
+        // as decimal (0177 -> 177, a public address), while the OS
+        // BSD/Winsock layer parses them as octal (0177 -> 127, loopback).
+        // That JDK/OS split is a classic SSRF hazard: the guard would
+        // validate 177.0.0.1 (public) while the request is sent to
+        // 127.0.0.1 (loopback). Fail closed. A single "0" segment is
+        // legal and unaffected.
+        rejectAmbiguousIpv4Form(normalizedHost);
+
         // Literal IP fast path: no DNS. Otherwise resolve and check every
         // A/AAAA record so a host with one public and one private record is
         // still rejected (basic DNS-rebinding mitigation).
@@ -138,6 +149,68 @@ public final class UrlGuard {
         } catch (IllegalArgumentException e) {
             return false;
         }
+    }
+
+    /**
+     * Rejects ambiguous IPv4 dotted-decimal hosts whose segments contain
+     * leading zeros (e.g. {@code 0177.0.0.1}, {@code 192.168.01.1}).
+     *
+     * <p>The JDK's {@link InetAddress#getAllByName} parses leading-zero
+     * segments as decimal ({@code 0177} -&gt; {@code 177}, a public
+     * address), while the OS BSD/Winsock layer parses them as octal
+     * ({@code 0177} -&gt; {@code 127}, loopback). That JDK/OS split is a
+     * classic SSRF hazard: the guard would validate {@code 177.0.0.1}
+     * (public) while the request is sent to {@code 127.0.0.1} (loopback).
+     * Fail closed.
+     *
+     * <p>The check applies only to bracket-stripped hosts that look like a
+     * dotted-decimal IPv4 form (only digits and dots). A single "0"
+     * segment is legal and unaffected; only a segment with length &gt; 1
+     * whose first character is '0' is rejected. Non-decimal IPv4 forms
+     * (hex, decimal-integer, short-form) are rejected elsewhere via the
+     * URI null-host fast path or the DNS fail-closed path.
+     */
+    private static void rejectAmbiguousIpv4Form(String normalizedHost) {
+        // Only inspect hosts that are purely dotted-decimal candidates:
+        // digits and dots only, at least one dot. Anything with hex chars,
+        // colons (IPv6), or other syntax is left to the literal/DNS paths.
+        if (normalizedHost.indexOf('.') < 0) {
+            return;
+        }
+        String[] segments = normalizedHost.split("\\.");
+        if (segments.length == 0) {
+            return;
+        }
+        for (String seg : segments) {
+            if (seg.isEmpty()) {
+                // Trailing/empty segment (e.g. "127.0.0.1.") — leave to the
+                // literal/DNS paths to classify.
+                return;
+            }
+            // Only apply the leading-zero rule to all-decimal segments.
+            // A segment with non-digit chars is not a decimal IPv4 segment
+            // (hex/short forms are handled by other paths).
+            if (!isAllAsciiDigits(seg)) {
+                return;
+            }
+            if (seg.length() > 1 && seg.charAt(0) == '0') {
+                throw new SecurityException(
+                        "Host is blocked by SSRF guard: ambiguousIpv4 "
+                                + "(leading-zero segment '" + seg
+                                + "' in " + normalizedHost
+                                + "): JDK parses as decimal, OS as octal");
+            }
+        }
+    }
+
+    private static boolean isAllAsciiDigits(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < '0' || c > '9') {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static String stripBrackets(String host) {
@@ -194,6 +267,21 @@ public final class UrlGuard {
             if (matchesPrefix(b, BENCHMARK_PREFIX, BENCHMARK_PREFIX_BITS)) {
                 return BlockedReason.BENCHMARK;
             }
+        } else {
+            // IPv6: InetAddress.isSiteLocalAddress() is the deprecated
+            // RFC 1918 check and returns false for every IPv6 address,
+            // including Unique Local Addresses (ULA, fc00::/7). ULA is
+            // non-publicly-routable and includes fd00:ec2::254, the IPv6
+            // analogue of the AWS/GCE IMDS endpoint. Reject fc00::/7
+            // explicitly: the top 7 bits of the first byte are 1111110,
+            // i.e. (b & 0xFE) == 0xFC, covering both fc00:: and fd00::.
+            // Compare as ints: 0xFC is an int literal (252), and (b[0] & 0xFE)
+            // is an int after promotion — casting the RHS to byte would sign-
+            // extend 0xFC to -4 (0xFFFFFFFC) and the equality would never hold.
+            byte[] b = addr.getAddress();
+            if (b.length >= 1 && (b[0] & 0xFE) == 0xFC) {
+                return BlockedReason.ULA;
+            }
         }
         return null;
     }
@@ -239,7 +327,8 @@ public final class UrlGuard {
         SITE_LOCAL("siteLocal"),
         MULTICAST("multicast"),
         CGNAT("cgnat"),
-        BENCHMARK("benchmark");
+        BENCHMARK("benchmark"),
+        ULA("ula");
 
         private final String label;
 
