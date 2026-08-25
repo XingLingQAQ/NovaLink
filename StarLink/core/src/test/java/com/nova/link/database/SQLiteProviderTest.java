@@ -408,4 +408,128 @@ class SQLiteProviderTest {
         assertThat(provider.countNotifications(false)).isEqualTo(3);
         assertThat(provider.countNotifications(true)).isEqualTo(2);
     }
+
+    @Test
+    void clearNotificationsRemovesOrphanPerUserReadState() throws Exception {
+        Notification n = new Notification("Title", "Body", Notification.LEVEL_INFO);
+        provider.saveNotification(n);
+        provider.markNotificationRead(n.getId(), "A");
+        assertThat(provider.getUnreadCount("A")).isZero();
+
+        int cleared = provider.clearNotifications();
+        assertThat(cleared).isEqualTo(1);
+        assertThat(provider.getNotifications(0, 10, false)).isEmpty();
+
+        // notification_read has no FK ON DELETE CASCADE — the wipe must have
+        // removed the read-state children too, leaving zero orphan rows.
+        assertThat(countNotificationReadRows()).isZero();
+
+        // Stale-resurrection guard: a fresh notification reusing the wiped id
+        // (seeded explicitly — AUTOINCREMENT alone would hand out a new id)
+        // must be unread for A, not silently "already read" via leftover state.
+        seedNotificationWithExplicitId(n.getId());
+        assertThat(provider.getUnreadCount("A")).isEqualTo(1);
+    }
+
+    @Test
+    void clearDirectedNotificationsRemovesTheirReadStateOnly() throws Exception {
+        Notification directed = new Notification("d", "m", Notification.LEVEL_INFO);
+        directed.setRecipient("Bob");
+        provider.saveNotification(directed);
+        Notification broadcast = new Notification("b", "m", Notification.LEVEL_INFO);
+        provider.saveNotification(broadcast);
+
+        // Per-user read state is keyed by the exact username each caller uses;
+        // the reviewed defect concerns recipient-case divergence, so both
+        // sides here use one consistent spelling per user.
+        provider.markNotificationRead(directed.getId(), "Bob");
+        provider.markNotificationRead(broadcast.getId(), "Carol");
+
+        int cleared = provider.clearNotifications("BOB");
+        assertThat(cleared).isEqualTo(1);
+
+        // The directed notification is gone for everyone; the broadcast stays.
+        assertThat(provider.getNotifications(0, 10, false, "Bob"))
+                .as("only the broadcast remains visible to Bob")
+                .hasSize(1);
+        assertThat(provider.getNotifications(0, 10, false, "Carol")).hasSize(1);
+
+        // Only the broadcast's read-state row (Carol's) survives; Bob's mark on
+        // the deleted directed notification must not be orphaned behind.
+        assertThat(countNotificationReadRows()).isEqualTo(1);
+        assertThat(provider.getUnreadCount("Carol")).isZero();
+    }
+
+    @Test
+    void directedNotificationRecipientMatchingIsCaseInsensitive() throws DatabaseException {
+        // Stored recipient case diverges from the querying username case —
+        // the exact mismatch the WS delivery path already tolerates via
+        // trim().toLowerCase(Locale.ROOT) normalization (commit 700bf5a).
+        Notification upper = new Notification("upper", "m", Notification.LEVEL_INFO);
+        upper.setRecipient("Admin");
+        provider.saveNotification(upper);
+        Notification lower = new Notification("lower", "m", Notification.LEVEL_INFO);
+        lower.setRecipient("bob");
+        provider.saveNotification(lower);
+
+        // Each user queries under one consistent self-spelling throughout;
+        // only the STORED recipient case differs from it.
+        String adminUser = "Admin";
+        String bobUser = "bob";
+
+        // Listing: both directed notifications are visible despite case gap.
+        assertThat(provider.getNotifications(0, 10, false, adminUser))
+                .as("'Admin'-directed notification visible to user 'Admin'")
+                .hasSize(1);
+        assertThat(provider.getNotifications(0, 10, false, bobUser))
+                .as("'bob'-directed notification visible to user 'bob'")
+                .hasSize(1);
+        assertThat(provider.getUnreadCount(adminUser)).isEqualTo(1);
+        assertThat(provider.getUnreadCount(bobUser)).isEqualTo(1);
+        assertThat(provider.countNotifications(false, adminUser)).isEqualTo(1);
+
+        // markAllRead flips the per-user flags for both.
+        provider.markAllNotificationsRead(adminUser);
+        provider.markAllNotificationsRead(bobUser);
+        assertThat(provider.getUnreadCount(adminUser)).isZero();
+        assertThat(provider.getUnreadCount(bobUser)).isZero();
+        assertThat(provider.getNotifications(0, 10, true, adminUser)).isEmpty();
+
+        // Clear under a differently-cased spelling than stored still removes
+        // the directed notification (and only it).
+        int cleared = provider.clearNotifications("BOB");
+        assertThat(cleared).isEqualTo(1);
+        assertThat(provider.getNotifications(0, 10, false, bobUser)).isEmpty();
+        List<Notification> remaining = provider.getNotifications(0, 10, false, adminUser);
+        assertThat(remaining).hasSize(1);
+        // Stored recipient values are preserved verbatim for display.
+        assertThat(remaining.get(0).getRecipient()).isEqualTo("Admin");
+    }
+
+    /**
+     * Opens a second raw JDBC connection to the same database file and counts
+     * the {@code notification_read} rows. This is the direct oracle for orphan
+     * cleanup — the provider API deliberately exposes no read-state dump, and
+     * orphaned rows are by definition invisible through the normal JOINs.
+     */
+    private int countNotificationReadRows() throws Exception {
+        try (var conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + dbFile);
+             var stmt = conn.prepareStatement("SELECT COUNT(*) FROM notification_read");
+             var rs = stmt.executeQuery()) {
+            rs.next();
+            return rs.getInt(1);
+        }
+    }
+
+    /** Seeds a notification row with an explicit id, bypassing AUTOINCREMENT. */
+    private void seedNotificationWithExplicitId(long id) throws Exception {
+        try (var conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + dbFile);
+             var stmt = conn.prepareStatement(
+                     "INSERT INTO notifications (id, title, message, level, created_at, read, recipient) "
+                             + "VALUES (?, 'fresh', 'fresh', 'info', ?, FALSE, NULL)")) {
+            stmt.setLong(1, id);
+            stmt.setLong(2, System.currentTimeMillis());
+            stmt.executeUpdate();
+        }
+    }
 }

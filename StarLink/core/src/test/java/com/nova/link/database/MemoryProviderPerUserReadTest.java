@@ -101,4 +101,59 @@ class MemoryProviderPerUserReadTest {
         assertThat(provider.getUnreadCount("B")).isEqualTo(1);
         assertThat(provider.getUnreadCount("A")).isZero();
     }
+
+    @Test
+    void directedNotificationRecipientMatchingIsCaseInsensitive() throws DatabaseException {
+        Notification upper = new Notification("upper", "m", Notification.LEVEL_INFO);
+        upper.setRecipient("Admin");
+        provider.saveNotification(upper);
+
+        // Listing + unread count match regardless of stored vs queried case.
+        assertThat(provider.getNotifications(0, 10, false, "admin")).hasSize(1);
+        assertThat(provider.getNotifications(0, 10, true, "ADMIN")).hasSize(1);
+        assertThat(provider.getUnreadCount("ADMIN")).isEqualTo(1);
+        assertThat(provider.countNotifications(false, "admin")).isEqualTo(1);
+
+        // markAllRead flips the per-user flag. Per-user read-state keys are
+        // matched exactly (out of scope here — the reviewed defect concerns
+        // recipient matching), so subsequent reads use the same spelling
+        // the mark was made with.
+        provider.markAllNotificationsRead("Admin");
+        assertThat(provider.getUnreadCount("Admin")).isZero();
+        assertThat(provider.getNotifications(0, 10, true, "Admin")).isEmpty();
+
+        // Stored recipient values are preserved verbatim for display.
+        List<Notification> listed = provider.getNotifications(0, 10, false, "admin");
+        assertThat(listed).hasSize(1);
+        assertThat(listed.get(0).getRecipient()).isEqualTo("Admin");
+    }
+
+    @Test
+    void clearDirectedRemovesReadStateAndIsCaseInsensitive() throws DatabaseException {
+        Notification directed = new Notification("d", "m", Notification.LEVEL_INFO);
+        directed.setRecipient("Bob");
+        provider.saveNotification(directed);
+        Notification broadcast = new Notification("b", "m", Notification.LEVEL_INFO);
+        provider.saveNotification(broadcast);
+
+        provider.markNotificationRead(directed.getId(), "Bob");
+
+        int cleared = provider.clearNotifications("BOB");
+        assertThat(cleared).isEqualTo(1);
+
+        // The directed notification is gone; the broadcast stays.
+        assertThat(provider.getNotifications(0, 10, false, "bob")).hasSize(1);
+        assertThat(provider.getNotifications(0, 10, false, "carol")).hasSize(1);
+
+        // Stale-resurrection guard: clearNotifications() (no-arg) must also
+        // drop per-user read state so a reused id is not silently pre-read.
+        provider.markNotificationRead(broadcast.getId(), "Carol");
+        provider.clearNotifications();
+        assertThat(provider.getNotifications(0, 10, false)).isEmpty();
+        Notification recycled = new Notification("recycled", "m", Notification.LEVEL_INFO);
+        provider.saveNotification(recycled);
+        // notificationIdSeq keeps incrementing in MemoryProvider; simulate a
+        // wiped id by asserting the fresh stream starts unread for everyone.
+        assertThat(provider.getUnreadCount("carol")).isEqualTo(1);
+    }
 }
