@@ -52,6 +52,71 @@ def _bare_language_default(lang: str) -> str:
     return _BARE_LANGUAGE_DEFAULTS.get(lang, "zh_CN")
 
 
+class _MainThreadMarshaler:
+    """Posts callables onto Endstone's main server thread (VERIFY-004).
+
+    Resolution happens lazily on first use and is then cached, so the
+    scheduler lookup cost is paid once per handler lifetime. A callable is
+    marshaled via ``plugin.server.scheduler.run_task(plugin, fn)`` — the
+    platform's documented main-thread entry point (``Task.is_sync``:
+    "run by server thread"). When any link in that chain is missing (unit
+    tests, plugin stubs, server not yet wired) the callable runs inline on
+    the caller's thread, preserving pre-fix behavior exactly.
+    """
+
+    def __init__(self, plugin: "NovaChatPlugin"):
+        self._plugin = plugin
+        self._scheduler: Any = None
+        self._resolved = False
+
+    def _resolve_scheduler(self) -> Any:
+        """One-time best-effort resolution of the live server scheduler."""
+        if self._resolved:
+            return self._scheduler
+        self._resolved = True
+        try:
+            server = getattr(self._plugin, "server", None)
+            scheduler = getattr(server, "scheduler", None)
+            run_task = getattr(scheduler, "run_task", None)
+            if callable(run_task):
+                # Guard against MagicMock-style test doubles whose
+                # attributes exist but would not marshal to a real server
+                # thread: only accept an object that declares itself as the
+                # endstone Scheduler type when endstone is importable.
+                try:
+                    from endstone.scheduler import Scheduler
+                    if not isinstance(scheduler, Scheduler):
+                        scheduler = None
+                except ImportError:
+                    scheduler = None
+                if scheduler is not None:
+                    self._scheduler = scheduler
+        except Exception:
+            # Never let marshaler resolution break packet delivery.
+            self._scheduler = None
+        return self._scheduler
+
+    def post(self, fn) -> None:
+        """Run ``fn`` on the main thread when possible, else inline."""
+        scheduler = None
+        try:
+            scheduler = self._resolve_scheduler()
+        except Exception:
+            scheduler = None
+
+        if scheduler is not None:
+            try:
+                scheduler.run_task(self._plugin, fn)
+                return
+            except Exception as e:
+                # Scheduling failed (e.g. server shutting down); fall back
+                # to inline execution so delivery is attempted anyway.
+                logging.getLogger("NovaChat.Chat").debug(
+                    f"scheduler.run_task failed, running inline: {e}"
+                )
+        fn()
+
+
 class ChatHandler:
     """
     Handler for chat message interception and processing.
@@ -99,9 +164,38 @@ class ChatHandler:
         from novachat_endstone.i18n import I18n
         self._i18n = I18n()
 
+        # VERIFY-004: main-thread marshaling for native player API calls.
+        # Inbound packet handlers run on the asyncio NETWORK-loop thread
+        # (NetworkClient._read_loop -> _handle_packet -> handler(packet)),
+        # but Endstone's BedrockScriptAPI surface (send_message/send_title/
+        # send_tip/play_sound) follows Bukkit conventions where cross-thread
+        # world/player access is at best undocumented. Scheduler.run_task is
+        # the platform's documented primitive for marshaling onto the server
+        # thread (Task.is_sync: "run by server thread"). When a real
+        # scheduler is reachable we post through it; otherwise (unit tests,
+        # plugin stubs without a server) we execute inline so behavior is
+        # unchanged.
+        self._main_thread_marshaler = _MainThreadMarshaler(plugin)
+
         # Register packet handlers
         self._register_packet_handlers()
-    
+
+    def _post_to_main_thread(self, fn) -> None:
+        """Run ``fn`` on Endstone's main server thread (best-effort).
+
+        VERIFY-004 seam: every native player-API invocation triggered by an
+        inbound packet goes through here. With a live Endstone runtime this
+        delegates to ``Scheduler.run_task``; without one it runs inline so
+        unit-test behavior stays identical to pre-fix deliveries.
+        """
+        # Lazily self-heal for instances built via ``__new__`` + attribute
+        # stamping (the established unit-test idiom) which bypass __init__.
+        marshaler = getattr(self, "_main_thread_marshaler", None)
+        if marshaler is None:
+            marshaler = _MainThreadMarshaler(self._plugin)
+            self._main_thread_marshaler = marshaler
+        marshaler.post(fn)
+
     def _register_packet_handlers(self) -> None:
         """Register handlers for incoming packets from the backend."""
         self._network_client.register_handler(
@@ -247,17 +341,22 @@ class ChatHandler:
                 packet.sender_name,
                 packet.content
             )
-            
+
             # Get players who should receive this message
             recipients = self._get_channel_recipients(packet.channel_id)
-            
-            # Send to recipients
+
+            # Send to recipients (VERIFY-004: marshaled to main thread)
             for player in recipients:
-                try:
-                    player.send_message(formatted)
-                except Exception as e:
-                    self._logger.error(f"Failed to send message to {player.name}: {e}")
-                    
+                def _deliver(player=player, message=formatted):
+                    try:
+                        player.send_message(message)
+                    except Exception as e:
+                        self._logger.error(
+                            f"Failed to send message to {player.name}: {e}"
+                        )
+
+                self._post_to_main_thread(_deliver)
+
         except Exception as e:
             self._logger.error(f"Error handling chat message: {e}")
     
@@ -390,11 +489,15 @@ class ChatHandler:
         """
         Send a title to a specific player.
 
+        VERIFY-004: the native call is marshaled onto the main thread when a
+        scheduler is reachable; inline otherwise.
+
         Args:
             player: The target player
             packet: The title message packet
         """
-        try:
+
+        def _deliver():
             player.send_title(
                 packet.title,
                 packet.subtitle,
@@ -402,6 +505,9 @@ class ChatHandler:
                 packet.stay,
                 packet.fade_out
             )
+
+        try:
+            self._post_to_main_thread(_deliver)
         except Exception as e:
             self._logger.error(f"Failed to send title to {player.name}: {e}")
 
@@ -524,17 +630,19 @@ class ChatHandler:
             )
             player = self._find_player_by_uuid(mentioned_uuid)
             if player:
-                try:
-                    player.send_title("§b§l@", subtitle, 10, 40, 20)
-                except Exception as e:
-                    self._logger.debug(f"Failed to send title to player: {e}")
-                    pass
-                # Best-effort sound notification
-                try:
-                    player.play_sound("random.orb", 1.0, 1.0)
-                except Exception as e:
-                    self._logger.debug(f"Failed to play sound: {e}")
-                    pass
+                # VERIFY-004: title + sound are native calls -> main thread.
+                def _deliver_mention(player=player, subtitle=subtitle):
+                    try:
+                        player.send_title("§b§l@", subtitle, 10, 40, 20)
+                    except Exception as e:
+                        self._logger.debug(f"Failed to send title to player: {e}")
+                    # Best-effort sound notification
+                    try:
+                        player.play_sound("random.orb", 1.0, 1.0)
+                    except Exception as e:
+                        self._logger.debug(f"Failed to play sound: {e}")
+
+                self._post_to_main_thread(_deliver_mention)
         except Exception as e:
             self._logger.error(f"Error handling mention: {e}")
 
@@ -546,13 +654,17 @@ class ChatHandler:
         try:
             recipients = self._get_channel_recipients(packet.channel_id)
             for player in recipients:
-                try:
-                    player.send_message(
-                        f"§7{packet.sender_name} §f[§bitem§f]§7: {packet.item_json}"
-                    )
-                except Exception as e:
-                    self._logger.debug(f"Failed to send message to player: {e}")
-                    pass
+                # VERIFY-004: native send_message -> main thread.
+                def _deliver_item(player=player, item_json=packet.item_json,
+                                  sender_name=packet.sender_name):
+                    try:
+                        player.send_message(
+                            f"§7{sender_name} §f[§bitem§f]§7: {item_json}"
+                        )
+                    except Exception as e:
+                        self._logger.debug(f"Failed to send message to player: {e}")
+
+                self._post_to_main_thread(_deliver_item)
         except Exception as e:
             self._logger.error(f"Error handling item display: {e}")
 
@@ -582,11 +694,14 @@ class ChatHandler:
                     message = self._i18n.get(
                         "chat.msg.sent", locale, packet.target_name, packet.content
                     )
-                    try:
-                        player.send_message(message)
-                    except Exception as e:
-                        self._logger.debug(f"Failed to send echo to player: {e}")
-                        pass
+                    # VERIFY-004: native send_message -> main thread.
+                    def _deliver_echo(player=player, message=message):
+                        try:
+                            player.send_message(message)
+                        except Exception as e:
+                            self._logger.debug(f"Failed to send echo to player: {e}")
+
+                    self._post_to_main_thread(_deliver_echo)
 
             # Received line: this local player is the (distinct) target.
             if (
@@ -600,11 +715,14 @@ class ChatHandler:
                     message = self._i18n.get(
                         "chat.msg.received", locale, packet.sender_name, packet.content
                     )
-                    try:
-                        player.send_message(message)
-                    except Exception as e:
-                        self._logger.debug(f"Failed to send private msg to player: {e}")
-                        pass
+                    # VERIFY-004: native send_message -> main thread.
+                    def _deliver_received(player=player, message=message):
+                        try:
+                            player.send_message(message)
+                        except Exception as e:
+                            self._logger.debug(f"Failed to send private msg to player: {e}")
+
+                    self._post_to_main_thread(_deliver_received)
         except Exception as e:
             self._logger.error(f"Error handling private message: {e}")
 
@@ -612,10 +730,14 @@ class ChatHandler:
         """Send a message to a player by UUID (best-effort)."""
         player = self._find_player_by_uuid(player_uuid)
         if player:
-            try:
-                player.send_message(message)
-            except Exception as e:
-                self._logger.error(f"Failed to send message to {player_uuid}: {e}")
+            # VERIFY-004: native send_message -> main thread.
+            def _deliver(player=player, message=message):
+                try:
+                    player.send_message(message)
+                except Exception as e:
+                    self._logger.error(f"Failed to send message to {player_uuid}: {e}")
+
+            self._post_to_main_thread(_deliver)
 
     def _find_player_by_uuid(self, player_uuid: str) -> Any:
         """Find an online player by UUID string."""
@@ -823,16 +945,19 @@ class ChatHandler:
         )
         player = self._find_player_by_uuid(player_uuid)
         if player:
-            try:
-                player.send_title(title, subtitle, 10, 70, 20)
-            except Exception as e:
-                self._logger.debug(f"Failed to send title to player: {e}")
-                pass
-            try:
-                player.send_tip(actionbar)
-            except Exception as e:
-                self._logger.debug(f"Failed to send tip: {e}")
-                pass
+            # VERIFY-004: title + action bar are native calls -> main thread.
+            def _deliver_kick(player=player, title=title, subtitle=subtitle,
+                              actionbar=actionbar):
+                try:
+                    player.send_title(title, subtitle, 10, 70, 20)
+                except Exception as e:
+                    self._logger.debug(f"Failed to send title to player: {e}")
+                try:
+                    player.send_tip(actionbar)
+                except Exception as e:
+                    self._logger.debug(f"Failed to send tip: {e}")
+
+            self._post_to_main_thread(_deliver_kick)
 
     def notify_mute_target(
         self, player_uuid: str, channel_id: str, duration: str
@@ -855,17 +980,20 @@ class ChatHandler:
         )
         player = self._find_player_by_uuid(player_uuid)
         if player:
-            try:
-                player.send_title(title, subtitle, 10, 70, 20)
-            except Exception as e:
-                self._logger.debug(f"Failed to send title to player: {e}")
-                pass
-            try:
-                player.send_tip(actionbar)
-            except Exception as e:
-                self._logger.debug(f"Failed to send tip: {e}")
-                pass
-    
+            # VERIFY-004: title + action bar are native calls -> main thread.
+            def _deliver_mute(player=player, title=title, subtitle=subtitle,
+                              actionbar=actionbar):
+                try:
+                    player.send_title(title, subtitle, 10, 70, 20)
+                except Exception as e:
+                    self._logger.debug(f"Failed to send title to player: {e}")
+                try:
+                    player.send_tip(actionbar)
+                except Exception as e:
+                    self._logger.debug(f"Failed to send tip: {e}")
+
+            self._post_to_main_thread(_deliver_mute)
+
     def on_player_join(self, player: Any) -> None:
         """
         Handle player join event.

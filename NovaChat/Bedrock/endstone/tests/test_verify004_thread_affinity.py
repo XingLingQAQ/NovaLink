@@ -296,6 +296,79 @@ class TestSchedulerSeamExists:
         assert isinstance(getattr(Server, "scheduler", None), property)
 
 
+class TestFixSeamWiring:
+    """The handler-side seam: ChatHandler._post_to_main_thread must exist
+    and route through a real endstone Scheduler when one is reachable,
+    while staying inline (pre-fix behavior) when none is."""
+
+    def test_post_to_main_thread_exists_on_chat_handler(self):
+        assert callable(getattr(ChatHandler, "_post_to_main_thread", None)), (
+            "ChatHandler must expose the _post_to_main_thread seam"
+        )
+
+    def test_real_endstone_scheduler_receives_callable(self):
+        """With a genuine endstone Scheduler wired on plugin.server, the
+        marshaler must hand the callable to scheduler.run_task instead of
+        executing it inline."""
+        from endstone.scheduler import Scheduler as RealScheduler
+        from novachat_endstone.chat.handler import _MainThreadMarshaler
+
+        posted = []
+
+        class RecordingScheduler(RealScheduler):
+            """Subclasses the real type so the isinstance guard passes; BDS
+            never instantiates this — only run_task is intercepted."""
+
+            def run_task(self, plugin, task, delay=0, period=0):  # noqa: D102
+                posted.append(task)
+                return "recording-task"
+
+        class SchedServer:
+            def __init__(self, scheduler):
+                self._scheduler = scheduler
+                self.online_players = []
+
+            @property
+            def scheduler(self):
+                return self._scheduler
+
+        class SchedPlugin:
+            def __init__(self, server):
+                self.server = server
+
+        scheduler_double = RecordingScheduler.__new__(RecordingScheduler)
+        plugin = SchedPlugin(SchedServer(scheduler_double))
+
+        marshaler = _MainThreadMarshaler(plugin)
+        executed_inline = []
+        marker = lambda: executed_inline.append(True)  # noqa: E731
+        marshaler.post(marker)
+
+        assert posted == [marker], (
+            "the callable must be handed to scheduler.run_task"
+        )
+        assert not executed_inline, (
+            "with a live scheduler present, nothing may run inline"
+        )
+
+    def test_no_scheduler_falls_back_to_inline_execution(self):
+        """Without a reachable scheduler (unit-test mode) the callable runs
+        inline — identical to pre-fix behavior."""
+        from novachat_endstone.chat.handler import _MainThreadMarshaler
+
+        class NoSchedServer:
+            online_players = []
+            scheduler = None
+
+        class NoSchedPlugin:
+            server = NoSchedServer()
+
+        executed = []
+        marshaler = _MainThreadMarshaler(NoSchedPlugin())
+        marshaler.post(lambda: executed.append(True))
+        assert executed == [True]
+
+
 # ---------------------------------------------------------------------------
 # 3. Concurrent packet drain: shared handler state survives interleaving.
 # ---------------------------------------------------------------------------
