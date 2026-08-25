@@ -20,6 +20,16 @@ import java.util.List;
  * see it immediately). This keeps call sites one-liners and guarantees the two
  * side-channels stay in sync.
  *
+ * <p>PANEL-014 per-user isolation contract: every scoped operation (per-user
+ * list/read/clear/count) is served by the provider's dedicated per-user method.
+ * If a provider does not implement it and throws
+ * {@link UnsupportedOperationException}, the store FAILS SAFE — the scoped
+ * call returns an empty/zero result or a no-op with a warning log — and NEVER
+ * escalates to the global destructive variants ({@link #clearAll()},
+ * global {@link #markAllRead()}). Falling back from a user-scoped failure to a
+ * global destructive operation would let any single user's action wipe or
+ * flip state for every other user (privilege amplification).
+ *
  * Requirements: notification persistence feature
  */
 public class NotificationStore {
@@ -58,15 +68,19 @@ public class NotificationStore {
      */
     public Notification createNotification(String title, String message, String level) {
         Notification notification = new Notification(title, message, level);
+        boolean persisted = false;
         if (databaseProvider != null) {
             try {
                 databaseProvider.saveNotification(notification);
+                persisted = true;
             } catch (DatabaseException e) {
                 logger.error("Failed to persist notification '{}': {}", title, e.getMessage());
-                // Still attempt the broadcast so the panel sees it live.
             }
         }
-        if (webSocketGateway != null) {
+        // Ghost suppression: skip live delivery when the record was not
+        // persisted — an unpersisted popup has no id, so it could never be
+        // marked read or listed and REST/realtime would permanently diverge.
+        if (webSocketGateway != null && persisted) {
             try {
                 webSocketGateway.broadcastNotification(title, message, level);
             } catch (Exception e) {
@@ -85,29 +99,43 @@ public class NotificationStore {
      * recipient so the per-user REST listing (GET /api/notifications) also
      * scopes it to that user.
      *
+     * <p>The recipient is trimmed before persisting; a blank value degrades to
+     * a broadcast (null/blank recipient means broadcast downstream). Stored
+     * case is preserved — matching is case-insensitive at comparison time. If
+     * persistence fails, live WS delivery is SKIPPED so the realtime view
+     * never diverges from REST: an unpersisted notification has no id and
+     * could never be marked read or listed.
+     *
      * @param title     the notification title
      * @param message   the notification body
      * @param level     the level (info / warning / error)
-     * @param recipient the recipient username (panel username); null falls
-     *                  back to a broadcast via {@link #createNotification}
-     * @return the persisted notification (with its generated id), or null on failure
+     * @param recipient the recipient username (panel username); null or blank
+     *                  falls back to a broadcast via {@link #createNotification}
+     * @return the persisted notification (with its generated id), or the
+     *         unpersisted in-memory instance (id 0) when persistence failed or
+     *         no provider is configured
      */
     public Notification createDirectedNotification(String title, String message, String level, String recipient) {
         if (recipient == null || recipient.isBlank()) {
             return createNotification(title, message, level);
         }
+        // Trim at write time; stored case is preserved (comparison-time
+        // matching handles case-insensitivity downstream).
+        String normalizedRecipient = recipient.trim();
         Notification notification = new Notification(title, message, level);
-        notification.setRecipient(recipient);
+        notification.setRecipient(normalizedRecipient);
+        boolean persisted = false;
         if (databaseProvider != null) {
             try {
                 databaseProvider.saveNotification(notification);
+                persisted = true;
             } catch (DatabaseException e) {
                 logger.error("Failed to persist directed notification '{}': {}", title, e.getMessage());
             }
         }
-        if (webSocketGateway != null) {
+        if (webSocketGateway != null && persisted) {
             try {
-                webSocketGateway.sendDirectedNotification(recipient, title, message, level);
+                webSocketGateway.sendDirectedNotification(normalizedRecipient, title, message, level);
             } catch (Exception e) {
                 logger.debug("Failed to deliver directed notification '{}': {}", title, e.getMessage());
             }
@@ -195,7 +223,14 @@ public class NotificationStore {
      * admins' directed ones — a per-user isolation defect surfaced by the
      * VERIFY-013 §7 two-user E2E slice.
      *
-     * @return number of broadcast notifications deleted
+     * <p>Fail-safe: a provider that does not implement
+     * {@code clearBroadcastNotifications()} (UnsupportedOperationException)
+     * gets a no-op returning 0 — NEVER the old {@link #clearAll()} fallback,
+     * which would escalate the scoped retention op into deleting every user's
+     * notifications.
+     *
+     * @return number of broadcast notifications deleted, or 0 if the provider
+     *         does not support the scoped operation
      */
     public int clearBroadcast() {
         if (databaseProvider == null) {
@@ -207,11 +242,11 @@ public class NotificationStore {
             logger.error("Failed to clear broadcast notifications: {}", e.getMessage());
             return 0;
         } catch (UnsupportedOperationException e) {
-            // Provider not upgraded — fall back to clearing everything so the
-            // SUPER_ADMIN retention path keeps working on legacy providers
-            // (RedisProvider). The isolation guarantee is only honored on
-            // upgraded JDBC/memory providers; documented as a known gap.
-            return clearAll();
+            // Fail-safe: never escalate a scoped failure to clearAll() — that
+            // would wipe every user's notifications, not just broadcasts.
+            logger.warn("Provider {} does not support clear-broadcast; skipping "
+                    + "(fail-safe, no destructive fallback)", databaseProvider.getProviderType());
+            return 0;
         }
     }
 
@@ -257,6 +292,10 @@ public class NotificationStore {
      * per-user read state. Visible = broadcast (recipient null) or directed to
      * this user.
      *
+     * <p>Fail-safe: a provider without the per-user API returns an empty list
+     * (never the global listing, which would leak other users' directed
+     * notifications).
+     *
      * @param offset 0-based offset
      * @param limit max results
      * @param unreadOnly when true, only notifications this user has not read
@@ -273,13 +312,18 @@ public class NotificationStore {
             logger.error("Failed to load notifications for user {}: {}", userId, e.getMessage());
             return Collections.emptyList();
         } catch (UnsupportedOperationException e) {
-            // Provider not upgraded (e.g. RedisProvider) — fall back to global.
-            return getNotifications(offset, limit, unreadOnly);
+            // Fail-safe: an empty result instead of the global listing — the
+            // global view would leak other users' directed notifications.
+            logger.warn("Provider {} does not support per-user notification listing; returning empty "
+                    + "(fail-safe, no global fallback)", databaseProvider.getProviderType());
+            return Collections.emptyList();
         }
     }
 
     /**
-     * Marks a single notification as read for a specific user.
+     * Marks a single notification as read for a specific user. Fail-safe: a
+     * provider without the per-user API makes this a no-op (never a global
+     * mark-read, which would flip the flag for every user).
      */
     public void markRead(long id, String userId) {
         if (databaseProvider == null || userId == null) {
@@ -290,12 +334,16 @@ public class NotificationStore {
         } catch (DatabaseException e) {
             logger.error("Failed to mark notification {} as read for user {}: {}", id, userId, e.getMessage());
         } catch (UnsupportedOperationException e) {
-            markRead(id);
+            logger.warn("Provider {} does not support per-user mark-read; skipping "
+                    + "(fail-safe, no global fallback)", databaseProvider.getProviderType());
         }
     }
 
     /**
      * Marks all notifications visible to a user as read (per-user state).
+     * Fail-safe: a provider without the per-user API makes this a no-op
+     * (never global {@link #markAllRead()}, which would mark every user's
+     * notifications read).
      */
     public void markAllRead(String userId) {
         if (databaseProvider == null || userId == null) {
@@ -306,15 +354,19 @@ public class NotificationStore {
         } catch (DatabaseException e) {
             logger.error("Failed to mark all notifications as read for user {}: {}", userId, e.getMessage());
         } catch (UnsupportedOperationException e) {
-            markAllRead();
+            logger.warn("Provider {} does not support per-user mark-all-read; skipping "
+                    + "(fail-safe, no global fallback)", databaseProvider.getProviderType());
         }
     }
 
     /**
      * Clears directed notifications for a specific user. Broadcast events are
-     * never cleared by this call.
+     * never cleared by this call. Fail-safe: a provider without the per-user
+     * API returns 0 and deletes nothing (never the old {@link #clearAll()}
+     * fallback, which let one admin's archive wipe every user's inbox).
      *
-     * @return number of directed notifications deleted
+     * @return number of directed notifications deleted, or 0 if the provider
+     *         does not support the scoped operation
      */
     public int clearAll(String userId) {
         if (databaseProvider == null || userId == null) {
@@ -326,12 +378,18 @@ public class NotificationStore {
             logger.error("Failed to clear notifications for user {}: {}", userId, e.getMessage());
             return 0;
         } catch (UnsupportedOperationException e) {
-            return clearAll();
+            // Fail-safe: never escalate to clearNotifications() (global) — one
+            // user's archive must not wipe everyone's data.
+            logger.warn("Provider {} does not support per-user clear; skipping "
+                    + "(fail-safe, no global fallback)", databaseProvider.getProviderType());
+            return 0;
         }
     }
 
     /**
-     * Counts notifications visible to a user matching the filter.
+     * Counts notifications visible to a user matching the filter. Fail-safe:
+     * a provider without the per-user API returns 0 (never the global count,
+     * which would include other users' directed notifications).
      */
     public int count(boolean unreadOnly, String userId) {
         if (databaseProvider == null || userId == null) {
@@ -343,12 +401,16 @@ public class NotificationStore {
             logger.error("Failed to count notifications for user {}: {}", userId, e.getMessage());
             return 0;
         } catch (UnsupportedOperationException e) {
-            return count(unreadOnly);
+            logger.warn("Provider {} does not support per-user notification count; returning 0 "
+                    + "(fail-safe, no global fallback)", databaseProvider.getProviderType());
+            return 0;
         }
     }
 
     /**
-     * Gets the per-user unread count.
+     * Gets the per-user unread count. Fail-safe: a provider without the
+     * per-user API returns 0 (never the global unread count, which aggregates
+     * every user's notifications).
      */
     public int getUnreadCount(String userId) {
         if (databaseProvider == null || userId == null) {
@@ -360,7 +422,9 @@ public class NotificationStore {
             logger.error("Failed to get unread count for user {}: {}", userId, e.getMessage());
             return 0;
         } catch (UnsupportedOperationException e) {
-            return getUnreadCount();
+            logger.warn("Provider {} does not support per-user unread count; returning 0 "
+                    + "(fail-safe, no global fallback)", databaseProvider.getProviderType());
+            return 0;
         }
     }
 }
