@@ -50,6 +50,10 @@ public class MemoryProvider implements DatabaseProvider {
         mutes.clear();
         bans.clear();
         notifications.clear();
+        // Keep read state consistent with the notifications wipe. shutdown() is
+        // the full reset path; stale notificationReadState entries would be
+        // matched against reused ids after re-initialization.
+        notificationReadState.clear();
         auditEvents.clear();
         invitations.clear();
         synchronized (messages) {
@@ -407,6 +411,11 @@ public class MemoryProvider implements DatabaseProvider {
         synchronized (notifications) {
             count = notifications.size();
             notifications.clear();
+            // Clear per-user read state too. notificationIdSeq keeps incrementing
+            // and can be reused for new notifications after a wipe; leaving stale
+            // notificationReadState entries would make isNotificationReadForUser
+            // return true for a fresh notification a user never opened.
+            notificationReadState.clear();
         }
         if (count > 0) {
             logger.debug("Cleared {} notifications", count);

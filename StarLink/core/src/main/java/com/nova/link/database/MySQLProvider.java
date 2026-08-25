@@ -1046,14 +1046,32 @@ public class MySQLProvider extends AbstractJdbcProvider {
 
     @Override
     public int clearBroadcastNotifications() throws DatabaseException {
-        String sql = "DELETE FROM notifications WHERE recipient IS NULL";
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-            int count = stmt.executeUpdate();
-            if (count > 0) {
-                logger.debug("Cleared {} broadcast notifications", count);
+        // Only broadcast notifications (recipient IS NULL) are deleted. Directed
+        // notifications (non-null recipient) are preserved so the SUPER_ADMIN
+        // global-retention path does not wipe other admins' inboxes.
+        //
+        // notification_read has no FK ON DELETE CASCADE (its PK is
+        // (notification_id, user_id)), so the per-user read-state rows for the
+        // purged broadcast notifications must be deleted explicitly. Otherwise
+        // they are orphaned forever, growing the table without bound and leaving
+        // stale rows that later JOIN-based visibility/counts would surface.
+        // Order matters: delete the child table (notification_read) before the
+        // parent (notifications). Both statements run on the same Connection for
+        // a consistent view.
+        String deleteReadSql = "DELETE FROM notification_read "
+                + "WHERE notification_id IN (SELECT id FROM notifications WHERE recipient IS NULL)";
+        String deleteNotificationsSql = "DELETE FROM notifications WHERE recipient IS NULL";
+        try (Connection conn = dataSource.getConnection()) {
+            try (PreparedStatement readStmt = conn.prepareStatement(deleteReadSql)) {
+                readStmt.executeUpdate();
             }
-            return count;
+            try (PreparedStatement notifStmt = conn.prepareStatement(deleteNotificationsSql)) {
+                int count = notifStmt.executeUpdate();
+                if (count > 0) {
+                    logger.debug("Cleared {} broadcast notifications", count);
+                }
+                return count;
+            }
         } catch (SQLException e) {
             throw new DatabaseException("Failed to clear broadcast notifications", e);
         }
