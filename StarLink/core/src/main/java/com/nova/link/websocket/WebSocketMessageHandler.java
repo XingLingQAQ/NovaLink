@@ -692,6 +692,20 @@ public class WebSocketMessageHandler {
      * the method safe for callers that pass through a raw notification
      * recipient).
      *
+     * <p>Recipient matching is case- and whitespace-insensitive: both
+     * {@code recipient} and each session's username are normalized with
+     * {@link String#trim()} followed by {@link java.util.Locale#ROOT}
+     * lowercasing before comparison. This closes a silent-drop defect where a
+     * recipient sourced from one origin (e.g. a notification recipient field
+     * set from config or an API caller) and a session username sourced from
+     * another (e.g. a JWT claim written verbatim from the login form, which is
+     * never normalized in this codebase) differed only in case or surrounding
+     * whitespace, causing the directed notification to be persisted but never
+     * delivered in real time. The explicit {@code equalsIgnoreCase} is
+     * deliberately avoided — it would conflate distinct recipients such as
+     * {@code Admin} and {@code admin}; the two-sided normalization here is
+     * deterministic and applies the same rule to both sides.
+     *
      * @param recipient the recipient username (panel username), or null/blank
      *                  to fall back to a broadcast
      * @param title     the notification title
@@ -713,9 +727,13 @@ public class WebSocketMessageHandler {
 
         String json = gson.toJson(notification);
 
+        String normalizedRecipient = recipient.trim().toLowerCase(java.util.Locale.ROOT);
         for (WebSocketSession session : sessions.values()) {
+            String sessionUsername = session.getUsername();
             if (session.isAuthenticated() && session.isActive()
-                    && recipient.equals(session.getUsername())) {
+                    && sessionUsername != null
+                    && normalizedRecipient.equals(
+                            sessionUsername.trim().toLowerCase(java.util.Locale.ROOT))) {
                 session.send(json);
             }
         }

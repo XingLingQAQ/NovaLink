@@ -108,15 +108,26 @@ public class WebSocketSession {
     /**
      * Sets the authentication state.
      *
+     * <p>Identity fields ({@code userId}, {@code username}, {@code role}) are
+     * written before the {@code authenticated} flag. The {@code authenticated}
+     * field is {@code volatile} and written last, acting as a release barrier:
+     * any thread that subsequently observes {@code authenticated == true} via
+     * {@link #isAuthenticated()} is guaranteed to also observe the earlier
+     * non-volatile writes to the identity fields. This prevents a concurrent
+     * reader in {@code sendDirectedNotification} from seeing
+     * {@code authenticated == true} while {@code getUsername()} still returns
+     * null (or a stale value), which would silently skip the session.
+     *
      * @param userId   the user ID
      * @param username the username
      * @param role     the user role
      */
     public void setAuthenticated(String userId, String username, String role) {
-        this.authenticated = true;
         this.userId = userId;
         this.username = username;
         this.role = role;
+        // volatile write last — release barrier for the identity fields above
+        this.authenticated = true;
     }
 
     /**
