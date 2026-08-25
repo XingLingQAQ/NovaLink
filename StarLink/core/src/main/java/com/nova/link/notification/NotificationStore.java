@@ -77,6 +77,45 @@ public class NotificationStore {
     }
 
     /**
+     * Creates, persists, and delivers a directed notification to a single
+     * recipient over WebSocket. PANEL-014: the directed-delivery path uses
+     * {@link WebSocketGateway#sendDirectedNotification} so the notification
+     * reaches only the session whose username matches {@code recipient},
+     * not every authenticated session. The persisted notification carries the
+     * recipient so the per-user REST listing (GET /api/notifications) also
+     * scopes it to that user.
+     *
+     * @param title     the notification title
+     * @param message   the notification body
+     * @param level     the level (info / warning / error)
+     * @param recipient the recipient username (panel username); null falls
+     *                  back to a broadcast via {@link #createNotification}
+     * @return the persisted notification (with its generated id), or null on failure
+     */
+    public Notification createDirectedNotification(String title, String message, String level, String recipient) {
+        if (recipient == null || recipient.isBlank()) {
+            return createNotification(title, message, level);
+        }
+        Notification notification = new Notification(title, message, level);
+        notification.setRecipient(recipient);
+        if (databaseProvider != null) {
+            try {
+                databaseProvider.saveNotification(notification);
+            } catch (DatabaseException e) {
+                logger.error("Failed to persist directed notification '{}': {}", title, e.getMessage());
+            }
+        }
+        if (webSocketGateway != null) {
+            try {
+                webSocketGateway.sendDirectedNotification(recipient, title, message, level);
+            } catch (Exception e) {
+                logger.debug("Failed to deliver directed notification '{}': {}", title, e.getMessage());
+            }
+        }
+        return notification;
+    }
+
+    /**
      * Lists notifications with pagination.
      *
      * @param offset 0-based offset
@@ -140,6 +179,39 @@ public class NotificationStore {
         } catch (DatabaseException e) {
             logger.error("Failed to clear notifications: {}", e.getMessage());
             return 0;
+        }
+    }
+
+    /**
+     * Deletes all broadcast notifications (those with a null recipient). Used by
+     * the SUPER_ADMIN global-retention path (DELETE /api/notifications/broadcast)
+     * so that purging the shared broadcast stream does NOT remove other admins'
+     * directed notifications.
+     *
+     * <p>PANEL-014: prior to this method the broadcast-clear endpoint called
+     * {@link #clearAll()} which delegates to
+     * {@code databaseProvider.clearNotifications()} (DELETE FROM notifications
+     * with no recipient filter), wiping every notification including other
+     * admins' directed ones — a per-user isolation defect surfaced by the
+     * VERIFY-013 §7 two-user E2E slice.
+     *
+     * @return number of broadcast notifications deleted
+     */
+    public int clearBroadcast() {
+        if (databaseProvider == null) {
+            return 0;
+        }
+        try {
+            return databaseProvider.clearBroadcastNotifications();
+        } catch (DatabaseException e) {
+            logger.error("Failed to clear broadcast notifications: {}", e.getMessage());
+            return 0;
+        } catch (UnsupportedOperationException e) {
+            // Provider not upgraded — fall back to clearing everything so the
+            // SUPER_ADMIN retention path keeps working on legacy providers
+            // (RedisProvider). The isolation guarantee is only honored on
+            // upgraded JDBC/memory providers; documented as a known gap.
+            return clearAll();
         }
     }
 

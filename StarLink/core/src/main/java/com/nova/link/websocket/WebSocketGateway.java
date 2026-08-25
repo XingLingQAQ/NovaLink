@@ -318,6 +318,25 @@ public class WebSocketGateway {
     }
 
     /**
+     * Sends a directed notification to the single authenticated session whose
+     * username matches {@code recipient}. PANEL-014: per-user WS delivery so
+     * a notification addressed to one admin does not leak to every other
+     * authenticated session. A null/blank recipient falls back to a broadcast
+     * inside the message handler.
+     *
+     * @param recipient the recipient username (panel username), or null/blank
+     *                  to broadcast
+     * @param title     the notification title
+     * @param message   the notification message
+     * @param level     the notification level (info, warning, error)
+     */
+    public void sendDirectedNotification(String recipient, String title, String message, String level) {
+        if (running) {
+            messageHandler.sendDirectedNotification(recipient, title, message, level);
+        }
+    }
+
+    /**
      * Generates a JWT token for a user.
      *
      * @param userId   the user ID

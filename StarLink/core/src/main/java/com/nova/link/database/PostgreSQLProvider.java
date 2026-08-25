@@ -996,6 +996,21 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
         }
     }
 
+    @Override
+    public int clearBroadcastNotifications() throws DatabaseException {
+        String sql = "DELETE FROM notifications WHERE recipient IS NULL";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            int count = stmt.executeUpdate();
+            if (count > 0) {
+                logger.debug("Cleared {} broadcast notifications", count);
+            }
+            return count;
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to clear broadcast notifications", e);
+        }
+    }
+
     // ==================== Invitation Operations ====================
 
     @Override

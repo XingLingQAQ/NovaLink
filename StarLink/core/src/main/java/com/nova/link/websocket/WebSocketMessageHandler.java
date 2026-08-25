@@ -667,11 +667,55 @@ public class WebSocketMessageHandler {
         notification.addProperty("level", level);
         notification.addProperty("revision", revisionCounter.incrementAndGet());
         notification.addProperty("timestamp", System.currentTimeMillis());
-        
+
         String json = gson.toJson(notification);
-        
+
         for (WebSocketSession session : sessions.values()) {
             if (session.isAuthenticated() && session.isActive()) {
+                session.send(json);
+            }
+        }
+    }
+
+    /**
+     * Sends a notification to a single authenticated session matching the
+     * given recipient username. Used by the directed-notification delivery path
+     * (PANEL-014) so that a notification addressed to one admin reaches that
+     * admin only, not every authenticated session.
+     *
+     * <p>PANEL-014: prior to this method the only WS delivery API was
+     * {@link #broadcastNotification(String, String, String)}, which sends to
+     * EVERY authenticated session regardless of recipient — a per-user WS
+     * isolation defect surfaced by the VERIFY-013 §7 two-user E2E slice. A
+     * null or empty {@code recipient} falls back to a plain broadcast (the
+     * call site should already branch on recipient, but the fallback keeps
+     * the method safe for callers that pass through a raw notification
+     * recipient).
+     *
+     * @param recipient the recipient username (panel username), or null/blank
+     *                  to fall back to a broadcast
+     * @param title     the notification title
+     * @param message   the notification message
+     * @param level     the notification level (info, warning, error)
+     */
+    public void sendDirectedNotification(String recipient, String title, String message, String level) {
+        if (recipient == null || recipient.isBlank()) {
+            broadcastNotification(title, message, level);
+            return;
+        }
+        JsonObject notification = new JsonObject();
+        notification.addProperty("type", "notification");
+        notification.addProperty("title", title);
+        notification.addProperty("message", message);
+        notification.addProperty("level", level);
+        notification.addProperty("revision", revisionCounter.incrementAndGet());
+        notification.addProperty("timestamp", System.currentTimeMillis());
+
+        String json = gson.toJson(notification);
+
+        for (WebSocketSession session : sessions.values()) {
+            if (session.isAuthenticated() && session.isActive()
+                    && recipient.equals(session.getUsername())) {
                 session.send(json);
             }
         }

@@ -4740,8 +4740,10 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      *
      * <p>PANEL-014: this is the global cleanup path for broadcast events that
      * are no longer relevant. It deletes every notification where recipient is
-     * NULL. The action is audited via {@link #recordAuditSuccess} so there is a
-     * trail of who purged the shared broadcast stream and when.
+     * NULL, leaving directed notifications (non-null recipient) intact so
+     * other admins' inboxes are not wiped by a shared-stream purge. The action
+     * is audited via {@link #recordAuditSuccess} so there is a trail of who
+     * purged the shared broadcast stream and when.
      */
     private void handleClearBroadcastNotifications(ChannelHandlerContext ctx, FullHttpRequest request,
                                                    Claims claims) {
@@ -4749,7 +4751,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Notifications not enabled");
             return;
         }
-        int cleared = notificationStore.clearAll();
+        int cleared = notificationStore.clearBroadcast();
         recordAuditSuccess(ctx, claims, "notification.clear_broadcast",
                 "notifications", null, null);
         JsonObject response = new JsonObject();

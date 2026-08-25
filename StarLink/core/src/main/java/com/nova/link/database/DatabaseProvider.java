@@ -354,6 +354,30 @@ public interface DatabaseProvider {
         throw new UnsupportedOperationException("Per-user notifications not supported by this provider");
     }
 
+    /**
+     * Clears broadcast notifications only (those with a null recipient). Used by
+     * the SUPER_ADMIN global-retention path so that purging the shared broadcast
+     * stream does NOT remove other admins' directed notifications. Directed
+     * notifications (non-null recipient) are preserved.
+     *
+     * <p>PANEL-014: introduced to close the per-user isolation defect where the
+     * prior broadcast-clear path called {@link #clearNotifications()} (DELETE
+     * FROM notifications with no recipient filter), wiping every notification
+     * including other admins' directed ones.
+     *
+     * <p>Providers that have not been upgraded (e.g. RedisProvider) inherit this
+     * default which throws {@link UnsupportedOperationException}; the
+     * {@link com.nova.link.notification.NotificationStore} layer catches that and
+     * falls back to {@link #clearNotifications()} so the retention path keeps
+     * working on legacy providers (with the isolation gap documented).
+     *
+     * @return number of broadcast notifications deleted
+     * @throws DatabaseException if the operation fails
+     */
+    default int clearBroadcastNotifications() throws DatabaseException {
+        throw new UnsupportedOperationException("Clear-broadcast not supported by this provider");
+    }
+
     // ==================== Audit Operations (schema v9) ====================
 
     /**

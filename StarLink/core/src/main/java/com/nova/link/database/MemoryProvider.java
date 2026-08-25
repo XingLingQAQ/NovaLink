@@ -628,6 +628,27 @@ public class MemoryProvider implements DatabaseProvider {
         return count;
     }
 
+    @Override
+    public int clearBroadcastNotifications() throws DatabaseException {
+        checkConnection();
+        int count = 0;
+        synchronized (notifications) {
+            java.util.Iterator<Notification> it = notifications.iterator();
+            while (it.hasNext()) {
+                Notification n = it.next();
+                if (n.getRecipient() == null) {
+                    it.remove();
+                    notificationReadState.remove(n.getId());
+                    count++;
+                }
+            }
+        }
+        if (count > 0) {
+            logger.debug("Cleared {} broadcast notifications", count);
+        }
+        return count;
+    }
+
     // ==================== Audit Operations ====================
 
     private long auditIdSeq = 0;

@@ -405,10 +405,10 @@ class PerUserNotificationTwoUserE2ETest {
                 .isEqualTo(2);
     }
 
-    // ====================== Scenario 2: WS differentiated delivery (RED) ======================
+    // ====================== Scenario 2: WS differentiated delivery ======================
 
     @Test
-    @DisplayName("scenario 2 [RED]: WS directed notification (recipient=admin1) must reach admin1 only, broadcast reaches both")
+    @DisplayName("scenario 2: WS directed notification (recipient=admin1) must reach admin1 only, broadcast reaches both")
     void scenario2_wsDifferentiatedDelivery() throws DatabaseException {
         // Two authenticated WS sessions.
         AuthenticatedSession admin1Ws = authenticateWs(admin1Token);
@@ -416,18 +416,17 @@ class PerUserNotificationTwoUserE2ETest {
 
         // Persist a directed notification for admin1 directly via the DB
         // (bypassing NotificationStore.createNotification which always
-        // broadcasts). Then invoke the WS delivery path and assert the
-        // directed notification reaches admin1 ONLY.
+        // broadcasts). Then invoke the directed WS delivery path and assert
+        // the directed notification reaches admin1 ONLY.
         Notification directed = new Notification("directed", "for admin1", "info");
         directed.setRecipient("admin1");
         db.saveNotification(directed);
 
-        // The only WS delivery API in the current main source is
-        // broadcastNotification(title, message, level) which sends to EVERY
-        // authenticated session regardless of recipient. There is no
-        // directed-delivery method. We call it to exercise the real WS
-        // plumbing and assert the EXPECTED isolation behavior.
-        wsHandler.broadcastNotification(
+        // PANEL-014 fix: the directed-delivery API filters by session username
+        // so admin2 does not receive admin1's notification. A null/blank
+        // recipient falls back to broadcast inside the handler.
+        wsHandler.sendDirectedNotification(
+                directed.getRecipient(),
                 directed.getTitle(), directed.getMessage(), directed.getLevel());
 
         // admin1 should receive the notification.
@@ -435,19 +434,13 @@ class PerUserNotificationTwoUserE2ETest {
         assertThat(admin1Frame.get("type").getAsString()).isEqualTo("notification");
         assertThat(admin1Frame.get("title").getAsString()).isEqualTo("directed");
 
-        // admin2 must NOT receive the directed notification.
-        // EXPECTED RED: broadcastNotification sends to ALL sessions with no
-        // recipient check, so admin2 WILL have a frame. This is a per-user
-        // WS isolation defect (WebSocketMessageHandler.broadcastNotification
-        // line 662-678). Per the hard constraint, the test asserts the
-        // correct expected behavior and is marked RED; the main source is
-        // NOT modified.
+        // admin2 must NOT receive the directed notification. The directed
+        // delivery path filters by session.getUsername(), so admin2 has no
+        // pending outbound frame.
         JsonObject admin2Frame = admin2Ws.readJsonOrNull();
         assertThat(admin2Frame)
-                .as("RED: admin2 must NOT receive admin1's directed WS notification. "
-                        + "Current WebSocketMessageHandler.broadcastNotification sends to ALL "
-                        + "authenticated sessions with NO recipient filtering — this is a "
-                        + "per-user WS isolation defect.")
+                .as("admin2 must NOT receive admin1's directed WS notification — "
+                        + "sendDirectedNotification filters by session username.")
                 .isNull();
 
         // Broadcast notification reaches both (this part exercises the
@@ -519,17 +512,14 @@ class PerUserNotificationTwoUserE2ETest {
         // The handler Javadoc states "deletes every notification where
         // recipient is NULL" — i.e., only broadcasts. Assert that the
         // cleared count matches the 2 broadcasts (NOT the 3 total).
-        // EXPECTED RED: NotificationStore.clearAll() calls
-        // databaseProvider.clearNotifications() which deletes ALL
-        // notifications (DELETE FROM notifications, no recipient filter),
-        // not just broadcasts. This is a per-user isolation defect: a
-        // SUPER_ADMIN clearing broadcasts also deletes other admins'
-        // directed notifications.
+        // PANEL-014 fix: the broadcast-clear endpoint now calls
+        // NotificationStore.clearBroadcast() which delegates to
+        // databaseProvider.clearBroadcastNotifications() (DELETE FROM
+        // notifications WHERE recipient IS NULL), preserving directed
+        // notifications.
         assertThat(r5.asJson().get("cleared").getAsInt())
-                .as("RED: clear broadcast must delete only the 2 broadcasts, not "
-                        + "admin2's directed notification. Current clearAll() deletes "
-                        + "ALL notifications (clearNotifications() with no recipient "
-                        + "filter), violating per-user isolation.")
+                .as("clear broadcast must delete only the 2 broadcasts, not "
+                        + "admin2's directed notification.")
                 .isEqualTo(2);
 
         // admin2's directed notification must survive the global broadcast clear.
@@ -537,8 +527,8 @@ class PerUserNotificationTwoUserE2ETest {
         assertThat(r6.status).isEqualTo(HttpResponseStatus.OK);
         JsonArray remaining = r6.asJson().getAsJsonArray("items");
         assertThat(remaining.size())
-                .as("RED: admin2's directed notification must survive the global "
-                        + "broadcast clear. Current implementation deletes it.")
+                .as("admin2's directed notification must survive the global "
+                        + "broadcast clear.")
                 .isEqualTo(1);
         assertThat(remaining.get(0).getAsJsonObject().get("title").getAsString())
                 .isEqualTo("d-admin2");
