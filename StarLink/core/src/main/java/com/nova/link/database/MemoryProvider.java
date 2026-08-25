@@ -465,6 +465,25 @@ public class MemoryProvider implements DatabaseProvider {
         return users != null && Boolean.TRUE.equals(users.get(userId));
     }
 
+    /**
+     * Returns a copy of {@code n} whose {@code read} flag reflects per-user
+     * state for {@code userId} (double-read: global flag OR per-user state),
+     * leaving the shared persisted object unmutated. Used by the per-user
+     * listing so the panel sees correct per-user read/unread styling instead
+     * of the global broadcast flag.
+     */
+    private Notification perUserReadCopy(Notification n, String userId) {
+        return new Notification(
+                n.getId(),
+                n.getTitle(),
+                n.getMessage(),
+                n.getLevel(),
+                n.getCreatedAt(),
+                isNotificationReadForUser(n, userId),
+                n.getRecipient()
+        );
+    }
+
     private boolean isNotificationVisibleToUser(Notification n, String userId) {
         String recipient = n.getRecipient();
         return recipient == null || recipient.equals(userId);
@@ -500,7 +519,10 @@ public class MemoryProvider implements DatabaseProvider {
                     if (collected >= effectiveLimit) {
                         break;
                     }
-                    result.add(n);
+                    // Return a copy whose read flag reflects per-user state for
+                    // this user (double-read: global flag OR per-user state), not
+                    // the shared persisted object's global flag.
+                    result.add(perUserReadCopy(n, userId));
                     collected++;
                 }
             } else {
@@ -517,7 +539,7 @@ public class MemoryProvider implements DatabaseProvider {
                     if (collected >= effectiveLimit) {
                         break;
                     }
-                    result.add(n);
+                    result.add(perUserReadCopy(n, userId));
                     collected++;
                 }
             }

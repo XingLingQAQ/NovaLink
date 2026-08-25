@@ -243,6 +243,39 @@ class SQLiteProviderTest {
     }
 
     @Test
+    void perUserReadListingReflectsPerUserStateNotGlobal() throws DatabaseException {
+        // Broadcast notification (recipient null) visible to every user.
+        Notification n = new Notification("Title", "Body", Notification.LEVEL_INFO);
+        provider.saveNotification(n);
+        assertThat(n.getId()).isGreaterThan(0);
+
+        // Before any per-user mark: read==false for both A and B.
+        List<Notification> forA = provider.getNotifications(0, 10, false, "A");
+        List<Notification> forB = provider.getNotifications(0, 10, false, "B");
+        assertThat(forA).hasSize(1);
+        assertThat(forB).hasSize(1);
+        assertThat(forA.get(0).isRead()).isFalse();
+        assertThat(forB.get(0).isRead()).isFalse();
+
+        // Mark read per-user for A only. The global notifications.read column
+        // must NOT flip (per-user mark inserts only into notification_read).
+        provider.markNotificationRead(n.getId(), "A");
+
+        List<Notification> forAAfter = provider.getNotifications(0, 10, false, "A");
+        List<Notification> forBAfter = provider.getNotifications(0, 10, false, "B");
+        assertThat(forAAfter).hasSize(1);
+        assertThat(forBAfter).hasSize(1);
+        // A marked it read -> per-user read flag is true for A.
+        assertThat(forAAfter.get(0).isRead()).isTrue();
+        // B never marked it -> per-user read flag is false for B.
+        assertThat(forBAfter.get(0).isRead()).isFalse();
+
+        // Unread counts must agree: A has 0 unread, B still has 1 unread.
+        assertThat(provider.getUnreadCount("A")).isZero();
+        assertThat(provider.getUnreadCount("B")).isEqualTo(1);
+    }
+
+    @Test
     void invitationLifecycle() throws DatabaseException {
         UUID inviter = UUID.randomUUID();
         Invitation invitation = new Invitation("CODE123", "ch-1", inviter, 9999999999L);

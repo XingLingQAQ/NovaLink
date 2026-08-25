@@ -827,8 +827,9 @@ public class SQLiteProvider extends AbstractJdbcProvider {
             """;
 
     private static final String SQL_GET_PER_USER_ALL = """
-            SELECT n.id, n.title, n.message, n.level, n.created_at, n.read, n.recipient,
-                   COALESCE(nr.read, FALSE) AS per_user_read
+            SELECT n.id, n.title, n.message, n.level, n.created_at,
+                   (n.read = TRUE OR (nr.read IS NOT NULL AND nr.read = TRUE)) AS read,
+                   n.recipient
             FROM notifications n
             LEFT JOIN notification_read nr ON nr.notification_id = n.id AND nr.user_id = ?
             WHERE n.recipient IS NULL OR n.recipient = ?
