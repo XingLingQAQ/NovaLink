@@ -307,3 +307,73 @@ target("novachat-levilamina-send-tests")
         os.cp("src/i18n/lang", targetdir .. "/lang")
     end)
 target_end()
+
+-- Test target: VERIFY-005 LeviLamina packet-decode fuzz tests (no LeviLamina
+-- SDK needed). Fuzzes the pure decode boundaries (VarInt::tryPeek/decode,
+-- PacketBuffer::readString, Packet::read) for the four audit scenarios:
+-- unknown packet ID, bad VarInt, bad UTF-8/truncated field, oversized field.
+--
+-- The test re-implements the decodePacket switch inline so it does NOT depend
+-- on the private NetworkClient::processReceivedData / decodePacket methods.
+-- No production source is touched (no test seam extraction needed — the pure
+-- decode functions are already public). See the test header comment for the
+-- honest residual-gap note about the "close connection" audit expectation.
+--
+-- Build & run:
+--   xmake f --sdk=n -m debug
+--   xmake build novachat-levilamina-decode-fuzz-tests
+--   xmake run novachat-levilamina-decode-fuzz-tests
+target("novachat-levilamina-decode-fuzz-tests")
+    set_kind("binary")
+    set_languages("c++20")
+    set_symbols("debug")
+    add_cxflags("/utf-8")
+    add_includedirs("src")
+
+    add_files("tests/test_network_decode_fuzz.cpp")
+    add_files("src/protocol/PacketBuffer.cpp")
+
+    set_targetdir("$(buildir)/bin")
+    set_filename("novachat-levilamina-decode-fuzz-tests.exe")
+
+    if is_plat("windows") then
+        add_defines("NOMINMAX", "UNICODE", "_UNICODE", "WIN32", "_WIN32", "_WINDOWS")
+        add_syslinks("ws2_32", "advapi32")
+    end
+target_end()
+
+-- Test target: VERIFY-007 LeviLamina i18n error-code parity regression test
+-- (no LeviLamina SDK needed). Asserts both en_US and zh_CN bundles contain
+-- the 26 canonical NC-* error codes (message + suggestion keys) and that
+-- errorMessage() composites a non-empty localized string.
+--
+-- Build & run:
+--   xmake f --sdk=n -m debug
+--   xmake build novachat-levilamina-i18n-parity-tests
+--   xmake run novachat-levilamina-i18n-parity-tests
+target("novachat-levilamina-i18n-parity-tests")
+    set_kind("binary")
+    set_languages("c++20")
+    set_symbols("debug")
+    add_cxflags("/utf-8")
+    add_includedirs("src")
+
+    add_files("tests/test_i18n_errorcode_parity.cpp")
+    add_files("src/protocol/PacketBuffer.cpp")
+    add_files("src/i18n/I18n.cpp")
+
+    set_targetdir("$(buildir)/bin")
+    set_filename("novachat-levilamina-i18n-parity-tests.exe")
+
+    if is_plat("windows") then
+        add_defines("NOMINMAX", "UNICODE", "_UNICODE", "WIN32", "_WIN32", "_WINDOWS")
+        add_syslinks("ws2_32", "advapi32")
+    end
+
+    -- Copy the lang/ resource directory next to the test binary so the I18n
+    -- loader (which scans <exe-dir>/lang/*.json) finds the translations.
+    after_build(function (target)
+        local targetdir = target:targetdir()
+        os.cp("src/i18n/lang", targetdir .. "/lang")
+    end)
+target_end()
