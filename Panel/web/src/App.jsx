@@ -44,6 +44,7 @@ import AppealQueue from './components/dashboard/AppealQueue';
 import ReportCreateModal from './components/dashboard/ReportCreateModal';
 import StatusPage from './components/dashboard/StatusPage';
 import ConfigHistory from './components/dashboard/ConfigHistory';
+import ConfigPublishPanel from './components/dashboard/ConfigPublishPanel';
 import CampaignManagement from './components/dashboard/CampaignManagement';
 
 import LoginScreen from './components/auth/LoginScreen';
@@ -439,6 +440,23 @@ function Dashboard({ currentUser, onLogout }) {
                       rollback is SUPER_ADMIN-only (gated inside the view). */}
                   {activeTab === 'configHistory' && can(role, 'settings.history') && (
                     <ConfigHistory theme="clean" mode={mode} role={role} />
+                  )}
+
+                  {/* Config publish (§11.6 item 20 / 提案 10 doc-deferred
+                      sub-items) — draft / approve / publish / backup / restore.
+                      SUPER_ADMIN-only: all nine endpoints under /api/settings/*
+                      require SUPER_ADMIN. Gated by the `config.publish`
+                      capability (see permissions.js) — the sidebar entry, this
+                      route, and the in-component guard all share one source of
+                      truth. The component additionally degrades to a forbidden
+                      hint if ever rendered with a lesser role. */}
+                  {activeTab === 'configPublish' && can(role, 'config.publish') && (
+                    <ConfigPublishPanel
+                      theme="clean"
+                      mode={mode}
+                      onToast={addToast}
+                      role={role}
+                    />
                   )}
 
                   {/* Campaigns (§11.6 提案 06 / item 19) — orchestrated,

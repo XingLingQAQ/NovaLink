@@ -45,6 +45,12 @@ const ROLE_CAPABILITIES = {
     // history AND can roll the live config back to a chosen revision.
     'settings.history',
     'config.rollback',
+    // §11.6 item 20 / 提案 10 doc-deferred sub-items: draft / approve /
+    // publish / backup / restore workflow (nine SUPER_ADMIN-only endpoints
+    // under /api/settings/*). Stricter than config.rollback — ADMIN cannot
+    // reach these. Gated as a capability (not a raw role check) so the sidebar
+    // entry, the App route, and the component guard all stay in sync.
+    'config.publish',
   ],
 };
 

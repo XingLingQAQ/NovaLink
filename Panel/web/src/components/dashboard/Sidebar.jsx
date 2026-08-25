@@ -25,6 +25,7 @@ import {
   Activity,
   GitBranch,
   Send,
+  FileEdit,
 } from 'lucide-react';
 
 import { can } from '../../lib/permissions';
@@ -58,6 +59,13 @@ function Sidebar({ activeTab, onTabChange, sidebarOpen, isMobile, onOverlayClick
     // diff + rollback. ADMIN+ see it; the rollback action is SUPER_ADMIN-only
     // (gated inside the view).
     { id: 'configHistory', icon: GitBranch, label: t('common.nav_config_history'), capability: 'settings.history' },
+    // §11.6 item 20 / 提案 10 doc-deferred sub-items: draft / approve / publish
+    // / backup / restore workflow. SUPER_ADMIN-only — nine endpoints under
+    // /api/settings/* all require SUPER_ADMIN. Gated by the `config.publish`
+    // capability so the sidebar entry, the App route, and the component guard
+    // share one source of truth. ADMIN sees configHistory (read + rollback) but
+    // never this entry.
+    { id: 'configPublish', icon: FileEdit, label: t('common.nav_config_publish'), capability: 'config.publish' },
     // Proposal 09 status page: read-only observability aggregate. No capability
     // gate — every role (including VIEWER) can see it, mirroring the unauth
     // /api/health + VIEWER-readable /api/metrics backend contract.
