@@ -4633,7 +4633,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 try {
                     switch (key) {
                         case "page" -> page = Math.max(1, Integer.parseInt(value));
-                        case "size" -> size = Math.max(1, Integer.parseInt(value));
+                        case "size" -> size = Math.min(100, Math.max(1, Integer.parseInt(value)));
                         case "unreadOnly" -> unreadOnly = Boolean.parseBoolean(value);
                     }
                 } catch (NumberFormatException ignored) {
@@ -4641,10 +4641,19 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 }
             }
         }
-        int offset = (page - 1) * size;
-
+        // Compute offset as long to avoid int overflow on large page*size; an
+        // overflowed/negative value would be passed straight to LIMIT/OFFSET
+        // and corrupt pagination. When the true offset exceeds int range we
+        // return an empty page instead of clamping (clamping would silently
+        // serve stale lower pages).
+        long offsetLong = (long) (page - 1) * size;
         String userId = panelUsername(claims);
-        List<Notification> notifications = notificationStore.getNotifications(offset, size, unreadOnly, userId);
+        List<Notification> notifications;
+        if (offsetLong < 0 || offsetLong > Integer.MAX_VALUE) {
+            notifications = Collections.emptyList();
+        } else {
+            notifications = notificationStore.getNotifications((int) offsetLong, size, unreadOnly, userId);
+        }
         int unreadCount = notificationStore.getUnreadCount(userId);
         // Real total of matching records (NOT the current page size) so the
         // panel can decide whether more pages exist.
@@ -4729,6 +4738,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
         int cleared = notificationStore.clearAll(panelUsername(claims));
+        recordAuditSuccess(ctx, claims, "notification.clear",
+                "notifications", null, null);
         JsonObject response = new JsonObject();
         response.addProperty("cleared", cleared);
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
