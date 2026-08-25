@@ -296,6 +296,167 @@ public abstract class AbstractJdbcProvider implements DatabaseProvider {
         }
     }
 
+    // ==================== Notification purge/clear (schema v4 + v10) ====================
+    //
+    // PANEL-014 per-user read state: notification_read has no FK ON DELETE
+    // CASCADE (its PK is (notification_id, user_id)), so deleting notification
+    // rows without first removing their read-state children orphans those rows
+    // forever — the table grows without bound and stale rows surface in later
+    // JOIN-based visibility/counts (and if an id is ever reused, stale
+    // read-state resurrects as a false "already read" for a notification the
+    // user never opened). Every purge path below therefore deletes the child
+    // rows first, then the parent rows, inside ONE explicit transaction, so a
+    // failure between the two DELETEs can never leave notifications alive
+    // while their read-marks are wiped. Mirrors MemoryProvider's synchronized
+    // clear* behaviour.
+    //
+    // None of these statements touches a reserved-word identifier (the quoted
+    // `read` column only appears in the dialect-specific SELECT/INSERT/UPDATE
+    // paths, which stay in the subclasses), so the SQL is byte-identical
+    // across MySQL, PostgreSQL and SQLite and lives here once. Subclasses
+    // override the public entry points with thin delegations.
+
+    /**
+     * Deletes every notification and every per-user read-state row in one
+     * transaction. Child-first order ({@code notification_read} before
+     * {@code notifications}) prevents orphaned read state; the explicit
+     * transaction makes the wipe atomic.
+     *
+     * @return the number of notifications deleted
+     * @throws DatabaseException on any persistence failure (transaction rolled back)
+     */
+    protected int clearAllNotificationsTransactional() throws DatabaseException {
+        try (Connection conn = getDataSource().getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                executeDelete(conn, "DELETE FROM notification_read");
+                int deleted = executeDelete(conn, "DELETE FROM notifications");
+                conn.commit();
+                if (deleted > 0) {
+                    logger.debug("Cleared {} notifications", deleted);
+                }
+                return deleted;
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                restoreAutoCommitQuietly(conn, previousAutoCommit);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to clear notifications", e);
+        }
+    }
+
+    /**
+     * Deletes the directed notifications addressed to {@code userId}, together
+     * with their per-user read-state rows, in one transaction. Matching is
+     * case-insensitive ({@code LOWER()} on both sides), end-to-end with the
+     * WebSocket delivery path which normalizes recipient and username before
+     * comparing — a directed notification must be equally visible in REST
+     * listing and removable by clear regardless of the case it was stored
+     * with. Stored recipient values are never mutated. Broadcast notifications
+     * (recipient IS NULL) are never removed by this call.
+     *
+     * @param userId the panel username whose directed notifications to purge
+     * @return the number of directed notifications deleted
+     * @throws DatabaseException on any persistence failure (transaction rolled back)
+     */
+    protected int clearDirectedNotificationsTransactional(String userId) throws DatabaseException {
+        String deleteReadSql = "DELETE FROM notification_read WHERE notification_id IN "
+                + "(SELECT id FROM notifications WHERE LOWER(recipient) = LOWER(?))";
+        String deleteNotificationsSql = "DELETE FROM notifications WHERE LOWER(recipient) = LOWER(?)";
+        try (Connection conn = getDataSource().getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement readStmt = conn.prepareStatement(deleteReadSql)) {
+                    readStmt.setString(1, userId);
+                    readStmt.executeUpdate();
+                }
+                int deleted;
+                try (PreparedStatement notifStmt = conn.prepareStatement(deleteNotificationsSql)) {
+                    notifStmt.setString(1, userId);
+                    deleted = notifStmt.executeUpdate();
+                }
+                conn.commit();
+                if (deleted > 0) {
+                    logger.debug("Cleared {} directed notifications for user {}", deleted, userId);
+                }
+                return deleted;
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                restoreAutoCommitQuietly(conn, previousAutoCommit);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to clear per-user notifications", e);
+        }
+    }
+
+    /**
+     * Deletes every broadcast notification (recipient IS NULL) together with
+     * its per-user read-state rows, in one transaction. Directed notifications
+     * are preserved so the SUPER_ADMIN global-retention path does not wipe
+     * other admins' inboxes. Child-first order and atomicity as in
+     * {@link #clearAllNotificationsTransactional()}.
+     *
+     * @return the number of broadcast notifications deleted
+     * @throws DatabaseException on any persistence failure (transaction rolled back)
+     */
+    protected int clearBroadcastNotificationsTransactional() throws DatabaseException {
+        String deleteReadSql = "DELETE FROM notification_read "
+                + "WHERE notification_id IN (SELECT id FROM notifications WHERE recipient IS NULL)";
+        String deleteNotificationsSql = "DELETE FROM notifications WHERE recipient IS NULL";
+        try (Connection conn = getDataSource().getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement readStmt = conn.prepareStatement(deleteReadSql)) {
+                    readStmt.executeUpdate();
+                }
+                int deleted;
+                try (PreparedStatement notifStmt = conn.prepareStatement(deleteNotificationsSql)) {
+                    deleted = notifStmt.executeUpdate();
+                }
+                conn.commit();
+                if (deleted > 0) {
+                    logger.debug("Cleared {} broadcast notifications", deleted);
+                }
+                return deleted;
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                restoreAutoCommitQuietly(conn, previousAutoCommit);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to clear broadcast notifications", e);
+        }
+    }
+
+    /** Runs a parameterless DELETE and returns the affected row count. */
+    private static int executeDelete(Connection conn, String sql) throws SQLException {
+        try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+            return stmt.executeUpdate();
+        }
+    }
+
+    /**
+     * Restores the connection's auto-commit mode after a transactional
+     * operation. Restore failures are logged, never propagated: a dead
+     * connection must not mask the outcome of an operation that already
+     * committed (or rolled back) successfully.
+     */
+    private void restoreAutoCommitQuietly(Connection conn, boolean previousAutoCommit) {
+        try {
+            conn.setAutoCommit(previousAutoCommit);
+        } catch (SQLException e) {
+            logger.warn("Could not restore auto-commit state: {}", e.getMessage());
+        }
+    }
+
     // ==================== Announcements (schema v5) ====================
 
     @Override

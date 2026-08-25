@@ -485,8 +485,13 @@ public class MemoryProvider implements DatabaseProvider {
     }
 
     private boolean isNotificationVisibleToUser(Notification n, String userId) {
+        // Case-insensitive + trim, end-to-end with the WS delivery path which
+        // normalizes recipient and username the same way (commit 700bf5a).
+        // Stored recipient values are never mutated.
         String recipient = n.getRecipient();
-        return recipient == null || recipient.equals(userId);
+        return recipient == null
+                || recipient.trim().toLowerCase(Locale.ROOT)
+                        .equals(userId.trim().toLowerCase(Locale.ROOT));
     }
 
     @Override
@@ -646,7 +651,12 @@ public class MemoryProvider implements DatabaseProvider {
             java.util.Iterator<Notification> it = notifications.iterator();
             while (it.hasNext()) {
                 Notification n = it.next();
-                if (userId.equals(n.getRecipient())) {
+                if (isNotificationVisibleToUser(n, userId) && n.getRecipient() != null) {
+                    // Remove the directed notification's per-user read state
+                    // together with the notification itself — notificationIdSeq
+                    // keeps incrementing and ids can be reused, so leaving stale
+                    // notificationReadState entries would resurrect read flags
+                    // for notifications a user never opened.
                     it.remove();
                     notificationReadState.remove(n.getId());
                     count++;

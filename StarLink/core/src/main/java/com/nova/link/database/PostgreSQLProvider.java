@@ -752,19 +752,10 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
 
     @Override
     public int clearNotifications() throws DatabaseException {
-        String sql = "DELETE FROM notifications";
-
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-
-            int count = stmt.executeUpdate();
-            if (count > 0) {
-                logger.debug("Cleared {} notifications", count);
-            }
-            return count;
-        } catch (SQLException e) {
-            throw new DatabaseException("Failed to clear notifications", e);
-        }
+        // Deletes notification_read children first, then notifications, in one
+        // transaction — see AbstractJdbcProvider for why the child-first wipe
+        // is required (no FK ON DELETE CASCADE on notification_read).
+        return clearAllNotificationsTransactional();
     }
 
     @Override
@@ -811,7 +802,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             SELECT n.id, n.title, n.message, n.level, n.created_at, n.read, n.recipient
             FROM notifications n
             LEFT JOIN notification_read nr ON nr.notification_id = n.id AND nr.user_id = ?
-            WHERE (n.recipient IS NULL OR n.recipient = ?)
+            WHERE (n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?))
               AND (n.read = TRUE OR (nr.read IS NOT NULL AND nr.read = TRUE)) = FALSE
             ORDER BY n.created_at DESC, n.id DESC
             LIMIT ? OFFSET ?
@@ -823,7 +814,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
                    n.recipient
             FROM notifications n
             LEFT JOIN notification_read nr ON nr.notification_id = n.id AND nr.user_id = ?
-            WHERE n.recipient IS NULL OR n.recipient = ?
+            WHERE n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?)
             ORDER BY n.created_at DESC, n.id DESC
             LIMIT ? OFFSET ?
             """;
@@ -894,7 +885,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
         }
         String sql = "INSERT INTO notification_read (notification_id, user_id, read, read_at) "
                 + "SELECT n.id, ?, TRUE, ? FROM notifications n "
-                + "WHERE (n.recipient IS NULL OR n.recipient = ?) "
+                + "WHERE (n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?)) "
                 + "AND NOT EXISTS ("
                 + "  SELECT 1 FROM notification_read nr "
                 + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.read = TRUE"
@@ -922,7 +913,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             return getUnreadCount();
         }
         String sql = "SELECT COUNT(*) FROM notifications n "
-                + "WHERE (n.recipient IS NULL OR n.recipient = ?) "
+                + "WHERE (n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?)) "
                 + "AND n.read = FALSE "
                 + "AND NOT EXISTS ("
                 + "  SELECT 1 FROM notification_read nr "
@@ -951,7 +942,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
         String sql;
         if (unreadOnly) {
             sql = "SELECT COUNT(*) FROM notifications n "
-                    + "WHERE (n.recipient IS NULL OR n.recipient = ?) "
+                    + "WHERE (n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?)) "
                     + "AND n.read = FALSE "
                     + "AND NOT EXISTS ("
                     + "  SELECT 1 FROM notification_read nr "
@@ -959,7 +950,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
                     + ")";
         } else {
             sql = "SELECT COUNT(*) FROM notifications n "
-                    + "WHERE n.recipient IS NULL OR n.recipient = ?";
+                    + "WHERE n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?)";
         }
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -983,18 +974,11 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
         if (userId == null) {
             return clearNotifications();
         }
-        String sql = "DELETE FROM notifications WHERE recipient = ?";
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, userId);
-            int count = stmt.executeUpdate();
-            if (count > 0) {
-                logger.debug("Cleared {} directed notifications for user {}", count, userId);
-            }
-            return count;
-        } catch (SQLException e) {
-            throw new DatabaseException("Failed to clear per-user notifications", e);
-        }
+        // Deletes the directed notifications' read-state children first, then
+        // the notifications, in one transaction — see AbstractJdbcProvider.
+        // LOWER() on both sides keeps recipient matching case-insensitive,
+        // end-to-end with the WS delivery path.
+        return clearDirectedNotificationsTransactional(userId);
     }
 
     @Override
@@ -1002,32 +986,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
         // Only broadcast notifications (recipient IS NULL) are deleted. Directed
         // notifications (non-null recipient) are preserved so the SUPER_ADMIN
         // global-retention path does not wipe other admins' inboxes.
-        //
-        // notification_read has no FK ON DELETE CASCADE (its PK is
-        // (notification_id, user_id)), so the per-user read-state rows for the
-        // purged broadcast notifications must be deleted explicitly. Otherwise
-        // they are orphaned forever, growing the table without bound and leaving
-        // stale rows that later JOIN-based visibility/counts would surface.
-        // Order matters: delete the child table (notification_read) before the
-        // parent (notifications). Both statements run on the same Connection for
-        // a consistent view.
-        String deleteReadSql = "DELETE FROM notification_read "
-                + "WHERE notification_id IN (SELECT id FROM notifications WHERE recipient IS NULL)";
-        String deleteNotificationsSql = "DELETE FROM notifications WHERE recipient IS NULL";
-        try (Connection conn = dataSource.getConnection()) {
-            try (PreparedStatement readStmt = conn.prepareStatement(deleteReadSql)) {
-                readStmt.executeUpdate();
-            }
-            try (PreparedStatement notifStmt = conn.prepareStatement(deleteNotificationsSql)) {
-                int count = notifStmt.executeUpdate();
-                if (count > 0) {
-                    logger.debug("Cleared {} broadcast notifications", count);
-                }
-                return count;
-            }
-        } catch (SQLException e) {
-            throw new DatabaseException("Failed to clear broadcast notifications", e);
-        }
+        return clearBroadcastNotificationsTransactional();
     }
 
     // ==================== Invitation Operations ====================

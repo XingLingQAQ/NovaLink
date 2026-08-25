@@ -769,19 +769,10 @@ public class MySQLProvider extends AbstractJdbcProvider {
 
     @Override
     public int clearNotifications() throws DatabaseException {
-        String sql = "DELETE FROM notifications";
-
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-
-            int count = stmt.executeUpdate();
-            if (count > 0) {
-                logger.debug("Cleared {} notifications", count);
-            }
-            return count;
-        } catch (SQLException e) {
-            throw new DatabaseException("Failed to clear notifications", e);
-        }
+        // Deletes notification_read children first, then notifications, in one
+        // transaction — see AbstractJdbcProvider for why the child-first wipe
+        // is required (no FK ON DELETE CASCADE on notification_read).
+        return clearAllNotificationsTransactional();
     }
 
     @Override
@@ -830,7 +821,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
             SELECT n.id, n.title, n.message, n.level, n.created_at, n.`read` AS `read`, n.recipient
             FROM notifications n
             LEFT JOIN notification_read nr ON nr.notification_id = n.id AND nr.user_id = ?
-            WHERE (n.recipient IS NULL OR n.recipient = ?)
+            WHERE (n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?))
               AND (n.`read` = TRUE OR (nr.`read` IS NOT NULL AND nr.`read` = TRUE)) = FALSE
             ORDER BY n.created_at DESC, n.id DESC
             LIMIT ? OFFSET ?
@@ -842,7 +833,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
                    n.recipient
             FROM notifications n
             LEFT JOIN notification_read nr ON nr.notification_id = n.id AND nr.user_id = ?
-            WHERE n.recipient IS NULL OR n.recipient = ?
+            WHERE n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?)
             ORDER BY n.created_at DESC, n.id DESC
             LIMIT ? OFFSET ?
             """;
@@ -911,63 +902,29 @@ public class MySQLProvider extends AbstractJdbcProvider {
             markAllNotificationsRead();
             return;
         }
-        // MySQL does not allow INSERT ... SELECT ... ON DUPLICATE KEY UPDATE
-        // referencing the same target table in the SELECT without a derived
-        // table, so we first select candidate ids, then upsert per row. For
-        // simplicity and bounded work, we load the visible-unread ids and
-        // upsert them in a single batched statement.
-        String selectSql = "SELECT n.id FROM notifications n "
-                + "WHERE (n.recipient IS NULL OR n.recipient = ?) "
-                + "AND n.`read` = FALSE "
+        // Single atomic INSERT ... SELECT ... ON DUPLICATE KEY UPDATE. The
+        // SELECT reads notifications while the INSERT targets notification_read
+        // — different tables, so MySQL's same-target-table restriction on
+        // INSERT ... SELECT does not apply and no two-step select-then-batch
+        // is needed.
+        String sql = "INSERT INTO notification_read (notification_id, user_id, `read`, read_at) "
+                + "SELECT n.id, ?, TRUE, ? FROM notifications n "
+                + "WHERE (n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?)) "
                 + "AND NOT EXISTS ("
                 + "  SELECT 1 FROM notification_read nr "
                 + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.`read` = TRUE"
-                + ")";
-        String upsertSql = "INSERT INTO notification_read (notification_id, user_id, `read`, read_at) "
-                + "VALUES (?, ?, TRUE, ?) "
+                + ") "
                 + "ON DUPLICATE KEY UPDATE `read` = TRUE, read_at = VALUES(read_at)";
-        try (Connection conn = dataSource.getConnection()) {
-            boolean previousAutoCommit = conn.getAutoCommit();
-            conn.setAutoCommit(false);
-            try {
-                List<Long> ids = new ArrayList<>();
-                try (PreparedStatement selectStmt = conn.prepareStatement(selectSql)) {
-                    selectStmt.setString(1, userId);
-                    selectStmt.setString(2, userId);
-                    try (ResultSet rs = selectStmt.executeQuery()) {
-                        while (rs.next()) {
-                            ids.add(rs.getLong(1));
-                        }
-                    }
-                }
-                if (ids.isEmpty()) {
-                    return;
-                }
-                long now = System.currentTimeMillis();
-                try (PreparedStatement upsertStmt = conn.prepareStatement(upsertSql)) {
-                    for (Long id : ids) {
-                        upsertStmt.setLong(1, id);
-                        upsertStmt.setString(2, userId);
-                        upsertStmt.setLong(3, now);
-                        upsertStmt.addBatch();
-                    }
-                    int[] counts = upsertStmt.executeBatch();
-                    int total = 0;
-                    for (int c : counts) {
-                        if (c > 0) {
-                            total += c;
-                        }
-                    }
-                    if (total > 0) {
-                        logger.debug("Marked {} notifications as read for user {}", total, userId);
-                    }
-                }
-                conn.commit();
-            } catch (SQLException e) {
-                conn.rollback();
-                throw e;
-            } finally {
-                conn.setAutoCommit(previousAutoCommit);
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            long now = System.currentTimeMillis();
+            stmt.setString(1, userId);
+            stmt.setLong(2, now);
+            stmt.setString(3, userId);
+            stmt.setString(4, userId);
+            int count = stmt.executeUpdate();
+            if (count > 0) {
+                logger.debug("Marked {} notifications as read for user {}", count, userId);
             }
         } catch (SQLException e) {
             throw new DatabaseException("Failed to mark all per-user notifications as read", e);
@@ -980,7 +937,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
             return getUnreadCount();
         }
         String sql = "SELECT COUNT(*) FROM notifications n "
-                + "WHERE (n.recipient IS NULL OR n.recipient = ?) "
+                + "WHERE (n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?)) "
                 + "AND n.`read` = FALSE "
                 + "AND NOT EXISTS ("
                 + "  SELECT 1 FROM notification_read nr "
@@ -1009,7 +966,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
         String sql;
         if (unreadOnly) {
             sql = "SELECT COUNT(*) FROM notifications n "
-                    + "WHERE (n.recipient IS NULL OR n.recipient = ?) "
+                    + "WHERE (n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?)) "
                     + "AND n.`read` = FALSE "
                     + "AND NOT EXISTS ("
                     + "  SELECT 1 FROM notification_read nr "
@@ -1017,7 +974,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
                     + ")";
         } else {
             sql = "SELECT COUNT(*) FROM notifications n "
-                    + "WHERE n.recipient IS NULL OR n.recipient = ?";
+                    + "WHERE n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?)";
         }
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -1041,18 +998,11 @@ public class MySQLProvider extends AbstractJdbcProvider {
         if (userId == null) {
             return clearNotifications();
         }
-        String sql = "DELETE FROM notifications WHERE recipient = ?";
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, userId);
-            int count = stmt.executeUpdate();
-            if (count > 0) {
-                logger.debug("Cleared {} directed notifications for user {}", count, userId);
-            }
-            return count;
-        } catch (SQLException e) {
-            throw new DatabaseException("Failed to clear per-user notifications", e);
-        }
+        // Deletes the directed notifications' read-state children first, then
+        // the notifications, in one transaction — see AbstractJdbcProvider.
+        // LOWER() on both sides keeps recipient matching case-insensitive,
+        // end-to-end with the WS delivery path.
+        return clearDirectedNotificationsTransactional(userId);
     }
 
     @Override
@@ -1060,32 +1010,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
         // Only broadcast notifications (recipient IS NULL) are deleted. Directed
         // notifications (non-null recipient) are preserved so the SUPER_ADMIN
         // global-retention path does not wipe other admins' inboxes.
-        //
-        // notification_read has no FK ON DELETE CASCADE (its PK is
-        // (notification_id, user_id)), so the per-user read-state rows for the
-        // purged broadcast notifications must be deleted explicitly. Otherwise
-        // they are orphaned forever, growing the table without bound and leaving
-        // stale rows that later JOIN-based visibility/counts would surface.
-        // Order matters: delete the child table (notification_read) before the
-        // parent (notifications). Both statements run on the same Connection for
-        // a consistent view.
-        String deleteReadSql = "DELETE FROM notification_read "
-                + "WHERE notification_id IN (SELECT id FROM notifications WHERE recipient IS NULL)";
-        String deleteNotificationsSql = "DELETE FROM notifications WHERE recipient IS NULL";
-        try (Connection conn = dataSource.getConnection()) {
-            try (PreparedStatement readStmt = conn.prepareStatement(deleteReadSql)) {
-                readStmt.executeUpdate();
-            }
-            try (PreparedStatement notifStmt = conn.prepareStatement(deleteNotificationsSql)) {
-                int count = notifStmt.executeUpdate();
-                if (count > 0) {
-                    logger.debug("Cleared {} broadcast notifications", count);
-                }
-                return count;
-            }
-        } catch (SQLException e) {
-            throw new DatabaseException("Failed to clear broadcast notifications", e);
-        }
+        return clearBroadcastNotificationsTransactional();
     }
 
     // ==================== Invitation Operations ====================
