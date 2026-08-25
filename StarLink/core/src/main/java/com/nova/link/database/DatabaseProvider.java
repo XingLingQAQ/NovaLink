@@ -266,8 +266,14 @@ public interface DatabaseProvider {
     // These methods operate on per-user read state in the notification_read
     // table. They are interface default methods that throw
     // UnsupportedOperationException so providers that have not been upgraded
-    // (e.g. RedisProvider) inherit a safe stub and continue to compile. The
-    // JDBC and memory providers override them with real implementations.
+    // inherit a safe stub and continue to compile. The JDBC and memory
+    // providers override them with real implementations.
+    //
+    // Fail-safe contract: the store layer (NotificationStore) treats an
+    // UnsupportedOperationException from any of these scoped methods as a
+    // no-op / empty / zero result. It NEVER falls back to the corresponding
+    // global method — escalating a user-scoped failure into a global read/clear
+    // would let one user's action wipe or flip every other user's notifications.
 
     /**
      * Lists notifications visible to a specific user with pagination and
@@ -365,11 +371,12 @@ public interface DatabaseProvider {
      * FROM notifications with no recipient filter), wiping every notification
      * including other admins' directed ones.
      *
-     * <p>Providers that have not been upgraded (e.g. RedisProvider) inherit this
-     * default which throws {@link UnsupportedOperationException}; the
-     * {@link com.nova.link.notification.NotificationStore} layer catches that and
-     * falls back to {@link #clearNotifications()} so the retention path keeps
-     * working on legacy providers (with the isolation gap documented).
+     * <p>Providers that have not been upgraded inherit this default which throws
+     * {@link UnsupportedOperationException}; the
+     * {@link com.nova.link.notification.NotificationStore} layer treats that as
+     * a fail-safe no-op (returns 0, deletes nothing). It NEVER falls back to
+     * {@link #clearNotifications()} — escalating a scoped retention failure to
+     * a global destructive operation would wipe every user's notifications.
      *
      * @return number of broadcast notifications deleted
      * @throws DatabaseException if the operation fails

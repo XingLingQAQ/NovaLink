@@ -34,6 +34,7 @@ public class RedisProvider implements DatabaseProvider {
     private static final String INVITATION_PREFIX = KEY_PREFIX + "invitation:";
     private static final String NOTIFICATION_PREFIX = KEY_PREFIX + "notification:";
     private static final String NOTIFICATION_INDEX = KEY_PREFIX + "notifications";
+    private static final String NOTIFICATION_READ_PREFIX = KEY_PREFIX + "notification_read:";
     private static final String PLAYER_INDEX = KEY_PREFIX + "players";
     private static final String CHANNEL_INDEX = KEY_PREFIX + "channels";
     private static final String MESSAGE_PREFIX = KEY_PREFIX + "message:";
@@ -112,6 +113,21 @@ public class RedisProvider implements DatabaseProvider {
             return "PONG".equals(jedis.ping());
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    /**
+     * Test-only fixture hook: wipes every key of the configured Redis database
+     * (FLUSHDB). Used by integration tests that share a throwaway local Redis
+     * instance and need a hermetic starting state. Never call from production
+     * code — it destroys ALL data in the selected database.
+     */
+    public void clearAllForTests() {
+        if (jedisPool == null) {
+            return;
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.flushDB();
         }
     }
 
@@ -517,6 +533,53 @@ public class RedisProvider implements DatabaseProvider {
 
     // ==================== Notification Operations ====================
 
+    // --- Per-user notification state (PANEL-014) ---
+    // Mirrors the JDBC providers' notification_read model: per-user read flags
+    // live in a Redis hash novalink:notification_read:<userId> mapping
+    // notificationId -> readAt (epoch millis). A notification is "read for a
+    // user" when the global read flag is true OR the user's hash contains the
+    // id. A notification is visible to a user when recipient is null/blank
+    // (broadcast) or matches the userId case-insensitively after trimming
+    // (matching the WS delivery normalization from 700bf5a).
+
+    /** True when {@code notification} is visible to {@code userId}. */
+    private static boolean isVisibleToUser(Notification notification, String userId) {
+        String recipient = notification.getRecipient();
+        return recipient == null
+                || recipient.trim().toLowerCase(Locale.ROOT)
+                        .equals(userId.trim().toLowerCase(Locale.ROOT));
+    }
+
+    /** True when {@code id} is marked read for {@code userId} in Redis. */
+    private boolean isReadForUser(Jedis jedis, long id, String userId) {
+        return jedis.hexists(NOTIFICATION_READ_PREFIX + userId, String.valueOf(id));
+    }
+
+    /** Marks {@code id} as read for {@code userId} (per-user hash upsert). */
+    private void markReadForUser(Jedis jedis, long id, String userId) {
+        jedis.hset(NOTIFICATION_READ_PREFIX + userId, String.valueOf(id),
+                String.valueOf(System.currentTimeMillis()));
+    }
+
+    /** Deletes every per-user read-state entry for the given notification ids. */
+    private void deleteReadStateFor(Jedis jedis, List<String> ids) {
+        // SCAN runs on its own connection so it never interleaves with the
+        // caller's protocol state; HDEL writes go through the caller's jedis.
+        try (Jedis scanJedis = jedisPool.getResource()) {
+            ScanParams params = new ScanParams().match(NOTIFICATION_READ_PREFIX + "*").count(100);
+            String cursor = ScanParams.SCAN_POINTER_START;
+            do {
+                ScanResult<String> scan = scanJedis.scan(cursor, params);
+                cursor = scan.getCursor();
+                for (String key : scan.getResult()) {
+                    for (String idStr : ids) {
+                        jedis.hdel(key, idStr);
+                    }
+                }
+            } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
+        }
+    }
+
     @Override
     public void saveNotification(Notification notification) throws DatabaseException {
         if (notification == null) {
@@ -634,6 +697,8 @@ public class RedisProvider implements DatabaseProvider {
                 count++;
             }
             jedis.del(NOTIFICATION_INDEX);
+            // No orphaned per-user read state may survive the purge.
+            deleteReadStateFor(jedis, ids);
             if (count > 0) {
                 logger.debug("Cleared {} notifications", count);
             }
@@ -672,6 +737,217 @@ public class RedisProvider implements DatabaseProvider {
             return (int) jedis.zcard(NOTIFICATION_INDEX);
         } catch (Exception e) {
             throw new DatabaseException("Failed to count notifications in Redis", e);
+        }
+    }
+
+    // ==================== Per-user Notification Operations (PANEL-014) ====================
+    // Same contract as the JDBC/memory providers: visibility =
+    // broadcast OR directed-to-user; read-for-user = global read flag OR an
+    // entry in the user's notification_read hash. Null userId delegates to the
+    // global variants.
+
+    @Override
+    public List<Notification> getNotifications(int offset, int limit, boolean unreadOnly, String userId)
+            throws DatabaseException {
+        if (userId == null) {
+            return getNotifications(offset, limit, unreadOnly);
+        }
+        if (limit <= 0) {
+            return Collections.emptyList();
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<String> ids = jedis.zrevrangeByScore(NOTIFICATION_INDEX, "+inf", "-inf");
+            List<Notification> result = new ArrayList<>();
+            int collected = 0;
+            int skipped = 0;
+            for (String idStr : ids) {
+                String json = jedis.get(NOTIFICATION_PREFIX + idStr);
+                if (json == null) {
+                    continue;
+                }
+                NotificationDto dto = gson.fromJson(json, NotificationDto.class);
+                Notification notification = dto.toNotification();
+                if (!isVisibleToUser(notification, userId)) {
+                    continue;
+                }
+                if (unreadOnly && (dto.read || isReadForUser(jedis, dto.id, userId))) {
+                    continue;
+                }
+                if (skipped < offset) {
+                    skipped++;
+                    continue;
+                }
+                result.add(notification);
+                collected++;
+                if (collected >= limit) {
+                    break;
+                }
+            }
+            return result;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to load per-user notifications from Redis", e);
+        }
+    }
+
+    @Override
+    public void markNotificationRead(long id, String userId) throws DatabaseException {
+        if (userId == null) {
+            markNotificationRead(id);
+            return;
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            markReadForUser(jedis, id, userId);
+            logger.debug("Marked notification {} as read for user {}", id, userId);
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to mark per-user notification as read in Redis", e);
+        }
+    }
+
+    @Override
+    public void markAllNotificationsRead(String userId) throws DatabaseException {
+        if (userId == null) {
+            markAllNotificationsRead();
+            return;
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<String> ids = jedis.zrangeByScore(NOTIFICATION_INDEX, "-inf", "+inf");
+            int count = 0;
+            for (String idStr : ids) {
+                String json = jedis.get(NOTIFICATION_PREFIX + idStr);
+                if (json == null) {
+                    continue;
+                }
+                NotificationDto dto = gson.fromJson(json, NotificationDto.class);
+                if (!dto.read && isVisibleToUser(dto.toNotification(), userId)) {
+                    markReadForUser(jedis, dto.id, userId);
+                    count++;
+                }
+            }
+            if (count > 0) {
+                logger.debug("Marked {} notifications as read for user {}", count, userId);
+            }
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to mark all per-user notifications as read in Redis", e);
+        }
+    }
+
+    @Override
+    public int getUnreadCount(String userId) throws DatabaseException {
+        if (userId == null) {
+            return getUnreadCount();
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<String> ids = jedis.zrangeByScore(NOTIFICATION_INDEX, "-inf", "+inf");
+            int count = 0;
+            for (String idStr : ids) {
+                String json = jedis.get(NOTIFICATION_PREFIX + idStr);
+                if (json == null) {
+                    continue;
+                }
+                NotificationDto dto = gson.fromJson(json, NotificationDto.class);
+                if (!dto.read && !isReadForUser(jedis, dto.id, userId)
+                        && isVisibleToUser(dto.toNotification(), userId)) {
+                    count++;
+                }
+            }
+            return count;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to get per-user unread count from Redis", e);
+        }
+    }
+
+    @Override
+    public int countNotifications(boolean unreadOnly, String userId) throws DatabaseException {
+        if (userId == null) {
+            return countNotifications(unreadOnly);
+        }
+        if (unreadOnly) {
+            return getUnreadCount(userId);
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<String> ids = jedis.zrangeByScore(NOTIFICATION_INDEX, "-inf", "+inf");
+            int count = 0;
+            for (String idStr : ids) {
+                String json = jedis.get(NOTIFICATION_PREFIX + idStr);
+                if (json == null) {
+                    continue;
+                }
+                NotificationDto dto = gson.fromJson(json, NotificationDto.class);
+                if (isVisibleToUser(dto.toNotification(), userId)) {
+                    count++;
+                }
+            }
+            return count;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to count per-user notifications in Redis", e);
+        }
+    }
+
+    @Override
+    public int clearNotifications(String userId) throws DatabaseException {
+        if (userId == null) {
+            return clearNotifications();
+        }
+        // Only DIRECTED notifications addressed to this user are deleted.
+        // Broadcast events (null/blank recipient) are never removed by this
+        // call — visibility to the user is not enough, otherwise a per-user
+        // archive would wipe the shared stream. Per-user read-state entries
+        // for the purged ids are removed too (no orphans).
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<String> ids = jedis.zrangeByScore(NOTIFICATION_INDEX, "-inf", "+inf");
+            int count = 0;
+            for (String idStr : ids) {
+                String json = jedis.get(NOTIFICATION_PREFIX + idStr);
+                if (json == null) {
+                    continue;
+                }
+                NotificationDto dto = gson.fromJson(json, NotificationDto.class);
+                if (dto.recipient != null && !dto.recipient.trim().isEmpty()
+                        && isVisibleToUser(dto.toNotification(), userId)) {
+                    jedis.del(NOTIFICATION_PREFIX + idStr);
+                    jedis.zrem(NOTIFICATION_INDEX, idStr);
+                    deleteReadStateFor(jedis, Collections.singletonList(idStr));
+                    count++;
+                }
+            }
+            if (count > 0) {
+                logger.debug("Cleared {} directed notifications for user {}", count, userId);
+            }
+            return count;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to clear per-user notifications from Redis", e);
+        }
+    }
+
+    @Override
+    public int clearBroadcastNotifications() throws DatabaseException {
+        // Only broadcast notifications (null/blank recipient) are deleted;
+        // directed notifications are preserved so the SUPER_ADMIN global
+        // retention path does not wipe other admins' inboxes. Per-user
+        // read-state entries for the purged broadcasts are removed too
+        // (mirrors the JDBC no-orphan fix intent).
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<String> ids = jedis.zrangeByScore(NOTIFICATION_INDEX, "-inf", "+inf");
+            int count = 0;
+            for (String idStr : ids) {
+                String json = jedis.get(NOTIFICATION_PREFIX + idStr);
+                if (json == null) {
+                    continue;
+                }
+                NotificationDto dto = gson.fromJson(json, NotificationDto.class);
+                if (dto.recipient == null || dto.recipient.trim().isEmpty()) {
+                    jedis.del(NOTIFICATION_PREFIX + idStr);
+                    jedis.zrem(NOTIFICATION_INDEX, idStr);
+                    deleteReadStateFor(jedis, Collections.singletonList(idStr));
+                    count++;
+                }
+            }
+            if (count > 0) {
+                logger.debug("Cleared {} broadcast notifications", count);
+            }
+            return count;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to clear broadcast notifications from Redis", e);
         }
     }
 
@@ -1319,6 +1595,7 @@ public class RedisProvider implements DatabaseProvider {
         String level;
         long createdAt;
         boolean read;
+        String recipient;
 
         NotificationDto() {}
 
@@ -1329,10 +1606,11 @@ public class RedisProvider implements DatabaseProvider {
             this.level = n.getLevel();
             this.createdAt = n.getCreatedAt();
             this.read = n.isRead();
+            this.recipient = n.getRecipient();
         }
 
         Notification toNotification() {
-            return new Notification(id, title, message, level, createdAt, read);
+            return new Notification(id, title, message, level, createdAt, read, recipient);
         }
     }
 
