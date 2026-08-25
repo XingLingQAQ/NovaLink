@@ -577,7 +577,29 @@ class NetworkClient {
      * @param string $data Raw packet data
      */
     private function handlePacket(string $data): void {
-        $packet = Packet::fromBytes($data);
+        // VERIFY-005 R1: wrap decode in try/catch so a malformed frame (bad
+        // VarInt, invalid UTF-8 in a string field, buffer underflow, oversized
+        // length, etc.) closes the connection and triggers reconnect instead
+        // of crashing the read loop. Mirrors Endstone _read_loop semantics:
+        //   except Exception: await self._handle_disconnect(); break
+        // handleDisconnect() calls disconnect() (cancels read+keepalive tasks,
+        // closes socket, clears buffer, resets flags) then scheduleReconnect().
+        $packetId = ord(substr($data, 0, 1)) ?: -1;
+        try {
+            $packet = Packet::fromBytes($data);
+        } catch (\InvalidArgumentException $e) {
+            $this->plugin->getLogger()->warning(
+                "Decoding packet failed (id=0x" . dechex($packetId) . ", len=" . strlen($data) . "): " . $e->getMessage()
+            );
+            $this->handleDisconnect();
+            return;
+        } catch (\Throwable $e) {
+            $this->plugin->getLogger()->warning(
+                "Unexpected error decoding packet (id=0x" . dechex($packetId) . ", len=" . strlen($data) . "): " . $e->getMessage()
+            );
+            $this->handleDisconnect();
+            return;
+        }
         if ($packet === null) {
             $this->plugin->debug("Received unknown packet");
             return;

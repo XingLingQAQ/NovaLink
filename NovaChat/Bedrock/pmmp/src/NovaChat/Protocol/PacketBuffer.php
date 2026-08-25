@@ -285,7 +285,8 @@ class PacketBuffer {
      * @return string The string value
      * @throws InvalidArgumentException If the declared length is negative,
      *         exceeds `MAX_FRAME_LENGTH`, exceeds `$maxLength` (when given),
-     *         or exceeds the remaining bytes.
+     *         exceeds the remaining bytes, or the decoded bytes are not valid
+     *         UTF-8 (VERIFY-005 R3).
      */
     public function readString(?int $maxLength = null): string {
         $length = $this->readVarInt();
@@ -305,6 +306,15 @@ class PacketBuffer {
         }
         $value = substr($this->buffer, $this->position, $length);
         $this->position += $length;
+        // VERIFY-005 R3: every string field in the NovaChat protocol is text
+        // (senderName, channelId, errorCode, message, configJson, itemJson,
+        // placeholders...). Reject non-UTF-8 bytes at the decode layer so a
+        // malformed frame is caught here and bubbled up to handlePacket's
+        // try/catch (R1), which closes+releases+reconnects. mb_check_encoding
+        // returns false for invalid UTF-8 sequences (e.g. lone \xFF\xFE).
+        if (!mb_check_encoding($value, 'UTF-8')) {
+            throw new InvalidArgumentException("Invalid UTF-8 in string field");
+        }
         return $value;
     }
     
