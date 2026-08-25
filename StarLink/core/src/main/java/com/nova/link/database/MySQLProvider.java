@@ -927,37 +927,47 @@ public class MySQLProvider extends AbstractJdbcProvider {
                 + "VALUES (?, ?, TRUE, ?) "
                 + "ON DUPLICATE KEY UPDATE `read` = TRUE, read_at = VALUES(read_at)";
         try (Connection conn = dataSource.getConnection()) {
-            List<Long> ids = new ArrayList<>();
-            try (PreparedStatement selectStmt = conn.prepareStatement(selectSql)) {
-                selectStmt.setString(1, userId);
-                selectStmt.setString(2, userId);
-                try (ResultSet rs = selectStmt.executeQuery()) {
-                    while (rs.next()) {
-                        ids.add(rs.getLong(1));
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                List<Long> ids = new ArrayList<>();
+                try (PreparedStatement selectStmt = conn.prepareStatement(selectSql)) {
+                    selectStmt.setString(1, userId);
+                    selectStmt.setString(2, userId);
+                    try (ResultSet rs = selectStmt.executeQuery()) {
+                        while (rs.next()) {
+                            ids.add(rs.getLong(1));
+                        }
                     }
                 }
-            }
-            if (ids.isEmpty()) {
-                return;
-            }
-            long now = System.currentTimeMillis();
-            try (PreparedStatement upsertStmt = conn.prepareStatement(upsertSql)) {
-                for (Long id : ids) {
-                    upsertStmt.setLong(1, id);
-                    upsertStmt.setString(2, userId);
-                    upsertStmt.setLong(3, now);
-                    upsertStmt.addBatch();
+                if (ids.isEmpty()) {
+                    return;
                 }
-                int[] counts = upsertStmt.executeBatch();
-                int total = 0;
-                for (int c : counts) {
-                    if (c > 0) {
-                        total += c;
+                long now = System.currentTimeMillis();
+                try (PreparedStatement upsertStmt = conn.prepareStatement(upsertSql)) {
+                    for (Long id : ids) {
+                        upsertStmt.setLong(1, id);
+                        upsertStmt.setString(2, userId);
+                        upsertStmt.setLong(3, now);
+                        upsertStmt.addBatch();
+                    }
+                    int[] counts = upsertStmt.executeBatch();
+                    int total = 0;
+                    for (int c : counts) {
+                        if (c > 0) {
+                            total += c;
+                        }
+                    }
+                    if (total > 0) {
+                        logger.debug("Marked {} notifications as read for user {}", total, userId);
                     }
                 }
-                if (total > 0) {
-                    logger.debug("Marked {} notifications as read for user {}", total, userId);
-                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
             }
         } catch (SQLException e) {
             throw new DatabaseException("Failed to mark all per-user notifications as read", e);
