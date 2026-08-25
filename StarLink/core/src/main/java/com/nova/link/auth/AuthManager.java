@@ -8,6 +8,9 @@ import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -423,6 +426,33 @@ public class AuthManager {
      */
     public int getPanelUserCount() {
         return panelCredentials.size();
+    }
+
+    /**
+     * Collects the usernames of every registered web-panel account whose role
+     * is at least {@code minimumRole}. Reads the live panel credentials pool
+     * ({@code super-admins} + {@code panel-users}) so dynamically registered
+     * accounts are included, and returns a sorted snapshot: callers may iterate
+     * it freely while registrations continue concurrently (the backing map is
+     * a {@link ConcurrentHashMap}, so the snapshot is weakly consistent).
+     *
+     * <p>PANEL-014 consumer: the moderation notification fan-out addresses one
+     * directed "new case/appeal" notification per ADMIN-or-above panel user,
+     * derived from this role model instead of any hardcoded username list.
+     *
+     * @param minimumRole the inclusive minimum role (null is treated as VIEWER)
+     * @return sorted usernames of the matching panel accounts, never null
+     */
+    public List<String> getPanelUsernamesWithRoleAtLeast(PanelRole minimumRole) {
+        PanelRole required = minimumRole != null ? minimumRole : PanelRole.VIEWER;
+        List<String> usernames = new ArrayList<>();
+        for (PanelUserCredentials credentials : panelCredentials.values()) {
+            if (credentials.getRole() != null && credentials.getRole().atLeast(required)) {
+                usernames.add(credentials.getUsername());
+            }
+        }
+        Collections.sort(usernames);
+        return usernames;
     }
 
     /**

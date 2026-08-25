@@ -40,6 +40,13 @@ import java.util.UUID;
  * the reviewer isolation rule must fail loudly so the attempted self-review is
  * visible in the audit trail.
  *
+ * <p><b>Directed filing notifications (PANEL-014):</b> when a notification
+ * store and an admin-username supplier are wired (production wiring lives in
+ * {@code NovaLinkMain}), every successfully created case or appeal fans out
+ * one directed notification per ADMIN-or-above panel user. The fan-out is a
+ * strict best-effort side channel — mirroring {@code recordAudit}, it can
+ * never fail or delay the primary persistence path.
+ *
  * <p>The validation bounds (PANEL-007 §6):
  * <ul>
  *   <li>{@code item_json} schema: {@code itemId} ≤ 64 chars,
@@ -71,6 +78,29 @@ public class ModerationManager {
 
     private final DatabaseProvider databaseProvider;
     private final AuditStore auditStore;
+
+    /**
+     * Optional notification store (setter-injected, PANEL-014 producer seam).
+     */
+    private volatile com.nova.link.notification.NotificationStore notificationStore;
+
+    /**
+     * Supplies the panel usernames to fan directed case/appeal notifications
+     * to (setter-injected; typically {@code authManager::getPanelUsernamesWithRoleAtLeast}
+     * bound at ADMIN). Null disables the fan-out.
+     */
+    private volatile java.util.function.Supplier<List<String>> panelAdminUsernames;
+
+    /**
+     * Sets the recipient-discovery callback for directed filing notifications.
+     * Invoked once per created case/appeal; returning an empty list skips the
+     * notification silently.
+     *
+     * @param panelAdminUsernames supplier of ADMIN-or-above panel usernames
+     */
+    public void setPanelAdminUsernames(java.util.function.Supplier<List<String>> panelAdminUsernames) {
+        this.panelAdminUsernames = panelAdminUsernames;
+    }
 
     /**
      * @param databaseProvider the persistence layer (must support moderation ops;
@@ -143,6 +173,17 @@ public class ModerationManager {
         }
         recordAudit(actor, "moderation.case.create", "moderation_case:" + caseId,
                 null, hash, reason, "success");
+        // PANEL-014: alert every ADMIN-or-above panel user about the new case.
+        // Best-effort — runs after the audit success record and can never fail
+        // the already-persisted case.
+        notifyAdminsOfFiling(
+                filingTitle("Case", moderationCase.getId()),
+                "Reported player " + subjectPlayerId
+                        + (subjectDisplayName != null && !subjectDisplayName.isBlank()
+                                ? " (" + subjectDisplayName + ")" : "")
+                        + " | reporter: " + (reporterName != null ? reporterName : "-")
+                        + " | reason: " + brief(reason),
+                com.nova.link.database.Notification.LEVEL_INFO);
         return moderationCase;
     }
 
@@ -305,6 +346,15 @@ public class ModerationManager {
         }
         recordAudit(actor, "moderation.appeal.create", "appeal:" + appealId,
                 null, hash, appealReason, "success");
+        // PANEL-014: appeals are time-sensitive (a pending appeal blocks the
+        // resolution workflow), so they surface as WARNING-level directed
+        // alerts to every ADMIN-or-above panel user. Best-effort.
+        notifyAdminsOfFiling(
+                filingTitle("Appeal", appeal.getId()),
+                "Case " + caseId + " appealed by "
+                        + (appellant != null ? appellant : "-")
+                        + " | reason: " + brief(appealReason),
+                com.nova.link.database.Notification.LEVEL_WARNING);
         return appeal;
     }
 
@@ -493,6 +543,82 @@ public class ModerationManager {
             // Audit must never block the mutation.
             logger.warn("Failed to record moderation audit event action={}: {}", action, e.getMessage());
         }
+    }
+
+    /**
+     * Sets the optional notification store. When present, every successfully
+     * persisted case or appeal fans out one directed notification per
+     * ADMIN-or-above panel user (PANEL-014 production producer). The fan-out
+     * is best-effort: it never blocks, never throws and never fails the
+     * primary moderation operation.
+     *
+     * @param notificationStore the store, or null to disable notifications
+     */
+    public void setNotificationStore(com.nova.link.notification.NotificationStore notificationStore) {
+        this.notificationStore = notificationStore;
+    }
+
+    /**
+     * Fans out one directed notification per ADMIN-or-above panel user for a
+     * newly created case or appeal (PANEL-014). Recipients are discovered via
+     * the {@code panelAdminUsernames} supplier (the panel role model), so no
+     * hardcoded username lists exist here; the production wiring in
+     * {@code NovaLinkMain} binds the supplier at {@code PanelRole.ADMIN}.
+     *
+     * <p>Strictly best-effort — the audit hook convention: a null store, a
+     * null recipient supplier or any per-recipient failure is swallowed at
+     * debug level; the primary moderation mutation must never observe a
+     * notification problem. One filing event produces exactly N notifications
+     * (N = matching admins), not one broadcast.
+     */
+    private void notifyAdminsOfFiling(String title, String message, String level) {
+        com.nova.link.notification.NotificationStore store = notificationStore;
+        if (store == null) {
+            return;
+        }
+        List<String> recipients;
+        try {
+            recipients = panelAdminUsernames != null ? panelAdminUsernames.get() : null;
+        } catch (Exception e) {
+            logger.debug("Failed to enumerate panel admins for directed notification '{}': {}",
+                    title, e.getMessage());
+            return;
+        }
+        if (recipients == null || recipients.isEmpty()) {
+            return;
+        }
+        for (String recipient : recipients) {
+            if (recipient == null || recipient.isBlank()) {
+                continue;
+            }
+            try {
+                // createDirectedNotification persists + live-delivers to just
+                // this username; it swallows its own persistence/broadcast
+                // failures internally, but guard anyway so a future signature
+                // change can never fail the moderation path from here.
+                store.createDirectedNotification(title, message, level, recipient);
+            } catch (Exception e) {
+                logger.debug("Failed to enqueue directed notification '{}' for {}: {}",
+                        title, recipient, e.getMessage());
+            }
+        }
+    }
+
+    /** Builds "New Case" / "New Appeal" titles with a stable prefix. */
+    private static String filingTitle(String kind, String id) {
+        return "New " + kind + " #" + (id != null ? id : "?");
+    }
+
+    /**
+     * Truncates free-form text for the notification body (keeps bodies
+     * scannable in the panel feed).
+     */
+    private static String brief(String text) {
+        if (text == null) {
+            return "-";
+        }
+        String trimmed = text.strip();
+        return trimmed.length() > 120 ? trimmed.substring(0, 117) + "..." : trimmed;
     }
 
     private static void validateSubject(String subjectPlayerId) {

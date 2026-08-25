@@ -502,6 +502,17 @@ public class NovaLinkMain {
         // internally — the REST handler must NOT duplicate those audit calls.
         ModerationManager moderationManager =
                 new ModerationManager(databaseProvider, auditStore);
+        // PANEL-014: wire the directed-notification producer so a newly filed
+        // case or appeal fans out one directed notification per ADMIN-or-above
+        // panel user. Recipient discovery uses the live AuthManager role model
+        // (super-admins + panel-users config), never a hardcoded list. The
+        // fan-out is best-effort inside ModerationManager; per-request cost
+        // runs on whatever thread executes createReport/createAppeal (the
+        // REST worker pool in production).
+        moderationManager.setNotificationStore(notificationStore);
+        moderationManager.setPanelAdminUsernames(
+                () -> authManager.getPanelUsernamesWithRoleAtLeast(
+                        com.nova.link.auth.PanelRole.ADMIN));
 
         // §11.6 提案 06 (项目 19) — campaign 编排管理器。内存态（slice A，零迁移）；
         // 复用同一个 AuditStore 记录 campaign 审计；投递回调走受信 MessageRouter 路径，
