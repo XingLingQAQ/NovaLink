@@ -71,6 +71,17 @@ export const SUPPORTED_LANGS = Object.keys(resources).filter(
   (locale) => !aliasTarget(locale)
 );
 
+/**
+ * Per-locale `language.self` label read from the static resources map above
+ * (i18next v26 removed store()/getResourceBundle — read our own globbed
+ * resources instead of asking the i18next instance). Falls back to the locale
+ * code when the locale (and its bare-code base) has no registered resource.
+ */
+export function languageLabel(locale) {
+  const res = resources[locale] ?? resources[locale?.split('_')[0]];
+  return res?.translation?.language?.self ?? locale;
+}
+
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)

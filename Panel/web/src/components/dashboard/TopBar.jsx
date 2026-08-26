@@ -9,7 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { Menu, Moon, Sun, Bell, ChevronLeft, ChevronRight } from 'lucide-react';
 
 import { ConnectionState } from '../../services/websocket';
-import { SUPPORTED_LANGS } from '../../i18n';
+import { SUPPORTED_LANGS, languageLabel } from '../../i18n';
 import NotificationDropdown from './NotificationDropdown';
 
 function TopBar({
@@ -112,8 +112,7 @@ function TopBar({
         {/* Language switcher — driven by SUPPORTED_LANGS (auto-detected from src/lang/*.json) */}
         <div className="flex items-center p-0.5 rounded-full gap-0.5 border border-border bg-muted/60" title={t('language.switch_title')}>
           {SUPPORTED_LANGS.map((lang) => {
-            const store = i18n.store?.()?.data ?? {};
-            const label = store[lang]?.translation?.language?.self ?? lang;
+            const label = languageLabel(lang);
             const isActive = i18n.language === lang || i18n.language?.split('_')[0] === lang.split('_')[0];
             return (
               <button
