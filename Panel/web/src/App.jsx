@@ -34,17 +34,13 @@ import ConsoleCommand from './components/dashboard/ConsoleCommand';
 import ChannelManagement from './components/dashboard/ChannelManagement';
 import PlayerManagement from './components/dashboard/PlayerManagement';
 import AnnouncementManagement from './components/dashboard/AnnouncementManagement';
-import FilterManagement from './components/dashboard/FilterManagement';
 import ClientStatus from './components/dashboard/ClientStatus';
-import WebhookManagement from './components/dashboard/WebhookManagement';
 import SettingsView from './components/dashboard/SettingsView';
 import AuditLog from './components/dashboard/AuditLog';
 import ModerationManagement from './components/dashboard/ModerationManagement';
 import AppealQueue from './components/dashboard/AppealQueue';
 import ReportCreateModal from './components/dashboard/ReportCreateModal';
 import StatusPage from './components/dashboard/StatusPage';
-import ConfigHistory from './components/dashboard/ConfigHistory';
-import ConfigPublishPanel from './components/dashboard/ConfigPublishPanel';
 import CampaignManagement from './components/dashboard/CampaignManagement';
 
 import LoginScreen from './components/auth/LoginScreen';
@@ -112,6 +108,12 @@ function Dashboard({ currentUser, onLogout }) {
     }
   });
   const [activeTab, setActiveTab] = useState('dashboard');
+  // Inner Settings sub-tab (general / filter / webhooks / configHistory /
+  // configPublish). The sidebar no longer has top-level leaves for the four
+  // settings-adjacent surfaces — they live as tabs inside SettingsView. The
+  // ids are still accepted by handleTabChange for deep-link compatibility
+  // (a bookmark or future code path can still route to `webhooks` etc.).
+  const [settingsSubTab, setSettingsSubTab] = useState('general');
   const [liveChannelSelection, setLiveChannelSelection] = useState('all');
 
   // Sync the `.dark` class on <html> with the mode state so the oklch CSS
@@ -201,13 +203,29 @@ function Dashboard({ currentUser, onLogout }) {
   }, [setApiUnreadCount]);
 
   const handleTabChange = useCallback((tab) => {
-    setActiveTab(tab);
+    // Settings-adjacent surfaces are now inner tabs of Settings. The old
+    // sidebar ids are kept as deep-link entry points: they land on Settings
+    // and select the matching inner tab. `tab` is the ORIGINAL id here, so
+    // the setLiveChannelSelection / isMobile side effects below still act on
+    // the value the user actually clicked (or deep-linked to).
+    const settingsMap = {
+      webhooks: 'webhooks',
+      filter: 'filter',
+      configHistory: 'configHistory',
+      configPublish: 'configPublish',
+      settings: 'general',
+    };
+    if (tab in settingsMap) {
+      setSettingsSubTab(settingsMap[tab]);
+      setActiveTab('settings');
+      if (tab === 'webhooks') {
+        fetchWebhooks();
+      }
+    } else {
+      setActiveTab(tab);
+    }
     if (tab !== 'messages') setLiveChannelSelection('all');
     if (isMobile) setSidebarOpen(false);
-    // Lazy-load webhooks when the tab is first opened.
-    if (tab === 'webhooks') {
-      fetchWebhooks();
-    }
   }, [isMobile, fetchWebhooks]);
 
   // --- Derived / styling ---
@@ -388,33 +406,13 @@ function Dashboard({ currentUser, onLogout }) {
                     />
                   )}
 
-                  {/* Filter - Word Filter Management (ADMIN / SUPER_ADMIN) */}
-                  {activeTab === 'filter' && can(role, 'filter.manage') && (
-                    <FilterManagement
-                      theme="clean"
-                      mode={mode}
-                      onToast={addToast}
-                    />
-                  )}
-
-                  {/* Webhooks - Webhook Management */}
-                  {activeTab === 'webhooks' && (
-                    <WebhookManagement
-                      theme="clean"
-                      mode={mode}
-                      txtMain={txtMain}
-                      txtSec={txtSec}
-                      webhooks={data.webhooks}
-                      loading={data.webhooksLoading}
-                      onCreateWebhook={data.handleCreateWebhook}
-                      onDeleteWebhook={data.handleDeleteWebhook}
-                      onUpdateWebhook={data.handleUpdateWebhook}
-                      onTestWebhook={data.handleTestWebhook}
-                      role={role}
-                    />
-                  )}
-
-                  {/* Settings */}
+                  {/* Settings — hosts General (appearance / connection /
+                      chat features) plus the inner tabs for word filter /
+                      webhooks / config history / config publish. The four
+                      surfaces no longer have their own routes; deep links to
+                      `filter` / `webhooks` / `configHistory` / `configPublish`
+                      are redirected into the matching Settings sub-tab by
+                      handleTabChange. */}
                   {activeTab === 'settings' && (
                     <SettingsView
                       theme="clean" mode={mode}
@@ -427,36 +425,23 @@ function Dashboard({ currentUser, onLogout }) {
                       apiUrl={getApiBaseUrl()}
                       wsUrl={getWsUrl()}
                       role={role}
+                      onToast={addToast}
+                      webhooks={data.webhooks}
+                      webhooksLoading={data.webhooksLoading}
+                      onCreateWebhook={data.handleCreateWebhook}
+                      onDeleteWebhook={data.handleDeleteWebhook}
+                      onUpdateWebhook={data.handleUpdateWebhook}
+                      onTestWebhook={data.handleTestWebhook}
+                      txtMain={txtMain}
+                      txtSec={txtSec}
+                      settingsSubTab={settingsSubTab}
+                      onSettingsSubTabChange={setSettingsSubTab}
                     />
                   )}
 
                   {/* Audit Log (ADMIN / SUPER_ADMIN) */}
                   {activeTab === 'audit' && can(role, 'audit.view') && (
                     <AuditLog theme="clean" mode={mode} />
-                  )}
-
-                  {/* Config history (§11.6 Project 20 / PANEL proposal 10) —
-                      masked snapshot browse + diff + rollback. ADMIN+ see it;
-                      rollback is SUPER_ADMIN-only (gated inside the view). */}
-                  {activeTab === 'configHistory' && can(role, 'settings.history') && (
-                    <ConfigHistory theme="clean" mode={mode} role={role} />
-                  )}
-
-                  {/* Config publish (§11.6 item 20 / 提案 10 doc-deferred
-                      sub-items) — draft / approve / publish / backup / restore.
-                      SUPER_ADMIN-only: all nine endpoints under /api/settings/*
-                      require SUPER_ADMIN. Gated by the `config.publish`
-                      capability (see permissions.js) — the sidebar entry, this
-                      route, and the in-component guard all share one source of
-                      truth. The component additionally degrades to a forbidden
-                      hint if ever rendered with a lesser role. */}
-                  {activeTab === 'configPublish' && can(role, 'config.publish') && (
-                    <ConfigPublishPanel
-                      theme="clean"
-                      mode={mode}
-                      onToast={addToast}
-                      role={role}
-                    />
                   )}
 
                   {/* Campaigns (§11.6 提案 06 / item 19) — orchestrated,
