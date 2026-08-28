@@ -361,7 +361,7 @@ class ChatMessagePacket(Packet):
             except Exception:
                 # Legacy payload ended after content; treat as no placeholders.
                 size = 0
-            if 0 <= size <= 1000:  # defensive bound, mirrors Java
+            if 0 <= size <= _pl.MAX_MAP_ENTRIES:  # defensive bound, mirrors Java
                 for _ in range(size):
                     key = buffer.read_string(_pl.MAX_METADATA_KEY)
                     placeholders[key] = buffer.read_string(_pl.MAX_METADATA_VALUE)
@@ -408,10 +408,11 @@ class ChannelActionPacket(Packet):
         if buffer.remaining() > 0:
             try:
                 size = buffer.read_varint()
-                for _ in range(max(0, size)):
-                    k = buffer.read_string(_pl.MAX_METADATA_KEY)
-                    v = buffer.read_string(_pl.MAX_METADATA_VALUE)
-                    extra[k] = v
+                if 0 <= size <= _pl.MAX_MAP_ENTRIES:
+                    for _ in range(size):
+                        k = buffer.read_string(_pl.MAX_METADATA_KEY)
+                        v = buffer.read_string(_pl.MAX_METADATA_VALUE)
+                        extra[k] = v
             except Exception:
                 extra = {}
 
@@ -545,10 +546,11 @@ class ChannelActionResponsePacket(Packet):
         if buffer.remaining() > 0:
             try:
                 size = buffer.read_varint()
-                for _ in range(max(0, size)):
-                    k = buffer.read_string(_pl.MAX_METADATA_KEY)
-                    v = buffer.read_string(_pl.MAX_METADATA_VALUE)
-                    extra[k] = v
+                if 0 <= size <= _pl.MAX_MAP_ENTRIES:
+                    for _ in range(size):
+                        k = buffer.read_string(_pl.MAX_METADATA_KEY)
+                        v = buffer.read_string(_pl.MAX_METADATA_VALUE)
+                        extra[k] = v
             except Exception:
                 extra = {}
 
@@ -622,10 +624,11 @@ class AdminActionPacket(Packet):
         if buffer.remaining() > 0:
             try:
                 size = buffer.read_varint()
-                for _ in range(max(0, size)):
-                    k = buffer.read_string(_pl.MAX_METADATA_KEY)
-                    v = buffer.read_string(_pl.MAX_METADATA_VALUE)
-                    extra[k] = v
+                if 0 <= size <= _pl.MAX_MAP_ENTRIES:
+                    for _ in range(size):
+                        k = buffer.read_string(_pl.MAX_METADATA_KEY)
+                        v = buffer.read_string(_pl.MAX_METADATA_VALUE)
+                        extra[k] = v
             except Exception:
                 extra = {}
 

@@ -137,6 +137,15 @@ struct ProtocolLimits {
 
     /** Max UTF-8 bytes for a metadata/extra map value. Mirrors ChatMessagePacket placeholder value precedent. */
     static constexpr size_t MAX_METADATA_VALUE = 512;
+
+    /**
+     * Max number of entries in a metadata/extra/placeholder map. A corrupted or
+     * hostile frame can declare a huge VarInt map size and force an oversized
+     * allocation before any single entry is read; this count cap rejects the
+     * frame up front. Non-JVM mirror: identical value. Entry count, not byte
+     * length.
+     */
+    static constexpr size_t MAX_MAP_ENTRIES = 1000;
 };
 
 } // namespace novachat::protocol

@@ -315,7 +315,7 @@ public:
         mPlaceholders.clear();
         if (buf.readableBytes() > 0) {
             int32_t size = buf.readVarInt();
-            if (size >= 0 && size <= 1000) { // defensive bound, mirrors Java
+            if (size >= 0 && size <= ProtocolLimits::MAX_MAP_ENTRIES) { // defensive bound, mirrors Java
                 mPlaceholders.reserve(static_cast<size_t>(size));
                 for (int32_t i = 0; i < size; ++i) {
                     std::string key = buf.readString(ProtocolLimits::MAX_METADATA_KEY);
@@ -416,6 +416,9 @@ public:
         }
         int32_t size = buf.readVarInt();
         mExtra.clear();
+        if (size < 0 || size > ProtocolLimits::MAX_MAP_ENTRIES) {
+            return;
+        }
         for (int32_t i = 0; i < size; ++i) {
             std::string key = buf.readString(ProtocolLimits::MAX_METADATA_KEY);
             std::string value = buf.readString(ProtocolLimits::MAX_METADATA_VALUE);
@@ -478,6 +481,9 @@ public:
         }
         int32_t size = buf.readVarInt();
         mExtra.clear();
+        if (size < 0 || size > ProtocolLimits::MAX_MAP_ENTRIES) {
+            return;
+        }
         for (int32_t i = 0; i < size; ++i) {
             std::string key = buf.readString(ProtocolLimits::MAX_METADATA_KEY);
             std::string value = buf.readString(ProtocolLimits::MAX_METADATA_VALUE);
@@ -615,6 +621,9 @@ public:
         mTarget = buf.readString(ProtocolLimits::MAX_CHANNEL_ID);
         int32_t size = buf.readVarInt();
         mExtra.clear();
+        if (size < 0 || size > ProtocolLimits::MAX_MAP_ENTRIES) {
+            return;
+        }
         for (int32_t i = 0; i < size; ++i) {
             std::string key = buf.readString(ProtocolLimits::MAX_METADATA_KEY);
             std::string value = buf.readString(ProtocolLimits::MAX_METADATA_VALUE);

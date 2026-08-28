@@ -130,3 +130,10 @@ MAX_METADATA_KEY: int = 128
 #: Max UTF-8 bytes for a metadata/extra map value. Mirrors ChatMessagePacket
 #: placeholder value precedent.
 MAX_METADATA_VALUE: int = 512
+
+#: Max number of entries in a metadata/extra/placeholder map. A corrupted or
+#: hostile frame can declare a huge VarInt map size and force an oversized
+#: allocation before any single entry is read; this count cap rejects the
+#: frame up front. Non-JVM mirror: identical value. Entry count, not byte
+#: length.
+MAX_MAP_ENTRIES: int = 1000
