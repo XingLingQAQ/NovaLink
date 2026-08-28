@@ -69,10 +69,14 @@ bool NovaChatPlugin::enable() {
         mConfig->getServerVersion(),
         mConfig->getReconnectDelay()
     );
-    // AUTH-002 TLS: plumb the transport-encryption config into the client. The
-    // values are stored but not yet applied in doConnect() (skeleton seam —
-    // see the TODO in NetworkClient::doConnect). Called here so a future
-    // OpenSSL integration picks them up without re-plumbing the constructor.
+    // AUTH-002 TLS: plumb the transport-encryption config into the client.
+    // Applied in doConnect() — when isTlsEnabled() is true the TCP socket is
+    // wrapped in an OpenSSL TLS session (SSL_CTX with SSL_VERIFY_PEER, optional
+    // mTLS client cert/key) and a non-blocking SSL_connect state machine driven
+    // by the select() loop in networkThreadFunc(); HandshakeInit is sent only
+    // after the TLS session reaches Established. Verification is enforced
+    // unconditionally (no insecure bypass). Called here so the config reaches
+    // the client without re-plumbing the constructor.
     mNetworkClient->setTlsConfig(
         mConfig->isTlsEnabled(),
         mConfig->getTlsCaCertPath(),
@@ -132,8 +136,9 @@ bool NovaChatPlugin::reloadConfiguration() {
             mConfig->getReconnectDelay()
         );
         // AUTH-002 TLS: re-apply the transport-encryption config after a reload
-        // so an operator toggle takes effect on the next reconnect. (Skeleton
-        // seam: stored but not yet applied — see NetworkClient::doConnect.)
+        // so an operator toggle takes effect on the next reconnect. doConnect()
+        // honours the same SSL_VERIFY_PEER + optional mTLS path as the initial
+        // connect.
         mNetworkClient->setTlsConfig(
             mConfig->isTlsEnabled(),
             mConfig->getTlsCaCertPath(),
