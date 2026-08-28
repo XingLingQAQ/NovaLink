@@ -30,16 +30,13 @@ public final class ClientExtensionHost {
 
     private final ExtensionManager extensionManager;
     private final ClientLogger logger;
-    private final Path extensionsDir;
     private final boolean enabled;
 
     private ClientExtensionHost(ExtensionManager extensionManager,
                                ClientLogger logger,
-                               Path extensionsDir,
                                boolean enabled) {
         this.extensionManager = extensionManager;
         this.logger = logger;
-        this.extensionsDir = extensionsDir;
         this.enabled = enabled;
     }
 
@@ -65,7 +62,7 @@ public final class ClientExtensionHost {
         if (!Files.isDirectory(dir)) {
             safeLogger.debug("Extension host: extensions directory absent ("
                     + dir + "); running without extensions");
-            return new ClientExtensionHost(manager, safeLogger, dir, false);
+            return new ClientExtensionHost(manager, safeLogger, false);
         }
 
         boolean enabled = false;
@@ -82,7 +79,7 @@ public final class ClientExtensionHost {
         } catch (Throwable t) {
             safeLogger.error("Extension host initialization failed; continuing without extensions", t);
         }
-        return new ClientExtensionHost(manager, safeLogger, dir, enabled);
+        return new ClientExtensionHost(manager, safeLogger, enabled);
     }
 
     private static Path resolveExtensionsDir(String extensionsDir) {
@@ -100,11 +97,6 @@ public final class ClientExtensionHost {
     /** @return the extension event bus (never null) */
     public ExtensionEventBus getEventBus() {
         return extensionManager.getEventBus();
-    }
-
-    /** @return the resolved extensions directory path */
-    public Path getExtensionsDir() {
-        return extensionsDir;
     }
 
     /** @return true when at least one extension was successfully enabled */

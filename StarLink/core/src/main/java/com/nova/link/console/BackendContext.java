@@ -112,7 +112,6 @@ public final class BackendContext {
     public ConfigManager getConfigManager() { return configManager; }
     public AuthManager getAuthManager() { return authManager; }
     public PermissionManager getPermissionManager() { return permissionManager; }
-    public ClientPermissionRegistry getClientPermissionRegistry() { return clientPermissionRegistry; }
     public DatabaseProvider getDatabaseProvider() { return databaseProvider; }
     public ChannelManager getChannelManager() { return channelManager; }
     public PlayerStateManager getPlayerStateManager() { return playerStateManager; }

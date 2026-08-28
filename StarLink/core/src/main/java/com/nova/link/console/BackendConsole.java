@@ -91,11 +91,6 @@ public class BackendConsole {
         }
     }
 
-    /** Exposed for tests so the completer can be exercised without a live terminal. */
-    public Completer completer() {
-        return new BackendCompleter(handler.context());
-    }
-
     /**
      * Runs the console loop on the calling (main) thread. Returns when the user
      * types {@code stop}/{@code shutdown} or sends EOF (Ctrl+D).

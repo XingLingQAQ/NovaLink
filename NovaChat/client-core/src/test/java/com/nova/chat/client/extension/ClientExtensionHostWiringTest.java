@@ -60,7 +60,6 @@ class ClientExtensionHostWiringTest {
 
         assertThat(host).isNotNull();
         assertThat(host.isEnabled()).isFalse();
-        assertThat(host.getExtensionsDir()).isEqualTo(absent);
         assertThat(host.getExtensionManager()).isNotNull();
         assertThat(host.getEventBus()).isNotNull();
         // Directory was NOT created by the host (zero side-effects).
