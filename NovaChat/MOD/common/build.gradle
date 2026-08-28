@@ -28,16 +28,16 @@ dependencies {
     // Logging
     implementation "org.slf4j:slf4j-api:${slf4jVersion}"
     implementation "ch.qos.logback:logback-classic:${logbackVersion}"
-    
+
     // YAML Configuration
     implementation "org.yaml:snakeyaml:${snakeYamlVersion}"
-    
+
     // JSON
     implementation "com.google.code.gson:gson:${gsonVersion}"
-    
+
     // Networking
     implementation "io.netty:netty-all:${nettyVersion}"
-    
+
     // Protocol (common) - from parent project
     implementation project(':NovaChat:common')
 
@@ -45,7 +45,16 @@ dependencies {
     // Provides AbstractPlatformNetworkClient, PlayerStateStore, ChannelCommandService,
     // I18n, MentionNotifier, ChannelResponseDispatcher, ConfigSyncHandlerRegistrar, etc.
     implementation project(':NovaChat:client-core')
-    
+
+    // Brigadier API (Minecraft 1.21.11 ships com.mojang:brigadier:1.3.10).
+    // compileOnly so the shared registrar skeleton can reference
+    // CommandDispatcher / LiteralArgumentBuilder / CommandContext without
+    // pulling Minecraft itself — each loader subproject (fabric/neoforge/quilt)
+    // supplies the full brigadier + MC jar at runtime via fabric-loom /
+    // neoforged.gradle.userdev. Exposed at compile time only; not on the
+    // mod-common runtime classpath, so the common jar stays Minecraft-free.
+    compileOnly "com.mojang:brigadier:1.3.10"
+
     // Testing
     testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"

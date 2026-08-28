@@ -1,22 +1,18 @@
 package com.nova.chat.mod.fabric;
 
-import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
-import com.nova.chat.mod.command.HelpCommand;
-import com.nova.chat.mod.command.IgnoreCommand;
-import com.nova.chat.mod.command.JoinCommand;
-import com.nova.chat.mod.command.LeaveCommand;
-import com.nova.chat.mod.command.ListCommand;
-import com.nova.chat.mod.command.MsgCommand;
-import com.nova.chat.mod.command.ReloadCommand;
-import com.nova.chat.mod.command.ReplyCommand;
-import com.nova.chat.mod.command.ToggleCommand;
-import com.nova.chat.mod.command.UnignoreCommand;
-import com.nova.chat.mod.command.WhoCommand;
-import com.nova.chat.mod.platform.CommandHandler;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.nova.chat.mod.platform.CommandManager;
 import com.nova.chat.mod.platform.ModServices;
+import com.nova.chat.mod.platform.Platform;
+import com.nova.chat.mod.platform.brigadier.AbstractBrigadierCommandRegistrar;
+import com.nova.chat.mod.platform.brigadier.BrigadierHooks;
+import com.nova.chat.mod.platform.brigadier.ModDebugInfo;
+import com.nova.chat.mod.platform.brigadier.ServerPlayerInfo;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -28,214 +24,93 @@ import net.minecraft.server.permissions.PermissionSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.UUID;
+
 /**
- * Registers NovaChat commands using Fabric's CommandRegistrationCallback.
+ * Fabric shim for the shared {@link AbstractBrigadierCommandRegistrar}.
  *
- * <p>Registers all eleven subcommands (help/join/leave/list/who/toggle/
- * ignore/unignore/msg/r/reload) through the shared {@link CommandManager} and
- * delegates execution to the common {@link CommandHandler} implementations,
- * attaching {@link ModServices} to each command context so the handlers can
- * reach the shared network / channel-command / registry / state services.
+ * <p>Extends the common registrar and overrides the 13
+ * {@link BrigadierHooks} methods against Fabric's typed
+ * {@link CommandSourceStack}, and registers the shared registrar's
+ * {@code novachat}/{@code nc} tree on Fabric's
+ * {@link CommandRegistrationCallback}. All 11 handler registrations, the
+ * brigadier subtree shape, {@code executeSubCommand}, {@code isAdmin} and the
+ * {@code debug} banner live in the common layer; this class is just the
+ * platform glue.
  */
-public class FabricCommandRegistrar {
+public class FabricCommandRegistrar
+        extends AbstractBrigadierCommandRegistrar<CommandSourceStack> {
+
     private static final Logger LOGGER = LoggerFactory.getLogger(FabricCommandRegistrar.class);
 
-    private static CommandManager commandManager;
-    private static ModServices services;
+    private static FabricCommandRegistrar instance;
 
     /**
-     * Register all NovaChat commands.
+     * Register all NovaChat commands on Fabric.
      *
      * @param manager  the command manager
      * @param services the shared mod services (attached to each command context)
      */
     public static void registerCommands(CommandManager manager, ModServices services) {
-        FabricCommandRegistrar.commandManager = manager;
-        FabricCommandRegistrar.services = services;
+        if (instance == null) {
+            instance = new FabricCommandRegistrar();
+        }
+        instance.registerSharedStateAndHandlers(manager, services);
 
-        // Register shared command handlers in the command manager
-        manager.registerCommand("help", new HelpCommand());
-        manager.registerCommand("join", new JoinCommand());
-        manager.registerCommand("leave", new LeaveCommand());
-        manager.registerCommand("list", new ListCommand());
-        manager.registerCommand("who", new WhoCommand());
-        manager.registerCommand("toggle", new ToggleCommand());
-        manager.registerCommand("msg", new MsgCommand());
-        manager.registerCommand("r", new ReplyCommand());
-        manager.registerCommand("ignore", new IgnoreCommand());
-        manager.registerCommand("unignore", new UnignoreCommand());
-        manager.registerCommand("reload", new ReloadCommand());
-
-        // Register with Fabric's command system
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
-            registerNovaChatCommand(dispatcher);
+            instance.registerNovaChatCommands(dispatcher);
             LOGGER.info("NovaChat commands registered");
         });
     }
 
-    private static void registerNovaChatCommand(CommandDispatcher<CommandSourceStack> dispatcher) {
-        var novachatCommand = Commands.literal("novachat")
-            .then(Commands.literal("help")
-                .executes(ctx -> executeSubCommand(ctx, "help", new String[0])))
-            .then(Commands.literal("join")
-                .then(Commands.argument("channel", StringArgumentType.word())
-                    .suggests((ctx, builder) -> {
-                        if (services != null) {
-                            for (String id : services.getKnownChannelRegistry()
-                                    .getKnownChannelIds(builder.getRemainingLowerCase())) {
-                                builder.suggest(id);
-                            }
-                        }
-                        if (builder.getRemaining().isEmpty()) {
-                            builder.suggest("global");
-                            builder.suggest("local");
-                        }
-                        return builder.buildFuture();
-                    })
-                    .executes(ctx -> {
-                        String channel = StringArgumentType.getString(ctx, "channel");
-                        return executeSubCommand(ctx, "join", new String[]{channel});
-                    })))
-            .then(Commands.literal("leave")
-                .executes(ctx -> executeSubCommand(ctx, "leave", new String[0])))
-            .then(Commands.literal("list")
-                .executes(ctx -> executeSubCommand(ctx, "list", new String[0])))
-            .then(Commands.literal("who")
-                .executes(ctx -> executeSubCommand(ctx, "who", new String[0])))
-            .then(Commands.literal("toggle")
-                .executes(ctx -> executeSubCommand(ctx, "toggle", new String[0])))
-            .then(Commands.literal("msg")
-                .then(Commands.argument("player", StringArgumentType.word())
-                    .then(Commands.argument("message", StringArgumentType.greedyString())
-                        .executes(ctx -> {
-                            String p = StringArgumentType.getString(ctx, "player");
-                            String m = StringArgumentType.getString(ctx, "message");
-                            return executeSubCommand(ctx, "msg", new String[]{p, m});
-                        }))))
-            .then(Commands.literal("r")
-                .then(Commands.argument("message", StringArgumentType.greedyString())
-                    .executes(ctx -> {
-                        String m = StringArgumentType.getString(ctx, "message");
-                        return executeSubCommand(ctx, "r", new String[]{m});
-                    })))
-            .then(Commands.literal("ignore")
-                .executes(ctx -> executeSubCommand(ctx, "ignore", new String[0]))
-                .then(Commands.argument("target", StringArgumentType.word())
-                    .executes(ctx -> {
-                        String t = StringArgumentType.getString(ctx, "target");
-                        return executeSubCommand(ctx, "ignore", new String[]{t});
-                    })))
-            .then(Commands.literal("unignore")
-                .then(Commands.argument("target", StringArgumentType.word())
-                    .executes(ctx -> {
-                        String t = StringArgumentType.getString(ctx, "target");
-                        return executeSubCommand(ctx, "unignore", new String[]{t});
-                    })))
-            .then(Commands.literal("reload")
-                .requires(source -> isAdmin(source))
-                .executes(ctx -> executeSubCommand(ctx, "reload", new String[0])))
-            .then(Commands.literal("debug")
-                .requires(source -> isAdmin(source))
-                .executes(ctx -> executeDebug(ctx)))
-            .executes(ctx -> executeSubCommand(ctx, "help", new String[0]));
+    // ---------------------- BrigadierHooks implementation ----------------------
 
-        dispatcher.register(novachatCommand);
-
-        var ncCommand = Commands.literal("nc")
-            .then(Commands.literal("help")
-                .executes(ctx -> executeSubCommand(ctx, "help", new String[0])))
-            .then(Commands.literal("join")
-                .then(Commands.argument("channel", StringArgumentType.word())
-                    .suggests((ctx, builder) -> {
-                        if (services != null) {
-                            for (String id : services.getKnownChannelRegistry()
-                                    .getKnownChannelIds(builder.getRemainingLowerCase())) {
-                                builder.suggest(id);
-                            }
-                        }
-                        if (builder.getRemaining().isEmpty()) {
-                            builder.suggest("global");
-                            builder.suggest("local");
-                        }
-                        return builder.buildFuture();
-                    })
-                    .executes(ctx -> {
-                        String channel = StringArgumentType.getString(ctx, "channel");
-                        return executeSubCommand(ctx, "join", new String[]{channel});
-                    })))
-            .then(Commands.literal("leave")
-                .executes(ctx -> executeSubCommand(ctx, "leave", new String[0])))
-            .then(Commands.literal("list")
-                .executes(ctx -> executeSubCommand(ctx, "list", new String[0])))
-            .then(Commands.literal("who")
-                .executes(ctx -> executeSubCommand(ctx, "who", new String[0])))
-            .then(Commands.literal("toggle")
-                .executes(ctx -> executeSubCommand(ctx, "toggle", new String[0])))
-            .then(Commands.literal("msg")
-                .then(Commands.argument("player", StringArgumentType.word())
-                    .then(Commands.argument("message", StringArgumentType.greedyString())
-                        .executes(ctx -> {
-                            String p = StringArgumentType.getString(ctx, "player");
-                            String m = StringArgumentType.getString(ctx, "message");
-                            return executeSubCommand(ctx, "msg", new String[]{p, m});
-                        }))))
-            .then(Commands.literal("r")
-                .then(Commands.argument("message", StringArgumentType.greedyString())
-                    .executes(ctx -> {
-                        String m = StringArgumentType.getString(ctx, "message");
-                        return executeSubCommand(ctx, "r", new String[]{m});
-                    })))
-            .then(Commands.literal("ignore")
-                .executes(ctx -> executeSubCommand(ctx, "ignore", new String[0]))
-                .then(Commands.argument("target", StringArgumentType.word())
-                    .executes(ctx -> {
-                        String t = StringArgumentType.getString(ctx, "target");
-                        return executeSubCommand(ctx, "ignore", new String[]{t});
-                    })))
-            .then(Commands.literal("unignore")
-                .then(Commands.argument("target", StringArgumentType.word())
-                    .executes(ctx -> {
-                        String t = StringArgumentType.getString(ctx, "target");
-                        return executeSubCommand(ctx, "unignore", new String[]{t});
-                    })))
-            .then(Commands.literal("reload")
-                .requires(source -> isAdmin(source))
-                .executes(ctx -> executeSubCommand(ctx, "reload", new String[0])))
-            .then(Commands.literal("debug")
-                .requires(source -> isAdmin(source))
-                .executes(ctx -> executeDebug(ctx)))
-            .executes(ctx -> executeSubCommand(ctx, "help", new String[0]));
-
-        dispatcher.register(ncCommand);
+    @Override
+    public LiteralArgumentBuilder<CommandSourceStack> literal(String name) {
+        return Commands.literal(name);
     }
 
-    private static int executeSubCommand(CommandContext<CommandSourceStack> ctx, String subCommand, String[] args) {
-        CommandSourceStack source = ctx.getSource();
+    @Override
+    public RequiredArgumentBuilder<CommandSourceStack, String> argument(
+            String name, ArgumentType<String> type) {
+        return Commands.argument(name, type);
+    }
 
-        if (!(source.getEntity() instanceof ServerPlayer player)) {
-            source.sendFailure(Component.literal("This command can only be executed by a player"));
-            return 0;
+    @Override
+    public ArgumentType<String> word() {
+        return StringArgumentType.word();
+    }
+
+    @Override
+    public ArgumentType<String> greedyString() {
+        return StringArgumentType.greedyString();
+    }
+
+    @Override
+    public String readString(CommandContext<CommandSourceStack> ctx, String name)
+            throws CommandSyntaxException {
+        return StringArgumentType.getString(ctx, name);
+    }
+
+    @Override
+    public ServerPlayerInfo lookupPlayer(CommandSourceStack source) {
+        if (source.getEntity() instanceof ServerPlayer player) {
+            return new ServerPlayerInfo(player.getUUID(), player.getName().getString());
         }
+        return null;
+    }
 
-        if (commandManager == null) {
-            source.sendFailure(Component.literal("NovaChat is not initialized"));
-            return 0;
-        }
+    @Override
+    public Platform getPlatform() {
+        return NovaChatFabric.getInstance().getPlatform();
+    }
 
-        CommandHandler handler = commandManager.getCommand(subCommand);
-        if (handler == null) {
-            source.sendFailure(Component.literal("Unknown subcommand: " + subCommand));
-            return 0;
-        }
-
-        FabricPlatform platform = NovaChatFabric.getInstance().getPlatform();
-        boolean isAdmin = isAdmin(source);
-        FabricCommandContext cmdContext = new FabricCommandContext(
-                player.getUUID(), player.getName().getString(), platform, isAdmin, source);
-        cmdContext.withServices(services);
-
-        boolean success = handler.execute(args, cmdContext);
-        return success ? 1 : 0;
+    @Override
+    public com.nova.chat.mod.platform.CommandContext createContext(
+            UUID playerId, String playerName, Platform platform,
+            boolean isAdmin, CommandSourceStack source) {
+        return new FabricCommandContext(
+                playerId, playerName, platform, isAdmin, source);
     }
 
     /**
@@ -244,28 +119,38 @@ public class FabricCommandRegistrar {
      * {@link PermissionLevel#GAMEMASTERS}; {@code hasPermission(HasCommandLevel)}
      * checks "equal or higher", matching the legacy {@code hasPermission(2)}.
      */
-    private static boolean isAdmin(CommandSourceStack source) {
+    @Override
+    public boolean isAdmin(CommandSourceStack source) {
         PermissionSet perms = source.permissions();
         return perms != null && perms.hasPermission(
                 new Permission.HasCommandLevel(PermissionLevel.GAMEMASTERS));
     }
 
-    private static int executeDebug(CommandContext<CommandSourceStack> ctx) {
-        CommandSourceStack source = ctx.getSource();
+    @Override
+    public void sendSuccess(CommandSourceStack source, String message) {
+        source.sendSuccess(() -> Component.literal(message), false);
+    }
 
-        NovaChatFabric instance = NovaChatFabric.getInstance();
-        boolean connected = instance.getNetworkClient() != null
-                && instance.getNetworkClient().isConnected()
-                && instance.getNetworkClient().isAuthenticated();
-        String host = instance.getConfig().getBackend().getHost();
-        int port = instance.getConfig().getBackend().getPort();
+    @Override
+    public void sendFailure(CommandSourceStack source, String message) {
+        source.sendFailure(Component.literal(message));
+    }
 
-        source.sendSuccess(() -> Component.literal("§6=== NovaChat Debug Info ==="), false);
-        source.sendSuccess(() -> Component.literal("§7Backend: §f" + host + ":" + port), false);
-        source.sendSuccess(() -> Component.literal("§7Connected: " + (connected ? "§aYes" : "§cNo")), false);
-        source.sendSuccess(() -> Component.literal("§7Platform: §fFabric"), false);
-        source.sendSuccess(() -> Component.literal("§7Replace Vanilla Chat: §f" + instance.getConfig().getChat().isReplaceVanilla()), false);
+    @Override
+    public ModDebugInfo debugInfo(CommandSourceStack source) {
+        NovaChatFabric inst = NovaChatFabric.getInstance();
+        boolean connected = inst.getNetworkClient() != null
+                && inst.getNetworkClient().isConnected()
+                && inst.getNetworkClient().isAuthenticated();
+        return new ModDebugInfo(
+                inst.getConfig().getBackend().getHost(),
+                inst.getConfig().getBackend().getPort(),
+                connected,
+                inst.getConfig().getChat().isReplaceVanilla());
+    }
 
-        return 1;
+    @Override
+    public String platformDisplayName() {
+        return "Fabric";
     }
 }
