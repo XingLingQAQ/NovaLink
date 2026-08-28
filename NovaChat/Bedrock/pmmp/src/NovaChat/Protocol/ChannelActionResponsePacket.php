@@ -53,6 +53,12 @@ class ChannelActionResponsePacket extends Packet {
             return;
         }
         $size = $buffer->readVarInt();
+        if ($size < 0 || $size > ProtocolLimits::MAX_MAP_ENTRIES) {
+            // Defensive: reject a corrupted/hostile map size before the read
+            // loop (mirrors ChatMessagePacket and the JVM guard).
+            $this->extra = [];
+            return;
+        }
         $this->extra = [];
         for ($i = 0; $i < $size; $i++) {
             $key = $buffer->readString(ProtocolLimits::MAX_METADATA_KEY);

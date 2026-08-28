@@ -145,4 +145,16 @@ public final class ProtocolLimits {
 
     /** Max UTF-8 bytes for a metadata/extra map value. Mirrors ChatMessagePacket placeholder value precedent. */
     public static final int MAX_METADATA_VALUE = 512;
+
+    /**
+     * Max number of entries in a metadata/extra/placeholder map. A corrupted or
+     * hostile frame can declare a huge VarInt map size and force an oversized
+     * allocation before any single entry is read; this count cap rejects the
+     * frame up front (mirrors the original {@code size > 1000} defensive guard
+     * in ChatMessagePacket / ChannelActionResponsePacket). Non-JVM mirror:
+     * identical value. Note this is an entry count, not a byte length, but it
+     * is still well under {@link #MAX_FRAME_LENGTH} so the per-field invariant
+     * holds.
+     */
+    public static final int MAX_MAP_ENTRIES = 1000;
 }

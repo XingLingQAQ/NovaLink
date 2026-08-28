@@ -106,7 +106,7 @@ public class ChatMessagePacket extends Packet {
             return;
         }
 
-        if (size < 0 || size > 1000) {
+        if (size < 0 || size > ProtocolLimits.MAX_MAP_ENTRIES) {
             // Defensive: avoid OOM on corrupted frames.
             placeholders = new HashMap<>();
             return;

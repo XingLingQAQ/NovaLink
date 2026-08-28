@@ -58,7 +58,18 @@ class ChannelActionPacket extends Packet {
         $this->action = $buffer->readByte();
         $this->channelId = $buffer->readString(ProtocolLimits::MAX_CHANNEL_ID);
         $this->password = $buffer->readString(ProtocolLimits::MAX_CHANNEL_PASSWORD);
+        // Extra map is optional for legacy peers (mirrors Java isReadable guard).
+        if ($buffer->remaining() <= 0) {
+            $this->extra = [];
+            return;
+        }
         $size = $buffer->readVarInt();
+        if ($size < 0 || $size > ProtocolLimits::MAX_MAP_ENTRIES) {
+            // Defensive: reject a corrupted/hostile map size before the read
+            // loop (mirrors ChatMessagePacket and the JVM guard).
+            $this->extra = [];
+            return;
+        }
         $this->extra = [];
         for ($i = 0; $i < $size; $i++) {
             $key = $buffer->readString(ProtocolLimits::MAX_METADATA_KEY);

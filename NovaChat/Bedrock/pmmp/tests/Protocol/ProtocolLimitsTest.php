@@ -83,6 +83,10 @@ final class ProtocolLimitsTest extends TestCase {
         self::assertSame(512, ProtocolLimits::MAX_METADATA_VALUE);
     }
 
+    public function test_map_entries_limit_is_1000(): void {
+        self::assertSame(1000, ProtocolLimits::MAX_MAP_ENTRIES);
+    }
+
     public function test_every_per_field_limit_under_frame_ceiling(): void {
         foreach (ProtocolLimits::allFieldLimits() as $limit) {
             self::assertLessThanOrEqual(

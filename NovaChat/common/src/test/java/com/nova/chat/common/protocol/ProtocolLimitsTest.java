@@ -85,6 +85,12 @@ class ProtocolLimitsTest {
     }
 
     @Test
+    @DisplayName("map entry count cap is 1000")
+    void mapEntriesLimit() {
+        assertThat(ProtocolLimits.MAX_MAP_ENTRIES).isEqualTo(1000);
+    }
+
+    @Test
     @DisplayName("every per-field limit is <= the frame ceiling")
     void allFieldsUnderFrameCeiling() {
         int[] allFieldLimits = {
@@ -108,6 +114,7 @@ class ProtocolLimitsTest {
                 ProtocolLimits.MAX_ACTION_JSON,
                 ProtocolLimits.MAX_METADATA_KEY,
                 ProtocolLimits.MAX_METADATA_VALUE,
+                ProtocolLimits.MAX_MAP_ENTRIES,
         };
         for (int limit : allFieldLimits) {
             assertThat(limit)

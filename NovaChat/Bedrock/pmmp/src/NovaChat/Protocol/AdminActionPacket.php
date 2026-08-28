@@ -55,6 +55,12 @@ class AdminActionPacket extends Packet {
         $this->passwordHash = $buffer->readString(ProtocolLimits::MAX_PASSWORD_HASH);
         $this->target = $buffer->readString(ProtocolLimits::MAX_CHANNEL_ID);
         $size = $buffer->readVarInt();
+        if ($size < 0 || $size > ProtocolLimits::MAX_MAP_ENTRIES) {
+            // Defensive: reject a corrupted/hostile map size before the read
+            // loop (mirrors ChatMessagePacket and the JVM guard).
+            $this->extra = [];
+            return;
+        }
         $this->extra = [];
         for ($i = 0; $i < $size; $i++) {
             $key = $buffer->readString(ProtocolLimits::MAX_METADATA_KEY);
