@@ -14,6 +14,7 @@ import com.nova.chat.folia.scheduler.FoliaSchedulerAdapter;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.logging.Level;
 
 /**
  * Folia async network client facade over {@link CoreNetworkClient}.
@@ -186,7 +187,7 @@ public class AsyncNetworkClient extends AbstractPlatformNetworkClient {
             if (cause == null) {
                 plugin.getLogger().severe(message);
             } else {
-                plugin.getLogger().severe(message + ": " + cause.getMessage());
+                plugin.getLogger().log(Level.SEVERE, message, cause);
             }
         }
     }
