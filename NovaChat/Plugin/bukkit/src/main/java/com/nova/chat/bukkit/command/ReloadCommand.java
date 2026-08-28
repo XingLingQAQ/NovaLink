@@ -4,6 +4,8 @@ import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.i18n.I18n;
 import org.bukkit.command.CommandSender;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
 import java.util.List;
@@ -20,6 +22,8 @@ import java.util.List;
  * Requirements: 18
  */
 public class ReloadCommand extends AbstractSubCommand {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ReloadCommand.class);
 
     public ReloadCommand(NovaChatBukkit plugin) {
         super(plugin);
@@ -63,7 +67,7 @@ public class ReloadCommand extends AbstractSubCommand {
         } catch (Exception e) {
             messageHelper.sendError(sender, I18n.tr(playerIdOf(sender), "chat.reload.failed", e.getMessage()));
             plugin.getLogger().severe("Failed to reload configuration: " + e.getMessage());
-            e.printStackTrace();
+            LOGGER.error("failed to reload configuration", e);
         }
 
         return true;
