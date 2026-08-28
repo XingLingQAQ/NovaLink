@@ -76,14 +76,24 @@ class VarInt:
             
             current_byte = data[offset + bytes_read]
             bytes_read += 1
-            
-            value |= (current_byte & VarInt.SEGMENT_BITS) << position
-            
+
+            # On the 5th byte (position == 28), only the low 4 bits are valid
+            # for a 32-bit VarInt. Mask with 0x0F to discard bits 32-34,
+            # matching the Java/C++ 32-bit truncation and PHP's 0x0F mask.
+            # Python's arbitrary-precision ints would otherwise retain those
+            # bits and produce a value that differs from the other 3 forks
+            # for the same wire bytes (e.g. a 5th byte of 0x1F would yield
+            # 805306368 here vs -268435456 in Java/C++/PHP).
+            if position == 28:
+                value |= (current_byte & 0x0F) << position
+            else:
+                value |= (current_byte & VarInt.SEGMENT_BITS) << position
+
             if (current_byte & VarInt.CONTINUE_BIT) == 0:
                 break
-            
+
             position += 7
-            
+
             if position >= 32:
                 raise ValueError("VarInt is too big")
         

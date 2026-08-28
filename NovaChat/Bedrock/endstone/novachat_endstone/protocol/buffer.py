@@ -12,6 +12,7 @@ import uuid
 from typing import Optional
 
 from novachat_endstone.protocol.varint import VarInt
+from novachat_endstone.protocol.protocol_limits import MAX_FRAME_LENGTH
 
 
 class PacketBuffer:
@@ -129,7 +130,7 @@ class PacketBuffer:
         self._read_offset += bytes_read
         return value
     
-    def read_string(self, max_length: Optional[int] = None) -> str:
+    def read_string(self, max_length: Optional[int] = MAX_FRAME_LENGTH) -> str:
         """Read a length-prefixed UTF-8 string.
 
         When ``max_length`` is provided the wire length is bounded before any
@@ -137,18 +138,27 @@ class PacketBuffer:
         ``PacketBuffer.readString(buf, max)`` (PROTO-003). An oversized field
         is rejected with a :class:`ValueError` whose message contains
         ``"exceeds maximum"`` so non-JVM forks stay byte-for-byte consistent
-        with the Java error contract. When ``max_length`` is ``None`` the
-        unbounded read path is preserved for backward compatibility.
+        with the Java error contract.
+
+        The default bound is :data:`MAX_FRAME_LENGTH` (4 MiB), so a future
+        caller that forgets to pass an explicit ``max_length`` is still
+        bounded at the string-read layer rather than being unbounded. The
+        transport (``NetworkClient``) already enforces the same ceiling on
+        total frame size, so this default only closes the defense-in-depth
+        gap at the field level; explicit ``max_length`` callers are
+        unchanged.
 
         Args:
             max_length: Optional maximum UTF-8 byte length for this field.
+                Defaults to :data:`MAX_FRAME_LENGTH` so the unbounded
+                ``None`` path is no longer reachable.
 
         Returns:
             The decoded string.
 
         Raises:
             ValueError: If the declared length is negative, exceeds
-                ``max_length`` (when given), or exceeds the remaining bytes.
+                ``max_length``, or exceeds the remaining bytes.
         """
         length = self.read_varint()
         if max_length is not None and length > max_length:
