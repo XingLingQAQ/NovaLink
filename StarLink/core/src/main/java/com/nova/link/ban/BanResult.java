@@ -1,4 +1,5 @@
 package com.nova.link.ban;
+import com.nova.chat.common.NovaConstants;
 
 /**
  * Represents the result of a ban operation.
@@ -37,7 +38,7 @@ public class BanResult {
      * @return failed result with NC-403 code
      */
     public static BanResult forbidden(String message) {
-        return new BanResult(false, "NC-403", message);
+        return new BanResult(false, NovaConstants.ERROR_FORBIDDEN, message);
     }
 
     /**
@@ -47,7 +48,7 @@ public class BanResult {
      * @return failed result with NC-400 code
      */
     public static BanResult badRequest(String message) {
-        return new BanResult(false, "NC-400", message);
+        return new BanResult(false, NovaConstants.ERROR_BAD_REQUEST, message);
     }
 
     /**
@@ -57,7 +58,7 @@ public class BanResult {
      * @return failed result with NC-404 code
      */
     public static BanResult notFound(String message) {
-        return new BanResult(false, "NC-404", message);
+        return new BanResult(false, NovaConstants.ERROR_NOT_FOUND, message);
     }
 
     /**
@@ -67,7 +68,7 @@ public class BanResult {
      * @return failed result with NC-400 code
      */
     public static BanResult durationExceeded(String message) {
-        return new BanResult(false, "NC-400", message);
+        return new BanResult(false, NovaConstants.ERROR_BAD_REQUEST, message);
     }
 
     public boolean isSuccess() {

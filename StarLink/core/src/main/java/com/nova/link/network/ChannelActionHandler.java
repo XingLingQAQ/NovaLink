@@ -1,4 +1,5 @@
 package com.nova.link.network;
+import com.nova.chat.common.NovaConstants;
 
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
@@ -180,10 +181,10 @@ public class ChannelActionHandler {
      */
     public ChannelActionResponsePacket handle(ClientConnection connection, ChannelActionPacket packet) {
         if (packet == null || packet.getAction() == null) {
-            return new ChannelActionResponsePacket(false, null, "", "NC-400", "Invalid channel action packet");
+            return new ChannelActionResponsePacket(false, null, "", NovaConstants.ERROR_BAD_REQUEST, "Invalid channel action packet");
         }
         if (connection == null || !connection.isAuthenticated()) {
-            return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(), "NC-401", "Not authenticated");
+            return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(), NovaConstants.ERROR_UNAUTHORIZED, "Not authenticated");
         }
 
         try {
@@ -214,12 +215,12 @@ public class ChannelActionHandler {
                     return handleWho(connection, packet);
                 default:
                     return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(),
-                            "NC-400", "Unsupported channel action");
+                            NovaConstants.ERROR_BAD_REQUEST, "Unsupported channel action");
             }
         } catch (Exception e) {
             logger.error("Failed to handle channel action {} from client {}: {}",
                     packet.getAction(), connection.getClientId(), e.getMessage(), e);
-            return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(), "NC-500", "Internal server error");
+            return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(), NovaConstants.ERROR_INTERNAL, "Internal server error");
         }
     }
 
@@ -233,30 +234,30 @@ public class ChannelActionHandler {
         String platform = packet.getExtra("platform");
 
         if (playerId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.JOIN, packet.getChannelId(), "NC-400", "Player ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.JOIN, packet.getChannelId(), NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
         }
 
         String channelId = packet.getChannelId();
         if (channelId == null || channelId.isBlank()) {
-            return new ChannelActionResponsePacket(false, ChannelAction.JOIN, "", "NC-400", "Channel ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.JOIN, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
 
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, "NC-404", "Channel not found");
+            return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
         // Enforce client boundary for SERVER/PRIVATE channels
         if (channel.getScope() != ChannelScope.GLOBAL) {
             String clientId = connection.getClientId();
             if (clientId == null || !clientId.equals(channel.getClientId())) {
-                return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, "NC-403", "Cross-client channel access denied");
+                return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, NovaConstants.ERROR_FORBIDDEN, "Cross-client channel access denied");
             }
         }
 
         // Enforce world restrictions if provided by client
         if (channel.hasWorldFilter() && !channel.isWorldAllowed(world)) {
-            return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, "NC-435", "Channel is restricted to specific worlds");
+            return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, NovaConstants.ERROR_WORLD_RESTRICTED, "Channel is restricted to specific worlds");
         }
 
         boolean joined;
@@ -269,7 +270,7 @@ public class ChannelActionHandler {
             );
             if (!result.isGranted()) {
                 return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId,
-                        result.getErrorCode() != null ? result.getErrorCode() : "NC-403",
+                        result.getErrorCode() != null ? result.getErrorCode() : NovaConstants.ERROR_FORBIDDEN,
                         result.getErrorMessage() != null ? result.getErrorMessage() : "Join denied");
             }
             joined = true;
@@ -280,7 +281,7 @@ public class ChannelActionHandler {
             } else {
                 joined = channelManager.addMember(channelId, playerId);
                 if (!joined) {
-                    return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, "NC-431", "Channel is full");
+                    return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, NovaConstants.ERROR_CHANNEL_FULL, "Channel is full");
                 }
             }
         }
@@ -302,29 +303,29 @@ public class ChannelActionHandler {
         String platform = packet.getExtra("platform");
 
         if (playerId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, packet.getChannelId(), "NC-400", "Player ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, packet.getChannelId(), NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
         }
 
         String channelId = packet.getChannelId();
         if (channelId == null || channelId.isBlank()) {
-            return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, "", "NC-400", "Channel ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
 
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, channelId, "NC-404", "Channel not found");
+            return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
         // Enforce client boundary for SERVER/PRIVATE channels
         if (channel.getScope() != ChannelScope.GLOBAL) {
             String clientId = connection.getClientId();
             if (clientId == null || !clientId.equals(channel.getClientId())) {
-                return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, channelId, "NC-403", "Cross-client channel access denied");
+                return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, channelId, NovaConstants.ERROR_FORBIDDEN, "Cross-client channel access denied");
             }
         }
 
         if (!channel.isMember(playerId)) {
-            return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, channelId, "NC-433", "Not in channel");
+            return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, channelId, NovaConstants.ERROR_NOT_IN_CHANNEL, "Not in channel");
         }
 
         channelManager.removeMember(channelId, playerId);
@@ -351,13 +352,13 @@ public class ChannelActionHandler {
         String playerName = firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name"));
         String platform = packet.getExtra("platform");
         if (playerId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.CREATE, packet.getChannelId(), "NC-400", "Player ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.CREATE, packet.getChannelId(), NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
         }
 
         String displayName = firstNonBlank(packet.getExtra("displayName"), packet.getChannelId(), "Private Channel");
         String clientId = connection.getClientId();
         if (clientId == null || clientId.isBlank()) {
-            return new ChannelActionResponsePacket(false, ChannelAction.CREATE, "", "NC-400", "Client ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.CREATE, "", NovaConstants.ERROR_BAD_REQUEST, "Client ID is required");
         }
 
         PrivateChannelManager.PrivateChannelCreationResult created = privateChannelManager.createPrivateChannel(
@@ -397,26 +398,26 @@ public class ChannelActionHandler {
             inviterId = getUuid(packet.getExtra("player_uuid"), packet.getExtra("uuid"));
         }
         if (inviterId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, packet.getChannelId(), "NC-400", "Inviter ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, packet.getChannelId(), NovaConstants.ERROR_BAD_REQUEST, "Inviter ID is required");
         }
 
         String channelId = packet.getChannelId();
         if (channelId == null || channelId.isBlank()) {
-            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, "", "NC-400", "Channel ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
 
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId, "NC-404", "Channel not found");
+            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
         if (channel.getScope() != ChannelScope.PRIVATE) {
-            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId, "NC-400", "Invitations are only supported for private channels");
+            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId, NovaConstants.ERROR_BAD_REQUEST, "Invitations are only supported for private channels");
         }
 
         // Only channel admins can create invites for private channels.
         if (!permissionManager.isChannelAdmin(channelId, inviterId)) {
-            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId, "NC-403", "Channel admin permission required");
+            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId, NovaConstants.ERROR_FORBIDDEN, "Channel admin permission required");
         }
 
         try {
@@ -426,9 +427,9 @@ public class ChannelActionHandler {
             response.addExtra("expireTime", String.valueOf(invitation.getExpireTime()));
             return response;
         } catch (IllegalArgumentException e) {
-            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId, "NC-404", e.getMessage());
+            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId, NovaConstants.ERROR_NOT_FOUND, e.getMessage());
         } catch (DatabaseException e) {
-            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId, "NC-510", "Database error while creating invitation");
+            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId, NovaConstants.ERROR_DATABASE_ERROR, "Database error while creating invitation");
         }
     }
 
@@ -442,30 +443,30 @@ public class ChannelActionHandler {
         String platform = packet.getExtra("platform");
 
         if (playerId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, packet.getChannelId(), "NC-400", "Player ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, packet.getChannelId(), NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
         }
 
         String inviteCode = packet.getChannelId();
         if (inviteCode == null || inviteCode.isBlank()) {
-            return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, "", "NC-400", "Invite code is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, "", NovaConstants.ERROR_BAD_REQUEST, "Invite code is required");
         }
 
         InvitationResult result;
         try {
             result = invitationManager.acceptInvitation(inviteCode, playerId, connection.getClientId());
         } catch (DatabaseException e) {
-            return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, inviteCode, "NC-510", "Database error while accepting invitation");
+            return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, inviteCode, NovaConstants.ERROR_DATABASE_ERROR, "Database error while accepting invitation");
         }
 
         if (!result.isSuccess()) {
             return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, inviteCode,
-                    result.getErrorCode() != null ? result.getErrorCode() : "NC-400",
+                    result.getErrorCode() != null ? result.getErrorCode() : NovaConstants.ERROR_BAD_REQUEST,
                     result.getErrorMessage() != null ? result.getErrorMessage() : "Invite invalid");
         }
 
         String channelId = result.getChannelId();
         if (channelId == null || channelId.isBlank()) {
-            return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, inviteCode, "NC-500", "Invite accepted but channelId missing");
+            return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, inviteCode, NovaConstants.ERROR_INTERNAL, "Invite accepted but channelId missing");
         }
 
         upsertPlayerState(connection, playerId, playerName, world, channelId, platform);
@@ -481,18 +482,18 @@ public class ChannelActionHandler {
         String channelId = packet.getChannelId();
 
         if (operatorId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.KICK, channelId, "NC-400", "Operator ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.KICK, channelId, NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
         }
         if (targetId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.KICK, channelId, "NC-400", "Target player ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.KICK, channelId, NovaConstants.ERROR_BAD_REQUEST, "Target player ID is required");
         }
         if (channelId == null || channelId.isBlank()) {
-            return new ChannelActionResponsePacket(false, ChannelAction.KICK, "", "NC-400", "Channel ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.KICK, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
 
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.KICK, channelId, "NC-404", "Channel not found");
+            return new ChannelActionResponsePacket(false, ChannelAction.KICK, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
         ChannelActionResponsePacket permissionError = requireModerationPermission(
@@ -502,7 +503,7 @@ public class ChannelActionHandler {
         }
 
         if (!channel.isMember(targetId)) {
-            return new ChannelActionResponsePacket(false, ChannelAction.KICK, channelId, "NC-433", "Target is not in channel");
+            return new ChannelActionResponsePacket(false, ChannelAction.KICK, channelId, NovaConstants.ERROR_NOT_IN_CHANNEL, "Target is not in channel");
         }
 
         channelManager.removeMember(channelId, targetId);
@@ -542,25 +543,25 @@ public class ChannelActionHandler {
     private ChannelActionResponsePacket handleMute(ClientConnection connection, ChannelActionPacket packet) {
         if (muteManager == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.MUTE, packet.getChannelId(),
-                    "NC-503", "Mute system is not available");
+                    NovaConstants.ERROR_SERVICE_UNAVAILABLE, "Mute system is not available");
         }
 
         UUID operatorId = resolveOperatorId(packet);
         UUID targetId = resolveTargetId(packet);
         String channelId = packet.getChannelId();
         if (operatorId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.MUTE, channelId, "NC-400", "Operator ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.MUTE, channelId, NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
         }
         if (targetId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.MUTE, channelId, "NC-400", "Target player ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.MUTE, channelId, NovaConstants.ERROR_BAD_REQUEST, "Target player ID is required");
         }
         if (channelId == null || channelId.isBlank()) {
-            return new ChannelActionResponsePacket(false, ChannelAction.MUTE, "", "NC-400", "Channel ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.MUTE, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
 
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.MUTE, channelId, "NC-404", "Channel not found");
+            return new ChannelActionResponsePacket(false, ChannelAction.MUTE, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
         ChannelActionResponsePacket permissionError = requireModerationPermission(
@@ -583,7 +584,7 @@ public class ChannelActionHandler {
 
         if (!result.isSuccess()) {
             return new ChannelActionResponsePacket(false, ChannelAction.MUTE, channelId,
-                    result.getErrorCode() != null ? result.getErrorCode() : "NC-400",
+                    result.getErrorCode() != null ? result.getErrorCode() : NovaConstants.ERROR_BAD_REQUEST,
                     result.getMessage() != null ? result.getMessage() : "Mute failed");
         }
 
@@ -607,25 +608,25 @@ public class ChannelActionHandler {
     private ChannelActionResponsePacket handleUnmute(ClientConnection connection, ChannelActionPacket packet) {
         if (muteManager == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.UNMUTE, packet.getChannelId(),
-                    "NC-503", "Mute system is not available");
+                    NovaConstants.ERROR_SERVICE_UNAVAILABLE, "Mute system is not available");
         }
 
         UUID operatorId = resolveOperatorId(packet);
         UUID targetId = resolveTargetId(packet);
         String channelId = packet.getChannelId();
         if (operatorId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.UNMUTE, channelId, "NC-400", "Operator ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.UNMUTE, channelId, NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
         }
         if (targetId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.UNMUTE, channelId, "NC-400", "Target player ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.UNMUTE, channelId, NovaConstants.ERROR_BAD_REQUEST, "Target player ID is required");
         }
         if (channelId == null || channelId.isBlank()) {
-            return new ChannelActionResponsePacket(false, ChannelAction.UNMUTE, "", "NC-400", "Channel ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.UNMUTE, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
 
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.UNMUTE, channelId, "NC-404", "Channel not found");
+            return new ChannelActionResponsePacket(false, ChannelAction.UNMUTE, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
         ChannelActionResponsePacket permissionError = requireModerationPermission(
@@ -637,7 +638,7 @@ public class ChannelActionHandler {
         MuteResult result = muteManager.unmutePlayer(operatorId, targetId, channelId, connection.getClientId());
         if (!result.isSuccess()) {
             return new ChannelActionResponsePacket(false, ChannelAction.UNMUTE, channelId,
-                    result.getErrorCode() != null ? result.getErrorCode() : "NC-400",
+                    result.getErrorCode() != null ? result.getErrorCode() : NovaConstants.ERROR_BAD_REQUEST,
                     result.getMessage() != null ? result.getMessage() : "Unmute failed");
         }
 
@@ -647,17 +648,17 @@ public class ChannelActionHandler {
     private ChannelActionResponsePacket handleBan(ClientConnection connection, ChannelActionPacket packet) {
         if (banManager == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.BAN, packet.getChannelId(),
-                    "NC-503", "Ban system is not available");
+                    NovaConstants.ERROR_SERVICE_UNAVAILABLE, "Ban system is not available");
         }
 
         UUID operatorId = resolveOperatorId(packet);
         UUID targetId = resolveTargetId(packet);
         String channelId = packet.getChannelId();
         if (operatorId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId, "NC-400", "Operator ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId, NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
         }
         if (targetId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId, "NC-400", "Target player ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId, NovaConstants.ERROR_BAD_REQUEST, "Target player ID is required");
         }
         // channelId may be null/blank for a global ban — do not reject here.
 
@@ -665,7 +666,7 @@ public class ChannelActionHandler {
         if (channelId != null && !channelId.isBlank()) {
             Channel channel = channelManager.getChannel(channelId);
             if (channel == null) {
-                return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId, "NC-404", "Channel not found");
+                return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
             }
             ChannelActionResponsePacket permissionError = requireModerationPermission(
                     ChannelAction.BAN, operatorId, channel, connection.getClientId());
@@ -688,7 +689,7 @@ public class ChannelActionHandler {
 
         if (!result.isSuccess()) {
             return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId,
-                    result.getErrorCode() != null ? result.getErrorCode() : "NC-400",
+                    result.getErrorCode() != null ? result.getErrorCode() : NovaConstants.ERROR_BAD_REQUEST,
                     result.getMessage() != null ? result.getMessage() : "Ban failed");
         }
 
@@ -709,23 +710,23 @@ public class ChannelActionHandler {
     private ChannelActionResponsePacket handleUnban(ClientConnection connection, ChannelActionPacket packet) {
         if (banManager == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, packet.getChannelId(),
-                    "NC-503", "Ban system is not available");
+                    NovaConstants.ERROR_SERVICE_UNAVAILABLE, "Ban system is not available");
         }
 
         UUID operatorId = resolveOperatorId(packet);
         UUID targetId = resolveTargetId(packet);
         String channelId = packet.getChannelId();
         if (operatorId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, channelId, "NC-400", "Operator ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, channelId, NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
         }
         if (targetId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, channelId, "NC-400", "Target player ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, channelId, NovaConstants.ERROR_BAD_REQUEST, "Target player ID is required");
         }
 
         if (channelId != null && !channelId.isBlank()) {
             Channel channel = channelManager.getChannel(channelId);
             if (channel == null) {
-                return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, channelId, "NC-404", "Channel not found");
+                return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
             }
             ChannelActionResponsePacket permissionError = requireModerationPermission(
                     ChannelAction.UNBAN, operatorId, channel, connection.getClientId());
@@ -740,7 +741,7 @@ public class ChannelActionHandler {
                 connection.getClientId());
         if (!result.isSuccess()) {
             return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, channelId,
-                    result.getErrorCode() != null ? result.getErrorCode() : "NC-400",
+                    result.getErrorCode() != null ? result.getErrorCode() : NovaConstants.ERROR_BAD_REQUEST,
                     result.getMessage() != null ? result.getMessage() : "Unban failed");
         }
 
@@ -753,20 +754,20 @@ public class ChannelActionHandler {
         UUID operatorId = resolveOperatorId(packet);
         String channelId = packet.getChannelId();
         if (operatorId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, "NC-400", "Operator ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
         }
         if (channelId == null || channelId.isBlank()) {
-            return new ChannelActionResponsePacket(false, ChannelAction.DELETE, "", "NC-400", "Channel ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.DELETE, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
 
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, "NC-404", "Channel not found");
+            return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
         // Only private channels can be deleted via protocol (config channels are managed by backend).
         if (channel.getScope() != ChannelScope.PRIVATE) {
-            return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, "NC-403",
+            return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, NovaConstants.ERROR_FORBIDDEN,
                     "Only private channels can be deleted");
         }
 
@@ -775,7 +776,7 @@ public class ChannelActionHandler {
                 || permissionManager.isChannelAdmin(channelId, operatorId)
                 || (channel.getOwnerId() != null && channel.getOwnerId().equals(operatorId));
         if (!allowed) {
-            return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, "NC-403",
+            return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, NovaConstants.ERROR_FORBIDDEN,
                     "Insufficient permissions to delete channel");
         }
 
@@ -783,14 +784,14 @@ public class ChannelActionHandler {
         if (level != PermissionLevel.SUPER_ADMIN) {
             String clientId = connection.getClientId();
             if (clientId == null || !clientId.equals(channel.getClientId())) {
-                return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, "NC-403",
+                return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, NovaConstants.ERROR_FORBIDDEN,
                         "Cross-client channel delete denied");
             }
         }
 
         boolean deleted = channelManager.deleteChannel(channelId);
         if (!deleted) {
-            return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, "NC-404", "Channel not found");
+            return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
         privateChannelManager.removeTrackedId(channelId);
@@ -821,12 +822,12 @@ public class ChannelActionHandler {
     private ChannelActionResponsePacket handleWho(ClientConnection connection, ChannelActionPacket packet) {
         String channelId = packet.getChannelId();
         if (channelId == null || channelId.isBlank()) {
-            return new ChannelActionResponsePacket(false, ChannelAction.WHO, "", "NC-400", "Channel ID is required");
+            return new ChannelActionResponsePacket(false, ChannelAction.WHO, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
 
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.WHO, channelId, "NC-404", "Channel not found");
+            return new ChannelActionResponsePacket(false, ChannelAction.WHO, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
         // Enforce client boundary for SERVER/PRIVATE channels — WHO is a read on
@@ -834,7 +835,7 @@ public class ChannelActionHandler {
         if (channel.getScope() != ChannelScope.GLOBAL) {
             String clientId = connection.getClientId();
             if (clientId == null || !clientId.equals(channel.getClientId())) {
-                return new ChannelActionResponsePacket(false, ChannelAction.WHO, channelId, "NC-403",
+                return new ChannelActionResponsePacket(false, ChannelAction.WHO, channelId, NovaConstants.ERROR_FORBIDDEN,
                         "Cross-client channel access denied");
             }
         }
@@ -901,19 +902,19 @@ public class ChannelActionHandler {
                 if (channel.getScope() != ChannelScope.GLOBAL
                         && operatorClientId != null
                         && !operatorClientId.equals(channel.getClientId())) {
-                    return new ChannelActionResponsePacket(false, action, channel.getId(), "NC-403",
+                    return new ChannelActionResponsePacket(false, action, channel.getId(), NovaConstants.ERROR_FORBIDDEN,
                             "Client admin can only moderate their own client's channels");
                 }
                 return null;
             case CHANNEL_ADMIN:
                 if (!permissionManager.isChannelAdmin(channel.getId(), operatorId)) {
-                    return new ChannelActionResponsePacket(false, action, channel.getId(), "NC-403",
+                    return new ChannelActionResponsePacket(false, action, channel.getId(), NovaConstants.ERROR_FORBIDDEN,
                             "Channel admin can only moderate channels they manage");
                 }
                 return null;
             case PLAYER:
             default:
-                return new ChannelActionResponsePacket(false, action, channel.getId(), "NC-403",
+                return new ChannelActionResponsePacket(false, action, channel.getId(), NovaConstants.ERROR_FORBIDDEN,
                         "Insufficient permissions");
         }
     }

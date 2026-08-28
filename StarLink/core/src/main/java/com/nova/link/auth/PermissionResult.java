@@ -1,4 +1,5 @@
 package com.nova.link.auth;
+import com.nova.chat.common.NovaConstants;
 
 /**
  * Represents the result of a permission check.
@@ -34,7 +35,7 @@ public class PermissionResult {
      * @return a denied PermissionResult
      */
     public static PermissionResult denied(String message) {
-        return new PermissionResult(false, "NC-403", message);
+        return new PermissionResult(false, NovaConstants.ERROR_FORBIDDEN, message);
     }
 
     /**

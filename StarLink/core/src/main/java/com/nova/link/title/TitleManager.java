@@ -1,4 +1,5 @@
 package com.nova.link.title;
+import com.nova.chat.common.NovaConstants;
 
 import com.nova.link.auth.PermissionLevel;
 import com.nova.link.auth.PermissionManager;
@@ -66,21 +67,21 @@ public class TitleManager {
     public TitleResult sendTitle(UUID senderId, String senderClientId, String channelId,
                                   String title, String subtitle, int fadeIn, int stay, int fadeOut) {
         if (senderId == null) {
-            return TitleResult.failure("NC-400", "Sender ID is required");
+            return TitleResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Sender ID is required");
         }
 
         if (channelId == null || channelId.isEmpty()) {
-            return TitleResult.failure("NC-400", "Channel ID is required");
+            return TitleResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
 
         if (title == null || title.isEmpty()) {
-            return TitleResult.failure("NC-400", "Title text is required");
+            return TitleResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Title text is required");
         }
 
         // Get the channel
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return TitleResult.failure("NC-404", "Channel not found: " + channelId);
+            return TitleResult.failure(NovaConstants.ERROR_NOT_FOUND, "Channel not found: " + channelId);
         }
 
         // Check permission based on sender's permission level
@@ -121,11 +122,11 @@ public class TitleManager {
         // Client admin can send to channels within their client
         if (senderLevel == PermissionLevel.CLIENT_ADMIN) {
             if (channel.getScope() == ChannelScope.GLOBAL) {
-                return TitleResult.failure("NC-403", 
+                return TitleResult.failure(NovaConstants.ERROR_FORBIDDEN, 
                         "Client admin cannot send title to global channels");
             }
             if (!senderClientId.equals(channel.getClientId())) {
-                return TitleResult.failure("NC-403", 
+                return TitleResult.failure(NovaConstants.ERROR_FORBIDDEN, 
                         "Client admin can only send title to channels within their client");
             }
             return TitleResult.success(channel.getId(), 0, "Permission granted");
@@ -134,17 +135,17 @@ public class TitleManager {
         // Channel admin can only send to their managed private channels
         if (senderLevel == PermissionLevel.CHANNEL_ADMIN) {
             if (channel.getScope() != ChannelScope.PRIVATE) {
-                return TitleResult.failure("NC-403", 
+                return TitleResult.failure(NovaConstants.ERROR_FORBIDDEN, 
                         "Channel admin can only send title to private channels they manage");
             }
             if (!senderId.equals(channel.getOwnerId())) {
-                return TitleResult.failure("NC-403", 
+                return TitleResult.failure(NovaConstants.ERROR_FORBIDDEN, 
                         "Channel admin can only send title to channels they own");
             }
             return TitleResult.success(channel.getId(), 0, "Permission granted");
         }
 
         // Regular players cannot send titles
-        return TitleResult.failure("NC-403", "Insufficient permission to send title");
+        return TitleResult.failure(NovaConstants.ERROR_FORBIDDEN, "Insufficient permission to send title");
     }
 }

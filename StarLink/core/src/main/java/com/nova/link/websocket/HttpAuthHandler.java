@@ -1,4 +1,5 @@
 package com.nova.link.websocket;
+import com.nova.chat.common.NovaConstants;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -165,7 +166,7 @@ public class HttpAuthHandler extends SimpleChannelInboundHandler<FullHttpRequest
             
             if (!result.isSuccess()) {
                 logger.warn("Panel login failed for user '{}': {}", username, result.getErrorCode());
-                String message = "NC-429".equals(result.getErrorCode())
+                String message = NovaConstants.ERROR_TOO_MANY_REQUESTS.equals(result.getErrorCode())
                         ? I18n.tr("auth.login.ip_banned",
                                 authManager.getIpBanManager().getRemainingBanTime(ipAddress) / 1000)
                         : I18n.tr("auth.login.invalid_credentials");

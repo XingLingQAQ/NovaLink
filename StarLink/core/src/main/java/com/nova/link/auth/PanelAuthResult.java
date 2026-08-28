@@ -1,4 +1,5 @@
 package com.nova.link.auth;
+import com.nova.chat.common.NovaConstants;
 
 /**
  * Result of a web-panel login attempt (see
@@ -24,12 +25,12 @@ public class PanelAuthResult {
 
     /** Invalid credentials (or the account is not a panel account). */
     public static PanelAuthResult unauthorized() {
-        return new PanelAuthResult(false, "NC-401", null);
+        return new PanelAuthResult(false, NovaConstants.ERROR_UNAUTHORIZED, null);
     }
 
     /** Too many failed attempts from this IP. */
     public static PanelAuthResult ipBanned() {
-        return new PanelAuthResult(false, "NC-429", null);
+        return new PanelAuthResult(false, NovaConstants.ERROR_TOO_MANY_REQUESTS, null);
     }
 
     public boolean isSuccess() {

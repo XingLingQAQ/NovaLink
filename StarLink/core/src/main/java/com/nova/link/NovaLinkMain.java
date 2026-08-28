@@ -1,4 +1,5 @@
 package com.nova.link;
+import com.nova.chat.common.NovaConstants;
 
 import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.common.protocol.NovaProtocol;
@@ -1172,7 +1173,7 @@ public class NovaLinkMain {
             int clientProtocolVersion = packet.getProtocolVersion();
             if (clientProtocolVersion != NovaProtocol.PROTOCOL_VERSION) {
                 HandshakeResponsePacket response = HandshakeResponsePacket.failure(
-                        "NC-420",
+                        NovaConstants.ERROR_PROTOCOL_MISMATCH,
                         String.format(
                                 "Protocol version mismatch: client=%d, server=%d. Please update your client.",
                                 clientProtocolVersion,
@@ -1191,7 +1192,7 @@ public class NovaLinkMain {
             String clientNonce = packet.getClientNonce();
             if (clientId == null || clientId.isEmpty() || clientNonce == null || clientNonce.isEmpty()) {
                 HandshakeResponsePacket response = HandshakeResponsePacket.failure(
-                        "NC-401", "Invalid handshake init");
+                        NovaConstants.ERROR_UNAUTHORIZED, "Invalid handshake init");
                 response.setRequestId(packet.getRequestId());
                 sendResponseAndClose(connection, response, "malformed init");
                 return;
@@ -1254,7 +1255,7 @@ public class NovaLinkMain {
                 }
             } else {
                 response = HandshakeResponsePacket.failure(
-                        authResult.getErrorCode() != null ? authResult.getErrorCode() : "NC-401",
+                        authResult.getErrorCode() != null ? authResult.getErrorCode() : NovaConstants.ERROR_UNAUTHORIZED,
                         authResult.getMessage() != null ? authResult.getMessage() : "Authentication failed"
                 );
                 logger.warn("Challenge authentication failed for client '{}' from {}: {}",
@@ -1286,7 +1287,7 @@ public class NovaLinkMain {
             int clientProtocolVersion = packet.getProtocolVersion();
             if (clientProtocolVersion != NovaProtocol.PROTOCOL_VERSION) {
                 HandshakeResponsePacket response = HandshakeResponsePacket.failure(
-                        "NC-420",
+                        NovaConstants.ERROR_PROTOCOL_MISMATCH,
                         String.format(
                                 "Protocol version mismatch: client=%d, server=%d. Please update your client.",
                                 clientProtocolVersion,
@@ -1303,7 +1304,7 @@ public class NovaLinkMain {
             // Legacy static-hash auth is no longer accepted: the protocol bumped
             // to v3 and the challenge-response path is now mandatory.
             HandshakeResponsePacket response = HandshakeResponsePacket.failure(
-                    "NC-420",
+                    NovaConstants.ERROR_PROTOCOL_MISMATCH,
                     "Legacy handshake is no longer supported. Please update your client to use the challenge-response handshake."
             );
             response.setRequestId(packet.getRequestId());
@@ -1328,7 +1329,7 @@ public class NovaLinkMain {
                     logger.warn("Rate limit exceeded for client {} (chat message dropped)",
                             connection.getClientId());
                     sendThrottleError(connection, packet.getRequestId(), packet.getChannelId(),
-                            "NC-429", I18n.tr("network.error.rate_limited"), "rate_limit");
+                            NovaConstants.ERROR_TOO_MANY_REQUESTS, I18n.tr("network.error.rate_limited"), "rate_limit");
                 }
                 return;
             }
@@ -1343,7 +1344,7 @@ public class NovaLinkMain {
             if (!result.isDelivered()
                     && result.getDropReason() == com.nova.link.channel.MessagePipelineResult.DropReason.SLOW_MODE) {
                 sendThrottleError(connection, packet.getRequestId(), packet.getChannelId(),
-                        "NC-429",
+                        NovaConstants.ERROR_TOO_MANY_REQUESTS,
                         I18n.tr("network.error.slow_mode", result.getSlowModeRemainingSeconds()),
                         "slow_mode");
             }
@@ -1424,7 +1425,7 @@ public class NovaLinkMain {
         networkHandler.registerHandler(AdminActionPacket.class, (connection, packet) -> {
             if (!connection.isAuthenticated()) {
                 AdminActionResponsePacket response = AdminActionResponsePacket.failure(
-                        packet.getAction(), "NC-401", "Not authenticated"
+                        packet.getAction(), NovaConstants.ERROR_UNAUTHORIZED, "Not authenticated"
                 );
                 response.setRequestId(packet.getRequestId());
                 connection.sendPacket(response);

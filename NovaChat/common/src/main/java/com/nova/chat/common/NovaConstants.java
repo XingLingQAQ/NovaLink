@@ -55,7 +55,13 @@ public final class NovaConstants {
     public static final String ERROR_TOO_MANY_REQUESTS = "NC-429";
     public static final String ERROR_INTERNAL = "NC-500";
     public static final String ERROR_SERVICE_UNAVAILABLE = "NC-503";
-    
+    public static final String ERROR_PROTOCOL_MISMATCH = "NC-420";
+    public static final String ERROR_CHANNEL_FULL = "NC-431";
+    public static final String ERROR_NOT_IN_CHANNEL = "NC-433";
+    public static final String ERROR_INCORRECT_PASSWORD = "NC-434";
+    public static final String ERROR_WORLD_RESTRICTED = "NC-435";
+    public static final String ERROR_DATABASE_ERROR = "NC-510";
+
     // Channel Scopes
     public static final String SCOPE_GLOBAL = "GLOBAL";
     public static final String SCOPE_SERVER = "SERVER";

@@ -1,4 +1,5 @@
 package com.nova.link.spy;
+import com.nova.chat.common.NovaConstants;
 
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.link.auth.PermissionManager;
@@ -58,28 +59,28 @@ public class SpyManager {
      */
     public SpyResult startSpying(UUID adminId, String channelId, String targetClientId) {
         if (adminId == null) {
-            return SpyResult.failure("NC-400", "Admin ID is required");
+            return SpyResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Admin ID is required");
         }
         if (channelId == null || channelId.isEmpty()) {
-            return SpyResult.failure("NC-400", "Channel ID is required");
+            return SpyResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
 
         // Verify super admin session
         if (!permissionManager.hasSuperAdminSession(adminId)) {
-            return SpyResult.failure("NC-403", "Super admin authentication required for spy mode");
+            return SpyResult.failure(NovaConstants.ERROR_FORBIDDEN, "Super admin authentication required for spy mode");
         }
 
         // Verify channel exists
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return SpyResult.failure("NC-404", "Channel not found: " + channelId);
+            return SpyResult.failure(NovaConstants.ERROR_NOT_FOUND, "Channel not found: " + channelId);
         }
 
         // If targetClientId is specified, verify it matches the channel's client
         if (targetClientId != null && !targetClientId.isEmpty()) {
             String channelClientId = channel.getClientId();
             if (channelClientId != null && !channelClientId.equals(targetClientId)) {
-                return SpyResult.failure("NC-404", 
+                return SpyResult.failure(NovaConstants.ERROR_NOT_FOUND, 
                     "Channel '" + channelId + "' not found on client '" + targetClientId + "'");
             }
         }
@@ -108,22 +109,22 @@ public class SpyManager {
      */
     public SpyResult stopSpying(UUID adminId, String channelId) {
         if (adminId == null) {
-            return SpyResult.failure("NC-400", "Admin ID is required");
+            return SpyResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Admin ID is required");
         }
         if (channelId == null || channelId.isEmpty()) {
-            return SpyResult.failure("NC-400", "Channel ID is required");
+            return SpyResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
 
         Set<SpySession> sessions = spySessions.get(adminId);
         if (sessions == null || sessions.isEmpty()) {
-            return SpyResult.failure("NC-404", "No active spy sessions");
+            return SpyResult.failure(NovaConstants.ERROR_NOT_FOUND, "No active spy sessions");
         }
 
         // Find and remove the session for this channel
         boolean removed = sessions.removeIf(s -> s.getChannelId().equals(channelId));
         
         if (!removed) {
-            return SpyResult.failure("NC-404", "Not monitoring channel: " + channelId);
+            return SpyResult.failure(NovaConstants.ERROR_NOT_FOUND, "Not monitoring channel: " + channelId);
         }
 
         // Update channel spies index
@@ -155,7 +156,7 @@ public class SpyManager {
      */
     public SpyResult stopAllSpying(UUID adminId) {
         if (adminId == null) {
-            return SpyResult.failure("NC-400", "Admin ID is required");
+            return SpyResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Admin ID is required");
         }
 
         Set<SpySession> sessions = spySessions.remove(adminId);
@@ -311,30 +312,30 @@ public class SpyManager {
      */
     public SpyResult sendToMonitoredChannel(UUID adminId, String channelId, String content) {
         if (adminId == null) {
-            return SpyResult.failure("NC-400", "Admin ID is required");
+            return SpyResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Admin ID is required");
         }
         if (channelId == null || channelId.isEmpty()) {
-            return SpyResult.failure("NC-400", "Channel ID is required");
+            return SpyResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
         if (content == null || content.isEmpty()) {
-            return SpyResult.failure("NC-400", "Message content is required");
+            return SpyResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Message content is required");
         }
 
         // Verify admin is spying on this channel
         if (!isSpying(adminId, channelId)) {
-            return SpyResult.failure("NC-403", "Not monitoring channel: " + channelId);
+            return SpyResult.failure(NovaConstants.ERROR_FORBIDDEN, "Not monitoring channel: " + channelId);
         }
 
         // Get the spy session to check if sending is allowed
         SpySession session = getSpySession(adminId, channelId);
         if (session == null || !session.canSend()) {
-            return SpyResult.failure("NC-403", "Sending is disabled for this spy session");
+            return SpyResult.failure(NovaConstants.ERROR_FORBIDDEN, "Sending is disabled for this spy session");
         }
 
         // Verify channel exists
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return SpyResult.failure("NC-404", "Channel not found: " + channelId);
+            return SpyResult.failure(NovaConstants.ERROR_NOT_FOUND, "Channel not found: " + channelId);
         }
 
         // Create and send the message
@@ -356,7 +357,7 @@ public class SpyManager {
                 logger.info("Super admin {} sent message to monitored channel {}", adminId, channelId);
                 return SpyResult.success("Message sent to channel: " + channelId);
             } else {
-                return SpyResult.failure("NC-503", "Target client is not connected");
+                return SpyResult.failure(NovaConstants.ERROR_SERVICE_UNAVAILABLE, "Target client is not connected");
             }
         } else {
             // Global channel - broadcast to all clients

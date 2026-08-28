@@ -1,4 +1,5 @@
 package com.nova.link.channel;
+import com.nova.chat.common.NovaConstants;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -235,21 +236,21 @@ public class PrivateChannelManager {
     public PrivateChannelAccessResult validateAccess(String channelId, String playerClientId, String providedPassword) {
         // Validate parameters
         if (channelId == null || channelId.trim().isEmpty()) {
-            return PrivateChannelAccessResult.denied("Channel ID is required", "NC-400");
+            return PrivateChannelAccessResult.denied("Channel ID is required", NovaConstants.ERROR_BAD_REQUEST);
         }
         if (playerClientId == null || playerClientId.trim().isEmpty()) {
-            return PrivateChannelAccessResult.denied("Player client ID is required", "NC-400");
+            return PrivateChannelAccessResult.denied("Player client ID is required", NovaConstants.ERROR_BAD_REQUEST);
         }
         
         // Get the channel
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return PrivateChannelAccessResult.denied("Channel not found: " + channelId, "NC-404");
+            return PrivateChannelAccessResult.denied("Channel not found: " + channelId, NovaConstants.ERROR_NOT_FOUND);
         }
         
         // Verify it's a private channel
         if (channel.getScope() != ChannelScope.PRIVATE) {
-            return PrivateChannelAccessResult.denied("Channel is not a private channel", "NC-400");
+            return PrivateChannelAccessResult.denied("Channel is not a private channel", NovaConstants.ERROR_BAD_REQUEST);
         }
         
         // Verify client membership (Requirement 7.4, 7.6)
@@ -260,7 +261,7 @@ public class PrivateChannelManager {
                     channelId, playerClientId, channelClientId);
             return PrivateChannelAccessResult.denied(
                     "Access denied: you must be connected to the same server as the channel", 
-                    "NC-403");
+                    NovaConstants.ERROR_FORBIDDEN);
         }
         
         // Verify password (Requirement 7.4)
@@ -268,7 +269,7 @@ public class PrivateChannelManager {
         if (channelPassword != null && !channelPassword.isEmpty()) {
             if (providedPassword == null || !channelPassword.equals(providedPassword)) {
                 logger.debug("Access denied to channel {}: incorrect password", channelId);
-                return PrivateChannelAccessResult.denied("Incorrect password", "NC-434");
+                return PrivateChannelAccessResult.denied("Incorrect password", NovaConstants.ERROR_INCORRECT_PASSWORD);
             }
         }
         
@@ -347,7 +348,7 @@ public class PrivateChannelManager {
             String providedPassword) {
         
         if (playerId == null) {
-            return PrivateChannelAccessResult.denied("Player ID is required", "NC-400");
+            return PrivateChannelAccessResult.denied("Player ID is required", NovaConstants.ERROR_BAD_REQUEST);
         }
         
         // Validate access first
@@ -364,7 +365,7 @@ public class PrivateChannelManager {
         
         boolean added = channel.addMember(playerId);
         if (!added) {
-            return PrivateChannelAccessResult.denied("Channel is at maximum capacity", "NC-431");
+            return PrivateChannelAccessResult.denied("Channel is at maximum capacity", NovaConstants.ERROR_CHANNEL_FULL);
         }
         
         logger.info("Player {} joined private channel {} (client={})", playerId, channelId, playerClientId);

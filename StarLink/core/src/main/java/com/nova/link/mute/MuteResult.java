@@ -1,4 +1,5 @@
 package com.nova.link.mute;
+import com.nova.chat.common.NovaConstants;
 
 /**
  * Represents the result of a mute operation.
@@ -34,7 +35,7 @@ public class MuteResult {
      * @return failed result with NC-403 code
      */
     public static MuteResult forbidden(String message) {
-        return new MuteResult(false, "NC-403", message);
+        return new MuteResult(false, NovaConstants.ERROR_FORBIDDEN, message);
     }
 
     /**
@@ -44,7 +45,7 @@ public class MuteResult {
      * @return failed result with NC-400 code
      */
     public static MuteResult badRequest(String message) {
-        return new MuteResult(false, "NC-400", message);
+        return new MuteResult(false, NovaConstants.ERROR_BAD_REQUEST, message);
     }
 
     /**
@@ -54,7 +55,7 @@ public class MuteResult {
      * @return failed result with NC-404 code
      */
     public static MuteResult notFound(String message) {
-        return new MuteResult(false, "NC-404", message);
+        return new MuteResult(false, NovaConstants.ERROR_NOT_FOUND, message);
     }
 
     /**
@@ -64,7 +65,7 @@ public class MuteResult {
      * @return failed result with NC-400 code
      */
     public static MuteResult durationExceeded(String message) {
-        return new MuteResult(false, "NC-400", message);
+        return new MuteResult(false, NovaConstants.ERROR_BAD_REQUEST, message);
     }
 
     public boolean isSuccess() {

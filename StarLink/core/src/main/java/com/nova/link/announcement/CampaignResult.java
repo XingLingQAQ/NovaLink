@@ -1,4 +1,5 @@
 package com.nova.link.announcement;
+import com.nova.chat.common.NovaConstants;
 
 /**
  * Result of a campaign operation (§11.6 提案 06 — slice A).
@@ -10,15 +11,15 @@ package com.nova.link.announcement;
 public final class CampaignResult {
 
     /** Error code for bad request */
-    public static final String CODE_BAD_REQUEST = "NC-400";
+    public static final String CODE_BAD_REQUEST = NovaConstants.ERROR_BAD_REQUEST;
     /** Error code for forbidden operation */
-    public static final String CODE_FORBIDDEN = "NC-403";
+    public static final String CODE_FORBIDDEN = NovaConstants.ERROR_FORBIDDEN;
     /** Error code for not found */
-    public static final String CODE_NOT_FOUND = "NC-404";
+    public static final String CODE_NOT_FOUND = NovaConstants.ERROR_NOT_FOUND;
     /** Error code for rate-limited (too many deliveries in the window) */
-    public static final String CODE_RATE_LIMITED = "NC-429";
+    public static final String CODE_RATE_LIMITED = NovaConstants.ERROR_TOO_MANY_REQUESTS;
     /** Error code for internal error */
-    public static final String CODE_INTERNAL_ERROR = "NC-500";
+    public static final String CODE_INTERNAL_ERROR = NovaConstants.ERROR_INTERNAL;
 
     private final boolean success;
     private final String message;

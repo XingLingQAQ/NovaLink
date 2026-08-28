@@ -1,4 +1,5 @@
 package com.nova.link.network;
+import com.nova.chat.common.NovaConstants;
 
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.PrivateMessagePacket;
@@ -145,7 +146,7 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
             if (rateLimiter.shouldNotify(connection.getConnectionId())) {
                 logger.warn("Rate limit exceeded for client {} (private message dropped)",
                         connection.getClientId());
-                sendError(connection, packet, "NC-429",
+                sendError(connection, packet, NovaConstants.ERROR_TOO_MANY_REQUESTS,
                         I18n.tr("network.error.rate_limited"), "rate_limited");
             }
             return;
@@ -154,7 +155,7 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
         // Feature toggle (features.private-messages-enabled, hot-reloadable).
         if (!privateMessagesEnabled.getAsBoolean()) {
             logger.debug("PrivateMessage drop: feature disabled (client {})", connection.getClientId());
-            sendError(connection, packet, "NC-403",
+            sendError(connection, packet, NovaConstants.ERROR_FORBIDDEN,
                     I18n.tr("network.error.private_messages_disabled"), "disabled");
             return;
         }
@@ -163,7 +164,7 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
         if (muteManager != null && packet.getSenderId() != null
                 && muteManager.isMuted(packet.getSenderId(), null)) {
             logger.debug("PrivateMessage drop: sender {} globally muted", packet.getSenderId());
-            sendError(connection, packet, "NC-403",
+            sendError(connection, packet, NovaConstants.ERROR_FORBIDDEN,
                     I18n.tr("network.error.muted_global"), "muted");
             return;
         }
@@ -175,7 +176,7 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
         if (targetState == null) {
             logger.debug("PrivateMessage drop: target '{}' not found (client {})",
                     targetName, connection.getClientId());
-            sendError(connection, packet, "NC-404",
+            sendError(connection, packet, NovaConstants.ERROR_NOT_FOUND,
                     I18n.tr("network.error.player_not_online", targetName != null ? targetName : ""),
                     "not_online");
             return;
@@ -187,7 +188,7 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
         if (!targetState.isDmEnabled()) {
             logger.debug("PrivateMessage drop: target '{}' has DMs disabled (client {})",
                     targetName, connection.getClientId());
-            sendError(connection, packet, "NC-403",
+            sendError(connection, packet, NovaConstants.ERROR_FORBIDDEN,
                     I18n.tr("network.error.target_dm_disabled",
                             targetName != null ? targetName : ""),
                     "target_dm_disabled");
@@ -196,7 +197,7 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
 
         // Self-messaging is pointless: reject with a hint.
         if (targetState.getPlayerId().equals(packet.getSenderId())) {
-            sendError(connection, packet, "NC-403",
+            sendError(connection, packet, NovaConstants.ERROR_FORBIDDEN,
                     I18n.tr("network.error.private_message_self"), "self");
             return;
         }
@@ -223,7 +224,7 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
         if (targetIgnoresSender(targetState.getPlayerId(), packet.getSenderId())) {
             logger.debug("PrivateMessage drop: target {} ignores sender {} (no-leak NC-404)",
                     targetState.getPlayerId(), packet.getSenderId());
-            sendError(connection, packet, "NC-404",
+            sendError(connection, packet, NovaConstants.ERROR_NOT_FOUND,
                     I18n.tr("network.error.player_not_online", targetName != null ? targetName : ""),
                     "not_online");
             return;
@@ -231,7 +232,7 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
         if (senderIgnoresTarget(packet.getSenderId(), targetState.getPlayerId())) {
             logger.debug("PrivateMessage drop: sender {} ignores target {}",
                     packet.getSenderId(), targetState.getPlayerId());
-            sendError(connection, packet, "NC-403",
+            sendError(connection, packet, NovaConstants.ERROR_FORBIDDEN,
                     I18n.tr("network.error.private_message_ignored_by_sender",
                             targetName != null ? targetName : ""),
                     "ignored_by_sender");
@@ -247,7 +248,7 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
                 || !targetConnection.isAuthenticated()) {
             logger.debug("PrivateMessage drop: target '{}' offline (client {} not connected)",
                     targetName, targetClientId);
-            sendError(connection, packet, "NC-404",
+            sendError(connection, packet, NovaConstants.ERROR_NOT_FOUND,
                     I18n.tr("network.error.player_not_online", targetName != null ? targetName : ""),
                     "not_online");
             return;

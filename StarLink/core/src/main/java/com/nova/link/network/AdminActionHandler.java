@@ -1,4 +1,5 @@
 package com.nova.link.network;
+import com.nova.chat.common.NovaConstants;
 
 import com.nova.chat.common.protocol.AdminAction;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
@@ -139,7 +140,7 @@ public class AdminActionHandler {
      */
     public AdminActionResponsePacket handle(AdminActionPacket packet, String remoteAddress) {
         if (packet == null || packet.getAction() == null) {
-            return AdminActionResponsePacket.failure(null, "NC-400", "Invalid admin action packet");
+            return AdminActionResponsePacket.failure(null, NovaConstants.ERROR_BAD_REQUEST, "Invalid admin action packet");
         }
 
         AdminAction action = packet.getAction();
@@ -161,7 +162,7 @@ public class AdminActionHandler {
             case STATUS:
                 return handleStatus(packet);
             default:
-                return AdminActionResponsePacket.failure(action, "NC-400", "Unknown admin action");
+                return AdminActionResponsePacket.failure(action, NovaConstants.ERROR_BAD_REQUEST, "Unknown admin action");
         }
     }
 
@@ -183,7 +184,7 @@ public class AdminActionHandler {
         if (banManager != null && remoteAddress != null && banManager.isBanned(remoteAddress)) {
             long remainingSeconds = banManager.getRemainingBanTime(remoteAddress) / 1000;
             logger.warn("Super admin auth attempt from banned IP: {}", remoteAddress);
-            return AdminActionResponsePacket.failure(AdminAction.AUTH, "NC-403",
+            return AdminActionResponsePacket.failure(AdminAction.AUTH, NovaConstants.ERROR_FORBIDDEN,
                 "IP temporarily banned. Try again in " + remainingSeconds + " seconds.");
         }
 
@@ -191,14 +192,14 @@ public class AdminActionHandler {
             if (banManager != null && remoteAddress != null) {
                 banManager.recordFailure(remoteAddress);
             }
-            return AdminActionResponsePacket.failure(AdminAction.AUTH, "NC-400", "Player ID is required");
+            return AdminActionResponsePacket.failure(AdminAction.AUTH, NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
         }
 
         if (passwordHash == null || passwordHash.isEmpty()) {
             if (banManager != null && remoteAddress != null) {
                 banManager.recordFailure(remoteAddress);
             }
-            return AdminActionResponsePacket.failure(AdminAction.AUTH, "NC-400", "Password is required");
+            return AdminActionResponsePacket.failure(AdminAction.AUTH, NovaConstants.ERROR_BAD_REQUEST, "Password is required");
         }
 
         AuthResult result = permissionManager.authenticateSuperAdmin(playerId, passwordHash);
@@ -228,7 +229,7 @@ public class AdminActionHandler {
         UUID playerId = packet.getPlayerId();
 
         if (playerId == null) {
-            return AdminActionResponsePacket.failure(AdminAction.LOGOUT, "NC-400", "Player ID is required");
+            return AdminActionResponsePacket.failure(AdminAction.LOGOUT, NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
         }
 
         permissionManager.revokeSuperAdminSession(playerId);
@@ -252,22 +253,22 @@ public class AdminActionHandler {
         String targetClientId = packet.getExtra("clientId");
 
         if (playerId == null) {
-            return AdminActionResponsePacket.failure(AdminAction.SPY_START, "NC-400", "Player ID is required");
+            return AdminActionResponsePacket.failure(AdminAction.SPY_START, NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
         }
 
         // Check if player has super admin session
         if (!permissionManager.hasSuperAdminSession(playerId)) {
-            return AdminActionResponsePacket.failure(AdminAction.SPY_START, "NC-403", 
+            return AdminActionResponsePacket.failure(AdminAction.SPY_START, NovaConstants.ERROR_FORBIDDEN, 
                 "Super admin authentication required for spy mode");
         }
 
         if (channelId == null || channelId.isEmpty()) {
-            return AdminActionResponsePacket.failure(AdminAction.SPY_START, "NC-400", "Channel ID is required");
+            return AdminActionResponsePacket.failure(AdminAction.SPY_START, NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
 
         if (spyManager == null) {
             logger.error("SpyManager not initialized");
-            return AdminActionResponsePacket.failure(AdminAction.SPY_START, "NC-500", 
+            return AdminActionResponsePacket.failure(AdminAction.SPY_START, NovaConstants.ERROR_INTERNAL, 
                 "Spy mode not available");
         }
 
@@ -303,18 +304,18 @@ public class AdminActionHandler {
         String channelId = packet.getTarget(); // Optional: specific channel to stop
 
         if (playerId == null) {
-            return AdminActionResponsePacket.failure(AdminAction.SPY_STOP, "NC-400", "Player ID is required");
+            return AdminActionResponsePacket.failure(AdminAction.SPY_STOP, NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
         }
 
         // Check if player has super admin session
         if (!permissionManager.hasSuperAdminSession(playerId)) {
-            return AdminActionResponsePacket.failure(AdminAction.SPY_STOP, "NC-403", 
+            return AdminActionResponsePacket.failure(AdminAction.SPY_STOP, NovaConstants.ERROR_FORBIDDEN, 
                 "Super admin authentication required");
         }
 
         if (spyManager == null) {
             logger.error("SpyManager not initialized");
-            return AdminActionResponsePacket.failure(AdminAction.SPY_STOP, "NC-500", 
+            return AdminActionResponsePacket.failure(AdminAction.SPY_STOP, NovaConstants.ERROR_INTERNAL, 
                 "Spy mode not available");
         }
 
@@ -346,18 +347,18 @@ public class AdminActionHandler {
         UUID playerId = packet.getPlayerId();
 
         if (playerId == null) {
-            return AdminActionResponsePacket.failure(AdminAction.RELOAD, "NC-400", "Player ID is required");
+            return AdminActionResponsePacket.failure(AdminAction.RELOAD, NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
         }
 
         // Check if player has super admin session
         if (!permissionManager.hasSuperAdminSession(playerId)) {
-            return AdminActionResponsePacket.failure(AdminAction.RELOAD, "NC-403", 
+            return AdminActionResponsePacket.failure(AdminAction.RELOAD, NovaConstants.ERROR_FORBIDDEN, 
                 "Super admin authentication required for reload");
         }
 
         if (configManager == null) {
             logger.error("ConfigManager not initialized");
-            return AdminActionResponsePacket.failure(AdminAction.RELOAD, "NC-500", "Config reload not available");
+            return AdminActionResponsePacket.failure(AdminAction.RELOAD, NovaConstants.ERROR_INTERNAL, "Config reload not available");
         }
 
         try {
@@ -366,7 +367,7 @@ public class AdminActionHandler {
             return AdminActionResponsePacket.success(AdminAction.RELOAD, "Configuration reloaded");
         } catch (ConfigException e) {
             logger.error("Configuration reload failed (requested by player {})", playerId, e);
-            return AdminActionResponsePacket.failure(AdminAction.RELOAD, "NC-500", "Configuration reload failed: " + e.getMessage());
+            return AdminActionResponsePacket.failure(AdminAction.RELOAD, NovaConstants.ERROR_INTERNAL, "Configuration reload failed: " + e.getMessage());
         }
     }
 
@@ -380,7 +381,7 @@ public class AdminActionHandler {
         UUID playerId = packet.getPlayerId();
 
         if (playerId == null) {
-            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-400", "Player ID is required");
+            return AdminActionResponsePacket.failure(AdminAction.STATUS, NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
         }
 
         // All STATUS subtypes (including ANNOUNCE/TITLE broadcasts) require an
@@ -388,7 +389,7 @@ public class AdminActionHandler {
         // BEFORE this check, allowing any authenticated game server to broadcast
         // arbitrary announcements/titles network-wide without authorization.
         if (!permissionManager.hasSuperAdminSession(playerId)) {
-            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-403",
+            return AdminActionResponsePacket.failure(AdminAction.STATUS, NovaConstants.ERROR_FORBIDDEN,
                 "Super admin authentication required for status");
         }
 
@@ -420,19 +421,19 @@ public class AdminActionHandler {
         String operatorName = packet.getExtra("operatorName");
 
         if (channelId == null || channelId.isEmpty()) {
-            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-400", "Channel ID is required");
+            return AdminActionResponsePacket.failure(AdminAction.STATUS, NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
         if (content == null || content.isEmpty()) {
-            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-400", "Announcement content is required");
+            return AdminActionResponsePacket.failure(AdminAction.STATUS, NovaConstants.ERROR_BAD_REQUEST, "Announcement content is required");
         }
         if (channelManager == null || messageRouter == null) {
             logger.error("Announce requested but ChannelManager/MessageRouter not initialized");
-            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-500", "Announcement not available");
+            return AdminActionResponsePacket.failure(AdminAction.STATUS, NovaConstants.ERROR_INTERNAL, "Announcement not available");
         }
 
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-404", "Channel not found: " + channelId);
+            return AdminActionResponsePacket.failure(AdminAction.STATUS, NovaConstants.ERROR_NOT_FOUND, "Channel not found: " + channelId);
         }
 
         String senderName = (operatorName != null && !operatorName.isEmpty()) ? operatorName : "公告";
@@ -471,19 +472,19 @@ public class AdminActionHandler {
         String subtitle = packet.getExtra("subtitle");
 
         if (channelId == null || channelId.isEmpty()) {
-            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-400", "Channel ID is required");
+            return AdminActionResponsePacket.failure(AdminAction.STATUS, NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
         if (title == null || title.isEmpty()) {
-            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-400", "Title is required");
+            return AdminActionResponsePacket.failure(AdminAction.STATUS, NovaConstants.ERROR_BAD_REQUEST, "Title is required");
         }
         if (channelManager == null || networkHandler == null) {
             logger.error("Title requested but ChannelManager/ServerNetworkHandler not initialized");
-            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-500", "Title not available");
+            return AdminActionResponsePacket.failure(AdminAction.STATUS, NovaConstants.ERROR_INTERNAL, "Title not available");
         }
 
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-404", "Channel not found: " + channelId);
+            return AdminActionResponsePacket.failure(AdminAction.STATUS, NovaConstants.ERROR_NOT_FOUND, "Channel not found: " + channelId);
         }
 
         TitlePacket titlePacket = new TitlePacket(channelId, title, subtitle, packet.getPlayerId());
@@ -500,7 +501,7 @@ public class AdminActionHandler {
             String targetClientId = channel.getClientId();
             ClientConnection target = targetClientId != null ? networkHandler.findByClientId(targetClientId) : null;
             if (target == null || !target.isActive() || !target.isAuthenticated()) {
-                return AdminActionResponsePacket.failure(AdminAction.STATUS, "NC-503", "Target client is not connected");
+                return AdminActionResponsePacket.failure(AdminAction.STATUS, NovaConstants.ERROR_SERVICE_UNAVAILABLE, "Target client is not connected");
             }
             target.sendPacket(titlePacket);
         }

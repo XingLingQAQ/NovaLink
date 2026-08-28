@@ -1,4 +1,5 @@
 package com.nova.link.auth;
+import com.nova.chat.common.NovaConstants;
 
 /**
  * Represents the result of an authentication attempt.
@@ -36,7 +37,7 @@ public class AuthResult {
      * @return a failed AuthResult
      */
     public static AuthResult unauthorized(String message) {
-        return new AuthResult(false, "NC-401", message, null);
+        return new AuthResult(false, NovaConstants.ERROR_UNAUTHORIZED, message, null);
     }
 
     /**
@@ -46,7 +47,7 @@ public class AuthResult {
      * @return a failed AuthResult
      */
     public static AuthResult ipBanned(String message) {
-        return new AuthResult(false, "NC-429", message, null);
+        return new AuthResult(false, NovaConstants.ERROR_TOO_MANY_REQUESTS, message, null);
     }
 
     public boolean isSuccess() {

@@ -1,4 +1,5 @@
 package com.nova.link.api;
+import com.nova.chat.common.NovaConstants;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -1596,7 +1597,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, e.getMessage());
         } catch (Exception e) {
             logger.error("Error creating invitation via API", e);
-            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR, "NC-510: Database error");
+            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR, NovaConstants.ERROR_DATABASE_ERROR + ": Database error");
         }
     }
 
@@ -1644,7 +1645,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
         } catch (Exception e) {
             logger.error("Error revoking invitation {} via API", code, e);
-            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR, "NC-510: Database error");
+            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR, NovaConstants.ERROR_DATABASE_ERROR + ": Database error");
         }
     }
 
@@ -2005,7 +2006,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 logger.warn("Batch {} for target {} failed", action, targetUuid, e);
                 itemStatus = "failure";
                 itemMessage = e.getMessage() != null ? e.getMessage() : "internal error";
-                itemErrorCode = "NC-510";
+                itemErrorCode = NovaConstants.ERROR_DATABASE_ERROR;
                 failureCount++;
             }
 
@@ -2165,9 +2166,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         MuteResult result = muteManager.mutePlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, durationMs, reason, null, true);
         if (!result.isSuccess()) {
-            HttpResponseStatus status = "NC-404".equals(result.getErrorCode())
+            HttpResponseStatus status = NovaConstants.ERROR_NOT_FOUND.equals(result.getErrorCode())
                     ? HttpResponseStatus.NOT_FOUND
-                    : ("NC-403".equals(result.getErrorCode())
+                    : (NovaConstants.ERROR_FORBIDDEN.equals(result.getErrorCode())
                         ? HttpResponseStatus.FORBIDDEN
                         : HttpResponseStatus.BAD_REQUEST);
             sendJsonError(ctx, request, status,
@@ -2239,9 +2240,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         MuteResult result = muteManager.unmutePlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, null, true);
         if (!result.isSuccess()) {
-            HttpResponseStatus status = "NC-404".equals(result.getErrorCode())
+            HttpResponseStatus status = NovaConstants.ERROR_NOT_FOUND.equals(result.getErrorCode())
                     ? HttpResponseStatus.NOT_FOUND
-                    : ("NC-403".equals(result.getErrorCode())
+                    : (NovaConstants.ERROR_FORBIDDEN.equals(result.getErrorCode())
                         ? HttpResponseStatus.FORBIDDEN
                         : HttpResponseStatus.BAD_REQUEST);
             sendJsonError(ctx, request, status,
@@ -2384,9 +2385,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         BanResult result = banManager.banPlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, durationMs, reason, null, true);
         if (!result.isSuccess()) {
-            HttpResponseStatus status = "NC-404".equals(result.getErrorCode())
+            HttpResponseStatus status = NovaConstants.ERROR_NOT_FOUND.equals(result.getErrorCode())
                     ? HttpResponseStatus.NOT_FOUND
-                    : ("NC-403".equals(result.getErrorCode())
+                    : (NovaConstants.ERROR_FORBIDDEN.equals(result.getErrorCode())
                         ? HttpResponseStatus.FORBIDDEN
                         : HttpResponseStatus.BAD_REQUEST);
             sendJsonError(ctx, request, status,
@@ -2454,9 +2455,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         BanResult result = banManager.unbanPlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, null, true);
         if (!result.isSuccess()) {
-            HttpResponseStatus status = "NC-404".equals(result.getErrorCode())
+            HttpResponseStatus status = NovaConstants.ERROR_NOT_FOUND.equals(result.getErrorCode())
                     ? HttpResponseStatus.NOT_FOUND
-                    : ("NC-403".equals(result.getErrorCode())
+                    : (NovaConstants.ERROR_FORBIDDEN.equals(result.getErrorCode())
                         ? HttpResponseStatus.FORBIDDEN
                         : HttpResponseStatus.BAD_REQUEST);
             sendJsonError(ctx, request, status,
@@ -2583,7 +2584,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
 
         if (!channel.isMember(targetUuid)) {
-            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "NC-433: Target is not in channel");
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, NovaConstants.ERROR_NOT_IN_CHANNEL + ": Target is not in channel");
             return;
         }
 
@@ -2695,7 +2696,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         } catch (Exception e) {
             logger.error("Error reloading config via API", e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                    "NC-500: Reload failed: " + e.getMessage());
+                    NovaConstants.ERROR_INTERNAL + ": Reload failed: " + e.getMessage());
             recordAudit(ctx, claims, "config.reload", "config",
                     null, null, e.getMessage(), "failure");
         }
@@ -2877,7 +2878,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         } catch (Exception e) {
             logger.error("Error persisting settings via API", e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                    "NC-500: Settings apply succeeded but persist failed: " + e.getMessage());
+                    NovaConstants.ERROR_INTERNAL + ": Settings apply succeeded but persist failed: " + e.getMessage());
             return;
         }
 
@@ -3203,7 +3204,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
         } catch (Exception e) {
             logger.error("Error computing config diff {}->{}", from, to, e);
-            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR, "NC-510: Database error");
+            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR, NovaConstants.ERROR_DATABASE_ERROR + ": Database error");
         }
     }
 
@@ -3278,10 +3279,10 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             // write; the live config is unchanged. Surface as NC-510.
             logger.error("Config rollback to revision {} failed (fail-closed)", targetRevision, e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                    "NC-510: Rollback failed: " + e.getMessage());
+                    NovaConstants.ERROR_DATABASE_ERROR + ": Rollback failed: " + e.getMessage());
         } catch (Exception e) {
             logger.error("Unexpected error during config rollback to revision {}", targetRevision, e);
-            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR, "NC-510: Database error");
+            sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR, NovaConstants.ERROR_DATABASE_ERROR + ": Database error");
         }
     }
 
@@ -3386,7 +3387,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         } catch (IllegalStateException e) {
             logger.error("Create draft failed (fail-closed)", e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                    "NC-510: " + e.getMessage());
+                    NovaConstants.ERROR_DATABASE_ERROR + ": " + e.getMessage());
         }
     }
 
@@ -3478,7 +3479,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             } else {
                 logger.error("Approve draft {} failed (fail-closed)", id, e);
                 sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                        "NC-510: " + e.getMessage());
+                        NovaConstants.ERROR_DATABASE_ERROR + ": " + e.getMessage());
             }
         }
     }
@@ -3540,7 +3541,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         } catch (IllegalStateException e) {
             logger.error("Publish draft {} failed (fail-closed)", id, e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                    "NC-510: " + e.getMessage());
+                    NovaConstants.ERROR_DATABASE_ERROR + ": " + e.getMessage());
         }
     }
 
@@ -3580,7 +3581,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             } else {
                 logger.error("Discard draft {} failed (fail-closed)", id, e);
                 sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                        "NC-510: " + e.getMessage());
+                        NovaConstants.ERROR_DATABASE_ERROR + ": " + e.getMessage());
             }
         }
     }
@@ -3618,7 +3619,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         } catch (IllegalStateException e) {
             logger.error("Create backup failed (fail-closed)", e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                    "NC-510: " + e.getMessage());
+                    NovaConstants.ERROR_DATABASE_ERROR + ": " + e.getMessage());
         }
     }
 
@@ -3708,7 +3709,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         } catch (IllegalStateException e) {
             logger.error("Restore from backup {} failed (fail-closed)", backupId, e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                    "NC-510: " + e.getMessage());
+                    NovaConstants.ERROR_DATABASE_ERROR + ": " + e.getMessage());
         }
     }
 
@@ -3810,13 +3811,13 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * failure maps to {@code INTERNAL_SERVER_ERROR}.
      */
     private static HttpResponseStatus moderationErrorStatus(String errorCode) {
-        if ("NC-404".equals(errorCode)) {
+        if (NovaConstants.ERROR_NOT_FOUND.equals(errorCode)) {
             return HttpResponseStatus.NOT_FOUND;
         }
-        if ("NC-403".equals(errorCode)) {
+        if (NovaConstants.ERROR_FORBIDDEN.equals(errorCode)) {
             return HttpResponseStatus.FORBIDDEN;
         }
-        if ("NC-500".equals(errorCode)) {
+        if (NovaConstants.ERROR_INTERNAL.equals(errorCode)) {
             return HttpResponseStatus.INTERNAL_SERVER_ERROR;
         }
         return HttpResponseStatus.BAD_REQUEST;
@@ -4000,7 +4001,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
 
         if (reportedPlayerId == null || reportedPlayerId.isBlank()) {
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
-                    "NC-400: reportedPlayerId is required");
+                    NovaConstants.ERROR_BAD_REQUEST + ": reportedPlayerId is required");
             return;
         }
         // Merge reasonCode + reasonText into the single reason field as
@@ -4182,7 +4183,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
         if (moderator == null || moderator.isBlank()) {
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
-                    "NC-400: moderator is required");
+                    NovaConstants.ERROR_BAD_REQUEST + ": moderator is required");
             return;
         }
 
@@ -4253,7 +4254,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         };
         if (resolutionAction == null) {
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
-                    "NC-400: Invalid resolution action");
+                    NovaConstants.ERROR_BAD_REQUEST + ": Invalid resolution action");
             return;
         }
 
@@ -4295,7 +4296,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         PanelRole role = resourcePolicy.resolveRole(claims);
         if (role == PanelRole.VIEWER) {
             sendJsonError(ctx, request, HttpResponseStatus.FORBIDDEN,
-                    "NC-403: evidence access requires moderation.manage");
+                    NovaConstants.ERROR_FORBIDDEN + ": evidence access requires moderation.manage");
             return;
         }
 
@@ -4354,7 +4355,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         PanelRole role = resourcePolicy.resolveRole(claims);
         if (role == PanelRole.VIEWER) {
             sendJsonError(ctx, request, HttpResponseStatus.FORBIDDEN,
-                    "NC-403: evidence access requires moderation.manage");
+                    NovaConstants.ERROR_FORBIDDEN + ": evidence access requires moderation.manage");
             return;
         }
 
@@ -4386,12 +4387,12 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
         if (evidenceType == null) {
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
-                    "NC-400: Invalid evidenceType");
+                    NovaConstants.ERROR_BAD_REQUEST + ": Invalid evidenceType");
             return;
         }
         if (contentPayload == null || contentPayload.isBlank()) {
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
-                    "NC-400: contentPayload is required");
+                    NovaConstants.ERROR_BAD_REQUEST + ": contentPayload is required");
             return;
         }
 
@@ -4470,15 +4471,15 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
         if (caseId == null || caseId.isBlank()) {
-            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "NC-400: caseId is required");
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, NovaConstants.ERROR_BAD_REQUEST + ": caseId is required");
             return;
         }
         if (appellantId == null || appellantId.isBlank()) {
-            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "NC-400: appellantId is required");
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, NovaConstants.ERROR_BAD_REQUEST + ": appellantId is required");
             return;
         }
         if (reason == null || reason.isBlank()) {
-            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "NC-400: reason is required");
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, NovaConstants.ERROR_BAD_REQUEST + ": reason is required");
             return;
         }
 
@@ -4611,7 +4612,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
         if (status == null) {
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
-                    "NC-400: Invalid decision (expected APPROVED, DENIED or ESCALATED)");
+                    NovaConstants.ERROR_BAD_REQUEST + ": Invalid decision (expected APPROVED, DENIED or ESCALATED)");
             return;
         }
 
@@ -4887,7 +4888,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 // "no such routable target" from the caller's POV; surface as NC-404
                 // to mirror the NC-4xx idiom used by the routing-failure path below.
                 sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
-                        "NC-404: Channel not found: "
+                        NovaConstants.ERROR_NOT_FOUND + ": Channel not found: "
                                 + (channelId != null ? channelId : "(null)"));
                 return;
             }
@@ -4911,7 +4912,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 String detail = !result.isSuccess() && result.getErrorMessage() != null
                         ? result.getErrorMessage()
                         : "No recipients routed for channel " + channelId;
-                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "NC-404: " + detail);
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, NovaConstants.ERROR_NOT_FOUND + ": " + detail);
                 return;
             }
 
@@ -5025,7 +5026,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         } catch (Exception e) {
             logger.error("Error querying message history", e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                    "NC-510: Database error");
+                    NovaConstants.ERROR_DATABASE_ERROR + ": Database error");
         }
     }
 
@@ -5637,7 +5638,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         } catch (Exception e) {
             logger.error("Error persisting filter config via API", e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                    "NC-500: Filter apply succeeded but persist failed: " + e.getMessage());
+                    NovaConstants.ERROR_INTERNAL + ": Filter apply succeeded but persist failed: " + e.getMessage());
             return;
         }
 

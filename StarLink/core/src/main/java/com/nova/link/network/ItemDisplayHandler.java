@@ -1,4 +1,5 @@
 package com.nova.link.network;
+import com.nova.chat.common.NovaConstants;
 
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
@@ -86,7 +87,7 @@ public class ItemDisplayHandler implements PacketHandler<ItemDisplayPacket> {
             if (rateLimiter.shouldNotify(connection.getConnectionId())) {
                 logger.warn("Rate limit exceeded for client {} (item display dropped)",
                         connection.getClientId());
-                sendError(connection, packet, "NC-429", I18n.tr("network.error.rate_limited"));
+                sendError(connection, packet, NovaConstants.ERROR_TOO_MANY_REQUESTS, I18n.tr("network.error.rate_limited"));
             }
             return;
         }
@@ -98,7 +99,7 @@ public class ItemDisplayHandler implements PacketHandler<ItemDisplayPacket> {
         if (channel == null) {
             logger.debug("ItemDisplay drop: channel '{}' not found (client {})",
                     channelId, connection.getClientId());
-            sendError(connection, packet, "NC-404",
+            sendError(connection, packet, NovaConstants.ERROR_NOT_FOUND,
                     I18n.tr("network.error.channel_not_found", channelId != null ? channelId : ""));
             return;
         }
@@ -108,7 +109,7 @@ public class ItemDisplayHandler implements PacketHandler<ItemDisplayPacket> {
             if (channel.getClientId() == null || !channel.getClientId().equals(connection.getClientId())) {
                 logger.warn("ItemDisplay drop CROSS_CLIENT senderClient={} channel={} owner={}",
                         connection.getClientId(), channel.getId(), channel.getClientId());
-                sendError(connection, packet, "NC-403",
+                sendError(connection, packet, NovaConstants.ERROR_FORBIDDEN,
                         I18n.tr("network.error.cross_client_denied", channel.getId()));
                 return;
             }
@@ -119,7 +120,7 @@ public class ItemDisplayHandler implements PacketHandler<ItemDisplayPacket> {
                 && muteManager.isMuted(packet.getSenderId(), channel.getId())) {
             logger.debug("ItemDisplay drop: sender {} muted in channel {}",
                     packet.getSenderId(), channel.getId());
-            sendError(connection, packet, "NC-403",
+            sendError(connection, packet, NovaConstants.ERROR_FORBIDDEN,
                     I18n.tr("network.error.muted", channel.getId()));
             return;
         }
@@ -127,7 +128,7 @@ public class ItemDisplayHandler implements PacketHandler<ItemDisplayPacket> {
                 && banManager.isBanned(packet.getSenderId(), channel.getId())) {
             logger.debug("ItemDisplay drop: sender {} banned from channel {}",
                     packet.getSenderId(), channel.getId());
-            sendError(connection, packet, "NC-403",
+            sendError(connection, packet, NovaConstants.ERROR_FORBIDDEN,
                     I18n.tr("network.error.banned", channel.getId()));
             return;
         }

@@ -1,4 +1,5 @@
 package com.nova.link.moderation;
+import com.nova.chat.common.NovaConstants;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
@@ -149,10 +150,10 @@ public class ModerationManager {
         validateBounded("snapshot", snapshot, SNAPSHOT_MAX);
         validateBounded("mention", mention, MENTION_MAX);
         if (reporterSource == null) {
-            throw new ModerationException("NC-400", "reporterSource is required");
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "reporterSource is required");
         }
         if (source == null) {
-            throw new ModerationException("NC-400", "source is required");
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "source is required");
         }
         validateItemJson(itemJson);
 
@@ -169,7 +170,7 @@ public class ModerationManager {
         } catch (DatabaseException e) {
             recordAudit(actor, "moderation.case.create", "moderation_case:" + caseId,
                     hash, null, reason, "failure");
-            throw new ModerationException("NC-500", "Failed to persist moderation case: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to persist moderation case: " + e.getMessage());
         }
         recordAudit(actor, "moderation.case.create", "moderation_case:" + caseId,
                 null, hash, reason, "success");
@@ -197,7 +198,7 @@ public class ModerationManager {
     public ModerationCase assignCase(String caseId, String assignedModerator, String actor) {
         ModerationCase existing = requireCase(caseId);
         if (existing.getStatus() == CaseStatus.CLOSED) {
-            throw new ModerationException("NC-403", "Cannot assign a closed case");
+            throw new ModerationException(NovaConstants.ERROR_FORBIDDEN, "Cannot assign a closed case");
         }
         long now = System.currentTimeMillis();
         ModerationCase updated = new ModerationCase(
@@ -224,11 +225,11 @@ public class ModerationManager {
         ModerationCase existing = requireCase(caseId);
         if (existing.getStatus() != CaseStatus.OPEN
                 && existing.getStatus() != CaseStatus.UNDER_REVIEW) {
-            throw new ModerationException("NC-403",
+            throw new ModerationException(NovaConstants.ERROR_FORBIDDEN,
                     "Cannot resolve a case that is not OPEN or UNDER_REVIEW");
         }
         if (action == null) {
-            throw new ModerationException("NC-400", "resolutionAction is required");
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "resolutionAction is required");
         }
         validateBounded("resolutionNote", resolutionNote, REASON_MAX);
         long now = System.currentTimeMillis();
@@ -268,7 +269,7 @@ public class ModerationManager {
                                     String submittedBy, String actor) {
         ModerationCase existing = requireCase(caseId);
         if (evidenceType == null) {
-            throw new ModerationException("NC-400", "evidenceType is required");
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "evidenceType is required");
         }
         validateBounded("description", description, DESCRIPTION_MAX);
         String hash = hashPayload(contentPayload);
@@ -280,7 +281,7 @@ public class ModerationManager {
         } catch (DatabaseException e) {
             recordAudit(actor, "moderation.evidence.add", "moderation_case:" + caseId,
                     hash, null, description, "failure");
-            throw new ModerationException("NC-500", "Failed to persist case evidence: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to persist case evidence: " + e.getMessage());
         }
         recordAudit(actor, "moderation.evidence.add", "moderation_case:" + caseId,
                 null, hash, description, "success");
@@ -297,7 +298,7 @@ public class ModerationManager {
         try {
             return databaseProvider.listCaseEvidence(caseId);
         } catch (DatabaseException e) {
-            throw new ModerationException("NC-500", "Failed to list case evidence: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to list case evidence: " + e.getMessage());
         }
     }
 
@@ -313,7 +314,7 @@ public class ModerationManager {
     public Appeal createAppeal(String caseId, String appellant, String appealReason, String actor) {
         ModerationCase existing = requireCase(caseId);
         if (existing.getStatus() != CaseStatus.RESOLVED) {
-            throw new ModerationException("NC-403",
+            throw new ModerationException(NovaConstants.ERROR_FORBIDDEN,
                     "Can only appeal a RESOLVED case");
         }
         validateBounded("appealReason", appealReason, REASON_MAX);
@@ -327,7 +328,7 @@ public class ModerationManager {
         } catch (DatabaseException e) {
             recordAudit(actor, "moderation.appeal.create", "appeal:" + appealId,
                     hash, null, appealReason, "failure");
-            throw new ModerationException("NC-500", "Failed to persist appeal: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to persist appeal: " + e.getMessage());
         }
         // Flip the case to APPEALED so listings reflect the open appeal.
         long nowCase = System.currentTimeMillis();
@@ -387,7 +388,7 @@ public class ModerationManager {
                                String reviewedBy, String reviewNote, String actor) {
         Appeal appeal = requireAppeal(appealId);
         if (status == null || status == AppealStatus.PENDING) {
-            throw new ModerationException("NC-400",
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST,
                     "Appeal review status must be APPROVED, REJECTED, DENIED or ESCALATED");
         }
         ModerationCase caseRecord = requireCase(appeal.getCaseId());
@@ -397,7 +398,7 @@ public class ModerationManager {
             // Hard 403: the reviewer must differ from the assigned moderator.
             recordAudit(actor, "moderation.appeal.review", "appeal:" + appealId,
                     appeal.getContentHash(), null, reviewNote, "failure");
-            throw new ModerationException("NC-403",
+            throw new ModerationException(NovaConstants.ERROR_FORBIDDEN,
                     "Appeal reviewer must differ from the case moderator");
         }
         validateBounded("reviewNote", reviewNote, REASON_MAX);
@@ -407,7 +408,7 @@ public class ModerationManager {
         } catch (DatabaseException e) {
             recordAudit(actor, "moderation.appeal.review", "appeal:" + appealId,
                     appeal.getContentHash(), null, reviewNote, "failure");
-            throw new ModerationException("NC-500", "Failed to update appeal review: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to update appeal review: " + e.getMessage());
         }
         recordAudit(actor, "moderation.appeal.review", "appeal:" + appealId,
                 null, appeal.getContentHash(), reviewNote, "success");
@@ -424,7 +425,7 @@ public class ModerationManager {
         try {
             return databaseProvider.getModerationCase(caseId);
         } catch (DatabaseException e) {
-            throw new ModerationException("NC-500", "Failed to load moderation case: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to load moderation case: " + e.getMessage());
         }
     }
 
@@ -435,7 +436,7 @@ public class ModerationManager {
         try {
             return databaseProvider.listModerationCases(offset, limit, status);
         } catch (DatabaseException e) {
-            throw new ModerationException("NC-500", "Failed to list moderation cases: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to list moderation cases: " + e.getMessage());
         }
     }
 
@@ -446,7 +447,7 @@ public class ModerationManager {
         try {
             return databaseProvider.countModerationCases(status);
         } catch (DatabaseException e) {
-            throw new ModerationException("NC-500", "Failed to count moderation cases: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to count moderation cases: " + e.getMessage());
         }
     }
 
@@ -457,7 +458,7 @@ public class ModerationManager {
         try {
             return databaseProvider.getAppeal(appealId);
         } catch (DatabaseException e) {
-            throw new ModerationException("NC-500", "Failed to load appeal: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to load appeal: " + e.getMessage());
         }
     }
 
@@ -468,7 +469,7 @@ public class ModerationManager {
         try {
             return databaseProvider.listAppeals(offset, limit, status);
         } catch (DatabaseException e) {
-            throw new ModerationException("NC-500", "Failed to list appeals: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to list appeals: " + e.getMessage());
         }
     }
 
@@ -479,7 +480,7 @@ public class ModerationManager {
         try {
             return databaseProvider.countAppeals(status);
         } catch (DatabaseException e) {
-            throw new ModerationException("NC-500", "Failed to count appeals: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to count appeals: " + e.getMessage());
         }
     }
 
@@ -487,31 +488,31 @@ public class ModerationManager {
 
     private ModerationCase requireCase(String caseId) {
         if (caseId == null || caseId.isBlank()) {
-            throw new ModerationException("NC-400", "caseId is required");
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "caseId is required");
         }
         try {
             Optional<ModerationCase> opt = databaseProvider.getModerationCase(caseId);
             if (opt.isEmpty()) {
-                throw new ModerationException("NC-404", "Moderation case not found: " + caseId);
+                throw new ModerationException(NovaConstants.ERROR_NOT_FOUND, "Moderation case not found: " + caseId);
             }
             return opt.get();
         } catch (DatabaseException e) {
-            throw new ModerationException("NC-500", "Failed to load moderation case: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to load moderation case: " + e.getMessage());
         }
     }
 
     private Appeal requireAppeal(String appealId) {
         if (appealId == null || appealId.isBlank()) {
-            throw new ModerationException("NC-400", "appealId is required");
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "appealId is required");
         }
         try {
             Optional<Appeal> opt = databaseProvider.getAppeal(appealId);
             if (opt.isEmpty()) {
-                throw new ModerationException("NC-404", "Appeal not found: " + appealId);
+                throw new ModerationException(NovaConstants.ERROR_NOT_FOUND, "Appeal not found: " + appealId);
             }
             return opt.get();
         } catch (DatabaseException e) {
-            throw new ModerationException("NC-500", "Failed to load appeal: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to load appeal: " + e.getMessage());
         }
     }
 
@@ -521,7 +522,7 @@ public class ModerationManager {
         } catch (DatabaseException e) {
             recordAudit(actor, action, "moderation_case:" + updated.getId(),
                     contentHash, null, updated.getReason(), "failure");
-            throw new ModerationException("NC-500", "Failed to persist moderation case: " + e.getMessage());
+            throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to persist moderation case: " + e.getMessage());
         }
         recordAudit(actor, action, "moderation_case:" + updated.getId(),
                 null, contentHash, updated.getReason(), "success");
@@ -623,16 +624,16 @@ public class ModerationManager {
 
     private static void validateSubject(String subjectPlayerId) {
         if (subjectPlayerId == null || subjectPlayerId.isBlank()) {
-            throw new ModerationException("NC-400", "subjectPlayerId is required");
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "subjectPlayerId is required");
         }
         if (subjectPlayerId.length() > ITEM_ID_MAX) {
-            throw new ModerationException("NC-400", "subjectPlayerId exceeds " + ITEM_ID_MAX + " chars");
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "subjectPlayerId exceeds " + ITEM_ID_MAX + " chars");
         }
     }
 
     private static void validateBounded(String fieldName, String value, int max) {
         if (value != null && value.length() > max) {
-            throw new ModerationException("NC-400",
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST,
                     fieldName + " exceeds " + max + " chars");
         }
     }
@@ -648,16 +649,16 @@ public class ModerationManager {
             return;
         }
         if (itemJson.getBytes(StandardCharsets.UTF_8).length > ITEM_JSON_MAX_BYTES) {
-            throw new ModerationException("NC-400", "item_json exceeds 2KB");
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "item_json exceeds 2KB");
         }
         JsonElement parsed;
         try {
             parsed = JsonParser.parseString(itemJson);
         } catch (Exception e) {
-            throw new ModerationException("NC-400", "item_json is not valid JSON");
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "item_json is not valid JSON");
         }
         if (parsed == null || !parsed.isJsonObject()) {
-            throw new ModerationException("NC-400", "item_json must be a JSON object");
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "item_json must be a JSON object");
         }
         JsonObject obj = parsed.getAsJsonObject();
         if (obj.has("itemId")) {
@@ -670,27 +671,27 @@ public class ModerationManager {
             try {
                 int count = obj.get("count").getAsInt();
                 if (count < 0 || count > COUNT_MAX) {
-                    throw new ModerationException("NC-400",
+                    throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST,
                             "item_json count out of range [0," + COUNT_MAX + "]");
                 }
             } catch (ModerationException e) {
                 throw e;
             } catch (Exception e) {
-                throw new ModerationException("NC-400", "item_json count must be an integer");
+                throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "item_json count must be an integer");
             }
         }
         if (obj.has("enchantments")) {
             JsonElement ench = obj.get("enchantments");
             if (!ench.isJsonArray()) {
-                throw new ModerationException("NC-400", "item_json enchantments must be an array");
+                throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "item_json enchantments must be an array");
             }
             if (ench.getAsJsonArray().size() > ENCHANTMENTS_MAX) {
-                throw new ModerationException("NC-400",
+                throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST,
                         "item_json enchantments exceed " + ENCHANTMENTS_MAX + " entries");
             }
             for (JsonElement e : ench.getAsJsonArray()) {
                 if (!e.isJsonObject()) {
-                    throw new ModerationException("NC-400",
+                    throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST,
                             "item_json enchantment entries must be objects");
                 }
                 JsonObject entry = e.getAsJsonObject();
@@ -707,11 +708,11 @@ public class ModerationManager {
             return;
         }
         if (!el.isJsonPrimitive() || !el.getAsJsonPrimitive().isString()) {
-            throw new ModerationException("NC-400", "item_json " + fieldName + " must be a string");
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "item_json " + fieldName + " must be a string");
         }
         String s = el.getAsString();
         if (s.length() > max) {
-            throw new ModerationException("NC-400",
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST,
                     "item_json " + fieldName + " exceeds " + max + " chars");
         }
     }

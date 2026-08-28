@@ -1,4 +1,5 @@
 package com.nova.link.network;
+import com.nova.chat.common.NovaConstants;
 
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
@@ -140,14 +141,7 @@ public class ServerNetworkHandler {
      * NC-500 "internal server error" family used by ChannelActionHandler /
      * AdminActionHandler for server-side faults.
      */
-    private static final String NC_SERVER_BUSY = "NC-500";
-    /**
-     * NC code returned when a handshake/authenticate task is rejected: the
-     * connection cannot complete the challenge-response dance, so it is closed
-     * with NC-420 (the existing protocol-mismatch close pattern used by the
-     * handshake handlers in NovaLinkMain).
-     */
-    private static final String NC_HANDSHAKE_BUSY = "NC-420";
+    private static final String NC_SERVER_BUSY = NovaConstants.ERROR_INTERNAL;
 
     /**
      * Registers a packet handler for a specific packet type.
@@ -638,7 +632,7 @@ public class ServerNetworkHandler {
                 // the connection with an explicit failure (mirrors
                 // NovaLinkMain#sendResponseAndClose for NC-420 protocol mismatch).
                 HandshakeResponsePacket response = HandshakeResponsePacket.failure(
-                        NC_HANDSHAKE_BUSY,
+                        NovaConstants.ERROR_PROTOCOL_MISMATCH,
                         "Server busy, please reconnect");
                 response.setRequestId(packet.getRequestId());
                 connection.sendPacket(response).whenComplete((ignored, error) -> {

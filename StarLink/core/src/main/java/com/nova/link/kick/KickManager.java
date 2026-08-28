@@ -1,4 +1,5 @@
 package com.nova.link.kick;
+import com.nova.chat.common.NovaConstants;
 
 import com.nova.link.auth.PermissionLevel;
 import com.nova.link.auth.PermissionManager;
@@ -69,26 +70,26 @@ public class KickManager {
     public KickResult kickPlayer(UUID operatorId, String operatorClientId, 
                                   UUID targetPlayerId, String channelId) {
         if (operatorId == null) {
-            return KickResult.failure("NC-400", "Operator ID is required");
+            return KickResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
         }
 
         if (targetPlayerId == null) {
-            return KickResult.failure("NC-400", "Target player ID is required");
+            return KickResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Target player ID is required");
         }
 
         if (channelId == null || channelId.isEmpty()) {
-            return KickResult.failure("NC-400", "Channel ID is required");
+            return KickResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
 
         // Get the channel
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return KickResult.failure("NC-404", "Channel not found: " + channelId);
+            return KickResult.failure(NovaConstants.ERROR_NOT_FOUND, "Channel not found: " + channelId);
         }
 
         // Check if target is a member of the channel
         if (!channel.isMember(targetPlayerId)) {
-            return KickResult.failure("NC-404", "Player is not a member of channel: " + channelId);
+            return KickResult.failure(NovaConstants.ERROR_NOT_FOUND, "Player is not a member of channel: " + channelId);
         }
 
         // Check permission based on operator's permission level
@@ -101,13 +102,13 @@ public class KickManager {
         // Cannot kick the channel owner from their own private channel
         if (channel.getScope() == ChannelScope.PRIVATE && 
             targetPlayerId.equals(channel.getOwnerId())) {
-            return KickResult.failure("NC-403", "Cannot kick the channel owner from their own channel");
+            return KickResult.failure(NovaConstants.ERROR_FORBIDDEN, "Cannot kick the channel owner from their own channel");
         }
 
         // Remove player from channel
         boolean removed = channel.removeMember(targetPlayerId);
         if (!removed) {
-            return KickResult.failure("NC-500", "Failed to remove player from channel");
+            return KickResult.failure(NovaConstants.ERROR_INTERNAL, "Failed to remove player from channel");
         }
 
         // Add player to default channel
@@ -140,7 +141,7 @@ public class KickManager {
 
         // Cannot kick someone with equal or higher permission level
         if (!operatorLevel.isHigherThan(targetLevel) && operatorLevel != PermissionLevel.SUPER_ADMIN) {
-            return KickResult.failure("NC-403", 
+            return KickResult.failure(NovaConstants.ERROR_FORBIDDEN, 
                     "Cannot kick a player with equal or higher permission level");
         }
 
@@ -152,11 +153,11 @@ public class KickManager {
         // Client admin can kick from channels within their client
         if (operatorLevel == PermissionLevel.CLIENT_ADMIN) {
             if (channel.getScope() == ChannelScope.GLOBAL) {
-                return KickResult.failure("NC-403", 
+                return KickResult.failure(NovaConstants.ERROR_FORBIDDEN, 
                         "Client admin cannot kick from global channels");
             }
             if (!operatorClientId.equals(channel.getClientId())) {
-                return KickResult.failure("NC-403", 
+                return KickResult.failure(NovaConstants.ERROR_FORBIDDEN, 
                         "Client admin can only kick from channels within their client");
             }
             return KickResult.success(channel.getId(), null, "Permission granted");
@@ -165,18 +166,18 @@ public class KickManager {
         // Channel admin can only kick from their managed private channels
         if (operatorLevel == PermissionLevel.CHANNEL_ADMIN) {
             if (channel.getScope() != ChannelScope.PRIVATE) {
-                return KickResult.failure("NC-403", 
+                return KickResult.failure(NovaConstants.ERROR_FORBIDDEN, 
                         "Channel admin can only kick from private channels they manage");
             }
             if (!operatorId.equals(channel.getOwnerId())) {
-                return KickResult.failure("NC-403", 
+                return KickResult.failure(NovaConstants.ERROR_FORBIDDEN, 
                         "Channel admin can only kick from channels they own");
             }
             return KickResult.success(channel.getId(), null, "Permission granted");
         }
 
         // Regular players cannot kick
-        return KickResult.failure("NC-403", "Insufficient permission to kick players");
+        return KickResult.failure(NovaConstants.ERROR_FORBIDDEN, "Insufficient permission to kick players");
     }
 
     /**

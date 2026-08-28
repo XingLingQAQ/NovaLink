@@ -1,4 +1,5 @@
 package com.nova.link.channel;
+import com.nova.chat.common.NovaConstants;
 
 import com.nova.link.database.DatabaseException;
 import com.nova.link.database.DatabaseProvider;
@@ -156,26 +157,26 @@ public class InvitationManager {
      */
     public InvitationResult validateInvitation(String code) throws DatabaseException {
         if (code == null || code.isEmpty()) {
-            return InvitationResult.invalid("NC-400", "Invitation code cannot be empty");
+            return InvitationResult.invalid(NovaConstants.ERROR_BAD_REQUEST, "Invitation code cannot be empty");
         }
         
         Optional<Invitation> optInvitation = databaseProvider.loadInvitation(code);
         if (optInvitation.isEmpty()) {
-            return InvitationResult.invalid("NC-404", "Invitation not found");
+            return InvitationResult.invalid(NovaConstants.ERROR_NOT_FOUND, "Invitation not found");
         }
         
         Invitation invitation = optInvitation.get();
         
         if (invitation.isUsed()) {
-            return InvitationResult.invalid("NC-411", "Invitation has already been used");
+            return InvitationResult.invalid(NovaConstants.ERROR_INVITATION_USED, "Invitation has already been used");
         }
 
         if (invitation.isRevoked()) {
-            return InvitationResult.invalid("NC-410", "Invitation has been revoked");
+            return InvitationResult.invalid(NovaConstants.ERROR_INVITATION_EXPIRED, "Invitation has been revoked");
         }
 
         if (invitation.isExpired()) {
-            return InvitationResult.invalid("NC-410", "Invitation has expired");
+            return InvitationResult.invalid(NovaConstants.ERROR_INVITATION_EXPIRED, "Invitation has expired");
         }
         
         return InvitationResult.valid(invitation);
@@ -207,19 +208,19 @@ public class InvitationManager {
         // Get the channel
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
-            return InvitationResult.invalid("NC-404", "Channel no longer exists");
+            return InvitationResult.invalid(NovaConstants.ERROR_NOT_FOUND, "Channel no longer exists");
         }
 
         // For private channels, verify client isolation
         if (channel.getScope() == ChannelScope.PRIVATE) {
             if (playerClientId == null || !playerClientId.equals(channel.getClientId())) {
-                return InvitationResult.invalid("NC-403", "Cannot join private channel from different client");
+                return InvitationResult.invalid(NovaConstants.ERROR_FORBIDDEN, "Cannot join private channel from different client");
             }
         }
 
         // Check channel capacity
         if (channel.getMaxCapacity() > 0 && channel.getMemberCount() >= channel.getMaxCapacity()) {
-            return InvitationResult.invalid("NC-409", "Channel is full");
+            return InvitationResult.invalid(NovaConstants.ERROR_CONFLICT, "Channel is full");
         }
 
         // Atomically claim one use of the invitation. A single provider
@@ -241,19 +242,19 @@ public class InvitationManager {
             // here cannot reintroduce the race.
             Optional<Invitation> current = databaseProvider.loadInvitation(code);
             if (current.isEmpty()) {
-                return InvitationResult.invalid("NC-404", "Invitation not found");
+                return InvitationResult.invalid(NovaConstants.ERROR_NOT_FOUND, "Invitation not found");
             }
             Invitation state = current.get();
             if (state.isRevoked() || state.isExpired()) {
-                return InvitationResult.invalid("NC-410", "Invitation has been revoked or expired");
+                return InvitationResult.invalid(NovaConstants.ERROR_INVITATION_EXPIRED, "Invitation has been revoked or expired");
             }
-            return InvitationResult.invalid("NC-411", "Invitation has already been used");
+            return InvitationResult.invalid(NovaConstants.ERROR_INVITATION_USED, "Invitation has already been used");
         }
 
         // Add player to channel
         boolean added = channelManager.addMember(channelId, playerId);
         if (!added) {
-            return InvitationResult.invalid("NC-500", "Failed to add member to channel");
+            return InvitationResult.invalid(NovaConstants.ERROR_INTERNAL, "Failed to add member to channel");
         }
 
         logger.info("Player {} accepted invitation {} and joined channel {}", playerId, code, channelId);
