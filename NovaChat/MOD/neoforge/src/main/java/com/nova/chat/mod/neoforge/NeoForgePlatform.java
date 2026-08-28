@@ -3,6 +3,7 @@ package com.nova.chat.mod.neoforge;
 import com.nova.chat.mod.platform.ChatHandler;
 import com.nova.chat.mod.platform.CommandManager;
 import com.nova.chat.mod.platform.Platform;
+import com.nova.chat.mod.platform.PlatformHelpers;
 import com.nova.chat.mod.platform.PlatformType;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
@@ -209,52 +210,13 @@ public class NeoForgePlatform implements Platform {
             String id = net.minecraft.core.registries.BuiltInRegistries.ITEM
                     .getKey(stack.getItem()).toString();
             int count = stack.getCount();
-            String customName = resolveCustomItemName(stack);
+            String customName = PlatformHelpers.resolveCustomItemName(stack);
             return com.nova.chat.client.itemdisplay.ItemDisplayTokens
                     .buildItemJson(id, count, customName);
         } catch (Throwable t) {
             LOGGER.warn("Failed to serialize held item for {}: {}", playerId, t.getMessage());
             return null;
         }
-    }
-
-    /**
-     * Resolves the optional custom display name from an item stack. Returns null
-     * when the item has no custom name (so {@code ItemDisplayTokens.buildItemJson}
-     * omits the {@code name} field and the receiver prettifies the id).
-     *
-     * <p>MC 1.21.5+ moved custom names into the data-component model; the old
-     * {@code hasCustomHoverName()} accessor was removed. This helper reads
-     * {@code DataComponents.CUSTOM_NAME} reflectively so the same source
-     * compiles across 1.20.x (legacy NBT items) and 1.21.x (data components)
-     * without a version-split build. Any reflective failure degrades to null.
-     */
-    private static String resolveCustomItemName(net.minecraft.world.item.ItemStack stack) {
-        try {
-            // DataComponents.CUSTOM_NAME was added in 1.20.5+. Use reflection so the
-            // common source compiles on 1.20.2 (no DataComponents class) too.
-            Class<?> dataComponentsClass = Class.forName(
-                    "net.minecraft.core.component.DataComponents");
-            Object customNameComponent = java.util.Arrays.stream(dataComponentsClass.getFields())
-                    .filter(f -> "CUSTOM_NAME".equals(f.getName()))
-                    .findFirst()
-                    .map(f -> {
-                        try { return f.get(null); }
-                        catch (Exception e) { return null; }
-                    })
-                    .orElse(null);
-            if (customNameComponent == null) {
-                return null;
-            }
-            Object name = stack.getClass().getMethod("get", Object.class)
-                    .invoke(stack, customNameComponent);
-            if (name instanceof net.minecraft.network.chat.Component component) {
-                return component.getString();
-            }
-        } catch (Throwable ignored) {
-            // accessor missing on this mapping/version; skip custom name
-        }
-        return null;
     }
 
     @Override
@@ -352,22 +314,11 @@ public class NeoForgePlatform implements Platform {
 
     @Override
     public void runLater(Runnable task, long delaySeconds) {
-        if (task == null) {
-            return;
-        }
-        long delaySec = Math.max(0L, delaySeconds);
-        // Schedule on a managed ScheduledExecutorService so pending tasks can be
-        // cancelled on shutdown instead of leaking raw Thread.sleep threads.
-        ScheduledFuture<?> future = scheduledExecutor.schedule(() -> {
-            try {
-                task.run();
-            } catch (Throwable t) {
-                LOGGER.error("Error in delayed task", t);
-            }
-        }, delaySec, TimeUnit.SECONDS);
-        pendingDelayedTasks.add(future);
-        // Best-effort cleanup of completed futures to avoid unbounded growth.
-        pendingDelayedTasks.removeIf(f -> f.isDone());
+        // try/catch wrapping + pending-future bookkeeping lives in PlatformHelpers
+        // so the three mod-loader bridges share one copy; the executor and
+        // pending-Delayed-tasks collection stay as per-platform fields.
+        PlatformHelpers.safeSchedule(scheduledExecutor, pendingDelayedTasks,
+                task, delaySeconds, LOGGER);
     }
 
     /**
@@ -471,8 +422,6 @@ public class NeoForgePlatform implements Platform {
         broadcastMessage(component);
     }
     
-    private static final String COLOR_CODE_CHARS = "0123456789abcdefklmnorABCDEFKLMNOR";
-
     /**
      * Parse color codes in a message and convert to Component
      * Supports & color codes (e.g., &c for red, &l for bold)
@@ -484,31 +433,6 @@ public class NeoForgePlatform implements Platform {
             return Component.empty();
         }
 
-        return Component.literal(parseColorCodesToSection(message));
-    }
-
-    /**
-     * Replaces {@code &X} with {@code §X} only when {@code X} is a valid
-     * Minecraft color/format code. A bare {@code &} not followed by a valid
-     * code character is preserved as-is so plain text like {@code "Tom & Jerry"}
-     * is not corrupted into garbage section signs.
-     */
-    private static String parseColorCodesToSection(String message) {
-        if (message == null || message.isEmpty()) {
-            return message;
-        }
-        StringBuilder sb = new StringBuilder(message.length());
-        int len = message.length();
-        for (int i = 0; i < len; i++) {
-            char c = message.charAt(i);
-            if (c == '&' && i + 1 < len
-                    && COLOR_CODE_CHARS.indexOf(message.charAt(i + 1)) >= 0) {
-                sb.append('§').append(message.charAt(i + 1));
-                i++;
-            } else {
-                sb.append(c);
-            }
-        }
-        return sb.toString();
+        return Component.literal(PlatformHelpers.parseColorCodesToSection(message));
     }
 }
