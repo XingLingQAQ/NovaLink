@@ -45,6 +45,19 @@ class ChatHandler implements Listener {
     /** @var array<int, string> Known channel IDs (populated from ConfigSync / action responses) */
     private array $knownChannels = [];
 
+    /**
+     * Per-channel remote member cache (channelId => list of UUID strings).
+     *
+     * Mirrors the Java ChannelCommandService optimistic local-state update:
+     * MEMBER_JOIN adds the member to the channel's local roster and
+     * MEMBER_LEAVE removes it. Only remote membership pushed by the backend
+     * via ChannelUpdatePacket is tracked here; the local player's own
+     * active channel is held in {@see $playerChannels} and is never touched
+     * by these updates. Best-effort: a bad or missing dataJson logs a
+     * debug warning and leaves the cache intact.
+     */
+    private array $channelMembers = [];
+
     /** @var array<string, string> Pending channel action request ID => channelId */
     private array $pendingActions = [];
     
@@ -326,14 +339,188 @@ class ChatHandler implements Listener {
                 break;
                 
             case ChannelUpdatePacket::UPDATE_MEMBER_JOIN:
-            case ChannelUpdatePacket::UPDATE_MEMBER_LEAVE:
-                // Could notify channel members about joins/leaves
+                $this->applyMemberJoin($packet->channelId, $packet->dataJson);
                 break;
-                
+
+            case ChannelUpdatePacket::UPDATE_MEMBER_LEAVE:
+                $this->applyMemberLeave($packet->channelId, $packet->dataJson);
+                break;
+
             case ChannelUpdatePacket::UPDATE_CONFIG_CHANGED:
-                // Channel configuration changed, could refresh local cache
+                $this->applyConfigChanged($packet->channelId, $packet->dataJson);
                 break;
         }
+    }
+
+    /**
+     * Applies a MEMBER_JOIN update: adds the member UUID carried in dataJson
+     * to the local channel roster. Mirrors the Java ChannelCommandService
+     * optimistic local-state update for membership. Best-effort: a missing
+     * or malformed payload logs a warning and leaves the cache intact.
+     *
+     * dataJson shape: {"playerId": "<uuid>", "playerName": "<optional>"}
+     */
+    private function applyMemberJoin(string $channelId, string $dataJson): void {
+        if ($channelId === "") {
+            return;
+        }
+        $memberId = $this->extractMemberId($dataJson);
+        if ($memberId === "") {
+            $this->plugin->debug("ChannelUpdate MEMBER_JOIN: missing playerId, ignored");
+            return;
+        }
+        if (!isset($this->channelMembers[$channelId])) {
+            $this->channelMembers[$channelId] = [];
+        }
+        if (!in_array($memberId, $this->channelMembers[$channelId], true)) {
+            $this->channelMembers[$channelId][] = $memberId;
+        }
+        // The channel now exists locally, so track it as known too.
+        $this->addKnownChannel($channelId);
+    }
+
+    /**
+     * Applies a MEMBER_LEAVE update: removes the member UUID carried in
+     * dataJson from the local channel roster. Mirrors the Java
+     * ChannelCommandService optimistic local-state update for leave.
+     * Best-effort: a missing or malformed payload logs a warning and
+     * leaves the cache intact.
+     *
+     * dataJson shape: {"playerId": "<uuid>", "playerName": "<optional>"}
+     */
+    private function applyMemberLeave(string $channelId, string $dataJson): void {
+        if ($channelId === "") {
+            return;
+        }
+        $memberId = $this->extractMemberId($dataJson);
+        if ($memberId === "") {
+            $this->plugin->debug("ChannelUpdate MEMBER_LEAVE: missing playerId, ignored");
+            return;
+        }
+        if (!isset($this->channelMembers[$channelId])) {
+            return;
+        }
+        $this->channelMembers[$channelId] = array_values(
+            array_filter(
+                $this->channelMembers[$channelId],
+                static fn (string $id): bool => $id !== $memberId
+            )
+        );
+        if ($this->channelMembers[$channelId] === []) {
+            unset($this->channelMembers[$channelId]);
+        }
+    }
+
+    /**
+     * Applies a CONFIG_CHANGED update: refreshes the local known-channel
+     * list. When dataJson carries a full ConfigSync-shaped payload the
+     * same extraction logic as {@see handleConfigSync} is reused (the
+     * Java ConfigSyncChannels.extract contract). When dataJson is blank
+     * or carries only a per-channel config blob, we simply mark the
+     * channel as known so /nc list and tab completion stay consistent.
+     * Best-effort: a malformed payload logs a warning and leaves the
+     * existing registry intact.
+     */
+    private function applyConfigChanged(string $channelId, string $dataJson): void {
+        if ($dataJson !== "" && trim($dataJson) !== "") {
+            $decoded = json_decode($dataJson, true);
+            // ConfigSync-shaped payload (root object with global_channels /
+            // clients) -> reuse the full rebuild path.
+            if (is_array($decoded) && !array_is_list($decoded)
+                && (array_key_exists("global_channels", $decoded)
+                    || array_key_exists("clients", $decoded))
+            ) {
+                $this->rebuildKnownChannels($decoded);
+                return;
+            }
+        }
+        // Fall back: mark the named channel as known.
+        if ($channelId !== "") {
+            $this->addKnownChannel($channelId);
+        }
+    }
+
+    /**
+     * Rebuilds the known-channel registry from a decoded ConfigSync
+     * payload. Factored out of {@see handleConfigSync} so CONFIG_CHANGED
+     * can reuse the identical extraction when the backend pushes a full
+     * config blob. Mirrors Java ConfigSyncChannels.extract.
+     *
+     * @param array<string, mixed> $decoded
+     */
+    private function rebuildKnownChannels(array $decoded): void {
+        $channels = [];
+
+        if (array_key_exists("global_channels", $decoded)) {
+            $globals = $decoded["global_channels"];
+            if (is_array($globals) && !array_is_list($globals)) {
+                foreach (array_keys($globals) as $id) {
+                    $channels[(string) $id] = true;
+                }
+            } elseif ($globals !== null) {
+                $this->plugin->debug("ConfigSync: global_channels must be a mapping");
+            }
+        }
+
+        $username = $this->plugin->getConfigManager()->getBackendUsername();
+        if ($username !== "" && trim($username) !== "") {
+            if (array_key_exists("clients", $decoded)) {
+                $clients = $decoded["clients"];
+                if (is_array($clients) && array_is_list($clients)) {
+                    foreach ($clients as $entry) {
+                        if (!is_array($entry) || !array_key_exists("username", $entry)) {
+                            continue;
+                        }
+                        $entryUsername = $entry["username"];
+                        if (!is_string($entryUsername) || $entryUsername !== $username) {
+                            continue;
+                        }
+                        if (array_key_exists("channels", $entry)) {
+                            $clientChannels = $entry["channels"];
+                            if (is_array($clientChannels) && !array_is_list($clientChannels)) {
+                                foreach (array_keys($clientChannels) as $id) {
+                                    $channels[(string) $id] = true;
+                                }
+                            } elseif ($clientChannels !== null) {
+                                $this->plugin->debug("ConfigSync: client.channels must be a mapping");
+                            }
+                        }
+                        break;
+                    }
+                } elseif ($clients !== null) {
+                    $this->plugin->debug("ConfigSync: clients must be an array");
+                }
+            }
+        }
+
+        $sorted = array_keys($channels);
+        sort($sorted);
+
+        $this->knownChannels = array_values($sorted);
+    }
+
+    /**
+     * Extracts the member UUID from a ChannelUpdate dataJson payload.
+     *
+     * Accepts {"playerId": "<uuid>"} (the Java ChannelActionPacket extra
+     * name) and {"playerUuid": "<uuid>"} / {"uuid": "<uuid>"} as
+     * permissive fallbacks. Returns "" when the field is absent or not a
+     * non-empty string.
+     */
+    private function extractMemberId(string $dataJson): string {
+        if ($dataJson === "" || trim($dataJson) === "") {
+            return "";
+        }
+        $decoded = json_decode($dataJson, true);
+        if (!is_array($decoded)) {
+            return "";
+        }
+        foreach (["playerId", "playerUuid", "uuid", "memberId"] as $key) {
+            if (array_key_exists($key, $decoded) && is_string($decoded[$key]) && $decoded[$key] !== "") {
+                return $decoded[$key];
+            }
+        }
+        return "";
     }
 
     /**
@@ -393,57 +580,7 @@ class ChatHandler implements Listener {
             return;
         }
 
-        $channels = [];
-
-        // Global channels: keys of the global_channels mapping.
-        if (array_key_exists("global_channels", $decoded)) {
-            $globals = $decoded["global_channels"];
-            if (is_array($globals) && !array_is_list($globals)) {
-                foreach (array_keys($globals) as $id) {
-                    $channels[(string) $id] = true;
-                }
-            } elseif ($globals !== null) {
-                $this->plugin->debug("ConfigSync: global_channels must be a mapping");
-            }
-        }
-
-        // Per-client channels for this client only. Blank username -> globals
-        // only (matches the Java extractor).
-        $username = $this->plugin->getConfigManager()->getBackendUsername();
-        if ($username !== "" && trim($username) !== "") {
-            if (array_key_exists("clients", $decoded)) {
-                $clients = $decoded["clients"];
-                if (is_array($clients) && array_is_list($clients)) {
-                    foreach ($clients as $entry) {
-                        if (!is_array($entry) || !array_key_exists("username", $entry)) {
-                            continue;
-                        }
-                        $entryUsername = $entry["username"];
-                        if (!is_string($entryUsername) || $entryUsername !== $username) {
-                            continue;
-                        }
-                        if (array_key_exists("channels", $entry)) {
-                            $clientChannels = $entry["channels"];
-                            if (is_array($clientChannels) && !array_is_list($clientChannels)) {
-                                foreach (array_keys($clientChannels) as $id) {
-                                    $channels[(string) $id] = true;
-                                }
-                            } elseif ($clientChannels !== null) {
-                                $this->plugin->debug("ConfigSync: client.channels must be a mapping");
-                            }
-                        }
-                        break;
-                    }
-                } elseif ($clients !== null) {
-                    $this->plugin->debug("ConfigSync: clients must be an array");
-                }
-            }
-        }
-
-        $sorted = array_keys($channels);
-        sort($sorted);
-
-        $this->knownChannels = array_values($sorted);
+        $this->rebuildKnownChannels($decoded);
     }
 
     /**
@@ -547,6 +684,16 @@ class ChatHandler implements Listener {
         if ($channelId !== "" && !in_array($channelId, $this->knownChannels, true)) {
             $this->knownChannels[] = $channelId;
         }
+    }
+
+    /**
+     * Returns the remote member UUIDs cached for a channel, or an empty
+     * list when no MEMBER_JOIN/LEAVE updates have been received for it.
+     *
+     * @return array<int, string>
+     */
+    public function getChannelMembers(string $channelId): array {
+        return $this->channelMembers[$channelId] ?? [];
     }
 
     /**
