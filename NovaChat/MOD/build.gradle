@@ -3,7 +3,7 @@ plugins {
 }
 
 // Shared ext properties for all projects
-// Version targets as of 2026-07 (latest classic stable MC line: 1.21.11; calendar line: 26.2)
+// Version targets as of 2026-08 (latest classic stable MC line: 1.21.11; calendar line: 26.2)
 allprojects {
     ext {
         architecturyVersion = '13.0.8'
@@ -15,15 +15,13 @@ allprojects {
         forgeVersion = '1.21.11-61.1.14'
         minecraftVersion = '1.21.11'
 
-        nettyVersion = '4.1.100.Final'
-        snakeYamlVersion = '2.2'
-        gsonVersion = '2.10.1'
-        slf4jVersion = '2.0.9'
-        logbackVersion = '1.4.14'
-
-        junitVersion = '5.10.1'
-        jqwikVersion = '1.8.2'
-        assertjVersion = '3.24.2'
+        // nettyVersion, snakeYamlVersion, gsonVersion, slf4jVersion,
+        // logbackVersion, junitVersion, jqwikVersion, assertjVersion are
+        // declared in the root build.gradle subprojects { ext { ... } } block
+        // and inherited here. Re-declaring them would silently desync the MOD
+        // subtree from the rest of the monorepo if root bumps a version.
+        // mockitoVersion / guavaVersion / jjwtVersion are also root-declared;
+        // MOD subprojects that need them (common) reference root's ext values.
     }
 }
 

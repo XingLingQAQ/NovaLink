@@ -5,7 +5,9 @@ plugins {
     // `No such property: mode for StubbedFileCopyDetails` during the jar transform.
     // The GradleUp fork fixes this and publishes 8.3.x+ for Gradle 9 compatibility.
     // Verified working: 8.3.6 on Gradle 9.6.1 (JDK 21 toolchain).
-    id 'com.gradleup.shadow' version '8.3.6'
+    // Unified with folia/pnx/sponge on 9.6.1: core uses only mergeServiceFiles(),
+    // manifest, and archiveClassifier -- all supported by 9.x.
+    id 'com.gradleup.shadow' version '9.6.1'
 }
 
 java {
