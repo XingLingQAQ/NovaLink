@@ -114,8 +114,8 @@ public class ChatMessagePacket extends Packet {
 
         placeholders = new HashMap<>(Math.min(size, 64));
         for (int i = 0; i < size; i++) {
-            String key = PacketBuffer.readString(buf, 128);
-            String value = PacketBuffer.readString(buf, 512);
+            String key = PacketBuffer.readString(buf, ProtocolLimits.MAX_METADATA_KEY);
+            String value = PacketBuffer.readString(buf, ProtocolLimits.MAX_METADATA_VALUE);
             placeholders.put(key, value);
         }
     }
