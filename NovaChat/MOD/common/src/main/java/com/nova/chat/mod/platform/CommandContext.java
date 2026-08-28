@@ -73,4 +73,51 @@ public class CommandContext {
             platform.sendMessage(playerId, LegacyColorCodes.ampersandToSection(message));
         }
     }
+
+    /**
+     * Sends an error line to this context's native source, converting {@code &}
+     * color codes to {@code §} via the unsafe {@code replace("&","§")} path
+     * (preserving the loader-style conversion — distinct from the safe
+     * {@link LegacyColorCodes#ampersandToSection} used by {@link #sendMessage}).
+     * Delegates to {@link #dispatchFailure} so loaders carrying a brigadier
+     * {@code CommandSourceStack} route to the source directly; the default
+     * routes through the attached {@link Platform}.
+     *
+     * @param message the error message with optional {@code &} color codes
+     */
+    public void sendError(String message) {
+        if (message != null) {
+            dispatchFailure(message.replace("&", "§"));
+        }
+    }
+
+    /**
+     * Bridge for sending a {@code §}-converted success line to this context's
+     * native command source. Loaders override to wrap the string in a native
+     * {@code Component} and dispatch via the brigadier source; the default
+     * routes through the attached {@link Platform}. The argument already carries
+     * {@code §}-style codes — no MC types cross this boundary so the common layer
+     * stays Minecraft-free (method A).
+     *
+     * @param sectionMessage the message with {@code §} color codes
+     */
+    protected void dispatchSuccess(String sectionMessage) {
+        if (platform != null && playerId != null) {
+            platform.sendMessage(playerId, sectionMessage);
+        }
+    }
+
+    /**
+     * Bridge for sending a {@code §}-converted failure line to this context's
+     * native command source. Loaders override to wrap the string in a native
+     * {@code Component} and dispatch via the brigadier source; the default
+     * routes through the attached {@link Platform}.
+     *
+     * @param sectionMessage the message with {@code §} color codes
+     */
+    protected void dispatchFailure(String sectionMessage) {
+        if (platform != null && playerId != null) {
+            platform.sendMessage(playerId, sectionMessage);
+        }
+    }
 }

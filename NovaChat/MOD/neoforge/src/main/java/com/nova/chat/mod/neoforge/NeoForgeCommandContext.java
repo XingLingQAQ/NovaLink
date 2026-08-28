@@ -8,36 +8,46 @@ import net.minecraft.network.chat.Component;
 import java.util.UUID;
 
 /**
- * NeoForge-specific command context that provides proper message sending
+ * NeoForge-specific command context that bridges {@link #dispatchSuccess} and
+ * {@link #dispatchFailure} to the brigadier {@link CommandSourceStack}. The
+ * {@code &}→{@code §} conversion happens once in the base {@link CommandContext};
+ * this shim only wraps the converted string in a {@code Component} and dispatches
+ * via the source — keeping all MC types out of the common layer (method A).
  */
 public class NeoForgeCommandContext extends CommandContext {
     private final CommandSourceStack source;
-    
+
     public NeoForgeCommandContext(UUID playerId, String playerName, Platform platform, boolean isAdmin, CommandSourceStack source) {
         super(playerId, playerName, platform, isAdmin);
         this.source = source;
     }
-    
+
+    /**
+     * Routes to the brigadier source via {@link #dispatchSuccess} using the
+     * unsafe {@code replace("&","§")} conversion (preserving the loader-style
+     * split from the base {@link CommandContext#sendMessage} safe path).
+     */
     @Override
     public void sendMessage(String message) {
-        if (source != null) {
-            // Convert color codes and send
-            String converted = message.replace("&", "§");
-            source.sendSuccess(() -> Component.literal(converted), false);
+        if (message != null) {
+            dispatchSuccess(message.replace("&", "§"));
         }
     }
-    
-    /**
-     * Send an error message to the player
-     * @param message the error message
-     */
-    public void sendError(String message) {
+
+    @Override
+    protected void dispatchSuccess(String sectionMessage) {
         if (source != null) {
-            String converted = message.replace("&", "§");
-            source.sendFailure(Component.literal(converted));
+            source.sendSuccess(() -> Component.literal(sectionMessage), false);
         }
     }
-    
+
+    @Override
+    protected void dispatchFailure(String sectionMessage) {
+        if (source != null) {
+            source.sendFailure(Component.literal(sectionMessage));
+        }
+    }
+
     /**
      * Get the command source stack
      * @return the command source stack
