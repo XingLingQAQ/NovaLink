@@ -49,8 +49,6 @@ function formatSlowMode(t, value) {
 function ChannelManagement({
   theme,
   mode,
-  txtMain: _txtMain,
-  txtSec: _txtSec,
   channels = [],
   onCreateChannel,
   onEditChannel,
@@ -58,7 +56,6 @@ function ChannelManagement({
   onInviteChannel,
   role,
 }) {
-  void _txtMain; void _txtSec;
   const { t } = useTranslation();
   const canManage = can(role, 'channels.manage');
   const [searchQuery, setSearchQuery] = useState('');

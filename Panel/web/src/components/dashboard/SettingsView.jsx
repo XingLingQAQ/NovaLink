@@ -85,8 +85,6 @@ function SettingsView({
   onDeleteWebhook,
   onUpdateWebhook,
   onTestWebhook,
-  txtMain,
-  txtSec,
   settingsSubTab,
   onSettingsSubTabChange,
 }) {
@@ -345,8 +343,6 @@ function SettingsView({
           <WebhookManagement
             theme={theme}
             mode={mode}
-            txtMain={txtMain}
-            txtSec={txtSec}
             webhooks={webhooks || []}
             loading={!!webhooksLoading}
             onCreateWebhook={onCreateWebhook}

@@ -18,8 +18,6 @@ import { isBedrockPlatform } from '../../utils/adapters';
 function MessageMonitor({
   theme,
   mode,
-  txtMain: _txtMain,
-  txtSec: _txtSec,
   messages = [],
   channels = [],
   onChannelSelectionChange,
@@ -30,7 +28,6 @@ function MessageMonitor({
   setConsoleAutoScroll: externalSetAutoScroll,
   role,
 }) {
-  void _txtMain; void _txtSec;
   const { t } = useTranslation();
   const canSend = can(role, 'messages.send');
   const [chatFilter, setChatFilter] = useState('all');

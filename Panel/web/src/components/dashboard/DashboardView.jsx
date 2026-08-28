@@ -23,8 +23,7 @@ import Badge from '../ui/Badge';
 import Avatar from '../ui/Avatar';
 import { platformLabel, isBedrockPlatform } from '../../utils/adapters';
 
-function DashboardView({ theme: _theme, mode: _mode, txtMain: _txtMain, txtSec: _txtSec, servers, channels, players, chatMessages, dashboardStats, statIconMap }) {
-  void _theme; void _mode; void _txtMain; void _txtSec;
+function DashboardView({ servers, channels, players, chatMessages, dashboardStats, statIconMap }) {
   const { t } = useTranslation();
   // Use the pre-built stats from real backend data if provided; otherwise fall back to computed.
   // The adapter supplies i18n keys + interpolation params; translate them here

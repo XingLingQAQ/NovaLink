@@ -25,18 +25,4 @@ export function desiredChannelSubscriptions(channels, activeTab, selectedChannel
     .map((channel) => channel.id);
 }
 
-/** Computes subscribe/unsubscribe commands needed to reach an exact desired set. */
-export function subscriptionDelta(desiredChannels, subscribedChannels, pendingChannels) {
-  const desired = new Set(desiredChannels || []);
-  const subscribed = new Set(subscribedChannels || []);
-  const pending = new Set(pendingChannels || []);
-  const obsolete = new Set(
-    [...subscribed, ...pending].filter((channel) => !desired.has(channel)),
-  );
-  const missing = [...desired].filter(
-    (channel) => !subscribed.has(channel) && !pending.has(channel),
-  );
-  return { subscribe: missing, unsubscribe: [...obsolete] };
-}
-
 export default desiredChannelSubscriptions;

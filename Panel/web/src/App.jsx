@@ -293,10 +293,6 @@ function Dashboard({ currentUser, onLogout }) {
                   {/* Dashboard - System Overview */}
                   {activeTab === 'dashboard' && (
                     <DashboardView
-                      theme="clean"
-                      mode={mode}
-                      txtMain={txtMain}
-                      txtSec={txtSec}
                       servers={servers}
                       channels={data.channels}
                       players={data.players}
@@ -311,8 +307,6 @@ function Dashboard({ currentUser, onLogout }) {
                     <MessageMonitor
                       theme="clean"
                       mode={mode}
-                      txtMain={txtMain}
-                      txtSec={txtSec}
                       messages={chatMessages}
                       channels={data.channels}
                       onChannelSelectionChange={setLiveChannelSelection}
@@ -340,8 +334,6 @@ function Dashboard({ currentUser, onLogout }) {
                     <ConsoleCommand
                       theme="clean"
                       mode={mode}
-                      txtMain={txtMain}
-                      txtSec={txtSec}
                     />
                   )}
 
@@ -350,8 +342,6 @@ function Dashboard({ currentUser, onLogout }) {
                     <ClientStatus
                       theme="clean"
                       mode={mode}
-                      txtMain={txtMain}
-                      txtSec={txtSec}
                       servers={servers}
                       onReloadConfig={data.handleReloadConfig}
                       onDisconnectServer={(server) => setDisconnectTarget(server)}
@@ -365,8 +355,6 @@ function Dashboard({ currentUser, onLogout }) {
                     <ChannelManagement
                       theme="clean"
                       mode={mode}
-                      txtMain={txtMain}
-                      txtSec={txtSec}
                       channels={data.channels}
                       onCreateChannel={data.handleCreateChannel}
                       onEditChannel={data.handleEditChannel}
@@ -381,8 +369,6 @@ function Dashboard({ currentUser, onLogout }) {
                     <PlayerManagement
                       theme="clean"
                       mode={mode}
-                      txtMain={txtMain}
-                      txtSec={txtSec}
                       players={data.players}
                       channels={data.channels}
                       mutedPlayers={data.mutedPlayers}

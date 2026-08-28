@@ -17,6 +17,30 @@ export {
 } from './connectionUrls.js';
 
 /**
+ * Single 401 → refresh → retry wrapper shared by apiFetch and getMetrics.
+ * The `runner` callback performs the fetch and should rebuild its auth
+ * header from `authService.getAuthHeader()` on each invocation, so a
+ * successful refresh is picked up automatically on the retry. On a 401
+ * from the first attempt we refresh the access token once and call
+ * `runner` again; a refresh-induced 401 is surfaced, not retried, so we
+ * never recurse infinitely. Centralizes the duplicated 401-handling
+ * that previously lived in both apiFetch and getMetrics (MED1).
+ * @param {function} runner - () => Promise<Response>
+ * @param {string} base - API base URL (for refreshAccessToken)
+ * @returns {Promise<Response>} the (possibly retried) fetch Response
+ */
+async function withTokenRefresh(runner, base) {
+  let response = await runner();
+  if (response.status === 401) {
+    const newToken = await authService.refreshAccessToken(base);
+    if (newToken) {
+      response = await runner();
+    }
+  }
+  return response;
+}
+
+/**
  * Perform a fetch against the REST API with auth headers.
  * On 401, transparently attempts a single token refresh + retry before
  * surfacing the error (avoids kicking the user on a stale-but-refreshable
@@ -30,15 +54,20 @@ export {
 export async function apiFetch(path, options = {}, _isRetry = false) {
   const base = getApiBaseUrl();
   const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
-  const headers = {
+
+  const buildHeaders = () => ({
     'Content-Type': 'application/json',
     ...authService.getAuthHeader(),
     ...(options.headers || {}),
-  };
+  });
+
+  const runner = () => fetch(url, { ...options, headers: buildHeaders() });
 
   let response;
   try {
-    response = await fetch(url, { ...options, headers });
+    // _isRetry guard: a refresh-induced 401 (or a refresh endpoint 401)
+    // surfaces directly without recursing into withTokenRefresh again.
+    response = _isRetry ? await runner() : await withTokenRefresh(runner, base);
   } catch (err) {
     throw new Error(i18n.t('common.api_error_connect', { error: err.message || err }));
   }
@@ -50,18 +79,6 @@ export async function apiFetch(path, options = {}, _isRetry = false) {
       data = JSON.parse(text);
     } catch {
       data = { raw: text };
-    }
-  }
-
-  // 401: try a single token refresh + retry before giving up. The _isRetry
-  // guard ensures a refresh-induced 401 (or a refresh endpoint 401) doesn't
-  // recurse infinitely.
-  if (response.status === 401 && !_isRetry) {
-    // AuthService owns the single deterministic logout. Its actual refresh
-    // error deliberately propagates to every caller sharing the refresh.
-    const newToken = await authService.refreshAccessToken(base);
-    if (newToken) {
-      return apiFetch(path, options, true);
     }
   }
 
@@ -431,21 +448,13 @@ export async function getHealth() {
 export async function getMetrics() {
   const base = getApiBaseUrl();
   const url = `${base}/metrics`;
-  const headers = { ...authService.getAuthHeader() };
+  const buildHeaders = () => ({ ...authService.getAuthHeader() });
+  const runner = () => fetch(url, { headers: buildHeaders() });
   let response;
   try {
-    response = await fetch(url, { headers });
+    response = await withTokenRefresh(runner, base);
   } catch (err) {
     throw new Error(i18n.t('common.api_error_connect', { error: err.message || err }));
-  }
-  if (response.status === 401) {
-    // Mirror apiFetch's single-refresh retry so a stale-but-refreshable token
-    // doesn't kick the user out of the status page.
-    const newToken = await authService.refreshAccessToken(base);
-    if (newToken) {
-      headers.Authorization = `Bearer ${newToken}`;
-      response = await fetch(url, { headers });
-    }
   }
   const text = await response.text();
   if (!response.ok) {

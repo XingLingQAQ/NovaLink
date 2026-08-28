@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 
 import {
   desiredChannelSubscriptions,
-  subscriptionDelta,
 } from './channelSubscriptions.js';
 
 const channels = [
@@ -37,18 +36,4 @@ test('private channels require explicit selection and backend authorization', ()
 
 test('views without live chat keep no channel subscriptions', () => {
   assert.deepEqual(desiredChannelSubscriptions(channels, 'history'), []);
-});
-
-test('a reconnected session subscribes only to the latest desired set', () => {
-  assert.deepEqual(
-    subscriptionDelta(['global', 'survival'], [], []),
-    { subscribe: ['global', 'survival'], unsubscribe: [] },
-  );
-});
-
-test('channels removed while subscribe is in flight are unsubscribed', () => {
-  assert.deepEqual(
-    subscriptionDelta(['global'], ['global', 'old-server'], ['old-private']),
-    { subscribe: [], unsubscribe: ['old-server', 'old-private'] },
-  );
 });

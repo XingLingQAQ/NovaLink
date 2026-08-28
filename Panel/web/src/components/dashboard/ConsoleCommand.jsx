@@ -15,8 +15,7 @@ import Button from '../ui/Button';
 import Badge from '../ui/Badge';
 import { api } from '../../services/api';
 
-function ConsoleCommand({ theme, mode, txtMain: _txtMain, txtSec: _txtSec }) {
-  void _txtMain; void _txtSec;
+function ConsoleCommand({ theme, mode }) {
   const { t } = useTranslation();
   const [input, setInput] = useState('');
   const [history, setHistory] = useState([]); // [{ command, output, error }]

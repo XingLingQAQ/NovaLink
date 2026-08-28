@@ -38,8 +38,6 @@ import { can } from '../../lib/permissions';
 function PlayerManagement({
   theme,
   mode,
-  txtMain: _txtMain,
-  txtSec: _txtSec,
   players = [],
   channels = [],
   mutedPlayers = [],
@@ -51,7 +49,6 @@ function PlayerManagement({
   onUnbanPlayer,
   role,
 }) {
-  void _txtMain; void _txtSec;
   const { t } = useTranslation();
   const canPunish = can(role, 'punish');
   const [tab, setTab] = useState('online');

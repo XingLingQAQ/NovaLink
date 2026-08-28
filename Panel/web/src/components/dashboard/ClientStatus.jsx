@@ -29,15 +29,12 @@ import { platformLabel } from '../../utils/adapters';
 function ClientStatus({
   theme,
   mode,
-  txtMain: _txtMain,
-  txtSec: _txtSec,
   servers = [],
   onReloadConfig,
   onDisconnectServer,
   onViewServerDetails,
   role,
 }) {
-  void _txtMain; void _txtSec;
   const { t } = useTranslation();
   const canReload = can(role, 'config.reload');
   const canDisconnect = can(role, 'clients.disconnect');

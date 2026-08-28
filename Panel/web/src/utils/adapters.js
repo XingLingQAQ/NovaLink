@@ -30,6 +30,11 @@
 import { Globe, Hash, Lock, Shield, AlertTriangle, CheckCircle, Info, UserX } from 'lucide-react';
 import i18n from '../i18n';
 
+// Module-level counter for synthesizing unique notification ids when the
+// backend payload omits one. Appended to the timestamp so two notifications
+// sharing the same millisecond still get distinct ids (HIGH2).
+let _synthNotifCounter = 0;
+
 /**
  * Map a backend channel scope to the component "type" field.
  * ChannelScope enum: GLOBAL | SERVER | PRIVATE
@@ -352,7 +357,7 @@ export function adaptNotification(notifJson) {
     type = 'warning';
     icon = AlertTriangle;
   } else if (level === 'error' || level === 'danger') {
-    type = 'warning';
+    type = 'error';
     icon = AlertTriangle;
   } else if (level === 'success') {
     type = 'success';
@@ -362,7 +367,7 @@ export function adaptNotification(notifJson) {
     icon = UserX;
   }
   return {
-    id: notifJson.id || `notif-${notifJson.timestamp || Date.now()}`,
+    id: notifJson.id || `notif-${notifJson.timestamp || Date.now()}-${_synthNotifCounter++}`,
     title: notifJson.title || i18n.t('notifications.default_title'),
     desc: notifJson.desc || notifJson.message || notifJson.description || '',
     time: notifJson.time || i18n.t('notifications.default_time'),
@@ -535,7 +540,7 @@ export function buildDashboardStats(statusJson, servers, channels, chatMessages)
  */
 export function formatRemainingMs(remainingMs, opts = {}) {
   const permanentLabel = opts.permanentLabel || i18n.t('players.expire_permanent');
-  const expiredLabel = opts.expiredLabel || i18n.t('players.expire_permanent');
+  const expiredLabel = opts.expiredLabel || i18n.t('players.ban_expired');
   if (remainingMs == null) return permanentLabel;
   if (remainingMs === -1) return permanentLabel;
   if (remainingMs <= 0) return expiredLabel;

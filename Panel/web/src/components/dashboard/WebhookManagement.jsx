@@ -37,8 +37,6 @@ import { can } from '../../lib/permissions';
 function WebhookManagement({
   theme,
   mode,
-  txtMain: _txtMain,
-  txtSec: _txtSec,
   webhooks = [],
   onCreateWebhook,
   onDeleteWebhook,
@@ -47,7 +45,6 @@ function WebhookManagement({
   loading = false,
   role,
 }) {
-  void _txtMain; void _txtSec;
   const { t } = useTranslation();
   const canManage = can(role, 'webhooks.manage');
   const [searchQuery, setSearchQuery] = useState('');
