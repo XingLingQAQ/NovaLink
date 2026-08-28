@@ -143,6 +143,19 @@ final class ProtocolLimits {
     public const MAX_METADATA_VALUE = 512;
 
     /**
+     * Max number of entries in a metadata/extra/placeholder map. A corrupted or
+     * hostile frame can declare a huge VarInt map size and force an oversized
+     * allocation (or a long read loop) before any single entry is read; this
+     * count cap rejects the frame up front. Mirrors the original
+     * `size > 1000` defensive guard in ChatMessagePacket /
+     * ChannelActionResponsePacket. Non-JVM mirror: identical value to the JVM
+     * `ProtocolLimits::MAX_MAP_ENTRIES`. This is an entry count, not a byte
+     * length, but it is still well under MAX_FRAME_LENGTH so the per-field
+     * invariant (every limit <= MAX_FRAME_LENGTH) holds.
+     */
+    public const MAX_MAP_ENTRIES = 1000;
+
+    /**
      * All per-field limit constants (everything except the two frame-level
      * constants MAX_FRAME_LENGTH / MAX_CONFIG_SYNC_JSON). Used by the
      * invariant test that asserts each per-field limit is <= MAX_FRAME_LENGTH.
@@ -171,6 +184,7 @@ final class ProtocolLimits {
             self::MAX_ACTION_JSON,
             self::MAX_METADATA_KEY,
             self::MAX_METADATA_VALUE,
+            self::MAX_MAP_ENTRIES,
         ];
     }
 }

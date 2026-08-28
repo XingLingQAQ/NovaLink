@@ -103,7 +103,7 @@ public class ChannelActionResponsePacket extends Packet {
             return;
         }
 
-        if (size < 0 || size > 1000) {
+        if (size < 0 || size > ProtocolLimits.MAX_MAP_ENTRIES) {
             extra = new HashMap<>();
             return;
         }
