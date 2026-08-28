@@ -18,9 +18,11 @@ import java.util.stream.Collectors;
  * {@link #setDatabaseProvider(DatabaseProvider)} (or the accepting constructor),
  * every {@link #createChannel}, {@link #deleteChannel} and {@link #updateChannel}
  * write-through to the database so the REST and TCP paths stay consistent and
- * channels survive a backend restart. DB failures are logged at WARN and never
- * propagate: the in-memory operation still succeeds (the channel remains
- * available for this process lifetime even if the sink is temporarily down).
+ * channels survive a backend restart. The in-memory mutation is applied first,
+ * then the DB write; on DB failure the in-memory mutation is rolled back and an
+ * {@link IllegalStateException} is propagated to the caller so the user sees an
+ * error instead of a silent success that leaves the registry ahead of the sink.
+ * When no provider is wired the helpers early-return and behave memory-only.
  *
  * Requirements: 3.1, 3.4
  */
@@ -141,7 +143,25 @@ public class ChannelManager {
 
         logger.info("Created channel: {} (scope={}, client={}, source={})",
                 channelId, config.getScope(), config.getClientId(), channel.getSource());
-        persistChannel(channel);
+        try {
+            persistChannel(channel);
+        } catch (RuntimeException | DatabaseException e) {
+            // Roll back the in-memory mutation so the registry does not get
+            // ahead of the DB, then surface the failure to the caller.
+            channels.remove(channelId);
+            if (config.getScope() == ChannelScope.GLOBAL) {
+                globalChannels.remove(channelId);
+            } else {
+                Set<String> clientChannels = channelsByClient.get(config.getClientId());
+                if (clientChannels != null) {
+                    clientChannels.remove(channelId);
+                }
+            }
+            logger.warn("Rolled back in-memory create of channel '{}' after persistence failure: {}",
+                    channelId, e.getMessage());
+            throw new IllegalStateException(
+                    "Failed to persist channel '" + channelId + "': " + e.getMessage(), e);
+        }
         return channel;
     }
 
@@ -156,7 +176,7 @@ public class ChannelManager {
         if (channel == null) {
             return false;
         }
-        
+
         // Remove from indexes
         if (channel.getScope() == ChannelScope.GLOBAL) {
             globalChannels.remove(channelId);
@@ -166,9 +186,25 @@ public class ChannelManager {
                 clientChannels.remove(channelId);
             }
         }
-        
+
         logger.info("Deleted channel: {}", channelId);
-        deletePersistedChannel(channelId);
+        try {
+            deletePersistedChannel(channelId);
+        } catch (RuntimeException | DatabaseException e) {
+            // Restore the channel and its indexes so the registry does not
+            // get ahead of the DB, then surface the failure to the caller.
+            channels.put(channelId, channel);
+            if (channel.getScope() == ChannelScope.GLOBAL) {
+                globalChannels.add(channelId);
+            } else {
+                channelsByClient.computeIfAbsent(channel.getClientId(), k -> ConcurrentHashMap.newKeySet())
+                        .add(channelId);
+            }
+            logger.warn("Rolled back in-memory delete of channel '{}' after persistence failure: {}",
+                    channelId, e.getMessage());
+            throw new IllegalStateException(
+                    "Failed to delete persisted channel '" + channelId + "': " + e.getMessage(), e);
+        }
         return true;
     }
 
@@ -315,6 +351,12 @@ public class ChannelManager {
         if (channel == null) {
             return null;
         }
+        // Snapshot the mutable fields so we can roll back on persistence failure
+        // and keep the registry consistent with the DB.
+        String prevDisplayName = channel.getDisplayName();
+        int prevMaxCapacity = channel.getMaxCapacity();
+        String prevPermission = channel.getPermission();
+        long prevRevision = channel.getRevision();
         boolean changed = false;
         if (displayName != null) {
             channel.setDisplayName(displayName);
@@ -338,7 +380,20 @@ public class ChannelManager {
         }
         logger.info("Updated channel: {} (displayName={}, maxCapacity={}, permission={}, permissionPresent={})",
                 channelId, displayName, maxCapacity, permission, permissionPresent);
-        persistChannel(channel);
+        try {
+            persistChannel(channel);
+        } catch (RuntimeException | DatabaseException e) {
+            // Restore the pre-update state so the registry does not get ahead
+            // of the DB, then surface the failure to the caller.
+            channel.setDisplayName(prevDisplayName);
+            channel.setMaxCapacity(prevMaxCapacity);
+            channel.setPermission(prevPermission);
+            channel.setRevision(prevRevision);
+            logger.warn("Rolled back in-memory update of channel '{}' after persistence failure: {}",
+                    channelId, e.getMessage());
+            throw new IllegalStateException(
+                    "Failed to persist update of channel '" + channelId + "': " + e.getMessage(), e);
+        }
         return channel;
     }
 
@@ -409,38 +464,28 @@ public class ChannelManager {
 
     /**
      * Write-through save of a channel to the database, if a provider is wired.
-     * Failures are logged at WARN and swallowed so the in-memory operation
-     * still succeeds — a temporarily-down sink must not break channel lifecycle.
+     * Propagates {@link DatabaseException} (and any runtime exception) so the
+     * caller can roll back the in-memory mutation and surface the failure — a
+     * temporarily-down sink must not leave the registry ahead of the DB.
      */
-    private void persistChannel(Channel channel) {
+    private void persistChannel(Channel channel) throws DatabaseException {
         DatabaseProvider db = this.databaseProvider;
         if (db == null || channel == null) {
             return;
         }
-        try {
-            db.saveChannel(channel);
-        } catch (DatabaseException e) {
-            logger.warn("Failed to persist channel '{}': {}", channel.getId(), e.getMessage());
-        } catch (Exception e) {
-            logger.warn("Unexpected error persisting channel '{}': {}", channel.getId(), e.getMessage());
-        }
+        db.saveChannel(channel);
     }
 
     /**
      * Write-through delete of a channel from the database, if a provider is wired.
-     * Failures are logged at WARN and swallowed (same rationale as {@link #persistChannel}).
+     * Propagates {@link DatabaseException} (and any runtime exception) so the
+     * caller can roll back the in-memory mutation (same rationale as {@link #persistChannel}).
      */
-    private void deletePersistedChannel(String channelId) {
+    private void deletePersistedChannel(String channelId) throws DatabaseException {
         DatabaseProvider db = this.databaseProvider;
         if (db == null || channelId == null) {
             return;
         }
-        try {
-            db.deleteChannel(channelId);
-        } catch (DatabaseException e) {
-            logger.warn("Failed to delete persisted channel '{}': {}", channelId, e.getMessage());
-        } catch (Exception e) {
-            logger.warn("Unexpected error deleting persisted channel '{}': {}", channelId, e.getMessage());
-        }
+        db.deleteChannel(channelId);
     }
 }
