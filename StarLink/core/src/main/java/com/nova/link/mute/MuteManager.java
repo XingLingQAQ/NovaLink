@@ -8,18 +8,26 @@ import com.nova.link.channel.ChannelScope;
 import com.nova.link.database.DatabaseException;
 import com.nova.link.database.DatabaseProvider;
 import com.nova.link.database.MuteInfo;
+import com.nova.link.moderation.AbstractModerationManager;
+import com.nova.link.moderation.DurationUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 
 /**
  * Manages mute operations for players in channels.
- * 
+ *
+ * <p>Cache, lifecycle (cleanup executor), console-sentinel bypass and
+ * trusted-operator bypass are inherited from
+ * {@link AbstractModerationManager}. This class keeps the mute-specific
+ * validation logic, the static duration helpers ({@link #getMaxDuration} /
+ * {@link #isValidDuration}) and the public {@code mutePlayer} /
+ * {@code unmutePlayer} signatures.
+ *
  * Requirements:
  * - 13.1: Record mute information when admin executes mute command
  * - 13.2: Reject messages from muted players and return mute notification
@@ -28,7 +36,7 @@ import java.util.concurrent.TimeUnit;
  * - 13.5: Super admin: any channel, no limit
  * - 13.6: Auto-unmute when mute expires
  */
-public class MuteManager {
+public class MuteManager extends AbstractModerationManager<MuteInfo> {
 
     private static final Logger logger = LoggerFactory.getLogger(MuteManager.class);
 
@@ -38,78 +46,15 @@ public class MuteManager {
     /** Maximum mute duration for client admins: 24 hours in milliseconds */
     public static final long CLIENT_ADMIN_MAX_DURATION_MS = 24 * 60 * 60 * 1000L;
 
-    /** In-memory cache of mutes: playerId -> (channelId -> MuteInfo) */
-    private final Map<UUID, Map<String, MuteInfo>> muteCache = new ConcurrentHashMap<>();
-
-    /** Key for global mutes in the map */
-    private static final String GLOBAL_MUTE_KEY = "__global__";
-
-    private final DatabaseProvider databaseProvider;
-    private final PermissionManager permissionManager;
-    private final ChannelManager channelManager;
-
-    /**
-     * Optional notification store. When set, successful mute/unmute operations
-     * create a persisted + broadcast notification. Injected via setter to keep
-     * the constructor signature stable.
-     */
-    private com.nova.link.notification.NotificationStore notificationStore;
-
-    private ScheduledExecutorService cleanupExecutor;
-
     public MuteManager(DatabaseProvider databaseProvider,
                        PermissionManager permissionManager,
                        ChannelManager channelManager) {
-        this.databaseProvider = databaseProvider;
-        this.permissionManager = permissionManager;
-        this.channelManager = channelManager;
+        super(databaseProvider, permissionManager, channelManager);
     }
-
-    /**
-     * Sets the optional notification store so mute/unmute events are persisted
-     * and broadcast to the web panel.
-     */
-    public void setNotificationStore(com.nova.link.notification.NotificationStore notificationStore) {
-        this.notificationStore = notificationStore;
-    }
-
-    /**
-     * Initializes the mute manager and starts the cleanup task.
-     */
-    public void initialize() {
-        // Start periodic cleanup of expired mutes
-        cleanupExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "MuteManager-Cleanup");
-            t.setDaemon(true);
-            return t;
-        });
-        cleanupExecutor.scheduleAtFixedRate(this::cleanupExpiredMutes, 1, 1, TimeUnit.MINUTES);
-        logger.info("MuteManager initialized with periodic cleanup");
-    }
-
-    /**
-     * Shuts down the mute manager.
-     */
-    public void shutdown() {
-        if (cleanupExecutor != null) {
-            cleanupExecutor.shutdown();
-            try {
-                if (!cleanupExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    cleanupExecutor.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                cleanupExecutor.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-        }
-        muteCache.clear();
-        logger.info("MuteManager shutdown");
-    }
-
 
     /**
      * Mutes a player in a channel.
-     * 
+     *
      * Requirements:
      * - 13.1: Record mute information
      * - 13.3: Channel admin: own channels, max 1 hour
@@ -157,13 +102,7 @@ public class MuteManager {
         // though the handler already authorized the console sentinel.
         // Trusted operators (panel RBAC pre-authorized) get the same bypass while
         // keeping their own UUID for attribution.
-        PermissionLevel operatorLevel;
-        if (trustedOperator
-                || (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L)) {
-            operatorLevel = PermissionLevel.SUPER_ADMIN;
-        } else {
-            operatorLevel = permissionManager.getPermissionLevel(operatorId, channelId);
-        }
+        PermissionLevel operatorLevel = resolveOperatorLevel(operatorId, channelId, trustedOperator);
 
         // Validate permission and scope
         MuteResult validationResult = validateMutePermission(
@@ -179,36 +118,31 @@ public class MuteManager {
         MuteInfo muteInfo = new MuteInfo(channelId, expireTime, reason, operatorId);
 
         // Store in cache
-        String cacheKey = channelId != null ? channelId : GLOBAL_MUTE_KEY;
-        muteCache.computeIfAbsent(targetPlayerId, k -> new ConcurrentHashMap<>())
-                .put(cacheKey, muteInfo);
+        putInCache(targetPlayerId, cacheKeyFor(channelId), muteInfo);
 
         // Persist to database
-        if (databaseProvider != null) {
-            try {
-                databaseProvider.saveMute(targetPlayerId, muteInfo);
-            } catch (DatabaseException e) {
-                logger.error("Failed to persist mute for player {}: {}", targetPlayerId, e.getMessage());
-                // Continue - mute is still in cache
-            }
-        }
+        persistToDb(targetPlayerId, muteInfo);
 
         logger.info("Player {} muted in channel {} by {} for {} ms. Reason: {}",
                 targetPlayerId, channelId, operatorId, durationMs, reason);
 
+        // Notify the optional notification store (panel feed).
         if (notificationStore != null) {
             try {
                 String scope = channelId != null ? channelId : "global";
                 notificationStore.createNotification(
                         "Player Muted",
                         "Player " + targetPlayerId + " muted in " + scope
-                                + " for " + describeDuration(durationMs)
+                                + " for " + DurationUtils.describeDuration(durationMs)
                                 + ". Reason: " + (reason != null ? reason : "-"),
                         "warning");
             } catch (Exception e) {
                 logger.debug("Failed to create mute notification: {}", e.getMessage());
             }
         }
+
+        // Hook for subclasses (ban ejects the player; mute does nothing).
+        onAppliedSuccessfully(targetPlayerId, channelId, channelId == null);
 
         return MuteResult.success("Player muted successfully");
     }
@@ -217,7 +151,7 @@ public class MuteManager {
      * Validates if the operator has permission to mute in the specified scope.
      */
     private MuteResult validateMutePermission(UUID operatorId, PermissionLevel operatorLevel,
-                                               String channelId, long durationMs, 
+                                               String channelId, long durationMs,
                                                String operatorClientId) {
         switch (operatorLevel) {
             case SUPER_ADMIN:
@@ -236,7 +170,7 @@ public class MuteManager {
                         return MuteResult.notFound("Channel not found: " + channelId);
                     }
                     // Check if channel belongs to operator's client
-                    if (channel.getScope() != ChannelScope.GLOBAL && 
+                    if (channel.getScope() != ChannelScope.GLOBAL &&
                         !Objects.equals(channel.getClientId(), operatorClientId)) {
                         return MuteResult.forbidden(
                                 "Client admin can only mute in their own client's channels");
@@ -294,16 +228,10 @@ public class MuteManager {
             return MuteResult.badRequest("Target player ID is required");
         }
 
-        // Console-originated actions (UUID 00000000-0000-0000-0000-000000000000)
-        // bypass permission validation — console always has full authority. Mirrors
-        // the bypass in mutePlayer and ChannelActionHandler.requireModerationPermission.
-        PermissionLevel operatorLevel;
-        if (trustedOperator
-                || (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L)) {
-            operatorLevel = PermissionLevel.SUPER_ADMIN;
-        } else {
-            operatorLevel = permissionManager.getPermissionLevel(operatorId, channelId);
-        }
+        // Console-originated actions bypass permission validation. Trusted
+        // operators (panel RBAC pre-authorized) get the same bypass while
+        // keeping their own UUID for attribution.
+        PermissionLevel operatorLevel = resolveOperatorLevel(operatorId, channelId, trustedOperator);
 
         // Validate permission (same rules as mute, but no duration check)
         MuteResult validationResult = validateMutePermission(
@@ -313,20 +241,10 @@ public class MuteManager {
         }
 
         // Remove from cache
-        String cacheKey = channelId != null ? channelId : GLOBAL_MUTE_KEY;
-        Map<String, MuteInfo> playerMutes = muteCache.get(targetPlayerId);
-        if (playerMutes != null) {
-            playerMutes.remove(cacheKey);
-        }
+        removeFromCache(targetPlayerId, cacheKeyFor(channelId));
 
         // Remove from database
-        if (databaseProvider != null) {
-            try {
-                databaseProvider.deleteMute(targetPlayerId, channelId);
-            } catch (DatabaseException e) {
-                logger.error("Failed to delete mute for player {}: {}", targetPlayerId, e.getMessage());
-            }
-        }
+        deleteFromDatabase(targetPlayerId, channelId);
 
         logger.info("Player {} unmuted in channel {} by {}", targetPlayerId, channelId, operatorId);
 
@@ -347,7 +265,7 @@ public class MuteManager {
 
     /**
      * Checks if a player is muted in a specific channel.
-     * 
+     *
      * Requirements:
      * - 13.2: Check mute status on message send
      * - 13.6: Auto-unmute when mute expires
@@ -357,41 +275,7 @@ public class MuteManager {
      * @return true if the player is muted
      */
     public boolean isMuted(UUID playerId, String channelId) {
-        if (playerId == null) {
-            return false;
-        }
-
-        Map<String, MuteInfo> playerMutes = muteCache.get(playerId);
-        if (playerMutes == null) {
-            return false;
-        }
-
-        // Check channel-specific mute
-        String cacheKey = channelId != null ? channelId : GLOBAL_MUTE_KEY;
-        MuteInfo channelMute = playerMutes.get(cacheKey);
-        if (channelMute != null) {
-            if (channelMute.isExpired()) {
-                // Auto-unmute: remove expired mute
-                playerMutes.remove(cacheKey);
-                cleanupMuteFromDatabase(playerId, channelId);
-                return false;
-            }
-            return true;
-        }
-
-        // Check global mute
-        MuteInfo globalMute = playerMutes.get(GLOBAL_MUTE_KEY);
-        if (globalMute != null) {
-            if (globalMute.isExpired()) {
-                // Auto-unmute: remove expired global mute
-                playerMutes.remove(GLOBAL_MUTE_KEY);
-                cleanupMuteFromDatabase(playerId, null);
-                return false;
-            }
-            return true;
-        }
-
-        return false;
+        return isModerated(playerId, channelId);
     }
 
     /**
@@ -402,29 +286,7 @@ public class MuteManager {
      * @return the mute info, or null if not muted
      */
     public MuteInfo getMuteInfo(UUID playerId, String channelId) {
-        if (playerId == null) {
-            return null;
-        }
-
-        Map<String, MuteInfo> playerMutes = muteCache.get(playerId);
-        if (playerMutes == null) {
-            return null;
-        }
-
-        // Check channel-specific mute first
-        String cacheKey = channelId != null ? channelId : GLOBAL_MUTE_KEY;
-        MuteInfo channelMute = playerMutes.get(cacheKey);
-        if (channelMute != null && !channelMute.isExpired()) {
-            return channelMute;
-        }
-
-        // Check global mute
-        MuteInfo globalMute = playerMutes.get(GLOBAL_MUTE_KEY);
-        if (globalMute != null && !globalMute.isExpired()) {
-            return globalMute;
-        }
-
-        return null;
+        return getInfo(playerId, channelId);
     }
 
     /**
@@ -434,24 +296,8 @@ public class MuteManager {
      * @return list of active mute infos
      */
     public List<MuteInfo> getActiveMutes(UUID playerId) {
-        if (playerId == null) {
-            return Collections.emptyList();
-        }
-
-        Map<String, MuteInfo> playerMutes = muteCache.get(playerId);
-        if (playerMutes == null) {
-            return Collections.emptyList();
-        }
-
-        List<MuteInfo> activeMutes = new ArrayList<>();
-        for (MuteInfo mute : playerMutes.values()) {
-            if (!mute.isExpired()) {
-                activeMutes.add(mute);
-            }
-        }
-        return activeMutes;
+        return getActive(playerId);
     }
-
 
     /**
      * Gets all active mutes across all players from the in-memory cache.
@@ -462,19 +308,7 @@ public class MuteManager {
      * @return map of player UUID to that player's active mutes
      */
     public Map<UUID, List<MuteInfo>> getAllActiveMutes() {
-        Map<UUID, List<MuteInfo>> result = new HashMap<>();
-        for (Map.Entry<UUID, Map<String, MuteInfo>> entry : muteCache.entrySet()) {
-            List<MuteInfo> active = new ArrayList<>();
-            for (MuteInfo mute : entry.getValue().values()) {
-                if (!mute.isExpired()) {
-                    active.add(mute);
-                }
-            }
-            if (!active.isEmpty()) {
-                result.put(entry.getKey(), active);
-            }
-        }
-        return result;
+        return getAllActive();
     }
 
     /**
@@ -485,32 +319,7 @@ public class MuteManager {
      * @return the number of mutes loaded
      */
     public int loadAllMutes() {
-        if (databaseProvider == null) {
-            return 0;
-        }
-
-        int loaded = 0;
-        try {
-            Map<UUID, List<MuteInfo>> allMutes = databaseProvider.getAllActiveMutes();
-            for (Map.Entry<UUID, List<MuteInfo>> entry : allMutes.entrySet()) {
-                Map<String, MuteInfo> playerMutes = muteCache.computeIfAbsent(
-                        entry.getKey(), k -> new ConcurrentHashMap<>());
-                for (MuteInfo mute : entry.getValue()) {
-                    if (!mute.isExpired()) {
-                        String cacheKey = mute.getChannelId() != null ?
-                                mute.getChannelId() : GLOBAL_MUTE_KEY;
-                        playerMutes.put(cacheKey, mute);
-                        loaded++;
-                    }
-                }
-            }
-            if (loaded > 0) {
-                logger.info("Loaded {} active mutes from database", loaded);
-            }
-        } catch (DatabaseException e) {
-            logger.error("Failed to load active mutes from database: {}", e.getMessage());
-        }
-        return loaded;
+        return loadAll();
     }
 
     /**
@@ -519,27 +328,7 @@ public class MuteManager {
      * @param playerId the player UUID
      */
     public void loadPlayerMutes(UUID playerId) {
-        if (playerId == null || databaseProvider == null) {
-            return;
-        }
-
-        try {
-            List<MuteInfo> mutes = databaseProvider.loadMutes(playerId);
-            if (!mutes.isEmpty()) {
-                Map<String, MuteInfo> playerMutes = muteCache.computeIfAbsent(
-                        playerId, k -> new ConcurrentHashMap<>());
-                for (MuteInfo mute : mutes) {
-                    if (!mute.isExpired()) {
-                        String cacheKey = mute.getChannelId() != null ? 
-                                mute.getChannelId() : GLOBAL_MUTE_KEY;
-                        playerMutes.put(cacheKey, mute);
-                    }
-                }
-                logger.debug("Loaded {} mutes for player {}", mutes.size(), playerId);
-            }
-        } catch (DatabaseException e) {
-            logger.error("Failed to load mutes for player {}: {}", playerId, e.getMessage());
-        }
+        loadPlayer(playerId);
     }
 
     /**
@@ -548,57 +337,7 @@ public class MuteManager {
      * @param playerId the player UUID
      */
     public void clearPlayerMutes(UUID playerId) {
-        if (playerId != null) {
-            muteCache.remove(playerId);
-        }
-    }
-
-    /**
-     * Cleans up expired mutes from cache and database.
-     */
-    private void cleanupExpiredMutes() {
-        int cacheCleanup = 0;
-        
-        // Clean up cache
-        for (Map.Entry<UUID, Map<String, MuteInfo>> entry : muteCache.entrySet()) {
-            Map<String, MuteInfo> playerMutes = entry.getValue();
-            Iterator<Map.Entry<String, MuteInfo>> iterator = playerMutes.entrySet().iterator();
-            while (iterator.hasNext()) {
-                MuteInfo mute = iterator.next().getValue();
-                if (mute.isExpired()) {
-                    iterator.remove();
-                    cacheCleanup++;
-                }
-            }
-        }
-
-        // Clean up database
-        int dbCleanup = 0;
-        if (databaseProvider != null) {
-            try {
-                dbCleanup = databaseProvider.cleanupExpiredMutes();
-            } catch (DatabaseException e) {
-                logger.error("Failed to cleanup expired mutes from database: {}", e.getMessage());
-            }
-        }
-
-        if (cacheCleanup > 0 || dbCleanup > 0) {
-            logger.debug("Cleaned up {} expired mutes from cache, {} from database", 
-                    cacheCleanup, dbCleanup);
-        }
-    }
-
-    /**
-     * Helper method to clean up a single mute from database.
-     */
-    private void cleanupMuteFromDatabase(UUID playerId, String channelId) {
-        if (databaseProvider != null) {
-            try {
-                databaseProvider.deleteMute(playerId, channelId);
-            } catch (DatabaseException e) {
-                logger.error("Failed to cleanup mute from database: {}", e.getMessage());
-            }
-        }
+        clearPlayer(playerId);
     }
 
     /**
@@ -641,28 +380,60 @@ public class MuteManager {
         return durationMs == 0 || durationMs <= maxDuration;
     }
 
-    /**
-     * Gets the mute cache size (for testing).
-     */
-    public int getCacheSize() {
-        return muteCache.size();
+    // ============================ AbstractModerationManager hooks ============================
+
+    @Override
+    protected String cleanupThreadName() {
+        return "MuteManager-Cleanup";
     }
 
-    /**
-     * Clears all cached mutes (for testing).
-     */
-    public void clearCache() {
-        muteCache.clear();
+    @Override
+    protected Logger logger() {
+        return logger;
     }
 
-    private static String describeDuration(long ms) {
-        if (ms <= 0) {
-            return "permanent";
-        }
-        long secs = ms / 1000;
-        if (secs < 60) return secs + "s";
-        if (secs < 3600) return (secs / 60) + "m";
-        if (secs < 86400) return (secs / 3600) + "h";
-        return (secs / 86400) + "d";
+    @Override
+    protected String managerLogName() {
+        return "MuteManager";
+    }
+
+    @Override
+    protected String noun() {
+        return "mute";
+    }
+
+    @Override
+    protected String getChannelId(MuteInfo info) {
+        return info.getChannelId();
+    }
+
+    @Override
+    protected boolean isExpired(MuteInfo info) {
+        return info.isExpired();
+    }
+
+    @Override
+    protected void saveToDb(UUID playerId, MuteInfo info) throws DatabaseException {
+        databaseProvider.saveMute(playerId, info);
+    }
+
+    @Override
+    protected void deleteFromDb(UUID playerId, String channelId) throws DatabaseException {
+        databaseProvider.deleteMute(playerId, channelId);
+    }
+
+    @Override
+    protected Map<UUID, List<MuteInfo>> loadAllFromDb() throws DatabaseException {
+        return databaseProvider.getAllActiveMutes();
+    }
+
+    @Override
+    protected List<MuteInfo> loadFromDb(UUID playerId) throws DatabaseException {
+        return databaseProvider.loadMutes(playerId);
+    }
+
+    @Override
+    protected int cleanupExpiredFromDb() throws DatabaseException {
+        return databaseProvider.cleanupExpiredMutes();
     }
 }

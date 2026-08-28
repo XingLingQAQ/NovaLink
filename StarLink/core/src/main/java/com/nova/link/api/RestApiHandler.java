@@ -25,6 +25,7 @@ import com.nova.link.channel.MessageRouter;
 import com.nova.link.channel.RoutingResult;
 import com.nova.link.config.ConfigManager;
 import com.nova.link.console.ConsoleCommandHandler;
+import com.nova.link.console.ConsoleSentinel;
 import com.nova.link.database.BanInfo;
 import com.nova.link.database.ChatMessageRecord;
 import com.nova.link.database.DatabaseProvider;
@@ -754,7 +755,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         if (operatorId == null) {
             return null;
         }
-        if (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L) {
+        if (ConsoleSentinel.isConsole(operatorId)) {
             return "console";
         }
         String runtime = panelOperatorNames.get(operatorId);

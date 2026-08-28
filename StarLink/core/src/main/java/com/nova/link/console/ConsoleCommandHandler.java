@@ -18,6 +18,7 @@ import com.nova.link.database.MuteInfo;
 import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
 import com.nova.link.i18n.I18n;
+import com.nova.link.moderation.DurationUtils;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.mute.MuteResult;
 import com.nova.link.network.ClientConnection;
@@ -318,7 +319,7 @@ public class ConsoleCommandHandler {
                 ConsoleSentinel.CONSOLE_SENTINEL, target, channel, durationMs, reason, null);
         if (result.isSuccess()) {
             return nl(I18n.tr("console.mute.success", args[0], target, channel,
-                    describeDuration(durationMs), reason));
+                    DurationUtils.describeDuration(durationMs), reason));
         }
         return nl(I18n.tr("console.mute.failed", result.getMessage(), result.getErrorCode()));
     }
@@ -358,7 +359,7 @@ public class ConsoleCommandHandler {
                             s.getPlayerName() != null ? s.getPlayerName() : s.getPlayerId(),
                             s.getPlayerId(),
                             m.getChannelId() != null ? m.getChannelId() : "(global)",
-                            describeDuration(m.getRemainingTime()),
+                            DurationUtils.describeRemaining(m.getRemainingTime()),
                             m.getReason() != null ? m.getReason() : "-")).append('\n');
                 }
             }
@@ -378,7 +379,7 @@ public class ConsoleCommandHandler {
         for (MuteInfo m : mutes) {
             sb.append(I18n.tr("console.mutes.entry_for",
                     m.getChannelId() != null ? m.getChannelId() : "(global)",
-                    describeDuration(m.getRemainingTime()),
+                    DurationUtils.describeRemaining(m.getRemainingTime()),
                     m.getReason() != null ? m.getReason() : "-")).append('\n');
         }
         return sb.toString();
@@ -421,7 +422,7 @@ public class ConsoleCommandHandler {
         if (result.isSuccess()) {
             return nl(I18n.tr("console.ban.success", args[0], target,
                     channelId != null ? channelId : "(global)",
-                    describeDuration(durationMs), reason));
+                    DurationUtils.describeDuration(durationMs), reason));
         }
         return nl(I18n.tr("console.ban.failed", result.getMessage(), result.getErrorCode()));
     }
@@ -475,7 +476,7 @@ public class ConsoleCommandHandler {
                             s.getPlayerId(),
                             b.getChannelId() != null ? b.getChannelId() : "(global)",
                             b.isPermanent() ? I18n.tr("console.ban.permanent")
-                                    : describeDuration(b.getRemainingTime()),
+                                    : DurationUtils.describeRemaining(b.getRemainingTime()),
                             b.getReason() != null ? b.getReason() : "-")).append('\n');
                 }
             }
@@ -496,7 +497,7 @@ public class ConsoleCommandHandler {
             sb.append(I18n.tr("console.bans.entry_for",
                     b.getChannelId() != null ? b.getChannelId() : "(global)",
                     b.isPermanent() ? I18n.tr("console.ban.permanent")
-                            : describeDuration(b.getRemainingTime()),
+                            : DurationUtils.describeRemaining(b.getRemainingTime()),
                     b.getReason() != null ? b.getReason() : "-")).append('\n');
         }
         return sb.toString();
@@ -853,20 +854,6 @@ public class ConsoleCommandHandler {
             case 'd': return TimeUnit.DAYS.toMillis(value);
             default: throw new IllegalArgumentException("unknown unit '" + unit + "' (use s/m/h/d)");
         }
-    }
-
-    private static String describeDuration(long ms) {
-        if (ms < 0) {
-            return "permanent";
-        }
-        if (ms == 0) {
-            return "expired";
-        }
-        long secs = ms / 1000;
-        if (secs < 60) return secs + "s";
-        if (secs < 3600) return (secs / 60) + "m";
-        if (secs < 86400) return (secs / 3600) + "h";
-        return (secs / 86400) + "d";
     }
 
     private static String joinFrom(String[] args, int from) {

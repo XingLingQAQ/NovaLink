@@ -8,14 +8,15 @@ import com.nova.link.channel.ChannelScope;
 import com.nova.link.database.BanInfo;
 import com.nova.link.database.DatabaseException;
 import com.nova.link.database.DatabaseProvider;
+import com.nova.link.moderation.AbstractModerationManager;
+import com.nova.link.moderation.DurationUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 
 /**
  * Manages ban operations for players in channels or globally.
@@ -24,11 +25,12 @@ import java.util.concurrent.TimeUnit;
  * tiers and console-sentinel bypass. Unlike a mute, a successful ban also
  * removes the player from the channel membership so an online banned player
  * is immediately ejected. A global ban (channelId == null) removes the player
- * from every channel they have joined.
+ * from every channel they have joined — implemented via the
+ * {@link #onAppliedSuccessfully} hook.
  *
  * Requirements: ban feature — player ban management
  */
-public class BanManager {
+public class BanManager extends AbstractModerationManager<BanInfo> {
 
     private static final Logger logger = LoggerFactory.getLogger(BanManager.class);
 
@@ -38,72 +40,10 @@ public class BanManager {
     /** Maximum ban duration for client admins: 24 hours in milliseconds */
     public static final long CLIENT_ADMIN_MAX_DURATION_MS = 24 * 60 * 60 * 1000L;
 
-    /** In-memory cache of bans: playerId -> (channelId -> BanInfo) */
-    private final Map<UUID, Map<String, BanInfo>> banCache = new ConcurrentHashMap<>();
-
-    /** Key for global bans in the map */
-    private static final String GLOBAL_BAN_KEY = "__global__";
-
-    private final DatabaseProvider databaseProvider;
-    private final PermissionManager permissionManager;
-    private final ChannelManager channelManager;
-
-    /**
-     * Optional notification store. When set, successful ban/unban operations
-     * create a persisted + broadcast notification. Injected via setter to keep
-     * the constructor signature stable and avoid a circular dependency with
-     * the notification subsystem.
-     */
-    private com.nova.link.notification.NotificationStore notificationStore;
-
-    private ScheduledExecutorService cleanupExecutor;
-
     public BanManager(DatabaseProvider databaseProvider,
                       PermissionManager permissionManager,
                       ChannelManager channelManager) {
-        this.databaseProvider = databaseProvider;
-        this.permissionManager = permissionManager;
-        this.channelManager = channelManager;
-    }
-
-    /**
-     * Sets the optional notification store so ban/unban events are persisted
-     * and broadcast to the web panel.
-     */
-    public void setNotificationStore(com.nova.link.notification.NotificationStore notificationStore) {
-        this.notificationStore = notificationStore;
-    }
-
-    /**
-     * Initializes the ban manager and starts the cleanup task.
-     */
-    public void initialize() {
-        cleanupExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "BanManager-Cleanup");
-            t.setDaemon(true);
-            return t;
-        });
-        cleanupExecutor.scheduleAtFixedRate(this::cleanupExpiredBans, 1, 1, TimeUnit.MINUTES);
-        logger.info("BanManager initialized with periodic cleanup");
-    }
-
-    /**
-     * Shuts down the ban manager.
-     */
-    public void shutdown() {
-        if (cleanupExecutor != null) {
-            cleanupExecutor.shutdown();
-            try {
-                if (!cleanupExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    cleanupExecutor.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                cleanupExecutor.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-        }
-        banCache.clear();
-        logger.info("BanManager shutdown");
+        super(databaseProvider, permissionManager, channelManager);
     }
 
     /**
@@ -151,13 +91,7 @@ public class BanManager {
         // bypass permission validation — console always has full authority.
         // Trusted operators (panel RBAC pre-authorized) get the same bypass while
         // keeping their own UUID for attribution.
-        PermissionLevel operatorLevel;
-        if (trustedOperator
-                || (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L)) {
-            operatorLevel = PermissionLevel.SUPER_ADMIN;
-        } else {
-            operatorLevel = permissionManager.getPermissionLevel(operatorId, channelId);
-        }
+        PermissionLevel operatorLevel = resolveOperatorLevel(operatorId, channelId, trustedOperator);
 
         // Validate permission and scope
         BanResult validationResult = validateBanPermission(
@@ -173,31 +107,10 @@ public class BanManager {
         BanInfo banInfo = new BanInfo(channelId, expireTime, reason, operatorId);
 
         // Store in cache
-        String cacheKey = channelId != null ? channelId : GLOBAL_BAN_KEY;
-        banCache.computeIfAbsent(targetPlayerId, k -> new ConcurrentHashMap<>())
-                .put(cacheKey, banInfo);
+        putInCache(targetPlayerId, cacheKeyFor(channelId), banInfo);
 
         // Persist to database
-        if (databaseProvider != null) {
-            try {
-                databaseProvider.saveBan(targetPlayerId, banInfo);
-            } catch (DatabaseException e) {
-                logger.error("Failed to persist ban for player {}: {}", targetPlayerId, e.getMessage());
-                // Continue - ban is still in cache
-            }
-        }
-
-        // Eject the banned player from channel membership.
-        if (channelId != null) {
-            channelManager.removeMember(channelId, targetPlayerId);
-        } else {
-            // Global ban: remove from every joined channel.
-            for (Channel channel : channelManager.getAllChannels()) {
-                if (channel.isMember(targetPlayerId)) {
-                    channelManager.removeMember(channel.getId(), targetPlayerId);
-                }
-            }
-        }
+        persistToDb(targetPlayerId, banInfo);
 
         logger.info("Player {} banned in channel {} by {} for {} ms. Reason: {}",
                 targetPlayerId, channelId, operatorId, durationMs, reason);
@@ -209,13 +122,16 @@ public class BanManager {
                 notificationStore.createNotification(
                         "Player Banned",
                         "Player " + targetPlayerId + " banned in " + scope
-                                + " for " + describeDuration(durationMs)
+                                + " for " + DurationUtils.describeDuration(durationMs)
                                 + ". Reason: " + (reason != null ? reason : "-"),
                         "warning");
             } catch (Exception e) {
                 logger.debug("Failed to create ban notification: {}", e.getMessage());
             }
         }
+
+        // Eject the banned player from channel membership (ban-specific).
+        onAppliedSuccessfully(targetPlayerId, channelId, channelId == null);
 
         return BanResult.success("Player banned successfully");
     }
@@ -302,13 +218,7 @@ public class BanManager {
         // Console-originated actions bypass permission validation. Trusted
         // operators (panel RBAC pre-authorized) get the same bypass while
         // keeping their own UUID for attribution.
-        PermissionLevel operatorLevel;
-        if (trustedOperator
-                || (operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L)) {
-            operatorLevel = PermissionLevel.SUPER_ADMIN;
-        } else {
-            operatorLevel = permissionManager.getPermissionLevel(operatorId, channelId);
-        }
+        PermissionLevel operatorLevel = resolveOperatorLevel(operatorId, channelId, trustedOperator);
 
         // Validate permission (same rules as ban, but no duration check)
         BanResult validationResult = validateBanPermission(
@@ -318,20 +228,10 @@ public class BanManager {
         }
 
         // Remove from cache
-        String cacheKey = channelId != null ? channelId : GLOBAL_BAN_KEY;
-        Map<String, BanInfo> playerBans = banCache.get(targetPlayerId);
-        if (playerBans != null) {
-            playerBans.remove(cacheKey);
-        }
+        removeFromCache(targetPlayerId, cacheKeyFor(channelId));
 
         // Remove from database
-        if (databaseProvider != null) {
-            try {
-                databaseProvider.deleteBan(targetPlayerId, channelId);
-            } catch (DatabaseException e) {
-                logger.error("Failed to delete ban for player {}: {}", targetPlayerId, e.getMessage());
-            }
-        }
+        deleteFromDatabase(targetPlayerId, channelId);
 
         logger.info("Player {} unbanned in channel {} by {}", targetPlayerId, channelId, operatorId);
 
@@ -359,39 +259,7 @@ public class BanManager {
      * @return true if the player is banned
      */
     public boolean isBanned(UUID playerId, String channelId) {
-        if (playerId == null) {
-            return false;
-        }
-
-        Map<String, BanInfo> playerBans = banCache.get(playerId);
-        if (playerBans == null) {
-            return false;
-        }
-
-        // Check channel-specific ban
-        String cacheKey = channelId != null ? channelId : GLOBAL_BAN_KEY;
-        BanInfo channelBan = playerBans.get(cacheKey);
-        if (channelBan != null) {
-            if (channelBan.isExpired()) {
-                playerBans.remove(cacheKey);
-                cleanupBanFromDatabase(playerId, channelId);
-                return false;
-            }
-            return true;
-        }
-
-        // Check global ban
-        BanInfo globalBan = playerBans.get(GLOBAL_BAN_KEY);
-        if (globalBan != null) {
-            if (globalBan.isExpired()) {
-                playerBans.remove(GLOBAL_BAN_KEY);
-                cleanupBanFromDatabase(playerId, null);
-                return false;
-            }
-            return true;
-        }
-
-        return false;
+        return isModerated(playerId, channelId);
     }
 
     /**
@@ -402,27 +270,7 @@ public class BanManager {
      * @return the ban info, or null if not banned
      */
     public BanInfo getBanInfo(UUID playerId, String channelId) {
-        if (playerId == null) {
-            return null;
-        }
-
-        Map<String, BanInfo> playerBans = banCache.get(playerId);
-        if (playerBans == null) {
-            return null;
-        }
-
-        String cacheKey = channelId != null ? channelId : GLOBAL_BAN_KEY;
-        BanInfo channelBan = playerBans.get(cacheKey);
-        if (channelBan != null && !channelBan.isExpired()) {
-            return channelBan;
-        }
-
-        BanInfo globalBan = playerBans.get(GLOBAL_BAN_KEY);
-        if (globalBan != null && !globalBan.isExpired()) {
-            return globalBan;
-        }
-
-        return null;
+        return getInfo(playerId, channelId);
     }
 
     /**
@@ -432,22 +280,7 @@ public class BanManager {
      * @return list of active ban infos
      */
     public List<BanInfo> getActiveBans(UUID playerId) {
-        if (playerId == null) {
-            return Collections.emptyList();
-        }
-
-        Map<String, BanInfo> playerBans = banCache.get(playerId);
-        if (playerBans == null) {
-            return Collections.emptyList();
-        }
-
-        List<BanInfo> activeBans = new ArrayList<>();
-        for (BanInfo ban : playerBans.values()) {
-            if (!ban.isExpired()) {
-                activeBans.add(ban);
-            }
-        }
-        return activeBans;
+        return getActive(playerId);
     }
 
     /**
@@ -459,19 +292,7 @@ public class BanManager {
      * @return map of player UUID to that player's active bans
      */
     public Map<UUID, List<BanInfo>> getAllActiveBans() {
-        Map<UUID, List<BanInfo>> result = new HashMap<>();
-        for (Map.Entry<UUID, Map<String, BanInfo>> entry : banCache.entrySet()) {
-            List<BanInfo> active = new ArrayList<>();
-            for (BanInfo ban : entry.getValue().values()) {
-                if (!ban.isExpired()) {
-                    active.add(ban);
-                }
-            }
-            if (!active.isEmpty()) {
-                result.put(entry.getKey(), active);
-            }
-        }
-        return result;
+        return getAllActive();
     }
 
     /**
@@ -482,32 +303,7 @@ public class BanManager {
      * @return the number of bans loaded
      */
     public int loadAllBans() {
-        if (databaseProvider == null) {
-            return 0;
-        }
-
-        int loaded = 0;
-        try {
-            Map<UUID, List<BanInfo>> allBans = databaseProvider.getAllActiveBans();
-            for (Map.Entry<UUID, List<BanInfo>> entry : allBans.entrySet()) {
-                Map<String, BanInfo> playerBans = banCache.computeIfAbsent(
-                        entry.getKey(), k -> new ConcurrentHashMap<>());
-                for (BanInfo ban : entry.getValue()) {
-                    if (!ban.isExpired()) {
-                        String cacheKey = ban.getChannelId() != null ?
-                                ban.getChannelId() : GLOBAL_BAN_KEY;
-                        playerBans.put(cacheKey, ban);
-                        loaded++;
-                    }
-                }
-            }
-            if (loaded > 0) {
-                logger.info("Loaded {} active bans from database", loaded);
-            }
-        } catch (DatabaseException e) {
-            logger.error("Failed to load active bans from database: {}", e.getMessage());
-        }
-        return loaded;
+        return loadAll();
     }
 
     /**
@@ -516,27 +312,7 @@ public class BanManager {
      * @param playerId the player UUID
      */
     public void loadPlayerBans(UUID playerId) {
-        if (playerId == null || databaseProvider == null) {
-            return;
-        }
-
-        try {
-            List<BanInfo> bans = databaseProvider.loadBans(playerId);
-            if (!bans.isEmpty()) {
-                Map<String, BanInfo> playerBans = banCache.computeIfAbsent(
-                        playerId, k -> new ConcurrentHashMap<>());
-                for (BanInfo ban : bans) {
-                    if (!ban.isExpired()) {
-                        String cacheKey = ban.getChannelId() != null ?
-                                ban.getChannelId() : GLOBAL_BAN_KEY;
-                        playerBans.put(cacheKey, ban);
-                    }
-                }
-                logger.debug("Loaded {} bans for player {}", bans.size(), playerId);
-            }
-        } catch (DatabaseException e) {
-            logger.error("Failed to load bans for player {}: {}", playerId, e.getMessage());
-        }
+        loadPlayer(playerId);
     }
 
     /**
@@ -545,79 +321,82 @@ public class BanManager {
      * @param playerId the player UUID
      */
     public void clearPlayerBans(UUID playerId) {
-        if (playerId != null) {
-            banCache.remove(playerId);
-        }
+        clearPlayer(playerId);
     }
 
-    /**
-     * Cleans up expired bans from cache and database.
-     */
-    public void cleanupExpiredBans() {
-        int cacheCleanup = 0;
+    // ============================ AbstractModerationManager hooks ============================
 
-        for (Map.Entry<UUID, Map<String, BanInfo>> entry : banCache.entrySet()) {
-            Map<String, BanInfo> playerBans = entry.getValue();
-            Iterator<Map.Entry<String, BanInfo>> iterator = playerBans.entrySet().iterator();
-            while (iterator.hasNext()) {
-                BanInfo ban = iterator.next().getValue();
-                if (ban.isExpired()) {
-                    iterator.remove();
-                    cacheCleanup++;
+    /**
+     * Ban-specific hook: eject the banned player from channel membership so an
+     * online banned player is immediately removed. A global ban removes the
+     * player from every joined channel.
+     */
+    @Override
+    protected void onAppliedSuccessfully(UUID playerId, String channelId, boolean isGlobal) {
+        if (!isGlobal) {
+            channelManager.removeMember(channelId, playerId);
+        } else {
+            // Global ban: remove from every joined channel.
+            for (Channel channel : channelManager.getAllChannels()) {
+                if (channel.isMember(playerId)) {
+                    channelManager.removeMember(channel.getId(), playerId);
                 }
             }
         }
-
-        int dbCleanup = 0;
-        if (databaseProvider != null) {
-            try {
-                dbCleanup = databaseProvider.cleanupExpiredBans();
-            } catch (DatabaseException e) {
-                logger.error("Failed to cleanup expired bans from database: {}", e.getMessage());
-            }
-        }
-
-        if (cacheCleanup > 0 || dbCleanup > 0) {
-            logger.debug("Cleaned up {} expired bans from cache, {} from database",
-                    cacheCleanup, dbCleanup);
-        }
     }
 
-    /**
-     * Helper method to clean up a single ban from database.
-     */
-    private void cleanupBanFromDatabase(UUID playerId, String channelId) {
-        if (databaseProvider != null) {
-            try {
-                databaseProvider.deleteBan(playerId, channelId);
-            } catch (DatabaseException e) {
-                logger.error("Failed to cleanup ban from database: {}", e.getMessage());
-            }
-        }
+    @Override
+    protected String cleanupThreadName() {
+        return "BanManager-Cleanup";
     }
 
-    /**
-     * Gets the ban cache size (for testing).
-     */
-    public int getCacheSize() {
-        return banCache.size();
+    @Override
+    protected Logger logger() {
+        return logger;
     }
 
-    /**
-     * Clears all cached bans (for testing).
-     */
-    public void clearCache() {
-        banCache.clear();
+    @Override
+    protected String managerLogName() {
+        return "BanManager";
     }
 
-    private static String describeDuration(long ms) {
-        if (ms <= 0) {
-            return "permanent";
-        }
-        long secs = ms / 1000;
-        if (secs < 60) return secs + "s";
-        if (secs < 3600) return (secs / 60) + "m";
-        if (secs < 86400) return (secs / 3600) + "h";
-        return (secs / 86400) + "d";
+    @Override
+    protected String noun() {
+        return "ban";
+    }
+
+    @Override
+    protected String getChannelId(BanInfo info) {
+        return info.getChannelId();
+    }
+
+    @Override
+    protected boolean isExpired(BanInfo info) {
+        return info.isExpired();
+    }
+
+    @Override
+    protected void saveToDb(UUID playerId, BanInfo info) throws DatabaseException {
+        databaseProvider.saveBan(playerId, info);
+    }
+
+    @Override
+    protected void deleteFromDb(UUID playerId, String channelId) throws DatabaseException {
+        databaseProvider.deleteBan(playerId, channelId);
+    }
+
+    @Override
+    protected Map<UUID, List<BanInfo>> loadAllFromDb() throws DatabaseException {
+        return databaseProvider.getAllActiveBans();
+    }
+
+    @Override
+    protected List<BanInfo> loadFromDb(UUID playerId) throws DatabaseException {
+        return databaseProvider.loadBans(playerId);
+    }
+
+    @Override
+    protected int cleanupExpiredFromDb() throws DatabaseException {
+        return databaseProvider.cleanupExpiredBans();
     }
 }

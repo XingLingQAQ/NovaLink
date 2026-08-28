@@ -13,6 +13,7 @@ import com.nova.link.channel.ChannelScope;
 import com.nova.link.channel.InvitationManager;
 import com.nova.link.channel.InvitationResult;
 import com.nova.link.channel.PrivateChannelManager;
+import com.nova.link.console.ConsoleSentinel;
 import com.nova.link.database.DatabaseException;
 import com.nova.link.database.DatabaseProvider;
 import com.nova.link.database.PlayerState;
@@ -889,7 +890,7 @@ public class ChannelActionHandler {
                                                                     String operatorClientId) {
         // Console-originated actions (UUID 00000000-0000-0000-0000-000000000000)
         // bypass permission checks — console always has full authority.
-        if (operatorId != null && operatorId.getMostSignificantBits() == 0L && operatorId.getLeastSignificantBits() == 0L) {
+        if (ConsoleSentinel.isConsole(operatorId)) {
             return null;
         }
         PermissionLevel level = permissionManager.getPermissionLevel(operatorId, channel.getId());
