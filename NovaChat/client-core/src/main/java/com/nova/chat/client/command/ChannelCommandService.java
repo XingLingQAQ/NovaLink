@@ -3,6 +3,9 @@ package com.nova.chat.client.command;
 import com.nova.chat.client.network.AbstractPlatformNetworkClient;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.common.extension.ExtensionEventBus;
+import com.nova.chat.common.extension.events.PlayerJoinChannelEvent;
+import com.nova.chat.common.extension.events.PlayerLeaveChannelEvent;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
@@ -41,9 +44,14 @@ public final class ChannelCommandService {
 
     private final PacketSender packetSender;
     private final String platform;
+    /**
+     * Optional extension event bus for firing PlayerJoin/LeaveChannelEvent.
+     * Null preserves the pre-extension behavior (zero-regression).
+     */
+    private final ExtensionEventBus extensionEventBus;
 
     public ChannelCommandService(PacketSender packetSender) {
-        this(packetSender, null);
+        this(packetSender, null, null);
     }
 
     /**
@@ -51,8 +59,32 @@ public final class ChannelCommandService {
      *                 (e.g. "BUKKIT", "VELOCITY"); null/blank omits the extra
      */
     public ChannelCommandService(PacketSender packetSender, String platform) {
+        this(packetSender, platform, null);
+    }
+
+    /**
+     * Full constructor with an optional extension event bus.
+     *
+     * @param packetSender      channel-action packet sender
+     * @param platform          platform type name injected into packet extras; null/blank omitted
+     * @param extensionEventBus extension event bus for join/leave events; null preserves
+     *                          the pre-extension behavior (no events fired)
+     */
+    public ChannelCommandService(PacketSender packetSender, String platform, ExtensionEventBus extensionEventBus) {
         this.packetSender = Objects.requireNonNull(packetSender, "packetSender");
         this.platform = platform;
+        this.extensionEventBus = extensionEventBus;
+    }
+
+    /**
+     * Convenience constructor wiring the event bus for the common case
+     * {@code platform == null}.
+     *
+     * @param packetSender      channel-action packet sender
+     * @param extensionEventBus extension event bus; null for pre-extension behavior
+     */
+    public ChannelCommandService(PacketSender packetSender, ExtensionEventBus extensionEventBus) {
+        this(packetSender, null, extensionEventBus);
     }
 
     /**
@@ -78,6 +110,26 @@ public final class ChannelCommandService {
             Supplier<? extends AbstractPlatformNetworkClient> clientSupplier,
             PlatformType platform
     ) {
+        return forPlatform(clientSupplier, platform, null);
+    }
+
+    /**
+     * Builds a {@link ChannelCommandService} wired to a live platform network
+     * client (via a supplier, see {@link #forPlatform(Supplier, PlatformType)})
+     * and an optional extension event bus for join/leave events.
+     *
+     * @param clientSupplier    supplies the current platform network client
+     *                          (null-tolerant; a null client refuses the send)
+     * @param platform          platform type whose name is injected into packet
+     *                          extras; null/blank omits the extra
+     * @param extensionEventBus extension event bus; null for pre-extension behavior
+     * @return a wired service
+     */
+    public static ChannelCommandService forPlatform(
+            Supplier<? extends AbstractPlatformNetworkClient> clientSupplier,
+            PlatformType platform,
+            ExtensionEventBus extensionEventBus
+    ) {
         Objects.requireNonNull(clientSupplier, "clientSupplier");
         String platformName = platform != null ? platform.name() : null;
         return new ChannelCommandService(packet -> {
@@ -87,7 +139,7 @@ public final class ChannelCommandService {
             }
             client.sendPacket(packet);
             return true;
-        }, platformName);
+        }, platformName, extensionEventBus);
     }
 
     /**
@@ -144,6 +196,19 @@ public final class ChannelCommandService {
 
         // Optimistic local update after accepted send (mirrors Bukkit JoinCommand).
         state.setActiveChannel(channelId);
+
+        // Fire PlayerJoinChannelEvent for extensions. Best-effort: if a listener
+        // cancels, the local state update above is NOT rolled back (the backend
+        // may still ack the join), but extensions get the signal. Null bus = no-op
+        // (pre-extension behavior, zero-regression).
+        if (extensionEventBus != null) {
+            PlayerJoinChannelEvent event = new PlayerJoinChannelEvent(
+                    state.getPlayerId(),
+                    playerName != null && !playerName.isBlank() ? playerName : state.getPlayerId().toString(),
+                    channelId);
+            extensionEventBus.fire(event);
+        }
+
         return CommandResult.success(CommandIntent.JOIN,
                 "Joining channel '" + channelId + "'");
     }
@@ -191,6 +256,18 @@ public final class ChannelCommandService {
 
         // Optimistic local membership update after accepted send.
         state.leaveChannel(target);
+
+        // Fire PlayerLeaveChannelEvent for extensions. Not cancellable per the
+        // event contract; the local state update above is already committed.
+        // Null bus = no-op (pre-extension behavior, zero-regression).
+        if (extensionEventBus != null) {
+            PlayerLeaveChannelEvent event = new PlayerLeaveChannelEvent(
+                    state.getPlayerId(),
+                    playerName != null && !playerName.isBlank() ? playerName : state.getPlayerId().toString(),
+                    target);
+            extensionEventBus.fire(event);
+        }
+
         return CommandResult.success(CommandIntent.LEAVE,
                 "Leaving channel '" + target + "'");
     }

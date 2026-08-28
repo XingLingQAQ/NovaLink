@@ -1,5 +1,7 @@
 package com.nova.chat.client.network;
 
+import com.nova.chat.client.extension.ClientExtensionHost;
+import com.nova.chat.common.extension.ExtensionEventBus;
 import com.nova.chat.common.protocol.NovaProtocol;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketRegistry;
@@ -9,6 +11,7 @@ import com.nova.chat.common.protocol.codec.PacketEncoder;
 import com.nova.chat.common.protocol.codec.Varint21FrameDecoder;
 import com.nova.chat.common.protocol.codec.Varint21LengthFieldPrepender;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
+import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.HandshakeAuthenticatePacket;
 import com.nova.chat.common.protocol.packets.HandshakeChallengePacket;
 import com.nova.chat.common.protocol.packets.HandshakeInitPacket;
@@ -85,6 +88,15 @@ public final class CoreNetworkClient {
      * tracks channel-action context by construction (coupling #3 single entry).
      */
     private final ChannelResponseTracker channelResponseTracker = new ChannelResponseTracker();
+
+    /**
+     * Best-effort extension host. Initialized once at construction; never null.
+     * When no extensions directory exists or it is empty, the host is a benign
+     * no-op shell so client behavior is identical to the pre-extension baseline
+     * (zero-regression). Extensions that fail to load/enable are isolated by
+     * the underlying {@link ExtensionManager}.
+     */
+    private final ClientExtensionHost extensionHost;
 
     private EventLoopGroup workerGroup;
     private volatile Channel channel;
@@ -211,6 +223,28 @@ public final class CoreNetworkClient {
         this.lastPort = connectionConfig.getPort();
         this.sslContext = buildClientSslContext(connectionConfig.getTls());
         registerDefaultHandlers();
+        // Best-effort extension wiring: a missing/empty extensions directory
+        // yields a no-op host so the client behaves identically to the
+        // pre-extension baseline (zero-regression). See ClientExtensionHost.
+        this.extensionHost = ClientExtensionHost.initialize(
+                System.getProperty("nova.client.extensionsDir"), logger);
+    }
+
+    /**
+     * @return the best-effort {@link ClientExtensionHost} owning the extension
+     *         manager, event bus, and command registry. Never null; a benign
+     *         empty shell when no extensions are deployed.
+     */
+    public ClientExtensionHost getExtensionHost() {
+        return extensionHost;
+    }
+
+    /**
+     * Convenience accessor for the extension event bus. Equivalent to
+     * {@code getExtensionHost().getEventBus()}; never null.
+     */
+    public ExtensionEventBus getExtensionEventBus() {
+        return extensionHost.getEventBus();
     }
 
     // --- public API (mirrors historical NetworkClient surface) ---
@@ -392,6 +426,11 @@ public final class CoreNetworkClient {
         }
         workerGroup = null;
 
+        // Best-effort extension teardown: disable all enabled extensions and
+        // release their class loaders. Swallows errors so a faulty extension
+        // cannot block client shutdown.
+        extensionHost.shutdown();
+
         logger.debug("Disconnected from NovaLink backend");
     }
 
@@ -416,6 +455,25 @@ public final class CoreNetworkClient {
         if (packet instanceof ChannelActionPacket) {
             channelResponseTracker.cleanupExpired();
             channelResponseTracker.track((ChannelActionPacket) packet);
+        }
+        // Fire outgoing ChatMessageEvent so extensions can mutate or cancel
+        // chat before it hits the wire. Cancellation drops the packet silently.
+        // Best-effort: any listener exception is caught inside fire() and logged,
+        // so a faulty extension can never tear down the send path.
+        if (packet instanceof ChatMessagePacket) {
+            ChatMessagePacket cmp = (ChatMessagePacket) packet;
+            com.nova.chat.common.extension.events.ChatMessageEvent event =
+                    new com.nova.chat.common.extension.events.ChatMessageEvent(
+                            cmp.getSenderId(),
+                            cmp.getSenderName(),
+                            cmp.getChannelId(),
+                            cmp.getContent());
+            extensionHost.getEventBus().fire(event);
+            if (event.isCancelled()) {
+                logger.debug("ChatMessageEvent cancelled by an extension; dropping outbound packet");
+                return;
+            }
+            cmp.setContent(event.getMessage());
         }
         Channel ch = channel;
         if (ch != null && ch.isActive()) {
@@ -565,6 +623,29 @@ public final class CoreNetworkClient {
             return;
         }
         logger.debug("Received packet: " + packet.getClass().getSimpleName());
+
+        // Fire inbound ChatMessageEvent so extensions can mutate or cancel
+        // chat before the platform handler sees it. Cancellation drops the
+        // packet (no handler invocation). Best-effort: listener exceptions are
+        // caught inside fire() and logged, so a faulty extension cannot crash
+        // the inbound path. This is the only inbound interception point in
+        // client-core; platforms that want the post-handler view register their
+        // own ChatMessagePacket handler downstream.
+        if (packet instanceof ChatMessagePacket) {
+            ChatMessagePacket cmp = (ChatMessagePacket) packet;
+            com.nova.chat.common.extension.events.ChatMessageEvent event =
+                    new com.nova.chat.common.extension.events.ChatMessageEvent(
+                            cmp.getSenderId(),
+                            cmp.getSenderName(),
+                            cmp.getChannelId(),
+                            cmp.getContent());
+            extensionHost.getEventBus().fire(event);
+            if (event.isCancelled()) {
+                logger.debug("Inbound ChatMessageEvent cancelled by an extension; dropping");
+                return;
+            }
+            cmp.setContent(event.getMessage());
+        }
 
         Consumer<Packet> handler = packetHandlers.get(packet.getClass());
         if (handler != null) {
