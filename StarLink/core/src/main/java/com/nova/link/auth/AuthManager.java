@@ -1,10 +1,9 @@
 package com.nova.link.auth;
 
+import com.nova.chat.common.security.ChallengeHmac;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -26,7 +25,6 @@ public class AuthManager {
 
     private static final Logger logger = LoggerFactory.getLogger(AuthManager.class);
     private static final String HASH_ALGORITHM = "SHA-256";
-    private static final String HMAC_ALGORITHM = "HmacSHA256";
 
     // Client credentials storage: username -> credentials
     private final Map<String, ClientCredentials> clientCredentials = new ConcurrentHashMap<>();
@@ -267,7 +265,10 @@ public class AuthManager {
     /**
      * Computes the AUTH-002 challenge-response HMAC.
      *
-     * <p>{@code key = utf8(sha256hex(password))},
+     * <p>Delegates to {@link ChallengeHmac#compute(String, String, String)} in
+     * {@code NovaChat:common}, the single source of truth shared with the Java
+     * client. The wire format is unchanged:
+     * {@code key = utf8(sha256hex(password))},
      * {@code message = utf8(serverNonce + clientNonce)},
      * output is lowercase-hex HMAC-SHA-256.
      *
@@ -275,24 +276,12 @@ public class AuthManager {
      * @param serverNonce  the server nonce (hex)
      * @param clientNonce  the client nonce (hex)
      * @return the lowercase-hex HMAC, or {@code null} if the algorithm is missing
+     *         or any input is {@code null}
      */
     public static String computeChallengeHmac(String passwordHash,
                                               String serverNonce,
                                               String clientNonce) {
-        if (passwordHash == null || serverNonce == null || clientNonce == null) {
-            return null;
-        }
-        try {
-            Mac mac = Mac.getInstance(HMAC_ALGORITHM);
-            mac.init(new SecretKeySpec(passwordHash.getBytes(StandardCharsets.UTF_8), HMAC_ALGORITHM));
-            byte[] hmacBytes = mac.doFinal((serverNonce + clientNonce).getBytes(StandardCharsets.UTF_8));
-            return bytesToHex(hmacBytes);
-        } catch (NoSuchAlgorithmException | java.security.InvalidKeyException e) {
-            // HmacSHA256 is guaranteed by the JCA; a bad key only happens if
-            // the stored hash is somehow the wrong length, which is a config bug.
-            logger.error("Failed to compute challenge HMAC", e);
-            return null;
-        }
+        return ChallengeHmac.compute(passwordHash, serverNonce, clientNonce);
     }
 
     /**

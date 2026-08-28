@@ -1,35 +1,32 @@
 package com.nova.chat.client.network;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-import java.security.InvalidKeyException;
-import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Objects;
 
 /**
  * AUTH-002 challenge-response helpers for the client side.
  *
- * <p>Mirrors {@code AuthManager.computeChallengeHmac} on the backend so the
- * wire format stays byte-for-byte identical with the PHP/Python/C++ clients.
+ * <p>Delegates the HMAC computation to
+ * {@code com.nova.chat.common.security.ChallengeHmac} in
+ * {@code NovaChat:common}, the single source of truth shared with the backend
+ * {@code AuthManager.computeChallengeHmac}. The wire format stays
+ * byte-for-byte identical with the PHP/Python/C++ clients.
  *
- * <p>HMAC:
+ * <p>HMAC (defined in the common class):
  * <ul>
  *   <li>key = UTF-8 bytes of {@code sha256hex(password)} (the stored credential
- *       hash, computed by {@link PasswordHasher#sha256Hex})</li>
+ *       hash, computed by {@code PasswordHasher#sha256Hex})</li>
  *   <li>message = UTF-8 bytes of {@code serverNonce + clientNonce}
  *       (string concatenation)</li>
  *   <li>output = lowercase-hex HMAC-SHA-256</li>
  * </ul>
  *
  * <p>This class is plugin-only (Architecture B) and deliberately does not
- * depend on {@code StarLink/core}; the backend has its own copy in
- * {@code AuthManager.computeChallengeHmac}.
+ * depend on {@code StarLink/core}; it shares the implementation with the
+ * backend via {@code NovaChat:common}.
  */
 public final class ChallengeHmac {
 
-    private static final String HMAC_ALGORITHM = "HmacSHA256";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     /** 16 random bytes → 32 lowercase-hex characters. */
@@ -62,16 +59,8 @@ public final class ChallengeHmac {
         Objects.requireNonNull(passwordHash, "passwordHash");
         Objects.requireNonNull(serverNonce, "serverNonce");
         Objects.requireNonNull(clientNonce, "clientNonce");
-        try {
-            Mac mac = Mac.getInstance(HMAC_ALGORITHM);
-            mac.init(new SecretKeySpec(passwordHash.getBytes(StandardCharsets.UTF_8), HMAC_ALGORITHM));
-            byte[] hmacBytes = mac.doFinal((serverNonce + clientNonce).getBytes(StandardCharsets.UTF_8));
-            return toLowerHex(hmacBytes);
-        } catch (NoSuchAlgorithmException | InvalidKeyException e) {
-            // HmacSHA256 is guaranteed by the JCA; a bad key only happens if the
-            // stored hash is somehow the wrong length, which is a config bug.
-            throw new RuntimeException("Failed to compute challenge HMAC", e);
-        }
+        return com.nova.chat.common.security.ChallengeHmac.compute(
+                passwordHash, serverNonce, clientNonce);
     }
 
     private static String toLowerHex(byte[] bytes) {
