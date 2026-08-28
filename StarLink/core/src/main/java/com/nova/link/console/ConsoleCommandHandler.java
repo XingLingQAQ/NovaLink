@@ -100,6 +100,20 @@ public class ConsoleCommandHandler {
     }
 
     /**
+     * Single source of truth for the set of console commands that may be
+     * executed via the REST console endpoint. Excludes {@code stop}/{@code
+     * shutdown} (they halt the backend — not safe via REST); includes every
+     * other dispatched command (notably {@code spy}, which the prior hand-
+     * maintained REST whitelist had drifted to omit).
+     */
+    public static Set<String> restExecutableCommands() {
+        return Set.of(
+                "help", "?", "status", "players", "clients", "channels", "channel",
+                "mute", "unmute", "mutes", "ban", "unban", "bans", "kick",
+                "announce", "title", "reload", "spies", "spy", "create", "delete");
+    }
+
+    /**
      * Dispatch a single input line.
      *
      * @param line raw console line (may be blank)

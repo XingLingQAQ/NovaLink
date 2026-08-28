@@ -88,20 +88,14 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
 
     private static final Logger logger = LoggerFactory.getLogger(RestApiHandler.class);
 
-    /** Sentinel operator UUID for admin-originated REST actions (console sentinel). */
-    private static final UUID CONSOLE_SENTINEL = new UUID(0L, 0L);
-
     /**
-     * Console commands that MAY be executed via the REST console endpoint
-     * (whitelist). Everything else — notably {@code stop}/{@code shutdown}
-     * (halt the backend) and {@code spy} (starts live chat monitoring) — is
-     * reserved for the real backend console and rejected with 403.
-     * Keep in sync with {@link ConsoleCommandHandler#dispatch}.
+     * REST-executable console command whitelist, sourced from the single
+     * source of truth {@link ConsoleCommandHandler#restExecutableCommands()}.
+     * Cached as a static final so the per-request REST hot path pays no
+     * allocation; {@code Set.of(...)} is immutable so caching is safe.
      */
-    private static final Set<String> CONSOLE_WHITELIST = Set.of(
-            "help", "?", "status", "players", "clients", "channels", "channel",
-            "mute", "unmute", "mutes", "ban", "unban", "bans", "kick",
-            "announce", "title", "reload", "spies", "create", "delete");
+    private static final Set<String> REST_EXECUTABLE_COMMANDS =
+            ConsoleCommandHandler.restExecutableCommands();
 
     private final JwtService jwtService;
     private final AuthManager authManager;
@@ -738,7 +732,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      */
     private UUID panelOperatorUuid(String username) {
         if (username == null || username.isBlank()) {
-            return CONSOLE_SENTINEL;
+            return ConsoleSentinel.CONSOLE_SENTINEL;
         }
         UUID uuid = UUID.nameUUIDFromBytes(("panel:" + username)
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -1586,7 +1580,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
 
         try {
-            Invitation invitation = invitationManager.createInvitation(channelId, CONSOLE_SENTINEL, ttlMillis);
+            Invitation invitation = invitationManager.createInvitation(channelId, ConsoleSentinel.CONSOLE_SENTINEL, ttlMillis);
             JsonObject response = new JsonObject();
             response.addProperty("success", true);
             response.addProperty("code", invitation.getCode());
@@ -4805,8 +4799,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * enforced by the RBAC matrix).
      *
      * <p>Delegates to {@link ConsoleCommandHandler#dispatch}. Only commands on
-     * the {@link #CONSOLE_WHITELIST} are allowed; anything else (e.g.
-     * {@code stop}/{@code shutdown}/{@code spy}) is rejected with 403.
+     * the {@link #REST_EXECUTABLE_COMMANDS} whitelist (sourced from
+     * {@link ConsoleCommandHandler#restExecutableCommands()}) are allowed;
+     * anything else (e.g. {@code stop}/{@code shutdown}) is rejected with 403.
      * Requirements: 25.4
      */
     private void handleConsoleCommand(ChannelHandlerContext ctx, FullHttpRequest request) {
@@ -4832,11 +4827,14 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
 
         // Whitelist: only the safe command subset may run via REST. Commands
-        // like stop/shutdown (halt the backend) or spy (live chat monitoring)
-        // are reserved for the real backend console.
+        // like stop/shutdown (halt the backend) are reserved for the real
+        // backend console. The whitelist is sourced from
+        // ConsoleCommandHandler.restExecutableCommands() (single source of
+        // truth) and cached in REST_EXECUTABLE_COMMANDS for zero-allocation
+        // per-request checks.
         String trimmed = command.trim();
         String firstToken = trimmed.split("\\s+")[0].toLowerCase(java.util.Locale.ROOT);
-        if (!CONSOLE_WHITELIST.contains(firstToken)) {
+        if (!REST_EXECUTABLE_COMMANDS.contains(firstToken)) {
             sendJsonError(ctx, request, HttpResponseStatus.FORBIDDEN,
                     I18n.tr("api.console.command_not_allowed", firstToken));
             return;
@@ -5242,7 +5240,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
 
         AnnouncementResult result = announcementManager.deleteAnnouncement(
-                CONSOLE_SENTINEL, announcementId, null, true);
+                ConsoleSentinel.CONSOLE_SENTINEL, announcementId, null, true);
         if (!result.isSuccess()) {
             sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
                     I18n.tr("api.announcement.not_found", announcementId));

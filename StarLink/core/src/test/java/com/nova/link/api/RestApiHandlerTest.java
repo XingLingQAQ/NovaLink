@@ -730,10 +730,11 @@ class RestApiHandlerTest {
     }
 
     @Test
-    @DisplayName("POST /api/console rejects spy command (reserved for the real console)")
-    void consoleSpyNotWhitelisted() {
+    @DisplayName("POST /api/console executes a spy command (on the REST whitelist)")
+    void consoleSpyWhitelisted() {
         Response resp = dispatch(HttpMethod.POST, "/api/console", "{\"command\":\"spy start staff\"}");
-        assertThat(resp.status).isEqualTo(HttpResponseStatus.FORBIDDEN);
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        assertThat(resp.asJson().get("success").getAsBoolean()).isTrue();
     }
 
     @Test
