@@ -1,25 +1,31 @@
 package com.nova.chat.common;
 
+import com.nova.chat.common.protocol.NovaProtocol;
+
 /**
  * Common constants shared between NovaLink and NovaChat plugins.
  */
 public final class NovaConstants {
-    
+
     private NovaConstants() {
         // Utility class
     }
-    
-    // Protocol Version
-    // v3 (AUTH-002): challenge-response handshake replaces the replayable
-    // static-hash 0x01 flow; see NovaProtocol for the change history. Kept in
-    // lockstep with NovaProtocol.PROTOCOL_VERSION.
-    public static final int PROTOCOL_VERSION = 3;
+
+    // Protocol Version — single source is NovaProtocol.PROTOCOL_VERSION; this
+    // alias is kept only for the NovaConstants public API surface. v3 (AUTH-002):
+    // challenge-response handshake replaces the replayable static-hash 0x01 flow;
+    // see NovaProtocol for the change history.
+    public static final int PROTOCOL_VERSION = NovaProtocol.PROTOCOL_VERSION;
     
     // Default Ports
     public static final int DEFAULT_PORT = 8888;
     public static final int DEFAULT_WEBSOCKET_PORT = 8889;
     
-    // Packet IDs
+    // Packet IDs — legacy alias set. The authoritative, complete registry is
+    // com.nova.chat.common.protocol.PacketIds (which also covers HANDSHAKE_INIT /
+    // HANDSHAKE_CHALLENGE / HANDSHAKE_AUTHENTICATE / PRIVATE_MESSAGE not mirrored
+    // here). These byte aliases predate PacketIds and are kept for the public
+    // NovaConstants API surface; see PacketIds for per-id registration status.
     public static final byte PACKET_HANDSHAKE = 0x01;
     public static final byte PACKET_HANDSHAKE_RESPONSE = 0x02;
     public static final byte PACKET_CHAT_MESSAGE = 0x03;
@@ -27,16 +33,18 @@ public final class NovaConstants {
     public static final byte PACKET_CHANNEL_ACTION_RESPONSE = 0x05;
     public static final byte PACKET_CONFIG_SYNC = 0x06;
     public static final byte PACKET_KEEP_ALIVE = 0x07;
+    // No Java packet class; ID 0x08 reserved and mirrored by PHP/Python/C++ clients.
     public static final byte PACKET_PLAYER_STATE = 0x08;
     public static final byte PACKET_TITLE = 0x09;
+    // No Java packet class; ID 0x0A deprecated (announcements route via
+    // AdminAction STATUS). PHP/C++ keep the constant for numbering; Python omits it.
     public static final byte PACKET_ANNOUNCEMENT = 0x0A;
     public static final byte PACKET_ADMIN_ACTION = 0x0B;
     public static final byte PACKET_ADMIN_ACTION_RESPONSE = 0x0C;
+    // No Java packet class; ID 0x0D used by PHP/Python clients (ChannelUpdatePacket).
     public static final byte PACKET_CHANNEL_UPDATE = 0x0D;
     public static final byte PACKET_ITEM_DISPLAY = 0x10;
-    public static final byte PACKET_INVENTORY_SNAPSHOT = 0x11;
     public static final byte PACKET_MENTION = 0x12;
-    public static final byte PACKET_IMAGE_DISPLAY = 0x13;
 
     // Error Codes
     // These are the protocol-layer wire constants (NC-XXX strings). The

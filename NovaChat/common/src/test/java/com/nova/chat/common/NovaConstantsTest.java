@@ -36,9 +36,7 @@ class NovaConstantsTest {
             NovaConstants.PACKET_ADMIN_ACTION_RESPONSE,
             NovaConstants.PACKET_CHANNEL_UPDATE,
             NovaConstants.PACKET_ITEM_DISPLAY,
-            NovaConstants.PACKET_INVENTORY_SNAPSHOT,
-            NovaConstants.PACKET_MENTION,
-            NovaConstants.PACKET_IMAGE_DISPLAY
+            NovaConstants.PACKET_MENTION
         };
 
         // Check all packet IDs are unique
