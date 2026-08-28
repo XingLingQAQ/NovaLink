@@ -17,6 +17,10 @@ import com.nova.chat.client.i18n.LocaleResolver;
  * locale-change event like Java Edition), so a single {@link PlayerJoinEvent}
  * handler is enough. There is no later locale-change event to listen for.
  */
+// TODO(dedup): byte-identical near-duplicate of
+// com.nova.chat.pnx.listener.LocaleListener (only the package differs; PNX
+// reuses the cn.nukkit API). Not unified — no shared Bedrock-common module
+// exists and adding cn.nukkit to NovaChat:common would pollute all platforms.
 public class LocaleListener implements Listener {
 
     @EventHandler(priority = EventPriority.LOWEST)

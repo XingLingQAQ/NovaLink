@@ -77,6 +77,11 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      */
     @SuppressWarnings("unchecked")
     @Override
+    // TODO(dedup): same thread-jump wrap as Folia AsyncNetworkClient#registerHandler
+    // (line 111), but this hops to the MC server thread via platform.execute (sync),
+    // while Folia hops to its async scheduler. Different thread guarantees — not
+    // unified. AbstractPlatformNetworkClient#registerHandler is the no-hop default;
+    // both subclasses override it with platform-specific semantics. Do not merge.
     public <T extends Packet> void registerHandler(Class<T> packetClass, Consumer<T> handler) {
         core().registerHandler(packetClass, packet -> platform.execute(() -> handler.accept((T) packet)));
     }
