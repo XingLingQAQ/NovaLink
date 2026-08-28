@@ -7,9 +7,6 @@ import com.nova.chat.mod.config.ModConfig;
 import com.nova.chat.mod.network.NetworkClient;
 import com.nova.chat.mod.platform.CommandManager;
 import com.nova.chat.mod.platform.ModServices;
-import com.nova.chat.mod.quilt.version.QuiltVersionHelper;
-import com.nova.chat.mod.version.UnsupportedVersionException;
-import com.nova.chat.mod.version.VersionAdapter;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -35,23 +32,11 @@ public class NovaChatQuilt implements ModInitializer {
     private ConfigManager configManager;
     private ModConfig config;
     private ModServices services;
-    private VersionAdapter versionAdapter;
 
     @Override
     public void onInitialize() {
         instance = this;
         LOGGER.info("NovaChat Quilt Mod initializing...");
-
-        // Initialize version adapter first
-        try {
-            versionAdapter = QuiltVersionHelper.initialize();
-            LOGGER.info("Quilt version adapter initialized for Minecraft {}",
-                    versionAdapter.getMinecraftVersion());
-        } catch (UnsupportedVersionException e) {
-            LOGGER.error("Unsupported Minecraft version: {}", e.getMessage());
-            LOGGER.error("NovaChat Quilt requires Minecraft 1.14.x - 1.21.x / 26.x");
-            return;
-        }
 
         // Initialize common module (version banner)
         NovaChatMod.init();
@@ -156,13 +141,5 @@ public class NovaChatQuilt implements ModInitializer {
             services.getChatInterceptor().reload();
         }
         LOGGER.info("Configuration reloaded");
-    }
-
-    public VersionAdapter getVersionAdapter() {
-        return versionAdapter;
-    }
-
-    public String getMinecraftVersion() {
-        return versionAdapter != null ? versionAdapter.getMinecraftVersion() : "unknown";
     }
 }
