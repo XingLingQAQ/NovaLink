@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Verifies that {@link ChannelManager} write-through persistence (P0-3) keeps
@@ -156,9 +157,8 @@ class ChannelManagerPersistenceTest {
     }
 
     @Test
-    @DisplayName("DB failure during createChannel is swallowed (in-memory op still succeeds)")
-    void createChannel_dbFailure_isNonFatal() {
-        // A provider whose saveChannel throws.
+    @DisplayName("DB failure during createChannel rolls back in-memory mutation and surfaces error")
+    void createChannel_dbFailure_isFatal() {
         MemoryProvider throwingProvider = new MemoryProvider() {
             @Override
             public void saveChannel(Channel channel) throws com.nova.link.database.DatabaseException {
@@ -168,14 +168,16 @@ class ChannelManagerPersistenceTest {
         try { throwingProvider.initialize(); } catch (com.nova.link.database.DatabaseException e) { throw new RuntimeException(e); }
         ChannelManager manager = new ChannelManager(throwingProvider);
 
-        // The create should still succeed in memory despite the DB failure.
-        Channel channel = manager.createChannel(ChannelConfig.builder()
+        // The create must surface the DB failure rather than silently succeed in memory.
+        assertThatThrownBy(() -> manager.createChannel(ChannelConfig.builder()
                 .id("memory-only")
                 .scope(ChannelScope.GLOBAL)
-                .build());
+                .build()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("memory-only");
 
-        assertThat(channel).isNotNull();
-        assertThat(manager.channelExists("memory-only")).isTrue();
+        // In-memory mutation is rolled back so the registry does not diverge from the sink.
+        assertThat(manager.channelExists("memory-only")).isFalse();
     }
 
     @Test
