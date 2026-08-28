@@ -12,6 +12,7 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import org.slf4j.Logger;
@@ -66,6 +67,26 @@ public class NovaChatNeoForge {
 
         // Register commands on the platform
         platform.registerCommands(commandManager);
+
+        // Register player join/quit events → forward to common ChatInterceptor.
+        // The common handler owns state init (join) + removePlayerState (quit),
+        // so the loader stays a thin event forwarder. This wiring finally calls
+        // the previously-dead removePlayerState on disconnect.
+        ChatInterceptor chatInterceptor = services.getChatInterceptor();
+        NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerLoggedInEvent event) -> {
+            net.minecraft.world.entity.player.Player player = event.getEntity();
+            if (player instanceof net.minecraft.server.level.ServerPlayer serverPlayer) {
+                chatInterceptor.onPlayerJoin(serverPlayer.getUUID(),
+                        serverPlayer.getName().getString());
+            } else {
+                chatInterceptor.onPlayerJoin(player.getUUID(),
+                        player.getName().getString());
+            }
+        });
+        NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerLoggedOutEvent event) -> {
+            net.minecraft.world.entity.player.Player player = event.getEntity();
+            chatInterceptor.onPlayerQuit(player.getUUID());
+        });
 
         // Register server lifecycle events on NeoForge event bus
         NeoForge.EVENT_BUS.register(this);

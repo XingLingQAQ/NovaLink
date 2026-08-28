@@ -462,6 +462,43 @@ public class ChatInterceptor implements ChatHandler {
         privateMessageService.onPlayerQuit(playerId);
     }
 
+    // ============================ player lifecycle ============================
+
+    /**
+     * Player-join entry point shared by every mod loader (Fabric, NeoForge,
+     * Quilt). Each loader registers its platform-native join event and forwards
+     * the UUID + name here; this method owns the state-initialization side
+     * effects so the loaders stay thin.
+     *
+     * <p>Mirrors the bukkit {@code ChatInterceptor.onPlayerJoin}: lazily creates
+     * the per-player {@link PlayerChannelState} via {@link #getOrCreateState} so
+     * the first chat / command does not pay the creation cost. Idempotent: a
+     * repeat join for a UUID that somehow still has a state just reuses it.
+     *
+     * @param playerId  the player's UUID (non-null)
+     * @param playerName the player's display name (may be null; only used for logging)
+     */
+    public void onPlayerJoin(UUID playerId, String playerName) {
+        getOrCreateState(playerId, playerName);
+        LOGGER.debug("Initialized chat state for {} ({})", playerName, playerId);
+    }
+
+    /**
+     * Player-quit entry point shared by every mod loader. Delegates to
+     * {@link #removePlayerState} which drops the per-player
+     * {@link PlayerChannelState} and clears the private-message reply target.
+     *
+     * <p>This is the fix for the dead-code {@link #removePlayerState}: before
+     * this wiring the method existed but no mod loader called it, so player
+     * state and reply targets leaked for every disconnected player.
+     *
+     * @param playerId the player's UUID (non-null)
+     */
+    public void onPlayerQuit(UUID playerId) {
+        removePlayerState(playerId);
+        LOGGER.debug("Removed chat state for {}", playerId);
+    }
+
     public ChatMode getGlobalMode() {
         return globalMode;
     }

@@ -8,8 +8,10 @@ import com.nova.chat.mod.network.NetworkClient;
 import com.nova.chat.mod.platform.CommandManager;
 import com.nova.chat.mod.platform.ModServices;
 import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.server.level.ServerPlayer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -65,6 +67,16 @@ public class NovaChatFabric implements ModInitializer {
 
         // Register commands on the platform
         platform.registerCommands(commandManager);
+
+        // Register player join/leave events → forward to common ChatInterceptor.
+        // The common handler owns state init (join) + removePlayerState (leave),
+        // so the loader stays a thin event forwarder. This wiring finally calls
+        // the previously-dead removePlayerState on disconnect.
+        ChatInterceptor chatInterceptor = services.getChatInterceptor();
+        ServerPlayerEvents.JOIN.register((ServerPlayer player) ->
+                chatInterceptor.onPlayerJoin(player.getUUID(), player.getName().getString()));
+        ServerPlayerEvents.LEAVE.register((ServerPlayer player) ->
+                chatInterceptor.onPlayerQuit(player.getUUID()));
 
         // Register server lifecycle events
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
