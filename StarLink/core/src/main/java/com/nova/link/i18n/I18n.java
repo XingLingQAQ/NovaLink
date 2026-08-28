@@ -17,6 +17,9 @@ import java.util.ResourceBundle;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Independent internationalization service for the NovaLink backend
  * ({@code novalink-core}). Renders console / backend-internal user-facing
@@ -61,8 +64,7 @@ public final class I18n {
      */
     static final String BASE_NAME = "lang.messages";
 
-    private static final org.slf4j.Logger LOG =
-            org.slf4j.LoggerFactory.getLogger(I18n.class);
+    private static final Logger logger = LoggerFactory.getLogger(I18n.class);
 
     /** Hard fallback locale (zh_CN). */
     private static final Locale FALLBACK_LOCALE = LocaleResolver.ROOT_LOCALE;
@@ -191,7 +193,7 @@ public final class I18n {
                     // fall through to key echo
                 }
             }
-            LOG.warn("Missing backend i18n key: {} (locale={})", key, locale);
+            logger.warn("Missing backend i18n key: {} (locale={})", key, locale);
             return key;
         }
     }
@@ -253,7 +255,7 @@ public final class I18n {
              Reader reader = new InputStreamReader(in, StandardCharsets.UTF_8)) {
             return new PropertyResourceBundle(reader);
         } catch (IOException e) {
-            LOG.warn("Failed to load external lang file {}: {}", file, e.getMessage());
+            logger.warn("Failed to load external lang file {}: {}", file, e.getMessage());
             return null;
         }
     }
