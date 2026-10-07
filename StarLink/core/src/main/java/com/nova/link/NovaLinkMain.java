@@ -200,10 +200,7 @@ public class NovaLinkMain {
                 // This enables SUPER_ADMIN role in the web panel.
                 try {
                     if (admin != null && admin.getUuid() != null && admin.getPasswordHash() != null) {
-                        String webLoginUsername = (admin.getUsername() != null && !admin.getUsername().isBlank())
-                                ? admin.getUsername()
-                                : admin.getUuid().toString();
-                        authManager.registerSuperAdmin(webLoginUsername, admin.getPasswordHash());
+                        authManager.registerSuperAdmin(admin.resolveWebLoginUsername(), admin.getPasswordHash());
                     }
                 } catch (Exception e) {
                     logger.warn("Failed to register super admin for web-panel auth: {}", admin, e);

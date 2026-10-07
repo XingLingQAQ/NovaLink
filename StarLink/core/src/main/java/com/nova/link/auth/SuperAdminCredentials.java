@@ -43,6 +43,18 @@ public class SuperAdminCredentials {
         return username;
     }
 
+    /**
+     * @return the username used for web-panel login: the configured
+     *         {@link #getUsername()} when present and non-blank, otherwise the
+     *         {@link #getUuid()} string (backward compatible with deployments
+     *         that never set a username).
+     */
+    public String resolveWebLoginUsername() {
+        return (username != null && !username.isBlank())
+                ? username
+                : uuid.toString();
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
