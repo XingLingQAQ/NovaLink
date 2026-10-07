@@ -78,6 +78,10 @@ public class RedisProvider implements DatabaseProvider {
             poolConfig.setMaxIdle(5);
             poolConfig.setMinIdle(1);
             poolConfig.setTestOnBorrow(true);
+            // Fail fast when the pool is exhausted instead of blocking forever:
+            // clearNotifications paths used to borrow a nested second connection
+            // (deleteReadStateFor) which could self-deadlock a saturated pool.
+            poolConfig.setMaxWaitMillis(3000);
 
             if (password != null && !password.isEmpty()) {
                 jedisPool = new JedisPool(poolConfig, host, port, 2000, password, database);
@@ -563,21 +567,22 @@ public class RedisProvider implements DatabaseProvider {
 
     /** Deletes every per-user read-state entry for the given notification ids. */
     private void deleteReadStateFor(Jedis jedis, List<String> ids) {
-        // SCAN runs on its own connection so it never interleaves with the
-        // caller's protocol state; HDEL writes go through the caller's jedis.
-        try (Jedis scanJedis = jedisPool.getResource()) {
-            ScanParams params = new ScanParams().match(NOTIFICATION_READ_PREFIX + "*").count(100);
-            String cursor = ScanParams.SCAN_POINTER_START;
-            do {
-                ScanResult<String> scan = scanJedis.scan(cursor, params);
-                cursor = scan.getCursor();
-                for (String key : scan.getResult()) {
-                    for (String idStr : ids) {
-                        jedis.hdel(key, idStr);
-                    }
+        // Reuse the caller's connection: Redis is single-threaded request-
+        // response, so SCAN interleaved with HDEL on the same socket is legal
+        // (cursor state lives server-side). This matches the single-connection
+        // SCAN+HDEL pattern in cleanupExpiredMutes and avoids a nested borrow
+        // that could exhaust a size-10 pool under concurrent clear paths.
+        ScanParams params = new ScanParams().match(NOTIFICATION_READ_PREFIX + "*").count(100);
+        String cursor = ScanParams.SCAN_POINTER_START;
+        do {
+            ScanResult<String> scan = jedis.scan(cursor, params);
+            cursor = scan.getCursor();
+            for (String key : scan.getResult()) {
+                for (String idStr : ids) {
+                    jedis.hdel(key, idStr);
                 }
-            } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
-        }
+            }
+        } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
     }
 
     @Override
