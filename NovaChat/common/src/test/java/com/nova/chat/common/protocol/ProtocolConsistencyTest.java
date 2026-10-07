@@ -10,8 +10,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,10 +39,43 @@ class ProtocolConsistencyTest {
 
     @Test
     @DisplayName("createRegistry registers all core packet types")
-    void registryContainsCorePackets() {
+    void registryContainsCorePackets() throws IllegalAccessException {
         PacketRegistry registry = NovaProtocol.createRegistry();
 
-        int[] expected = {
+        // Reserved orphan ids documented in PacketIds as "no Java packet class yet".
+        // These are intentionally unregistered and are excluded from the core set.
+        // TITLE_MESSAGE is an alias of TITLE and collapses into it naturally via the Set.
+        Set<Integer> orphanIds = Set.of(
+                PacketIds.PLAYER_STATE,       // 0x08
+                PacketIds.ANNOUNCEMENT,       // 0x0A
+                PacketIds.CHANNEL_UPDATE,     // 0x0D
+                PacketIds.INVENTORY_SNAPSHOT, // 0x11
+                PacketIds.IMAGE_DISPLAY       // 0x13
+        );
+
+        // Reflectively scan every public static final int in PacketIds so that new
+        // packets are picked up automatically instead of requiring manual sync here.
+        // Mirrors the reflective fallback in PacketRegistryDetailedTest.
+        Set<Integer> expected = new LinkedHashSet<>();
+        for (Field field : PacketIds.class.getDeclaredFields()) {
+            int mods = field.getModifiers();
+            if (!Modifier.isStatic(mods) || !Modifier.isFinal(mods) || !Modifier.isPublic(mods)) {
+                continue;
+            }
+            if (field.getType() != int.class) {
+                continue;
+            }
+            int value = field.getInt(null);
+            if (orphanIds.contains(value)) {
+                continue;
+            }
+            expected.add(value);
+        }
+
+        // Sanity check: we must still see the well-known set including the AUTH-002
+        // challenge-response handshake packets (0x15/0x16/0x17). This guards against
+        // a future refactor accidentally dropping the reflective scan.
+        assertThat(expected).contains(
                 PacketIds.HANDSHAKE,
                 PacketIds.HANDSHAKE_RESPONSE,
                 PacketIds.CHAT_MESSAGE,
@@ -50,8 +87,12 @@ class ProtocolConsistencyTest {
                 PacketIds.ADMIN_ACTION,
                 PacketIds.ADMIN_ACTION_RESPONSE,
                 PacketIds.ITEM_DISPLAY,
-                PacketIds.MENTION
-        };
+                PacketIds.MENTION,
+                PacketIds.PRIVATE_MESSAGE,
+                PacketIds.HANDSHAKE_INIT,
+                PacketIds.HANDSHAKE_CHALLENGE,
+                PacketIds.HANDSHAKE_AUTHENTICATE
+        );
 
         for (int id : expected) {
             assertThat(registry.isRegistered(id))
