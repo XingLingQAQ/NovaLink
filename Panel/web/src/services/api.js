@@ -232,54 +232,65 @@ export const api = {
   // 403) -> publish (PUBLISHED, requires APPROVED or 409) -> live config +
   // backup snapshot. Discard is DRAFT-only. Restore-from-backup rolls the
   // live config back to a backup revision.
-  // GET /api/settings/drafts?limit= -> [{draftId,status,createdAt,createdBy,
-  //   approvedAt,publishedAt}] — draft list, newest first.
-  listDrafts: (limit = 50) => {
+  //
+  // Backend wire contract (RestApiHandler.java):
+  //   - all paths under /config/* (NOT /settings/* — the legacy /settings/drafts/
+  //     backups/restore-from-backup paths never existed and returned 404)
+  //   - list endpoints return an envelope { items:[...] } — unwrapped here so
+  //     callers see a plain array
+  //   - draft row: { id, status, createdBy, createdAt, approvedBy?, approvedAt?,
+  //     publishedAt?, draft? } — draft (when present) is the *parsed* masked
+  //     YAML→JSON object, not a string; "validation" is not a draft field
+  //   - backup row: { id, label, settingsRevision, createdBy, createdAt, backup? }
+  // GET /api/config/drafts?limit= -> { items:[{id,status,createdBy,createdAt,
+  //   approvedAt?,publishedAt?}] } — draft list, newest first.
+  listDrafts: async (limit = 50) => {
     const params = new URLSearchParams({ limit: String(limit) });
-    return apiFetch(`/settings/drafts?${params.toString()}`);
+    const res = await apiFetch(`/config/drafts?${params.toString()}`);
+    return Array.isArray(res) ? res : (res && Array.isArray(res.items) ? res.items : []);
   },
-  // POST /api/settings/drafts { yaml } -> { draftId, status:"DRAFT",
-  //   validation:{valid,errors[],warnings[]}, createdAt, createdBy }. 400 +
-  //   validation report when the YAML is invalid.
-  createDraft: (yamlText) => apiFetch('/settings/drafts', {
+  // POST /api/config/drafts { yaml } -> { id, status:"DRAFT", createdBy,
+  //   createdAt, draft }. 400 + validation report when the YAML is invalid.
+  createDraft: (yamlText) => apiFetch('/config/drafts', {
     method: 'POST',
     body: JSON.stringify({ yaml: yamlText }),
   }),
-  // GET /api/settings/drafts/{id} -> full draft { draftId, status, draft_yaml,
-  //   validation, createdAt, createdBy, approvedBy, approvedAt, publishedAt,
-  //   publishedRevision, note }.
+  // GET /api/config/drafts/{id} -> full draft { id, status, createdBy,
+  //   createdAt, approvedBy?, approvedAt?, publishedAt?, draft }.
   getDraft: (draftId) =>
-    apiFetch(`/settings/drafts/${encodeURIComponent(draftId)}`),
-  // POST /api/settings/drafts/{id}/approve { note } -> { draftId,
-  //   status:"APPROVED", approvedBy, approvedAt }. 403 when approver == createdBy.
-  approveDraft: (draftId, note) => apiFetch(`/settings/drafts/${encodeURIComponent(draftId)}/approve`, {
+    apiFetch(`/config/drafts/${encodeURIComponent(draftId)}`),
+  // POST /api/config/drafts/{id}/approve { note } -> { id, status:"APPROVED",
+  //   approvedBy, approvedAt, ... }. 403 when approver == createdBy.
+  approveDraft: (draftId, note) => apiFetch(`/config/drafts/${encodeURIComponent(draftId)}/approve`, {
     method: 'POST',
     body: JSON.stringify({ note }),
   }),
-  // POST /api/settings/drafts/{id}/publish -> { revision, backupId,
-  //   publishedAt }. 409 when the draft is not APPROVED.
-  publishDraft: (draftId) => apiFetch(`/settings/drafts/${encodeURIComponent(draftId)}/publish`, {
+  // POST /api/config/drafts/{id}/publish -> { success, draftId, revision }.
+  //   409 when the draft is not APPROVED.
+  publishDraft: (draftId) => apiFetch(`/config/drafts/${encodeURIComponent(draftId)}/publish`, {
     method: 'POST',
   }),
-  // DELETE /api/settings/drafts/{id} -> 204 (DRAFT-only; backend 409 otherwise).
-  discardDraft: (draftId) => apiFetch(`/settings/drafts/${encodeURIComponent(draftId)}`, {
+  // DELETE /api/config/drafts/{id} -> { success, draftId } (DRAFT-only; backend
+  //   409 when the draft is APPROVED/PUBLISHED).
+  discardDraft: (draftId) => apiFetch(`/config/drafts/${encodeURIComponent(draftId)}`, {
     method: 'DELETE',
   }),
-  // POST /api/settings/backup { label } -> { backupId, label, revision,
-  //   createdAt, createdBy }.
-  createBackup: (label) => apiFetch('/settings/backup', {
+  // POST /api/config/backups { label } -> { id, label, settingsRevision,
+  //   createdBy, createdAt, backup }.
+  createBackup: (label) => apiFetch('/config/backups', {
     method: 'POST',
     body: JSON.stringify({ label }),
   }),
-  // GET /api/settings/backups?limit= -> [{ backupId, label, revision,
-  //   createdAt, createdBy }] — backup list, newest first.
-  listBackups: (limit = 50) => {
+  // GET /api/config/backups?limit= -> { items:[{ id, label, settingsRevision,
+  //   createdBy, createdAt }] } — backup list, newest first.
+  listBackups: async (limit = 50) => {
     const params = new URLSearchParams({ limit: String(limit) });
-    return apiFetch(`/settings/backups?${params.toString()}`);
+    const res = await apiFetch(`/config/backups?${params.toString()}`);
+    return Array.isArray(res) ? res : (res && Array.isArray(res.items) ? res.items : []);
   },
-  // POST /api/settings/restore-from-backup { backupId } -> { revision,
-  //   restoredFromBackupId }.
-  restoreFromBackup: (backupId) => apiFetch('/settings/restore-from-backup', {
+  // POST /api/config/restore-from-backup { backupId } -> { success, backupId,
+  //   revision }.
+  restoreFromBackup: (backupId) => apiFetch('/config/restore-from-backup', {
     method: 'POST',
     body: JSON.stringify({ backupId }),
   }),
