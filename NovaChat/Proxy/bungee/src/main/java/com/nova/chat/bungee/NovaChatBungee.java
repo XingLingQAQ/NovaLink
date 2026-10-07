@@ -305,7 +305,14 @@ public class NovaChatBungee extends Plugin {
             networkClient.disconnect();
         }
         initializeNetworkClient();
-        
+
+        // H6: re-bind incoming packet handlers to the new NetworkClient instance.
+        // The old handlers were registered against the discarded client and
+        // would silently drop all inbound packets after this reload.
+        if (chatListener != null) {
+            chatListener.rebindIncomingHandlers();
+        }
+
         getLogger().info("NovaChat configuration reloaded");
     }
     

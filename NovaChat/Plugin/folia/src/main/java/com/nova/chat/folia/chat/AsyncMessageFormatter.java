@@ -270,7 +270,10 @@ public class AsyncMessageFormatter {
                                                             String channelName, String senderName,
                                                             String message) {
         CompletableFuture<String> future = new CompletableFuture<>();
-        if (placeholderApiAvailable && player != null && player.isOnline()) {
+        if (player != null && player.isOnline()) {
+            // PAPI present or not, we still need player-owned state (getDisplayName,
+            // getWorld) on the region thread. Formatting off-thread can read stale
+            // or half-torn values under Folia's region threading.
             scheduler.runForPlayer(player, () -> {
                 try {
                     future.complete(formatChatMessage(player, channelId, channelName, senderName, message));
@@ -310,7 +313,10 @@ public class AsyncMessageFormatter {
                                                             String channelName, String senderName,
                                                             String message, Map<String, String> placeholders) {
         CompletableFuture<String> future = new CompletableFuture<>();
-        if (placeholderApiAvailable && player != null && player.isOnline()) {
+        if (player != null && player.isOnline()) {
+            // See above: any live player means we touch region-owned state in
+            // platformExtras(); only PAPI-absent null-player/offline paths may
+            // stay on the generic async scheduler.
             scheduler.runForPlayer(player, () -> {
                 try {
                     future.complete(formatChatMessage(player, channelId, channelName,
