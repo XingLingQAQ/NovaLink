@@ -254,6 +254,132 @@ class PrivateMessageHandlerTest {
         assertThat(packet.getTimestamp()).isPositive();
     }
 
+    // ==================== H3 fix: sender-identity spoofing containment ====================
+
+    @Test
+    @DisplayName("forged senderId is overwritten with the server-authoritative UUID (name lookup)")
+    void forgedSenderIdOverwritten() {
+        // Attacker forges senderId = a random UUID (e.g. an admin's id) to bypass
+        // mute/ignore checks. The server's player cache keys authority on the
+        // packet's own senderName, so the forged UUID must be replaced by
+        // Steve's real UUID before any consumer reads it.
+        UUID forgedId = UUID.randomUUID();
+        PrivateMessagePacket packet = new PrivateMessagePacket(forgedId, "Steve", "Survival",
+                "Alex", new UUID(0L, 0L), "claiming to be someone else", 0L);
+
+        handler(null).handle(survivalConn, packet);
+
+        assertThat(packet.getSenderId()).isEqualTo(steveId);
+        verify(creativeConn).sendPacket(packet);
+        // Audit line must record the server-authoritative id, not the forged one.
+        verify(chatLogger).logPrivateMessage(steveId.toString(), "Steve",
+                alexId.toString(), "Alex", "claiming to be someone else");
+    }
+
+    @Test
+    @DisplayName("forged senderName casing is canonicalised via the player cache")
+    void forgedSenderNameCanonicalised() {
+        // Casing-only forgery: "sTeVe". Resolution is case-insensitive, so the
+        // handler must still find Steve and stamp the canonical name.
+        PrivateMessagePacket packet = new PrivateMessagePacket(UUID.randomUUID(), "sTeVe", "Survival",
+                "Alex", new UUID(0L, 0L), "hi", 0L);
+
+        handler(null).handle(survivalConn, packet);
+
+        assertThat(packet.getSenderId()).isEqualTo(steveId);
+        assertThat(packet.getSenderName()).isEqualTo("Steve");
+        verify(creativeConn).sendPacket(packet);
+    }
+
+    @Test
+    @DisplayName("unresolvable senderName is silently dropped (no leak)")
+    void unresolvableSenderNameDropped() {
+        // "Eve" is not in the network-wide player cache — the handler has no
+        // authoritative id for her and silently drops the packet (no error
+        // reply, no delivery, no audit; never leak whether a player exists).
+        PrivateMessagePacket packet = new PrivateMessagePacket(UUID.randomUUID(), "Eve", "Survival",
+                "Alex", new UUID(0L, 0L), "hi", 0L);
+
+        handler(null).handle(survivalConn, packet);
+
+        verify(survivalConn, never()).sendPacket(any());
+        verify(creativeConn, never()).sendPacket(any());
+        verify(chatLogger, never()).logPrivateMessage(anyString(), anyString(),
+                anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("globally muted sender rejected even when packet carries another (bypass) id")
+    void forgedSenderIdDoesNotBypassMute() {
+        // Real sender Steve is muted. Attacker sets senderName="Steve" but
+        // forges senderId to a non-muted random UUID. The handler must still
+        // consult the mute manager with Steve's real id and reject.
+        when(muteManager.isMuted(steveId, null)).thenReturn(true);
+        UUID forgedId = UUID.randomUUID();
+        PrivateMessagePacket packet = new PrivateMessagePacket(forgedId, "Steve", "Survival",
+                "Alex", new UUID(0L, 0L), "hi", 0L);
+
+        handler(null).handle(survivalConn, packet);
+
+        ChannelActionResponsePacket error = capturedError(survivalConn);
+        assertThat(error.getErrorCode()).isEqualTo("NC-403");
+        verify(creativeConn, never()).sendPacket(any());
+    }
+
+    @Test
+    @DisplayName("target-ignores-sender enforced against the server-authoritative sender id")
+    void forgedSenderIdDoesNotBypassIgnore() {
+        // Alex ignores the real Steve. Attacker forges senderId to a known-unblocked
+        // UUID. The ignore lookup must be queried with Steve's real id and reject.
+        PrivateMessageHandler.IgnoreLookup lookup = (src, tgt) ->
+                alexId.equals(src) && steveId.equals(tgt);
+        UUID forgedId = UUID.randomUUID();
+        PrivateMessagePacket packet = new PrivateMessagePacket(forgedId, "Steve", "Survival",
+                "Alex", new UUID(0L, 0L), "hi", 0L);
+
+        handler(null, lookup).handle(survivalConn, packet);
+
+        ChannelActionResponsePacket error = capturedError(survivalConn);
+        assertThat(error.getErrorCode()).isEqualTo("NC-404");
+        assertThat(error.getExtra("detail")).isEqualTo("not_online");
+        verify(creativeConn, never()).sendPacket(any());
+    }
+
+    @Test
+    @DisplayName("sender ignoring target cannot bypass by forging senderId either")
+    void forgedSenderIdCannotBypassSenderSideIgnore() {
+        // Real Steve ignores Alex. Attacker forges senderId so the lookup
+        // (if it had used the packet's claim) would return false.
+        PrivateMessageHandler.IgnoreLookup lookup = (src, tgt) ->
+                steveId.equals(src) && alexId.equals(tgt);
+        UUID forgedId = UUID.randomUUID();
+        PrivateMessagePacket packet = new PrivateMessagePacket(forgedId, "Steve", "Survival",
+                "Alex", new UUID(0L, 0L), "hi", 0L);
+
+        handler(null, lookup).handle(survivalConn, packet);
+
+        ChannelActionResponsePacket error = capturedError(survivalConn);
+        assertThat(error.getErrorCode()).isEqualTo("NC-403");
+        assertThat(error.getExtra("detail")).isEqualTo("ignored_by_sender");
+        verify(creativeConn, never()).sendPacket(any());
+    }
+
+    @Test
+    @DisplayName("self-message via forged senderId is rejected as self (canonical id comparison)")
+    void selfMessageViaForgedIdStillRejected() {
+        // senderName="Steve" resolves to steveId; forging senderId to steveId
+        // makes targetId == resolved senderId == steveId when targetName="Steve".
+        // The self check uses the authoritative id, so it still rejects as self.
+        PrivateMessagePacket packet = new PrivateMessagePacket(steveId, "Steve", "Survival",
+                "Steve", new UUID(0L, 0L), "note to self", 0L);
+
+        handler(null).handle(survivalConn, packet);
+
+        ChannelActionResponsePacket error = capturedError(survivalConn);
+        assertThat(error.getExtra("detail")).isEqualTo("self");
+        verify(survivalConn).sendPacket(any()); // only the error
+    }
+
     @Test
     @DisplayName("same-connection sender and target receive a single packet")
     void sameConnectionSingleDelivery() {
