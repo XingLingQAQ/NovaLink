@@ -54,11 +54,13 @@ import java.util.Optional;
  * re-published). The approver must be a SUPER_ADMIN distinct from
  * {@code createdBy} (permission separation).
  *
- * <p><b>Fail-closed.</b> Publish and restore both call {@link ConfigManager#save()}
- * after {@link ConfigHistoryService#applySnapshot}. If save throws, the live
- * config is untouched, the draft stays APPROVED (publish failed before the
- * state flip), the backup is retained, and the caller surfaces 500/NC-510.
- * This mirrors the rollback contract in {@link ConfigHistoryService#rollback}.
+ * <p><b>Fail-closed.</b> Publish and restore both merge the staged config onto
+ * a private deep copy of the live config, swap the copy into the live slot via
+ * {@link ConfigManager#swapConfigForSave}, then call {@link ConfigManager#save()}.
+ * If save throws, the original live config is swapped back and the draft stays
+ * APPROVED (publish failed before the state flip) / the backup is retained;
+ * the caller surfaces 500/NC-510. This mirrors the rollback contract in
+ * {@link ConfigHistoryService#rollback}.
  *
  * <p><b>Audit.</b> Every mutating operation records an audit event via
  * {@link AuditStore#record} (best-effort, never blocks), with the action
@@ -246,8 +248,8 @@ public final class ConfigPublishService {
         if (draft.getStatus() != ConfigDraft.Status.APPROVED) {
             return -2L;
         }
-        NovaLinkConfig live = configManager.getConfig();
-        if (live == null) {
+        NovaLinkConfig liveSnapshot = configManager.getConfig();
+        if (liveSnapshot == null) {
             throw new IllegalStateException("Live config not available");
         }
         NovaLinkConfig draftConfig;
@@ -259,18 +261,22 @@ public final class ConfigPublishService {
         if (draftConfig == null) {
             throw new IllegalStateException("Draft JSON parsed to null config");
         }
-        String beforeMasked = configHistoryService.maskSecrets(gson.toJson(live));
+        String beforeMasked = configHistoryService.maskSecrets(gson.toJson(liveSnapshot));
         String beforeHash = AuditEvent.hashJson(beforeMasked);
 
-        // Apply the draft onto the live config in place. Masked fields are
-        // skipped so live secrets survive.
-        configHistoryService.applySnapshot(live, draftConfig);
+        // H4: merge the draft onto a private deep clone of the live config.
+        // If save() later fails we swap the original back in and the
+        // caller-visible live config never observed the merge.
+        NovaLinkConfig liveCopy = gson.fromJson(gson.toJson(liveSnapshot), NovaLinkConfig.class);
+        configHistoryService.applySnapshot(liveCopy, draftConfig);
 
-        // Fail-closed save: a throw leaves the live config untouched and the
-        // draft stays APPROVED. The caller surfaces 500/NC-510.
+        // Swap the clone into the live slot, write, and on failure swap the
+        // original back so the live config is unchanged.
+        NovaLinkConfig swappedOut = configManager.swapConfigForSave(liveCopy);
         try {
             configManager.save();
         } catch (Exception e) {
+            configManager.swapConfigForSave(swappedOut);
             throw new IllegalStateException("Publish save failed: " + e.getMessage(), e);
         }
 
@@ -288,7 +294,8 @@ public final class ConfigPublishService {
                     e.getMessage());
         }
 
-        String afterMasked = configHistoryService.maskSecrets(gson.toJson(live));
+        // liveCopy is the installed live config; serialise it directly.
+        String afterMasked = configHistoryService.maskSecrets(gson.toJson(liveCopy));
         String afterHash = AuditEvent.hashJson(afterMasked);
         audit("settings.draft.publish", "draft:" + id,
                 beforeHash, afterHash, "draft published by " + actor, actor);
@@ -405,8 +412,8 @@ public final class ConfigPublishService {
         if (backup == null) {
             return -1L;
         }
-        NovaLinkConfig live = configManager.getConfig();
-        if (live == null) {
+        NovaLinkConfig liveSnapshot = configManager.getConfig();
+        if (liveSnapshot == null) {
             throw new IllegalStateException("Live config not available");
         }
         NovaLinkConfig backupConfig;
@@ -418,23 +425,28 @@ public final class ConfigPublishService {
         if (backupConfig == null) {
             throw new IllegalStateException("Backup JSON parsed to null config");
         }
-        String beforeMasked = configHistoryService.maskSecrets(gson.toJson(live));
+        String beforeMasked = configHistoryService.maskSecrets(gson.toJson(liveSnapshot));
         String beforeHash = AuditEvent.hashJson(beforeMasked);
 
-        // Apply the backup onto the live config in place. Masked fields are
-        // skipped so live secrets survive.
-        configHistoryService.applySnapshot(live, backupConfig);
+        // H4: merge the backup onto a private deep clone of the live config.
+        // If save() later fails we swap the original back in and the
+        // caller-visible live config never observed the merge.
+        NovaLinkConfig liveCopy = gson.fromJson(gson.toJson(liveSnapshot), NovaLinkConfig.class);
+        configHistoryService.applySnapshot(liveCopy, backupConfig);
 
-        // Fail-closed save: a throw leaves the live config untouched and the
-        // backup is retained. The caller surfaces 500/NC-510.
+        // Swap the clone into the live slot, write, and on failure swap the
+        // original back so the live config is unchanged.
+        NovaLinkConfig swappedOut = configManager.swapConfigForSave(liveCopy);
         try {
             configManager.save();
         } catch (Exception e) {
+            configManager.swapConfigForSave(swappedOut);
             throw new IllegalStateException("Restore save failed: " + e.getMessage(), e);
         }
 
         long newRevision = configManager.getSettingsRevision();
-        String afterMasked = configHistoryService.maskSecrets(gson.toJson(live));
+        // liveCopy is the installed live config; serialise it directly.
+        String afterMasked = configHistoryService.maskSecrets(gson.toJson(liveCopy));
         String afterHash = AuditEvent.hashJson(afterMasked);
         audit("settings.backup.restore", "backup:" + id,
                 beforeHash, afterHash, "backup '" + backup.getLabel() + "' restored by " + actor, actor);

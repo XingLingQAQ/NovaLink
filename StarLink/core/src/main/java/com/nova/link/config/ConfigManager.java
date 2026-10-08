@@ -263,6 +263,25 @@ public class ConfigManager {
     }
 
     /**
+     * Atomically swaps the live config reference and returns the previous one.
+     * Used by rollback / publish / restore so the merge happens on a private
+     * clone and only becomes the visible live config via this swap; if the
+     * subsequent {@link #save()} throws, the caller swaps the previous config
+     * back and the live config remains untouched.
+     *
+     * <p><b>Power tool; only the api-layer config services should call this.</b>
+     * The swap is raw — the caller is responsible for restoring the previous
+     * config if the subsequent save fails. General callers should use
+     * {@link #getConfig()} and {@link #save()} instead.
+     *
+     * @param newConfig the merged config to install (must not be null)
+     * @return the previously-installed config
+     */
+    public NovaLinkConfig swapConfigForSave(NovaLinkConfig newConfig) {
+        return configLoader.swapConfigForSave(newConfig);
+    }
+
+    /**
      * Starts watching the configuration file for changes.
      */
     public void startWatching() {

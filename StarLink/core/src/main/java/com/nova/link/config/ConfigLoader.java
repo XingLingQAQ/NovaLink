@@ -250,6 +250,27 @@ public class ConfigLoader {
     }
 
     /**
+     * Atomically replaces the live config reference and returns the previous
+     * one. Used by rollback / publish / restore so the merge happens on a
+     * private clone and only becomes visible to {@link #getConfig()} callers
+     * when the clone is swapped in — if the subsequent {@link #save()} throws,
+     * the caller swaps the original back and the live config is unchanged.
+     *
+     * <p>Package-private: this is a power tool shared with
+     * {@link com.nova.link.config.ConfigManager#swapConfigForSave} and the
+     * rollback / publish paths. Public callers never swap.
+     *
+     * @param newConfig the config to install (must not be null)
+     * @return the previously-installed config; never null after a successful
+     *         {@link #load()}
+     */
+    NovaLinkConfig swapConfigForSave(NovaLinkConfig newConfig) {
+        NovaLinkConfig old = this.config;
+        this.config = newConfig;
+        return old;
+    }
+
+    /**
      * Gets the configuration file path.
      *
      * @return the config path
