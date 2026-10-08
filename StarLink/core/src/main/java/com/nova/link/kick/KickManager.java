@@ -136,8 +136,9 @@ public class KickManager {
      */
     private KickResult checkKickPermission(UUID operatorId, String operatorClientId,
                                             UUID targetPlayerId, Channel channel) {
-        PermissionLevel operatorLevel = permissionManager.getPermissionLevel(operatorId, operatorClientId);
-        PermissionLevel targetLevel = permissionManager.getPermissionLevel(targetPlayerId, channel.getClientId());
+        String channelId = channel.getId();
+        PermissionLevel operatorLevel = permissionManager.getPermissionLevel(operatorId, channelId);
+        PermissionLevel targetLevel = permissionManager.getPermissionLevel(targetPlayerId, channelId);
 
         // Cannot kick someone with equal or higher permission level
         if (!operatorLevel.isHigherThan(targetLevel) && operatorLevel != PermissionLevel.SUPER_ADMIN) {

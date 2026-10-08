@@ -112,7 +112,7 @@ public class TitleManager {
      * @return TitleResult indicating success or failure with error details
      */
     private TitleResult checkTitlePermission(UUID senderId, String senderClientId, Channel channel) {
-        PermissionLevel senderLevel = permissionManager.getPermissionLevel(senderId, senderClientId);
+        PermissionLevel senderLevel = permissionManager.getPermissionLevel(senderId, channel.getId());
 
         // Super admin can send to any channel
         if (senderLevel == PermissionLevel.SUPER_ADMIN) {
