@@ -12,11 +12,22 @@ import com.nova.chat.common.protocol.packets.*;
 import com.nova.link.auth.AuthManager;
 import com.nova.link.auth.ClientCredentials;
 import com.nova.link.auth.NonceCache;
+import com.nova.link.auth.PermissionManager;
 import com.nova.link.channel.ChannelManager;
+import com.nova.link.channel.InvitationManager;
+import com.nova.link.channel.MessageRouter;
+import com.nova.link.channel.PrivateChannelManager;
+import com.nova.link.database.MemoryProvider;
+import com.nova.link.database.PlayerStateManager;
+import com.nova.link.filter.SensitiveWordFilter;
+import com.nova.link.mute.MuteManager;
+import com.nova.link.network.AdminActionHandler;
+import com.nova.link.network.ChannelActionHandler;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.NettyServer;
 import com.nova.link.network.PacketHandler;
 import com.nova.link.network.ServerNetworkHandler;
+import com.nova.link.spy.SpyManager;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -49,6 +60,25 @@ public class IntegrationTestHelper {
     private NonceCache nonceCache;
     private final List<TestClient> clients = new ArrayList<>();
     private int currentPort = DEFAULT_PORT;
+
+    // ==== Production-business wiring (mirrors EmbeddedNovaLinkServer) ====
+    // When {@link #useProductionHandlers} is true these are initialised in
+    // {@link #startServer(int, com.nova.link.config.TlsConfig)} and registered in
+    // {@link #registerPacketHandlers()}, so the chat/channel/admin packet paths
+    // exercise the production {@link MessageRouter}, {@link ChannelActionHandler},
+    // and {@link AdminActionHandler} instead of loop-back stubs.
+    private boolean useProductionHandlers = true;
+    private PermissionManager permissionManager;
+    private MemoryProvider databaseProvider;
+    private PlayerStateManager playerStateManager;
+    private PrivateChannelManager privateChannelManager;
+    private InvitationManager invitationManager;
+    private MuteManager muteManager;
+    private SensitiveWordFilter sensitiveWordFilter;
+    private MessageRouter messageRouter;
+    private ChannelActionHandler channelActionHandler;
+    private AdminActionHandler adminActionHandler;
+    private SpyManager spyManager;
 
     /**
      * Starts a test NovaLink server with default configuration.
@@ -88,6 +118,16 @@ public class IntegrationTestHelper {
         // Create network handler with synchronous processing for testing
         networkHandler = new ServerNetworkHandler(1, false);
 
+        // Default: wire production business handlers (MessageRouter,
+        // ChannelActionHandler, AdminActionHandler) so integration tests that
+        // drive chat / channel / admin packets exercise real business logic
+        // instead of loop-back stubs. Flip {@link #useProductionHandlers}
+        // to {@code false} BEFORE calling startServer to keep the legacy
+        // pure-transport stub behaviour.
+        if (useProductionHandlers) {
+            initProductionBusinessStack();
+        }
+
         // Register packet handlers
         registerPacketHandlers();
 
@@ -112,11 +152,36 @@ public class IntegrationTestHelper {
         if (networkHandler != null) {
             networkHandler.shutdown();
         }
-        
+
         // Stop server
         if (server != null) {
             server.shutdown().get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
         }
+
+        // Tear down production business stack resources
+        if (muteManager != null) {
+            try { muteManager.shutdown(); } catch (Exception ignored) {}
+            muteManager = null;
+        }
+        if (playerStateManager != null) {
+            try {
+                playerStateManager.saveAllDirty();
+                playerStateManager.clearCache(false);
+            } catch (Exception ignored) {}
+            playerStateManager = null;
+        }
+        if (databaseProvider != null) {
+            try { databaseProvider.shutdown(); } catch (Exception ignored) {}
+            databaseProvider = null;
+        }
+        permissionManager = null;
+        privateChannelManager = null;
+        invitationManager = null;
+        sensitiveWordFilter = null;
+        messageRouter = null;
+        channelActionHandler = null;
+        adminActionHandler = null;
+        spyManager = null;
     }
 
     /**
@@ -155,6 +220,142 @@ public class IntegrationTestHelper {
      */
     public ServerNetworkHandler getNetworkHandler() {
         return networkHandler;
+    }
+
+    /**
+     * Enables or disables production business-handler wiring. Must be called
+     * BEFORE {@link #startServer(int)} / {@link #startServer(int, com.nova.link.config.TlsConfig)}.
+     * Default: {@code true} (production handlers active).
+     *
+     * <p>Set to {@code false} only when the test wants to verify transport /
+     * framing / codec behaviour with no business-side effects — see the
+     * legacy stub registrations in {@link #registerPacketHandlers()}.
+     */
+    public void setUseProductionHandlers(boolean useProductionHandlers) {
+        this.useProductionHandlers = useProductionHandlers;
+    }
+
+    /**
+     * Returns the permission manager wired by the production business stack,
+     * or {@code null} when {@link #useProductionHandlers} is false. Tests use
+     * this to register super-admin credentials before driving AUTH / STATUS /
+     * SPY packets.
+     */
+    public PermissionManager getPermissionManager() {
+        return permissionManager;
+    }
+
+    /**
+     * Returns the production AdminActionHandler wired by the production
+     * business stack, or {@code null} when {@link #useProductionHandlers} is false.
+     */
+    public AdminActionHandler getAdminActionHandler() {
+        return adminActionHandler;
+    }
+
+    /**
+     * Returns the production ChannelActionHandler wired by the production
+     * business stack, or {@code null} when {@link #useProductionHandlers} is false.
+     */
+    public ChannelActionHandler getChannelActionHandler() {
+        return channelActionHandler;
+    }
+
+    /**
+     * Returns the production MessageRouter wired by the production business
+     * stack, or {@code null} when {@link #useProductionHandlers} is false.
+     */
+    public MessageRouter getMessageRouter() {
+        return messageRouter;
+    }
+
+    /**
+     * Returns the MuteManager wired by the production business stack, or
+     * {@code null} when {@link #useProductionHandlers} is false.
+     */
+    public MuteManager getMuteManager() {
+        return muteManager;
+    }
+
+    /**
+     * Builds the minimal production manager stack used by
+     * {@link #registerPacketHandlers()} when {@link #useProductionHandlers} is true.
+     * The wiring mirrors {@link EmbeddedNovaLinkServer#start()} but keeps a
+     * single-threaded {@link ServerNetworkHandler} for determinism.
+     */
+    private void initProductionBusinessStack() throws Exception {
+        permissionManager = new PermissionManager();
+
+        databaseProvider = new MemoryProvider();
+        try {
+            databaseProvider.initialize();
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to initialize MemoryProvider", e);
+        }
+        playerStateManager = new PlayerStateManager(databaseProvider);
+
+        privateChannelManager = new PrivateChannelManager(channelManager);
+        invitationManager = new InvitationManager(databaseProvider, channelManager);
+        muteManager = new MuteManager(databaseProvider, permissionManager, channelManager);
+        muteManager.initialize();
+        sensitiveWordFilter = new SensitiveWordFilter();
+
+        messageRouter = new MessageRouter(channelManager, networkHandler);
+        messageRouter.setMuteManager(muteManager);
+        messageRouter.setSensitiveWordFilter(sensitiveWordFilter);
+
+        spyManager = new SpyManager(permissionManager, channelManager, networkHandler);
+        messageRouter.setSpyManager(spyManager);
+
+        adminActionHandler = new AdminActionHandler(permissionManager);
+        adminActionHandler.setSpyManager(spyManager);
+        adminActionHandler.setChannelManager(channelManager);
+        adminActionHandler.setNetworkHandler(networkHandler);
+        adminActionHandler.setMessageRouter(messageRouter);
+        adminActionHandler.setIpBanManager(authManager.getIpBanManager());
+
+        channelActionHandler = new ChannelActionHandler(
+                channelManager,
+                playerStateManager,
+                databaseProvider,
+                privateChannelManager,
+                invitationManager,
+                permissionManager,
+                muteManager
+        );
+
+        // Pre-create the small set of channels that existing tests reference
+        // (mirrors EmbeddedNovaLinkServer.DEFAULT_GLOBAL_CHANNELS subset).
+        // Production handlers (ChannelActionHandler, SpyManager) verify channel
+        // existence; the legacy stub accepted any id, so without this
+        // pre-creation old tests that use e.g. "private-channel" or "global"
+        // would fail with NC-404 through no fault of their own.
+        createDefaultTestChannels();
+    }
+
+    private static final String[] DEFAULT_TEST_CHANNELS = {
+            "global", "local", "staff", "vip",
+            "test-channel", "private-channel", "data-channel",
+            "new-channel", "temp-channel", "invited-channel"
+    };
+
+    private void createDefaultTestChannels() {
+        for (String channelId : DEFAULT_TEST_CHANNELS) {
+            try {
+                if (channelManager.channelExists(channelId)) {
+                    continue;
+                }
+                channelManager.createChannel(com.nova.link.channel.ChannelConfig.builder()
+                        .id(channelId)
+                        .displayName(channelId)
+                        .scope(com.nova.link.channel.ChannelScope.GLOBAL)
+                        .maxCapacity(1000)
+                        .build());
+            } catch (Exception ignored) {
+                // non-fatal: tests that require stricter channel state can create
+                // their own channels explicitly via channelManager
+            }
+        }
     }
 
     private void registerPacketHandlers() {
@@ -258,42 +459,99 @@ public class IntegrationTestHelper {
             }
         });
 
-        // Chat message handler
-        networkHandler.registerHandler(ChatMessagePacket.class, new PacketHandler<ChatMessagePacket>() {
-            @Override
-            public void handle(ClientConnection connection, ChatMessagePacket packet) {
-                if (!connection.isAuthenticated()) {
-                    return;
-                }
-                // Broadcast to all authenticated clients
-                networkHandler.broadcastAuthenticated(packet);
-            }
-        });
+        // ==================== Chat / Channel / Admin / KeepAlive ====================
+        // When {@link #useProductionHandlers} is true the three business handlers
+        // below are the same production classes NovaLinkMain installs (chat goes
+        // through MessageRouter; channel actions go through ChannelActionHandler;
+        // admin actions go through AdminActionHandler). When false the legacy
+        // self-loop stubs are kept so transport-only tests can opt out.
+        if (useProductionHandlers) {
+            // Chat message handler — production path via MessageRouter
+            networkHandler.registerHandler(ChatMessagePacket.class, new PacketHandler<ChatMessagePacket>() {
+                @Override
+                public void handle(ClientConnection connection, ChatMessagePacket packet) {
+                    if (!connection.isAuthenticated()) {
+                        return;
+                    }
+                    String senderClientId = connection.getClientId();
+                    packet.setClientId(senderClientId);
 
-        // Channel action handler
-        networkHandler.registerHandler(ChannelActionPacket.class, new PacketHandler<ChannelActionPacket>() {
-            @Override
-            public void handle(ClientConnection connection, ChannelActionPacket packet) {
-                if (!connection.isAuthenticated()) {
+                    com.nova.link.channel.Channel channel = channelManager.getChannel(packet.getChannelId());
+                    if (channel == null) {
+                        return;
+                    }
+                    if (!messageRouter.canSendToChannel(channel, senderClientId)) {
+                        return;
+                    }
+                    messageRouter.routeToChannel(channel, packet);
+                }
+            });
+
+            // Channel action handler — production ChannelActionHandler
+            networkHandler.registerHandler(ChannelActionPacket.class, new PacketHandler<ChannelActionPacket>() {
+                @Override
+                public void handle(ClientConnection connection, ChannelActionPacket packet) {
+                    ChannelActionResponsePacket response = channelActionHandler.handle(connection, packet);
+                    response.setRequestId(packet.getRequestId());
+                    connection.sendPacket(response);
+                }
+            });
+
+            // Admin action handler — production AdminActionHandler
+            networkHandler.registerHandler(AdminActionPacket.class, new PacketHandler<AdminActionPacket>() {
+                @Override
+                public void handle(ClientConnection connection, AdminActionPacket packet) {
+                    if (!connection.isAuthenticated()) {
+                        AdminActionResponsePacket response = AdminActionResponsePacket.failure(
+                            packet.getAction(), "NC-401", "Not authenticated"
+                        );
+                        response.setRequestId(packet.getRequestId());
+                        connection.sendPacket(response);
+                        return;
+                    }
+                    AdminActionResponsePacket response = adminActionHandler.handle(packet, connection.getRemoteAddress());
+                    response.setRequestId(packet.getRequestId());
+                    connection.sendPacket(response);
+                }
+            });
+        } else {
+            // ===== Legacy pure-transport stubs (opt-out) =====
+            // Kept verbatim so transport-only tests (codec / framing) can set
+            // useProductionHandlers(false) and keep the previous behaviour.
+            networkHandler.registerHandler(ChatMessagePacket.class, new PacketHandler<ChatMessagePacket>() {
+                @Override
+                public void handle(ClientConnection connection, ChatMessagePacket packet) {
+                    if (!connection.isAuthenticated()) {
+                        return;
+                    }
+                    networkHandler.broadcastAuthenticated(packet);
+                }
+            });
+
+            networkHandler.registerHandler(ChannelActionPacket.class, new PacketHandler<ChannelActionPacket>() {
+                @Override
+                public void handle(ClientConnection connection, ChannelActionPacket packet) {
+                    if (!connection.isAuthenticated()) {
+                        ChannelActionResponsePacket response = new ChannelActionResponsePacket(
+                            false, packet.getAction(), packet.getChannelId(),
+                            "NC-401", "Not authenticated"
+                        );
+                        response.setRequestId(packet.getRequestId());
+                        connection.sendPacket(response);
+                        return;
+                    }
+
                     ChannelActionResponsePacket response = new ChannelActionResponsePacket(
-                        false, packet.getAction(), packet.getChannelId(),
-                        "NC-401", "Not authenticated"
+                        true, packet.getAction(), packet.getChannelId(),
+                        "", "Action completed"
                     );
                     response.setRequestId(packet.getRequestId());
                     connection.sendPacket(response);
-                    return;
                 }
+            });
+        }
 
-                ChannelActionResponsePacket response = new ChannelActionResponsePacket(
-                    true, packet.getAction(), packet.getChannelId(),
-                    "", "Action completed"
-                );
-                response.setRequestId(packet.getRequestId());
-                connection.sendPacket(response);
-            }
-        });
-
-        // Keep-alive handler
+        // Keep-alive handler (same in both modes — pure round-trip echo)
         networkHandler.registerHandler(KeepAlivePacket.class, new PacketHandler<KeepAlivePacket>() {
             @Override
             public void handle(ClientConnection connection, KeepAlivePacket packet) {
