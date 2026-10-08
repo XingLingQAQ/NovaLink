@@ -2,17 +2,23 @@
  * Config Publish Panel (§11.6 item 20 / 提案 10 doc-deferred sub-items).
  *
  * SUPER_ADMIN-only surface for the draft / approve / publish / backup / restore
- * workflow. Backed by nine endpoints (all `/api/settings/*`, all SUPER_ADMIN,
- * all responses masked):
- *   - POST   /api/settings/drafts                  — create a DRAFT (validates YAML)
- *   - GET    /api/settings/drafts?limit=            — draft list, newest first
- *   - GET    /api/settings/drafts/{id}              — full draft detail
- *   - POST   /api/settings/drafts/{id}/approve      — DRAFT→APPROVED (approver!=createdBy)
- *   - POST   /api/settings/drafts/{id}/publish      — APPROVED→PUBLISHED + backup
- *   - DELETE /api/settings/drafts/{id}              — discard a DRAFT
- *   - POST   /api/settings/backup                  — create a labeled backup
- *   - GET    /api/settings/backups?limit=           — backup list, newest first
- *   - POST   /api/settings/restore-from-backup      — roll live config to a backup
+ * workflow. Backed by nine endpoints (all `/api/config/*`, all SUPER_ADMIN,
+ * all responses masked). Wire contract implemented by RestApiHandler.java:
+ *   - POST   /api/config/drafts                  — create a DRAFT (validates YAML)
+ *   - GET    /api/config/drafts?limit=            — { items:[draft] }, newest first
+ *   - GET    /api/config/drafts/{id}              — full draft detail
+ *   - POST   /api/config/drafts/{id}/approve      — DRAFT→APPROVED (approver!=createdBy)
+ *   - POST   /api/config/drafts/{id}/publish      — APPROVED→PUBLISHED + backup
+ *   - DELETE /api/config/drafts/{id}              — discard a DRAFT
+ *   - POST   /api/config/backups                  — create a labeled backup
+ *   - GET    /api/config/backups?limit=           — { items:[backup] }, newest first
+ *   - POST   /api/config/restore-from-backup      — roll live config to a backup
+ *
+ * Row shape (server truth): drafts and backups are keyed by `id` (long), NOT
+ * `draftId`/`backupId`. List endpoints return an `items` envelope — the api.js
+ * client unwraps it for us. The draft payload is the structured masked-YAML→
+ * JSON `draft` object (NOT a `draft_yaml` string); backups similarly expose
+ * `backup` (not surfaced here).
  *
  * Self-contained, mirroring ConfigHistory.jsx + CampaignManagement.jsx: calls
  * `api.*` directly, manages its own state, and degrades gracefully on 503
@@ -235,19 +241,27 @@ function ConfigPublishPanel({ theme, mode, onToast, role }) {
     try {
       const res = await api.createDraft(trimmed);
       if (onToast) {
-        onToast(t('configPublish.toast_draft_created', { draftId: res && res.draftId }), 'success');
+        onToast(t('configPublish.toast_draft_created', { draftId: res && res.id }), 'success');
       }
       setDraftYaml('');
       setValidateResult(null);
       setValidateError(null);
       await fetchDrafts();
     } catch (err) {
-      // 400 + validation report: surface the errors inline.
-      if (err && err.status === 400 && err.data) {
+      // 400 + validation report: surface the errors inline. The backend's 400
+      // body for create-draft is { message } — there is no per-path errors[]
+      // payload on this endpoint (unlike /settings/validate). Surface the
+      // message as a single synthetic error row so the UI still shows it
+      // inside the validation panel rather than a disconnected toast.
+      if (err && err.status === 400) {
+        const serverErrors = (err.data && Array.isArray(err.data.errors) && err.data.errors) || [];
+        const serverWarnings = (err.data && Array.isArray(err.data.warnings) && err.data.warnings) || [];
         setValidateResult({
           valid: false,
-          errors: (err.data.errors || err.data.validation?.errors || []),
-          warnings: (err.data.warnings || err.data.validation?.warnings || []),
+          errors: serverErrors.length > 0
+            ? serverErrors
+            : [{ path: null, message: (err && err.message) || String(err) }],
+          warnings: serverWarnings,
         });
       } else if (onToast) {
         onToast(
@@ -384,7 +398,7 @@ function ConfigPublishPanel({ theme, mode, onToast, role }) {
     setBackupError(null);
     try {
       const res = await api.createBackup(backupLabel.trim() || undefined);
-      if (onToast) onToast(t('configPublish.create_backup_success', { revision: res && res.revision }), 'success');
+      if (onToast) onToast(t('configPublish.create_backup_success', { revision: res && res.settingsRevision }), 'success');
       setBackupLabel('');
       await fetchBackups();
     } catch (err) {
@@ -412,7 +426,7 @@ function ConfigPublishPanel({ theme, mode, onToast, role }) {
     setRestorePending(true);
     setRestoreError(null);
     try {
-      const res = await api.restoreFromBackup(restoreTarget.backupId);
+      const res = await api.restoreFromBackup(restoreTarget.id);
       if (onToast) onToast(t('configPublish.restore_success', { revision: res && res.revision }), 'success');
       closeRestore();
       await refresh();
@@ -615,7 +629,8 @@ function ConfigPublishPanel({ theme, mode, onToast, role }) {
               </thead>
               <tbody>
                 {drafts.map((row, idx) => {
-                  const id = row.draftId != null ? row.draftId : idx;
+                  // Server truth: drafts are keyed by `id` (long), not draftId.
+                  const id = row.id != null ? row.id : idx;
                   const status = row.status;
                   const isBusy = busyDraftId === id;
                   return (
@@ -623,7 +638,7 @@ function ConfigPublishPanel({ theme, mode, onToast, role }) {
                       key={id}
                       className="border-b border-border last:border-0 hover:bg-muted/40 transition-colors align-top"
                     >
-                      <td className="px-4 py-2.5 whitespace-nowrap font-mono text-foreground text-[11px]">{row.draftId || '-'}</td>
+                      <td className="px-4 py-2.5 whitespace-nowrap font-mono text-foreground text-[11px]">{row.id != null ? row.id : '-'}</td>
                       <td className="px-4 py-2.5 whitespace-nowrap">
                         <Badge variant={draftStatusVariant(status)}>{draftStatusLabel(status, t)}</Badge>
                       </td>
@@ -631,14 +646,7 @@ function ConfigPublishPanel({ theme, mode, onToast, role }) {
                       <td className="px-4 py-2.5 whitespace-nowrap text-foreground">{row.createdBy || '-'}</td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-muted-foreground">{formatTime(row.approvedAt, locale)}</td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-muted-foreground">
-                        {row.publishedAt ? (
-                          <span>
-                            {formatTime(row.publishedAt, locale)}
-                            {row.publishedRevision != null && (
-                              <span className="opacity-70 ml-1">#{row.publishedRevision}</span>
-                            )}
-                          </span>
-                        ) : '-'}
+                        {row.publishedAt ? formatTime(row.publishedAt, locale) : '-'}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right">
                         <div className="inline-flex items-center gap-1.5">
@@ -648,7 +656,7 @@ function ConfigPublishPanel({ theme, mode, onToast, role }) {
                             size="sm"
                             theme={theme}
                             mode={mode}
-                            onClick={() => openDetail(row.draftId)}
+                            onClick={() => openDetail(row.id)}
                             title={t('configPublish.action_view')}
                             aria-label={t('configPublish.action_view')}
                           >
@@ -661,7 +669,7 @@ function ConfigPublishPanel({ theme, mode, onToast, role }) {
                                 size="sm"
                                 theme={theme}
                                 mode={mode}
-                                onClick={() => openApprove(row.draftId)}
+                                onClick={() => openApprove(row.id)}
                                 title={t('configPublish.action_approve')}
                               >
                                 <ShieldCheck size={13} /> {t('configPublish.action_approve')}
@@ -672,7 +680,7 @@ function ConfigPublishPanel({ theme, mode, onToast, role }) {
                                 theme={theme}
                                 mode={mode}
                                 className="text-destructive hover:text-destructive"
-                                onClick={() => openDiscard(row.draftId)}
+                                onClick={() => openDiscard(row.id)}
                                 title={t('configPublish.action_discard')}
                                 aria-label={t('configPublish.action_discard')}
                               >
@@ -686,7 +694,7 @@ function ConfigPublishPanel({ theme, mode, onToast, role }) {
                               size="sm"
                               theme={theme}
                               mode={mode}
-                              onClick={() => openPublish(row.draftId)}
+                              onClick={() => openPublish(row.id)}
                               title={t('configPublish.action_publish')}
                             >
                               <Upload size={13} /> {t('configPublish.action_publish')}
@@ -782,12 +790,14 @@ function ConfigPublishPanel({ theme, mode, onToast, role }) {
               <tbody>
                 {backups.map((row, idx) => (
                   <tr
-                    key={row.backupId != null ? row.backupId : idx}
+                    key={row.id != null ? row.id : idx}
                     className="border-b border-border last:border-0 hover:bg-muted/40 transition-colors align-top"
                   >
-                    <td className="px-4 py-2.5 whitespace-nowrap font-mono text-foreground text-[11px]">{row.backupId || '-'}</td>
+                    <td className="px-4 py-2.5 whitespace-nowrap font-mono text-foreground text-[11px]">{row.id != null ? row.id : '-'}</td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-foreground">{row.label || '-'}</td>
-                    <td className="px-4 py-2.5 whitespace-nowrap font-mono text-foreground">#{row.revision != null ? row.revision : '-'}</td>
+                    <td className="px-4 py-2.5 whitespace-nowrap font-mono text-foreground">
+                      #{row.settingsRevision != null ? row.settingsRevision : '-'}
+                    </td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-muted-foreground">{formatTime(row.createdAt, locale)}</td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-foreground">{row.createdBy || '-'}</td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-right">
@@ -840,27 +850,24 @@ function ConfigPublishPanel({ theme, mode, onToast, role }) {
                 <p><span className="text-muted-foreground">{t('configPublish.col_status')}:</span> <Badge variant={draftStatusVariant(detailData.status)}>{draftStatusLabel(detailData.status, t)}</Badge></p>
                 <p><span className="text-muted-foreground">{t('configPublish.col_created_by')}:</span> <span className="text-foreground">{detailData.createdBy || '-'}</span></p>
                 {detailData.approvedBy && <p><span className="text-muted-foreground">{t('configPublish.action_approve')}:</span> <span className="text-foreground">{detailData.approvedBy}</span></p>}
-                {detailData.publishedRevision != null && <p><span className="text-muted-foreground">{t('configPublish.col_revision')}:</span> <span className="text-foreground font-mono">#{detailData.publishedRevision}</span></p>}
+                {detailData.publishedAt != null && (
+                  <p>
+                    <span className="text-muted-foreground">{t('configPublish.col_published_at')}:</span>{' '}
+                    <span className="text-foreground">{formatTime(detailData.publishedAt, locale)}</span>
+                  </p>
+                )}
               </div>
             )}
+            {/* The backend's `draft` field is the *parsed* masked-YAML→JSON
+                object (NOT a draft_yaml string). Pretty-print it so the modal
+                stays YAML-like for the reader. */}
             <pre className="max-h-[50vh] overflow-auto rounded-md border border-border bg-muted/30 p-3 text-[11px] font-mono leading-relaxed text-foreground whitespace-pre-wrap break-all">
-              {detailData && detailData.draft_yaml ? detailData.draft_yaml : ''}
+              {detailData && detailData.draft != null
+                ? (typeof detailData.draft === 'string'
+                    ? detailData.draft
+                    : JSON.stringify(detailData.draft, null, 2))
+                : ''}
             </pre>
-            {detailData && detailData.validation && !detailData.validation.valid && Array.isArray(detailData.validation.errors) && detailData.validation.errors.length > 0 && (
-              <div className="rounded-md border border-destructive/30 bg-destructive/5 divide-y divide-border">
-                <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">{t('configPublish.validate_errors')}</p>
-                {detailData.validation.errors.map((entry, i) => {
-                  const message = (entry && entry.message) || String(entry);
-                  const path = entry && entry.path != null ? entry.path : null;
-                  return (
-                    <div key={i} className="px-3 py-1.5">
-                      {path != null && <p className="text-[11px] font-mono text-foreground break-all">{path}</p>}
-                      <p className="text-[11px] text-muted-foreground break-all">{message}</p>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
           </div>
         )}
       </Modal>
@@ -973,7 +980,7 @@ function ConfigPublishPanel({ theme, mode, onToast, role }) {
             {restoreTarget
               ? t('configPublish.restore_confirm_body', {
                   label: restoreTarget.label || '-',
-                  revision: restoreTarget.revision != null ? restoreTarget.revision : '-',
+                  revision: restoreTarget.settingsRevision != null ? restoreTarget.settingsRevision : '-',
                 })
               : ''}
           </p>
