@@ -81,6 +81,12 @@ public class DatabaseConfig {
 
     /**
      * MySQL configuration.
+     *
+     * <p>H1: exposes an explicit {@code ssl-mode} knob, defaulting to
+     * {@code REQUIRED} (fail-closed). Setting it to {@code DISABLED} is a
+     * plaintext-acknowledgement: NovaLink refuses to start unless
+     * {@code server.insecure-allow-plaintext: true} is also set, mirroring
+     * the AUTH-002 transport gate at the JDBC layer.
      */
     public static class MySQLConfig {
         private String host;
@@ -89,6 +95,13 @@ public class DatabaseConfig {
         private String username;
         private String password;
         private int poolSize;
+        /**
+         * H1: JDBC TLS mode. One of {@code DISABLED}, {@code PREFERRED},
+         * {@code REQUIRED}, {@code VERIFY_CA}, {@code VERIFY_IDENTITY}.
+         * Defaults to {@code REQUIRED} so an absent key cannot silently
+         * downgrade to {@code DISABLED}.
+         */
+        private String sslMode = "REQUIRED";
 
         public String getHost() {
             return host;
@@ -138,6 +151,14 @@ public class DatabaseConfig {
             this.poolSize = poolSize;
         }
 
+        public String getSslMode() {
+            return sslMode;
+        }
+
+        public void setSslMode(String sslMode) {
+            this.sslMode = sslMode;
+        }
+
         @Override
         public boolean equals(Object o) {
             if (this == o) return true;
@@ -148,12 +169,13 @@ public class DatabaseConfig {
                    Objects.equals(host, that.host) &&
                    Objects.equals(database, that.database) &&
                    Objects.equals(username, that.username) &&
-                   Objects.equals(password, that.password);
+                   Objects.equals(password, that.password) &&
+                   Objects.equals(sslMode, that.sslMode);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(host, port, database, username, password, poolSize);
+            return Objects.hash(host, port, database, username, password, poolSize, sslMode);
         }
     }
 
