@@ -916,10 +916,10 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             handleCreateAnnouncement(ctx, request, claims);
         } else if (path.matches("/api/announcements/[^/]+") && method == HttpMethod.PUT) {
             String announcementId = path.substring("/api/announcements/".length());
-            handleUpdateAnnouncement(ctx, request, announcementId);
+            handleUpdateAnnouncement(ctx, request, announcementId, claims);
         } else if (path.matches("/api/announcements/[^/]+") && method == HttpMethod.DELETE) {
             String announcementId = path.substring("/api/announcements/".length());
-            handleDeleteAnnouncement(ctx, request, announcementId);
+            handleDeleteAnnouncement(ctx, request, announcementId, claims);
         }
         // Sensitive-word filter endpoints
         else if (path.equals("/api/filter") && method == HttpMethod.GET) {
@@ -5144,6 +5144,18 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
 
+        // H6b: enforce the channel resource gate before delegating to the
+        // manager with trustedOperator=true. Mirrors handleSendMessage(:4884)
+        // — surfaces as 404 so the caller cannot distinguish "no such channel"
+        // from "no send permission on that channel".
+        Channel announcementChannel = channelManager.getChannel(channelId);
+        PanelRole announcementRole = resourcePolicy.resolveRole(claims);
+        if (!resourcePolicy.canSend(announcementRole, announcementChannel)) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
+                    NovaConstants.ERROR_NOT_FOUND + ": Channel not found: " + channelId);
+            return;
+        }
+
         UUID operatorId = panelOperatorUuid(panelUsername(claims));
 
         if (type == AnnouncementType.IMMEDIATE) {
@@ -5194,7 +5206,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * announcement cancels its scheduled task; enabling re-schedules it.
      */
     private void handleUpdateAnnouncement(ChannelHandlerContext ctx, FullHttpRequest request,
-                                          String announcementId) {
+                                          String announcementId, Claims claims) {
         if (announcementManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Announcements not enabled");
             return;
@@ -5219,6 +5231,20 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
 
+        // H6b: derive the channel from the persisted announcement and gate on
+        // canManageChannel — same idiom as handleUpdateChannel(:1460). Surface
+        // as 404 so announcement existence is not leaked to low-scope callers.
+        Announcement existing = announcementManager.getAnnouncement(announcementId);
+        if (existing != null) {
+            Channel updateChannel = channelManager.getChannel(existing.getChannelId());
+            PanelRole updateRole = resourcePolicy.resolveRole(claims);
+            if (!resourcePolicy.canManageChannel(updateRole, updateChannel)) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
+                        I18n.tr("api.announcement.not_found", announcementId));
+                return;
+            }
+        }
+
         AnnouncementResult result = announcementManager.setAnnouncementEnabled(announcementId, enabled);
         if (!result.isSuccess()) {
             sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
@@ -5233,10 +5259,24 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * DELETE /api/announcements/{id} - Delete a persisted announcement.
      */
     private void handleDeleteAnnouncement(ChannelHandlerContext ctx, FullHttpRequest request,
-                                          String announcementId) {
+                                          String announcementId, Claims claims) {
         if (announcementManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Announcements not enabled");
             return;
+        }
+
+        // H6b: gate on the channel that owns this announcement — mirrors the
+        // handleUpdateChannel(:1460) canManageChannel idiom. Surface as 404
+        // so the caller cannot probe announcement ids outside their scope.
+        Announcement existing = announcementManager.getAnnouncement(announcementId);
+        if (existing != null) {
+            Channel deleteChannel = channelManager.getChannel(existing.getChannelId());
+            PanelRole deleteRole = resourcePolicy.resolveRole(claims);
+            if (!resourcePolicy.canManageChannel(deleteRole, deleteChannel)) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
+                        I18n.tr("api.announcement.not_found", announcementId));
+                return;
+            }
         }
 
         AnnouncementResult result = announcementManager.deleteAnnouncement(
@@ -5380,6 +5420,17 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         com.nova.link.announcement.DeliveryPolicy policy =
                 com.nova.link.announcement.DeliveryPolicy.fromDbValue(deliveryPolicyRaw);
 
+        // H6b: enforce the channel resource gate before delegating with
+        // trustedOperator=true. Mirrors handleSendMessage(:4884) — surfaces
+        // as 404 so the channel existence is not leaked to low-scope callers.
+        Channel campaignChannel = channelManager.getChannel(channelId);
+        PanelRole campaignRole = resourcePolicy.resolveRole(claims);
+        if (!resourcePolicy.canSend(campaignRole, campaignChannel)) {
+            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
+                    NovaConstants.ERROR_NOT_FOUND + ": Channel not found: " + channelId);
+            return;
+        }
+
         UUID operatorId = panelOperatorUuid(panelUsername(claims));
         com.nova.link.announcement.CampaignResult result = campaignManager.createCampaign(
                 operatorId, channelId, content, platforms, policy,
@@ -5418,6 +5469,19 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Campaigns not enabled");
             return;
         }
+        // H6b: gate on the campaign's channel before transitioning state —
+        // mirrors canManageChannel on handleUpdateChannel(:1460). Surface as
+        // 404 so low-scope callers cannot probe campaign ids.
+        com.nova.link.announcement.Campaign existingCampaign = campaignManager.getCampaign(campaignId);
+        if (existingCampaign != null) {
+            Channel scheduleChannel = channelManager.getChannel(existingCampaign.getChannelId());
+            PanelRole scheduleRole = resourcePolicy.resolveRole(claims);
+            if (!resourcePolicy.canManageChannel(scheduleRole, scheduleChannel)) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
+                        "Campaign not found: " + campaignId);
+                return;
+            }
+        }
         UUID operatorId = panelOperatorUuid(panelUsername(claims));
         com.nova.link.announcement.CampaignResult result =
                 campaignManager.scheduleCampaign(campaignId, operatorId, true);
@@ -5437,6 +5501,19 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         if (campaignManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Campaigns not enabled");
             return;
+        }
+        // H6b: gate on the campaign's channel before transitioning state —
+        // mirrors canManageChannel on handleUpdateChannel(:1460). Surface as
+        // 404 so low-scope callers cannot probe campaign ids.
+        com.nova.link.announcement.Campaign existingCampaign = campaignManager.getCampaign(campaignId);
+        if (existingCampaign != null) {
+            Channel activateChannel = channelManager.getChannel(existingCampaign.getChannelId());
+            PanelRole activateRole = resourcePolicy.resolveRole(claims);
+            if (!resourcePolicy.canManageChannel(activateRole, activateChannel)) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
+                        "Campaign not found: " + campaignId);
+                return;
+            }
         }
         UUID operatorId = panelOperatorUuid(panelUsername(claims));
         com.nova.link.announcement.CampaignResult result =
@@ -5458,6 +5535,19 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         if (campaignManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Campaigns not enabled");
             return;
+        }
+        // H6b: revoke is SUPER_ADMIN-only via requiredRole, but SUPER_ADMIN
+        // may still be scope-restricted by PanelResourcePolicy — gate on the
+        // campaign's channel anyway. Surface as 404 to avoid id-probing.
+        com.nova.link.announcement.Campaign existingCampaign = campaignManager.getCampaign(campaignId);
+        if (existingCampaign != null) {
+            Channel revokeChannel = channelManager.getChannel(existingCampaign.getChannelId());
+            PanelRole revokeRole = resourcePolicy.resolveRole(claims);
+            if (!resourcePolicy.canManageChannel(revokeRole, revokeChannel)) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
+                        "Campaign not found: " + campaignId);
+                return;
+            }
         }
         UUID operatorId = panelOperatorUuid(panelUsername(claims));
         com.nova.link.announcement.CampaignResult result =
