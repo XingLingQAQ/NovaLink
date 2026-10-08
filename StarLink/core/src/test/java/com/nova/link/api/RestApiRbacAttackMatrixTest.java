@@ -199,6 +199,16 @@ class RestApiRbacAttackMatrixTest {
         messageLogService.initialize();
         handler.setMessageLogService(messageLogService);
 
+        // H6b: wire announcement + campaign managers so the channel-resource
+        // gate on those routes is exercised end-to-end. The same
+        // ChannelManager/PermissionManager feed both REST layer and manager.
+        com.nova.link.announcement.AnnouncementManager announcementManager =
+                new com.nova.link.announcement.AnnouncementManager(permissionManager, channelManager);
+        handler.setAnnouncementManager(announcementManager);
+        com.nova.link.announcement.CampaignManager campaignManager =
+                new com.nova.link.announcement.CampaignManager(permissionManager, channelManager);
+        handler.setCampaignManager(campaignManager);
+
         // The WebSocket handler is constructed with the SAME authManager so
         // role downgrades are observable by both REST and WS in the same test.
         wsHandler = new WebSocketMessageHandler(
@@ -785,6 +795,134 @@ class RestApiRbacAttackMatrixTest {
             Response globalSend = dispatch(superAdminToken, HttpMethod.POST, "/api/messages",
                     "{\"channelId\":\"staff\",\"content\":\"root-hi\"}");
             assertThat(globalSend.status()).isEqualTo(HttpResponseStatus.OK);
+        }
+    }
+
+    @Nested
+    @DisplayName("H6b — channel resource gate on /api/announcements + /api/campaigns")
+    class AnnouncementCampaignResourceGate {
+
+        @Test
+        @DisplayName("ADMIN POST /api/announcements to PRIVATE channel returns 404 (no leak)")
+        void adminCannotCreateAnnouncementInPrivateChannel() {
+            Response missing = dispatch(adminToken, HttpMethod.POST, "/api/announcements",
+                    "{\"type\":\"INSTANT\",\"channelId\":\"truly-missing\",\"content\":\"x\"}");
+            // Pre-fix: channelExists(private-staff) passed, trustedOperator=true
+            // bypassed the AnnouncementManager scope check, so an ADMIN could
+            // broadcast into a PRIVATE channel they have no send-right on.
+            Response privateAnn = dispatch(adminToken, HttpMethod.POST, "/api/announcements",
+                    "{\"type\":\"INSTANT\",\"channelId\":\"private-staff\",\"content\":\"x\"}");
+            Response serverAnn = dispatch(adminToken, HttpMethod.POST, "/api/announcements",
+                    "{\"type\":\"INSTANT\",\"channelId\":\"survival\",\"content\":\"x\"}");
+            Response globalAnn = dispatch(adminToken, HttpMethod.POST, "/api/announcements",
+                    "{\"type\":\"INSTANT\",\"channelId\":\"staff\",\"content\":\"x\"}");
+
+            // Missing-channel reference: 400 from the channelExists pre-check
+            // (mirrors handleSendMessage pre-gate idiom).
+            assertThat(missing.status()).isEqualTo(HttpResponseStatus.BAD_REQUEST);
+            // PRIVATE: rejected by canSend → 404, mirroring handleSendMessage.
+            assertThat(privateAnn.status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
+            assertThat(privateAnn.asJson().get("error").getAsString()).contains("NC-404");
+            assertNoChannelFields(privateAnn);
+            // ADMIN in-scope: passes (routing outcome may still non-OK because
+            // INSTANT routes via MessageRouter — but the RBAC gate must not reject).
+            assertThat(serverAnn.status()).isIn(HttpResponseStatus.OK, HttpResponseStatus.BAD_REQUEST);
+            assertThat(globalAnn.status()).isIn(HttpResponseStatus.OK, HttpResponseStatus.BAD_REQUEST);
+        }
+
+        @Test
+        @DisplayName("SUPER_ADMIN POST /api/announcements to PRIVATE channel is allowed by the resource gate")
+        void superAdminCanCreateAnnouncementInPrivateChannel() {
+            Response privateAnn = dispatch(superAdminToken, HttpMethod.POST, "/api/announcements",
+                    "{\"type\":\"INSTANT\",\"channelId\":\"private-staff\",\"content\":\"secret\"}");
+            // SUPER_ADMIN passes canSend for PRIVATE. The downstream routing
+            // outcome (AnnouncementManager success / channel routing) is not
+            // the RBAC concern here — assert the gate did not 404.
+            assertThat(privateAnn.status()).isNotEqualTo(HttpResponseStatus.NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("VIEWER POST /api/announcements is rejected at the role gate (403) — unchanged")
+        void viewerCannotCreateAnnouncement() {
+            Response viewer = dispatch(viewerToken, HttpMethod.POST, "/api/announcements",
+                    "{\"type\":\"INSTANT\",\"channelId\":\"staff\",\"content\":\"x\"}");
+            assertThat(viewer.status()).isEqualTo(HttpResponseStatus.FORBIDDEN);
+            assertNoChannelFields(viewer);
+        }
+
+        @Test
+        @DisplayName("ADMIN PUT /api/announcements/{id} on a PRIVATE-channel announcement returns 404")
+        void adminCannotTogglePrivateAnnouncement() {
+            // Seed a JOIN announcement on private-staff via SUPER_ADMIN (who
+            // passes the resource gate), then attempt to toggle as ADMIN.
+            Response created = dispatch(superAdminToken, HttpMethod.POST, "/api/announcements",
+                    "{\"type\":\"JOIN\",\"channelId\":\"private-staff\",\"content\":\"seed\"}");
+            assertThat(created.status()).isEqualTo(HttpResponseStatus.CREATED);
+            String id = created.asJson().get("id").getAsString();
+
+            Response adminToggle = dispatch(adminToken, HttpMethod.PUT,
+                    "/api/announcements/" + id, "{\"enabled\":false}");
+            assertThat(adminToggle.status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
+            assertNoChannelFields(adminToggle);
+
+            // SUPER_ADMIN can still toggle it (proves the 404 is gate-driven,
+            // not because the announcement vanished).
+            Response superToggle = dispatch(superAdminToken, HttpMethod.PUT,
+                    "/api/announcements/" + id, "{\"enabled\":false}");
+            assertThat(superToggle.status()).isEqualTo(HttpResponseStatus.OK);
+        }
+
+        @Test
+        @DisplayName("ADMIN DELETE /api/announcements/{id} on a PRIVATE-channel announcement returns 404")
+        void adminCannotDeletePrivateAnnouncement() {
+            Response created = dispatch(superAdminToken, HttpMethod.POST, "/api/announcements",
+                    "{\"type\":\"JOIN\",\"channelId\":\"private-staff\",\"content\":\"seed\"}");
+            String id = created.asJson().get("id").getAsString();
+
+            Response adminDelete = dispatch(adminToken, HttpMethod.DELETE,
+                    "/api/announcements/" + id, null);
+            assertThat(adminDelete.status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
+            assertNoChannelFields(adminDelete);
+
+            Response superDelete = dispatch(superAdminToken, HttpMethod.DELETE,
+                    "/api/announcements/" + id, null);
+            assertThat(superDelete.status()).isEqualTo(HttpResponseStatus.OK);
+        }
+
+        @Test
+        @DisplayName("ADMIN POST /api/campaigns to PRIVATE channel returns 404 (mirrors sendMessage gate)")
+        void adminCannotCreateCampaignInPrivateChannel() {
+            Response privateCamp = dispatch(adminToken, HttpMethod.POST, "/api/campaigns",
+                    "{\"channelId\":\"private-staff\",\"content\":\"c\",\"platforms\":[\"discord\"]}");
+            assertThat(privateCamp.status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
+            assertThat(privateCamp.asJson().get("error").getAsString()).contains("NC-404");
+            assertNoChannelFields(privateCamp);
+
+            // SERVER scope: ADMIN passes the canSend gate; the manager may
+            // still reject on business rules but that is not the RBAC gate.
+            Response serverCamp = dispatch(adminToken, HttpMethod.POST, "/api/campaigns",
+                    "{\"channelId\":\"survival\",\"content\":\"c\",\"platforms\":[\"discord\"]}");
+            assertThat(serverCamp.status()).isNotEqualTo(HttpResponseStatus.NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("ADMIN POST /api/campaigns/{id}/schedule|activate on a PRIVATE-owner campaign returns 404")
+        void adminCannotScheduleOrActivatePrivateCampaign() {
+            // SUPER_ADMIN seeds a PREVIEW campaign on private-staff.
+            Response created = dispatch(superAdminToken, HttpMethod.POST, "/api/campaigns",
+                    "{\"channelId\":\"private-staff\",\"content\":\"c\",\"platforms\":[\"discord\"]}");
+            assertThat(created.status()).isEqualTo(HttpResponseStatus.CREATED);
+            String id = created.asJson().get("id").getAsString();
+
+            Response schedule = dispatch(adminToken, HttpMethod.POST,
+                    "/api/campaigns/" + id + "/schedule", null);
+            assertThat(schedule.status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
+            assertNoChannelFields(schedule);
+
+            Response activate = dispatch(adminToken, HttpMethod.POST,
+                    "/api/campaigns/" + id + "/activate", null);
+            assertThat(activate.status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
+            assertNoChannelFields(activate);
         }
     }
 }
