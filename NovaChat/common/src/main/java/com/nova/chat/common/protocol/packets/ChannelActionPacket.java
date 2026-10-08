@@ -97,12 +97,17 @@ public class ChannelActionPacket extends Packet {
         int mark = buf.readerIndex();
         try {
             int size = PacketBuffer.readVarInt(buf);
-            // Heuristic guard: legacy implementations sometimes used a JSON string here (length can be large).
-            if (size < 0 || size > 64) {
+            // Entry-count cap: protocol-wide MAX_MAP_ENTRIES, matching
+            // ChatMessagePacket / ChannelActionResponsePacket and the non-JVM
+            // (PHP/Python/C++) receivers. Also rejects implausible pair counts
+            // so a legacy-JSON declaration in this slot (readString length
+            // prefix) trips into the rewind path below before a single entry
+            // is decoded.
+            if (size < 0 || size > ProtocolLimits.MAX_MAP_ENTRIES) {
                 throw new IllegalArgumentException("extra map size out of range: " + size);
             }
 
-            extra = new HashMap<>(size);
+            extra = new HashMap<>(Math.min(size, 64));
             for (int i = 0; i < size; i++) {
                 String key = PacketBuffer.readString(buf, ProtocolLimits.MAX_METADATA_KEY);
                 String value = PacketBuffer.readString(buf, ProtocolLimits.MAX_METADATA_VALUE);
