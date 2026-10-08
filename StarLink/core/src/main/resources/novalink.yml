@@ -61,6 +61,12 @@ database:
     username: root
     password: ""
     pool-size: 10
+    # H1: JDBC TLS mode. One of DISABLED, PREFERRED, REQUIRED, VERIFY_CA, VERIFY_IDENTITY.
+    # Default REQUIRED — fail-closed so an absent key cannot silently downgrade.
+    # Setting ssl-mode: DISABLED is a plaintext acknowledgement: the backend
+    # refuses to start unless server.insecure-allow-plaintext: true is also set.
+    # Use VERIFY_CA or VERIFY_IDENTITY in production with a proper CA cert.
+    ssl-mode: REQUIRED
   postgresql:
     host: 127.0.0.1
     port: 5432

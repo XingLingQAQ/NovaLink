@@ -397,6 +397,21 @@ public class ConfigLoader {
         mysql.setPassword(requiredString(mysqlData, "password"));
         mysql.setPoolSize(requiredPositiveInt(mysqlData, "pool-size", "database.mysql.pool-size"));
 
+        // H1: JDBC TLS mode. Defaults to REQUIRED (fail-closed). DISABLED must
+        // be paired with server.insecure-allow-plaintext: true or the server
+        // refuses to start. Mirror of the AUTH-002 gate at the JDBC layer.
+        String sslMode = optionalString(mysqlData, "ssl-mode", "database.mysql.ssl-mode");
+        if (sslMode != null && !sslMode.isBlank()) {
+            String normalized = sslMode.trim().toUpperCase(Locale.ROOT);
+            if (!Set.of("DISABLED", "PREFERRED", "REQUIRED", "VERIFY_CA", "VERIFY_IDENTITY")
+                    .contains(normalized)) {
+                throw new IllegalArgumentException(
+                        "Configuration value database.mysql.ssl-mode is unsupported: " + sslMode
+                                + " (allowed: DISABLED, PREFERRED, REQUIRED, VERIFY_CA, VERIFY_IDENTITY)");
+            }
+            mysql.setSslMode(normalized);
+        }
+
         Map<String, Object> pgData = requiredMap(data, "postgresql");
         DatabaseConfig.PostgreSQLConfig pg = config.getPostgresql();
         pg.setHost(requiredNonBlankString(pgData, "host", "database.postgresql.host"));
@@ -738,6 +753,7 @@ public class ConfigLoader {
         mysql.put("username", config.getDatabase().getMysql().getUsername());
         mysql.put("password", config.getDatabase().getMysql().getPassword());
         mysql.put("pool-size", config.getDatabase().getMysql().getPoolSize());
+        mysql.put("ssl-mode", config.getDatabase().getMysql().getSslMode());
         database.put("mysql", mysql);
 
         Map<String, Object> postgresql = new LinkedHashMap<>();

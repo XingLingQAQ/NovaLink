@@ -104,6 +104,14 @@ database:
     password: your-mysql-password
     # Connection pool size / 连接池大小
     pool-size: 10
+    # H1: JDBC TLS mode / JDBC TLS 模式
+    # One of DISABLED, PREFERRED, REQUIRED, VERIFY_CA, VERIFY_IDENTITY.
+    # Default REQUIRED — fail-closed, so an absent key cannot silently downgrade.
+    # DISABLED requires server.insecure-allow-plaintext: true to acknowledge the risk.
+    # 可选值：DISABLED / PREFERRED / REQUIRED / VERIFY_CA / VERIFY_IDENTITY。
+    # 默认 REQUIRED —— 关不上才报错，缺省值不会悄悄降级到明文。
+    # 设为 DISABLED 必须同时把 server.insecure-allow-plaintext: true 打开。
+    ssl-mode: REQUIRED
 
   # PostgreSQL Configuration / PostgreSQL 配置
   postgresql:

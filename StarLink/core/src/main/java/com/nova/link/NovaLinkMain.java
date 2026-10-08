@@ -804,13 +804,18 @@ public class NovaLinkMain {
         switch (normalized) {
             case "mysql":
                 DatabaseConfig.MySQLConfig mysql = config.getDatabase().getMysql();
+                // H1: thread the AUTH-002 plaintext opt-in into the JDBC layer.
+                // sslMode=DISABLED without the flag will fail fast inside
+                // MySQLProvider.buildJdbcUrl() before any socket opens.
                 return new MySQLProvider(
                         mysql.getHost(),
                         mysql.getPort(),
                         mysql.getDatabase(),
                         mysql.getUsername(),
                         mysql.getPassword(),
-                        mysql.getPoolSize()
+                        mysql.getPoolSize(),
+                        mysql.getSslMode(),
+                        config.getServer().isInsecureAllowPlaintext()
                 );
             case "postgresql":
             case "postgres":
