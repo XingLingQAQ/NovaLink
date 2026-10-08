@@ -62,10 +62,9 @@ class SuperAdminConfigTest {
         assertThat(admin.getUuid()).isEqualTo(ADMIN_UUID);
         assertThat(admin.getUsername()).isEqualTo("admin");
 
-        // Web-login username resolution mirrors NovaLinkMain: username wins over UUID.
-        String webLoginUsername = (admin.getUsername() != null && !admin.getUsername().isBlank())
-                ? admin.getUsername() : admin.getUuid().toString();
-        assertThat(webLoginUsername).isEqualTo("admin");
+        // Anchor on the production method NovaLinkMain uses to register the
+        // super-admin with AuthManager.
+        assertThat(admin.resolveWebLoginUsername()).isEqualTo("admin");
     }
 
     @Test
@@ -88,9 +87,9 @@ class SuperAdminConfigTest {
         SuperAdminCredentials admin = config.getSuperAdmins().get(0);
         assertThat(admin.getUsername()).isNull();
 
-        String webLoginUsername = (admin.getUsername() != null && !admin.getUsername().isBlank())
-                ? admin.getUsername() : admin.getUuid().toString();
-        assertThat(webLoginUsername).isEqualTo(ADMIN_UUID.toString());
+        // Anchor on the production method NovaLinkMain uses (absent username
+        // falls back to the UUID string for backward compatibility).
+        assertThat(admin.resolveWebLoginUsername()).isEqualTo(ADMIN_UUID.toString());
     }
 
     @Test
