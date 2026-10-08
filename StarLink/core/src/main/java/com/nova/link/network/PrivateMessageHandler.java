@@ -19,6 +19,16 @@ import java.util.function.BooleanSupplier;
  * following the ItemDisplayHandler validation-chain pattern:
  * <ul>
  *   <li>sender must be authenticated (silent drop otherwise);</li>
+ *   <li><b>H3 fix (sender-identity spoofing):</b> the packet's {@code senderId}/
+ *       {@code senderName} are never trusted — before any consumer reads them,
+ *       the sender is resolved through the network-wide player cache (populated
+ *       exclusively by the join broadcast) on the packet's own
+ *       {@code senderName}; both fields are then overwritten with the
+ *       authoritative values. An unresolvable name silently drops the packet.
+ *       This mirrors {@code RestApiHandler#handleSendMessage} (BACK-002), which
+ *       derives the sender from JWT claims. The mute check, self-message check,
+ *       ignore enforcement, audit line and the delivered packet all consume the
+ *       server-authoritative identity;</li>
  *   <li>the packet counts against the same per-connection token bucket as
  *       chat messages / item displays (NC-429, throttled);</li>
  *   <li>{@code features.private-messages-enabled} must be on (NC-403);</li>
@@ -138,6 +148,29 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
             logger.debug("Dropping PrivateMessagePacket from unauthenticated connection {}",
                     connection.getRemoteAddress());
             return;
+        }
+
+        // H3 fix (sender-identity spoofing): derive the authoritative sender from
+        // the network-wide player cache BEFORE any consumer reads packet.senderId
+        // / packet.senderName. The client can claim any UUID + name; the cache is
+        // built exclusively from the player-join broadcast and is the only
+        // server-side source of truth on TCP. Resolution is keyed on the
+        // packet's own senderName: a packet whose name does not match a live
+        // network player is silently dropped (no error reply — never leak
+        // whether a player exists by name). Once resolved we overwrite both
+        // fields so every subsequent check (mute, self-message, ignore
+        // enforcement, audit line) and the delivered/echoed packet itself see
+        // the server-authoritative identity, mirroring RestApiHandler's
+        // JWT-derived senderId from BACK-002.
+        PlayerState senderState = findPlayerByName(packet.getSenderName());
+        if (senderState == null) {
+            logger.debug("PrivateMessage drop: unresolvable sender name '{}' (client {})",
+                    packet.getSenderName(), connection.getClientId());
+            return;
+        }
+        packet.setSenderId(senderState.getPlayerId());
+        if (senderState.getPlayerName() != null && !senderState.getPlayerName().isEmpty()) {
+            packet.setSenderName(senderState.getPlayerName());
         }
 
         // Shared token bucket with chat messages (throttled error/log on excess).
