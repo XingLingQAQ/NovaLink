@@ -56,7 +56,7 @@ public class ChatInterceptor implements Listener {
     private final com.nova.chat.client.state.PlayerStateStore playerStates =
             new com.nova.chat.client.state.PlayerStateStore();
 
-    /** Shared response dispatcher (DUP-3); created in {@link #registerIncomingMessageHandler()}. */
+    /** Shared response dispatcher (DUP-3); created in {@link #rebindIncomingHandlers()}. */
     private ChannelResponseDispatcher dispatcher;
 
     /**
@@ -81,13 +81,20 @@ public class ChatInterceptor implements Listener {
         this.globalMode = config.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
         
         // Register handler for incoming chat messages from backend
-        registerIncomingMessageHandler();
+        rebindIncomingHandlers();
     }
-    
+
     /**
      * Registers the handler for incoming chat messages from the backend.
+     *
+     * <p>Public so that {@code reload} can re-bind to the freshly created
+     * NetworkClient after a network reconnect without reconstructing this
+     * interceptor (H6 fix).
      */
-    private void registerIncomingMessageHandler() {
+    public void rebindIncomingHandlers() {
+        if (plugin.getNetworkClient() == null) {
+            return;
+        }
         this.dispatcher = new ChannelResponseDispatcher(
                 plugin.getNetworkClient().getChannelResponseTracker(),
                 new NukkitChannelResponseAdapter());

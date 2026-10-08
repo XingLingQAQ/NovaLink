@@ -65,14 +65,20 @@ public class ChatInterceptor implements Listener {
         this.globalMode = config.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
         
         // Register handler for incoming chat messages from backend
-        registerIncomingMessageHandler();
+        rebindIncomingHandlers();
     }
-    
+
     /**
      * Registers the handler for incoming chat messages from the backend.
+     *
+     * <p>Public so that {@code reload} can re-bind to the freshly created
+     * NetworkClient after a network reconnect without reconstructing this
+     * interceptor (H6 fix).
      */
-    private void registerIncomingMessageHandler() {
-        plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
+    public void rebindIncomingHandlers() {
+        if (plugin.getNetworkClient() != null) {
+            plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
+        }
     }
     
     /**

@@ -697,14 +697,16 @@ public class AsyncChatInterceptor implements Listener {
     
     /**
      * Sends a message to a specific channel.
-     * 
-     * <p>Thread Safety: This method is thread-safe and can be called from any thread.
-     * The network client handles its own thread safety for packet sending.
-     * Player data access (getName, getDisplayName, getWorld) should ideally be done
-     * on the player's region thread, but these are generally safe read operations.</p>
-     * 
-     * <p>For maximum safety in Folia, we capture player data that might change and
-     * send the packet asynchronously.</p>
+     *
+     * <p>Thread Safety: This method may be invoked from an arbitrary async thread
+     * (e.g. {@link AsyncPlayerChatEvent}). Player-owned state such as
+     * {@code getDisplayName()}, {@code getWorld()} and the main-hand inventory is
+     * region-owned in Folia and MUST be read on the player's region thread;
+     * reading it off-thread raises {@code IllegalStateException}. We therefore
+     * hop to the player's region thread via {@link FoliaSchedulerAdapter#runForPlayer}
+     * to capture the data, then emit packets from there. The network client itself
+     * is thread-safe so packet sends are safe once the data has been captured on
+     * the correct thread.</p>
      *
      * @param player the sending player
      * @param channelId the target channel ID
@@ -719,34 +721,41 @@ public class AsyncChatInterceptor implements Listener {
             });
             return;
         }
-        
-        // Capture player data that we need for the packet
-        // These reads are generally safe but we capture them to avoid issues
-        // if player state changes during packet construction
-        UUID playerId = player.getUniqueId();
-        String playerName = player.getName();
-        String displayName = player.getDisplayName();
-        String worldName = player.getWorld().getName();
-        
-        ChatMessagePacket packet = new ChatMessagePacket(
-            playerId,
-            playerName,
-            config.getUsername(),
-            channelId,
-            message
-        );
-        
-        // Add basic placeholders with captured data
-        packet.addPlaceholder("player", playerName);
-        packet.addPlaceholder("display_name", displayName);
-        packet.addPlaceholder("world", worldName);
-        
-        // Send packet (async operation via Netty, thread-safe)
-        plugin.getNetworkClient().sendPacket(packet);
-        plugin.debug("Sent message to channel " + channelId + ": " + message);
 
-        // [item]/[i] display play: piggybacks on the outbound path (UX spec §4).
-        maybeSendItemDisplay(player, channelId, message);
+        // Hop onto the player's region thread to read region-owned state
+        // (display name / world / main-hand inventory) before building packets.
+        // The offline re-check inside the callback handles logout between
+        // scheduling and execution.
+        scheduler.runForPlayer(player, () -> {
+            if (!player.isOnline()) {
+                return;
+            }
+
+            UUID playerId = player.getUniqueId();
+            String playerName = player.getName();
+            String displayName = player.getDisplayName();
+            String worldName = player.getWorld().getName();
+
+            ChatMessagePacket packet = new ChatMessagePacket(
+                playerId,
+                playerName,
+                config.getUsername(),
+                channelId,
+                message
+            );
+
+            packet.addPlaceholder("player", playerName);
+            packet.addPlaceholder("display_name", displayName);
+            packet.addPlaceholder("world", worldName);
+
+            // Send packet (async operation via Netty, thread-safe)
+            plugin.getNetworkClient().sendPacket(packet);
+            plugin.debug("Sent message to channel " + channelId + ": " + message);
+
+            // [item]/[i] display play: piggybacks on the outbound path (UX spec §4).
+            // Already on the player's region thread here, so inventory reads are safe.
+            maybeSendItemDisplay(player, channelId, message);
+        });
     }
 
     /**
@@ -760,9 +769,11 @@ public class AsyncChatInterceptor implements Listener {
      * {@link ItemDisplayTokens}. Only display fields (id/count/custom name)
      * are serialized — never full NBT.
      *
-     * <p>Thread Safety: token matching and the cooldown map are thread-safe;
-     * the inventory read is a plain read of the caller's snapshot, consistent
-     * with the other captured player data in {@link #sendToChannel}.
+     * <p><b>Threading contract:</b> MUST be invoked on the player's region
+     * thread. The inventory read ({@link #buildMainHandItemJson}) is region-owned
+     * state in Folia and will throw {@code IllegalStateException} off-thread.
+     * Callers (namely {@link #sendToChannel}) already arrange this hop via
+     * {@link FoliaSchedulerAdapter#runForPlayer}.
      */
     private void maybeSendItemDisplay(Player player, String channelId, String message) {
         try {
@@ -788,6 +799,10 @@ public class AsyncChatInterceptor implements Listener {
      * Extracts the display fields (id / count / custom name) of the player's
      * main-hand item. Empty hand → air payload, matching the Bedrock
      * renderers' "Empty" placeholder behavior.
+     *
+     * <p><b>Must run on the player's region thread.</b> Inventory access is
+     * region-owned state in Folia; calling this off-thread raises
+     * {@code IllegalStateException}.
      */
     private String buildMainHandItemJson(Player player) {
         org.bukkit.inventory.ItemStack hand = player.getInventory().getItemInMainHand();
