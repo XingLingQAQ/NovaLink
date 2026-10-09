@@ -16,6 +16,7 @@ import com.nova.chat.client.network.CoreNetworkClient;
 import com.nova.chat.client.network.SchedulerBridge;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.common.NovaConstants;
 import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.client.itemdisplay.ItemDisplayMessages;
 import com.nova.chat.common.protocol.AdminAction;
@@ -78,7 +79,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * result is logged to the server console instead of being silently dropped.
      */
     static final UUID CONSOLE_SENTINEL_UUID =
-            java.util.UUID.fromString("00000000-0000-0000-0000-000000000000");
+            java.util.UUID.fromString(NovaConstants.CONSOLE_SENTINEL_UUID);
 
     /** Shared known-channel registry (populated from ConfigSync, UX-DESIGN §2.1). */
     private final com.nova.chat.client.channel.KnownChannelRegistry knownChannelRegistry;

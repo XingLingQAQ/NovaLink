@@ -800,7 +800,7 @@ public class ConsoleCommandHandler {
         // Actual shutdown is performed by the caller (BackendConsole) so the
         // console loop and JVM hook share a single exit path. This return value
         // signals intent.
-        return "STOP";
+        return STOP_TOKEN;
     }
 
     /** Sentinel return value indicating a shutdown request. */

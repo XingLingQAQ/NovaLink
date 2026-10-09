@@ -300,7 +300,7 @@ public class PlayerStateManager {
 
         PlayerState state = cache.get(playerId);
         if (state != null) {
-            state.addMute(muteInfo.getChannelId() != null ? muteInfo.getChannelId() : "__global__", muteInfo);
+            state.addMute(muteInfo.getChannelId() != null ? muteInfo.getChannelId() : DatabaseProvider.GLOBAL_KEY, muteInfo);
             markDirty(playerId);
         }
 
@@ -325,7 +325,7 @@ public class PlayerStateManager {
 
         PlayerState state = cache.get(playerId);
         if (state != null) {
-            state.removeMute(channelId != null ? channelId : "__global__");
+            state.removeMute(channelId != null ? channelId : DatabaseProvider.GLOBAL_KEY);
             markDirty(playerId);
         }
 

@@ -16,6 +16,17 @@ import java.util.UUID;
 public interface DatabaseProvider {
 
     /**
+     * Cache key used in the per-player mute/ban map for "channel-wide" entries
+     * whose {@code channelId} is {@code null}. Providers persist {@code NULL}
+     * for the channel column; in-memory maps and the moderation manager share
+     * this sentinel key so lookups and removals hit the same slot.
+     *
+     * <p>Single source of truth: {@code AbstractModerationManager}'s
+     * {@code GLOBAL_KEY} aliases this constant. Both must stay identical.
+     */
+    String GLOBAL_KEY = "__global__";
+
+    /**
      * Initializes the database connection and creates necessary tables/structures.
      *
      * @throws DatabaseException if initialization fails
