@@ -81,6 +81,35 @@ public interface Platform {
     java.util.Collection<UUID> getOnlinePlayerIds();
 
     /**
+     * Checks whether a player holds a {@code novachat.*} permission node. Used
+     * by {@code ChatInterceptor.maybeSendItemDisplay} to gate
+     * {@code novachat.feature.item} ({@code [item]}/{@code [i]}) on the shared
+     * node {@link com.nova.chat.client.itemdisplay.ItemDisplayTokens#PERMISSION_ITEM},
+     * matching the bukkit/folia/nukkit/pnx {@code player.hasPermission(...)}
+     * semantics (Requirements 12.5: no permission → token stays plain text).
+     *
+     * <p>Temporary fallback: mod loaders (fabric / quilt / neoforge) do not ship
+     * a native permission-registry equivalent to Bukkit's, and the existing
+     * command registrar admin checks go through
+     * {@link com.nova.chat.mod.platform.brigadier.BrigadierHooks#isAdmin} which
+     * is OP-level only and does not address this feature node. Mod servers
+     * historically run in trusted environments where the {@code novachat.feature.item}
+     * gate is implicit, so this default returns {@code true} — any player can
+     * emit the token — until a loader plumbs a real permission lookup here.
+     * Implementations with access to a permission API (LuckPerms-style bridge,
+     * mod-side registry) SHOULD override and return the real lookup result;
+     * implementations without one MUST document the fallback.
+     *
+     * @param playerId   the player's UUID
+     * @param permission the permission node (e.g. {@code novachat.feature.item})
+     * @return {@code true} when the player holds the node; the default
+     *         implementation grants all nodes (legacy behaviour, see above).
+     */
+    default boolean hasPermission(UUID playerId, String permission) {
+        return true;
+    }
+
+    /**
      * Get the platform type
      * @return the platform type (FABRIC, NEOFORGE, QUILT, FORGE)
      */
