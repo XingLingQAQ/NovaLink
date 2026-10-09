@@ -181,6 +181,16 @@ public class DatabaseConfig {
 
     /**
      * PostgreSQL configuration. Mirrors the MySQL connection fields.
+     *
+     * <p>H1b: exposes an explicit {@code ssl-mode} knob, defaulting to
+     * {@code verify-ca} (fail-closed). Setting it to {@code disable} is a
+     * plaintext-acknowledgement: NovaLink refuses to start unless
+     * {@code server.insecure-allow-plaintext: true} is also set, mirroring
+     * the AUTH-002 transport gate at the JDBC layer.
+     *
+     * <p>Values follow the PostgreSQL JDBC driver's {@code sslmode}:
+     * {@code disable}, {@code allow}, {@code prefer}, {@code require},
+     * {@code verify-ca}, {@code verify-full}.
      */
     public static class PostgreSQLConfig {
         private String host;
@@ -189,6 +199,14 @@ public class DatabaseConfig {
         private String username;
         private String password;
         private int poolSize;
+        /**
+         * H1b: JDBC TLS mode. One of {@code disable}, {@code allow},
+         * {@code prefer}, {@code require}, {@code verify-ca},
+         * {@code verify-full}. Defaults to {@code verify-ca} so an absent
+         * key cannot silently downgrade to the driver's plaintext-tolerant
+         * default ({@code prefer}).
+         */
+        private String sslMode = "verify-ca";
 
         public String getHost() {
             return host;
@@ -238,6 +256,14 @@ public class DatabaseConfig {
             this.poolSize = poolSize;
         }
 
+        public String getSslMode() {
+            return sslMode;
+        }
+
+        public void setSslMode(String sslMode) {
+            this.sslMode = sslMode;
+        }
+
         @Override
         public boolean equals(Object o) {
             if (this == o) return true;
@@ -248,12 +274,13 @@ public class DatabaseConfig {
                    Objects.equals(host, that.host) &&
                    Objects.equals(database, that.database) &&
                    Objects.equals(username, that.username) &&
-                   Objects.equals(password, that.password);
+                   Objects.equals(password, that.password) &&
+                   Objects.equals(sslMode, that.sslMode);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(host, port, database, username, password, poolSize);
+            return Objects.hash(host, port, database, username, password, poolSize, sslMode);
         }
     }
 

@@ -442,6 +442,22 @@ public class ConfigLoader {
         pg.setPassword(requiredString(pgData, "password"));
         pg.setPoolSize(requiredPositiveInt(pgData, "pool-size", "database.postgresql.pool-size"));
 
+        // H1b: PostgreSQL JDBC TLS mode. Defaults to verify-ca (fail-closed).
+        // disable must be paired with server.insecure-allow-plaintext: true or
+        // the server refuses to start. Mirror of the AUTH-002 gate at the JDBC
+        // layer, kept symmetric with the MySQL H1 knob.
+        String pgSslMode = optionalString(pgData, "ssl-mode", "database.postgresql.ssl-mode");
+        if (pgSslMode != null && !pgSslMode.isBlank()) {
+            String normalized = pgSslMode.trim().toLowerCase(Locale.ROOT);
+            if (!Set.of("disable", "allow", "prefer", "require", "verify-ca", "verify-full")
+                    .contains(normalized)) {
+                throw new IllegalArgumentException(
+                        "Configuration value database.postgresql.ssl-mode is unsupported: " + pgSslMode
+                                + " (allowed: disable, allow, prefer, require, verify-ca, verify-full)");
+            }
+            pg.setSslMode(normalized);
+        }
+
         Map<String, Object> sqliteData = requiredMap(data, "sqlite");
         DatabaseConfig.SQLiteConfig sqlite = config.getSqlite();
         sqlite.setFilePath(requiredNonBlankString(sqliteData, "file-path", "database.sqlite.file-path"));
@@ -784,6 +800,7 @@ public class ConfigLoader {
         postgresql.put("username", config.getDatabase().getPostgresql().getUsername());
         postgresql.put("password", config.getDatabase().getPostgresql().getPassword());
         postgresql.put("pool-size", config.getDatabase().getPostgresql().getPoolSize());
+        postgresql.put("ssl-mode", config.getDatabase().getPostgresql().getSslMode());
         database.put("postgresql", postgresql);
 
         Map<String, Object> sqlite = new LinkedHashMap<>();
