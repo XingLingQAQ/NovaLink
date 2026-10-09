@@ -283,8 +283,9 @@ public class PlayerStatePersistencePropertyTest {
                 Arbitraries.strings().ofMinLength(1).ofMaxLength(20).alpha().optional(),
                 Arbitraries.strings().ofMinLength(1).ofMaxLength(20).alpha()
                         .set().ofMinSize(0).ofMaxSize(5),
-                Arbitraries.longs().greaterOrEqual(0)
-        ).as((playerId, playerName, clientId, currentWorld, channels, lastSeen) -> {
+                Arbitraries.longs().greaterOrEqual(0),
+                muteEntries()
+        ).as((playerId, playerName, clientId, currentWorld, channels, lastSeen, muteMap) -> {
             PlayerState state = new PlayerState(playerId, playerName);
             clientId.ifPresent(state::setClientId);
             currentWorld.ifPresent(state::setCurrentWorld);
@@ -293,7 +294,30 @@ public class PlayerStatePersistencePropertyTest {
                 state.setActiveChannel(channels.iterator().next());
             }
             state.setLastSeen(lastSeen);
+            // Populate mutes so the round-trip assertion on getMutes() is
+            // discriminating (previous generator never called setMutes, so
+            // both sides were trivially equal to an empty map).
+            state.setMutes(muteMap);
             return state;
         });
+    }
+
+    @Provide
+    Arbitrary<Map<String, MuteInfo>> muteEntries() {
+        Arbitrary<MuteInfo> muteInfo = Combinators.combine(
+                Arbitraries.strings().ofMinLength(1).ofMaxLength(20).alpha().optional(),
+                Arbitraries.longs().between(0L, Long.MAX_VALUE - 1_000_000L),
+                Arbitraries.strings().ofMinLength(0).ofMaxLength(50).alpha().optional(),
+                Arbitraries.create(UUID::randomUUID)
+        ).as((channelOpt, expire, reasonOpt, opId) -> new MuteInfo(
+                channelOpt.orElse("global"),
+                expire,
+                reasonOpt.orElse("test"),
+                opId
+        ));
+        // Key by generated channel ids (non-empty alpha strings) so the map
+        // has real entries; frequency pulls in a mix of sizes including empty.
+        Arbitrary<String> keyArb = Arbitraries.strings().ofMinLength(1).ofMaxLength(10).alpha();
+        return Arbitraries.maps(keyArb, muteInfo).ofMinSize(1).ofMaxSize(3);
     }
 }

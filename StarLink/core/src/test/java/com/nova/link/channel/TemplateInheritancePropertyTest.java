@@ -69,18 +69,21 @@ public class TemplateInheritancePropertyTest {
         assertThat(channel.getDisplayName())
                 .as("Channel should inherit display name from template")
                 .isEqualTo(templateDisplayName);
-        
-        assertThat(channel.getScope())
-                .as("Channel should inherit scope from template")
-                .isEqualTo(ChannelScope.SERVER);
-        
+
         assertThat(channel.getPermission())
                 .as("Channel should inherit permission from template")
                 .isEqualTo(templatePermission);
-        
+
         assertThat(channel.getMaxCapacity())
                 .as("Channel should inherit max capacity from template")
                 .isEqualTo(templateMaxCapacity);
+
+        // Scope is excluded from this property: ServerChannelLoader forces
+        // every channel loaded through it to ChannelScope.SERVER regardless
+        // of whether the template declared a scope, so an equality assertion
+        // here would be vacuous and could not discriminate real template
+        // inheritance from the loader's hard-coded default. Scope behaviour
+        // is covered honestly in serverChannelLoaderForcesServerScope.
     }
 
     /**
@@ -136,10 +139,10 @@ public class TemplateInheritancePropertyTest {
                 .as("Explicit max capacity should override template value")
                 .isEqualTo(overrideMaxCapacity);
         
-        // PROPERTY: Non-overridden values should still come from template
-        assertThat(channel.getScope())
-                .as("Non-overridden scope should come from template")
-                .isEqualTo(ChannelScope.SERVER);
+        // PROPERTY: Non-overridden values should still come from template.
+        // Scope is intentionally not asserted here: ServerChannelLoader forces
+        // ChannelScope.SERVER on every channel it loads, whether or not the
+        // template declared one, so a SERVER equality check would be vacuous.
     }
 
     /**
@@ -200,10 +203,10 @@ public class TemplateInheritancePropertyTest {
         assertThat(channel.getMaxCapacity())
                 .as("Max capacity should come from template (not overridden)")
                 .isEqualTo(templateMaxCapacity);
-        
-        assertThat(channel.getScope())
-                .as("Scope should come from template (not overridden)")
-                .isEqualTo(ChannelScope.SERVER);
+
+        // Scope is intentionally not asserted here: ServerChannelLoader forces
+        // ChannelScope.SERVER on every channel it loads, whether or not the
+        // template declared one, so a SERVER equality check would be vacuous.
     }
 
     /**
@@ -351,5 +354,56 @@ public class TemplateInheritancePropertyTest {
         assertThat(channel.getScope())
                 .as("Scope should default to SERVER when template is missing")
                 .isEqualTo(ChannelScope.SERVER);
+    }
+
+    /**
+     * **Feature: starchat-starlink, ServerChannelLoader scope policy**
+     *
+     * Discriminating property: verifies ServerChannelLoader's hard-coded
+     * scope policy. Whatever scope a template declares (GLOBAL, PRIVATE, or
+     * none at all), the loader forces ChannelScope.SERVER for channels loaded
+     * via loadServerChannels. This documents loader behaviour (not template
+     * inheritance) and gives the prove-it step a target: change the loader's
+     * forced SERVER to anything else and this test goes red.
+     *
+     * **Validates: Requirements 5.1 (server channels are physically isolated
+     * from global scope)**
+     */
+    @Property(tries = 100)
+    void serverChannelLoaderForcesServerScopeRegardlessOfTemplate(
+            @ForAll @StringLength(min = 1, max = 20) String templateId,
+            @ForAll @StringLength(min = 1, max = 20) String channelId,
+            @ForAll @StringLength(min = 1, max = 20) String clientId,
+            @ForAll("nonServerScopes") ChannelScope templateScope
+    ) {
+        TemplateManager templateManager = new TemplateManager();
+        ChannelManager channelManager = new ChannelManager();
+        ServerChannelLoader loader = new ServerChannelLoader(channelManager, templateManager);
+
+        // Template deliberately declares a NON-SERVER scope. If the loader
+        // actually consulted the template, the resulting channel would carry
+        // `templateScope`; if the loader's forced SERVER is in effect, the
+        // channel is SERVER regardless.
+        ChannelTemplate template = new ChannelTemplate(templateId);
+        template.setScope(templateScope);
+        templateManager.registerTemplate(template);
+
+        Map<String, Map<String, Object>> channelsConfig = new HashMap<>();
+        Map<String, Object> channelConfig = new HashMap<>();
+        channelConfig.put("use_template", templateId);
+        channelsConfig.put(channelId, channelConfig);
+
+        List<Channel> channels = loader.loadServerChannels(clientId, channelsConfig);
+        assertThat(channels).hasSize(1);
+
+        assertThat(channels.get(0).getScope())
+                .as("Loader must force SERVER scope even when template declared %s",
+                        templateScope)
+                .isEqualTo(ChannelScope.SERVER);
+    }
+
+    @Provide
+    Arbitrary<ChannelScope> nonServerScopes() {
+        return Arbitraries.of(ChannelScope.GLOBAL, ChannelScope.PRIVATE);
     }
 }

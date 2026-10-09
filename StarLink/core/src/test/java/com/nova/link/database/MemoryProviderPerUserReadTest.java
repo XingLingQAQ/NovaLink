@@ -129,7 +129,7 @@ class MemoryProviderPerUserReadTest {
     }
 
     @Test
-    void clearDirectedRemovesReadStateAndIsCaseInsensitive() throws DatabaseException {
+    void clearDirectedRemovesReadStateAndIsCaseInsensitive() throws Exception {
         Notification directed = new Notification("d", "m", Notification.LEVEL_INFO);
         directed.setRecipient("Bob");
         provider.saveNotification(directed);
@@ -146,14 +146,50 @@ class MemoryProviderPerUserReadTest {
         assertThat(provider.getNotifications(0, 10, false, "carol")).hasSize(1);
 
         // Stale-resurrection guard: clearNotifications() (no-arg) must also
-        // drop per-user read state so a reused id is not silently pre-read.
+        // drop per-user read state. The previous version of this test asserted
+        // `getUnreadCount("carol") == 1` on a fresh notification, which is
+        // trivially true because MemoryProvider stamps a brand-new,
+        // ever-increasing id on each saveNotification call. Instead, assert
+        // the discriminating invariant: the private notificationReadState
+        // table has no residual entries for the cleared ids.
         provider.markNotificationRead(broadcast.getId(), "Carol");
+        provider.markNotificationRead(broadcast.getId(), "Dave");
+        assertThat(peekReadStateSize(provider)).isGreaterThan(0);
+
         provider.clearNotifications();
         assertThat(provider.getNotifications(0, 10, false)).isEmpty();
+
+        // After clear, the per-user read-state map must be empty — if the
+        // production `notificationReadState.clear()` line inside
+        // MemoryProvider.clearNotifications() were removed, stale rows for
+        // (broadcast.id, Carol) and (broadcast.id, Dave) would still be
+        // present and this assertion would fail, catching the regression.
+        assertThat(peekReadStateSize(provider))
+                .as("clearNotifications() must wipe notificationReadState so stale ids"
+                        + " cannot resurrect read flags after an id is ever reused")
+                .isZero();
+
+        // The seq counter keeps incrementing in MemoryProvider, so a fresh
+        // notification always arrives unread — kept as a sanity check that
+        // the stream is still functional post-clear.
         Notification recycled = new Notification("recycled", "m", Notification.LEVEL_INFO);
         provider.saveNotification(recycled);
-        // notificationIdSeq keeps incrementing in MemoryProvider; simulate a
-        // wiped id by asserting the fresh stream starts unread for everyone.
         assertThat(provider.getUnreadCount("carol")).isEqualTo(1);
+    }
+
+    /**
+     * Reads the private {@code notificationReadState} map size on
+     * {@link MemoryProvider}. Used only to assert that per-user read state
+     * has actually been wiped by {@link MemoryProvider#clearNotifications} —
+     * the public API cannot observe residual rows for ids that were already
+     * evicted from the notifications list, since {@code markNotificationRead}
+     * silently drops writes for unknown ids and {@code isNotificationReadForUser}
+     * is only consulted against still-live notifications. Reflection is the
+     * minimal-introspection way to keep this regression test discriminating.
+     */
+    private static int peekReadStateSize(MemoryProvider p) throws Exception {
+        java.lang.reflect.Field f = MemoryProvider.class.getDeclaredField("notificationReadState");
+        f.setAccessible(true);
+        return ((java.util.Map<?, ?>) f.get(p)).size();
     }
 }
