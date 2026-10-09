@@ -1,6 +1,6 @@
 package com.nova.link.channel;
 
-import com.nova.chat.common.NovaConstants;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.link.auth.PermissionLevel;
 import com.nova.link.auth.PermissionManager;
@@ -193,9 +193,18 @@ public class MessagePipeline {
             logger.debug("Pipeline drop EMPTY_CONTENT from {}", message.getSenderName());
             return MessagePipelineResult.dropped(MessagePipelineResult.DropReason.EMPTY_CONTENT, message);
         }
-        if (content.length() > NovaConstants.MAX_MESSAGE_LENGTH) {
-            logger.warn("Pipeline drop OVERSIZED_CONTENT ({} chars) from {}",
-                    content.length(), message.getSenderName());
+        // Oversize gate enforces the same byte-unit ceiling as the wire protocol
+        // (ProtocolLimits.MAX_MESSAGE_CONTENT, 2048 UTF-8 bytes). Previously this
+        // checked NovaConstants.MAX_MESSAGE_LENGTH (256 chars), which silently
+        // dropped protocol-legal messages in the 256..682 Chinese-character
+        // range that the decoder happily accepts. See the cross-references on
+        // both constants for the unit contract. Content always arrives here as
+        // a decoded Java String, so we re-measure in UTF-8 bytes — the same
+        // unit the wire applies — which keeps routing and decoding aligned.
+        int contentBytes = utf8Length(content);
+        if (contentBytes > ProtocolLimits.MAX_MESSAGE_CONTENT) {
+            logger.warn("Pipeline drop OVERSIZED_CONTENT ({} UTF-8 bytes, {} chars) from {}",
+                    contentBytes, content.length(), message.getSenderName());
             return MessagePipelineResult.dropped(MessagePipelineResult.DropReason.OVERSIZED_CONTENT, message);
         }
         if (message.getChannelId() == null || message.getChannelId().isBlank()) {
@@ -488,5 +497,40 @@ public class MessagePipeline {
                 break;
         }
         return recipients;
+    }
+
+    /**
+     * UTF-8 encoded length of the given string in bytes — the same unit the
+     * wire protocol uses when decoding/encoding
+     * (see {@link ProtocolLimits#MAX_MESSAGE_CONTENT}). Avoids
+     * {@link String#getBytes(java.nio.charset.Charset)} allocation on the hot
+     * routing path: walks the UTF-16 code units once and accumulates 1/2/3/4
+     * per (possibly surrogate-pair) code point.
+     */
+    private static int utf8Length(String s) {
+        int bytes = 0;
+        int i = 0;
+        int n = s.length();
+        while (i < n) {
+            char c = s.charAt(i);
+            if (c < 0x80) {
+                bytes += 1;
+                i += 1;
+            } else if (c < 0x800) {
+                bytes += 2;
+                i += 1;
+            } else if (Character.isHighSurrogate(c) && i + 1 < n
+                    && Character.isLowSurrogate(s.charAt(i + 1))) {
+                bytes += 4;
+                i += 2;
+            } else {
+                // BMP non-ASCII or unpaired surrogate: encoder substitutes '?' = 1 byte,
+                // but charging 3 here keeps the gate conservative (matches what
+                // ChatMessagePacket.writeString would actually emit for paired input).
+                bytes += 3;
+                i += 1;
+            }
+        }
+        return bytes;
     }
 }

@@ -1,6 +1,6 @@
 package com.nova.link.channel;
 
-import com.nova.chat.common.NovaConstants;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.link.network.ServerNetworkHandler;
 import org.junit.jupiter.api.BeforeEach;
@@ -63,7 +63,7 @@ class MessageRouterValidationTest {
     @Test
     @DisplayName("oversized content is dropped")
     void oversizedDropped() {
-        String huge = "x".repeat(NovaConstants.MAX_MESSAGE_LENGTH + 1);
+        String huge = "x".repeat(ProtocolLimits.MAX_MESSAGE_CONTENT + 1);
         ChatMessagePacket msg = new ChatMessagePacket(
                 UUID.randomUUID(), "Steve", "s1", "global", huge
         );
@@ -83,8 +83,8 @@ class MessageRouterValidationTest {
     @DisplayName("content at exact max length is not rejected by length check alone")
     void exactMaxLengthPassesLengthGate() {
         // Still fails because channel is unknown (mock returns null), but must not
-        // be rejected solely for length == MAX_MESSAGE_LENGTH.
-        String exact = "y".repeat(NovaConstants.MAX_MESSAGE_LENGTH);
+        // be rejected solely for length == MAX_MESSAGE_CONTENT bytes.
+        String exact = "y".repeat(ProtocolLimits.MAX_MESSAGE_CONTENT);
         ChatMessagePacket msg = new ChatMessagePacket(
                 UUID.randomUUID(), "Steve", "s1", "global", exact
         );
