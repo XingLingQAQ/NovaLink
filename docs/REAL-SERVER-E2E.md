@@ -25,7 +25,7 @@
 - 不验证 BungeeCord 旧协议栈与高版本 Paper 下游的完整兼容（Bungee 仅做 `login`/`server` 级冒烟，见 §5.4）。
 - 不验证 **LeviLamina（C++ BDS）/ PocketMine-MP / Endstone / Fabric / NeoForge / Quilt / Forge** —— 模组加载器类需要 Gradle 9.5+（当前 wrapper 8.8，`novachat-mod` loader 子模块在 `settings.gradle` 中被注释）；PHP/Python/C++ 端有独立工具链，归为 P2 且不做 CI 默认执行。
 - 不验证 **Nukkit/PNX 的基岩客户端协议**（真实基岩客户端登录）；只验证 Nukkit/PNX 服务端进程 + 插件装载 + 到 backend 的 NovaProtocol 连线。
-- 不验证 **MySQL/Redis 持久化**（Testcontainers 已有独立覆盖：`TestContainersConfig`、`MySQLProvider` 测试；本套件统一 `database.type=memory`）。
+- 不验证 **MySQL/Redis 持久化**：`database.type=memory`. MySQL/Redis/PostgreSQL 的真实持久化另由 `MySQLProvider*`/`RedisProvider*`/`PostgreSQLRealInstanceTest` 系列集成测试覆盖（直接连真实数据库实例，不依赖 Testcontainers）；`TestContainersConfig` 工具类此前是孤儿代码（无任何测试调用）已删除。
 
 ### 1.3 冻结平台红线
 

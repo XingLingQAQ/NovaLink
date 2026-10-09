@@ -14,8 +14,6 @@ backend:
 
 # Folia 特定设置
 folia:
-  # 是否启用异步消息处理（推荐开启）
-  async-processing: true
   # 网络操作超时时间（毫秒）
   network-timeout: 5000
 

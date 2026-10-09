@@ -278,11 +278,12 @@ public class ChatInterceptor implements ChatHandler {
      *
      * <p>Permission gate: the mod-common {@link Platform} abstraction has no
      * permission accessor (each loader checks permissions natively in its
-     * command registrar), so the permission check is delegated to the platform
-     * via {@link Platform#hasItemDisplayPermission(UUID)} — but to keep the
-     * interface narrow and avoid widening every implementor in this slice, the
-     * gate is currently advisory: the token is always sent when the platform
-     * returns a non-null item. A future slice can add the permission hook.
+     * command registrar), and the {@code Platform} interface deliberately does
+     * not expose a {@code hasItemDisplayPermission} hook. The MOD send path
+     * therefore performs NO permission check when emitting an item-display
+     * token — any {@code [item]}/{@code [i]} token in a chat message is sent
+     * when the platform returns a non-null held-item payload. Widening the
+     * interface with a permission hook is a separate task.
      */
     public void sendToChannel(UUID playerId, String playerName, String channelId, String message) {
         if (!networkClient.isAuthenticated()) {

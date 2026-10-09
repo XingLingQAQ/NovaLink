@@ -24,7 +24,6 @@ public class NovaChatConfig {
     private final int reconnectDelay;
 
     // Folia specific settings
-    private final boolean asyncProcessing;
     private final int networkTimeout;
 
     // Chat settings
@@ -57,7 +56,6 @@ public class NovaChatConfig {
         this.reconnectDelay = requiredPositiveInt(config, "backend.reconnect-delay");
 
         // Folia settings
-        this.asyncProcessing = requiredBoolean(config, "folia.async-processing");
         this.networkTimeout = requiredPositiveInt(config, "folia.network-timeout");
 
         // Chat settings
@@ -168,10 +166,6 @@ public class NovaChatConfig {
 
     public int getReconnectDelay() {
         return reconnectDelay;
-    }
-
-    public boolean isAsyncProcessing() {
-        return asyncProcessing;
     }
 
     public int getNetworkTimeout() {
