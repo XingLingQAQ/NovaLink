@@ -115,6 +115,35 @@ public class NovaChatCommand extends Command implements CommandExecutor {
     }
 
     /**
+     * Dispatches tab completion to the matching subcommand (UX-DESIGN §2.3).
+     *
+     * <p>PowerNukkitX's {@code Command} base does not call this from the Bedrock
+     * client completion path (client-side completion is driven by
+     * {@code CommandParameter} overloads), but the per-subcommand
+     * {@code tabComplete} contract is kept consistent with the other platforms
+     * and wired to the shared {@code KnownChannelRegistry} so it works wherever
+     * a dispatcher invokes it.
+     */
+    public List<String> tabComplete(CommandSender sender, String[] args) {
+        if (args.length <= 1) {
+            String prefix = args.length == 0 ? "" : args[0].toLowerCase();
+            return getAvailableSubCommands(sender).stream()
+                    .filter(name -> name.toLowerCase().startsWith(prefix))
+                    .collect(Collectors.toList());
+        }
+        String subCommandName = args[0].toLowerCase();
+        SubCommand subCommand = subCommands.get(subCommandName);
+        if (subCommand != null && subCommand.hasPermission(sender)) {
+            String[] subArgs = Arrays.copyOfRange(args, 1, args.length);
+            List<String> completions = subCommand.tabComplete(sender, subArgs);
+            if (completions != null) {
+                return completions;
+            }
+        }
+        return Collections.emptyList();
+    }
+
+    /**
      * Gets the list of sub-commands available to a sender based on permissions.
      * Hidden commands are excluded.
      *
