@@ -130,37 +130,88 @@ public class WorldFilterPropertyTest {
 
     /**
      * **Feature: starchat-starlink, Property 8: World Filter Membership**
-     * 
-     * Property: World filter membership is deterministic - the same world always
-     * produces the same result.
-     * 
-     * **Validates: Requirements 6.1, 6.4**
+     *
+     * Discriminating property: membership must match the expected outcome
+     * computed against the canonical world set (template mapping). Previously
+     * this test only asserted determinism (same answer three times), which any
+     * constant-true or constant-false implementation would also satisfy. Here
+     * we compare the filter's verdict against the membership predicted from
+     * the input worlds: when restrictions exist, exactly the worlds present in
+     * the allowed list (and only those) must be members; when the filter has
+     * no valid worlds, everything is a member.
+     *
+     * **Validates: Requirements 6.1, 6.2, 6.3, 6.4**
      */
-    @Property(tries = 100)
-    void worldFilterMembershipIsDeterministic(
-            @ForAll @Size(min = 0, max = 10) List<@StringLength(min = 1, max = 30) String> allowedWorlds,
-            @ForAll @StringLength(min = 1, max = 30) String testWorld
+    // Shrinking disabled: jqwik's string-list shrinker has a Long-standing
+    // ClassCastException (String→Character) on this 3-parameter shape that
+    // would mask the assertion failure in the report. The assertion itself
+    // already discriminates; shrinking only picks a smaller counter-example.
+    @Property(tries = 100, shrinking = ShrinkingMode.OFF)
+    void worldFilterMembershipMatchesExpectedSet(
+            @ForAll("allowedWorldLists") List<String> allowedWorlds,
+            @ForAll("worldNames") String inCandidateWorld,
+            @ForAll("worldNames") String outCandidateWorld
     ) {
-        // Create world filter
+        // Build canonical "expected" set the same way WorldFilter would.
+        Set<String> expected = new HashSet<>();
+        for (String world : allowedWorlds) {
+            if (world != null && !world.trim().isEmpty()) {
+                expected.add(world.trim());
+            }
+        }
+
         WorldFilter filter = new WorldFilter(allowedWorlds);
-        
-        // Check membership multiple times
-        boolean firstCheck = filter.shouldBeMember(testWorld);
-        boolean secondCheck = filter.shouldBeMember(testWorld);
-        boolean thirdCheck = filter.shouldBeMember(testWorld);
-        
-        // PROPERTY: Membership check should be deterministic
-        assertThat(firstCheck)
-                .as("World filter membership should be deterministic")
-                .isEqualTo(secondCheck)
-                .isEqualTo(thirdCheck);
+
+        // Two contrasting probes: one whose membership we know by construction
+        // (in-set when non-empty), one whose non-membership we know by
+        // construction (must not be in the set).
+        Assume.that(inCandidateWorld != null && !inCandidateWorld.trim().isEmpty());
+        Assume.that(outCandidateWorld != null && !outCandidateWorld.trim().isEmpty());
+        Assume.that(!expected.contains(outCandidateWorld.trim()));
+
+        String probeIn = inCandidateWorld.trim();
+        String probeOut = outCandidateWorld.trim();
+
+        boolean expectedInVerdict = expected.isEmpty() || expected.contains(probeIn);
+        boolean expectedOutVerdict = expected.isEmpty() ? true : false;
+
+        assertThat(filter.shouldBeMember(probeIn))
+                .as("Membership for candidate '%s' must match expected verdict "
+                        + "(allowed=%s)", probeIn, expected)
+                .isEqualTo(expectedInVerdict);
+
+        assertThat(filter.shouldBeMember(probeOut))
+                .as("Membership for non-listed candidate '%s' must match expected "
+                        + "verdict (allowed=%s)", probeOut, expected)
+                .isEqualTo(expectedOutVerdict);
+
+        // Determinism is a free by-product: invoke twice and confirm stability
+        // so we still cover the original intent (same input -> same answer).
+        assertThat(filter.shouldBeMember(probeIn))
+                .as("Second invocation must agree with first for '%s'", probeIn)
+                .isEqualTo(expectedInVerdict);
+        assertThat(filter.shouldBeMember(probeOut))
+                .as("Second invocation must agree with first for '%s'", probeOut)
+                .isEqualTo(expectedOutVerdict);
+    }
+
+    /** Bounded alphabetic world names (avoids a jqwik unicode-shrink String→Char CastX). */
+    @Provide
+    Arbitrary<String> worldNames() {
+        return Arbitraries.strings().alpha().ofMinLength(1).ofMaxLength(30);
+    }
+
+    /** Bounded list of allowed worlds, using the safe name arbitrary. */
+    @Provide
+    Arbitrary<List<String>> allowedWorldLists() {
+        return worldNames().list().ofMinSize(0).ofMaxSize(10);
     }
 
     /**
      * **Feature: starchat-starlink, Property 8: World Filter Membership**
-     * 
+     *
      * Property: World filter correctly identifies whether it has restrictions.
-     * 
+     *
      * **Validates: Requirements 6.1, 6.4**
      */
     @Property(tries = 100)
