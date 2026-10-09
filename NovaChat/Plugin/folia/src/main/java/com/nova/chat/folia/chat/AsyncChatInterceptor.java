@@ -64,7 +64,14 @@ import java.util.concurrent.ConcurrentHashMap;
 public class AsyncChatInterceptor implements Listener {
     
     private final NovaChatFolia plugin;
-    private final NovaChatConfig config;
+
+    /**
+     * Latest immutable config snapshot. Marked {@code volatile} because multiple
+     * region threads read formats/prefixes while {@link #setConfig} /
+     * {@link #reload} are invoked from the command thread with the new snapshot.
+     */
+    private volatile NovaChatConfig config;
+
     private final FoliaSchedulerAdapter scheduler;
     private final MentionNotifier mentionNotifier = new MentionNotifier();
     
@@ -943,14 +950,30 @@ public class AsyncChatInterceptor implements Listener {
     }
     
     /**
-     * Reloads configuration settings.
-     * 
+     * Reloads configuration settings using the plugin's latest config snapshot.
+     *
      * <p>Thread Safety: This should be called from the global region thread or
      * during plugin reload. The volatile write to globalMode ensures visibility.</p>
      */
     public void reload() {
-        this.globalMode = config.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
-        this.messageFormatter.reload();
+        setConfig(plugin.getNovaChatConfig());
+    }
+
+    /**
+     * Installs a new {@link NovaChatConfig} snapshot into this interceptor and
+     * cascades it to the message formatter. Called by the plugin main class
+     * after {@code loadConfiguration()} succeeds so subsequent hot-path lookups
+     * resolve against the freshly loaded values instead of a stale reference.
+     *
+     * @param newConfig the freshly loaded config snapshot
+     */
+    public void setConfig(NovaChatConfig newConfig) {
+        if (newConfig == null) {
+            return;
+        }
+        this.config = newConfig;
+        this.globalMode = newConfig.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
+        this.messageFormatter.setConfig(newConfig);
         plugin.debug("AsyncChatInterceptor reloaded, global mode: " + globalMode);
     }
     

@@ -46,7 +46,13 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ChatListener {
     
     private final NovaChatVelocity plugin;
-    private final NovaChatConfig config;
+
+    /**
+     * Latest immutable config snapshot; volatile — proxy event thread reads,
+     * command thread writes via {@link #setConfig} / {@link #reload}.
+     */
+    private volatile NovaChatConfig config;
+
     private final MessageFormatter messageFormatter;
     private final MentionNotifier mentionNotifier = new MentionNotifier();
     
@@ -709,11 +715,27 @@ public class ChatListener {
     }
     
     /**
-     * Reloads configuration settings.
+     * Reloads configuration settings using the plugin's latest config snapshot.
      */
     public void reload() {
-        this.globalMode = config.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
-        this.messageFormatter.reload();
+        setConfig(plugin.getConfig());
+    }
+
+    /**
+     * Installs a new {@link NovaChatConfig} snapshot into this listener and
+     * cascades it to the message formatter. Called by the plugin main class
+     * after {@code loadConfiguration()} succeeds so subsequent hot-path lookups
+     * resolve against the freshly loaded values instead of a stale reference.
+     *
+     * @param newConfig the freshly loaded config snapshot
+     */
+    public void setConfig(NovaChatConfig newConfig) {
+        if (newConfig == null) {
+            return;
+        }
+        this.config = newConfig;
+        this.globalMode = newConfig.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
+        this.messageFormatter.setConfig(newConfig);
         plugin.debug("ChatListener reloaded, global mode: " + globalMode);
     }
     

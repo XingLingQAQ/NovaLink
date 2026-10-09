@@ -26,7 +26,8 @@ import java.util.regex.Pattern;
 public class MessageFormatter {
 
     private final NovaChatBukkit plugin;
-    private final NovaChatConfig config;
+    /** Latest immutable config snapshot; volatile for cross-thread visibility. */
+    private volatile NovaChatConfig config;
     private final ColorRenderer<String> renderer;
 
     private boolean placeholderApiAvailable = false;
@@ -136,6 +137,22 @@ public class MessageFormatter {
     }
 
     public void reload() {
+        setConfig(plugin.getNovaChatConfig());
+    }
+
+    /**
+     * Installs a new {@link NovaChatConfig} snapshot. Hot-path lookups
+     * (channel formats, prefix, error/success formats) resolve against this
+     * reference on every call, so swapping it here is sufficient — no rebuild
+     * of formatter state is required beyond re-detecting PlaceholderAPI.
+     *
+     * @param newConfig the freshly loaded config snapshot
+     */
+    public void setConfig(NovaChatConfig newConfig) {
+        if (newConfig == null) {
+            return;
+        }
+        this.config = newConfig;
         checkPlaceholderApi();
     }
 }

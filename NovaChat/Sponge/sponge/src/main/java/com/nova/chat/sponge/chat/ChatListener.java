@@ -56,7 +56,14 @@ import java.time.Duration;
 public class ChatListener {
     
     private final NovaChatSponge plugin;
-    private final NovaChatConfig config;
+
+    /**
+     * Latest immutable config snapshot; volatile because Sponge chat may be
+     * invoked off the main thread while {@link #setConfig} / {@link #reload}
+     * are invoked from the command thread.
+     */
+    private volatile NovaChatConfig config;
+
     private final MentionNotifier mentionNotifier = new MentionNotifier();
 
     /** Shared [item]/[i] token detection + per-player cooldown (client-core). */
@@ -78,7 +85,7 @@ public class ChatListener {
     private final java.util.Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
     
     /** Global chat mode from configuration */
-    private ChatMode globalMode;
+    private volatile ChatMode globalMode;
     
     /**
      * Creates a new ChatListener.
@@ -816,10 +823,26 @@ public class ChatListener {
     }
     
     /**
-     * Reloads configuration settings.
+     * Reloads configuration settings using the plugin's latest config snapshot.
      */
     public void reload() {
-        this.globalMode = config.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
+        setConfig(plugin.getNovaChatConfig());
+    }
+
+    /**
+     * Installs a new {@link NovaChatConfig} snapshot into this listener.
+     * Called by the plugin main class after {@code loadConfiguration()} succeeds
+     * so subsequent hot-path lookups resolve against the freshly loaded values
+     * instead of a stale reference.
+     *
+     * @param newConfig the freshly loaded config snapshot
+     */
+    public void setConfig(NovaChatConfig newConfig) {
+        if (newConfig == null) {
+            return;
+        }
+        this.config = newConfig;
+        this.globalMode = newConfig.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
         plugin.debug("ChatListener reloaded, global mode: " + globalMode);
     }
     

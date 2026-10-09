@@ -14,11 +14,26 @@ import com.nova.chat.nukkit.config.NovaChatConfig;
 public class MessageHelper {
 
     private final NovaChatNukkit plugin;
-    private final NovaChatConfig config;
+    /** Latest immutable config snapshot; volatile for cross-thread visibility. */
+    private volatile NovaChatConfig config;
 
     public MessageHelper(NovaChatNukkit plugin) {
         this.plugin = plugin;
         this.config = plugin.getNovaChatConfig();
+    }
+
+    /**
+     * Installs a new {@link NovaChatConfig} snapshot. Prefix and error/success
+     * formats are read on every call, so swapping the reference here applies
+     * the reload semantics without further state resets.
+     *
+     * @param newConfig the freshly loaded config snapshot
+     */
+    public void setConfig(NovaChatConfig newConfig) {
+        if (newConfig == null) {
+            return;
+        }
+        this.config = newConfig;
     }
 
     /**

@@ -25,7 +25,8 @@ import java.util.Map;
 public class MessageFormatter {
 
     private final NovaChatVelocity plugin;
-    private NovaChatConfig config;
+    /** Latest immutable config snapshot; volatile — proxy thread reads. */
+    private volatile NovaChatConfig config;
     private final ColorRenderer<Component> renderer;
 
     private static final LegacyComponentSerializer LEGACY_SERIALIZER =
@@ -74,6 +75,20 @@ public class MessageFormatter {
     }
 
     public void reload() {
-        this.config = plugin.getConfig();
+        setConfig(plugin.getConfig());
+    }
+
+    /**
+     * Installs a new {@link NovaChatConfig} snapshot. Hot-path channel/prefix
+     * lookups read this reference on every call, so swapping it here is the
+     * full reload semantics — no cached state needs rebuilding.
+     *
+     * @param newConfig the freshly loaded config snapshot
+     */
+    public void setConfig(NovaChatConfig newConfig) {
+        if (newConfig == null) {
+            return;
+        }
+        this.config = newConfig;
     }
 }
