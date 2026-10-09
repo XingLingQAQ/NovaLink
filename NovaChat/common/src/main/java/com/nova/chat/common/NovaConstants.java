@@ -93,6 +93,20 @@ public final class NovaConstants {
     public static final long PENDING_REQUEST_TIMEOUT_MS = 30_000L;
     
     // Limits
+    /**
+     * Character-unit (UTF-16 code-unit) hint for how long a chat message may
+     * be. <b>This is NOT a wire or routing limit.</b> The wire protocol and
+     * the server-side routing pipeline both enforce
+     * {@link com.nova.chat.common.protocol.ProtocolLimits#MAX_MESSAGE_CONTENT}
+     * (2048 UTF-8 bytes). Because a CJK character occupies up to 3 UTF-8
+     * bytes, 682 Chinese characters fit comfortably inside the wire cap;
+     * this 256-char constant was chosen as a conservative UI affordance
+     * (placeholder text, chat-box char counters). It MUST remain well under
+     * {@code ProtocolLimits.MAX_MESSAGE_CONTENT} so a UI that blocks input at
+     * this count never produces a message the wire cannot carry. Routing
+     * (see {@code com.nova.link.channel.MessagePipeline}) does NOT use this
+     * value; do not couple routing logic to it.
+     */
     public static final int MAX_MESSAGE_LENGTH = 256;
     public static final int MAX_CHANNEL_NAME_LENGTH = 32;
     public static final int MAX_PASSWORD_LENGTH = 64;

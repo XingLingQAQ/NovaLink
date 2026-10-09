@@ -108,6 +108,18 @@ public final class ProtocolLimits {
      * budget (the precedent set by ChatMessagePacket before PROTO-003). A
      * single constant keeps the two read paths consistent and gives non-JVM
      * forks one value to mirror.
+     *
+     * <p><b>Cross-reference:</b> {@code com.nova.chat.common.NovaConstants#MAX_MESSAGE_LENGTH}
+     * is a <em>character</em>-unit hint used only by UI/input affordances; it is
+     * NOT a wire or routing limit. The wire and the server-side routing
+     * pipeline both enforce this 2048-byte bound. Because a CJK character
+     * uses up to 3 UTF-8 bytes, the minimum number of Chinese characters
+     * that fit in {@link #MAX_MESSAGE_CONTENT} is 682 (682*3 = 2046 &le; 2048);
+     * the minimum that fit in a hypothetical 4-byte-per-char payload is 512.
+     * {@code NovaConstants.MAX_MESSAGE_LENGTH} (256) is approximately the
+     * CJK lower bound of a 768-byte window and MUST stay &le;
+     * {@link #MAX_MESSAGE_CONTENT} / 4 (= 512) so UI affordances never
+     * promise more characters than the wire can carry.
      */
     public static final int MAX_MESSAGE_CONTENT = 2048;
 

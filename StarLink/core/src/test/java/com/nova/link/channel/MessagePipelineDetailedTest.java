@@ -1,6 +1,6 @@
 package com.nova.link.channel;
 
-import com.nova.chat.common.NovaConstants;
+import com.nova.chat.common.protocol.ProtocolLimits;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.link.auth.ClientPermissionRegistry;
 import com.nova.link.auth.PermissionManager;
@@ -157,29 +157,83 @@ class MessagePipelineDetailedTest {
         }
 
         @Test
-        @DisplayName("content longer than MAX → OVERSIZED_CONTENT")
+        @DisplayName("content longer than MAX (bytes) → OVERSIZED_CONTENT")
         void oversized() {
-            String huge = "x".repeat(NovaConstants.MAX_MESSAGE_LENGTH + 1);
+            // The pipeline gate is byte-unit (ProtocolLimits.MAX_MESSAGE_CONTENT,
+            // 2048 UTF-8 bytes) — aligned with the wire decoder. 2049 ASCII chars
+            // = 2049 bytes > 2048, so it is rejected.
+            String huge = "x".repeat(ProtocolLimits.MAX_MESSAGE_CONTENT + 1);
             MessagePipelineResult r = pipeline.process(msg("global", huge));
             assertThat(r.isDelivered()).isFalse();
             assertThat(r.getDropReason()).isEqualTo(MessagePipelineResult.DropReason.OVERSIZED_CONTENT);
-            assertThat(r.getMessage().getContent()).hasSize(NovaConstants.MAX_MESSAGE_LENGTH + 1);
+            assertThat(r.getMessage().getContent()).hasSize(ProtocolLimits.MAX_MESSAGE_CONTENT + 1);
         }
 
         @Test
-        @DisplayName("content at exact MAX length passes length gate and can deliver")
+        @DisplayName("CJK content beyond 256 chars but within 2048 bytes routes (was dropped by legacy gate)")
+        void cjkBeyondLegacyCharCapRoutes() {
+            // Regression guard for the R-series finding: pre-fix, any content
+            // longer than NovaConstants.MAX_MESSAGE_LENGTH (256 *characters*)
+            // was dropped, even when well under the wire cap. 300 CJK chars =
+            // 900 UTF-8 bytes — must route.
+            ClientConnection c1 = mockConn("c1", true, true);
+            ClientConnection c2 = mockConn("c2", true, true);
+            when(networkHandler.getConnections()).thenReturn(Set.of(c1, c2));
+
+            String cjk = "汉".repeat(300); // 300 chars, 900 UTF-8 bytes
+            MessagePipelineResult r = pipeline.process(msg("global", cjk));
+
+            assertThat(r.getDropReason()).isNotEqualTo(MessagePipelineResult.DropReason.OVERSIZED_CONTENT);
+            assertThat(r.isDelivered()).isTrue();
+            assertThat(r.getMessage().getContent()).hasSize(300);
+            assertThat(r.getRecipients()).containsExactlyInAnyOrder("c1", "c2");
+        }
+
+        @Test
+        @DisplayName("682 CJK chars (2046 UTF-8 bytes) routes — boundary just under wire cap")
+        void cjkAt682CharsRoutes() {
+            // 682 * 3 = 2046 bytes ≤ 2048, the maximum CJK character count the
+            // wire cap can carry. This is the exact boundary the audit doc
+            // calls out (256..682 was silently dropped pre-fix).
+            ClientConnection c1 = mockConn("c1", true, true);
+            when(networkHandler.getConnections()).thenReturn(Set.of(c1));
+
+            String cjk = "汉".repeat(682);
+            MessagePipelineResult r = pipeline.process(msg("global", cjk));
+
+            assertThat(r.getDropReason()).isNotEqualTo(MessagePipelineResult.DropReason.OVERSIZED_CONTENT);
+            assertThat(r.isDelivered()).isTrue();
+            assertThat(r.getMessage().getContent()).hasSize(682);
+        }
+
+        @Test
+        @DisplayName("683 CJK chars (2049 UTF-8 bytes) → OVERSIZED_CONTENT (just over wire cap)")
+        void cjkAt683CharsDropped() {
+            // 683 * 3 = 2049 bytes > 2048 — the first CJK count that exceeds
+            // the wire cap. Must be dropped even though it is only one
+            // character beyond the 682 boundary above.
+            String cjk = "汉".repeat(683);
+            MessagePipelineResult r = pipeline.process(msg("global", cjk));
+
+            assertThat(r.isDelivered()).isFalse();
+            assertThat(r.getDropReason()).isEqualTo(MessagePipelineResult.DropReason.OVERSIZED_CONTENT);
+        }
+
+        @Test
+        @DisplayName("content at exact MAX (bytes) passes length gate and can deliver")
         void exactMaxLength() {
             ClientConnection c1 = mockConn("c1", true, true);
             ClientConnection c2 = mockConn("c2", true, true);
             when(networkHandler.getConnections()).thenReturn(Set.of(c1, c2));
 
-            String exact = "y".repeat(NovaConstants.MAX_MESSAGE_LENGTH);
+            // 2048 ASCII chars = 2048 UTF-8 bytes — exactly at the cap, must pass.
+            String exact = "y".repeat(ProtocolLimits.MAX_MESSAGE_CONTENT);
             MessagePipelineResult r = pipeline.process(msg("global", exact));
 
             assertThat(r.getDropReason()).isNotEqualTo(MessagePipelineResult.DropReason.OVERSIZED_CONTENT);
             assertThat(r.getDropReason()).isNotEqualTo(MessagePipelineResult.DropReason.EMPTY_CONTENT);
             assertThat(r.isDelivered()).isTrue();
-            assertThat(r.getMessage().getContent()).hasSize(NovaConstants.MAX_MESSAGE_LENGTH);
+            assertThat(r.getMessage().getContent()).hasSize(ProtocolLimits.MAX_MESSAGE_CONTENT);
             assertThat(r.getRecipients()).containsExactlyInAnyOrder("c1", "c2");
         }
 
@@ -216,7 +270,7 @@ class MessagePipelineDetailedTest {
             packet.setSenderName("Steve");
             packet.setClientId("Survival");
             packet.setChannelId("");
-            packet.setContent("z".repeat(NovaConstants.MAX_MESSAGE_LENGTH + 1));
+            packet.setContent("z".repeat(ProtocolLimits.MAX_MESSAGE_CONTENT + 1));
 
             assertThat(pipeline.process(packet).getDropReason())
                     .isEqualTo(MessagePipelineResult.DropReason.OVERSIZED_CONTENT);

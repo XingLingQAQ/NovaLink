@@ -395,17 +395,10 @@ export class WebSocketService {
     }
   }
 
-  subscribe(channels) {
-    const desired = new Set(this.desiredSubscriptions);
-    for (const channel of channels || []) if (channel) desired.add(channel);
-    this.setSubscriptions([...desired]);
-  }
-
-  unsubscribe(channels) {
-    const desired = new Set(this.desiredSubscriptions);
-    for (const channel of channels || []) desired.delete(channel);
-    this.setSubscriptions([...desired]);
-  }
+  // NOTE: the previous public `subscribe(channels)` / `unsubscribe(channels)`
+  // helpers were removed (dead API). A repo-wide grep showed zero call sites
+  // outside this file — the panel reconciles desired subscriptions via
+  // useWsOrchestration → setSubscriptions, which subsumes both helpers.
 
   _applyDesiredSubscriptions(generation, socket) {
     if (!this._isAuthenticatedCurrent(generation, socket)) return;
