@@ -98,4 +98,13 @@ public final class NovaConstants {
     public static final int MAX_PASSWORD_LENGTH = 64;
     public static final int INVITATION_CODE_LENGTH = 6;
     public static final int PRIVATE_CHANNEL_ID_LENGTH = 4;
+
+    /**
+     * Well-known all-zero sentinel UUID used for console/RCON-originated
+     * packets. The backend treats this UUID as {@code SUPER_ADMIN} (see
+     * {@code com.nova.link.console.ConsoleSentinel} on the StarLink core
+     * side). Use this string via {@code UUID.fromString} when a {@code UUID}
+     * instance is needed; use it raw when the packet API wants a string.
+     */
+    public static final String CONSOLE_SENTINEL_UUID = "00000000-0000-0000-0000-000000000000";
 }

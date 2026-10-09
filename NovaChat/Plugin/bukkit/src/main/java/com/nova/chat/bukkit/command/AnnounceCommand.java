@@ -2,6 +2,7 @@ package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.common.NovaConstants;
 import com.nova.chat.common.protocol.AdminAction;
 import com.nova.chat.common.protocol.packets.AdminActionPacket;
 import org.bukkit.command.CommandSender;
@@ -82,7 +83,7 @@ public class AnnounceCommand extends AbstractSubCommand {
             packet.setPlayerId(((Player) sender).getUniqueId());
         } else {
             // Console/RCON: use the well-known console sentinel UUID.
-            packet.setPlayerId(java.util.UUID.fromString("00000000-0000-0000-0000-000000000000"));
+            packet.setPlayerId(java.util.UUID.fromString(NovaConstants.CONSOLE_SENTINEL_UUID));
             packet.addExtra("console", "true");
         }
         packet.setTarget(channelId);

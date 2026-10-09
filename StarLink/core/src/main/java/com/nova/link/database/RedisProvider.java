@@ -284,7 +284,7 @@ public class RedisProvider implements DatabaseProvider {
 
         try (Jedis jedis = jedisPool.getResource()) {
             String key = MUTE_PREFIX + playerId.toString();
-            String field = muteInfo.getChannelId() != null ? muteInfo.getChannelId() : "__global__";
+            String field = muteInfo.getChannelId() != null ? muteInfo.getChannelId() : GLOBAL_KEY;
             String json = gson.toJson(new MuteInfoDto(muteInfo));
             jedis.hset(key, field, json);
             
@@ -327,7 +327,7 @@ public class RedisProvider implements DatabaseProvider {
 
         try (Jedis jedis = jedisPool.getResource()) {
             String key = MUTE_PREFIX + playerId.toString();
-            String field = channelId != null ? channelId : "__global__";
+            String field = channelId != null ? channelId : GLOBAL_KEY;
             jedis.hdel(key, field);
             logger.debug("Deleted mute for player {} in channel {}", playerId, channelId);
         } catch (Exception e) {
@@ -419,7 +419,7 @@ public class RedisProvider implements DatabaseProvider {
 
         try (Jedis jedis = jedisPool.getResource()) {
             String key = BAN_PREFIX + playerId.toString();
-            String field = banInfo.getChannelId() != null ? banInfo.getChannelId() : "__global__";
+            String field = banInfo.getChannelId() != null ? banInfo.getChannelId() : GLOBAL_KEY;
             String json = gson.toJson(new BanInfoDto(banInfo));
             jedis.hset(key, field, json);
 
@@ -454,7 +454,7 @@ public class RedisProvider implements DatabaseProvider {
 
         try (Jedis jedis = jedisPool.getResource()) {
             String key = BAN_PREFIX + playerId.toString();
-            String field = channelId != null ? channelId : "__global__";
+            String field = channelId != null ? channelId : GLOBAL_KEY;
             jedis.hdel(key, field);
             logger.debug("Deleted ban for player {} in channel {}", playerId, channelId);
         } catch (Exception e) {

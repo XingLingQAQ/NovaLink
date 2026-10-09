@@ -168,7 +168,7 @@ public class MemoryProvider implements DatabaseProvider {
             throw new DatabaseException("Player ID and mute info cannot be null");
         }
         mutes.computeIfAbsent(playerId, k -> new ConcurrentHashMap<>())
-                .put(muteInfo.getChannelId() != null ? muteInfo.getChannelId() : "__global__", muteInfo);
+                .put(muteInfo.getChannelId() != null ? muteInfo.getChannelId() : GLOBAL_KEY, muteInfo);
         logger.debug("Saved mute for player {} in channel {}", playerId, muteInfo.getChannelId());
     }
 
@@ -193,7 +193,7 @@ public class MemoryProvider implements DatabaseProvider {
         }
         Map<String, MuteInfo> playerMutes = mutes.get(playerId);
         if (playerMutes != null) {
-            playerMutes.remove(channelId != null ? channelId : "__global__");
+            playerMutes.remove(channelId != null ? channelId : GLOBAL_KEY);
             logger.debug("Deleted mute for player {} in channel {}", playerId, channelId);
         }
     }
@@ -243,7 +243,7 @@ public class MemoryProvider implements DatabaseProvider {
             throw new DatabaseException("Player ID and ban info cannot be null");
         }
         bans.computeIfAbsent(playerId, k -> new ConcurrentHashMap<>())
-                .put(banInfo.getChannelId() != null ? banInfo.getChannelId() : "__global__", banInfo);
+                .put(banInfo.getChannelId() != null ? banInfo.getChannelId() : GLOBAL_KEY, banInfo);
         logger.debug("Saved ban for player {} in channel {}", playerId, banInfo.getChannelId());
     }
 
@@ -268,7 +268,7 @@ public class MemoryProvider implements DatabaseProvider {
         }
         Map<String, BanInfo> playerBans = bans.get(playerId);
         if (playerBans != null) {
-            playerBans.remove(channelId != null ? channelId : "__global__");
+            playerBans.remove(channelId != null ? channelId : GLOBAL_KEY);
             logger.debug("Deleted ban for player {} in channel {}", playerId, channelId);
         }
     }

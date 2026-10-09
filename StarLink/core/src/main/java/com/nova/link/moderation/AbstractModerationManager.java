@@ -51,8 +51,16 @@ import java.util.concurrent.TimeUnit;
  */
 public abstract class AbstractModerationManager<I> {
 
-    /** Cache key used for global (channelId == null) entries. */
-    protected static final String GLOBAL_KEY = "__global__";
+    /**
+     * Cache key used for global (channelId == null) entries.
+     *
+     * <p>Alias of {@link com.nova.link.database.DatabaseProvider#GLOBAL_KEY} —
+     * the authoritative definition lives on the provider interface so the
+     * provider implementations (same package) do not need to import a
+     * moderation class. Kept as {@code protected static final} here to avoid
+     * touching per-occurrence references in subclasses.
+     */
+    protected static final String GLOBAL_KEY = com.nova.link.database.DatabaseProvider.GLOBAL_KEY;
 
     /** In-memory cache: playerId -> (channelId-or-GLOBAL_KEY -> Info). */
     protected final Map<UUID, Map<String, I>> cache = new ConcurrentHashMap<>();

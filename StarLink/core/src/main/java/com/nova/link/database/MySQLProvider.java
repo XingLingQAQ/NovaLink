@@ -207,7 +207,7 @@ public class MySQLProvider extends AbstractJdbcProvider {
                     List<MuteInfo> mutes = loadMutes(playerId);
                     Map<String, MuteInfo> muteMap = new HashMap<>();
                     for (MuteInfo mute : mutes) {
-                        muteMap.put(mute.getChannelId() != null ? mute.getChannelId() : "__global__", mute);
+                        muteMap.put(mute.getChannelId() != null ? mute.getChannelId() : GLOBAL_KEY, mute);
                     }
                     state.setMutes(muteMap);
 

@@ -3,6 +3,7 @@ package com.nova.chat.bukkit.command;
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.common.NovaConstants;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import org.bukkit.command.CommandSender;
@@ -101,7 +102,7 @@ public class MuteCommand extends AbstractSubCommand {
         } else {
             // Console/RCON: use a well-known console UUID so the backend can
             // grant SUPER_ADMIN permission for console-originated moderation.
-            packet.addExtra("operatorId", "00000000-0000-0000-0000-000000000000");
+            packet.addExtra("operatorId", NovaConstants.CONSOLE_SENTINEL_UUID);
             packet.addExtra("console", "true");
         }
         packet.addExtra("operatorName", sender.getName());
