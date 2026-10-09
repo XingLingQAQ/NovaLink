@@ -43,7 +43,15 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ChatInterceptor implements Listener {
     
     private final NovaChatNukkit plugin;
-    private final NovaChatConfig config;
+
+    /**
+     * Latest immutable config snapshot. Marked {@code volatile} for cross-thread
+     * visibility: Nukkit chat dispatch is async while {@link #setConfig} /
+     * {@link #reload} are invoked from the command/main thread with the new
+     * snapshot.
+     */
+    private volatile NovaChatConfig config;
+
     private final MentionNotifier mentionNotifier = new MentionNotifier();
     
     /** Message formatter for color codes and placeholders */
@@ -743,11 +751,27 @@ public class ChatInterceptor implements Listener {
     }
     
     /**
-     * Reloads configuration settings.
+     * Reloads configuration settings using the plugin's latest config snapshot.
      */
     public void reload() {
-        this.globalMode = config.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
-        this.messageFormatter.reload();
+        setConfig(plugin.getNovaChatConfig());
+    }
+
+    /**
+     * Installs a new {@link NovaChatConfig} snapshot into this interceptor and
+     * cascades it to the message formatter. Called by the plugin main class
+     * after {@code loadConfiguration()} succeeds so subsequent hot-path lookups
+     * resolve against the freshly loaded values instead of a stale reference.
+     *
+     * @param newConfig the freshly loaded config snapshot
+     */
+    public void setConfig(NovaChatConfig newConfig) {
+        if (newConfig == null) {
+            return;
+        }
+        this.config = newConfig;
+        this.globalMode = newConfig.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
+        this.messageFormatter.setConfig(newConfig);
         plugin.debug("ChatInterceptor reloaded, global mode: " + globalMode);
     }
     

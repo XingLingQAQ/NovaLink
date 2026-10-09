@@ -33,7 +33,8 @@ import java.util.regex.Pattern;
 public class MessageFormatter {
 
     private final NovaChatSponge plugin;
-    private final NovaChatConfig config;
+    /** Latest immutable config snapshot; volatile for cross-thread visibility. */
+    private volatile NovaChatConfig config;
 
     /** Pattern for hex color codes: &#RRGGBB */
     private static final Pattern HEX_PATTERN = Pattern.compile("&#([A-Fa-f0-9]{6})");
@@ -238,10 +239,24 @@ public class MessageFormatter {
     }
 
     /**
-     * Reloads the formatter.
+     * Reloads the formatter using the plugin's latest config snapshot.
      */
     public void reload() {
-        // Currently nothing to reload, but kept for consistency
+        setConfig(plugin.getNovaChatConfig());
+    }
+
+    /**
+     * Installs a new {@link NovaChatConfig} snapshot. Hot-path channel/prefix
+     * lookups read this reference on every call, so swapping it here is the
+     * full reload semantics — no cached state needs rebuilding.
+     *
+     * @param newConfig the freshly loaded config snapshot
+     */
+    public void setConfig(NovaChatConfig newConfig) {
+        if (newConfig == null) {
+            return;
+        }
+        this.config = newConfig;
         plugin.debug("MessageFormatter reloaded");
     }
 }

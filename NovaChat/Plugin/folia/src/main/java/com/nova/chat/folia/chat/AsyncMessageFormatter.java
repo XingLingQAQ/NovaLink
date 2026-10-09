@@ -32,7 +32,8 @@ import java.util.regex.Pattern;
 public class AsyncMessageFormatter {
 
     private final NovaChatFolia plugin;
-    private final NovaChatConfig config;
+    /** Latest immutable config snapshot; volatile — region threads read formats. */
+    private volatile NovaChatConfig config;
     private final FoliaSchedulerAdapter scheduler;
     private final ColorRenderer<String> renderer;
 
@@ -154,6 +155,21 @@ public class AsyncMessageFormatter {
     }
 
     public void reload() {
+        setConfig(plugin.getNovaChatConfig());
+    }
+
+    /**
+     * Installs a new {@link NovaChatConfig} snapshot. Hot-path lookups resolve
+     * against this reference on every call, so swapping it here is the full
+     * reload semantics; PlaceholderAPI detection is re-run alongside.
+     *
+     * @param newConfig the freshly loaded config snapshot
+     */
+    public void setConfig(NovaChatConfig newConfig) {
+        if (newConfig == null) {
+            return;
+        }
+        this.config = newConfig;
         checkPlaceholderApi();
     }
 

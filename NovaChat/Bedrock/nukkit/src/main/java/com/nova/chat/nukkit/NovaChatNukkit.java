@@ -467,9 +467,16 @@ public class NovaChatNukkit extends PluginBase implements Listener {
             return;
         }
         
-        // Reload chat interceptor settings
+        // Reload chat interceptor settings (it pulls the fresh config snapshot
+        // from the plugin and cascades it to its MessageFormatter).
         if (chatInterceptor != null) {
             chatInterceptor.reload();
+        }
+
+        // Push the new snapshot into the command-side message helper so prefix
+        // and error/success format changes take effect on the hot path.
+        if (messageHelper != null) {
+            messageHelper.setConfig(novaChatConfig);
         }
         
         // Reconnect if connection settings changed
