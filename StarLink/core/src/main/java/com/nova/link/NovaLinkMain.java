@@ -821,13 +821,18 @@ public class NovaLinkMain {
             case "postgres":
             case "pg":
                 DatabaseConfig.PostgreSQLConfig pg = config.getDatabase().getPostgresql();
+                // H1b: thread the AUTH-002 plaintext opt-in into the JDBC layer.
+                // ssl-mode=disable without the flag will fail fast inside
+                // PostgreSQLProvider.buildJdbcUrl() before any socket opens.
                 return new PostgreSQLProvider(
                         pg.getHost(),
                         pg.getPort(),
                         pg.getDatabase(),
                         pg.getUsername(),
                         pg.getPassword(),
-                        pg.getPoolSize()
+                        pg.getPoolSize(),
+                        pg.getSslMode(),
+                        config.getServer().isInsecureAllowPlaintext()
                 );
             case "sqlite":
                 DatabaseConfig.SQLiteConfig sqlite = config.getDatabase().getSqlite();

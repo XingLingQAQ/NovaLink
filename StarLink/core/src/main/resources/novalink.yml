@@ -74,6 +74,9 @@ database:
     username: postgres
     password: ""
     pool-size: 10
+    # H1b: JDBC TLS mode / JDBC TLS 模式 (PostgreSQL driver sslmode).
+    # disable 必须同时把 server.insecure-allow-plaintext: true 打开。
+    ssl-mode: verify-ca
   sqlite:
     file-path: data/novalink.db
     pool-size: 5

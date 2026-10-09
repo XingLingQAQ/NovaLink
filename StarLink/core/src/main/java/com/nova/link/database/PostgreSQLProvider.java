@@ -24,28 +24,95 @@ import java.util.*;
  */
 public class PostgreSQLProvider extends AbstractJdbcProvider {
 
+    /** H1b: default JDBC TLS mode when no configuration is supplied. Fail-closed. */
+    public static final String DEFAULT_SSL_MODE = "verify-ca";
+
+    // Mirror of the PostgreSQL JDBC driver's supported sslmode values.
+    // See https://jdbc.postgresql.org/documentation/ssl/
+    private static final java.util.Set<String> SUPPORTED_SSL_MODES = java.util.Set.of(
+            "disable", "allow", "prefer", "require", "verify-ca", "verify-full");
+
     private final String host;
     private final int port;
     private final String database;
     private final String username;
     private final String password;
     private final int poolSize;
+    private final String sslMode;
+    private final boolean insecureAllowPlaintext;
 
     private final PostgreSQLDialect dialect = new PostgreSQLDialect();
 
+    /**
+     * Legacy constructor — kept for back-compat callers that predate H1b. Uses
+     * the fail-closed default (sslMode=verify-ca, plaintext opt-in=false), so
+     * any caller that still wants plaintext must migrate to the new constructor
+     * and explicitly acknowledge it.
+     */
     public PostgreSQLProvider(String host, int port, String database, String username, String password, int poolSize) {
+        this(host, port, database, username, password, poolSize, DEFAULT_SSL_MODE, false);
+    }
+
+    public PostgreSQLProvider(String host, int port, String database, String username, String password,
+                              int poolSize, String sslMode, boolean insecureAllowPlaintext) {
         this.host = host;
         this.port = port;
         this.database = database;
         this.username = username;
         this.password = password;
         this.poolSize = poolSize;
+        // PostgreSQL JDBC driver's sslmode values are lowercase; keep user
+        // config case-insensitive by normalising to lowercase here.
+        this.sslMode = sslMode == null || sslMode.isBlank()
+                ? DEFAULT_SSL_MODE
+                : sslMode.trim().toLowerCase(java.util.Locale.ROOT);
+        this.insecureAllowPlaintext = insecureAllowPlaintext;
+    }
+
+    /**
+     * Builds the JDBC URL with the configured {@link #sslMode} applied.
+     *
+     * <p>Fail-closed: when {@code sslmode=disable}, the operator must also set
+     * {@code server.insecure-allow-plaintext: true} — the same opt-in used by
+     * AUTH-002 for the TCP/WS listeners and by H1 for the MySQL JDBC layer.
+     * Throwing here aborts startup before HikariCP opens any socket, so the
+     * plaintext JDBC link cannot come up silently.
+     *
+     * <p>Note: PostgreSQL's {@code sslmode=prefer} (the driver default) falls
+     * back to plaintext if the server does not support SSL, so it is NOT
+     * fail-closed and not the default here. {@code verify-ca} is chosen as
+     * the default to match H1's MySQL {@code REQUIRED}: it requires TLS and
+     * validates the server certificate against the configured CA.
+     */
+    String buildJdbcUrl() {
+        if (!SUPPORTED_SSL_MODES.contains(sslMode)) {
+            throw new IllegalStateException("H1b: unsupported database.postgresql.ssl-mode: " + sslMode
+                    + " (allowed: " + SUPPORTED_SSL_MODES + ")");
+        }
+        if ("disable".equals(sslMode) && !insecureAllowPlaintext) {
+            throw new IllegalStateException(
+                    "AUTH-002/H1b: PostgreSQL JDBC would start in plaintext (database.postgresql.ssl-mode=disable). "
+                            + "The DB password and all chat data would traverse the network unencrypted. "
+                            + "Either set database.postgresql.ssl-mode to require/verify-ca/verify-full "
+                            + "(and provision server certs) or explicitly acknowledge the risk with "
+                            + "server.insecure-allow-plaintext: true.");
+        }
+
+        StringBuilder url = new StringBuilder("jdbc:postgresql://")
+                .append(host).append(':').append(port).append('/').append(database).append('?')
+                .append("sslmode=").append(sslMode);
+        if ("disable".equals(sslMode)) {
+            url.append("&ssl=false");
+        } else {
+            url.append("&ssl=true");
+        }
+        return url.toString();
     }
 
     @Override
     protected HikariConfig buildHikariConfig() {
         HikariConfig config = new HikariConfig();
-        config.setJdbcUrl("jdbc:postgresql://" + host + ":" + port + "/" + database);
+        config.setJdbcUrl(buildJdbcUrl());
         config.setUsername(username);
         config.setPassword(password);
         config.setMaximumPoolSize(poolSize);
