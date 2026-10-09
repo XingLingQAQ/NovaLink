@@ -1,297 +1,240 @@
 package com.nova.chat.mod.config;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import net.jqwik.api.*;
 import net.jqwik.api.constraints.IntRange;
 import net.jqwik.api.constraints.StringLength;
+import net.jqwik.api.lifecycle.AfterProperty;
+import net.jqwik.api.lifecycle.BeforeProperty;
 
-import java.util.HashMap;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * **Feature: novachat-platform-expansion, Property 12: Mod Configuration Parsing Round-Trip**
- * 
- * Property: For any valid mod configuration, serializing to JSON and parsing back 
- * should produce an equivalent configuration object.
- * 
- * **Validates: Requirements 6.1**
+ *
+ * <p>For any valid mod configuration, writing it as a YAML file and loading it
+ * back through the production {@link ConfigManager#loadConfig()} (which runs
+ * {@code parseYamlToConfig}) must preserve every user-typed field.</p>
+ *
+ * <p>This test drives the production parser end-to-end: the YAML literal is the
+ * authoritative input, and every assertion reads a value produced by the
+ * production pipeline. Deleting a parsing branch in {@code ConfigManager}
+ * breaks these assertions.</p>
+ *
+ * <p><strong>Validates: Requirements 6.1</strong></p>
  */
 class ModConfigParsingRoundTripPropertyTest {
-    
-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-    
-    @Property
-    @Report(Reporting.GENERATED)
-    void configurationRoundTripPreservesBackendSettings(
-            @ForAll @StringLength(min = 1, max = 100) String host,
-            @ForAll @IntRange(min = 1, max = 65535) int port,
-            @ForAll @StringLength(min = 1, max = 50) String username,
-            @ForAll @StringLength(min = 1, max = 100) String password,
-            @ForAll @IntRange(min = 1, max = 300) int reconnectDelay) {
-        
-        // Create original config
-        ModConfig original = new ModConfig();
-        ModConfig.BackendConfig backend = new ModConfig.BackendConfig();
-        backend.setHost(host);
-        backend.setPort(port);
-        backend.setUsername(username);
-        backend.setPassword(password);
-        backend.setReconnectDelay(reconnectDelay);
-        original.setBackend(backend);
-        
-        // Serialize and deserialize
-        ModConfig restored = roundTripConfig(original);
-        
-        // Verify backend settings are preserved
-        assertThat(restored.getBackend().getHost()).isEqualTo(host);
-        assertThat(restored.getBackend().getPort()).isEqualTo(port);
-        assertThat(restored.getBackend().getUsername()).isEqualTo(username);
-        assertThat(restored.getBackend().getPassword()).isEqualTo(password);
-        assertThat(restored.getBackend().getReconnectDelay()).isEqualTo(reconnectDelay);
-    }
-    
-    @Property
-    @Report(Reporting.GENERATED)
-    void configurationRoundTripPreservesChatSettings(
-            @ForAll boolean replaceVanilla,
-            @ForAll @StringLength(min = 1, max = 50) String defaultChannel) {
 
-        // Create original config
-        ModConfig original = new ModConfig();
-        ModConfig.ChatConfig chat = new ModConfig.ChatConfig();
-        chat.setReplaceVanilla(replaceVanilla);
-        chat.setDefaultChannel(defaultChannel);
-        original.setChat(chat);
+    private Path tempDir;
 
-        // Serialize and deserialize
-        ModConfig restored = roundTripConfig(original);
-
-        // Verify chat settings are preserved
-        assertThat(restored.getChat().isReplaceVanilla()).isEqualTo(replaceVanilla);
-        assertThat(restored.getChat().getDefaultChannel()).isEqualTo(defaultChannel);
+    @BeforeProperty
+    void createTempDir() throws IOException {
+        tempDir = Files.createTempDirectory("mod-config-prop");
     }
 
-    @Property
-    @Report(Reporting.GENERATED)
-    void configurationRoundTripPreservesLocale(
-            @ForAll("validLocale") String locale) {
+    @AfterProperty
+    void cleanTempDir() throws IOException {
+        if (tempDir == null || !Files.exists(tempDir)) {
+            return;
+        }
+        try (var walk = Files.walk(tempDir)) {
+            walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.delete(p);
+                } catch (IOException ignored) {
+                    // best-effort cleanup
+                }
+            });
+        }
+    }
 
-        // Create original config with the given locale
-        ModConfig original = new ModConfig();
-        original.getChat().setLocale(locale);
+    // ---------- YAML rendering helpers ----------
 
-        // Serialize and deserialize
-        ModConfig restored = roundTripConfig(original);
+    private static String quote(String value) {
+        // Test inputs are alphanumeric-ish for the constrained generators; escape just in case.
+        return "\"" + value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"") + "\"";
+    }
 
-        // Verify locale is preserved
-        assertThat(restored.getChat().getLocale()).isEqualTo(locale);
+    /**
+     * Renders a fully-formed, valid {@code novachat.yml} whose values match the
+     * supplied arguments. This is the authoritative input that the production
+     * parser must read back.
+     */
+    private static String yamlFor(
+            String host, int port, String username, String password, int reconnectDelay,
+            boolean replaceVanilla, String defaultChannel, String locale,
+            Map<String, String> formats, boolean debug) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("# random generated by test\n");
+        sb.append("config-version: 1\n");
+        sb.append("backend:\n");
+        sb.append("  host: ").append(quote(host)).append('\n');
+        sb.append("  port: ").append(port).append('\n');
+        sb.append("  username: ").append(quote(username)).append('\n');
+        sb.append("  password: ").append(quote(password)).append('\n');
+        sb.append("  reconnect-delay: ").append(reconnectDelay).append('\n');
+        sb.append("chat:\n");
+        sb.append("  replace_vanilla: ").append(replaceVanilla).append('\n');
+        sb.append("  default_channel: ").append(quote(defaultChannel)).append('\n');
+        sb.append("  locale: ").append(quote(locale)).append('\n');
+        sb.append("  channel-prefixes: {}\n");
+        sb.append("format:\n");
+        sb.append("  channels:\n");
+        if (formats.isEmpty()) {
+            sb.append("    _: \"{player}: {message}\"\n");
+        } else {
+            for (Map.Entry<String, String> e : formats.entrySet()) {
+                sb.append("    ").append(quote(e.getKey())).append(": ")
+                        .append(quote(e.getValue())).append('\n');
+            }
+        }
+        sb.append("debug: ").append(debug).append('\n');
+        return sb.toString();
+    }
+
+    /**
+     * Drives the production parse path: writes the YAML literal, then invokes
+     * {@link ConfigManager#loadConfig()}.
+     */
+    private ModConfig parseWithProduction(
+            String host, int port, String username, String password, int reconnectDelay,
+            boolean replaceVanilla, String defaultChannel, String locale,
+            Map<String, String> formats, boolean debug) throws IOException {
+        String yaml = yamlFor(host, port, username, password, reconnectDelay,
+                replaceVanilla, defaultChannel, locale, formats, debug);
+        Files.writeString(tempDir.resolve("novachat.yml"), yaml);
+        return new ConfigManager(tempDir).loadConfig();
+    }
+
+    // ---------- Arbitraries ----------
+
+    @Provide
+    Arbitrary<String> simpleAscii() {
+        // Random strings that are safe to pass through YAML unambiguously when
+        // quoted; keeps the corpus focused on parsing fidelity, not YAML lexing.
+        return Arbitraries.strings()
+                .withCharRange('a', 'z')
+                .withCharRange('A', 'Z')
+                .withCharRange('0', '9')
+                .withChars('.', '-', '_')
+                .ofMinLength(1)
+                .ofMaxLength(32);
     }
 
     @Provide
     Arbitrary<String> validLocale() {
         return Arbitraries.of("zh_CN", "en_US", "ja_JP", "de_DE", "fr_FR", "ko_KR");
     }
-    
-    @Property
-    @Report(Reporting.GENERATED)
-    void configurationRoundTripPreservesFormatTemplates(
-            @ForAll @StringLength(min = 1, max = 50) String channelName,
-            @ForAll @StringLength(min = 1, max = 200) String template) {
-        
-        // Create original config
-        ModConfig original = new ModConfig();
-        Map<String, String> formats = new HashMap<>();
-        formats.put(channelName, template);
-        original.setFormats(formats);
-        
-        // Serialize and deserialize
-        ModConfig restored = roundTripConfig(original);
-        
-        // Verify format templates are preserved
-        assertThat(restored.getFormats()).containsEntry(channelName, template);
+
+    @Provide
+    Arbitrary<String> channelName() {
+        return Arbitraries.strings()
+                .withCharRange('a', 'z')
+                .ofMinLength(1)
+                .ofMaxLength(16);
     }
-    
-    @Property
-    @Report(Reporting.GENERATED)
-    void configurationRoundTripPreservesDebugFlag(
-            @ForAll boolean debug) {
-        
-        // Create original config
-        ModConfig original = new ModConfig();
-        original.setDebug(debug);
-        
-        // Serialize and deserialize
-        ModConfig restored = roundTripConfig(original);
-        
-        // Verify debug flag is preserved
-        assertThat(restored.isDebug()).isEqualTo(debug);
+
+    @Provide
+    Arbitrary<String> formatTemplate() {
+        // Restrict to printable ASCII minus ':'-at-line-start and '#'-at-line-start
+        // (which YAML treats specially before the first space).
+        return Arbitraries.strings()
+                .withCharRange('a', 'z')
+                .withCharRange('A', 'Z')
+                .withChars('{', '}', '_', ' ', ':', '[', ']', '&', '/')
+                .ofMinLength(1)
+                .ofMaxLength(48);
     }
-    
+
+    // ---------- Properties ----------
+
     @Property
     @Report(Reporting.GENERATED)
-    void configurationRoundTripPreservesCompleteConfiguration(
-            @ForAll @StringLength(min = 1, max = 100) String host,
+    void backendSectionRoundTripsThroughProductionParser(
+            @ForAll("simpleAscii") String host,
             @ForAll @IntRange(min = 1, max = 65535) int port,
-            @ForAll @StringLength(min = 1, max = 50) String username,
-            @ForAll @StringLength(min = 1, max = 100) String password,
-            @ForAll @IntRange(min = 1, max = 300) int reconnectDelay,
+            @ForAll("simpleAscii") String username,
+            @ForAll("simpleAscii") String password,
+            // ClientConnectionConfig caps initialReconnectDelaySeconds at
+            // DEFAULT_MAX_RECONNECT_DELAY_SECONDS (=30); generating above that
+            // pushes us into production validation noise rather than exercising
+            // YAML parse fidelity.
+            @ForAll @IntRange(min = 1, max = 30) int reconnectDelay) throws IOException {
+
+        ModConfig parsed = parseWithProduction(
+                host, port, username, password, reconnectDelay,
+                false, "local", "zh_CN",
+                Map.of(), false);
+
+        assertThat(parsed.getBackend().getHost()).isEqualTo(host);
+        assertThat(parsed.getBackend().getPort()).isEqualTo(port);
+        assertThat(parsed.getBackend().getUsername()).isEqualTo(username);
+        assertThat(parsed.getBackend().getPassword()).isEqualTo(password);
+        assertThat(parsed.getBackend().getReconnectDelay()).isEqualTo(reconnectDelay);
+    }
+
+    @Property
+    @Report(Reporting.GENERATED)
+    void chatSectionRoundTripsThroughProductionParser(
             @ForAll boolean replaceVanilla,
-            @ForAll @StringLength(min = 1, max = 50) String defaultChannel,
-            @ForAll boolean debug) {
-        
-        // Create complete original config
-        ModConfig original = new ModConfig();
-        
-        ModConfig.BackendConfig backend = new ModConfig.BackendConfig();
-        backend.setHost(host);
-        backend.setPort(port);
-        backend.setUsername(username);
-        backend.setPassword(password);
-        backend.setReconnectDelay(reconnectDelay);
-        original.setBackend(backend);
-        
-        ModConfig.ChatConfig chat = new ModConfig.ChatConfig();
-        chat.setReplaceVanilla(replaceVanilla);
-        chat.setDefaultChannel(defaultChannel);
-        original.setChat(chat);
-        
-        original.setDebug(debug);
-        
-        // Serialize and deserialize
-        ModConfig restored = roundTripConfig(original);
-        
-        // Verify all settings are preserved
-        assertThat(restored.getBackend().getHost()).isEqualTo(host);
-        assertThat(restored.getBackend().getPort()).isEqualTo(port);
-        assertThat(restored.getBackend().getUsername()).isEqualTo(username);
-        assertThat(restored.getBackend().getPassword()).isEqualTo(password);
-        assertThat(restored.getBackend().getReconnectDelay()).isEqualTo(reconnectDelay);
-        assertThat(restored.getChat().isReplaceVanilla()).isEqualTo(replaceVanilla);
-        assertThat(restored.getChat().getDefaultChannel()).isEqualTo(defaultChannel);
-        assertThat(restored.isDebug()).isEqualTo(debug);
+            @ForAll("simpleAscii") String defaultChannel) throws IOException {
+
+        ModConfig parsed = parseWithProduction(
+                "127.0.0.1", 8888, "ModServer", "pw", 5,
+                replaceVanilla, defaultChannel, "zh_CN",
+                Map.of(), false);
+
+        assertThat(parsed.getChat().isReplaceVanilla()).isEqualTo(replaceVanilla);
+        assertThat(parsed.getChat().getDefaultChannel()).isEqualTo(defaultChannel);
     }
-    
-    /**
-     * Helper method to perform round-trip serialization/deserialization
-     */
-    @SuppressWarnings("unchecked")
-    private ModConfig roundTripConfig(ModConfig original) {
-        // Serialize to JSON
-        Map<String, Object> data = configToMap(original);
-        String json = GSON.toJson(data);
-        
-        // Deserialize from JSON
-        Map<String, Object> parsed = GSON.fromJson(json, Map.class);
-        return parseMapToConfig(parsed);
+
+    @Property
+    @Report(Reporting.GENERATED)
+    void chatLocaleRoundTripsThroughProductionParser(
+            @ForAll("validLocale") String locale) throws IOException {
+
+        ModConfig parsed = parseWithProduction(
+                "127.0.0.1", 8888, "ModServer", "pw", 5,
+                false, "local", locale,
+                Map.of(), false);
+
+        assertThat(parsed.getChat().getLocale()).isEqualTo(locale);
     }
-    
-    /**
-     * Convert ModConfig to Map for JSON serialization
-     */
-    private Map<String, Object> configToMap(ModConfig config) {
-        Map<String, Object> data = new HashMap<>();
-        
-        // Backend
-        Map<String, Object> backend = new HashMap<>();
-        backend.put("host", config.getBackend().getHost());
-        backend.put("port", config.getBackend().getPort());
-        backend.put("username", config.getBackend().getUsername());
-        backend.put("password", config.getBackend().getPassword());
-        backend.put("reconnect-delay", config.getBackend().getReconnectDelay());
-        data.put("backend", backend);
-        
-        // Chat
-        Map<String, Object> chat = new HashMap<>();
-        chat.put("replace_vanilla", config.getChat().isReplaceVanilla());
-        chat.put("default_channel", config.getChat().getDefaultChannel());
-        chat.put("locale", config.getChat().getLocale());
-        data.put("chat", chat);
-        
-        // Format
-        Map<String, Object> format = new HashMap<>();
-        format.put("channels", config.getFormats());
-        data.put("format", format);
-        
-        data.put("debug", config.isDebug());
-        
-        return data;
+
+    @Property
+    @Report(Reporting.GENERATED)
+    void formatChannelsRoundTripThroughProductionParser(
+            @ForAll("channelName") String channel,
+            @ForAll("formatTemplate") String template) throws IOException {
+
+        Map<String, String> formats = new LinkedHashMap<>();
+        formats.put(channel, template);
+
+        ModConfig parsed = parseWithProduction(
+                "127.0.0.1", 8888, "ModServer", "pw", 5,
+                false, "local", "zh_CN",
+                formats, false);
+
+        assertThat(parsed.getFormats()).containsEntry(channel, template);
     }
-    
-    /**
-     * Parse Map (from JSON) to ModConfig
-     */
-    @SuppressWarnings("unchecked")
-    private ModConfig parseMapToConfig(Map<String, Object> data) {
-        if (data == null) {
-            return new ModConfig();
-        }
-        
-        ModConfig config = new ModConfig();
-        
-        try {
-            if (data.containsKey("backend")) {
-                Object backendObj = data.get("backend");
-                if (backendObj instanceof Map) {
-                    Map<String, Object> backendData = (Map<String, Object>) backendObj;
-                    ModConfig.BackendConfig backend = new ModConfig.BackendConfig();
-                    Object hostObj = backendData.get("host");
-                    backend.setHost(hostObj != null ? String.valueOf(hostObj) : "127.0.0.1");
-                    Object portObj = backendData.get("port");
-                    backend.setPort(portObj instanceof Number ? ((Number) portObj).intValue() : 8888);
-                    Object usernameObj = backendData.get("username");
-                    backend.setUsername(usernameObj != null ? String.valueOf(usernameObj) : "ModServer");
-                    Object passwordObj = backendData.get("password");
-                    backend.setPassword(passwordObj != null ? String.valueOf(passwordObj) : "password");
-                    Object reconnectObj = backendData.get("reconnect-delay");
-                    backend.setReconnectDelay(reconnectObj instanceof Number ? ((Number) reconnectObj).intValue() : 5);
-                    config.setBackend(backend);
-                }
-            }
-            
-            if (data.containsKey("chat")) {
-                Object chatObj = data.get("chat");
-                if (chatObj instanceof Map) {
-                    Map<String, Object> chatData = (Map<String, Object>) chatObj;
-                    ModConfig.ChatConfig chat = new ModConfig.ChatConfig();
-                    Object replaceObj = chatData.get("replace_vanilla");
-                    chat.setReplaceVanilla(replaceObj instanceof Boolean ? (Boolean) replaceObj : false);
-                    Object channelObj = chatData.get("default_channel");
-                    chat.setDefaultChannel(channelObj != null ? String.valueOf(channelObj) : "local");
-                    Object localeObj = chatData.get("locale");
-                    chat.setLocale(localeObj != null ? String.valueOf(localeObj) : "zh_CN");
-                    config.setChat(chat);
-                }
-            }
-            
-            if (data.containsKey("format")) {
-                Object formatObj = data.get("format");
-                if (formatObj instanceof Map) {
-                    Map<String, Object> formatData = (Map<String, Object>) formatObj;
-                    if (formatData.containsKey("channels")) {
-                        Object channelsObj = formatData.get("channels");
-                        if (channelsObj instanceof Map) {
-                            Map<String, String> channels = new HashMap<>();
-                            for (Map.Entry<?, ?> entry : ((Map<?, ?>) channelsObj).entrySet()) {
-                                channels.put(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
-                            }
-                            config.setFormats(channels);
-                        }
-                    }
-                }
-            }
-            
-            Object debugObj = data.get("debug");
-            if (debugObj instanceof Boolean) {
-                config.setDebug((Boolean) debugObj);
-            }
-        } catch (Exception e) {
-            // If parsing fails, return default config
-            return new ModConfig();
-        }
-        
-        return config;
+
+    @Property
+    @Report(Reporting.GENERATED)
+    void debugFlagRoundTripsThroughProductionParser(
+            @ForAll boolean debug) throws IOException {
+
+        ModConfig parsed = parseWithProduction(
+                "127.0.0.1", 8888, "ModServer", "pw", 5,
+                false, "local", "zh_CN",
+                Map.of(), debug);
+
+        assertThat(parsed.isDebug()).isEqualTo(debug);
     }
 }
