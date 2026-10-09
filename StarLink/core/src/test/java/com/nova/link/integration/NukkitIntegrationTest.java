@@ -135,17 +135,17 @@ class NukkitIntegrationTest {
         client.authenticate(CLIENT_ID, PASSWORD).get(5, TimeUnit.SECONDS);
         
         // Test JOIN
-        ChannelActionPacket joinAction = new ChannelActionPacket(ChannelAction.JOIN, "bedrock");
+        ChannelActionPacket joinAction = client.channelAction(ChannelAction.JOIN, "bedrock");
         client.sendPacket(joinAction);
-        
+
         ChannelActionResponsePacket joinResponse = client.waitForPacket(
             ChannelActionResponsePacket.class, 5, TimeUnit.SECONDS
         );
         assertThat(joinResponse.isSuccess()).isTrue();
         assertThat(joinResponse.getAction()).isEqualTo(ChannelAction.JOIN);
-        
+
         // Test LEAVE
-        ChannelActionPacket leaveAction = new ChannelActionPacket(ChannelAction.LEAVE, "bedrock");
+        ChannelActionPacket leaveAction = client.channelAction(ChannelAction.LEAVE, "bedrock");
         client.sendPacket(leaveAction);
         
         ChannelActionResponsePacket leaveResponse = client.waitForPacket(
