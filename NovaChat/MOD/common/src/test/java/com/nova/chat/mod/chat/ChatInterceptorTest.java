@@ -1,5 +1,6 @@
 package com.nova.chat.mod.chat;
 
+import com.nova.chat.client.command.MessagePrefixes;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.chat.MentionNotifier;
@@ -46,6 +47,23 @@ class ChatInterceptorTest {
     private static final UUID PLAYER = UUID.fromString("22222222-3333-4444-5555-666666666666");
     private static final UUID OTHER = UUID.fromString("77777777-8888-9999-aaaa-bbbbbbbbbbbb");
     private static final UUID MENTIONER = UUID.fromString("cccccccc-1111-2222-3333-444444444444");
+
+    /**
+     * Rendering of {@code chat.network.not_connected} in the root locale
+     * (zh_CN, per {@link com.nova.chat.client.i18n.LocaleResolver#ROOT_LOCALE}).
+     * Anchored to
+     * {@code NovaChat/client-core/src/main/resources/lang/messages_zh_CN.properties}.
+     * If either the i18n key or its zh_CN translation changes, this literal
+     * should be updated in lockstep.
+     */
+    private static final String NOT_CONNECTED_BODY = "未连接到聊天服务器";
+
+    /**
+     * Rendering of {@link MessagePrefixes#ERROR_PREFIX} after {@code &}→§
+     * translation by {@link MessageFormatter#parseColors}. Anchored to
+     * {@code MessagePrefixes.ERROR_PREFIX = "&8[&cNovaChat&8]&r "}.
+     */
+    private static final String ERROR_PREFIX_COLORED = "§8[§cNovaChat§8]§r ";
 
     @Mock
     private Platform platform;
@@ -113,8 +131,14 @@ class ChatInterceptorTest {
             ci.onPlayerChat(PLAYER, "Steve", "hello");
 
             verify(networkClient, never()).sendPacket(any());
-            assertThat(sentToPlayer).hasSize(1);
-            // Error prefix is applied via MessageFormatter.formatError
+            // Anchored: ChatInterceptor.onPlayerChat renders
+            // MessageFormatter.formatError(playerId, I18n.tr(playerId,
+            // "chat.network.not_connected")) and pipes it through parseColors.
+            assertThat(sentToPlayer)
+                    .singleElement()
+                    .asString()
+                    .startsWith(ERROR_PREFIX_COLORED)
+                    .contains(NOT_CONNECTED_BODY);
         }
 
         @Test
@@ -165,7 +189,16 @@ class ChatInterceptorTest {
             ci.sendToChannel(PLAYER, "Steve", "trade", "hi");
 
             verify(networkClient, never()).sendPacket(any());
-            assertThat(sentToPlayer).hasSize(1);
+            // Anchored: ChatInterceptor.sendToChannel renders
+            // MessageFormatter.parseColors(formatError(playerId,
+            //   I18n.tr(playerId, "chat.network.not_connected")))
+            // — asserting both the prefixed brand and the i18n body rules out
+            // an assertion that would pass on ANY single message.
+            assertThat(sentToPlayer)
+                    .singleElement()
+                    .asString()
+                    .startsWith(ERROR_PREFIX_COLORED)
+                    .contains(NOT_CONNECTED_BODY);
         }
 
         @Test
