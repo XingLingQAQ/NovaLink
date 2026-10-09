@@ -175,17 +175,17 @@ class PowerNukkitXIntegrationTest {
         client.authenticate(CLIENT_ID, PASSWORD).get(5, TimeUnit.SECONDS);
         
         // Test JOIN
-        ChannelActionPacket joinAction = new ChannelActionPacket(ChannelAction.JOIN, "pnx-channel");
+        ChannelActionPacket joinAction = client.channelAction(ChannelAction.JOIN, "pnx-channel");
         client.sendPacket(joinAction);
-        
+
         ChannelActionResponsePacket joinResponse = client.waitForPacket(
             ChannelActionResponsePacket.class, 5, TimeUnit.SECONDS
         );
         assertThat(joinResponse.isSuccess()).isTrue();
         assertThat(joinResponse.getAction()).isEqualTo(ChannelAction.JOIN);
-        
+
         // Test LEAVE
-        ChannelActionPacket leaveAction = new ChannelActionPacket(ChannelAction.LEAVE, "pnx-channel");
+        ChannelActionPacket leaveAction = client.channelAction(ChannelAction.LEAVE, "pnx-channel");
         client.sendPacket(leaveAction);
         
         ChannelActionResponsePacket leaveResponse = client.waitForPacket(

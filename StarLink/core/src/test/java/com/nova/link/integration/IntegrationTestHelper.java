@@ -336,7 +336,9 @@ public class IntegrationTestHelper {
     private static final String[] DEFAULT_TEST_CHANNELS = {
             "global", "local", "staff", "vip",
             "test-channel", "private-channel", "data-channel",
-            "new-channel", "temp-channel", "invited-channel"
+            "new-channel", "temp-channel", "invited-channel",
+            // Platform-specific channels used by platform integration tests
+            "admin", "bedrock", "pnx-channel"
     };
 
     private void createDefaultTestChannels() {
@@ -644,6 +646,16 @@ public class IntegrationTestHelper {
         /** AUTH-002: optional client SslContext; {@code null} = plaintext. */
         private io.netty.handler.ssl.SslContext sslContext;
 
+        /**
+         * Stable player UUID used by this test client when building
+         * {@link ChannelActionPacket}s. Production {@link ChannelActionHandler}
+         * requires every JOIN/LEAVE/CREATE/... action to carry a playerId
+         * extra; the playerId must be stable across a test (e.g. JOIN then
+         * LEAVE must reference the same player), so we generate one at client
+         * construction rather than per packet.
+         */
+        private final java.util.UUID playerUuid = java.util.UUID.randomUUID();
+
         private EventLoopGroup workerGroup;
         private Channel channel;
         private volatile boolean connected = false;
@@ -828,6 +840,39 @@ public class IntegrationTestHelper {
 
         public PlatformType getPlatform() {
             return platform;
+        }
+
+        /**
+         * Returns the stable player UUID used for channel actions built via
+         * {@link #channelAction}. Joined/left operations from the same
+         * TestClient must reference the same player so production
+         * ChannelActionHandler can resolve member state correctly.
+         */
+        public java.util.UUID getPlayerUuid() {
+            return playerUuid;
+        }
+
+        /**
+         * Builds a {@link ChannelActionPacket} with this client's stable
+         * playerId already attached as the {@code playerId} extra — the shape
+         * the production {@link ChannelActionHandler} expects.
+         */
+        public ChannelActionPacket channelAction(com.nova.chat.common.protocol.ChannelAction action,
+                                                String channelId) {
+            ChannelActionPacket packet = new ChannelActionPacket(action, channelId);
+            packet.addExtra("playerId", playerUuid.toString());
+            return packet;
+        }
+
+        /**
+         * Builds a {@link ChannelActionPacket} with this client's stable playerId
+         * and a channel password attached.
+         */
+        public ChannelActionPacket channelAction(com.nova.chat.common.protocol.ChannelAction action,
+                                                String channelId, String password) {
+            ChannelActionPacket packet = new ChannelActionPacket(action, channelId, password);
+            packet.addExtra("playerId", playerUuid.toString());
+            return packet;
         }
 
         public <T extends Packet> void registerHandler(Class<T> packetClass, Consumer<T> handler) {

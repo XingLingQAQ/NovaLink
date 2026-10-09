@@ -135,9 +135,9 @@ class BukkitIntegrationTest {
         IntegrationTestHelper.TestClient client = helper.createClient(PlatformType.BUKKIT);
         client.connect().get(5, TimeUnit.SECONDS);
         client.authenticate(CLIENT_ID, PASSWORD).get(5, TimeUnit.SECONDS);
-        
+
         // Send channel join action
-        ChannelActionPacket joinAction = new ChannelActionPacket(
+        ChannelActionPacket joinAction = client.channelAction(
             ChannelAction.JOIN,
             "global"
         );
@@ -162,9 +162,14 @@ class BukkitIntegrationTest {
         IntegrationTestHelper.TestClient client = helper.createClient(PlatformType.BUKKIT);
         client.connect().get(5, TimeUnit.SECONDS);
         client.authenticate(CLIENT_ID, PASSWORD).get(5, TimeUnit.SECONDS);
-        
-        // Send channel leave action
-        ChannelActionPacket leaveAction = new ChannelActionPacket(
+
+        // LEAVE requires prior membership — join first.
+        ChannelActionPacket joinAction = client.channelAction(ChannelAction.JOIN, "global");
+        client.sendPacket(joinAction);
+        client.waitForPacket(ChannelActionResponsePacket.class, 5, TimeUnit.SECONDS);
+
+        // Then send channel leave action
+        ChannelActionPacket leaveAction = client.channelAction(
             ChannelAction.LEAVE,
             "global"
         );
