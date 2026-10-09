@@ -29,10 +29,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>{@link ChannelActionPacket#read(io.netty.buffer.ByteBuf)} carries no
  * protocol-version field, so the decoder guesses the wire format per frame: it
  * optimistically reads a VarInt pair count guarded by
- * {@code size < 0 || size > 64}, and on <em>any</em> exception rewinds the
- * reader and retries the whole remaining section as one length-prefixed JSON
- * object string. These fixtures pin the observable behavior of both branches
- * at the boundaries called out by the audit doc.
+ * {@code size < 0 || size > ProtocolLimits.MAX_MAP_ENTRIES} (1000), and on
+ * <em>any</em> exception rewinds the reader and retries the whole remaining
+ * section as one length-prefixed JSON object string. These fixtures pin the
+ * observable behavior of both branches at the boundaries called out by the
+ * audit doc.
  *
  * <p><b>Maintainer fixture note — legacy-format deprecation recommendation.</b>
  * Audit §7 asks to 明确协议版本和旧格式淘汰时间 ("state the protocol version and
@@ -44,10 +45,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * telemetry accumulates; (2) announce removal of the fallback at v4 and keep
  * one LTS window (about two quarters) of warn-only observation; (3) delete the
  * fallback and turn the guard into a hard reject of
- * {@code size < 0 || size > 64} in the release after telemetry flatlines at
- * zero. Until then the trade-offs pinned by
- * {@code HeuristicGuardBoundary} (silent extra loss and mid-frame desync for
- * modern frames with 65+ pairs) remain accepted, documented limits.
+ * {@code size < 0 || size > MAX_MAP_ENTRIES} in the release after telemetry
+ * flatlines at zero.
+ *
+ * <p><b>Map size ceiling (this fix).</b> The modern pair-parse guard used to
+ * be a hard-coded {@code size > 64}, which (a) contradicted the advertised
+ * cross-language ceiling {@link com.nova.chat.common.protocol.ProtocolLimits#MAX_MAP_ENTRIES}
+ * (1000) — PHP/Python/C++ receivers all accept up to 1000 entries — and
+ * (b) sent legitimate modern frames with 65..1000 entries down the legacy
+ * JSON fallback (silent data loss + stream desync). The guard now uses
+ * {@code MAX_MAP_ENTRIES}, aligning the Java decoder with the non-JVM
+ * receivers; only counts above 1000 (or negative) trigger the rewind.
  *
  * <p><b>Honest boundary (VERIFY-002 scope).</b> Static analysis cannot
  * enumerate deployed legacy clients. These tests pin decoder behavior for both
@@ -168,10 +176,12 @@ class ChannelActionLegacyExtraFallbackTest {
         }
 
         @Test
-        @DisplayName("Should decode a long legacy JSON extra (> 64 bytes) after guard rejection")
+        @DisplayName("Should decode a long legacy JSON extra after the modern pair-parse throws")
         void shouldDecodeLongLegacyJsonExtraAfterGuardRejection() {
-            // Length above 64 makes the guard throw before any pair is read;
-            // the fallback then reads the whole string and parses it.
+            // Length fits inside MAX_MAP_ENTRIES, so the size guard admits it
+            // as a pair count; the attempt to read the first key then runs out
+            // of buffer and throws, rewinding to the fallback, which parses
+            // the whole string.
             assertThat(utf8Length(LEGACY_LONG_JSON)).isGreaterThan(64);
 
             writeFrameHeader(buf, UUID.randomUUID(), ChannelAction.CREATE, "legacy-chan", "");
@@ -229,7 +239,7 @@ class ChannelActionLegacyExtraFallbackTest {
     // ==================== Heuristic guard boundary ====================
 
     @Nested
-    @DisplayName("Heuristic guard boundary (pair count 64 vs 65)")
+    @DisplayName("Heuristic guard boundary (MAX_MAP_ENTRIES = 1000)")
     class HeuristicGuardBoundary {
 
         @Test
@@ -246,15 +256,19 @@ class ChannelActionLegacyExtraFallbackTest {
             registry.encode(original, buf);
             ChannelActionPacket result = decodeSingle(buf);
 
-            // size=64 is inside [0..64]: parsed as modern pairs, no data loss.
+            // size=64 is well inside [0..1000]: parsed as modern pairs, no data loss.
             assertThat(result.getExtra()).isEqualTo(sixtyFour);
             assertThat(result.getExtra()).hasSize(64);
             assertThat(buf.readableBytes()).isZero();
         }
 
         @Test
-        @DisplayName("KNOWN LIMIT: a modern frame with 65 pairs silently degrades to empty extra and desyncs the stream")
-        void sixtyFivePairsSilentlyDegradeToEmptyExtraAndDesyncStream() {
+        @DisplayName("Should decode a modern frame with 65 extra pairs (cross-language parity)")
+        void shouldDecodeModernFrameWithSixtyFivePairs() {
+            // Formerly the Java decoder hard-coded size > 64 as the legacy-JSON
+            // heuristic, sending 65+ modern pairs into the fallback and losing
+            // them. PHP/Python/C++ receivers all accept up to MAX_MAP_ENTRIES
+            // (1000), so the Java guard now matches.
             Map<String, String> sixtyFive = new LinkedHashMap<>();
             for (int i = 0; i < 65; i++) {
                 sixtyFive.put(String.format("k%02d", i), "v" + i);
@@ -264,20 +278,47 @@ class ChannelActionLegacyExtraFallbackTest {
             original.setExtra(sixtyFive);
 
             registry.encode(original, buf);
-
             ChannelActionPacket result = decodeSingle(buf);
 
-            // PINNED CURRENT BEHAVIOR, documented audit trade-off (not desired
-            // behavior): size=65 trips the > 64 guard, the rewind retries the
-            // section as a JSON string whose length prefix is 0x41 (65), reads
-            // 65 bytes of pair data as garbage, and parseJsonToMap best-effort
-            // yields an empty map -> all 65 pairs are lost silently.
-            assertThat(result.getExtra()).isEmpty();
+            assertThat(result.getExtra()).isEqualTo(sixtyFive);
+            assertThat(result.getExtra()).hasSize(65);
+            assertThat(buf.readableBytes()).isZero();
+        }
 
-            // Worse: the fallback stopped mid-payload (consumed 1 + 65 of the
-            // 521 extra-section bytes), so the connection stream is left
-            // misaligned for whatever follows the frame.
-            assertThat(buf.readableBytes()).isPositive();
+        @Test
+        @DisplayName("Should decode a modern frame at the MAX_MAP_ENTRIES (1000) boundary")
+        void shouldDecodeModernFrameAtMaxMapEntriesBoundary() {
+            Map<String, String> thousand = new LinkedHashMap<>();
+            for (int i = 0; i < 1000; i++) {
+                thousand.put(String.format("k%04d", i), "v" + i);
+            }
+
+            ChannelActionPacket original = new ChannelActionPacket(ChannelAction.CREATE, "max-channel");
+            original.setExtra(thousand);
+
+            registry.encode(original, buf);
+            ChannelActionPacket result = decodeSingle(buf);
+
+            assertThat(result.getExtra()).hasSize(1000);
+            assertThat(buf.readableBytes()).isZero();
+        }
+
+        @Test
+        @DisplayName("Should reject a hostile frame past MAX_MAP_ENTRIES (1001) without reading entry payload")
+        void shouldRejectFramePastMaxMapEntries() {
+            // size=1001 exceeds MAX_MAP_ENTRIES, so the guard throws, the
+            // rewind retries the section as a legacy JSON string, and that
+            // also fails to parse -> extra degrades to an empty map. Either
+            // way the decoder must NOT loop 1001 times reading pair payload.
+            writeFrameHeader(buf, UUID.randomUUID(), ChannelAction.CREATE, "hostile-chan", "");
+            PacketBuffer.writeVarInt(buf, 1001);
+            // No actual pair payload follows: a parser that tried to iterate
+            // would blow past the frame and corrupt the connection stream.
+
+            ChannelActionPacket result = decodeSingle(buf);
+            assertThat(result.getAction()).isEqualTo(ChannelAction.CREATE);
+            assertThat(result.getChannelId()).isEqualTo("hostile-chan");
+            assertThat(result.getExtra()).isEmpty();
         }
     }
 

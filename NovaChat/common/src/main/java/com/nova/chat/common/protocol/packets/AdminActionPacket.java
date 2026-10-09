@@ -123,10 +123,12 @@ public class AdminActionPacket extends Packet {
         passwordHash = PacketBuffer.readString(buf, ProtocolLimits.MAX_PASSWORD_HASH);
         target = PacketBuffer.readString(buf, ProtocolLimits.MAX_CHANNEL_ID);
 
-        // Read extra map with a size guard matching ChannelActionPacket so a
-        // malformed/garbled size cannot cause an oversized allocation.
+        // Read extra map with the protocol-wide entry-count cap. Mirrors the
+        // ChatMessagePacket / ChannelActionResponsePacket defensive guard and
+        // the non-JVM (PHP/Python/C++) receivers, so a malformed or hostile
+        // size cannot force an oversized allocation before any entry is read.
         int size = PacketBuffer.readVarInt(buf);
-        if (size < 0 || size > 64) {
+        if (size < 0 || size > ProtocolLimits.MAX_MAP_ENTRIES) {
             extra = new HashMap<>();
             return;
         }
