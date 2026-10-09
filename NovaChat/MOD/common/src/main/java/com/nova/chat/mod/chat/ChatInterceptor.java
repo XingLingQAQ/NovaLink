@@ -276,14 +276,14 @@ public class ChatInterceptor implements ChatHandler {
      * the {@code itemJson} carries only display fields ({@code id} /
      * {@code count} / optional {@code name}) — never full NBT.
      *
-     * <p>Permission gate: the mod-common {@link Platform} abstraction has no
-     * permission accessor (each loader checks permissions natively in its
-     * command registrar), and the {@code Platform} interface deliberately does
-     * not expose a {@code hasItemDisplayPermission} hook. The MOD send path
-     * therefore performs NO permission check when emitting an item-display
-     * token — any {@code [item]}/{@code [i]} token in a chat message is sent
-     * when the platform returns a non-null held-item payload. Widening the
-     * interface with a permission hook is a separate task.
+     * <p>Permission gate: this slice calls
+     * {@link Platform#hasPermission(UUID, String)} with the shared
+     * {@link ItemDisplayTokens#PERMISSION_ITEM} node (Requirements 12.5: no
+     * permission → token stays plain text, never emits an
+     * {@link ItemDisplayPacket}). The default {@link Platform#hasPermission}
+     * implementation returns {@code true} (mod loaders do not ship a native
+     * permission registry, so the gate is effectively no-op until a loader
+     * overrides it with a real permission lookup, e.g. a LuckPerms bridge).
      */
     public void sendToChannel(UUID playerId, String playerName, String channelId, String message) {
         if (!networkClient.isAuthenticated()) {
@@ -326,11 +326,14 @@ public class ChatInterceptor implements ChatHandler {
      *   <li>packet build via {@link ItemDisplayTokens#buildPacket}</li>
      * </ul>
      *
-     * <p>Permission gate: the mod {@link Platform} abstraction has no permission
-     * accessor, so this slice does not gate on {@code novachat.feature.item}.
-     * The token stays plain text when the player is rate-limited or has no held
-     * item (same degradation as the no-permission path on bukkit/folia). A
-     * future slice can widen {@link Platform} with a permission hook.
+     * <p>Permission gate: gates on the shared
+     * {@link ItemDisplayTokens#PERMISSION_ITEM} node via
+     * {@link Platform#hasPermission(UUID, String)} (Requirements 12.5: no
+     * permission → the token stays plain text, matching the bukkit/folia
+     * degradation). The default {@link Platform#hasPermission} is permissive
+     * (returns {@code true}) because mod loaders do not ship a native
+     * permission registry — loaders that bridge to a real permission API
+     * (LuckPerms etc.) override it for an effective check.
      *
      * <p>Exception-safe: any failure logs a warning and returns so the chat
      * send path is never broken by item introspection.
@@ -342,6 +345,9 @@ public class ChatInterceptor implements ChatHandler {
         }
         if (!ItemDisplayTokens.hasItemToken(message)) {
             return;
+        }
+        if (!platform.hasPermission(playerId, ItemDisplayTokens.PERMISSION_ITEM)) {
+            return; // 12.5: without permission the token stays plain text
         }
         if (!itemDisplayTokens.tryAcquire(playerId)) {
             return; // rate-limited: token stays plain text
