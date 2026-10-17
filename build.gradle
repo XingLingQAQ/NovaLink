@@ -4,7 +4,13 @@ plugins {
 
 allprojects {
     group = 'com.nova'
-    version = '1.0.0-SNAPSHOT'
+    // Version: gradle.properties sets the 1.0.0-SNAPSHOT default, and a
+    // -Pversion=<v> on the command line overrides it (Gradle resolves -P ahead
+    // of gradle.properties). The release workflow relies on this: it passes
+    // -Pversion=<tag minus the leading v> and every module's jar name + plugin
+    // manifest follows. Forwarding rootProject.version to each subproject is
+    // what makes that reach them -- a hardcoded literal here would discard -P.
+    version = rootProject.version
 
     repositories {
         mavenCentral() {

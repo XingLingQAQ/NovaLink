@@ -48,3 +48,14 @@ tasks.named('test') {
         events "passed", "skipped", "failed"
     }
 }
+
+// Substitute ${version} in plugin.yml. Without this the descriptor ships the
+// literal token and Bukkit reports the plugin version as "${version}".
+// Mirrors the processResources/expand block folia/pnx/sponge already use.
+processResources {
+    filesMatching('plugin.yml') {
+        expand(
+            'version': project.version
+        )
+    }
+}

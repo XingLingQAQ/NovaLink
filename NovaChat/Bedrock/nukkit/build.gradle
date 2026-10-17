@@ -47,3 +47,13 @@ tasks.named('test') {
         events "passed", "skipped", "failed"
     }
 }
+
+// Substitute ${version} in nukkit.yml -- without this the descriptor ships the
+// literal token as the plugin version. Mirrors the folia/pnx/sponge block.
+processResources {
+    filesMatching('nukkit.yml') {
+        expand(
+            'version': project.version
+        )
+    }
+}

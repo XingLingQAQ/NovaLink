@@ -1,5 +1,5 @@
 name: NovaChat
-version: ${project.version}
+version: ${version}
 main: com.nova.chat.bukkit.NovaChatBukkit
 api-version: "1.21"
 description: Cross-server chat channel system for Bukkit/Spigot/Paper

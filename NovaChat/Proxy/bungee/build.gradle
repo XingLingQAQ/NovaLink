@@ -48,3 +48,13 @@ tasks.named('test') {
         events "passed", "skipped", "failed"
     }
 }
+
+// Substitute ${version} in bungee.yml -- without this the proxy reports the
+// literal token as the plugin version. Mirrors the folia/pnx/sponge block.
+processResources {
+    filesMatching('bungee.yml') {
+        expand(
+            'version': project.version
+        )
+    }
+}

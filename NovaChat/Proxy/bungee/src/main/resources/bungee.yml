@@ -1,5 +1,5 @@
 name: NovaChat
-version: ${project.version}
+version: ${version}
 main: com.nova.chat.bungee.NovaChatBungee
 description: Cross-server chat channel system for BungeeCord
 author: Nova Team

@@ -1,5 +1,5 @@
 name: NovaChat
-version: ${project.version}
+version: ${version}
 main: com.nova.chat.nukkit.NovaChatNukkit
 api: ["1.0.0"]
 description: Cross-server chat channel system for Nukkit Bedrock

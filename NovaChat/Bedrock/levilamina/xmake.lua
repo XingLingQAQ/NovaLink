@@ -40,7 +40,23 @@ if get_config("sdk") ~= "n" then
     -- pull, so we rely on the option guard above to avoid the repo clone
     -- entirely when only the test target is built.
     add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
-    add_requires("levilamina", {configs = {target_type = "server"}})
+    -- Pin the SDK to the version this plugin was validated against.
+    --
+    -- An unpinned add_requires("levilamina") resolves to the newest published
+    -- release on every fresh CI run. That silently floated us from the
+    -- validated 26.20.7 to 26.51.7, which no longer compiles against the MSVC
+    -- 14.44 STL that windows-2022 ships: its <memory> instantiates
+    -- default_delete<CommandRegistry> etc. over forward-declared types
+    -- (MinecraftCommands.h holds a unique_ptr to an incomplete CommandRegistry),
+    -- so the build dies in the SDK's own sources with
+    --   error: invalid application of 'sizeof' to an incomplete type
+    -- before any NovaChat code is compiled. The failure is entirely inside the
+    -- dependency, so there is nothing to fix on our side -- only the version to
+    -- hold still. Bump this deliberately, together with the runner image, after
+    -- confirming the new SDK builds under that image's toolset.
+    add_requires("levilamina 26.20.7", {configs = {target_type = "server"}})
+    -- levibuildscript provides the linkrule + modpacker rules; it is a pure-Lua
+    -- rules package (no compile step), so it needs no version pin.
     add_requires("levibuildscript")
     -- AUTH-002 TLS: OpenSSL is the TLS backend for the transport encryption
     -- (SSL_CTX + non-blocking SSL_connect/SSL_read/SSL_write wired into the
