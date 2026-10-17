@@ -47,7 +47,12 @@ param(
   [string]$Jdk25 = "",
   [int]$TimeoutSec = 420,
   [int]$BotWaitSec = 150,
-  [int]$ServerReadySec = 240,
+  # 480, not 240: a Java server with no pre-generated world spends most of its
+  # first boot generating spawn chunks. Measured on Purpur 1.21.11: 236.5s to
+  # "Done (" -- inside the old 240s budget by 3.5s, so any CI runner slower
+  # than the dev box timed out and reported "server did not signal ready".
+  # That was the folia failure in run 39049975656.
+  [int]$ServerReadySec = 480,
   # Resolved in the body below -- see test/bin/run-pmmp-e2e.ps1 for why a
   # $MyInvocation default is $null under [CmdletBinding()].
   [string]$RepoRoot = "",

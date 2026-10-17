@@ -31,7 +31,9 @@ param(
     [int]$McPort           = 25565,
     [int]$NovaPort         = 27905,
     [int]$NovaWsPort       = 34573,
-    [int]$ServerReadySec   = 240,
+    # 480, not 240: first-boot world generation measured 236.5s on Purpur
+    # 1.21.11, leaving 3.5s of margin against the old budget.
+    [int]$ServerReadySec   = 480,
     [int]$BotTimeoutSec    = 360
 )
 
