@@ -29,6 +29,29 @@ import java.util.ResourceBundle;
  */
 final class Utf8Control extends ResourceBundle.Control {
 
+    /**
+     * Disables {@link ResourceBundle}'s implicit default-locale fallback.
+     *
+     * <p>The default implementation returns {@link Locale#getDefault()} when the
+     * requested locale is not the JVM default. That makes a locale with no
+     * bundle of its own (e.g. {@code fr_FR}) silently resolve to whatever the
+     * <em>host</em> locale is — on a developer machine with
+     * {@code user.language=zh} that is the zh_CN bundle, but on an English CI
+     * runner it is {@code en_US}. The same lookup then returns different text
+     * per machine, which is exactly what a translation service must never do.
+     *
+     * <p>{@link I18n} owns the fallback chain explicitly (requested locale →
+     * zh_CN → key echo), so the implicit one is redundant as well as
+     * host-dependent. Returning {@code null} here restricts bundle resolution
+     * to the requested locale's own chain.
+     *
+     * @return always {@code null} — no implicit fallback locale
+     */
+    @Override
+    public Locale getFallbackLocale(String baseName, Locale locale) {
+        return null;
+    }
+
     @Override
     public ResourceBundle newBundle(String baseName, Locale locale, String format,
                                      ClassLoader loader, boolean reload)
