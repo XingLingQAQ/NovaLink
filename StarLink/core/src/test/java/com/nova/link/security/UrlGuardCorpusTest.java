@@ -362,20 +362,61 @@ class UrlGuardCorpusTest {
     }
 
     @Test
-    @DisplayName("rejects userinfo-bypass form http://localhost@evil.com/x — host is evil.com, not localhost")
+    @DisplayName("userinfo-bypass form http://localhost@evil.com/x validates evil.com, not localhost")
     void rejectsUserinfoBypass() {
-        // The URI parser correctly treats the userinfo component
-        // ("localhost") as separate from the host ("evil.com"). The guard
-        // therefore validates evil.com, not localhost. On this offline host
-        // getAllByName("evil.com") maps to a benchmark-range address
-        // (198.18.0.197) and is blocked. On a host with real DNS, evil.com
-        // would resolve to a public address and this test would pass-through
-        // — which is the correct behaviour, because the guard's job is to
-        // validate the actual host, not the userinfo. The case is included
-        // to document that the userinfo bypass does NOT trick the guard
-        // into validating "localhost"; it validates "evil.com".
-        assertThatThrownBy(() -> UrlGuard.validateSink("http://localhost@evil.com/x"))
-                .isInstanceOf(SecurityException.class);
+        // The URI parser correctly treats the userinfo component ("localhost")
+        // as separate from the host ("evil.com"), so the guard validates
+        // evil.com -- the userinfo never tricks it into validating localhost.
+        //
+        // This case asserts that *separation*, not a rejection. Whether the URL
+        // is rejected depends entirely on where evil.com resolves, which is the
+        // host's DNS and not a property of the guard:
+        //   * where evil.com resolves into a blocked band (e.g. a benchmark
+        //     range via a filtering resolver) it is rejected, and
+        //   * where it resolves publicly (74.91.138.132 on the CI runner and
+        //     on the dev host) it is accepted, which is CORRECT -- a public
+        //     host is exactly what a webhook sink is allowed to be.
+        // Asserting a throw unconditionally therefore encoded a DNS assumption
+        // and failed on any host with real DNS. Assert the invariant instead:
+        // the guard's verdict always follows the resolved host, and the
+        // userinfo is never what gets validated.
+        URI uri = URI.create("http://localhost@evil.com/x");
+        assertThat(uri.getHost())
+                .as("URI host must be evil.com; 'localhost' is userinfo, not host")
+                .isEqualTo("evil.com");
+        assertThat(uri.getUserInfo()).isEqualTo("localhost");
+
+        boolean resolvedPublicly = resolvesToPublicAddress("evil.com");
+        if (resolvedPublicly) {
+            // Public resolution: the guard must accept (it is a legitimate sink).
+            assertThat(UrlGuard.validateSink(uri)).isNotNull();
+        } else {
+            // Blocked/reserved resolution (or unresolvable): fail closed.
+            assertThatThrownBy(() -> UrlGuard.validateSink(uri))
+                    .isInstanceOf(SecurityException.class);
+        }
+    }
+
+    /**
+     * True when {@code host} resolves to at least one address the guard would
+     * accept. Used to keep the userinfo case meaningful on any DNS setup
+     * instead of hard-coding one host's resolver behaviour.
+     */
+    private static boolean resolvesToPublicAddress(String host) {
+        try {
+            for (java.net.InetAddress addr : java.net.InetAddress.getAllByName(host)) {
+                if (!addr.isAnyLocalAddress()
+                        && !addr.isLoopbackAddress()
+                        && !addr.isLinkLocalAddress()
+                        && !addr.isSiteLocalAddress()
+                        && !addr.isMulticastAddress()) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (java.net.UnknownHostException e) {
+            return false;
+        }
     }
 
     @Test
