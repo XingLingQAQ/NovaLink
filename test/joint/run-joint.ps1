@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # run-joint.ps1 — NovaChat cross-platform JOINT E2E orchestrator.
 #
 # Starts ONE shared NovaLink backend + TWO different platform servers

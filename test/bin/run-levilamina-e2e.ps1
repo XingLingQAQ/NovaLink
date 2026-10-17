@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # run-levilamina-e2e.ps1 -- portable LeviLamina/BDS L1 E2E orchestrator.
 #
 # Runs the full Layer-1 flow for the levilamina platform:

@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # fetch-server.ps1 -- download + verify a Minecraft server binary for E2E.
 #
 # Two modes (per docs/REAL-SERVER-E2E.md §4.2, extended 2026-08-09):

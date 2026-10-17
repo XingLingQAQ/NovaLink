@@ -40,6 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -198,6 +199,26 @@ class AsyncChatInterceptorItemDisplayTest {
 
     // --- send side ---
 
+    /**
+     * Runs every {@code runForPlayer} task inline from now on.
+     *
+     * <p>The outbound path ({@link AsyncChatInterceptor#sendToChannel}) dispatches
+     * the whole send — packet construction included, because {@code getDisplayName}
+     * and the main-hand inventory read are both region-owned — through
+     * {@link FoliaSchedulerAdapter#runForPlayer}. Receive-side tests capture the
+     * task and run it explicitly to assert the hop happens; send-side tests only
+     * care about what gets sent, so they execute the hop immediately instead of
+     * threading a captured task through every assertion.
+     */
+    @SuppressWarnings("unchecked")
+    private void runRegionTasksInline() {
+        doAnswer(invocation -> {
+            Runnable task = invocation.getArgument(1);
+            task.run();
+            return null;
+        }).when(scheduler).runForPlayer(any(Player.class), any(Runnable.class));
+    }
+
     private List<ItemDisplayPacket> sentItemDisplays() {
         ArgumentCaptor<Packet> captor = ArgumentCaptor.forClass(Packet.class);
         verify(networkClient, atLeastOnce()).sendPacket(captor.capture());
@@ -208,8 +229,26 @@ class AsyncChatInterceptorItemDisplayTest {
     }
 
     @Test
+    @DisplayName("outbound send is dispatched on the player's region thread")
+    void sendToChannelHopsToRegionThread() {
+        // No inline stub here: the point is that nothing is sent until the
+        // region task runs. getDisplayName() and the main-hand inventory read
+        // are region-owned, so the whole send has to go through the hop.
+        interceptor.sendToChannel(player, "global", "look at this [i]");
+
+        ArgumentCaptor<Runnable> task = ArgumentCaptor.forClass(Runnable.class);
+        verify(scheduler).runForPlayer(eq(player), task.capture());
+        verify(networkClient, never()).sendPacket(any(Packet.class));
+
+        task.getValue().run();
+
+        assertThat(sentItemDisplays()).hasSize(1);
+    }
+
+    @Test
     @DisplayName("[i] token sends an ItemDisplayPacket with display fields only")
     void tokenSendsItemDisplayPacket() {
+        runRegionTasksInline();
         interceptor.sendToChannel(player, "global", "look at this [i]");
 
         List<ItemDisplayPacket> displays = sentItemDisplays();
@@ -230,6 +269,7 @@ class AsyncChatInterceptorItemDisplayTest {
         when(meta.hasDisplayName()).thenReturn(true);
         when(meta.getDisplayName()).thenReturn("Excalibur");
 
+        runRegionTasksInline();
         interceptor.sendToChannel(player, "global", "[item]");
 
         assertThat(sentItemDisplays()).hasSize(1);
@@ -241,6 +281,7 @@ class AsyncChatInterceptorItemDisplayTest {
     void emptyHandSendsAirPayload() {
         when(inventory.getItemInMainHand()).thenReturn(null);
 
+        runRegionTasksInline();
         interceptor.sendToChannel(player, "global", "[item]");
 
         List<ItemDisplayPacket> displays = sentItemDisplays();
@@ -251,6 +292,7 @@ class AsyncChatInterceptorItemDisplayTest {
     @Test
     @DisplayName("no token / no permission: only the chat packet is sent")
     void noTokenOrNoPermissionSendsChatOnly() {
+        runRegionTasksInline();
         interceptor.sendToChannel(player, "global", "no token here [items]");
         assertThat(sentItemDisplays()).isEmpty();
 
@@ -262,6 +304,7 @@ class AsyncChatInterceptorItemDisplayTest {
     @Test
     @DisplayName("per-player cooldown suppresses a second display inside the window")
     void cooldownSuppressesSecondDisplay() {
+        runRegionTasksInline();
         interceptor.sendToChannel(player, "global", "first [i]");
         interceptor.sendToChannel(player, "global", "second [i]");
 

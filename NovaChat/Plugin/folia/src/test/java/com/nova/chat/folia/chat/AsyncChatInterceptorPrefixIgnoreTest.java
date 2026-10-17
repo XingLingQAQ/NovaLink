@@ -40,6 +40,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -146,6 +147,23 @@ class AsyncChatInterceptorPrefixIgnoreTest {
         I18n.setDefaultLocale(previousDefaultLocale);
     }
 
+    /**
+     * Runs every {@code runForPlayer} task inline from now on.
+     *
+     * <p>{@link AsyncChatInterceptor#sendToChannel} dispatches the whole outbound
+     * send through the region hop because the player-name and world reads are
+     * region-owned. Outbound tests here assert on the packet that gets sent, not
+     * on the hop itself, so they run it immediately.
+     */
+    @SuppressWarnings("unchecked")
+    private void runRegionTasksInline() {
+        doAnswer(invocation -> {
+            Runnable task = invocation.getArgument(1);
+            task.run();
+            return null;
+        }).when(scheduler).runForPlayer(any(Player.class), any(Runnable.class));
+    }
+
     private ChatMessagePacket sentChatPacket() {
         ArgumentCaptor<Packet> captor = ArgumentCaptor.forClass(Packet.class);
         verify(networkClient, atLeastOnce()).sendPacket(captor.capture());
@@ -158,9 +176,25 @@ class AsyncChatInterceptorPrefixIgnoreTest {
     // --- outbound prefix routing ---
 
     @Test
+    @DisplayName("outbound chat is dispatched on the player's region thread")
+    void outboundChatHopsToRegionThread() {
+        when(event.getMessage()).thenReturn("hello");
+
+        interceptor.onPlayerChat(event);
+
+        ArgumentCaptor<Runnable> task = ArgumentCaptor.forClass(Runnable.class);
+        verify(scheduler).runForPlayer(eq(player), task.capture());
+        verify(networkClient, never()).sendPacket(any(Packet.class));
+
+        task.getValue().run();
+        assertThat(sentChatPacket().getContent()).isEqualTo("hello");
+    }
+
+    @Test
     @DisplayName("prefixed message is redirected to the mapped channel with the prefix stripped")
     void prefixRedirectsToMappedChannel() {
         when(event.getMessage()).thenReturn("!hello everyone");
+        runRegionTasksInline();
 
         interceptor.onPlayerChat(event);
 
@@ -174,6 +208,7 @@ class AsyncChatInterceptorPrefixIgnoreTest {
     @DisplayName("escaped prefix sends the literal message to the active channel")
     void escapedPrefixStaysInActiveChannel() {
         when(event.getMessage()).thenReturn("\\!hello");
+        runRegionTasksInline();
 
         interceptor.onPlayerChat(event);
 
@@ -187,6 +222,7 @@ class AsyncChatInterceptorPrefixIgnoreTest {
     void unknownChannelFallsBack() {
         registry.replaceAll(Set.of("local"));
         when(event.getMessage()).thenReturn("!hello");
+        runRegionTasksInline();
 
         interceptor.onPlayerChat(event);
 

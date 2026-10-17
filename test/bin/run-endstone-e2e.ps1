@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # run-endstone-e2e.ps1 -- portable Endstone/BDS L1 E2E orchestrator.
 #
 # Runs the full Layer-1 flow for the endstone platform:

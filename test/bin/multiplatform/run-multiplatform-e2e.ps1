@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # run-multiplatform-e2e.ps1 -- portable NovaChat real-server E2E orchestrator.
 #
 # CI-friendly port of .e2e/bin/run-e2e-orchestrator.ps1 (gitignored, machine-
