@@ -290,10 +290,14 @@ if (Test-Path $resultsFile) {
     $msgs = $results.received | ForEach-Object { $_.text }
     # L1 assertions: join succeeded (channel joined message), list shows global,
     # and at least one chat message was captured (round-trip).
-    $joinOk   = $msgs -match '已加入频道|Joined channel|joined.*global'
-    $listOk   = $msgs -match 'global'
+    #
+    # -match on a collection returns the MATCHING ELEMENTS, not a boolean, so the
+    # old code logged "join=System.Object[]" and only worked by accident (a
+    # non-empty array is truthy). Cast to bool: the log then says what failed.
+    $joinOk   = [bool]($msgs -match '已加入频道|Joined channel|joined.*global')
+    $listOk   = [bool]($msgs -match 'global')
     $chatOk   = ($msgs | Where-Object { $_ -match 'hello from e2e bot' }).Count -ge 1
-    $noFatal  = -not ($msgs -match 'FATAL|Could not|Exception.*NovaLink')
+    $noFatal  = -not [bool]($msgs -match 'FATAL|Could not|Exception.*NovaLink')
     Log ("  join={0} list={1} chat={2} noFatal={3}" -f $joinOk, $listOk, $chatOk, $noFatal)
     $pass = $joinOk -and $listOk -and $chatOk -and $noFatal
 } else {
