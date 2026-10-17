@@ -329,7 +329,13 @@ $readyPattern = 'NovaLink.*started|NovaProtocol.*listening|WebSocket.*listening|
 for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Seconds 2
     if ($novaProc.HasExited) {
-        Log "ERROR: backend exited early; stderr:"; Get-Content $novaStderr -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object { Log "  $_" }
+        # The backend logs fatal startup errors to stdout (its logger writes
+        # there), so dumping only stderr showed just the JAVA_TOOL_OPTIONS
+        # banner and hid the actual cause. Show both.
+        Log "ERROR: backend exited early; stdout (tail):"
+        Get-Content $novaStdout -ErrorAction SilentlyContinue | Select-Object -Last 20 | ForEach-Object { Log "  $_" }
+        Log "ERROR: backend exited early; stderr:"
+        Get-Content $novaStderr -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object { Log "  $_" }
         Teardown-All; exit 1
     }
     if (Test-Path $novaStdout) {

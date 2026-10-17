@@ -8,6 +8,11 @@ server:
   secret-key: "{{SECRET_KEY}}"
   worker-threads: 2
   locale: en_US
+  # AUTH-002 fails closed: the backend refuses to start a plaintext TCP
+  # listener unless the risk is acknowledged explicitly. E2E runs entirely on
+  # loopback against throwaway configs, so plaintext is the intent here -- but
+  # it has to be stated, not assumed.
+  insecure-allow-plaintext: true
 
 database:
   type: memory
@@ -23,7 +28,9 @@ global_channels:
   global:
     display_name: "Global"
     permission: "novachat.channel.global"
-    max_capacity: 0
+    # The loader rejects max_capacity <= 0 ("must be greater than 0"), so 0 is
+    # not the "unlimited" sentinel here. E2E never approaches this ceiling.
+    max_capacity: 1000
 
 clients:
   - username: "E2E_Client"
