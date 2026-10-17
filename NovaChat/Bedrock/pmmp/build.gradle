@@ -131,13 +131,18 @@ tasks.register('testEnv') {
         // required for the suite to run at all -- without it they error with
         // 'Class "pocketmine\plugin\PluginBase" not found'.
         //
-        // check-platform-reqs is NOT run here (composer.json sets
-        // platform-check:false deliberately, because the plugin only needs
-        // ext-sockets and the CI PHP already has it); the install is what
-        // matters. --no-scripts avoids side effects at install time.
+        // --ignore-platform-reqs is REQUIRED, not a convenience: pocketmine-mp
+        // 5.x declares ext-chunkutils2 (a PocketMine-private extension that only
+        // exists inside the PocketMine runtime), so a plain `composer install`
+        // always fails with "requires ext-chunkutils2 -> missing from your
+        // system". The suite only needs pocketmine's PHP class definitions as
+        // type stubs (it never touches chunk serialization), so downloading the
+        // sources while skipping the extension requirement is exactly right.
+        // This is the same resolution the pre-merge bedrock-ci used.
         //
-        // Skipped when vendor/autoload.php already exists so a warm
-        // actions/cache restore costs nothing.
+        // --no-scripts avoids side effects at install time. Skipped when
+        // vendor/autoload.php already exists so a warm actions/cache restore
+        // costs nothing.
         if (!composerAutoload.exists()) {
             if (!composerAvailable) {
                 throw new GradleException(
@@ -148,7 +153,8 @@ tasks.register('testEnv') {
             }
             List<String> cmd = (composerCmd + [
                 'install', '--prefer-dist', '--no-interaction',
-                '--no-progress', '--no-scripts'])*.toString()
+                '--no-progress', '--no-scripts',
+                '--ignore-platform-reqs'])*.toString()
             logger.lifecycle('[pmmp] vendor/ missing -- running composer install')
             def pb = new ProcessBuilder(cmd).directory(projectDir).redirectErrorStream(true)
             def proc = pb.start()
