@@ -42,24 +42,34 @@ $LockedServers = @(
     # Java platforms
     # =========================================================================
 
-    # Bukkit platform: Purpur 26.2 build 2620. JDK 21.
+    # Bukkit platform: Purpur 26.1.2 build 2592. JDK 21.
     # Plugin declares api-version "1.21" (NovaChat/Plugin/bukkit/.../plugin.yml).
+    #
+    # PINNED TO 26.1.2, NOT THE LATEST 26.2: the mineflayer bot has to speak the
+    # server's protocol, and minecraft-data 3.113.1 lists 26.2 in its version
+    # index but ships no protocol data for it, so createClient throws
+    # "unsupported protocol version: 26.2". 26.1.2 is the newest release the bot
+    # can actually join (same version the folia entry below pins), so the
+    # harness tests against it. Bump both together when minecraft-data gains
+    # 26.2 support.
+    #
     # Auto-detect: api.purpurmc.org/v2/purpur/<MC> -> builds.latest, then
     #   download = https://api.purpurmc.org/v2/purpur/<MC>/<build>/download
     #   (NOTE: the OLD /builds/<build>/downloads/<file>.jar path 404s as of
     #   2026-08-09; the current pattern is /<MC>/<build>/download, singular,
     #   no filename. The website purpurmc.org/downloads links to this pattern.)
-    # SHA-256 verified locally 2026-08-12 (queried from api.purpurmc.org).
+    # SHA-256 computed from the downloaded jar (the Purpur API only exposes
+    # MD5); the MD5 matched the API value 0d01a9bcabd5e32b1e5e5d48901f1f17.
     @{
         Name    = 'purpur'
-        MC      = '26.2'
-        Build   = '2620'
+        MC      = '26.1.2'
+        Build   = '2592'
         Engine  = 'purpur'
-        Url     = 'https://api.purpurmc.org/v2/purpur/26.2/2620/download'
-        Sha256  = '21003A8BF180855BF8B3CDD7212D6B6FF76F06DE5DCBA84740C3ED433BA6C34D'
+        Url     = 'https://api.purpurmc.org/v2/purpur/26.1.2/2592/download'
+        Sha256  = 'D88E3826A7F3AD3CB4B07BE02FC732BA732BF1A1B113D96B605E9F8D1D119608'
         Eula    = $true
         Jdk     = 21
-        File    = 'purpur-26.2-2620.jar'
+        File    = 'purpur-26.1.2-2592.jar'
         Kind    = 'jar'
         Auto    = $true
     }

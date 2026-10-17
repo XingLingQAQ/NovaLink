@@ -47,6 +47,18 @@ function Log([string]$msg) {
     Write-Host ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss.fff"), $msg)
 }
 
+# The server jar name, the bot's protocol version and the server id all have to
+# agree with versions.lock.ps1. Read them from the lock instead of repeating the
+# literals here: they drifted once already (the lock said 26.2, the bot could
+# only speak 26.1.2) and the mismatch surfaced as an opaque
+# "unsupported protocol version" three steps later.
+. (Join-Path (Split-Path -Parent $binDir) 'versions.lock.ps1')
+$purpurLock = Get-LockedServer -Name 'purpur'
+if (-not $purpurLock) { Log "ERROR: no 'purpur' entry in test/versions.lock.ps1"; exit 2 }
+$purpurFile = $purpurLock.File
+$mcVersion  = $purpurLock.MC
+$serverId   = "purpur-$($purpurLock.MC)-$($purpurLock.Build)"
+
 # Track every PID we start so teardown is guaranteed.
 $global:Pids = [System.Collections.Generic.List[int]]::new()
 function Track-Pid([int]$procId) { if ($procId -gt 0) { $global:Pids.Add($procId) | Out-Null } }
@@ -120,7 +132,7 @@ Log "  bukkit jar: $($bukkitJar.FullName)"
 Log "step 2: fetching Purpur server jar (SHA-256 verified)"
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $binDir "fetch-server.ps1") -Name "purpur" -DistDir $DistDir
 if ($LASTEXITCODE -ne 0) { Log "ERROR: fetch-server failed"; exit 2 }
-$purpurJar = Join-Path $DistDir "purpur-26.2-2620.jar"
+$purpurJar = Join-Path $DistDir $purpurFile
 
 # ---------------------------------------------------------------------------
 # 3 + 4. Lay down Purpur run directory + silently accept EULA.
@@ -245,12 +257,12 @@ if (-not (Test-Path (Join-Path $botDir "node_modules/mineflayer"))) {
 $resultsFile = Join-Path $RunsDir "bot-results.json"
 $env:E2E_MC_HOST = "127.0.0.1"
 $env:E2E_MC_PORT = "$McPort"
-$env:E2E_MC_VERSION = "26.2"
+$env:E2E_MC_VERSION = $mcVersion
 $env:E2E_BOT_USERNAME = "E2E_Bot_Alpha"
 $env:E2E_RESULTS_FILE = $resultsFile
 $env:E2E_TIMEOUT_MS = "$($BotTimeoutSec * 1000)"
 $env:E2E_PLATFORM = "bukkit"
-$env:E2E_SERVER_ID = "purpur-26.2-2620"
+$env:E2E_SERVER_ID = $serverId
 $botStdout = Join-Path $RunsDir "bot.stdout.log"
 $botStderr = Join-Path $RunsDir "bot.stderr.log"
 $botProc = Start-Process -FilePath "node" -ArgumentList @("run-e2e.js") -WorkingDirectory $botDir `
