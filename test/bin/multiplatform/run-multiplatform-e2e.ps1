@@ -298,7 +298,13 @@ $PlatformDefs = @{
     # SpongeVanilla server's mods/ dir (Sponge plugins load from mods/).
     GradleTask  = ":NovaChat:Sponge:sponge:build"
     JarGlob     = "NovaChat/Sponge/sponge/build/libs/NovaChat-Sponge-*.jar"
-    BuildJdk    = "Jdk17"
+    # Build with 21 even though the server runs on 17. Gradle configures every
+    # subproject before running a task, and :NovaChat:MOD:fabric applies
+    # fabric-loom 1.17.17, which refuses to load on a JVM below 21. Building
+    # sponge on 17 therefore died in configuration with "Dependency requires at
+    # least JVM runtime version 21", before sponge was even reached. The Jdk
+    # field stays at 17: that one launches the SpongeVanilla server.
+    BuildJdk    = "Jdk21"
     PluginsSubdir = "sponge/mods"
   }
 }

@@ -367,7 +367,14 @@ $serverReady = $false
 for ($i = 0; $i -lt ($ServerReadySec / 5); $i++) {
     Start-Sleep -Seconds 5
     if ($pmmpProc.HasExited) {
-        Log "ERROR: PocketMine exited early; stderr:"; Get-Content $pmmpStderr -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object { Log "  $_" }
+        # PocketMine writes its startup failures (missing extension, bad phar,
+        # port clash) to stdout, not stderr -- dumping only stderr printed an
+        # empty block and hid the cause. Show both, as the backend check above
+        # already does.
+        Log "ERROR: PocketMine exited early; stdout (tail):"
+        Get-Content $pmmpStdout -ErrorAction SilentlyContinue | Select-Object -Last 25 | ForEach-Object { Log "  $_" }
+        Log "ERROR: PocketMine exited early; stderr:"
+        Get-Content $pmmpStderr -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object { Log "  $_" }
         Teardown-All; exit 1
     }
     if (Test-Path $pmmpStdout) {
