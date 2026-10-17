@@ -137,8 +137,18 @@ Copy-Item $bukkitJar.FullName -Destination (Join-Path $serverDir "plugins") -For
 Log "step 4: generating backend config + starting NovaLink backend"
 $novaDir = Join-Path $RunsDir "novalink"
 New-Item -ItemType Directory -Path $novaDir -Force | Out-Null
-$secretKey = [Convert]::ToHexString([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
-$clientPw  = [Convert]::ToHexString([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(16))
+# Random hex helper. Windows PowerShell 5.1 runs on .NET Framework, where the
+# static RandomNumberGenerator::GetBytes(int) overload and Convert::ToHexString
+# do not exist -- calling them throws "MethodNotFound". The instance
+# Create().GetBytes(byte[]) + BitConverter path works on both 5.1 and 7+.
+# Mirrors New-RandomHex in run-endstone/levilamina/pmmp-e2e.ps1.
+function New-RandomHex([int]$byteLen) {
+    $buf = New-Object byte[] $byteLen
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($buf)
+    return [BitConverter]::ToString($buf).Replace('-', '')
+}
+$secretKey = New-RandomHex 32
+$clientPw  = New-RandomHex 16
 $novaYml = Join-Path $novaDir "novalink.yml"
 $tpl = Get-Content (Join-Path $confDir "novalink.template.yml") -Raw
 $tpl = $tpl.Replace('{{NOVA_PORT}}', $NovaPort).Replace('{{NOVA_WS_PORT}}', $NovaWsPort).Replace('{{SECRET_KEY}}', $secretKey).Replace('{{CLIENT_PASSWORD}}', $clientPw)

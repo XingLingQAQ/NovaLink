@@ -16,11 +16,12 @@
 #                         the right lock entry, EULA policy, server.properties
 #                         format, and ready pattern.
 #
-# It does NOT build the backend jars itself -- the per-platform orchestrator
-# (run-<platform>-e2e.ps1) or the Gradle realE2E task must run
+# It does NOT build the backend jars itself -- run-e2e-orchestrator.ps1 performs
 # `:StarLink:core:jar :StarLink:core:writeRuntimeClasspath --init-script
-# test/bin/write-classpath.init.gradle` first, producing the classpath file at
-# <RepoRoot>/.e2e-artifacts/novalink-core.classpath.txt.
+# test/bin/write-classpath.init.gradle` before dispatching here, producing the
+# classpath file at <RepoRoot>/.e2e-artifacts/novalink-core.classpath.txt. When
+# this script is run STANDALONE (not via the orchestrator), run that Gradle
+# command first or Test-Prereqs will report the classpath file as missing.
 #
 # Exit codes:
 #   0 = all REQUESTED platforms passed (or were gracefully skipped w/ reason)
@@ -34,9 +35,16 @@
 [CmdletBinding()]
 param(
   [string]$Platforms = "bukkit,bungee,velocity,nukkit,folia,pnx,sponge",
-  [string]$Jdk21 = "$env:USERPROFILE\scoop\apps\temurin21-jdk\current",
-  [string]$Jdk17 = "C:\Program Files\Eclipse Adoptium\jdk-17.0.19.10-hotspot",
-  [string]$Jdk25 = "$env:USERPROFILE\scoop\apps\temurin25-jdk\current",
+  # JDK homes. Left empty so the body can resolve them from the environment
+  # first -- see Resolve-Jdk below. A default here cannot work on CI: the
+  # previous defaults were absolute dev-machine scoop paths
+  # ($env:USERPROFILE\scoop\apps\temurin21-jdk\current and an Adoptium
+  # jdk-17.0.19.10 path) that exist only on the author's machine, so every E2E
+  # platform failed prereq with "JDK 21 java.exe not found at
+  # C:\Users\runneradmin\scoop\...".
+  [string]$Jdk21 = "",
+  [string]$Jdk17 = "",
+  [string]$Jdk25 = "",
   [int]$TimeoutSec = 420,
   [int]$BotWaitSec = 150,
   [int]$ServerReadySec = 240,
@@ -59,6 +67,59 @@ if (-not $DistDir)     { $DistDir     = Join-Path $RepoRoot ".e2e-artifacts/dist
 if (-not $SummaryFile) { $SummaryFile = Join-Path $RepoRoot ".e2e-artifacts/runs/e2e-summary.json" }
 $ConfDir = Join-Path $RepoRoot "test/conf"
 $ClassPathFile = Join-Path $RepoRoot ".e2e-artifacts/novalink-core.classpath.txt"
+
+# --- resolve the three JDKs --------------------------------------------------
+# Order of preference, per JDK:
+#   1. an explicit -JdkNN argument
+#   2. the CI env var actions/setup-java exports for a multi-version request
+#      (JAVA_HOME_21_X64 / _17_X64 / _25_X64)
+#   3. a JAVA_HOME whose release file matches the requested major version
+#   4. the author's local scoop / Adoptium layout (dev convenience)
+# This keeps the harness runnable both on a GitHub runner and on a dev box
+# without either hardcoding the other's paths.
+function Resolve-Jdk {
+  param(
+    [string]$Explicit,
+    [string]$EnvName,
+    [int]$Major,
+    [string[]]$LocalCandidates
+  )
+  $candidates = @()
+  if ($Explicit)        { $candidates += $Explicit }
+  $envValue = [Environment]::GetEnvironmentVariable($EnvName)
+  if ($envValue)        { $candidates += $envValue }
+  if ($env:JAVA_HOME)   { $candidates += $env:JAVA_HOME }
+  $candidates += $LocalCandidates
+  foreach ($c in $candidates) {
+    if (-not $c) { continue }
+    $exe = Join-Path $c "bin/java.exe"
+    if (-not (Test-Path $exe)) { $exe = Join-Path $c "bin/java" }
+    if (-not (Test-Path $exe)) { continue }
+    # A JAVA_HOME may point at any version; only accept it when its release
+    # file (or the path) names the major version we need.
+    $release = Join-Path $c "release"
+    if (Test-Path $release) {
+      $content = Get-Content $release -Raw -ErrorAction SilentlyContinue
+      if ($content -match 'JAVA_VERSION="(\d+)') {
+        if ([int]$Matches[1] -ne $Major) { continue }
+        return $c
+      }
+    }
+    if ($c -match "(?:jdk|jdk-|temurin)?[-]?$Major(?:[.\-_]|$)") { return $c }
+    if ($c -eq $Explicit) { return $c }   # caller vouched for it
+  }
+  return $null
+}
+
+$Jdk21 = Resolve-Jdk -Explicit $Jdk21 -EnvName 'JAVA_HOME_21_X64' -Major 21 `
+  -LocalCandidates @("$env:USERPROFILE\scoop\apps\temurin21-jdk\current")
+$Jdk17 = Resolve-Jdk -Explicit $Jdk17 -EnvName 'JAVA_HOME_17_X64' -Major 17 `
+  -LocalCandidates @(
+    "$env:USERPROFILE\scoop\apps\temurin17-jdk\current",
+    "C:\Program Files\Eclipse Adoptium\jdk-17.0.19.10-hotspot")
+$Jdk25 = Resolve-Jdk -Explicit $Jdk25 -EnvName 'JAVA_HOME_25_X64' -Major 25 `
+  -LocalCandidates @("$env:USERPROFILE\scoop\apps\temurin25-jdk\current")
+
 
 $RequestedPlatforms = $Platforms -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
 
@@ -118,6 +179,12 @@ function Invoke-StartScript([string]$scriptPath, [string]$label, [string[]]$extr
     Log "  ERROR: start script not found: $scriptPath"
     return -1
   }
+  # Start-Process with FILE redirection (not pipes) is required here. The child
+  # is start-backend.ps1 / start-server.ps1, which launch a long-lived JVM and
+  # exit immediately; that JVM inherits the child's stdout/stderr handles. With
+  # pipe redirection the write end stays open in the JVM, so reading to EOF
+  # would block forever and this function would hang instead of returning a PID.
+  # Files close cleanly because the JVM writes to the file directly.
   $outFile = [System.IO.Path]::GetTempFileName()
   $errFile = [System.IO.Path]::GetTempFileName()
   try {
@@ -365,8 +432,23 @@ function Invoke-Platform([string]$pf) {
       $env:PATH = "$buildJdkPath\bin;$env:PATH"
       try {
         Push-Location $RepoRoot
+        # Gradle writes progress (e.g. "Enabling dist annotations on PMJ") to
+        # stderr. With $ErrorActionPreference = "Stop" (set at the top of this
+        # script), PowerShell turns a native command's stderr into a TERMINATING
+        # error, so `& gradlew ... 2>$buildErr` aborted this function on the
+        # first stderr line instead of running the build -- the platform then
+        # reported FAIL with a bogus note and no jar. Drop to Continue for just
+        # this invocation (the exit code is captured explicitly right after, so
+        # a real build failure is still detected) and restore it immediately.
+        # run-bukkit-e2e.ps1 solves the same problem by using Start-Process,
+        # which is not an option here because Start-Process throws on hosts
+        # whose environment holds case-variant duplicates (see the note in
+        # run-e2e-orchestrator.ps1).
+        $savedEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         & $gradleW $def.GradleTask "-x" "test" "--console=plain" 1>$buildLog 2>$buildErr
         $gradleExit = $LASTEXITCODE
+        $ErrorActionPreference = $savedEap
         Pop-Location
       } finally {
         $env:JAVA_HOME = $savedJavaHome

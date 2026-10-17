@@ -67,6 +67,53 @@ if ($LASTEXITCODE -ne 0) {
     exit 2
 }
 
+# --- generate the backend classpath the Java platforms need ------------------
+# start-backend.ps1 launches the NovaLink backend with
+# `java -cp <classpath> com.nova.link.NovaLinkMain`, reading that classpath from
+# .e2e-artifacts/novalink-core.classpath.txt. Nothing produced that file on this
+# path: the self-contained platform scripts (run-bukkit/endstone/levilamina/
+# pmmp-e2e.ps1) each build it, but the shared multiplatform orchestrator
+# deliberately does not ("It does NOT build the backend jars itself"), and
+# run-e2e-orchestrator.ps1 -- which is what the Gradle realE2E task invokes --
+# never did either. Every Java platform therefore failed prereq with
+# "classpath file missing" once the earlier launcher bug was fixed.
+#
+# Produce it here, once, for the same reason bukkit does it inline: the
+# multiplatform path has no other opportunity to run the build. Skipped when
+# the file already exists so a re-run (or the bukkit script, which builds it
+# itself) does not pay for it twice.
+$classPathFile = Join-Path $RepoRoot ".e2e-artifacts/novalink-core.classpath.txt"
+# The Java platforms are exactly those the multiplatform dispatcher handles:
+# every known platform that is NOT served by a self-contained script. Checked
+# against a literal list rather than $PlatformDefs because that table is defined
+# further down this file; keep the two in sync when adding a platform. An
+# unknown name is deliberately not treated as a Java platform -- it has no
+# dispatch, so building the classpath for it would be pointless work.
+$selfContained = @('bukkit', 'endstone', 'levilamina', 'pmmp')
+$knownPlatforms = @('bukkit', 'endstone', 'levilamina', 'pmmp',
+                    'folia', 'velocity', 'bungee', 'nukkit', 'pnx', 'sponge')
+$javaPlatforms = $RequestedPlatforms | Where-Object {
+    ($knownPlatforms -contains $_) -and ($selfContained -notcontains $_)
+}
+if ($javaPlatforms.Count -gt 0 -and -not (Test-Path $classPathFile)) {
+    Log "=== building backend classpath (required by: $($javaPlatforms -join ', ')) ==="
+    $gradlew = if ($env:OS -eq 'Windows_NT') { 'gradlew.bat' } else { './gradlew' }
+    $buildLog = Join-Path $RepoRoot ".e2e-artifacts/classpath-build.log"
+    New-Item -ItemType Directory -Force -Path (Split-Path $buildLog -Parent) | Out-Null
+    $initScript = Join-Path $binDir "write-classpath.init.gradle"
+    & (Join-Path $RepoRoot $gradlew) ":StarLink:core:jar" ":StarLink:core:writeRuntimeClasspath" `
+        "--init-script" $initScript `
+        "-Porg.gradle.java.installations.paths=" "-Dorg.gradle.java.installations.paths=" `
+        "--console=plain" 1>$buildLog 2>&1
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $classPathFile)) {
+        Log "ERROR: backend classpath build failed (exit $LASTEXITCODE); see $buildLog"
+        Get-Content $buildLog -ErrorAction SilentlyContinue |
+            Select-Object -Last 20 | ForEach-Object { Log "  $_" }
+    } else {
+        Log "  classpath written: $classPathFile"
+    }
+}
+
 # Platform definitions table. Each entry maps a platform name to its run script
 # and the contract used by the assertion layer.
 #
@@ -256,10 +303,25 @@ foreach ($p in $SelfPlatforms) {
         $results += [pscustomobject]@{ platform = $p; exitCode = 2; status = 'MISSING-HARNESS' }
         continue
     }
-    $selfPs = Start-Process -FilePath "powershell.exe" `
-        -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File",$script,"-RepoRoot",$RepoRoot,"-BotTimeoutSec",$BotWaitSec) `
-        -PassThru -NoNewWindow -Wait
-    $selfExit = $selfPs.ExitCode
+    # Invoke the child script with the call operator rather than Start-Process.
+    # Start-Process builds a fresh environment block and throws
+    # "Item has already been added. Key in dictionary: 'NO_PROXY' Key being
+    # added: 'no_proxy'" on any host whose environment holds two variables that
+    # differ only by case -- which a Windows box configured with proxy settings
+    # commonly does. CI runners do not have that shape, so this is portability
+    # rather than a CI fix; it also keeps the harness debuggable on a dev
+    # machine instead of failing before any platform runs.
+    #
+    # The call operator inherits the environment as-is and propagates the
+    # child's exit code through $LASTEXITCODE. Verified that a child writing to
+    # stderr does not abort this script even with $ErrorActionPreference = "Stop"
+    # set above (native-command stderr becomes a non-terminating error record).
+    # The multiplatform orchestrator cannot take this route for its own children
+    # because it needs file-redirected output -- see the note on
+    # Invoke-StartScript there.
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script `
+        -RepoRoot $RepoRoot -BotTimeoutSec $BotWaitSec
+    $selfExit = $LASTEXITCODE
     $results += [pscustomobject]@{ platform = $p; exitCode = $selfExit; status = if ($selfExit -eq 0) { 'PASS' } else { 'FAIL' } }
 }
 
@@ -274,10 +336,11 @@ if ($MultiPlatforms.Count -gt 0) {
     } else {
         $mpPlatforms = $MultiPlatforms -join ','
         Log "=== multiplatform batch: $mpPlatforms ==="
-        $mpPs = Start-Process -FilePath "powershell.exe" `
-            -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File",$mpScript,"-Platforms",$mpPlatforms,"-RepoRoot",$RepoRoot,"-TimeoutSec",$TimeoutSec,"-BotWaitSec",$BotWaitSec) `
-            -PassThru -NoNewWindow -Wait
-        $mpExit = $mpPs.ExitCode
+        # Call operator, not Start-Process -- see the note above.
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $mpScript `
+            -Platforms $mpPlatforms -RepoRoot $RepoRoot `
+            -TimeoutSec $TimeoutSec -BotWaitSec $BotWaitSec
+        $mpExit = $LASTEXITCODE
         $status = if ($mpExit -eq 0) { 'PASS' } else { 'FAIL' }
         foreach ($p in $MultiPlatforms) {
             $results += [pscustomobject]@{ platform = $p; exitCode = $mpExit; status = $status }

@@ -140,11 +140,23 @@ if (-not (Test-Path (Join-Path $endstoneVenv "Scripts/python.exe"))) {
 }
 $venvPy = Join-Path $endstoneVenv "Scripts/python.exe"
 # Install endstone (provides the BDS host) + the NovaChat plugin (editable).
+#
+# pip writes progress and dependency warnings to stderr. With
+# $ErrorActionPreference = "Stop" (set at the top of this script), a native
+# command's stderr becomes a TERMINATING error, so these `2>$buildErr`
+# redirects aborted the script before the install even completed. Drop to
+# Continue around the pip calls only -- the exit code is still checked
+# explicitly on the next line, so a real failure is not swallowed.
+$savedEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 & $venvPy -m pip install --upgrade pip 1>$buildOut 2>$buildErr
 & $venvPy -m pip install "endstone>=0.11,<0.12" 1>>$buildOut 2>>$buildErr
-if ($LASTEXITCODE -ne 0) { Log "ERROR: pip install endstone failed (see $buildErr)"; exit 2 }
+$pipExit = $LASTEXITCODE
+if ($pipExit -ne 0) { $ErrorActionPreference = $savedEap; Log "ERROR: pip install endstone failed (see $buildErr)"; exit 2 }
 & $venvPy -m pip install -e $endstoneSrc 1>>$buildOut 2>>$buildErr
-if ($LASTEXITCODE -ne 0) { Log "ERROR: pip install novachat_endstone failed (see $buildErr)"; exit 2 }
+$pipExit = $LASTEXITCODE
+$ErrorActionPreference = $savedEap
+if ($pipExit -ne 0) { Log "ERROR: pip install novachat_endstone failed (see $buildErr)"; exit 2 }
 Log "  endstone venv: $endstoneVenv"
 
 # Locate the endstone launcher entry point. Endstone ships a console script

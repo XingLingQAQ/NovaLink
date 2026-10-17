@@ -189,7 +189,17 @@ if (-not $phpExe) {
     Log "ERROR: no PHP runtime found. Download the PMMP PHP binary from https://github.com/pmmp/PHP-Binaries/releases (PHP-*-Windows-x64-PM5.zip) into $DistDir"
     exit 2
 }
-Log "  php: $phpExe ($(& $phpExe -v 2>$null | Select-Object -First 1))"
+# Probe the runtime version for the log. Wrapped because `php -v` can write to
+# stderr, and under $ErrorActionPreference = "Stop" (set at the top of this
+# script) even a `2>$null` redirect turns that into a terminating error -- which
+# would abort the whole platform run over a purely cosmetic log line. The probe
+# is best-effort: an empty result is reported as unknown.
+$savedEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$phpVersion = (& $phpExe -v 2>$null | Select-Object -First 1)
+$ErrorActionPreference = $savedEap
+if (-not $phpVersion) { $phpVersion = "unknown" }
+Log "  php: $phpExe ($phpVersion)"
 
 # ---------------------------------------------------------------------------
 # 3. Lay down PocketMine run directory + install the NovaChat pmmp plugin.

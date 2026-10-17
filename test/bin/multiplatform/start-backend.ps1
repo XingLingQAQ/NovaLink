@@ -61,8 +61,19 @@ if (-not (Test-Path $ClassPathFile)) {
 # --- generate novalink.yml from template -------------------------------------
 $novaDir = Join-Path $RunsDir "novalink"
 New-Item -ItemType Directory -Force -Path $novaDir | Out-Null
-if (-not $SecretKey) { $SecretKey = [Convert]::ToHexString([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32)) }
-if (-not $ClientPassword) { $ClientPassword = [Convert]::ToHexString([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(16)) }
+# Random hex helper. Windows PowerShell 5.1 runs on .NET Framework, where the
+# static RandomNumberGenerator::GetBytes(int) overload and Convert::ToHexString
+# do not exist -- calling them throws "MethodNotFound" and the backend never
+# starts (this is the failure every Java platform hit). The instance
+# Create().GetBytes(byte[]) + BitConverter path works on both 5.1 and 7+.
+# Mirrors New-RandomHex in run-endstone/levilamina/pmmp-e2e.ps1.
+function New-RandomHex([int]$byteLen) {
+    $buf = New-Object byte[] $byteLen
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($buf)
+    return [BitConverter]::ToString($buf).Replace('-', '')
+}
+if (-not $SecretKey) { $SecretKey = New-RandomHex 32 }
+if (-not $ClientPassword) { $ClientPassword = New-RandomHex 16 }
 
 $novaYml = Join-Path $novaDir "novalink.yml"
 $templatePath = Join-Path $confDir "novalink.template.yml"
@@ -81,6 +92,13 @@ $stderr = Join-Path $novaDir "stderr.log"
 $pidFile = Join-Path $novaDir "backend.pid"
 Remove-Item $stdout, $stderr -ErrorAction SilentlyContinue
 
+# NOTE: Start-Process is retained deliberately. It throws on hosts whose
+# environment holds two variables differing only by case ('NO_PROXY' vs
+# 'no_proxy', a common side effect of proxy configuration), but CI runners do
+# not have that shape and this script must not be restructured to suit one dev
+# box. The obvious replacements are worse here: routing through cmd.exe would
+# make the recorded PID the wrapper rather than the JVM, so Teardown-All's
+# Stop-Process would kill the wrapper and leave java holding the ports.
 $proc = Start-Process -FilePath $java -ArgumentList @("-cp", $cp, "com.nova.link.NovaLinkMain", $novaYml) `
     -WorkingDirectory $novaDir -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
 $proc.Id | Set-Content -Encoding ascii $pidFile
