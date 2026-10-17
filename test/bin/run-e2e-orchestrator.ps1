@@ -101,10 +101,22 @@ if ($javaPlatforms.Count -gt 0 -and -not (Test-Path $classPathFile)) {
     $buildLog = Join-Path $RepoRoot ".e2e-artifacts/classpath-build.log"
     New-Item -ItemType Directory -Force -Path (Split-Path $buildLog -Parent) | Out-Null
     $initScript = Join-Path $binDir "write-classpath.init.gradle"
-    & (Join-Path $RepoRoot $gradlew) ":StarLink:core:jar" ":StarLink:core:writeRuntimeClasspath" `
-        "--init-script" $initScript `
-        "-Porg.gradle.java.installations.paths=" "-Dorg.gradle.java.installations.paths=" `
-        "--console=plain" 1>$buildLog 2>&1
+    # Gradle writes "Picked up JAVA_TOOL_OPTIONS: ..." to stderr on every run.
+    # Under $ErrorActionPreference = 'Stop' PowerShell turns a native command's
+    # stderr into a terminating NativeCommandError, so the classpath build died
+    # before gradle ever compiled anything (folia/velocity/bungee/nukkit/pnx/
+    # sponge all failed here, 53s in). Relax it for the duration of the call and
+    # judge the outcome by the exit code, which is what actually reports failure.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & (Join-Path $RepoRoot $gradlew) ":StarLink:core:jar" ":StarLink:core:writeRuntimeClasspath" `
+            "--init-script" $initScript `
+            "-Porg.gradle.java.installations.paths=" "-Dorg.gradle.java.installations.paths=" `
+            "--console=plain" 1>$buildLog 2>&1
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $classPathFile)) {
         Log "ERROR: backend classpath build failed (exit $LASTEXITCODE); see $buildLog"
         Get-Content $buildLog -ErrorAction SilentlyContinue |

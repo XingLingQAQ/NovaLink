@@ -542,7 +542,13 @@ function Invoke-Platform([string]$pf) {
       $env:E2E_RESULTS_FILE = $resultsFile
       $env:E2E_TIMEOUT_MS = "$($BotWaitSec * 1000)"
       $env:E2E_PLATFORM = $pf
-      $env:E2E_MC_VERSION = "1.21.8"
+      # Ask for the protocol version the lock declares for the bot, not the
+      # server's own version: folia ships no build mineflayer can speak, and the
+      # hardcoded 1.21.8 here disagreed with every server the harness started.
+      $botLock = Get-LockedServer -Name $def.LockName
+      $env:E2E_MC_VERSION = if ($botLock -and $botLock.BotMcVersion) { $botLock.BotMcVersion }
+                            elseif ($botLock -and $botLock.MC) { $botLock.MC }
+                            else { "1.21.11" }
     }
 
     $botOut = Join-Path $runsDir "bot.stdout.log"
