@@ -242,7 +242,10 @@ $PlatformDefs = @{
     # server's plugins/ dir (not a downstream purpur). bungee.yml is at the jar
     # root so Waterfall loads it as a proxy plugin.
     GradleTask  = ":NovaChat:Proxy:bungee:build"
-    JarGlob     = "NovaChat/Proxy/bungee/build/libs/novachat-bungee-*.jar"
+    # archiveBaseName is the module name, so the jar is "bungee-<version>.jar"
+    # -- there is no "novachat-" prefix. A wrong glob does not fail the build;
+    # the platform silently reports "plugin jar not found" and FAILs.
+    JarGlob     = "NovaChat/Proxy/bungee/build/libs/bungee-*.jar"
     BuildJdk    = "Jdk21"
     PluginsSubdir = "bungee/plugins"
   }
@@ -254,7 +257,7 @@ $PlatformDefs = @{
     # (toolchain.languageVersion=25 + sourceCompatibility=VERSION_25 in build.gradle).
     # velocity-plugin.json is at the jar root so Velocity loads it as a proxy plugin.
     GradleTask  = ":NovaChat:Proxy:velocity:build"
-    JarGlob     = "NovaChat/Proxy/velocity/build/libs/novachat-velocity-*.jar"
+    JarGlob     = "NovaChat/Proxy/velocity/build/libs/velocity-*.jar"
     BuildJdk    = "Jdk25"
     PluginsSubdir = "velocity/plugins"
   }
@@ -264,7 +267,7 @@ $PlatformDefs = @{
     # Nukkit Bedrock plugin (thin jar, no shadow). nukkit.yml is at the jar root
     # so the Nukkit server loads it. Installed into the Nukkit server's plugins/ dir.
     GradleTask  = ":NovaChat:Bedrock:nukkit:build"
-    JarGlob     = "NovaChat/Bedrock/nukkit/build/libs/novachat-nukkit-*.jar"
+    JarGlob     = "NovaChat/Bedrock/nukkit/build/libs/nukkit-*.jar"
     BuildJdk    = "Jdk21"
     PluginsSubdir = "nukkit/plugins"
   }
