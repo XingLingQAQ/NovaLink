@@ -258,7 +258,15 @@ $botProc = Start-Process -FilePath "node" -ArgumentList @("run-e2e.js") -Working
 Track-Pid $botProc.Id
 $botProc.WaitForExit($BotTimeoutSec * 1000) | Out-Null
 if (-not $botProc.HasExited) { Stop-Pid $botProc.Id }
+# WaitForExit(timeout) returning false leaves the process object stale, so
+# ExitCode throws and the log line came out as "bot exit code=" with nothing
+# after it -- which hid the real reason the bot died (e.g. a missing module).
+$botProc.WaitForExit()
 Log "  bot exit code=$($botProc.ExitCode)"
+if ($botProc.ExitCode -ne 0) {
+    Log "  bot stderr:"
+    Get-Content $botStderr -ErrorAction SilentlyContinue | Select-Object -Last 15 | ForEach-Object { Log "    $_" }
+}
 
 # ---------------------------------------------------------------------------
 # 8. Assert results.json.

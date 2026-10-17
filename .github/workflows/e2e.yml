@@ -133,10 +133,14 @@ jobs:
       # Bedrock platforms use bedrock-protocol (run-e2e-bedrock.js). Both are
       # npm-installed from test/bot/package-lock.json.
       # ---------------------------------------------------------------------
-      - name: Set up Node 18 (mineflayer + bedrock-protocol bots)
+      # mineflayer 4.37.1 and minecraft-protocol 1.66.2 declare node >= 22
+      # (npm warns EBADENGINE on 18). The install itself succeeds on 18, so the
+      # mismatch only shows up at runtime: the bot exits in a few hundred ms and
+      # writes no results.json, which the harness reports as an L1 failure.
+      - name: Set up Node 22 (mineflayer + bedrock-protocol bots)
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: test/bot/package-lock.json
 
