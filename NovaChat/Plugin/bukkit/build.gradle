@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'com.gradleup.shadow' version '9.6.1'
 }
 
 java {
@@ -59,3 +60,35 @@ processResources {
         )
     }
 }
+
+// Fat jar. The plain `jar` task only contains this module's own classes, so the
+// plugin failed to load in a real server with
+//   InvalidPluginException: NoClassDefFoundError: com/nova/chat/common/protocol/Packet
+// -- the Bukkit classloader cannot see the implementation dependencies. folia,
+// pnx and sponge already shadow; bukkit was the one Java plugin platform that
+// did not, and the E2E harness was the first thing to load it in a server.
+shadowJar {
+    archiveClassifier.set('')
+    archiveBaseName.set('bukkit')
+
+    // Relocate dependencies to avoid conflicts with other plugins on the server.
+    relocate 'io.netty', 'com.nova.chat.bukkit.libs.netty'
+    relocate 'com.google.code.gson', 'com.nova.chat.bukkit.libs.gson'
+
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+
+    dependencies {
+        include(project(':NovaChat:common'))
+        include(project(':NovaChat:client-core'))
+        include(dependency('io.netty:.*'))
+        include(dependency('com.google.code.gson:gson'))
+    }
+}
+
+build.dependsOn shadowJar
+
+// shadowJar writes to the same path as the plain jar (archiveClassifier ''), so
+// running both corrupts the ZIP. The fat jar is the artifact; drop the thin one.
+jar.enabled = false
