@@ -56,16 +56,31 @@ if (-not (Test-Path $DistDir)) { New-Item -ItemType Directory -Path $DistDir -Fo
 # Helpers
 # ----------------------------------------------------------------------------
 
+# Get-FileHash lives in Microsoft.PowerShell.Utility, which the GitHub
+# windows-2022 runner's powershell.exe does not always auto-load in a
+# -NoProfile child process (observed as CommandNotFoundException only after the
+# download had already succeeded, so the fetch looked like a network failure).
+# Hashing through System.Security.Cryptography needs no module at all.
+function Get-FileSha256([string]$file) {
+    if (-not (Test-Path $file)) { return $null }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [System.IO.File]::OpenRead($file)
+        try {
+            return ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToUpper()
+        } finally {
+            $stream.Dispose()
+        }
+    } finally {
+        $sha.Dispose()
+    }
+}
+
 function Test-Sha256([string]$file, [string]$expectedHash) {
     if (-not $expectedHash) { return $false }
     if (-not (Test-Path $file)) { return $false }
-    $actual = (Get-FileHash -Path $file -Algorithm SHA256).Hash.ToUpper()
+    $actual = Get-FileSha256 $file
     return $actual -eq $expectedHash.ToUpper()
-}
-
-function Get-FileSha256([string]$file) {
-    if (-not (Test-Path $file)) { return $null }
-    return (Get-FileHash -Path $file -Algorithm SHA256).Hash.ToUpper()
 }
 
 # Download with retry (3 attempts, 300s timeout each). $dest is a .tmp path;
