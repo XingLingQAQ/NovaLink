@@ -165,19 +165,28 @@ jobs:
             pip-endstone-${{ runner.os }}-
 
       # ---------------------------------------------------------------------
-      # PHP (pmmp). pmmp's build.gradle testEnv task downloads the PHPUnit
-      # phar (via powershell on Windows) and clones Eris; phpunit runs the
-      # suite via the phar + tests/bootstrap.php. shivammathur/setup-php
-      # installs PHP 8.2 + the three exts NovaChat itself needs (sockets,
-      # mbstring, openssl). The pmmp unit tests only exercise
-      # NovaChat\Protocol\* and never touch pocketmine-mp's private runtime
-      # exts, so standard PHP is sufficient.
+      # PHP (pmmp). shivammathur/setup-php installs PHP 8.2 + the exts the
+      # suite needs (sockets, mbstring, openssl) and composer.
+      #
+      # pmmp's build.gradle testEnv task now runs `composer install` when
+      # vendor/ is absent. That is required, not optional: four test files
+      # build a NovaChatPlugin double, and NovaChatPlugin extends
+      # pocketmine\plugin\PluginBase -- a pocketmine-mp runtime class that only
+      # composer supplies. Without the install those tests error with
+      # 'Class "pocketmine\plugin\PluginBase" not found'. (The merged
+      # nova-ci dropped the composer step while keeping this vendor cache,
+      # which is why the pmmp suite was red.) testEnv then tops up the PHPUnit
+      # phar + Eris that tests/bootstrap.php also needs.
+      #
+      # composer is declared in `tools` so the step does not depend on the
+      # runner image happening to ship it.
       # ---------------------------------------------------------------------
       - name: Set up PHP 8.2
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
           extensions: sockets, mbstring, openssl
+          tools: composer
           coverage: none
 
       - name: Cache composer vendor

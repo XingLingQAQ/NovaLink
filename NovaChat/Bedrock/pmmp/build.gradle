@@ -4,17 +4,24 @@
 // This project does NOT apply the java plugin; it uses the base plugin
 // (lifecycle clean/build) and delegates the real work to the PHP toolchain
 // via Exec tasks:
-//   - testEnv   : ensures PHPUnit phar + Eris library are available
+//   - testEnv   : composer install (pocketmine runtime) + PHPUnit phar + Eris
 //   - phpunit   : runs the PHPUnit test suite (via phar + custom bootstrap)
 //   - build     : depends on testEnv + phpunit
 //   - clean     : remove vendor/ + build/ + .phpunit.cache/
 //
-// The standard `composer install` approach downloads the full pocketmine-mp
-// runtime (~100MB) which is slow on restricted networks. Instead, tests use
-// a standalone PHPUnit phar + git-cloned Eris library + a custom PSR-4
-// bootstrap (tests/bootstrap.php) that loads only the NovaChat classes and
-// Eris — sufficient for the protocol/i18n unit tests that don't depend on
-// pocketmine runtime classes.
+// DEPENDENCY MODEL: two layers, both required.
+//   1. composer install -- brings in pocketmine-mp, which supplies the runtime
+//      classes NovaChatPlugin extends (pocketmine\plugin\PluginBase,
+//      pocketmine\utils\TextFormat, scheduler/event APIs). Four test files
+//      build a NovaChatPlugin double, so without this they fail with
+//      'Class "pocketmine\plugin\PluginBase" not found'.
+//   2. PHPUnit phar + git-cloned Eris + tests/bootstrap.php -- the runner and
+//      the property-testing library, fetched directly rather than through
+//      composer so they stay available even when the composer step is
+//      unavailable (offline host, no openssl extension).
+// The bootstrap loads composer's autoloader when vendor/ exists and is a no-op
+// otherwise, so the phar-only path still works for the pure protocol/i18n
+// tests that need no pocketmine runtime classes.
 //
 // Run independently with:  gradle :NovaChat:Bedrock:pmmp:build
 // or directly from this dir: gradle -p NovaChat/Bedrock/pmmp build
@@ -60,11 +67,31 @@ def onPath = { String exe, List<String> probeArgs = ['--version'] ->
 }
 
 def phpAvailable = onPath('php')
+def isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
+// composer is invoked either directly (a shim on PATH) or, more portably, as
+// `php /path/to/composer.phar`. The shim name differs by install method --
+// scoop ships an extensionless `composer` shell script plus `composer.cmd`,
+// setup-php ships `composer.bat`, and a manual install is just the phar -- and
+// Gradle's ProcessBuilder on Windows only launches a script when the name
+// carries its real extension. So probe each candidate in turn and fall back to
+// running a phar through php.
+def composerCmd = {
+    for (String name : ['composer', 'composer.bat', 'composer.cmd']) {
+        if (onPath(name)) return [name]
+    }
+    // A phar invoked through php works regardless of shim naming.
+    for (String p : ['composer.phar',
+                     'C:/ProgramData/ComposerSetup/bin/composer.phar',
+                     'C:/ProgramData/Composer/bin/composer.phar']) {
+        if (new File(p).isFile()) return ['php', p]
+    }
+    return null
+}()
+def composerAvailable = composerCmd != null
 // Cross-platform phar downloader: Windows uses powershell (Invoke-WebRequest),
 // non-Windows uses curl. Both are preinstalled on their respective OS images.
 // powershell is probed with `-Command "exit 0"` (NOT --version, which PS 5.1
 // rejects as a parser error -> exit 1). curl is probed with -V.
-def isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
 def downloadAvailable = isWindows
     ? onPath('powershell', ['-Command', 'exit 0'])
     : onPath('curl', ['-V'])
@@ -75,11 +102,18 @@ def skipReason = '[pmmp] PHP toolchain not found on PATH -- skipping native buil
 
 tasks.register('testEnv') {
     group = 'build'
-    description = 'Ensures PHPUnit phar and Eris library are available for testing.'
+    description = 'Ensures the composer deps, PHPUnit phar and Eris library are available for testing.'
     def phpunitPhar = layout.projectDirectory.file('vendor/bin/phpunit.phar').asFile
     def erisDir = layout.projectDirectory.dir('vendor/giorgiosironi/eris').asFile
+    def composerAutoload = layout.projectDirectory.file('vendor/autoload.php').asFile
     outputs.file phpunitPhar
     outputs.dir erisDir
+    // vendor/autoload.php is declared as an output because this task is what
+    // produces it (via composer install) and phpunit depends on it being
+    // present. Without declaring it, Gradle could consider testEnv UP-TO-DATE
+    // from a restored cache that has the phar + Eris but no composer vendor,
+    // and the suite would then fail on the missing pocketmine classes.
+    outputs.file composerAutoload
     // Self-skip only when PHP itself is absent — without PHP there is nothing
     // to test. The phar downloader (powershell on Windows, curl on Linux) is
     // preinstalled on every OS image nova-ci runs on, so downloadAvailable is
@@ -91,6 +125,42 @@ tasks.register('testEnv') {
     doLast {
         def vendorBin = layout.projectDirectory.dir('vendor/bin').asFile
         if (!vendorBin.exists()) vendorBin.mkdirs()
+
+        // composer install: supplies pocketmine-mp, whose classes NovaChatPlugin
+        // extends. Four test files construct a NovaChatPlugin double, so this is
+        // required for the suite to run at all -- without it they error with
+        // 'Class "pocketmine\plugin\PluginBase" not found'.
+        //
+        // check-platform-reqs is NOT run here (composer.json sets
+        // platform-check:false deliberately, because the plugin only needs
+        // ext-sockets and the CI PHP already has it); the install is what
+        // matters. --no-scripts avoids side effects at install time.
+        //
+        // Skipped when vendor/autoload.php already exists so a warm
+        // actions/cache restore costs nothing.
+        if (!composerAutoload.exists()) {
+            if (!composerAvailable) {
+                throw new GradleException(
+                    "[pmmp] vendor/autoload.php is missing and composer is not on " +
+                    "PATH. The pmmp suite needs the pocketmine-mp runtime classes " +
+                    "(pocketmine\\plugin\\PluginBase); install composer, or " +
+                    "pre-populate NovaChat/Bedrock/pmmp/vendor.")
+            }
+            List<String> cmd = (composerCmd + [
+                'install', '--prefer-dist', '--no-interaction',
+                '--no-progress', '--no-scripts'])*.toString()
+            logger.lifecycle('[pmmp] vendor/ missing -- running composer install')
+            def pb = new ProcessBuilder(cmd).directory(projectDir).redirectErrorStream(true)
+            def proc = pb.start()
+            proc.inputStream.eachLine { logger.lifecycle('[pmmp] ' + it) }
+            int code = proc.waitFor()
+            if (code != 0) {
+                throw new GradleException(
+                    "[pmmp] composer install failed (exit ${code}). The pmmp suite " +
+                    "needs the pocketmine-mp runtime classes; install composer " +
+                    "(with the openssl extension) or pre-populate vendor/.")
+            }
+        }
         // Download PHPUnit phar if missing (cross-platform). We shell out via
         // ProcessBuilder (not Gradle's exec {} API) because this doLast runs on
         // a DefaultTask whose closure delegate has no exec() method, and the
