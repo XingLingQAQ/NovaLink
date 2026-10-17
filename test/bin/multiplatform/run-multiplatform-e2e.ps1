@@ -40,7 +40,9 @@ param(
   [int]$TimeoutSec = 420,
   [int]$BotWaitSec = 150,
   [int]$ServerReadySec = 240,
-  [string]$RepoRoot = (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)))),
+  # Resolved in the body below -- see test/bin/run-pmmp-e2e.ps1 for why a
+  # $MyInvocation default is $null under [CmdletBinding()].
+  [string]$RepoRoot = "",
   [string]$BinDir = "",     # defaults to <RepoRoot>/test/bin/multiplatform
   [string]$BotDir = "",     # defaults to <RepoRoot>/test/bot
   [string]$DistDir = "",    # server jar cache; defaults to <RepoRoot>/.e2e-artifacts/dist
@@ -50,6 +52,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 # --- resolve derived paths ---------------------------------------------------
+if (-not $RepoRoot)    { $RepoRoot    = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath))) }
 if (-not $BinDir)      { $BinDir      = Join-Path $RepoRoot "test/bin/multiplatform" }
 if (-not $BotDir)      { $BotDir      = Join-Path $RepoRoot "test/bot" }
 if (-not $DistDir)     { $DistDir     = Join-Path $RepoRoot ".e2e-artifacts/dist" }

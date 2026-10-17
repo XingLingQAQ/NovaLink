@@ -31,12 +31,25 @@
 [CmdletBinding()]
 param(
     [string]$Platforms = "bukkit,pmmp",
-    [string]$RepoRoot  = (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))),
+    # Resolved in the body below, NOT as a parameter default: under
+    # [CmdletBinding()] PowerShell binds parameters as an advanced function, and
+    # every automatic variable ($MyInvocation / $PSScriptRoot / $PSCommandPath)
+    # is still empty at bind time. A default here therefore evaluated to $null
+    # and the Split-Path chain threw "Cannot bind argument to parameter 'Path'
+    # because it is null", failing the whole E2E job before any platform ran.
+    [string]$RepoRoot,
     [int]$TimeoutSec = 420,
     [int]$BotWaitSec = 150
 )
 
 $ErrorActionPreference = "Stop"
+
+# Derive the repo root from this script's own location when the caller did not
+# supply one (test/bin/ -> repo root is three levels up). $PSScriptRoot is
+# populated once the script body runs, unlike in the param block above.
+if (-not $RepoRoot) {
+    $RepoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath))
+}
 $binDir = Join-Path $RepoRoot "test/bin"
 $multiplatformDir = Join-Path $binDir "multiplatform"
 $RequestedPlatforms = $Platforms -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
@@ -274,5 +287,10 @@ if ($MultiPlatforms.Count -gt 0) {
 
 Log "=== E2E summary ==="
 $results | ForEach-Object { Log ("  {0,-12} {1}" -f $_.platform, $_.status) }
-$anyFail = ($results | Where-Object { $_.exitCode -ne 0 }).Count -gt 0
-if ($anyFail) { exit 1 } else { exit 0 }
+# @() is required: with exactly ONE failing platform, Where-Object returns a
+# scalar PSCustomObject rather than an array, and .Count on a scalar is $null --
+# so `$null -gt 0` is False and the orchestrator would exit 0 (a silently green
+# E2E run) for the single-failure case. Wrapping in @() guarantees an array.
+$failures = @($results | Where-Object { $_.exitCode -ne 0 })
+Log ("=== {0} platform(s) requested, {1} failed ===" -f $results.Count, $failures.Count)
+if ($failures.Count -gt 0) { exit 1 } else { exit 0 }

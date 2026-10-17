@@ -17,7 +17,9 @@
 # ============================================================================
 [CmdletBinding()]
 param(
-    [string]$RepoRoot  = (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)))),
+    # Resolved in the body below -- see test/bin/run-pmmp-e2e.ps1 for why a
+    # $MyInvocation default is $null under [CmdletBinding()].
+    [string]$RepoRoot  = "",
     [string]$RunsDir   = "",     # per-platform run workspace; e.g. <repo>/.e2e-artifacts/runs/folia
     [string]$ClassPathFile = "", # defaults to <repo>/.e2e-artifacts/novalink-core.classpath.txt
     [string]$JdkHome   = $env:JAVA_HOME,
@@ -28,6 +30,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $RepoRoot) { $RepoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath))) }
 if (-not $RunsDir) { $RunsDir = Join-Path $RepoRoot ".e2e-artifacts/runs/backend" }
 if (-not $ClassPathFile) { $ClassPathFile = Join-Path $RepoRoot ".e2e-artifacts/novalink-core.classpath.txt" }
 $binDir  = Join-Path $RepoRoot "test/bin"

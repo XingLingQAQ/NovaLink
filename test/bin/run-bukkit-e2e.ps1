@@ -23,7 +23,9 @@
 # ============================================================================
 [CmdletBinding()]
 param(
-    [string]$RepoRoot      = (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))),
+    # Resolved in the body below -- see run-pmmp-e2e.ps1 for why a
+    # $MyInvocation default is $null under [CmdletBinding()].
+    [string]$RepoRoot      = "",
     [string]$DistDir       = "",     # server jar cache; defaults to <repo>/.e2e-artifacts/dist
     [string]$RunsDir       = "",     # per-run workspace; defaults to <repo>/.e2e-artifacts/runs/bukkit
     [int]$McPort           = 25565,
@@ -34,6 +36,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $RepoRoot) { $RepoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath)) }
 if (-not $DistDir) { $DistDir  = Join-Path $RepoRoot ".e2e-artifacts/dist" }
 if (-not $RunsDir) { $RunsDir  = Join-Path $RepoRoot ".e2e-artifacts/runs/bukkit" }
 $binDir   = Join-Path $RepoRoot "test/bin"

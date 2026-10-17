@@ -22,7 +22,12 @@
 # ============================================================================
 [CmdletBinding()]
 param(
-    [string]$RepoRoot      = (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))),
+    # Resolved in the body below, NOT as a parameter default: under
+    # [CmdletBinding()] parameters bind as an advanced function, and the
+    # automatic variables ($MyInvocation / $PSScriptRoot / $PSCommandPath) are
+    # all empty at bind time -- a default here is $null, so the Split-Path chain
+    # throws before the script runs.
+    [string]$RepoRoot      = "",
     [string]$DistDir       = "",     # server phar cache; defaults to <repo>/.e2e-artifacts/dist
     [string]$RunsDir       = "",     # per-run workspace; defaults to <repo>/.e2e-artifacts/runs/pmmp
     [int]$McPort           = 19132,  # Bedrock default UDP port
@@ -33,6 +38,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $RepoRoot) { $RepoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath)) }
 if (-not $DistDir) { $DistDir  = Join-Path $RepoRoot ".e2e-artifacts/dist" }
 if (-not $RunsDir) { $RunsDir  = Join-Path $RepoRoot ".e2e-artifacts/runs/pmmp" }
 $binDir   = Join-Path $RepoRoot "test/bin"

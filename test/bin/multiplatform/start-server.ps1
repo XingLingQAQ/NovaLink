@@ -36,7 +36,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$Platform,
-    [string]$RepoRoot  = (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)))),
+    # Resolved in the body below -- see test/bin/run-pmmp-e2e.ps1 for why a
+    # $MyInvocation default is $null under [CmdletBinding()].
+    [string]$RepoRoot  = "",
     [string]$RunsDir   = "",     # per-platform run workspace; e.g. <repo>/.e2e-artifacts/runs/folia
     [string]$DistDir   = "",     # server jar cache; defaults to <repo>/.e2e-artifacts/dist
     [string]$JdkHome   = $env:JAVA_HOME,
@@ -47,6 +49,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $RepoRoot) { $RepoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath))) }
 if (-not $DistDir) { $DistDir = Join-Path $RepoRoot ".e2e-artifacts/dist" }
 $binDir = Join-Path $RepoRoot "test/bin"
 
