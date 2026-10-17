@@ -56,9 +56,9 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: 'Comma-separated platforms (default: implemented set bukkit,endstone,levilamina,pmmp)'
+        description: 'Comma-separated platforms to run (leave empty to run the full matrix, one platform per job)'
         required: false
-        default: 'bukkit,endstone,levilamina,pmmp'
+        default: ''
   schedule:
     # Nightly at 03:30 UTC -- only runs on the default branch.
     - cron: '30 3 * * *'
@@ -230,13 +230,23 @@ jobs:
       - name: Run E2E (${{ matrix.platform }})
         shell: pwsh
         env:
-          # workflow_dispatch: prefer the user's platform selection. schedule:
-          # use the matrix platform value.
-          E2E_PLATFORMS: ${{ github.event.inputs.platforms || matrix.platform }}
+          # One platform per job. A manual dispatch may narrow the matrix with
+          # the `platforms` input; jobs outside that selection are skipped by the
+          # guard below instead of each re-running the same batch. The input
+          # defaults to empty (full matrix) -- a non-empty default would make
+          # every job run that same list, which is what happened before.
+          E2E_PLATFORMS: ${{ matrix.platform }}
+          E2E_SELECTED: ${{ github.event.inputs.platforms }}
+          E2E_PLATFORM: ${{ matrix.platform }}
         run: |
           chcp 65001
           $OutputEncoding = [System.Text.Encoding]::UTF8
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $selected = ($env:E2E_SELECTED -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          if ($selected.Count -gt 0 -and ($selected -notcontains $env:E2E_PLATFORM)) {
+            Write-Host "skipping $env:E2E_PLATFORM (not in the requested set: $($selected -join ', '))"
+            exit 0
+          }
           ./gradlew realE2E --console=plain `
             '-PenableRealE2E=true' `
             "-Pe2ePlatforms=$env:E2E_PLATFORMS" `
