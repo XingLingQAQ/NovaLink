@@ -79,12 +79,24 @@ $gradleW = if ($isWin) { ".\gradlew.bat" } else { "./gradlew" }
 $buildErr = Join-Path $RunsDir "build.err.log"
 $buildOut = Join-Path $RunsDir "build.out.log"
 New-Item -ItemType Directory -Path $RunsDir -Force | Out-Null
+# gradlew writes banner lines to stderr ("Picked up JAVA_TOOL_OPTIONS", Fabric
+# Loom's "Cannot remap modifiers"), and under $ErrorActionPreference = "Stop"
+# the call operator turns each one into a terminating NativeCommandError that
+# the trap below catches -- so the build aborted before gradle even ran.
+# Drop to Continue for just this invocation; the exit code is read explicitly
+# right after, so a real build failure is still detected. Start-Process is not
+# an option here: it throws on hosts whose environment holds case-variant
+# duplicates (see the note in run-e2e-orchestrator.ps1).
+$savedEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 & $gradleW ":NovaChat:Plugin:bukkit:build" ":StarLink:core:jar" "-x" "test" "--console=plain" `
     "-Porg.gradle.java.installations.paths=" "-Dorg.gradle.java.installations.paths=" `
     "--init-script" (Join-Path $binDir "write-classpath.init.gradle") `
     ":StarLink:core:writeRuntimeClasspath" `
     1>$buildOut 2>$buildErr
-if ($LASTEXITCODE -ne 0) {
+$gradleExit = $LASTEXITCODE
+$ErrorActionPreference = $savedEap
+if ($gradleExit -ne 0) {
     Log "ERROR: gradle build failed (see $buildErr)"
     Get-Content $buildErr -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Log "  $_" }
     exit 2
