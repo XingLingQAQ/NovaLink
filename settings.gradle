@@ -11,6 +11,10 @@ rootProject.name = 'nova-parent'
 
 include 'NovaChat:common'
 include 'NovaChat:client-core'
+// The storage layer is split out of :StarLink:core so that a slim,
+// proxy-hosted chat plugin can depend on persistence alone (no Netty/auth/
+// network/websocket/JWT, no :NovaChat:common). Package names are preserved.
+include 'StarLink:storage'
 include 'StarLink:core'
 include 'NovaChat:Plugin:bukkit'
 include 'NovaChat:Proxy:velocity'

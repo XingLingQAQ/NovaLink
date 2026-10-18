@@ -3,8 +3,9 @@ package com.nova.link.database;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelScope;
 import com.nova.link.database.dialect.MigrationDialect;
-import com.nova.link.database.dialect.PostgreSQLDialect;
+import com.nova.link.database.dialect.MySQLDialect;
 import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -13,24 +14,22 @@ import java.sql.SQLException;
 import java.util.*;
 
 /**
- * PostgreSQL implementation of {@link DatabaseProvider} using HikariCP.
+ * MySQL/MariaDB implementation of {@link DatabaseProvider} using HikariCP.
  *
  * <p>Extends {@link AbstractJdbcProvider} for connection-pool lifecycle and
- * migration running; this class supplies the PostgreSQL JDBC URL and the
- * PostgreSQL upsert form ({@code INSERT ... ON CONFLICT (pk) DO UPDATE SET
- * col = EXCLUDED.col}).
+ * migration running; this class supplies the MySQL-specific JDBC URL, prepared
+ * statement cache tuning, and the MySQL upsert form ({@code ON DUPLICATE KEY
+ * UPDATE}).
  *
  * <p>Requirements: 22.1, 22.5
  */
-public class PostgreSQLProvider extends AbstractJdbcProvider {
+public class MySQLProvider extends AbstractJdbcProvider {
 
-    /** H1b: default JDBC TLS mode when no configuration is supplied. Fail-closed. */
-    public static final String DEFAULT_SSL_MODE = "verify-ca";
+    /** H1: default JDBC TLS mode when no configuration is supplied. Fail-closed. */
+    public static final String DEFAULT_SSL_MODE = "REQUIRED";
 
-    // Mirror of the PostgreSQL JDBC driver's supported sslmode values.
-    // See https://jdbc.postgresql.org/documentation/ssl/
     private static final java.util.Set<String> SUPPORTED_SSL_MODES = java.util.Set.of(
-            "disable", "allow", "prefer", "require", "verify-ca", "verify-full");
+            "DISABLED", "PREFERRED", "REQUIRED", "VERIFY_CA", "VERIFY_IDENTITY");
 
     private final String host;
     private final int port;
@@ -41,71 +40,69 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
     private final String sslMode;
     private final boolean insecureAllowPlaintext;
 
-    private final PostgreSQLDialect dialect = new PostgreSQLDialect();
+    private final MySQLDialect dialect = new MySQLDialect();
 
     /**
-     * Legacy constructor — kept for back-compat callers that predate H1b. Uses
-     * the fail-closed default (sslMode=verify-ca, plaintext opt-in=false), so
-     * any caller that still wants plaintext must migrate to the new constructor
-     * and explicitly acknowledge it.
+     * Legacy constructor — kept for back-compat callers that predate H1. Uses
+     * the fail-closed default (sslMode=REQUIRED, plaintext opt-in=false), so
+     * any caller that still hardcodes "we want plaintext" must migrate to the
+     * new constructor and explicitly acknowledge it.
      */
-    public PostgreSQLProvider(String host, int port, String database, String username, String password, int poolSize) {
+    public MySQLProvider(String host, int port, String database, String username, String password, int poolSize) {
         this(host, port, database, username, password, poolSize, DEFAULT_SSL_MODE, false);
     }
 
-    public PostgreSQLProvider(String host, int port, String database, String username, String password,
-                              int poolSize, String sslMode, boolean insecureAllowPlaintext) {
+    public MySQLProvider(String host, int port, String database, String username, String password,
+                         int poolSize, String sslMode, boolean insecureAllowPlaintext) {
         this.host = host;
         this.port = port;
         this.database = database;
         this.username = username;
         this.password = password;
         this.poolSize = poolSize;
-        // PostgreSQL JDBC driver's sslmode values are lowercase; keep user
-        // config case-insensitive by normalising to lowercase here.
         this.sslMode = sslMode == null || sslMode.isBlank()
                 ? DEFAULT_SSL_MODE
-                : sslMode.trim().toLowerCase(java.util.Locale.ROOT);
+                : sslMode.trim().toUpperCase(java.util.Locale.ROOT);
         this.insecureAllowPlaintext = insecureAllowPlaintext;
     }
 
     /**
      * Builds the JDBC URL with the configured {@link #sslMode} applied.
      *
-     * <p>Fail-closed: when {@code sslmode=disable}, the operator must also set
+     * <p>Fail-closed: when {@code sslMode=DISABLED}, the operator must also set
      * {@code server.insecure-allow-plaintext: true} — the same opt-in used by
-     * AUTH-002 for the TCP/WS listeners and by H1 for the MySQL JDBC layer.
-     * Throwing here aborts startup before HikariCP opens any socket, so the
-     * plaintext JDBC link cannot come up silently.
-     *
-     * <p>Note: PostgreSQL's {@code sslmode=prefer} (the driver default) falls
-     * back to plaintext if the server does not support SSL, so it is NOT
-     * fail-closed and not the default here. {@code verify-ca} is chosen as
-     * the default to match H1's MySQL {@code REQUIRED}: it requires TLS and
-     * validates the server certificate against the configured CA.
+     * AUTH-002 for the TCP/WS listeners. Throwing here aborts startup before
+     * HikariCP opens any socket, so the plaintext JDBC link cannot come up
+     * silently.
      */
     String buildJdbcUrl() {
         if (!SUPPORTED_SSL_MODES.contains(sslMode)) {
-            throw new IllegalStateException("H1b: unsupported database.postgresql.ssl-mode: " + sslMode
+            throw new IllegalStateException("H1: unsupported database.mysql.ssl-mode: " + sslMode
                     + " (allowed: " + SUPPORTED_SSL_MODES + ")");
         }
-        if ("disable".equals(sslMode) && !insecureAllowPlaintext) {
+        if ("DISABLED".equals(sslMode) && !insecureAllowPlaintext) {
             throw new IllegalStateException(
-                    "AUTH-002/H1b: PostgreSQL JDBC would start in plaintext (database.postgresql.ssl-mode=disable). "
+                    "AUTH-002/H1: MySQL JDBC would start in plaintext (database.mysql.ssl-mode=DISABLED). "
                             + "The DB password and all chat data would traverse the network unencrypted. "
-                            + "Either set database.postgresql.ssl-mode to require/verify-ca/verify-full "
+                            + "Either set database.mysql.ssl-mode to REQUIRED/VERIFY_CA/VERIFY_IDENTITY "
                             + "(and provision server certs) or explicitly acknowledge the risk with "
                             + "server.insecure-allow-plaintext: true.");
         }
 
-        StringBuilder url = new StringBuilder("jdbc:postgresql://")
+        StringBuilder url = new StringBuilder("jdbc:mysql://")
                 .append(host).append(':').append(port).append('/').append(database).append('?')
-                .append("sslmode=").append(sslMode);
-        if ("disable".equals(sslMode)) {
-            url.append("&ssl=false");
+                .append("sslMode=").append(sslMode);
+        if ("DISABLED".equals(sslMode)) {
+            // Connector/J refuses allowPublicKeyRetrieval=true over TLS, so
+            // only attach the flag on the plaintext path where it is relevant.
+            url.append("&useSSL=false&allowPublicKeyRetrieval=true");
         } else {
-            url.append("&ssl=true");
+            url.append("&useSSL=true");
+            if ("VERIFY_CA".equals(sslMode) || "VERIFY_IDENTITY".equals(sslMode)) {
+                url.append("&verifyServerCertificate=true");
+            }
         }
+        url.append("&serverTimezone=UTC");
         return url.toString();
     }
 
@@ -113,17 +110,24 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
     protected HikariConfig buildHikariConfig() {
         HikariConfig config = new HikariConfig();
         config.setJdbcUrl(buildJdbcUrl());
+        // Pin the driver explicitly. Without this HikariCP falls back to
+        // DriverManager.getDriver(url), whose driver scan runs once per JVM
+        // using the first caller's context classloader -- under a plugin
+        // classloader that yields "Failed to get driver instance".
+        config.setDriverClassName("com.mysql.cj.jdbc.Driver");
         config.setUsername(username);
         config.setPassword(password);
         config.setMaximumPoolSize(poolSize);
         config.setMinimumIdle(2);
         config.setIdleTimeout(300000);
         config.setConnectionTimeout(10000);
-        config.setPoolName("NovaLink-PostgreSQL-Pool");
+        config.setPoolName("NovaLink-MySQL-Pool");
 
-        // PostgreSQL optimizations
-        config.addDataSourceProperty("preparedStatementCacheQueries", "256");
-        config.addDataSourceProperty("preparedStatementCacheSizeMiB", "5");
+        // MySQL specific optimizations
+        config.addDataSourceProperty("cachePrepStmts", "true");
+        config.addDataSourceProperty("prepStmtCacheSize", "250");
+        config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
+        config.addDataSourceProperty("useServerPrepStmts", "true");
         return config;
     }
 
@@ -143,15 +147,15 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
         String sql = """
             INSERT INTO players (player_id, player_name, client_id, current_world, joined_channels, active_channel, platform, dm_enabled, last_seen)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (player_id) DO UPDATE SET
-                player_name = EXCLUDED.player_name,
-                client_id = EXCLUDED.client_id,
-                current_world = EXCLUDED.current_world,
-                joined_channels = EXCLUDED.joined_channels,
-                active_channel = EXCLUDED.active_channel,
-                platform = EXCLUDED.platform,
-                dm_enabled = EXCLUDED.dm_enabled,
-                last_seen = EXCLUDED.last_seen
+            ON DUPLICATE KEY UPDATE
+                player_name = VALUES(player_name),
+                client_id = VALUES(client_id),
+                current_world = VALUES(current_world),
+                joined_channels = VALUES(joined_channels),
+                active_channel = VALUES(active_channel),
+                platform = VALUES(platform),
+                dm_enabled = VALUES(dm_enabled),
+                last_seen = VALUES(last_seen)
             """;
 
         try (Connection conn = dataSource.getConnection();
@@ -232,16 +236,19 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             boolean previousAutoCommit = conn.getAutoCommit();
             conn.setAutoCommit(false);
             try {
+                // Delete mutes first
                 try (PreparedStatement stmt = conn.prepareStatement("DELETE FROM mutes WHERE player_id = ?")) {
                     stmt.setString(1, playerId.toString());
                     stmt.executeUpdate();
                 }
 
+                // Delete bans
                 try (PreparedStatement stmt = conn.prepareStatement("DELETE FROM bans WHERE player_id = ?")) {
                     stmt.setString(1, playerId.toString());
                     stmt.executeUpdate();
                 }
 
+                // Delete player
                 try (PreparedStatement stmt = conn.prepareStatement("DELETE FROM players WHERE player_id = ?")) {
                     stmt.setString(1, playerId.toString());
                     stmt.executeUpdate();
@@ -291,14 +298,14 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
         String sql = """
             INSERT INTO channels (channel_id, display_name, scope, client_id, permission, max_capacity, allowed_worlds, password, owner_id, slow_mode_seconds, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (channel_id) DO UPDATE SET
-                display_name = EXCLUDED.display_name,
-                permission = EXCLUDED.permission,
-                max_capacity = EXCLUDED.max_capacity,
-                allowed_worlds = EXCLUDED.allowed_worlds,
-                password = EXCLUDED.password,
-                owner_id = EXCLUDED.owner_id,
-                slow_mode_seconds = EXCLUDED.slow_mode_seconds
+            ON DUPLICATE KEY UPDATE
+                display_name = VALUES(display_name),
+                permission = VALUES(permission),
+                max_capacity = VALUES(max_capacity),
+                allowed_worlds = VALUES(allowed_worlds),
+                password = VALUES(password),
+                owner_id = VALUES(owner_id),
+                slow_mode_seconds = VALUES(slow_mode_seconds)
             """;
 
         try (Connection conn = dataSource.getConnection();
@@ -379,8 +386,10 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             return;
         }
 
+        String sql = "DELETE FROM channels WHERE channel_id = ?";
+
         try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement("DELETE FROM channels WHERE channel_id = ?")) {
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
 
             stmt.setString(1, channelId);
             stmt.executeUpdate();
@@ -417,9 +426,12 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             throw new DatabaseException("Player ID and mute info cannot be null");
         }
 
-        // DELETE + INSERT in one transaction (see MySQLProvider.saveMute for
-        // the rationale; the non-atomic delete-then-insert pattern races under
-        // concurrency and trips the UNIQUE(player_id, channel_id) constraint).
+        // DELETE + INSERT in one transaction. Doing the delete as a separate
+        // connectionless call (deleteMute opens its own connection) leaves a
+        // window where two concurrent saves can both delete, then both insert,
+        // hitting the UNIQUE(player_id, channel_id) constraint. Keeping both
+        // statements on the same connection under autoCommit=false makes the
+        // replace atomic and serialised by the row lock taken by the DELETE.
         String deleteSql = muteInfo.getChannelId() != null
                 ? "DELETE FROM mutes WHERE player_id = ? AND channel_id = ?"
                 : "DELETE FROM mutes WHERE player_id = ? AND channel_id IS NULL";
@@ -525,6 +537,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
 
             stmt.setLong(1, System.currentTimeMillis());
             int count = stmt.executeUpdate();
+
             if (count > 0) {
                 logger.debug("Cleaned up {} expired mutes", count);
             }
@@ -681,6 +694,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
 
             stmt.setLong(1, System.currentTimeMillis());
             int count = stmt.executeUpdate();
+
             if (count > 0) {
                 logger.debug("Cleaned up {} expired bans", count);
             }
@@ -732,7 +746,8 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
         }
 
         // PANEL-014: recipient column added in schema v10. NULL = broadcast.
-        String sql = "INSERT INTO notifications (title, message, level, created_at, read, recipient) "
+        // `read` is backtick-quoted because it is a MySQL reserved word.
+        String sql = "INSERT INTO notifications (title, message, level, created_at, `read`, recipient) "
                 + "VALUES (?, ?, ?, ?, ?, ?)";
 
         try (Connection conn = dataSource.getConnection();
@@ -747,6 +762,8 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
 
             stmt.executeUpdate();
 
+            // Reflect the generated id back onto the object so callers
+            // can reference the persisted row (e.g. mark-read by id).
             stampGeneratedId(stmt, notification);
             logger.debug("Saved notification: {}", notification.getTitle());
         } catch (SQLException e) {
@@ -758,7 +775,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
     public List<Notification> getNotifications(int offset, int limit, boolean unreadOnly) throws DatabaseException {
         List<Notification> notifications = new ArrayList<>();
         String sql = unreadOnly
-                ? "SELECT * FROM notifications WHERE read = FALSE ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+                ? "SELECT * FROM notifications WHERE `read` = FALSE ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
                 : "SELECT * FROM notifications ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?";
 
         try (Connection conn = dataSource.getConnection();
@@ -788,7 +805,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
 
     @Override
     public void markNotificationRead(long id) throws DatabaseException {
-        String sql = "UPDATE notifications SET read = TRUE WHERE id = ?";
+        String sql = "UPDATE notifications SET `read` = TRUE WHERE id = ?";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -803,7 +820,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
 
     @Override
     public void markAllNotificationsRead() throws DatabaseException {
-        String sql = "UPDATE notifications SET read = TRUE WHERE read = FALSE";
+        String sql = "UPDATE notifications SET `read` = TRUE WHERE `read` = FALSE";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -827,7 +844,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
 
     @Override
     public int getUnreadCount() throws DatabaseException {
-        String sql = "SELECT COUNT(*) FROM notifications WHERE read = FALSE";
+        String sql = "SELECT COUNT(*) FROM notifications WHERE `read` = FALSE";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql);
@@ -845,7 +862,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
     @Override
     public int countNotifications(boolean unreadOnly) throws DatabaseException {
         String sql = unreadOnly
-                ? "SELECT COUNT(*) FROM notifications WHERE read = FALSE"
+                ? "SELECT COUNT(*) FROM notifications WHERE `read` = FALSE"
                 : "SELECT COUNT(*) FROM notifications";
 
         try (Connection conn = dataSource.getConnection();
@@ -862,22 +879,24 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
     }
 
     // --- Per-user notification state (PANEL-014) ---
-    // See SQLiteProvider for the semantic model. PostgreSQL uses ON CONFLICT
-    // for upsert, same as SQLite 3.24+.
+    // See SQLiteProvider for the semantic model. MySQL uses ON DUPLICATE KEY
+    // UPDATE for upsert (the primary key of notification_read is
+    // (notification_id, user_id), so a duplicate on either column triggers the
+    // update). `read` is backtick-quoted because it is a MySQL reserved word.
 
-    private static final String SQL_GET_PER_USER_UNREAD_PG = """
-            SELECT n.id, n.title, n.message, n.level, n.created_at, n.read, n.recipient
+    private static final String SQL_GET_PER_USER_UNREAD_MYSQL = """
+            SELECT n.id, n.title, n.message, n.level, n.created_at, n.`read` AS `read`, n.recipient
             FROM notifications n
             LEFT JOIN notification_read nr ON nr.notification_id = n.id AND nr.user_id = ?
             WHERE (n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?))
-              AND (n.read = TRUE OR (nr.read IS NOT NULL AND nr.read = TRUE)) = FALSE
+              AND (n.`read` = TRUE OR (nr.`read` IS NOT NULL AND nr.`read` = TRUE)) = FALSE
             ORDER BY n.created_at DESC, n.id DESC
             LIMIT ? OFFSET ?
             """;
 
-    private static final String SQL_GET_PER_USER_ALL_PG = """
+    private static final String SQL_GET_PER_USER_ALL_MYSQL = """
             SELECT n.id, n.title, n.message, n.level, n.created_at,
-                   (n.read = TRUE OR (nr.read IS NOT NULL AND nr.read = TRUE)) AS read,
+                   (n.`read` = TRUE OR (nr.`read` IS NOT NULL AND nr.`read` = TRUE)) AS `read`,
                    n.recipient
             FROM notifications n
             LEFT JOIN notification_read nr ON nr.notification_id = n.id AND nr.user_id = ?
@@ -905,7 +924,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             return getNotifications(offset, limit, unreadOnly);
         }
         List<Notification> notifications = new ArrayList<>();
-        String sql = unreadOnly ? SQL_GET_PER_USER_UNREAD_PG : SQL_GET_PER_USER_ALL_PG;
+        String sql = unreadOnly ? SQL_GET_PER_USER_UNREAD_MYSQL : SQL_GET_PER_USER_ALL_MYSQL;
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setString(1, userId);
@@ -929,9 +948,9 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             markNotificationRead(id);
             return;
         }
-        String sql = "INSERT INTO notification_read (notification_id, user_id, read, read_at) "
+        String sql = "INSERT INTO notification_read (notification_id, user_id, `read`, read_at) "
                 + "VALUES (?, ?, TRUE, ?) "
-                + "ON CONFLICT(notification_id, user_id) DO UPDATE SET read = TRUE, read_at = EXCLUDED.read_at";
+                + "ON DUPLICATE KEY UPDATE `read` = TRUE, read_at = VALUES(read_at)";
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setLong(1, id);
@@ -950,14 +969,19 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             markAllNotificationsRead();
             return;
         }
-        String sql = "INSERT INTO notification_read (notification_id, user_id, read, read_at) "
+        // Single atomic INSERT ... SELECT ... ON DUPLICATE KEY UPDATE. The
+        // SELECT reads notifications while the INSERT targets notification_read
+        // — different tables, so MySQL's same-target-table restriction on
+        // INSERT ... SELECT does not apply and no two-step select-then-batch
+        // is needed.
+        String sql = "INSERT INTO notification_read (notification_id, user_id, `read`, read_at) "
                 + "SELECT n.id, ?, TRUE, ? FROM notifications n "
                 + "WHERE (n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?)) "
                 + "AND NOT EXISTS ("
                 + "  SELECT 1 FROM notification_read nr "
-                + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.read = TRUE"
+                + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.`read` = TRUE"
                 + ") "
-                + "ON CONFLICT(notification_id, user_id) DO UPDATE SET read = TRUE, read_at = EXCLUDED.read_at";
+                + "ON DUPLICATE KEY UPDATE `read` = TRUE, read_at = VALUES(read_at)";
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             long now = System.currentTimeMillis();
@@ -981,10 +1005,10 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
         }
         String sql = "SELECT COUNT(*) FROM notifications n "
                 + "WHERE (n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?)) "
-                + "AND n.read = FALSE "
+                + "AND n.`read` = FALSE "
                 + "AND NOT EXISTS ("
                 + "  SELECT 1 FROM notification_read nr "
-                + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.read = TRUE"
+                + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.`read` = TRUE"
                 + ")";
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -1010,10 +1034,10 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
         if (unreadOnly) {
             sql = "SELECT COUNT(*) FROM notifications n "
                     + "WHERE (n.recipient IS NULL OR LOWER(n.recipient) = LOWER(?)) "
-                    + "AND n.read = FALSE "
+                    + "AND n.`read` = FALSE "
                     + "AND NOT EXISTS ("
                     + "  SELECT 1 FROM notification_read nr "
-                    + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.read = TRUE"
+                    + "  WHERE nr.notification_id = n.id AND nr.user_id = ? AND nr.`read` = TRUE"
                     + ")";
         } else {
             sql = "SELECT COUNT(*) FROM notifications n "
@@ -1068,17 +1092,17 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             INSERT INTO invitations (code, channel_id, inviter_id, expire_time, created_at, used, used_by, used_at,
                                     max_uses, used_count, revoked_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (code) DO UPDATE SET
-                channel_id = EXCLUDED.channel_id,
-                inviter_id = EXCLUDED.inviter_id,
-                expire_time = EXCLUDED.expire_time,
-                created_at = EXCLUDED.created_at,
-                used = EXCLUDED.used,
-                used_by = EXCLUDED.used_by,
-                used_at = EXCLUDED.used_at,
-                max_uses = EXCLUDED.max_uses,
-                used_count = EXCLUDED.used_count,
-                revoked_at = EXCLUDED.revoked_at
+            ON DUPLICATE KEY UPDATE
+                channel_id = VALUES(channel_id),
+                inviter_id = VALUES(inviter_id),
+                expire_time = VALUES(expire_time),
+                created_at = VALUES(created_at),
+                used = VALUES(used),
+                used_by = VALUES(used_by),
+                used_at = VALUES(used_at),
+                max_uses = VALUES(max_uses),
+                used_count = VALUES(used_count),
+                revoked_at = VALUES(revoked_at)
             """;
 
         try (Connection conn = dataSource.getConnection();
@@ -1186,8 +1210,8 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
         // revoked), and used_count < max_uses (quota remaining). On success,
         // used_count advances and used flips to TRUE exactly when the new
         // used_count reaches max_uses — unifying single-use (maxUses=1, used
-        // becomes TRUE on the first claim) and multi-use paths. PostgreSQL's
-        // boolean column accepts a boolean expression directly.
+        // becomes TRUE on the first claim) and multi-use paths. MySQL evaluates
+        // the boolean expression to 1/0, which maps onto TINYINT(1).
         String sql = "UPDATE invitations SET used_count = used_count + 1, used_by = ?, used_at = ?, "
                 + "used = (used_count + 1 >= max_uses) "
                 + "WHERE code = ? AND used = FALSE AND revoked_at IS NULL AND used_count < max_uses";
@@ -1217,8 +1241,10 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             return;
         }
 
+        String sql = "DELETE FROM invitations WHERE code = ?";
+
         try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement("DELETE FROM invitations WHERE code = ?")) {
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
 
             stmt.setString(1, code);
             stmt.executeUpdate();
@@ -1237,6 +1263,7 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
 
             stmt.setLong(1, System.currentTimeMillis());
             int count = stmt.executeUpdate();
+
             if (count > 0) {
                 logger.debug("Cleaned up {} expired invitations", count);
             }
@@ -1248,6 +1275,6 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
 
     @Override
     public String getProviderType() {
-        return "PostgreSQL";
+        return "MySQL";
     }
 }

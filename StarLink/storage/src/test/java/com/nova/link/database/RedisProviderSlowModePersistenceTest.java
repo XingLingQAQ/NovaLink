@@ -2,7 +2,6 @@ package com.nova.link.database;
 
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelScope;
-import com.nova.link.channel.SlowModeTracker;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -14,7 +13,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.function.LongSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -41,9 +39,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *       owner, and documents Gson's actual default for the missing int.</li>
  *   <li>Test C — restart semantics: save → shutdown → fresh provider against
  *       the SAME unflushed database → load: owner and slow mode survive.</li>
- *   <li>Test D — slow-mode boundary semantics at 0 (disabled) vs &gt; 0 via
- *       the pure {@code SlowModeTracker} with an injectable clock.</li>
  * </ul>
+ *
+ * <p>Slow-mode <em>consumption</em> (0 disables, &gt; 0 blocks inside the
+ * window) is covered by {@code MessagePipelineSlowModeTest} in :StarLink:core,
+ * where {@code SlowModeTracker} lives -- it is orchestration, not storage.
  */
 @DisplayName("RedisProvider channel slow-mode/owner persistence + legacy-DTO tolerance (VERIFY-006)")
 class RedisProviderSlowModePersistenceTest {
@@ -241,41 +241,6 @@ class RedisProviderSlowModePersistenceTest {
             // load, no setCreatedAt), and nothing consumes it post-creation.
         } finally {
             restarted.shutdown();
-        }
-    }
-
-    @Test
-    @DisplayName("Test D: slow-mode boundary — 0 disables throttling, >0 blocks within window (injectable clock)")
-    void testDSlowModeTrackerBoundaryZeroVsPositive() {
-        // Pure unit check of the consumption side of the persisted slow-mode
-        // value: the tracker is clock-injected so no sleeping is needed.
-        LongSupplier fixedClock = () -> 1_000_000L;
-        SlowModeTracker tracker = new SlowModeTracker(fixedClock);
-        UUID player = UUID.fromString("99999999-8888-7777-6666-555555555555");
-        String channelId = "verify006-d";
-
-        try {
-            // Boundary 0 = slow mode disabled: every message passes, and
-            // nothing enters the tracking map.
-            assertThat(tracker.tryAcquire(player, channelId, 0)).isZero();
-            assertThat(tracker.tryAcquire(player, channelId, 0)).isZero();
-
-            // A persisted positive window (e.g. 30 from Test A) must block a
-            // second message inside the window, reporting remaining >= 1s.
-            long firstWait = tracker.tryAcquire(player, "verify006-a", 30);
-            assertThat(firstWait).as("first message inside an active window always passes").isZero();
-            long secondWait = tracker.tryAcquire(player, "verify006-a", 30);
-            assertThat(secondWait).as("second immediate message blocked with remaining wait").isEqualTo(30);
-
-            // After the window elapses (clock advanced past now + 30s) the
-            // next message passes again.
-            LongSupplier later = () -> 1_000_000L + 31_000L;
-            SlowModeTracker after = new SlowModeTracker(later);
-            // Fresh tracker at the advanced time: window from the old tracker
-            // is irrelevant; this asserts a cold start passes immediately.
-            assertThat(after.tryAcquire(player, channelId, 30)).isZero();
-        } finally {
-            tracker.shutdown();
         }
     }
 }

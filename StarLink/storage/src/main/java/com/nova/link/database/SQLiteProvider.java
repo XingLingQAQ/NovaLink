@@ -49,6 +49,11 @@ public class SQLiteProvider extends AbstractJdbcProvider {
     protected HikariConfig buildHikariConfig() {
         HikariConfig config = new HikariConfig();
         config.setJdbcUrl("jdbc:sqlite:" + filePath);
+        // Pin the driver explicitly. Without this HikariCP falls back to
+        // DriverManager.getDriver(url), whose driver scan runs once per JVM
+        // using the first caller's context classloader -- under a plugin
+        // classloader that yields "Failed to get driver instance".
+        config.setDriverClassName("org.sqlite.JDBC");
         config.setMaximumPoolSize(poolSize);
         config.setMinimumIdle(1);
         config.setIdleTimeout(300000);

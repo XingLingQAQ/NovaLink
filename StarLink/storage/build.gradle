@@ -1,0 +1,62 @@
+// Storage layer: database providers, schema migrations, and the persistence
+// POJOs they serialize. Deliberately dependency-light so the slim cross-server
+// chat plugin can depend on this module alone -- no Netty, no auth, no network,
+// no JWT, no :NovaChat:common.
+//
+// Package names are unchanged (com.nova.link.database, com.nova.link.channel,
+// ...); core keeps the managers that drive these classes, so the two modules
+// share package names on the classpath. That is intentional: several POJOs
+// (Campaign, ConfigDraft) expose package-private state transitions that the
+// core managers call, and javac enforces package visibility by package name,
+// not by Gradle module.
+//
+// ---------------------------------------------------------------------------
+// Packaging notes for consumers that bundle this jar (shadow/fat-jar):
+//
+//   1. mergeServiceFiles() is REQUIRED. The JDBC drivers register through
+//      META-INF/services/java.sql.Driver; without merging ServiceLoader sees
+//      only one surviving descriptor and DriverManager.findDriver fails.
+//
+//   2. NEVER relocate org.sqlite. sqlite-jdbc extracts its native library
+//      keyed on the package name; relocation makes the native lib lookup fail
+//      at runtime ("no SQLite JNI library found").
+//
+// Both apply to the consuming plugin build (e.g. StarLink/core's shadowJar and
+// the slim proxy plugin), not to this library jar, which simply carries the
+// driver descriptors unmodified.
+// ---------------------------------------------------------------------------
+
+dependencies {
+    // Connection pooling + logging
+    implementation "com.zaxxer:HikariCP:${hikariCpVersion}"
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+
+    // Redis-backed provider (RedisProvider + its DTO serialization)
+    implementation "redis.clients:jedis:${jedisVersion}"
+    implementation "com.google.code.gson:gson:${gsonVersion}"
+
+    // JDBC drivers. runtimeOnly: the code loads them reflectively through
+    // DriverManager, and each Provider now pins its driver class explicitly
+    // (setDriverClassName) so the pool never has to scan the whole JVM.
+    runtimeOnly "com.mysql:mysql-connector-j:${mysqlVersion}"
+    runtimeOnly "org.postgresql:postgresql:${postgresVersion}"
+    runtimeOnly "org.xerial:sqlite-jdbc:${sqliteVersion}"
+
+    // Testing (junit/jqwik/assertj come from the root subprojects block)
+    testImplementation "org.testcontainers:testcontainers:${testcontainersVersion}"
+    testImplementation "org.testcontainers:junit-jupiter:${testcontainersVersion}"
+    testImplementation "org.testcontainers:postgresql:${testcontainersVersion}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform {
+        includeEngines 'junit-jupiter', 'jqwik'
+    }
+    testLogging {
+        events "passed", "skipped", "failed"
+        exceptionFormat 'full'
+        showStandardStreams true
+        showCauses true
+        showStackTraces true
+    }
+}
