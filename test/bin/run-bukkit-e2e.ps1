@@ -49,6 +49,38 @@ function Log([string]$msg) {
     Write-Host ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss.fff"), $msg)
 }
 
+# --- failure diagnostics -----------------------------------------------------
+# The backend, server and bot all write to files under $RunsDir, and a failing
+# run used to report only a one-line reason while the actual cause sat unread
+# on disk. Print the tail of each log, labelled with its path, so the CI job
+# log alone is enough to diagnose a failure.
+function Get-LogRank([string]$name) {
+    switch -Wildcard ($name) {
+        '*stderr.log' { return 0 }
+        '*stdout.log' { return 1 }
+        'build.*.log' { return 2 }
+        default       { return 4 }
+    }
+}
+
+function Show-FailureLogs([string]$reason) {
+    Log ""
+    Log "=== FAILURE DIAGNOSTICS: $reason ==="
+    if (-not (Test-Path -LiteralPath $RunsDir)) { Log "  run directory does not exist: $RunsDir"; return }
+    $logs = @(Get-ChildItem -LiteralPath $RunsDir -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -eq '.log' } |
+        Sort-Object @{ Expression = { Get-LogRank $_.Name } },
+                    @{ Expression = { $_.LastWriteTime }; Descending = $true } |
+        Select-Object -First 10)
+    if ($logs.Count -eq 0) { Log "  no *.log files under $RunsDir"; return }
+    foreach ($f in $logs) {
+        Log ("  --- {0} ({1:N0} bytes, last 40 lines) ---" -f $f.FullName, $f.Length)
+        Get-Content -LiteralPath $f.FullName -Tail 40 -Encoding UTF8 -ErrorAction SilentlyContinue |
+            ForEach-Object { Log "    $_" }
+    }
+    Log "=== END FAILURE DIAGNOSTICS ==="
+}
+
 # The server jar name, the bot's protocol version and the server id all have to
 # agree with versions.lock.ps1. Read them from the lock instead of repeating the
 # literals here: they drifted once already (the lock said 26.2, the bot could
@@ -206,7 +238,7 @@ for ($i = 0; $i -lt 30; $i++) {
         Get-Content $novaStdout -ErrorAction SilentlyContinue | Select-Object -Last 20 | ForEach-Object { Log "  $_" }
         Log "ERROR: backend exited early; stderr:"
         Get-Content $novaStderr -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object { Log "  $_" }
-        Teardown-All; exit 1
+        Teardown-All; Show-FailureLogs "backend exited early"; exit 1
     }
     if (Test-Path $novaStdout) {
         $logContent = Get-Content $novaStdout -Raw -ErrorAction SilentlyContinue
@@ -234,7 +266,7 @@ for ($i = 0; $i -lt ($ServerReadySec / 5); $i++) {
     Start-Sleep -Seconds 5
     if ($purpProc.HasExited) {
         Log "ERROR: Purpur exited early; stderr:"; Get-Content $purpStderr -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object { Log "  $_" }
-        Teardown-All; exit 1
+        Teardown-All; Show-FailureLogs "Purpur exited early"; exit 1
     }
     if (Test-Path $purpStdout) {
         $logContent = Get-Content $purpStdout -Raw -ErrorAction SilentlyContinue
@@ -243,7 +275,7 @@ for ($i = 0; $i -lt ($ServerReadySec / 5); $i++) {
 }
 if (-not $serverReady) {
     Log "ERROR: Purpur did not reach 'Done' within ${ServerReadySec}s"
-    Teardown-All; exit 1
+    Teardown-All; Show-FailureLogs "Purpur did not reach 'Done' within ${ServerReadySec}s"; exit 1
 }
 Log "  Purpur ready"
 
@@ -253,7 +285,7 @@ Log "  Purpur ready"
 Log "step 6: installing + running the mineflayer bot"
 if (-not (Test-Path (Join-Path $botDir "node_modules/mineflayer"))) {
     Push-Location $botDir
-    try { npm ci --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { Log "ERROR: npm ci failed"; Teardown-All; exit 2 } }
+    try { npm ci --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { Log "ERROR: npm ci failed"; Teardown-All; Show-FailureLogs "npm ci failed"; exit 2 } }
     finally { Pop-Location }
 }
 $resultsFile = Join-Path $RunsDir "bot-results.json"
@@ -316,5 +348,6 @@ if ($pass) {
 } else {
     Log "RESULT: L1 FAIL (bukkit/purpur) -- dumping bot log tail:"
     Get-Content $botStdout -ErrorAction SilentlyContinue | Select-Object -Last 30 | ForEach-Object { Log "  $_" }
+    Show-FailureLogs "L1 assertion failed"
     exit 1
 }

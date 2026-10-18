@@ -264,10 +264,45 @@ jobs:
             '-Dorg.gradle.java.installations.paths='
 
       # ---------------------------------------------------------------------
+      # Dump what the E2E run actually left on disk before uploading. The
+      # upload step used to report "No files were found" while this directory
+      # was full of logs, with nothing in the job log to show what was there.
+      # `-Force` is required because .e2e-artifacts is a hidden directory.
+      # dist/ is excluded on purpose: it is the multi-hundred-MB server-binary
+      # cache, not diagnostic output.
+      # ---------------------------------------------------------------------
+      - name: List E2E artifacts (diagnostics)
+        if: failure() || cancelled()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath .e2e-artifacts)) {
+            Write-Host '.e2e-artifacts does not exist'
+            exit 0
+          }
+          $files = Get-ChildItem -LiteralPath .e2e-artifacts -Recurse -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '[\\/]dist[\\/]' }
+          if (-not $files) {
+            Write-Host '.e2e-artifacts exists but contains no files (excluding dist/)'
+            exit 0
+          }
+          Write-Host ("{0} file(s) under .e2e-artifacts (excluding dist/):" -f @($files).Count)
+          $files | Sort-Object FullName | Select-Object -First 200 | ForEach-Object {
+            Write-Host ("{0,12:N0}  {1}" -f $_.Length, $_.FullName)
+          }
+
+      # ---------------------------------------------------------------------
       # On failure (or cancellation), upload the E2E artifacts for post-mortem:
-      # server logs, bot results, run summary, and the novalink-core classpath.
-      # if-no-files-found: ignore so a job that died before writing anything
-      # doesn't double-fail on the upload step.
+      # per-platform server/backend/bot logs, plugin-build logs, bot results and
+      # the run summary.
+      #
+      # include-hidden-files: true is REQUIRED, not cosmetic. The whole tree
+      # lives under `.e2e-artifacts`, a dot-prefixed (hidden) directory, and
+      # actions/upload-artifact@v4 excludes hidden files by default
+      # (excludeHiddenFiles = !includeHiddenFiles, default false). The previous
+      # pattern therefore matched nothing at all and every failed run uploaded
+      # 0 artifacts -- run 39056124289 has 10 failed/succeeded jobs and 0
+      # artifacts, with "No files were found with the provided path:
+      # .e2e-artifacts/" in each job log.
       # ---------------------------------------------------------------------
       - name: Upload E2E artifacts on failure
         if: failure() || cancelled()
@@ -275,8 +310,11 @@ jobs:
         with:
           name: e2e-${{ matrix.platform }}-${{ github.run_id }}
           path: |
-            .e2e-artifacts/
+            .e2e-artifacts/runs/
+            .e2e-artifacts/*.log
             **/bot-results.json
-            **/runs/
-          if-no-files-found: ignore
+          include-hidden-files: true
+          # warn (not ignore): if a job dies before writing anything, an
+          # annotation saying so is the diagnostic, not noise.
+          if-no-files-found: warn
           retention-days: 7

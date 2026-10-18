@@ -240,6 +240,57 @@ function Wait-LogMarker([string]$file, [string]$pattern, [int]$timeoutSec, [stri
   return $false
 }
 
+# --- failure diagnostics -----------------------------------------------------
+# Every process this script starts writes its stdout/stderr to a file under
+# $runsDir, and none of those files used to reach the console or the CI job
+# log. A platform that timed out reported one line ("server did not signal
+# ready within 480s") while the server's own output sat unread on disk --
+# exactly the folia/sponge failures in run 39056124289. Print the tail of every
+# log the run produced, labelled with its path, so the job log alone is enough
+# to diagnose a failure even when the artifact upload is unavailable.
+function Get-LogRank([string]$name) {
+  # Lower rank first: stderr before stdout, build logs before the rest.
+  switch -Wildcard ($name) {
+    '*stderr.log'       { return 0 }
+    '*stdout.log'       { return 1 }
+    'plugin-build*.log' { return 2 }
+    'build.*.log'       { return 2 }
+    'npm-install*.log'  { return 3 }
+    default             { return 4 }
+  }
+}
+
+function Write-LogTail([string]$path, [int]$lines) {
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
+  $size = (Get-Item -LiteralPath $path).Length
+  Log ("  --- {0} ({1:N0} bytes, last {2} lines) ---" -f $path, $size, $lines)
+  Get-Content -LiteralPath $path -Tail $lines -Encoding UTF8 -ErrorAction SilentlyContinue |
+    ForEach-Object { Log "    $_" }
+}
+
+function Write-FailureDiagnostics([string]$runDir, [string]$platform, [string]$reason) {
+  Log ""
+  Log "=== [$platform] FAILURE DIAGNOSTICS: $reason ==="
+  if (-not (Test-Path -LiteralPath $runDir)) {
+    Log "  run directory does not exist: $runDir"
+    return
+  }
+  # Recursive on purpose: besides the files this harness redirects by name,
+  # servers write their own (Purpur logs/latest.log, PocketMine server.log,
+  # a JVM hs_err_pid*.log). dist/ holds the downloaded binaries, not logs.
+  $logs = @(Get-ChildItem -LiteralPath $runDir -Recurse -File -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -eq '.log' -and $_.FullName -notmatch '[\\/]dist[\\/]' } |
+    Sort-Object @{ Expression = { Get-LogRank $_.Name } },
+                @{ Expression = { $_.LastWriteTime }; Descending = $true } |
+    Select-Object -First 10)
+  if ($logs.Count -eq 0) {
+    Log "  no *.log files under $runDir"
+    return
+  }
+  foreach ($f in $logs) { Write-LogTail $f.FullName 40 }
+  Log "=== [$platform] END FAILURE DIAGNOSTICS ==="
+}
+
 # --- per-platform definitions ------------------------------------------------
 # Each entry pins the ports + ready-pattern + chat phrase for that platform.
 # The shared start-server.ps1 + start-backend.ps1 primitives switch on -Platform
@@ -632,6 +683,16 @@ function Invoke-Platform([string]$pf) {
     # remove from global tracker
     $global:Pids.Clear()
     $global:PidLabels.Clear()
+    # Dump AFTER teardown: the processes have released their redirect handles,
+    # so the tails are complete rather than whatever happened to be flushed.
+    # Every early-return failure path above lands here, which is why the dump
+    # lives in `finally` instead of at each return.
+    # "PASS" is the only outcome worth no log tail; PARTIAL (L1 ok, chat
+    # round-trip missed) and UNKNOWN (an exception unwound through here) both
+    # need the same evidence as FAIL.
+    if ($result.status -ne "PASS") {
+      Write-FailureDiagnostics $runsDir $pf "$($result.status): $($result.notes)"
+    }
   }
   return $result
 }
