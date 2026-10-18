@@ -24,9 +24,15 @@
 # command first or Test-Prereqs will report the classpath file as missing.
 #
 # Exit codes:
-#   0 = all REQUESTED platforms passed (or were gracefully skipped w/ reason)
-#   1 = one or more requested platforms failed or were missing prereqs
+#   0 = all REQUESTED platforms passed (some may have been SKIPPED)
+#   1 = one or more requested platforms failed or were missing prereqs, OR a
+#       platform was SKIPPED while -RequireAllPlatforms is set
 #   2 = orchestrator itself failed (bad args, harness missing)
+#   3 = every requested platform was SKIPPED (no test ran anywhere)
+#
+# A platform is SKIPPED when it did not execute its L1 flow (velocity/bungee are
+# proxy-only by design). SKIPPED is a distinct terminal state, never PASS: the
+# summary JSON records status="SKIPPED" + skipped=true + a human-readable note.
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File run-multiplatform-e2e.ps1 `
@@ -59,7 +65,11 @@ param(
   [string]$BinDir = "",     # defaults to <RepoRoot>/test/bin/multiplatform
   [string]$BotDir = "",     # defaults to <RepoRoot>/test/bot
   [string]$DistDir = "",    # server jar cache; defaults to <RepoRoot>/.e2e-artifacts/dist
-  [string]$SummaryFile = "" # defaults to <RepoRoot>/.e2e-artifacts/runs/e2e-summary.json
+  [string]$SummaryFile = "", # defaults to <RepoRoot>/.e2e-artifacts/runs/e2e-summary.json
+  # Strict CI mode: SKIPPED counts as failure. Off by default -- SKIPPED is a
+  # normal local outcome (proxy-only platforms, blocked downloads), and CI opts
+  # in explicitly via run-e2e-orchestrator.ps1 -RequireAllPlatforms.
+  [switch]$RequireAllPlatforms
 )
 
 $ErrorActionPreference = "Stop"
@@ -652,7 +662,11 @@ foreach ($pf in $RequestedPlatforms) {
   $pfResult = Invoke-Platform $pf
   $allResults += $pfResult
   if ($pfResult.status -eq "FAIL") { $overallPass = $false }
-  Log "=== [$pf] RESULT: $($pfResult.status) (L1=$($pfResult.l1Pass), chat=$($pfResult.chatRoundTrip)) ==="
+  if ($pfResult.status -eq "SKIPPED") {
+    Log "=== [$pf] RESULT: SKIPPED (no assertions ran) ==="
+  } else {
+    Log "=== [$pf] RESULT: $($pfResult.status) (L1=$($pfResult.l1Pass), chat=$($pfResult.chatRoundTrip)) ==="
+  }
   Start-Sleep -Seconds 3
 }
 
@@ -664,13 +678,16 @@ Log ""
 Log "=== E2E SUMMARY ==="
 $summaryTable = @()
 foreach ($r in $allResults) {
-  $l1 = if ($r.l1Pass) { "PASS" } else { "FAIL" }
-  $chat = if ($r.chatRoundTrip) { "MATCH" } else { "NO-MATCH" }
+  # A SKIPPED platform ran no assertions; printing "L1: FAIL" for it would be
+  # just as dishonest as printing PASS. Show a neutral placeholder instead.
+  $l1 = if ($r.status -eq "SKIPPED") { "N/A" } elseif ($r.l1Pass) { "PASS" } else { "FAIL" }
+  $chat = if ($r.status -eq "SKIPPED") { "N/A" } elseif ($r.chatRoundTrip) { "MATCH" } else { "NO-MATCH" }
   Log ("  {0,-10} | L1: {1,-4} | chat: {2,-9} | {3}" -f $r.platform, $l1, $chat, $r.status)
   if ($r.notes) { Log "             | notes: $($r.notes)" }
   $summaryTable += [PSCustomObject]@{
     platform = $r.platform
     status = $r.status
+    skipped = ($r.status -eq "SKIPPED")
     l1Pass = $r.l1Pass
     chatRoundTrip = $r.chatRoundTrip
     chatPhrase = $r.chatPhrase
@@ -681,14 +698,31 @@ foreach ($r in $allResults) {
 # write summary JSON
 $summaryDir = Split-Path $SummaryFile -Parent
 if (-not (Test-Path $summaryDir)) { New-Item -ItemType Directory -Force $summaryDir | Out-Null }
-$summaryTable | ConvertTo-Json -Depth 5 | Set-Content $SummaryFile -Encoding utf8
+# BOM-free UTF-8: 5.1's -Encoding utf8 prefixes a BOM, and the orchestrator's
+# Get-Content|ConvertFrom-Json and Groovy's JsonSlurper both read this file.
+$summaryJson = $summaryTable | ConvertTo-Json -Depth 5
+[System.IO.File]::WriteAllText($SummaryFile, $summaryJson, (New-Object System.Text.UTF8Encoding($false)))
 Log "Summary written to: $SummaryFile"
 
-if ($overallPass) {
-  Log "=== ALL REQUESTED PLATFORMS PASSED ==="
-  exit 0
-} else {
+$skippedResults = @($allResults | Where-Object { $_.status -eq "SKIPPED" })
+$skippedSummary = ($skippedResults | ForEach-Object { $_.platform }) -join ", "
+if (-not $overallPass) {
   $failed = ($allResults | Where-Object { $_.status -eq "FAIL" } | ForEach-Object { $_.platform }) -join ", "
   Log "=== E2E FAILED for: $failed ==="
+  if ($skippedResults.Count -gt 0) { Log "=== also SKIPPED (no test ran): $skippedSummary ===" }
   exit 1
 }
+if ($skippedResults.Count -gt 0 -and $skippedResults.Count -eq $allResults.Count -and $allResults.Count -gt 0) {
+  Log "=== NO PLATFORM ACTUALLY RAN (all SKIPPED): $skippedSummary ==="
+  exit 3
+}
+if ($skippedResults.Count -gt 0) {
+  if ($RequireAllPlatforms) {
+    Log "=== STRICT MODE: SKIPPED platform(s) count as failures: $skippedSummary ==="
+    exit 1
+  }
+  Log "=== ALL REQUESTED NON-SKIPPED PLATFORMS PASSED; SKIPPED (no test ran): $skippedSummary ==="
+} else {
+  Log "=== ALL REQUESTED PLATFORMS PASSED ==="
+}
+exit 0

@@ -27,10 +27,24 @@
 # dir -- a step the shared primitive does not do (the other Java platforms are
 # tested against the server alone, without their platform plugin installed;
 # wiring the per-platform plugin build + install is tracked as a follow-up).
+#
+# Exit codes:
+#   0 = every requested platform PASSED (or was SKIPPED in non-strict mode)
+#   1 = a platform FAILED, or was SKIPPED while -RequireAllPlatforms is set
+#   2 = orchestrator/prereq failure before any platform result
+# Child platform scripts signal SKIPPED with exit 3; this script consumes that
+# code and never reports SKIPPED as PASS. The per-platform statuses are written
+# to .e2e-artifacts/runs/e2e-orchestrator-summary.json.
 # ============================================================================
 [CmdletBinding()]
 param(
     [string]$Platforms = "bukkit,pmmp",
+    # Strict CI mode: a SKIPPED platform counts as a failure. This is OFF by
+    # default because SKIPPED is a normal local outcome (a BDS-blocked dev box,
+    # or velocity/bungee which are proxy-only by design) and defaulting to fatal
+    # would make every offline/local full run red. CI opts in explicitly, so a
+    # platform that ran ZERO assertions can never look green there.
+    [switch]$RequireAllPlatforms,
     # Resolved in the body below, NOT as a parameter default: under
     # [CmdletBinding()] PowerShell binds parameters as an advanced function, and
     # every automatic variable ($MyInvocation / $PSScriptRoot / $PSCommandPath)
@@ -301,20 +315,46 @@ foreach ($p in $RequestedPlatforms) {
 
 $results = @()
 
+# Exit code contract shared with the per-platform scripts: 0 PASS, 1 FAIL,
+# 2 prereq error, 3 SKIPPED (no test ran). SKIPPED is its own terminal state --
+# it is never collapsed into PASS, because a platform that executed zero
+# assertions proves nothing about NovaLink's health.
+function Convert-ExitCodeToStatus([int]$exitCode) {
+    switch ($exitCode) {
+        0 { return 'PASS' }
+        3 { return 'SKIPPED' }
+        default { return 'FAIL' }
+    }
+}
+
+# A SKIPPED leaf script records why in <runsDir>/skip-reason.txt so the summary
+# can say "SKIPPED (BDS unavailable)" instead of a bare SKIPPED.
+function Read-SkipReason([string]$platform) {
+    $reasonFile = Join-Path $RepoRoot ".e2e-artifacts/runs/$platform/skip-reason.txt"
+    if (Test-Path -LiteralPath $reasonFile -PathType Leaf) {
+        return (Get-Content -LiteralPath $reasonFile -Raw -ErrorAction SilentlyContinue).Trim()
+    }
+    return ""
+}
+
 # --- dispatch the self-contained platforms (one script per platform) ---------
 foreach ($p in $SelfPlatforms) {
     Log "=== platform: $p ==="
     $def = $PlatformDefs[$p]
     if (-not $def) {
-        $results += [pscustomobject]@{ platform = $p; exitCode = 2; status = 'UNKNOWN' }
+        $results += [pscustomobject]@{ platform = $p; exitCode = 2; status = 'UNKNOWN'; skippedReason = '' }
         continue
     }
     $script = Join-Path $binDir $def.BackendScript
     if (-not (Test-Path $script)) {
         Log "ERROR: required platform script is missing: $script"
-        $results += [pscustomobject]@{ platform = $p; exitCode = 2; status = 'MISSING-HARNESS' }
+        $results += [pscustomobject]@{ platform = $p; exitCode = 2; status = 'MISSING-HARNESS'; skippedReason = '' }
         continue
     }
+    # A skip-reason file is per-run; remove any stale one so a previous run's
+    # reason cannot be attributed to this one.
+    $reasonFile = Join-Path $RepoRoot ".e2e-artifacts/runs/$p/skip-reason.txt"
+    Remove-Item -LiteralPath $reasonFile -Force -ErrorAction SilentlyContinue
     # Invoke the child script with the call operator rather than Start-Process.
     # Start-Process builds a fresh environment block and throws
     # "Item has already been added. Key in dictionary: 'NO_PROXY' Key being
@@ -334,7 +374,9 @@ foreach ($p in $SelfPlatforms) {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script `
         -RepoRoot $RepoRoot -BotTimeoutSec $BotWaitSec
     $selfExit = $LASTEXITCODE
-    $results += [pscustomobject]@{ platform = $p; exitCode = $selfExit; status = if ($selfExit -eq 0) { 'PASS' } else { 'FAIL' } }
+    $selfStatus = Convert-ExitCodeToStatus $selfExit
+    $selfReason = if ($selfStatus -eq 'SKIPPED') { Read-SkipReason $p } else { '' }
+    $results += [pscustomobject]@{ platform = $p; exitCode = $selfExit; status = $selfStatus; skippedReason = $selfReason }
 }
 
 # --- dispatch the Java platforms via the shared multiplatform orchestrator ----
@@ -343,29 +385,105 @@ if ($MultiPlatforms.Count -gt 0) {
     if (-not (Test-Path $mpScript)) {
         Log "ERROR: run-multiplatform-e2e.ps1 not found at $mpScript"
         foreach ($p in $MultiPlatforms) {
-            $results += [pscustomobject]@{ platform = $p; exitCode = 2; status = 'MISSING-HARNESS' }
+            $results += [pscustomobject]@{ platform = $p; exitCode = 2; status = 'MISSING-HARNESS'; skippedReason = '' }
         }
     } else {
         $mpPlatforms = $MultiPlatforms -join ','
         Log "=== multiplatform batch: $mpPlatforms ==="
+        # The batch's summary is per-run; drop a stale one so a crashed batch
+        # cannot leave the previous run's PASS rows behind to be read below.
+        $mpSummaryFile = Join-Path $RepoRoot ".e2e-artifacts/runs/e2e-summary.json"
+        Remove-Item -LiteralPath $mpSummaryFile -Force -ErrorAction SilentlyContinue
         # Call operator, not Start-Process -- see the note above.
+        # Build the array element-by-element. `$a = if (...) { @('-flag') } else { @() }`
+        # does NOT produce an array: an if-statement unrolls its output into the
+        # pipeline, so the one-element array collapses to a bare string. Splatting
+        # that string passes individual characters as arguments ("it is not
+        # possible to bind argument ... name" / the switch never reaches the
+        # child), which silently made strict mode unreachable. Verified with a
+        # minimal repro on PowerShell 5.1.
+        $mpStrictArgs = @()
+        if ($RequireAllPlatforms) { $mpStrictArgs += "-RequireAllPlatforms" }
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $mpScript `
             -Platforms $mpPlatforms -RepoRoot $RepoRoot `
-            -TimeoutSec $TimeoutSec -BotWaitSec $BotWaitSec
+            -TimeoutSec $TimeoutSec -BotWaitSec $BotWaitSec @mpStrictArgs
         $mpExit = $LASTEXITCODE
-        $status = if ($mpExit -eq 0) { 'PASS' } else { 'FAIL' }
+        # The batch reports one exit code for N platforms, but the platforms do
+        # not share a fate: velocity/bungee SKIP by design while a sibling FAILs.
+        # Read the batch's per-platform summary JSON so each row keeps its own
+        # status instead of inheriting a blanket PASS/FAIL.
+        $mpRows = @()
+        if (Test-Path -LiteralPath $mpSummaryFile -PathType Leaf) {
+            try {
+                # Windows PowerShell 5.1's ConvertFrom-Json returns a JSON array
+                # as ONE Object[] value; wrapping that in @() yields a nested
+                # array, and member enumeration then makes $row.status an array
+                # ("System.Object[]" in the summary). Enumerate explicitly.
+                $parsed = Get-Content -LiteralPath $mpSummaryFile -Raw | ConvertFrom-Json
+                $parsed | ForEach-Object { $mpRows += $_ }
+            } catch {
+                Log "WARN: could not parse multiplatform summary JSON: $($_.Exception.Message)"
+            }
+        }
         foreach ($p in $MultiPlatforms) {
-            $results += [pscustomobject]@{ platform = $p; exitCode = $mpExit; status = $status }
+            $row = $mpRows | Where-Object { $_.platform -eq $p } | Select-Object -First 1
+            if ($row) {
+                $mpStatus = $row.status
+                $mpReason = if ($mpStatus -eq 'SKIPPED') { $row.notes } else { '' }
+                # PARTIAL maps to 0 like the batch does: only FAIL reds the run.
+                $mpRowExit = switch ($mpStatus) { 'FAIL' { 1 } 'SKIPPED' { 3 } default { 0 } }
+                $results += [pscustomobject]@{ platform = $p; exitCode = $mpRowExit; status = $mpStatus; skippedReason = $mpReason }
+            } else {
+                # No per-platform row: fall back to the batch exit code.
+                $mpStatus = Convert-ExitCodeToStatus $mpExit
+                $results += [pscustomobject]@{ platform = $p; exitCode = $mpExit; status = $mpStatus; skippedReason = '' }
+            }
         }
     }
 }
 
 Log "=== E2E summary ==="
-$results | ForEach-Object { Log ("  {0,-12} {1}" -f $_.platform, $_.status) }
+# Print the honest terminal state. A SKIPPED platform executed zero assertions,
+# so it is never rendered as PASS -- the reason is printed next to it.
+$results | ForEach-Object {
+    if ($_.status -eq 'SKIPPED' -and $_.skippedReason) {
+        Log ("  {0,-12} {1} ({2})" -f $_.platform, $_.status, $_.skippedReason)
+    } else {
+        Log ("  {0,-12} {1}" -f $_.platform, $_.status)
+    }
+}
 # @() is required: with exactly ONE failing platform, Where-Object returns a
 # scalar PSCustomObject rather than an array, and .Count on a scalar is $null --
 # so `$null -gt 0` is False and the orchestrator would exit 0 (a silently green
 # E2E run) for the single-failure case. Wrapping in @() guarantees an array.
-$failures = @($results | Where-Object { $_.exitCode -ne 0 })
-Log ("=== {0} platform(s) requested, {1} failed ===" -f $results.Count, $failures.Count)
-if ($failures.Count -gt 0) { exit 1 } else { exit 0 }
+$failures = @($results | Where-Object { $_.status -eq 'FAIL' -or $_.status -eq 'UNKNOWN' -or $_.status -eq 'MISSING-HARNESS' })
+$skipped  = @($results | Where-Object { $_.status -eq 'SKIPPED' })
+Log ("=== {0} platform(s) requested, {1} passed, {2} skipped, {3} failed ===" -f `
+    $results.Count, ($results.Count - $skipped.Count - $failures.Count), $skipped.Count, $failures.Count)
+if ($RequireAllPlatforms -and $skipped.Count -gt 0) {
+    Log "STRICT MODE (-RequireAllPlatforms): SKIPPED platform(s) count as failures: $(($skipped | ForEach-Object { $_.platform }) -join ', ')"
+}
+
+# Machine-readable summary. 'status' is the explicit terminal state
+# (PASS/FAIL/SKIPPED/...); 'skipped' makes the SKIP outcome unambiguous for
+# consumers that only look at booleans, and 'skippedReason' explains why.
+$summaryFile = Join-Path $RepoRoot ".e2e-artifacts/runs/e2e-orchestrator-summary.json"
+$summaryDir = Split-Path -Parent $summaryFile
+if (-not (Test-Path $summaryDir)) { New-Item -ItemType Directory -Force -Path $summaryDir | Out-Null }
+$summaryRows = $results | ForEach-Object {
+    [pscustomobject]@{
+        platform      = $_.platform
+        status        = $_.status
+        exitCode      = $_.exitCode
+        skipped       = ($_.status -eq 'SKIPPED')
+        skippedReason = $_.skippedReason
+    }
+}
+# Write UTF-8 WITHOUT a BOM: Windows PowerShell 5.1's -Encoding utf8 emits one,
+# and Groovy's JsonSlurper (build.gradle reads this file) rejects a BOM.
+$summaryJson = $summaryRows | ConvertTo-Json -Depth 5
+[System.IO.File]::WriteAllText($summaryFile, $summaryJson, (New-Object System.Text.UTF8Encoding($false)))
+Log "Summary written to: $summaryFile"
+
+$strictFailure = $RequireAllPlatforms -and $skipped.Count -gt 0
+if ($failures.Count -gt 0 -or $strictFailure) { exit 1 } else { exit 0 }

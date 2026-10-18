@@ -102,6 +102,9 @@ a browser UA; the page is JS-rendered with no static URL).
 `-Auto` therefore logs the detection approach + URL pattern and exits 0 without
 downloading — it is **documented-only**, not a script failure. The levilamina /
 endstone E2E agents supply a locally-cached BDS zip via their own scripts.
+When no zip is present, the endstone/levilamina scripts record
+`skip-reason.txt` and exit **3 (SKIPPED)**; the orchestrator reports those
+platforms as `SKIPPED (BDS unavailable)`, never as PASS.
 
 URL pattern (documented):
 ```
@@ -130,6 +133,22 @@ The Java platforms (bukkit/folia/velocity/bungee/nukkit/sponge) reached L1 in
 the local `.e2e/` harness (see `docs/REAL-SERVER-E2E.md` §1.5.1). The Bedrock
 platforms (endstone/levilamina/pmmp) are wired through the orchestrator +
 their dedicated scripts.
+
+## Exit codes (SKIP is not PASS)
+
+| Code | Meaning | Orchestrator status |
+|------|---------|---------------------|
+| 0 | L1 pass | `PASS` |
+| 1 | L1 fail | `FAIL` |
+| 2 | prereq error (build/download failed) | `FAIL` |
+| 3 | skipped; no test ran | `SKIPPED` |
+
+A platform that runs zero assertions is never reported as `PASS`.
+`run-e2e-orchestrator.ps1 -RequireAllPlatforms` treats `SKIPPED` as a failure;
+CI passes `-Pe2eRequireAllPlatforms=true`, so a green job always means the
+requested platform actually ran. The per-platform terminal state is written to
+`.e2e-artifacts/runs/e2e-orchestrator-summary.json`
+(`status`, `skipped`, `skippedReason`).
 
 ## EULA policy (CI)
 
