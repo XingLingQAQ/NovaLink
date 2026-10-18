@@ -8,6 +8,9 @@ import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.PlatformType;
+import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
@@ -70,6 +73,16 @@ public class ChatListener {
      * server a player connects to; server switches do not re-trigger it.
      */
     private final java.util.Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Players whose first server connection this proxy session has already been
+     * processed for by {@link com.nova.chat.velocity.listener.ServerSwitchHandler}
+     * (default-channel JOIN). Cleared on disconnect. This is the authoritative
+     * first-connection signal; {@code PlayerChannelState#getCurrentServer()} is
+     * not, because both listeners write it and their execution order is not
+     * guaranteed.
+     */
+    private final java.util.Set<UUID> firstConnections = ConcurrentHashMap.newKeySet();
     
     /**
      * Global chat mode from configuration.
@@ -208,7 +221,7 @@ public class ChatListener {
      * Handles channel action responses from the backend by delegating the
      * shared "consume pending → route success/failure" skeleton to the shared
      * {@link ChannelResponseDispatcher} (DUP-3). The platform adapter owns player
-     * lookup, rendering and the proxy action-bar no-op.
+     * lookup, rendering and the Adventure action-bar status line.
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         plugin.debug("Received channel action response: " + packet);
@@ -228,8 +241,8 @@ public class ChatListener {
 
     /**
      * Velocity-specific {@link ChannelResponseDispatcher.ChannelResponseAdapter}.
-     * Proxy has no reliable action-bar API, so the status-bar callbacks are no-ops
-     * (§7 TODO). The KICK/MUTE notice is a title plus a chat-message reinforcement.
+     * The §7 status bar uses Adventure's {@code Audience#sendActionBar}; the
+     * KICK/MUTE notice is a title plus an action-bar reinforcement.
      *
      * <p>GAP-3 fix: every callback now hops to the Velocity scheduler via
      * {@code plugin.getServer().getScheduler().buildTask(plugin, ...).schedule()}
@@ -301,45 +314,44 @@ public class ChatListener {
 
         @Override
         public void sendJoinChannelStatusBar(UUID playerId, String channelId) {
-            // §7 status ("当前频道：X（模式）"): Velocity is a proxy with no stable
-            // action-bar API, so we render a one-shot title instead of a persistent
-            // bar. The title shows the channel name; the subtitle reuses the shared
-            // "current channel" copy. Times are short so it reads as a transient
-            // confirmation, not a lingering overlay.
+            // §7 status ("当前频道：X（模式）"): a one-shot Adventure action bar
+            // (Audience#sendActionBar(Component)), matching the other platforms'
+            // "flash the bar once" semantics. Vanilla fades it out; no polling.
             plugin.getServer().getScheduler()
                     .buildTask(plugin, () -> {
                         if (channelId == null || channelId.isEmpty()) {
                             return;
                         }
                         plugin.getServer().getPlayer(playerId).ifPresent(player -> {
-                            Component title = messageFormatter.parseColors(channelId);
-                            Component subtitle = messageFormatter.parseColors(
-                                    I18n.tr(playerId, "chat.status.current_bar", channelId, ""));
-                            Title.Times times = Title.Times.times(
-                                    Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
-                                    Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
-                                    Duration.ofMillis(MentionNotifier.DEFAULT_FADE_OUT * 50L));
-                            player.showTitle(Title.title(title, subtitle, times));
+                            PlayerChannelState state = getState(playerId);
+                            ChatMode mode = state != null ? state.getChatMode() : ChatMode.HYBRID;
+                            player.sendActionBar(messageFormatter.parseColors(
+                                    PlayerMessages.currentChannelBar(playerId, channelId, mode)));
                         });
                     })
                     .schedule();
         }
 
+
         @Override
         public void sendLeaveChannelStatusBar(UUID playerId) {
-            // One-shot title on leave (see sendJoinChannelStatusBar). No target
-            // channel to name, so the title is the shared "left channel" copy and
-            // the subtitle is empty.
+            // After a successful leave the active channel falls back locally
+            // (ChannelCommandService.leave → PlayerChannelState#leaveChannel), so
+            // resolve the current channel here and flash the same bar. Nothing to
+            // name when the player joined nothing else — skip.
             plugin.getServer().getScheduler()
-                    .buildTask(plugin, () ->
-                            plugin.getServer().getPlayer(playerId).ifPresent(player -> {
-                                Component title = messageFormatter.parseColors(I18n.tr(playerId, "chat.leave.leaving", ""));
-                                Title.Times times = Title.Times.times(
-                                        Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
-                                        Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
-                                        Duration.ofMillis(MentionNotifier.DEFAULT_FADE_OUT * 50L));
-                                player.showTitle(Title.title(title, Component.empty(), times));
-                            }))
+                    .buildTask(plugin, () -> {
+                        plugin.getServer().getPlayer(playerId).ifPresent(player -> {
+                            PlayerChannelState state = getState(playerId);
+                            String channelId = state != null ? state.getActiveChannel() : null;
+                            if (channelId == null || channelId.isEmpty()) {
+                                return;
+                            }
+                            ChatMode mode = state.getChatMode();
+                            player.sendActionBar(messageFormatter.parseColors(
+                                    PlayerMessages.currentChannelBar(playerId, channelId, mode)));
+                        });
+                    })
                     .schedule();
         }
 
@@ -390,7 +402,7 @@ public class ChatListener {
                                     Component subtitle = messageFormatter.parseColors(
                                             I18n.tr(targetId, "chat.notice.kick_subtitle", operator, channelId));
                                     target.showTitle(Title.title(title, subtitle, times));
-                                    target.sendMessage(messageFormatter.parseColors(
+                                    target.sendActionBar(messageFormatter.parseColors(
                                             I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId)));
                                     return;
                                 }
@@ -399,7 +411,7 @@ public class ChatListener {
                                 Component subtitle = messageFormatter.parseColors(
                                         I18n.tr(targetId, "chat.notice.mute_subtitle", channelId, durationText));
                                 target.showTitle(Title.title(title, subtitle, times));
-                                target.sendMessage(messageFormatter.parseColors(
+                                target.sendActionBar(messageFormatter.parseColors(
                                         I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId)));
                             }))
                     .schedule();
@@ -571,20 +583,85 @@ public class ChatListener {
     
     /**
      * Handles player disconnect events.
-     * Cleans up player state.
+     * Cleans up player state and tells the backend the player is gone.
+     *
+     * <p>The backend keeps every player it has seen in its online-state cache and
+     * only clears it on shutdown, so without a LEAVE the proxy player looks
+     * online forever: private messages are routed back to this proxy, which
+     * renders only the sender echo, and the sender sees a false "sent". The LEAVE
+     * is sent before the local state is dropped so it can name the channel the
+     * player is actually in.
      *
      * @param event the disconnect event
      */
     @Subscribe
     public void onPlayerDisconnect(DisconnectEvent event) {
         UUID playerId = event.getPlayer().getUniqueId();
+        PlayerChannelState state = playerStates.get(playerId);
+        notifyBackendDisconnect(event.getPlayer(), state);
         playerStates.remove(playerId);
         welcomedPlayers.remove(playerId);
+        firstConnections.remove(playerId);
         // Reply-target cleanup for /nc r (private messages); thread-safe map.
         if (plugin.getPrivateMessageService() != null) {
             plugin.getPrivateMessageService().onPlayerQuit(playerId);
         }
         plugin.debug("Removed chat state for " + event.getPlayer().getUsername());
+    }
+
+    /**
+     * Sends a LEAVE for every channel the departing player had joined, so the
+     * backend drops both the membership and the cached player state.
+     *
+     * <p>One packet per joined channel is required: {@code ChannelActionHandler}
+     * rejects a blank channel id (NC-400), and a player that joined several
+     * channels would otherwise stay a member of the rest.
+     *
+     * @param player the disconnecting player
+     * @param state  the player's chat state, or {@code null} if it was never created
+     */
+    private void notifyBackendDisconnect(Player player, PlayerChannelState state) {
+        if (state == null || plugin.getNetworkClient() == null
+                || !plugin.getNetworkClient().isAuthenticated()) {
+            return;
+        }
+        UUID playerId = player.getUniqueId();
+        String playerName = player.getUsername();
+        java.util.Set<String> channels = new java.util.LinkedHashSet<>(state.getJoinedChannels());
+        if (state.getActiveChannel() != null) {
+            channels.add(state.getActiveChannel());
+        }
+        for (String channelId : channels) {
+            if (channelId == null || channelId.isBlank()) {
+                continue;
+            }
+            ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.LEAVE, channelId);
+            packet.addExtra("playerId", playerId.toString());
+            packet.addExtra("playerName", playerName);
+            packet.addExtra("platform", PlatformType.VELOCITY.name());
+            // Distinguishes "player is logging off this network" from a plain
+            // /nc leave. The backend currently ignores this extra (see the
+            // companion change required in ChannelActionHandler#handleLeave);
+            // it is carried here so the cache eviction can be keyed on it.
+            packet.addExtra("logout", "true");
+            plugin.getNetworkClient().sendPacket(packet);
+            plugin.debug("Notified backend that " + playerName + " left channel " + channelId);
+        }
+    }
+
+    /**
+     * Atomically claims the player's first server connection of this proxy
+     * session.
+     *
+     * <p>Used by {@link com.nova.chat.velocity.listener.ServerSwitchHandler} so
+     * the "first join" decision never depends on listener execution order or on
+     * {@code PlayerChannelState#getCurrentServer()}, which both listeners write.
+     *
+     * @param playerId the connecting player
+     * @return {@code true} the first time this player connects in this session
+     */
+    public boolean claimFirstConnection(UUID playerId) {
+        return firstConnections.add(playerId);
     }
     
     /**

@@ -12,12 +12,15 @@ import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.bungee.NovaChatBungee;
 import com.nova.chat.bungee.config.NovaChatConfig;
 import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.PlatformType;
+import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
 import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.common.chat.MentionNotifier;
+import net.md_5.bungee.api.ChatMessageType;
 import net.md_5.bungee.api.Title;
 import net.md_5.bungee.api.chat.BaseComponent;
 import net.md_5.bungee.api.chat.HoverEvent;
@@ -70,7 +73,17 @@ public class ChatListener implements Listener {
      * welcome is gated by this memory set and cleared on disconnect.
      */
     private final java.util.Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
-    
+
+    /**
+     * Players whose first server connection this proxy session has already been
+     * processed for by {@link com.nova.chat.bungee.listener.ServerSwitchHandler}
+     * (default-channel JOIN). Cleared on disconnect. This is the authoritative
+     * first-connection signal; {@code PlayerChannelState#getCurrentServer()} is
+     * not, because both listeners write it and Bungee's {@code EventBus} does not
+     * guarantee their relative order.
+     */
+    private final java.util.Set<UUID> firstConnections = ConcurrentHashMap.newKeySet();
+
     /**
      * Global chat mode from configuration.
      *
@@ -219,7 +232,7 @@ public class ChatListener implements Listener {
      * Handles channel action responses from the backend by delegating the
      * shared "consume pending → route success/failure" skeleton to the shared
      * {@link ChannelResponseDispatcher} (DUP-3). The platform adapter owns player
-     * lookup, rendering and the proxy action-bar no-op.
+     * lookup, rendering and the {@code ChatMessageType.ACTION_BAR} status line.
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
         plugin.debug("Received channel action response: " + packet);
@@ -242,8 +255,8 @@ public class ChatListener implements Listener {
 
     /**
      * Bungee-specific {@link ChannelResponseDispatcher.ChannelResponseAdapter}.
-     * Bungee has no reliable proxy title/action-bar API, so the status-bar
-     * callbacks are no-ops and the KICK/MUTE notice is a chat message only.
+     * The §7 status bar uses {@code sendMessage(ChatMessageType.ACTION_BAR, ...)};
+     * the KICK/MUTE notice is a title plus an action-bar reinforcement.
      *
      * <p>GAP-3 fix (mirrors the Velocity {@code VelocityChannelResponseAdapter}):
      * every callback now hops off the Netty event loop via
@@ -316,13 +329,44 @@ public class ChatListener implements Listener {
 
         @Override
         public void sendJoinChannelStatusBar(UUID playerId, String channelId) {
-            // §7 action bar is intentionally not sent: Bungee is a proxy and has no
-            // stable action-bar API that reliably reaches the downstream client.
+            // §7 status ("当前频道：X（模式）"): one-shot action bar via
+            // sendMessage(ChatMessageType.ACTION_BAR, ...), which BungeeCord writes
+            // straight to the downstream client. No polling; vanilla fades it.
+            if (channelId == null || channelId.isEmpty()) {
+                return;
+            }
+            plugin.getProxy().getScheduler().runAsync(plugin, () -> {
+                ProxiedPlayer player = plugin.getProxy().getPlayer(playerId);
+                if (player == null) {
+                    return;
+                }
+                PlayerChannelState state = getState(playerId);
+                ChatMode mode = state != null ? state.getChatMode() : ChatMode.HYBRID;
+                player.sendMessage(ChatMessageType.ACTION_BAR, messageFormatter.parseColors(
+                        PlayerMessages.currentChannelBar(playerId, channelId, mode)));
+            });
         }
 
         @Override
         public void sendLeaveChannelStatusBar(UUID playerId) {
-            // No-op — see sendJoinChannelStatusBar.
+            // After a successful leave the active channel falls back locally
+            // (ChannelCommandService.leave → PlayerChannelState#leaveChannel), so
+            // resolve the current channel here and flash the same bar. Nothing to
+            // name when the player joined nothing else — skip.
+            plugin.getProxy().getScheduler().runAsync(plugin, () -> {
+                ProxiedPlayer player = plugin.getProxy().getPlayer(playerId);
+                if (player == null) {
+                    return;
+                }
+                PlayerChannelState state = getState(playerId);
+                String channelId = state != null ? state.getActiveChannel() : null;
+                if (channelId == null || channelId.isEmpty()) {
+                    return;
+                }
+                ChatMode mode = state.getChatMode();
+                player.sendMessage(ChatMessageType.ACTION_BAR, messageFormatter.parseColors(
+                        PlayerMessages.currentChannelBar(playerId, channelId, mode)));
+            });
         }
 
         @Override
@@ -365,15 +409,39 @@ public class ChatListener implements Listener {
                 String channelId = notice.getChannelId();
                 String operator = notice.getOperator();
                 if (notice.getAction() == ChannelAction.KICK) {
-                    target.sendMessage(messageFormatter.parseColors(
-                            I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId)));
+                    showNotice(target, targetId, "chat.notice.kick_title",
+                            I18n.tr(targetId, "chat.notice.kick_subtitle", operator, channelId),
+                            I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId));
                     return;
                 }
                 String durationText = notice.getDurationText();
-                target.sendMessage(messageFormatter.parseColors(
-                        I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId)));
+                showNotice(target, targetId, "chat.notice.mute_title",
+                        I18n.tr(targetId, "chat.notice.mute_subtitle", channelId, durationText),
+                        I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId));
             });
         }
+    }
+
+    /**
+     * Renders the target-side KICK/MUTE notice: a proxy-native title plus the
+     * action-bar line carrying the same text.
+     *
+     * @param target        the affected player
+     * @param targetId      the affected player's UUID (locale lookup)
+     * @param titleKey      i18n key for the title line
+     * @param subtitle      already-resolved subtitle text
+     * @param actionBarText already-resolved action-bar text
+     */
+    private void showNotice(ProxiedPlayer target, UUID targetId, String titleKey,
+                            String subtitle, String actionBarText) {
+        plugin.getProxy().createTitle()
+                .title(messageFormatter.parseColors(I18n.tr(targetId, titleKey)))
+                .subTitle(messageFormatter.parseColors(subtitle))
+                .fadeIn(MentionNotifier.DEFAULT_FADE_IN)
+                .stay(MentionNotifier.DEFAULT_STAY)
+                .fadeOut(MentionNotifier.DEFAULT_FADE_OUT)
+                .send(target);
+        target.sendMessage(ChatMessageType.ACTION_BAR, messageFormatter.parseColors(actionBarText));
     }
 
     /**
@@ -415,14 +483,11 @@ public class ChatListener implements Listener {
     /**
      * Handles a mention notification packet (UX-DESIGN §4.1, Requirements 11.2).
      *
-     * <p><b>Proxy degradation:</b> BungeeCord's {@link ProxiedPlayer} has no native
-     * title or sound API (no Adventure {@code Audience}). Sending a raw
-     * {@code net.md_5.bungee.protocol.packet.Title} / sound packet would couple us
-     * to unstable internal protocol classes, so we degrade to an in-chat
-     * highlighted notification. The {@link MentionPacket} itself still transits
-     * the proxy transparently (it is registered and handled here, not swallowed),
-     * so backends that want to render the title themselves via a client plugin
-     * can still do so.
+     * <p>Renders the same title + action-bar pair as the other platforms: the
+     * proxy-native {@link Title} API ({@code ProxyServer#createTitle()}) for the
+     * title, and {@code sendMessage(ChatMessageType.ACTION_BAR, ...)} for the
+     * bar. Both write packets straight to the downstream client; no internal
+     * protocol classes are touched.
      */
     private void handleMention(MentionPacket packet) {
         UUID mentionedId = packet.getMentionedId();
@@ -442,8 +507,21 @@ public class ChatListener implements Listener {
         mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
             String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
             String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
-            String text = "&e" + mentioner + " " + I18n.tr(mentionedId, "chat.mention.subtitle", channelId);
-            player.sendMessage(messageFormatter.parseColors(text));
+            BaseComponent[] title = messageFormatter.parseColors("&e" + mentioner);
+            BaseComponent[] subtitle = messageFormatter.parseColors(
+                    I18n.tr(mentionedId, "chat.mention.subtitle", channelId));
+
+            plugin.getProxy().createTitle()
+                    .title(title)
+                    .subTitle(subtitle)
+                    .fadeIn(MentionNotifier.DEFAULT_FADE_IN)
+                    .stay(MentionNotifier.DEFAULT_STAY)
+                    .fadeOut(MentionNotifier.DEFAULT_FADE_OUT)
+                    .send(player);
+
+            player.sendMessage(net.md_5.bungee.api.ChatMessageType.ACTION_BAR,
+                    messageFormatter.parseColors(
+                            "&e" + mentioner + " " + I18n.tr(mentionedId, "chat.mention.subtitle", channelId)));
         });
     }
 
@@ -530,15 +608,25 @@ public class ChatListener implements Listener {
     
     /**
      * Handles player disconnect events.
-     * Cleans up player state.
+     * Cleans up player state and tells the backend the player is gone.
+     *
+     * <p>The backend keeps every player it has seen in its online-state cache and
+     * only clears it on shutdown, so without a LEAVE the proxy player looks
+     * online forever: private messages are routed back to this proxy, which
+     * renders only the sender echo, and the sender sees a false "sent". The LEAVE
+     * is sent before the local state is dropped so it can name the channel the
+     * player is actually in.
      *
      * @param event the disconnect event
      */
     @EventHandler
     public void onPlayerDisconnect(PlayerDisconnectEvent event) {
         UUID playerId = event.getPlayer().getUniqueId();
+        PlayerChannelState state = playerStates.get(playerId);
+        notifyBackendDisconnect(event.getPlayer(), state);
         playerStates.remove(playerId);
         welcomedPlayers.remove(playerId);
+        firstConnections.remove(playerId);
         // Reply-target cleanup for /nc r (private messages); thread-safe map.
         if (plugin.getPrivateMessageService() != null) {
             plugin.getPrivateMessageService().onPlayerQuit(playerId);
@@ -547,10 +635,65 @@ public class ChatListener implements Listener {
     }
 
     /**
+     * Sends a LEAVE for every channel the departing player had joined, so the
+     * backend drops both the membership and the cached player state.
+     *
+     * <p>One packet per joined channel is required: {@code ChannelActionHandler}
+     * rejects a blank channel id (NC-400), and a player that joined several
+     * channels would otherwise stay a member of the rest.
+     *
+     * @param player the disconnecting player
+     * @param state  the player's chat state, or {@code null} if it was never created
+     */
+    private void notifyBackendDisconnect(ProxiedPlayer player, PlayerChannelState state) {
+        if (state == null || plugin.getNetworkClient() == null
+                || !plugin.getNetworkClient().isAuthenticated()) {
+            return;
+        }
+        UUID playerId = player.getUniqueId();
+        String playerName = player.getName();
+        java.util.Set<String> channels = new java.util.LinkedHashSet<>(state.getJoinedChannels());
+        if (state.getActiveChannel() != null) {
+            channels.add(state.getActiveChannel());
+        }
+        for (String channelId : channels) {
+            if (channelId == null || channelId.isBlank()) {
+                continue;
+            }
+            ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.LEAVE, channelId);
+            packet.addExtra("playerId", playerId.toString());
+            packet.addExtra("playerName", playerName);
+            packet.addExtra("platform", PlatformType.BUNGEECORD.name());
+            // Distinguishes "player is logging off this network" from a plain
+            // /nc leave. The backend currently ignores this extra (see the
+            // companion change required in ChannelActionHandler#handleLeave);
+            // it is carried here so the cache eviction can be keyed on it.
+            packet.addExtra("logout", "true");
+            plugin.getNetworkClient().sendPacket(packet);
+            plugin.debug("Notified backend that " + playerName + " left channel " + channelId);
+        }
+    }
+
+    /**
+     * Atomically claims the player's first server connection of this proxy
+     * session.
+     *
+     * <p>Used by {@link com.nova.chat.bungee.listener.ServerSwitchHandler} so the
+     * "first join" decision never depends on listener execution order or on
+     * {@code PlayerChannelState#getCurrentServer()}, which both listeners write.
+     *
+     * @param playerId the connecting player
+     * @return {@code true} the first time this player connects in this session
+     */
+    public boolean claimFirstConnection(UUID playerId) {
+        return firstConnections.add(playerId);
+    }
+
+    /**
      * Pushes the shared first-join welcome line once per proxy session to the
      * given player (UX-DESIGN §8.1). No-op if already welcomed this session.
-     * Intended to be called from {@code ServerSwitchHandler} on the player's
-     * first server connection (previous server == null).
+     * Called from {@code ServerSwitchHandler} on the player's first server
+     * connection (as decided by {@link #claimFirstConnection(UUID)}).
      *
      * @param player the freshly connected player
      */

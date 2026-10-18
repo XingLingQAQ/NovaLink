@@ -11,7 +11,9 @@ import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
+import net.md_5.bungee.api.ChatMessageType;
 import net.md_5.bungee.api.ProxyServer;
+import net.md_5.bungee.api.Title;
 import net.md_5.bungee.api.chat.BaseComponent;
 import net.md_5.bungee.api.connection.ProxiedPlayer;
 import net.md_5.bungee.api.event.ChatEvent;
@@ -70,6 +72,8 @@ class ChatListenerPrefixIgnoreTest {
     @Mock
     private ProxyServer proxy;
     @Mock
+    private Title title;
+    @Mock
     private ProxiedPlayer player;
     @Mock
     private ChatEvent event;
@@ -110,6 +114,14 @@ class ChatListenerPrefixIgnoreTest {
         when(player.getDisplayName()).thenReturn("Viewer");
         doReturn(List.of(player)).when(proxy).getPlayers();
         when(proxy.getPlayer(PLAYER_ID)).thenReturn(player);
+
+        // Mention notifications render a proxy title + ACTION_BAR line.
+        when(proxy.createTitle()).thenReturn(title);
+        when(title.title(any(BaseComponent[].class))).thenReturn(title);
+        when(title.subTitle(any(BaseComponent[].class))).thenReturn(title);
+        when(title.fadeIn(any(int.class))).thenReturn(title);
+        when(title.stay(any(int.class))).thenReturn(title);
+        when(title.fadeOut(any(int.class))).thenReturn(title);
 
         when(event.getSender()).thenReturn(player);
         when(event.isCommand()).thenReturn(false);
@@ -209,10 +221,12 @@ class ChatListenerPrefixIgnoreTest {
     }
 
     @Test
-    @DisplayName("mention from an ignored player: no in-chat notification")
+    @DisplayName("mention from an ignored player: no title, no action bar")
     void mentionFromIgnoredSenderSkipped() {
         mentionHandler.accept(new MentionPacket(IGNORED_SENDER_ID, "Steve", PLAYER_ID,
                 "local", "hi @Viewer", System.currentTimeMillis()));
+        verify(title, never()).send(any());
+        verify(player, never()).sendMessage(any(ChatMessageType.class), any(BaseComponent[].class));
         verify(player, never()).sendMessage(any(BaseComponent[].class));
     }
 
@@ -221,7 +235,10 @@ class ChatListenerPrefixIgnoreTest {
     void mentionFromOtherSenderNotifies() {
         mentionHandler.accept(new MentionPacket(OTHER_SENDER_ID, "Alex", PLAYER_ID,
                 "local", "hi @Viewer", System.currentTimeMillis()));
-        verify(player).sendMessage(any(BaseComponent[].class));
+        // Title + ACTION_BAR line, not a chat line.
+        verify(title).send(player);
+        verify(player).sendMessage(eq(ChatMessageType.ACTION_BAR), any(BaseComponent[].class));
+        verify(player, never()).sendMessage(any(BaseComponent[].class));
     }
 
     @Test
