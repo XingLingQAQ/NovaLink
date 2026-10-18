@@ -371,21 +371,26 @@ class ChatListenerConcurrencyTest {
         runConcurrently(bodies);
 
         // (b) No lost sends, no duplicated sends. Per-player expectations
-        // (chat + item + private message + mention all reach player0):
-        //     player0: chat + item + pm-echo + mention = 4 x DISPATCHES
-        //     player1: chat + item + pm-received       = 3 x DISPATCHES
-        //     others:  chat + item                     = 2 x DISPATCHES
-        //     titles:  everyone on "global" receives   = DISPATCHES
-        // The line counter sums BOTH sendMessage overloads (array and single).
+        // (chat + item + private message reach player0/player1). The mention
+        // path renders a title + action bar, NOT a chat line, so it contributes
+        // no line send:
+        //     player0: chat + item + pm-echo       = 3 x DISPATCHES
+        //     player1: chat + item + pm-received   = 3 x DISPATCHES
+        //     others:  chat + item                 = 2 x DISPATCHES
+        //     titles:  everyone on "global" receives = DISPATCHES
+        //              + the mention title for player0
+        // The line counter sums BOTH chat-line sendMessage overloads (array and
+        // single); the ACTION_BAR overload is separate and deliberately not
+        // counted here.
         for (int i = 0; i < PLAYER_COUNT; i++) {
             UUID id = players.get(i).getUniqueId();
-            int expectedLines = (i == 0) ? 4 * DISPATCHES : (i == 1) ? 3 * DISPATCHES : 2 * DISPATCHES;
+            int expectedLines = (i <= 1) ? 3 * DISPATCHES : 2 * DISPATCHES;
             assertThat(lineSendCounts.get(id))
-                    .as("chat-line sends to player%d (chat+item+pm[/mention])", i)
+                    .as("chat-line sends to player%d (chat+item+pm)", i)
                     .hasValue(expectedLines);
             assertThat(titleSendCounts.get(id))
                     .as("title sends to player%d", i)
-                    .hasValue(DISPATCHES);
+                    .hasValue(DISPATCHES + (i == 0 ? DISPATCHES : 0));
         }
 
         // (a, continued) dispatch genuinely ran off this thread, on >= 2 workers.
@@ -533,6 +538,56 @@ class ChatListenerConcurrencyTest {
                 assertThat(state.getActiveChannel()).isEqualTo(CHANNEL);
             }
         }
+    }
+
+    @Test
+    @DisplayName("disconnect: a LEAVE goes out for every joined channel")
+    void disconnectSendsLeaveForEachJoinedChannel() {
+        when(networkClient.isAuthenticated()).thenReturn(true);
+        ProxiedPlayer player = players.get(0);
+        PlayerChannelState state = listener.getState(player.getUniqueId());
+        state.joinChannel("trade");
+
+        PlayerDisconnectEvent event = mock(PlayerDisconnectEvent.class);
+        when(event.getPlayer()).thenReturn(player);
+        listener.onPlayerDisconnect(event);
+
+        ArgumentCaptor<com.nova.chat.common.protocol.Packet> sent =
+                ArgumentCaptor.forClass(com.nova.chat.common.protocol.Packet.class);
+        verify(networkClient, org.mockito.Mockito.atLeast(2)).sendPacket(sent.capture());
+        Set<String> leftChannels = new java.util.LinkedHashSet<>();
+        for (com.nova.chat.common.protocol.Packet packet : sent.getAllValues()) {
+            com.nova.chat.common.protocol.packets.ChannelActionPacket action =
+                    (com.nova.chat.common.protocol.packets.ChannelActionPacket) packet;
+            assertThat(action.getAction()).isEqualTo(com.nova.chat.common.protocol.ChannelAction.LEAVE);
+            // The backend rejects a blank channel id (NC-400).
+            assertThat(action.getChannelId()).isNotBlank();
+            assertThat(action.getExtra("playerId")).isEqualTo(player.getUniqueId().toString());
+            leftChannels.add(action.getChannelId());
+        }
+        assertThat(leftChannels).containsExactlyInAnyOrder(CHANNEL, "trade");
+    }
+
+    @Test
+    @DisplayName("disconnect: no LEAVE when the network is not authenticated")
+    void disconnectWithoutAuthSendsNothing() {
+        when(networkClient.isAuthenticated()).thenReturn(false);
+        ProxiedPlayer player = players.get(0);
+
+        PlayerDisconnectEvent event = mock(PlayerDisconnectEvent.class);
+        when(event.getPlayer()).thenReturn(player);
+        listener.onPlayerDisconnect(event);
+
+        verify(networkClient, org.mockito.Mockito.never())
+                .sendPacket(any(com.nova.chat.common.protocol.Packet.class));
+    }
+
+    @Test
+    @DisplayName("first connection is claimed atomically: exactly one winner per player")
+    void claimFirstConnectionIsAtomic() {
+        UUID id = players.get(0).getUniqueId();
+        assertThat(listener.claimFirstConnection(id)).isTrue();
+        assertThat(listener.claimFirstConnection(id)).isFalse();
     }
 
     /** Wraps per-worker bodies so {@link #runConcurrently} can index them. */

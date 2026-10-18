@@ -539,6 +539,56 @@ class ChatListenerConcurrencyTest {
         }
     }
 
+    @Test
+    @DisplayName("disconnect: a LEAVE goes out for every joined channel")
+    void disconnectSendsLeaveForEachJoinedChannel() {
+        when(networkClient.isAuthenticated()).thenReturn(true);
+        Player player = players.get(0);
+        PlayerChannelState state = listener.getState(player.getUniqueId());
+        state.joinChannel("trade");
+
+        DisconnectEvent event = mock(DisconnectEvent.class);
+        when(event.getPlayer()).thenReturn(player);
+        listener.onPlayerDisconnect(event);
+
+        ArgumentCaptor<com.nova.chat.common.protocol.Packet> sent =
+                ArgumentCaptor.forClass(com.nova.chat.common.protocol.Packet.class);
+        verify(networkClient, org.mockito.Mockito.atLeast(2)).sendPacket(sent.capture());
+        Set<String> leftChannels = new java.util.LinkedHashSet<>();
+        for (com.nova.chat.common.protocol.Packet packet : sent.getAllValues()) {
+            com.nova.chat.common.protocol.packets.ChannelActionPacket action =
+                    (com.nova.chat.common.protocol.packets.ChannelActionPacket) packet;
+            assertThat(action.getAction()).isEqualTo(com.nova.chat.common.protocol.ChannelAction.LEAVE);
+            // The backend rejects a blank channel id (NC-400).
+            assertThat(action.getChannelId()).isNotBlank();
+            assertThat(action.getExtra("playerId")).isEqualTo(player.getUniqueId().toString());
+            leftChannels.add(action.getChannelId());
+        }
+        assertThat(leftChannels).containsExactlyInAnyOrder(CHANNEL, "trade");
+    }
+
+    @Test
+    @DisplayName("disconnect: no LEAVE when the network is not authenticated")
+    void disconnectWithoutAuthSendsNothing() {
+        when(networkClient.isAuthenticated()).thenReturn(false);
+        Player player = players.get(0);
+
+        DisconnectEvent event = mock(DisconnectEvent.class);
+        when(event.getPlayer()).thenReturn(player);
+        listener.onPlayerDisconnect(event);
+
+        verify(networkClient, org.mockito.Mockito.never())
+                .sendPacket(any(com.nova.chat.common.protocol.Packet.class));
+    }
+
+    @Test
+    @DisplayName("first connection is claimed atomically: exactly one winner per player")
+    void claimFirstConnectionIsAtomic() {
+        UUID id = players.get(0).getUniqueId();
+        assertThat(listener.claimFirstConnection(id)).isTrue();
+        assertThat(listener.claimFirstConnection(id)).isFalse();
+    }
+
     /** Wraps per-worker bodies so {@link #runConcurrently} can index them. */
     private static IntConsumer[] phaseBodies(IntConsumer body) {
         IntConsumer[] bodies = new IntConsumer[THREADS];
