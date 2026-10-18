@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'com.gradleup.shadow' version '9.6.1'
 }
 
 // Velocity API requires Java 25. Use a Gradle toolchain so the Velocity
@@ -23,17 +24,30 @@ dependencies {
     // Shared client runtime (Architecture B — not used by StarLink:core)
     implementation project(':NovaChat:client-core')
 
-    // Netty
-    implementation "io.netty:netty-all:${nettyVersion}"
+    // Netty. compileOnly: Velocity ships its own Netty and exposes it to
+    // plugins through the proxy's parent ClassLoader. Shading a second copy
+    // would define io.netty.* twice (child-first plugin loaders would then
+    // split Channel/ByteBuf class identity from the proxy's own pipelines),
+    // so the plugin links against the proxy-provided copy. Compilation still
+    // needs it on the compile classpath; tests need it at runtime.
+    compileOnly "io.netty:netty-all:${nettyVersion}"
+    testImplementation "io.netty:netty-all:${nettyVersion}"
 
     // Utilities (Lombok omitted — velocity source uses no Lombok annotations,
-    // and Lombok 1.18.x crashes under JDK 25's annotation-processor SPI)
-    implementation "com.google.code.gson:gson:${gsonVersion}"
+    // and Lombok 1.18.x crashes under JDK 25's annotation-processor SPI).
+    // gson is compileOnly for the same reason as Netty (Velocity bundles it),
+    // and toml4j is shaded because Velocity's bundled copy may be absent from
+    // the plugin-visible classpath on a future proxy major.
+    compileOnly "com.google.code.gson:gson:${gsonVersion}"
+    testImplementation "com.google.code.gson:gson:${gsonVersion}"
     implementation "com.moandjiezana.toml:toml4j:0.7.2"
 
-    // Logging
-    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
-    implementation "ch.qos.logback:logback-classic:${logbackVersion}"
+    // Logging. slf4j-api is provided by the proxy (Velocity exposes SLF4J to
+    // plugins); logback-classic is the proxy's own SLF4J binding and must NOT
+    // be shaded — a plugin-supplied binding would fight Velocity's for the
+    // LoggerFactory singleton. Neither is needed at runtime from this jar.
+    compileOnly "org.slf4j:slf4j-api:${slf4jVersion}"
+    testImplementation "org.slf4j:slf4j-api:${slf4jVersion}"
 
     // Minecraft Platform
     compileOnly "com.velocitypowered:velocity-api:${velocityVersion}"
@@ -59,3 +73,76 @@ tasks.named('test') {
         events "passed", "skipped", "failed"
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fat jar (see the sibling bungee/build.gradle for the same rationale).
+//
+// The plain `jar` task only contains com/nova/chat/velocity/**. Velocity never
+// put that jar on a plugin classpath before (E2E skipped the proxy), so the
+// missing classes went unnoticed; loading it would fail with
+//   NoClassDefFoundError: com/nova/chat/common/protocol/Packet
+// because nothing on the proxy's classpath provides NovaChat's own modules.
+//
+// What is shaded and why (decided against the *actual* Velocity 4.1.0-SNAPSHOT
+// build 16 distribution, verified by unzipping velocity-4.1.0-SNAPSHOT-16.jar):
+//   INCLUDE  :NovaChat:common       protocol + shared chat helpers (our code)
+//   INCLUDE  :NovaChat:client-core  network runtime / i18n / state (our code)
+//   INCLUDE  org.yaml:snakeyaml     common's YamlConfigUpdater + extension
+//                                   metadata parser use the SnakeYAML 2.x node
+//                                   API. Velocity bundles its own copy (for
+//                                   configurate) but as an internal detail;
+//                                   shading a relocated copy keeps us working
+//                                   if Velocity ever drops or relocates it.
+//   INCLUDE  com.moandjiezana.toml  config.toml parser. Velocity happens to
+//                                   bundle toml4j too, but the artifact is
+//                                   ~50 KB and a plugin-visible dependency on
+//                                   a library the proxy does not promise to
+//                                   expose is not worth the risk. Relocated.
+//   EXCLUDE  io.netty:*             Velocity ships Netty and its own event
+//                                   loops. The plugin's PluginClassLoader is
+//                                   child-first, so an unrelocated copy would
+//                                   be loaded from the plugin jar; a proxy
+//                                   API type crossing that boundary would then
+//                                   see two Class identities. Never shade it.
+//   EXCLUDE  com.google.gson        Velocity bundles gson (2.14.0) and the
+//                                   proxy classloader exposes it. Our usage is
+//                                   the stable Gson/JsonParser surface.
+//   EXCLUDE  org.slf4j:slf4j-api    Velocity exposes SLF4J to plugins.
+//   EXCLUDE  ch.qos.logback         Never ship an SLF4J binding in a plugin:
+//                                   logback-classic would compete with the
+//                                   proxy's own provider for LoggerFactory.
+//                                   The dependency is dropped entirely.
+//
+// Relocation uses real Java package names (unlike bukkit/build.gradle, which
+// relocates the Maven groupId 'com.google.code.gson' and therefore rewrites
+// nothing).
+// ---------------------------------------------------------------------------
+shadowJar {
+    archiveClassifier.set('')
+    archiveBaseName.set('velocity')
+
+    relocate 'org.yaml.snakeyaml', 'com.nova.chat.velocity.libs.snakeyaml'
+    relocate 'com.moandjiezana.toml', 'com.nova.chat.velocity.libs.toml'
+
+    // Signatures are invalid once classes are rewritten; module descriptors
+    // from the shaded jars would also be merged nonsensically.
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+    exclude 'META-INF/versions/**/module-info.class'
+    exclude 'module-info.class'
+
+    dependencies {
+        include(project(':NovaChat:common'))
+        include(project(':NovaChat:client-core'))
+        include(dependency('org.yaml:snakeyaml'))
+        include(dependency('com.moandjiezana.toml:toml4j'))
+    }
+}
+
+build.dependsOn shadowJar
+
+// shadowJar writes to the same path as the plain jar (archiveClassifier ''),
+// so running both corrupts the ZIP. The fat jar is the artifact; drop the thin
+// one. Mirrors bukkit/folia/pnx/sponge.
+jar.enabled = false

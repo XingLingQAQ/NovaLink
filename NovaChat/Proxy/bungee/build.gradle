@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'com.gradleup.shadow' version '9.6.1'
 }
 
 java {
@@ -13,17 +14,24 @@ dependencies {
     // Shared client runtime (Architecture B — not used by StarLink:core)
     implementation project(':NovaChat:client-core')
 
-    // Netty
-    implementation "io.netty:netty-all:${nettyVersion}"
+    // Netty. compileOnly: the proxy ships Netty and the plugin classloader
+    // delegates to it. Shading a copy would split io.netty Class identities
+    // from the proxy's own event loops (see the fat-jar block below).
+    compileOnly "io.netty:netty-all:${nettyVersion}"
+    testImplementation "io.netty:netty-all:${nettyVersion}"
 
-    // Utilities
+    // Utilities. gson is provided by the proxy (bungeecord-chat embeds it);
+    // lombok is compile-time only and never shipped.
     compileOnly "org.projectlombok:lombok:${lombokVersion}"
     annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
-    implementation "com.google.code.gson:gson:${gsonVersion}"
+    compileOnly "com.google.code.gson:gson:${gsonVersion}"
+    testImplementation "com.google.code.gson:gson:${gsonVersion}"
 
-    // Logging
-    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
-    implementation "ch.qos.logback:logback-classic:${logbackVersion}"
+    // Logging. The proxy owns the SLF4J provider; a plugin must not ship an
+    // SLF4J binding (logback-classic) — it would compete for LoggerFactory.
+    // Waterfall/BungeeCord expose slf4j-api to plugins, so compileOnly.
+    compileOnly "org.slf4j:slf4j-api:${slf4jVersion}"
+    testImplementation "org.slf4j:slf4j-api:${slf4jVersion}"
 
     // Minecraft Platform
     compileOnly "net.md-5:bungeecord-api:${bungeecordVersion}"
@@ -58,3 +66,61 @@ processResources {
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fat jar. The plain `jar` task only contains com/nova/chat/bungee/**; loading
+// it in a proxy fails with
+//   NoClassDefFoundError: com/nova/chat/common/protocol/Packet
+// because no classpath entry provides NovaChat's own modules.
+//
+// Decisions, verified against the actual Waterfall 1.21 build 615 distribution
+// (the node E2E pins for bungee) and the bungeecord-api 1.21-R0.4 metadata:
+//   INCLUDE  :NovaChat:common       protocol + shared chat helpers (our code)
+//   INCLUDE  :NovaChat:client-core  network runtime / i18n / state (our code)
+//   INCLUDE  org.yaml:snakeyaml     common's YamlConfigUpdater and extension
+//                                   metadata parser use the SnakeYAML 2.x node
+//                                   API. Waterfall bundles snakeyaml 2.6 for
+//                                   bungeecord-config, but bungeecord-config
+//                                   declares snakeyaml <optional>true</optional>,
+//                                   so a proxy build that omits it would break
+//                                   /nc on startup. Relocated copy = safe.
+//   EXCLUDE  io.netty:*             Waterfall ships Netty and the plugin
+//                                   classloader is child-first: an unrelocated
+//                                   copy would be loaded from this jar and an
+//                                   API type crossing the boundary would see
+//                                   two Class identities.
+//   EXCLUDE  com.google.gson        bungeecord-chat bundles gson 2.11.0 (plus
+//                                   Waterfall's own copy); our usage is the
+//                                   stable Gson/JsonParser surface.
+//   EXCLUDE  org.slf4j:slf4j-api    Waterfall exposes SLF4J to plugins.
+//   EXCLUDE  ch.qos.logback         Never ship an SLF4J binding in a plugin.
+//
+// Relocations use real Java package names, not Maven groupIds
+// (bukkit/build.gradle relocates 'com.google.code.gson', which is a groupId
+// and rewrites nothing — do not copy that pattern).
+// ---------------------------------------------------------------------------
+shadowJar {
+    archiveClassifier.set('')
+    archiveBaseName.set('bungee')
+
+    relocate 'org.yaml.snakeyaml', 'com.nova.chat.bungee.libs.snakeyaml'
+
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+    exclude 'META-INF/versions/**/module-info.class'
+    exclude 'module-info.class'
+
+    dependencies {
+        include(project(':NovaChat:common'))
+        include(project(':NovaChat:client-core'))
+        include(dependency('org.yaml:snakeyaml'))
+    }
+}
+
+build.dependsOn shadowJar
+
+// shadowJar writes to the same path as the plain jar (archiveClassifier ''),
+// so running both corrupts the ZIP. The fat jar is the artifact; drop the thin
+// one. Mirrors bukkit/folia/pnx/sponge.
+jar.enabled = false
