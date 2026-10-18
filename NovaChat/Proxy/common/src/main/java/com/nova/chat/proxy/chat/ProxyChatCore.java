@@ -15,6 +15,8 @@ import com.nova.chat.client.privatemsg.PrivateMessageService;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.chat.MentionNotifier;
+import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
@@ -75,6 +77,21 @@ public class ProxyChatCore {
      * is gated by this memory set and cleared on disconnect.
      */
     private final Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Players whose first server connection of this proxy session has already
+     * been claimed (P3b fix 4).
+     *
+     * <p>The first-join decision must not read
+     * {@code PlayerChannelState#getCurrentServer()}: the chat listener and the
+     * server-switch handler both write it, and BungeeCord's {@code EventBus}
+     * keeps same-priority listeners in a {@code HashMap}, so their execution
+     * order is JVM-start random. On the bad order the default-channel JOIN and
+     * the welcome line were both skipped. A
+     * {@code ConcurrentHashMap.newKeySet().add()} claim is atomic regardless of
+     * listener order.
+     */
+    private final Set<UUID> firstConnections = ConcurrentHashMap.newKeySet();
 
     /**
      * Supplies the live network client. Read on every send so a reload/reconnect
@@ -454,11 +471,71 @@ public class ProxyChatCore {
      * @param playerId the disconnecting player's UUID
      */
     public void onPlayerDisconnect(UUID playerId) {
+        PlayerChannelState state = states.getState(playerId);
+        notifyBackendDisconnect(playerId, state);
         states.removeState(playerId);
         welcomedPlayers.remove(playerId);
+        firstConnections.remove(playerId);
         if (privateMessageService != null) {
             privateMessageService.onPlayerQuit(playerId);
         }
+    }
+
+    /**
+     * Sends a LEAVE for every channel the departing player had joined, so the
+     * backend drops both the membership and the cached player state (P3b fix 2).
+     *
+     * <p>One packet per joined channel is required:
+     * {@code ChannelActionHandler#handleLeave} rejects a blank channel id
+     * (NC-400), and a player that joined several channels would otherwise stay
+     * a member of the rest. Extras use the names the backend actually reads
+     * ({@code playerId} / {@code playerName} / {@code platform}); the previous
+     * {@code player_uuid} spelling never matched
+     * {@code ChannelResponseTracker}'s correlation key. {@code logout=true}
+     * distinguishes this from a plain {@code /nc leave}.
+     *
+     * @param playerId the disconnecting player's UUID
+     * @param state the player's chat state, or {@code null} if it was never created
+     */
+    private void notifyBackendDisconnect(UUID playerId, PlayerChannelState state) {
+        if (state == null || !isBackendReady()) {
+            return;
+        }
+        AbstractPlatformNetworkClient client = getNetworkClient();
+        ProxyPlayer player = platform.getPlayer(playerId);
+        String playerName = player != null ? player.getName() : "";
+        Set<String> channels = new java.util.LinkedHashSet<>(state.getJoinedChannels());
+        if (state.getActiveChannel() != null) {
+            channels.add(state.getActiveChannel());
+        }
+        for (String channelId : channels) {
+            if (channelId == null || channelId.isBlank()) {
+                continue;
+            }
+            ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.LEAVE, channelId);
+            packet.addExtra("playerId", playerId.toString());
+            packet.addExtra("playerName", playerName);
+            packet.addExtra("platform", platform.getPlatformType().name());
+            // Distinguishes "player is logging off this network" from a plain
+            // /nc leave. The backend currently ignores this extra (see the
+            // companion change required in ChannelActionHandler#handleLeave);
+            // it is carried here so the cache eviction can be keyed on it.
+            packet.addExtra("logout", "true");
+            client.sendPacket(packet);
+            platform.logDebug("Notified backend that " + playerName
+                    + " left channel " + channelId);
+        }
+    }
+
+    /**
+     * Atomically claims the player's first server connection of this proxy
+     * session (P3b fix 4).
+     *
+     * @param playerId the connecting player
+     * @return {@code true} the first time this player connects in this session
+     */
+    public boolean claimFirstConnection(UUID playerId) {
+        return firstConnections.add(playerId);
     }
 
     // ------------------------------------------------------------- state access
@@ -653,18 +730,31 @@ public class ProxyChatCore {
                 }
                 ProxyPlayer player = platform.getPlayer(playerId);
                 if (player != null) {
-                    platform.showChannelStatusBar(player, channelId);
+                    PlayerChannelState state = states.getState(playerId);
+                    ChatMode mode = state != null ? state.getChatMode() : ChatMode.HYBRID;
+                    platform.showChannelStatusBar(player, channelId, mode);
                 }
             });
         }
 
         @Override
         public void sendLeaveChannelStatusBar(UUID playerId) {
+            // After a successful leave the active channel falls back locally
+            // (ChannelCommandService.leave → PlayerChannelState#leaveChannel), so
+            // resolve the current channel here and flash the same bar. Nothing to
+            // name when the player joined nothing else — skip.
             platform.execute(() -> {
                 ProxyPlayer player = platform.getPlayer(playerId);
-                if (player != null) {
-                    platform.showChannelStatusBar(player, null);
+                if (player == null) {
+                    return;
                 }
+                PlayerChannelState state = states.getState(playerId);
+                String channelId = state != null ? state.getActiveChannel() : null;
+                if (channelId == null || channelId.isEmpty()) {
+                    return;
+                }
+                platform.showChannelStatusBar(player, channelId,
+                        state.getChatMode());
             });
         }
 

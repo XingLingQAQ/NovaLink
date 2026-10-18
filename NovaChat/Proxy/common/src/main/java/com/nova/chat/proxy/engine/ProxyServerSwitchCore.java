@@ -11,20 +11,23 @@ import com.nova.chat.proxy.platform.ProxyPlayer;
 /**
  * Platform-agnostic server-switch core for the NovaChat proxy family.
  *
- * <p>Absorbs the body of the two near-identical {@code ServerSwitchHandler}
- * implementations:
- * <ol>
- *   <li>notify the backend that a player is moving between downstream servers
- *       (a {@code LEAVE}-actioned packet carrying {@code action_type =
- *       server_switch} and the from/to names), and</li>
- *   <li>re-request the player's active channel on the new server so the backend
- *       can re-evaluate scope membership.</li>
- * </ol>
+ * <p>On a server connection it records the new server on the player's state and
+ * then either joins the default channel (first connection of the session) or
+ * re-requests the player's active channel on the new server.
+ *
+ * <p><b>The JOIN is the notification.</b> The backend learns about the new
+ * server from the JOIN packet's {@code server} extra, which is a real channel
+ * action it understands. There is deliberately no separate "server switch"
+ * packet: {@code ChannelAction} has no such value and StarLink's
+ * {@code ChannelActionHandler} only dispatches the declared actions, so the
+ * historical switch-notification LEAVE was dead code (the backend answered
+ * NC-400 for its blank channel id and the response was dropped because it
+ * carried {@code player_uuid} rather than the {@code playerId} the tracker keys
+ * on).
  *
  * <p>The platform shells keep only the event subscription glue: Velocity's
- * {@code ServerPreConnectEvent} / {@code ServerConnectedEvent} and BungeeCord's
- * {@code ServerSwitchEvent} / {@code ServerConnectedEvent}. The core never
- * branches on platform identity.
+ * {@code ServerConnectedEvent} and BungeeCord's {@code ServerSwitchEvent} /
+ * {@code ServerConnectedEvent}.
  *
  * <p>Requirements: 4.3, 5.3 — cross-server message routing.
  */
@@ -35,7 +38,7 @@ public class ProxyServerSwitchCore {
 
     /**
      * @param platform the platform adapter
-     * @param chatCore the shared chat core (state + config)
+     * @param chatCore the shared chat core (state + config + first-connection claim)
      */
     public ProxyServerSwitchCore(ProxyPlatform platform, ProxyChatCore chatCore) {
         this.platform = platform;
@@ -43,43 +46,33 @@ public class ProxyServerSwitchCore {
     }
 
     /**
-     * Notifies the backend about a server switch.
+     * Handles a server connection: records the server, then joins the default
+     * channel on the player's first connection of the session or re-requests the
+     * active channel otherwise.
      *
-     * @param player the player switching servers
-     * @param fromServer the server the player is leaving
-     * @param toServer the server the player is joining
+     * <p>The first-connection decision comes from
+     * {@link ProxyChatCore#claimFirstConnection(java.util.UUID)}, an atomic
+     * per-session claim, deliberately <em>not</em> from
+     * {@code PlayerChannelState#getCurrentServer() == null}: the chat listener
+     * and this handler both write {@code currentServer}, and their execution
+     * order is not guaranteed (BungeeCord keeps same-priority listeners in a
+     * {@code HashMap}).
+     *
+     * @param player the connecting player
+     * @param serverName the downstream server name
+     * @return {@code true} when this was the player's first connection of the
+     *         session (the caller may then push the welcome line)
      */
-    public void notifyServerSwitch(ProxyPlayer player, String fromServer, String toServer) {
-        AbstractPlatformNetworkClient client = chatCore.getNetworkClient();
-        if (client == null || !client.isAuthenticated()) {
-            return;
+    public boolean onServerConnected(ProxyPlayer player, String serverName) {
+        chatCore.recordServer(player, serverName);
+
+        PlayerChannelState state = chatCore.getOrCreateState(player);
+        if (chatCore.claimFirstConnection(player.getUniqueId())) {
+            joinDefaultChannel(player, state, serverName);
+            return true;
         }
-
-        // Send a channel action packet to notify backend about server switch.
-        // The backend can use this to update player state and handle routing.
-        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.LEAVE, "");
-        packet.addExtra("action_type", "server_switch");
-        packet.addExtra("player_uuid", player.getUniqueId().toString());
-        packet.addExtra("player_name", player.getName());
-        packet.addExtra("from_server", fromServer);
-        packet.addExtra("to_server", toServer);
-
-        client.sendPacket(packet);
-        platform.logDebug("Notified backend about server switch: "
-                + fromServer + " -> " + toServer);
-    }
-
-    /**
-     * Handles a completed server switch: notifies the backend and re-requests the
-     * player's active channel on the new server.
-     *
-     * @param player the player switching servers
-     * @param fromServer the server the player is leaving
-     * @param toServer the server the player is joining
-     */
-    public void onServerSwitch(ProxyPlayer player, String fromServer, String toServer) {
-        notifyServerSwitch(player, fromServer, toServer);
-        handleChannelTransition(player, fromServer, toServer);
+        handleChannelTransition(player, state, serverName);
+        return false;
     }
 
     /**
@@ -90,32 +83,25 @@ public class ProxyServerSwitchCore {
      * servers. Either way the backend decides — the proxy only re-asks.
      *
      * @param player the player
-     * @param previousServer the previous server (may be null for initial join)
-     * @param newServer the new server
+     * @param state the player's chat state
+     * @param newServer the server the player is joining
      */
-    public void handleChannelTransition(ProxyPlayer player, String previousServer, String newServer) {
+    public void handleChannelTransition(ProxyPlayer player, PlayerChannelState state,
+                                        String newServer) {
         AbstractPlatformNetworkClient client = chatCore.getNetworkClient();
         if (client == null || !client.isAuthenticated()) {
             return;
         }
 
-        PlayerChannelState state = chatCore.getOrCreateState(player);
         String currentChannel = state.getActiveChannel();
 
-        // If this is the initial connection (no previous server), just join the
-        // default channel.
-        if (previousServer == null) {
-            joinDefaultChannel(player, state, newServer);
-            return;
-        }
+        // Send a join request for the current channel on the new server.
+        // The backend will determine if the player can stay in the channel.
 
-        // Send a join request for the current channel on the new server; the
-        // backend determines whether the player can stay in the channel.
         ChannelActionPacket joinPacket = new ChannelActionPacket(ChannelAction.JOIN, currentChannel);
         joinPacket.addExtra("player_uuid", player.getUniqueId().toString());
         joinPacket.addExtra("player_name", player.getName());
         joinPacket.addExtra("server", newServer);
-        joinPacket.addExtra("previous_server", previousServer);
 
         client.sendPacket(joinPacket);
         platform.logDebug("Requested channel join after server switch: "
@@ -123,7 +109,7 @@ public class ProxyServerSwitchCore {
     }
 
     /**
-     * Joins the default channel for a player on initial connection.
+     * Joins the default channel for a player on their first connection.
      *
      * @param player the player
      * @param state the player's chat state

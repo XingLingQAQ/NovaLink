@@ -3,6 +3,8 @@ package com.nova.chat.velocity.platform;
 import com.nova.chat.client.format.ColorRenderer;
 import com.nova.chat.client.format.MessageFormatService;
 import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.client.command.PlayerMessages;
+import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.proxy.platform.ProxyPlatform;
 import com.nova.chat.proxy.platform.ProxyPlayer;
@@ -167,33 +169,25 @@ public final class VelocityProxyPlatform implements ProxyPlatform {
     }
 
     @Override
-    public void showChannelStatusBar(ProxyPlayer player, String channelId) {
+    public void sendActionBar(ProxyPlayer player, String legacyText) {
         Player handle = handle(player);
-        if (handle == null) {
+        if (handle != null) {
+            // Velocity's Player extends Adventure's Audience.
+            handle.sendActionBar(renderer.render(legacyText));
+        }
+    }
+
+    @Override
+    public void showChannelStatusBar(ProxyPlayer player, String channelId, ChatMode mode) {
+        Player handle = handle(player);
+        if (handle == null || channelId == null || channelId.isEmpty()) {
             return;
         }
-        // §7 status ("当前频道：X（模式）"): Velocity is a proxy with no stable
-        // action-bar API, so we render a one-shot title instead of a persistent
-        // bar. The title shows the channel name; the subtitle reuses the shared
-        // "current channel" copy. Times are short so it reads as a transient
-        // confirmation, not a lingering overlay.
-        Title.Times times = Title.Times.times(
-                Duration.ofMillis(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN * 50L),
-                Duration.ofMillis(com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY * 50L),
-                Duration.ofMillis(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT * 50L));
-        if (channelId != null && !channelId.isEmpty()) {
-            Component title = renderer.render(channelId);
-            Component subtitle = renderer.render(
-                    com.nova.chat.client.i18n.I18n.tr(
-                            player.getUniqueId(), "chat.status.current_bar", channelId, ""));
-            handle.showTitle(Title.title(title, subtitle, times));
-            return;
-        }
-        // One-shot title on leave: no target channel to name, so the title is the
-        // shared "left channel" copy and the subtitle is empty.
-        Component title = renderer.render(
-                com.nova.chat.client.i18n.I18n.tr(player.getUniqueId(), "chat.leave.leaving", ""));
-        handle.showTitle(Title.title(title, Component.empty(), times));
+        // §7 status ("当前频道：X（模式）"): a one-shot Adventure action bar
+        // (Audience#sendActionBar(Component)), matching the other platforms'
+        // "flash the bar once" semantics. Vanilla fades it out; no polling.
+        handle.sendActionBar(renderer.render(
+                PlayerMessages.currentChannelBar(player.getUniqueId(), channelId, mode)));
     }
 
     @Override
@@ -215,7 +209,7 @@ public final class VelocityProxyPlatform implements ProxyPlatform {
                     com.nova.chat.client.i18n.I18n.tr(
                             targetId, "chat.notice.kick_subtitle", operator, channelId));
             target.showTitle(Title.title(title, subtitle, times));
-            target.sendMessage(renderer.render(
+            target.sendActionBar(renderer.render(
                     com.nova.chat.client.i18n.I18n.tr(
                             targetId, "chat.notice.kick_actionbar", operator, channelId)));
             return;
@@ -226,7 +220,7 @@ public final class VelocityProxyPlatform implements ProxyPlatform {
                 com.nova.chat.client.i18n.I18n.tr(
                         targetId, "chat.notice.mute_subtitle", channelId, durationText));
         target.showTitle(Title.title(title, subtitle, times));
-        target.sendMessage(renderer.render(
+        target.sendActionBar(renderer.render(
                 com.nova.chat.client.i18n.I18n.tr(
                         targetId, "chat.notice.mute_actionbar", durationText, channelId)));
     }

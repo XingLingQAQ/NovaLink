@@ -25,9 +25,10 @@ import java.util.UUID;
  * the exact same string produces the platform's native object (Adventure
  * {@code Component} on Velocity, {@code BaseComponent[]} on Bungee) without the
  * core knowing anything about either API. Where the two proxies genuinely render
- * a notification differently (BungeeCord has no proxy title or action-bar API),
- * that difference is captured by a dedicated primitive — never by the core
- * branching on platform identity.
+ * a notification differently (for example BungeeCord writes action bars through
+ * {@code ChatMessageType.ACTION_BAR} while Velocity uses Adventure), that
+ * difference is captured by a dedicated primitive — never by the core branching
+ * on platform identity.
  *
  * <p><b>Threading contract.</b> {@link #execute(Runnable)} owns the thread hop:
  * the core calls it from whatever thread it is on (Netty event loop for inbound
@@ -120,10 +121,10 @@ public interface ProxyPlatform {
     /**
      * Delivers a mention notification (UX-DESIGN §4.1).
      *
-     * <p>Velocity has a proxy title + sound API: it shows {@code highlight} as
-     * the title and {@code subtitle} as the subtitle, then plays the default
-     * mention sound. BungeeCord has neither, and historically degrades to one
-     * in-chat line {@code highlight + " " + subtitle}.
+     * <p>Velocity shows {@code highlight} as the title and {@code subtitle} as
+     * the subtitle, then plays the default mention sound. BungeeCord renders the
+     * same title through {@code ProxyServer#createTitle()} and repeats
+     * {@code highlight + " " + subtitle} on the action bar.
      *
      * @param player the mentioned player
      * @param highlight legacy-coded mentioner name (e.g. {@code "&eAlex"})
@@ -132,22 +133,40 @@ public interface ProxyPlatform {
     void notifyMention(ProxyPlayer player, String highlight, String subtitle);
 
     /**
-     * Flashes the channel status indicator after a successful JOIN/LEAVE.
+     * Sends a transient action-bar line.
      *
-     * <p>Velocity has no reliable action-bar API at proxy level, so it renders a
-     * one-shot title; BungeeCord has neither and implements this as a no-op.
+     * <p>Velocity's {@code Player} is an Adventure {@code Audience}
+     * ({@code sendActionBar}); BungeeCord writes
+     * {@code sendMessage(ChatMessageType.ACTION_BAR, ...)} straight to the
+     * downstream client. Neither touches proxy-internal protocol classes.
      *
      * @param player the recipient
-     * @param channelId the channel name to show, or {@code null} for the
-     *                  "left channel" variant (which has no channel to name)
+     * @param legacyText legacy-coded text
      */
-    void showChannelStatusBar(ProxyPlayer player, String channelId);
+    void sendActionBar(ProxyPlayer player, String legacyText);
+
+    /**
+     * Flashes the §7 channel status indicator after a successful JOIN/LEAVE.
+     *
+     * <p>Both proxies render {@code PlayerMessages.currentChannelBar(...)} as a
+     * one-shot action bar. The core resolves the channel/mode; the platform only
+     * sends.
+     *
+     * @param player the recipient
+     * @param channelId the channel to name, or {@code null} for the leave variant
+     * @param mode the player's current chat mode
+     */
+    void showChannelStatusBar(ProxyPlayer player, String channelId,
+                              com.nova.chat.client.state.ChatMode mode);
 
     /**
      * Delivers the target-side KICK/MUTE notice (UX-DESIGN §5).
      *
-     * <p>Velocity shows a title plus a chat reinforcement; BungeeCord has no
-     * proxy title API and sends the chat line only.
+     * <p>Both proxies render a proxy-native title plus the action-bar line
+     * carrying the same text: Velocity via Adventure
+     * {@code showTitle}/{@code sendActionBar}, BungeeCord via
+     * {@code ProxyServer#createTitle()} plus
+     * {@code sendMessage(ChatMessageType.ACTION_BAR, ...)}.
      *
      * @param player the affected player
      * @param action {@link ChannelAction#KICK} or {@link ChannelAction#MUTE}

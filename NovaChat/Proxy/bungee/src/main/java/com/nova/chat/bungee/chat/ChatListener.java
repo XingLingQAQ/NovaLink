@@ -268,6 +268,21 @@ public class ChatListener implements Listener {
     }
 
     /**
+     * Atomically claims the player's first server connection of this proxy
+     * session (P3b fix 4).
+     *
+     * <p>Used by the server-switch handler so the "first join" decision never
+     * depends on listener execution order or on
+     * {@code PlayerChannelState#getCurrentServer()}, which both listeners write.
+     *
+     * @param playerId the connecting player
+     * @return {@code true} the first time this player connects in this session
+     */
+    public boolean claimFirstConnection(UUID playerId) {
+        return core.claimFirstConnection(playerId);
+    }
+
+    /**
      * Gets the message formatter.
      *
      * @return the message formatter

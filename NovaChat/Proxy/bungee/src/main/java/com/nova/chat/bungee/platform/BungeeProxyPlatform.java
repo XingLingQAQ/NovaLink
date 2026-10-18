@@ -9,7 +9,10 @@ import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.proxy.platform.ProxyPlatform;
 import com.nova.chat.proxy.platform.ProxyPlayer;
 import com.nova.chat.bungee.NovaChatBungee;
+import com.nova.chat.client.command.PlayerMessages;
+import com.nova.chat.client.state.ChatMode;
 import net.md_5.bungee.api.ChatColor;
+import net.md_5.bungee.api.ChatMessageType;
 import net.md_5.bungee.api.Title;
 import net.md_5.bungee.api.chat.BaseComponent;
 import net.md_5.bungee.api.chat.HoverEvent;
@@ -106,9 +109,14 @@ public final class BungeeProxyPlatform implements ProxyPlatform {
     public void showTitle(ProxyPlayer player, String title, String subtitle,
                           int fadeIn, int stay, int fadeOut) {
         ProxiedPlayer handle = handle(player);
-        if (handle == null) {
-            return;
+        if (handle != null) {
+            showTitle(handle, title, subtitle, fadeIn, stay, fadeOut);
         }
+    }
+
+    /** Renders a proxy-native title straight to the given downstream player. */
+    private void showTitle(ProxiedPlayer handle, String title, String subtitle,
+                           int fadeIn, int stay, int fadeOut) {
         // BungeeCord's native proxy title API writes the packets straight to the
         // downstream client. Timings are ticks, matching the packet contract.
         Title bungeeTitle = plugin.getProxy().createTitle()
@@ -127,19 +135,42 @@ public final class BungeeProxyPlatform implements ProxyPlatform {
     }
 
     @Override
+    public void sendActionBar(ProxyPlayer player, String legacyText) {
+        ProxiedPlayer handle = handle(player);
+        if (handle != null) {
+            // sendMessage(ChatMessageType.ACTION_BAR, ...) is written straight to
+            // the downstream client; no proxy-internal protocol classes.
+            handle.sendMessage(ChatMessageType.ACTION_BAR, renderer.render(legacyText));
+        }
+    }
+
+    @Override
     public void notifyMention(ProxyPlayer player, String highlight, String subtitle) {
         ProxiedPlayer handle = handle(player);
         if (handle == null) {
             return;
         }
-        // BungeeCord degrades the mention to an in-chat highlighted line.
-        handle.sendMessage(renderer.render(highlight + " " + subtitle));
+        // Same title + action-bar pair as the other platforms: the proxy-native
+        // Title API for the title, ChatMessageType.ACTION_BAR for the bar.
+        showTitle(handle, highlight, subtitle,
+                MentionNotifier.DEFAULT_FADE_IN,
+                MentionNotifier.DEFAULT_STAY,
+                MentionNotifier.DEFAULT_FADE_OUT);
+        handle.sendMessage(ChatMessageType.ACTION_BAR,
+                renderer.render(highlight + " " + subtitle));
     }
 
     @Override
-    public void showChannelStatusBar(ProxyPlayer player, String channelId) {
-        // Bungee is a proxy and has no stable action-bar API that reliably reaches
-        // the downstream client; the §7 status bar is intentionally not sent.
+    public void showChannelStatusBar(ProxyPlayer player, String channelId, ChatMode mode) {
+        ProxiedPlayer handle = handle(player);
+        if (handle == null || channelId == null || channelId.isEmpty()) {
+            return;
+        }
+        // §7 status ("当前频道：X（模式）"): one-shot action bar via
+        // sendMessage(ChatMessageType.ACTION_BAR, ...), which BungeeCord writes
+        // straight to the downstream client. No polling; vanilla fades it.
+        handle.sendMessage(ChatMessageType.ACTION_BAR, renderer.render(
+                PlayerMessages.currentChannelBar(player.getUniqueId(), channelId, mode)));
     }
 
     @Override
@@ -150,14 +181,37 @@ public final class BungeeProxyPlatform implements ProxyPlatform {
             return;
         }
         UUID targetId = player.getUniqueId();
-        // Bungee has no reliable proxy title API; the notice is a chat line only.
         if (action == ChannelAction.KICK) {
-            target.sendMessage(renderer.render(
-                    I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId)));
+            showNotice(target, targetId, "chat.notice.kick_title",
+                    I18n.tr(targetId, "chat.notice.kick_subtitle", operator, channelId),
+                    I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId));
             return;
         }
-        target.sendMessage(renderer.render(
-                I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId)));
+        showNotice(target, targetId, "chat.notice.mute_title",
+                I18n.tr(targetId, "chat.notice.mute_subtitle", channelId, durationText),
+                I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId));
+    }
+
+    /**
+     * Renders the target-side KICK/MUTE notice: a proxy-native title plus the
+     * action-bar line carrying the same text.
+     *
+     * @param target        the affected player
+     * @param targetId      the affected player's UUID (locale lookup)
+     * @param titleKey      i18n key for the title line
+     * @param subtitle      already-resolved subtitle text
+     * @param actionBarText already-resolved action-bar text
+     */
+    private void showNotice(ProxiedPlayer target, UUID targetId, String titleKey,
+                            String subtitle, String actionBarText) {
+        plugin.getProxy().createTitle()
+                .title(renderer.render(I18n.tr(targetId, titleKey)))
+                .subTitle(renderer.render(subtitle))
+                .fadeIn(MentionNotifier.DEFAULT_FADE_IN)
+                .stay(MentionNotifier.DEFAULT_STAY)
+                .fadeOut(MentionNotifier.DEFAULT_FADE_OUT)
+                .send(target);
+        target.sendMessage(ChatMessageType.ACTION_BAR, renderer.render(actionBarText));
     }
 
     // -------------------------------------------------------------- permissions
