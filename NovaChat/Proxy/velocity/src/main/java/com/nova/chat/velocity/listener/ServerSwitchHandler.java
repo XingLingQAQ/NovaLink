@@ -1,33 +1,37 @@
 package com.nova.chat.velocity.listener;
 
-import com.nova.chat.common.protocol.ChannelAction;
-import com.nova.chat.common.protocol.packets.ChannelActionPacket;
-import com.nova.chat.velocity.NovaChatVelocity;
-import com.nova.chat.velocity.chat.ChatListener;
 import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.proxy.engine.ProxyServerSwitchCore;
+import com.nova.chat.velocity.NovaChatVelocity;
+import com.nova.chat.velocity.platform.VelocityProxyPlayer;
 import com.velocitypowered.api.event.PostOrder;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
+import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import com.velocitypowered.api.proxy.Player;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
+
+import java.util.Optional;
 
 /**
  * Handles server switching events for cross-server message routing.
  *
- * When a player switches servers:
- * 1. Updates player state with new server information
- * 2. Handles channel transitions based on server-specific channels
+ * <p>When a player switches servers:
+ * <ol>
+ *   <li>notifies the backend about the server change</li>
+ *   <li>updates the player state with the new server information</li>
+ *   <li>requests the channel transition on the new server</li>
+ * </ol>
  *
- * <p>The backend learns about the new server from the JOIN packet below (its
- * {@code server} extra), which is a real channel action it understands. There
- * is no separate "server switch" packet: {@code ChannelAction} has no value for
- * it and {@code StarLink}'s {@code ChannelActionHandler} only dispatches the
- * declared actions.
+ * <p>The logic lives in the shared {@link ProxyServerSwitchCore}; this shell
+ * keeps only the Velocity event subscription.
  *
- * Requirements: 4.3, 5.3 - Cross-server message routing
+ * <p>Requirements: 4.3, 5.3 - Cross-server message routing
  */
 public class ServerSwitchHandler {
 
     private final NovaChatVelocity plugin;
+    private final ProxyServerSwitchCore core;
 
     /**
      * Creates a new ServerSwitchHandler.
@@ -36,18 +40,32 @@ public class ServerSwitchHandler {
      */
     public ServerSwitchHandler(NovaChatVelocity plugin) {
         this.plugin = plugin;
+        this.core = plugin.getServerSwitchCore();
     }
 
     /**
-     * Handles server connected events after the player has connected.
-     * Updates player state and handles channel transitions.
+     * Handles pre-connect events to prepare for a server switch: notifies the
+     * backend about the pending move.
      *
-     * <p>The first-connection decision comes from
-     * {@link ChatListener#claimFirstConnection(java.util.UUID)}, an atomic
-     * per-session claim, deliberately <em>not</em> from
-     * {@code PlayerChannelState#getCurrentServer() == null}: both this handler
-     * and {@link ChatListener#onServerConnected(ServerConnectedEvent)} write
-     * {@code currentServer}, and their execution order is not guaranteed.
+     * @param event the server pre-connect event
+     */
+    @Subscribe(order = PostOrder.NORMAL)
+    public void onServerPreConnect(ServerPreConnectEvent event) {
+        Player player = event.getPlayer();
+        Optional<RegisteredServer> previousServer = player.getCurrentServer()
+                .map(conn -> conn.getServer());
+
+        if (previousServer.isPresent() && event.getResult().getServer().isPresent()) {
+            core.notifyServerSwitch(
+                    new VelocityProxyPlayer(player),
+                    previousServer.get().getServerInfo().getName(),
+                    event.getResult().getServer().get().getServerInfo().getName());
+        }
+    }
+
+    /**
+     * Handles server connected events after the player has connected: updates the
+     * player state and handles the channel transition.
      *
      * @param event the server connected event
      */
@@ -55,74 +73,21 @@ public class ServerSwitchHandler {
     public void onServerConnected(ServerConnectedEvent event) {
         Player player = event.getPlayer();
         String serverName = event.getServer().getServerInfo().getName();
+        VelocityProxyPlayer handle = new VelocityProxyPlayer(player);
 
-        // Update player state with new server
-        ChatListener chatListener = plugin.getChatListener();
-        if (chatListener != null) {
-            PlayerChannelState state = chatListener.getOrCreateState(player);
-            state.setCurrentServer(serverName);
-
-            plugin.debug("Player " + player.getUsername() + " connected to server: " + serverName);
-
-            if (chatListener.claimFirstConnection(player.getUniqueId())) {
-                joinDefaultChannel(player, state, serverName);
-            } else {
-                handleChannelTransition(player, state, serverName);
-            }
-        }
-    }
-
-    /**
-     * Handles channel transitions when a player switches servers.
-     *
-     * For SERVER-scoped channels:
-     * - Player may need to leave server-specific channels
-     * - Player may need to join new server-specific channels
-     *
-     * For GLOBAL-scoped channels:
-     * - Player remains in the channel across servers
-     *
-     * @param player the player
-     * @param state the player's chat state
-     * @param newServer the server the player is joining
-     */
-    private void handleChannelTransition(Player player, PlayerChannelState state, String newServer) {
-        if (plugin.getNetworkClient() == null || !plugin.getNetworkClient().isAuthenticated()) {
+        com.nova.chat.velocity.chat.ChatListener chatListener = plugin.getChatListener();
+        if (chatListener == null) {
             return;
         }
 
-        String currentChannel = state.getActiveChannel();
+        PlayerChannelState state = chatListener.getOrCreateState(player);
+        String previousServer = state.getCurrentServer();
+        state.setCurrentServer(serverName);
 
-        // Send a join request for the current channel on the new server
-        // The backend will determine if the player can stay in the channel
-        ChannelActionPacket joinPacket = new ChannelActionPacket(ChannelAction.JOIN, currentChannel);
-        joinPacket.addExtra("player_uuid", player.getUniqueId().toString());
-        joinPacket.addExtra("player_name", player.getUsername());
-        joinPacket.addExtra("server", newServer);
+        plugin.debug("Player " + player.getUsername()
+                + " connected to server: " + serverName);
 
-        plugin.getNetworkClient().sendPacket(joinPacket);
-        plugin.debug("Requested channel join after server switch: " + currentChannel + " on " + newServer);
-    }
-
-    /**
-     * Joins the default channel for a player on initial connection.
-     *
-     * @param player the player
-     * @param state the player's chat state
-     * @param server the server name
-     */
-    private void joinDefaultChannel(Player player, PlayerChannelState state, String server) {
-        String defaultChannel = plugin.getConfig().getDefaultChannel();
-        state.setActiveChannel(defaultChannel);
-
-        if (plugin.getNetworkClient() != null && plugin.getNetworkClient().isAuthenticated()) {
-            ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.JOIN, defaultChannel);
-            packet.addExtra("player_uuid", player.getUniqueId().toString());
-            packet.addExtra("player_name", player.getUsername());
-            packet.addExtra("server", server);
-
-            plugin.getNetworkClient().sendPacket(packet);
-            plugin.debug("Player " + player.getUsername() + " joined default channel: " + defaultChannel);
-        }
+        // Handle channel transition based on server change
+        core.handleChannelTransition(handle, previousServer, serverName);
     }
 }

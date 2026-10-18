@@ -3,88 +3,127 @@ package com.nova.chat.bungee.chat;
 import com.nova.chat.bungee.NovaChatBungee;
 import com.nova.chat.bungee.config.NovaChatConfig;
 import com.nova.chat.client.format.ColorRenderer;
-import com.nova.chat.client.format.FormatTemplateEngine;
 import com.nova.chat.client.format.MessageFormatService;
+import com.nova.chat.proxy.chat.ProxyMessageFormatter;
+import com.nova.chat.proxy.config.ProxyConfigView;
 import net.md_5.bungee.api.ChatColor;
 import net.md_5.bungee.api.chat.BaseComponent;
 import net.md_5.bungee.api.chat.TextComponent;
-import net.md_5.bungee.api.connection.ProxiedPlayer;
 
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
- * Formats chat messages with color codes and placeholders.
- * Supports legacy color codes (&) and hex colors (&#RRGGBB).
+ * BungeeCord-side message formatter shell.
  *
- * <p>String assembly is delegated to {@link MessageFormatService}; the Bungee
- * {@link ColorRenderer} converts the legacy-coded string to a
- * {@link BaseComponent}[] via {@link ChatColor#translateAlternateColorCodes(char, String)}
- * and {@link TextComponent#fromLegacyText(String)}.
+ * <p>String assembly is owned by the shared {@link ProxyMessageFormatter} (which
+ * wraps the client-core {@link MessageFormatService}); this class only renders
+ * the produced legacy-coded strings into md_5 {@link BaseComponent}s through the
+ * same {@link ColorRenderer} pipeline the platform adapter uses.
  *
- * Requirements: 10.1-10.6
+ * <p>Requirements: 10.1-10.6
  */
 public class MessageFormatter {
 
-    private final NovaChatBungee plugin;
-    /** Latest immutable config snapshot; volatile — proxy thread reads. */
-    private volatile NovaChatConfig config;
+    private final Supplier<? extends ProxyConfigView> configSupplier;
     private final ColorRenderer<BaseComponent[]> renderer;
 
+    /**
+     * @param plugin the plugin instance
+     */
     public MessageFormatter(NovaChatBungee plugin) {
-        this.plugin = plugin;
-        this.config = plugin.getPluginConfig();
+        this(plugin, plugin::getPluginConfig);
+    }
+
+    /**
+     * @param plugin the plugin instance (retained for API compatibility)
+     * @param configSupplier supplies the current configuration snapshot
+     */
+    public MessageFormatter(NovaChatBungee plugin, Supplier<? extends ProxyConfigView> configSupplier) {
+        this.configSupplier = configSupplier;
         this.renderer = text -> {
-            String converted = MessageFormatService.convertHexToSection(text);
+            String converted = MessageFormatService.convertHexToSection(text != null ? text : "");
             converted = ChatColor.translateAlternateColorCodes('&', converted);
             return TextComponent.fromLegacyText(converted);
         };
     }
 
-    public BaseComponent[] formatChatMessage(ProxiedPlayer player, String channelId, String channelName,
-                                              String senderName, String content, Map<String, String> placeholders) {
-        String format = config.getChannelFormat(channelId);
-        String formatted = FormatTemplateEngine.apply(
-                format, senderName, channelId, channelName, content, placeholders);
-        return renderer.render(formatted);
+    /**
+     * Formats a channel chat line.
+     *
+     * @param player the recipient (unused; kept for API compatibility)
+     * @param channelId the channel id
+     * @param channelName the channel display name
+     * @param senderName the sender name
+     * @param content the message body
+     * @param placeholders backend placeholders
+     * @return the rendered components
+     */
+    public BaseComponent[] formatChatMessage(net.md_5.bungee.api.connection.ProxiedPlayer player,
+                                             String channelId, String channelName,
+                                             String senderName, String content,
+                                             Map<String, String> placeholders) {
+        return render(new ProxyMessageFormatter(configSupplier.get())
+                .formatChatMessage(channelId, channelName, senderName, content, placeholders));
     }
 
+    /**
+     * @param message the message body
+     * @return the rendered system line
+     */
     public BaseComponent[] formatSystemMessage(String message) {
-        return renderer.render(MessageFormatService.buildSystemMessage(config.getPrefix(), message));
+        return render(new ProxyMessageFormatter(configSupplier.get()).formatSystemMessage(message));
     }
 
+    /**
+     * @param message the error body
+     * @return the rendered error line
+     */
     public BaseComponent[] formatError(String message) {
-        return renderer.render(
-                MessageFormatService.buildError(config.getPrefix(), config.getErrorFormat(), message));
+        return render(new ProxyMessageFormatter(configSupplier.get()).formatError(message));
     }
 
+    /**
+     * @param message the success body
+     * @return the rendered success line
+     */
     public BaseComponent[] formatSuccess(String message) {
-        return renderer.render(
-                MessageFormatService.buildSuccess(config.getPrefix(), config.getSuccessFormat(), message));
+        return render(new ProxyMessageFormatter(configSupplier.get()).formatSuccess(message));
     }
 
+    /**
+     * @param text legacy-coded text
+     * @return the rendered components
+     */
     public BaseComponent[] parseColors(String text) {
-        return renderer.render(text);
+        return render(text);
     }
 
+    /**
+     * @param text legacy-coded text
+     * @return the text with color markup stripped
+     */
     public String stripColors(String text) {
         return MessageFormatService.stripColors(text);
     }
 
-    public void reload() {
-        setConfig(plugin.getPluginConfig());
+    /**
+     * Installs a new config snapshot.
+     *
+     * @param newConfig the fresh snapshot (null is ignored)
+     */
+    public void setConfig(NovaChatConfig newConfig) {
+        // Config is read through the supplier on every call, so swapping the
+        // plugin's snapshot is the full reload semantics.
     }
 
     /**
-     * Installs a new {@link NovaChatConfig} snapshot. Hot-path channel/prefix
-     * lookups read this reference on every call, so swapping it here is the
-     * full reload semantics — no cached state needs rebuilding.
+     * Renders a legacy-coded string into md_5 components.
      *
-     * @param newConfig the freshly loaded config snapshot
+     * @param legacyText the text
+     * @return the components, never null
      */
-    public void setConfig(NovaChatConfig newConfig) {
-        if (newConfig == null) {
-            return;
-        }
-        this.config = newConfig;
+    private BaseComponent[] render(String legacyText) {
+        return renderer.render(legacyText);
     }
 }

@@ -19,6 +19,15 @@ include 'StarLink:core'
 include 'NovaChat:Plugin:bukkit'
 include 'NovaChat:Proxy:velocity'
 include 'NovaChat:Proxy:bungee'
+// Platform-agnostic proxy layer shared by velocity + bungee (chat core, command
+// core, server-switch core, config model, 12 state accessors, dispatcher
+// callbacks). Lives in NovaChat/Proxy/common on disk, but -- exactly like
+// :NovaChat:MOD:mod-common above -- its Gradle project name must differ from
+// :NovaChat:common. Gradle disambiguates project dependencies by leaf name, so
+// two projects named "common" make project(':NovaChat:common') resolve onto this
+// module itself (compileJava -> compileJava circular dependency).
+include 'NovaChat:Proxy:proxy-common'
+project(':NovaChat:Proxy:proxy-common').projectDir = file('NovaChat/Proxy/common')
 include 'NovaChat:Bedrock:nukkit'
 // Shared mod sources (version detection, common networking).
 include 'NovaChat:MOD'

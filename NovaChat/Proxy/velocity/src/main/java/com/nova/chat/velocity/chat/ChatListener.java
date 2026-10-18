@@ -1,110 +1,63 @@
 package com.nova.chat.velocity.chat;
 
-import com.nova.chat.client.command.PlayerMessages;
-import com.nova.chat.client.command.WhoCommandService;
-import com.nova.chat.client.i18n.I18n;
-import com.nova.chat.client.itemdisplay.ItemDisplayMessages;
-import com.nova.chat.client.network.ChannelResponseDispatcher;
-import com.nova.chat.client.network.ChannelResponseTracker;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
-import com.nova.chat.common.protocol.ChannelAction;
-import com.nova.chat.common.protocol.PlatformType;
-import com.nova.chat.common.protocol.packets.ChannelActionPacket;
-import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
-import com.nova.chat.common.protocol.packets.ChatMessagePacket;
-import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
-import com.nova.chat.common.protocol.packets.MentionPacket;
-import com.nova.chat.common.protocol.packets.TitlePacket;
-import com.nova.chat.common.chat.MentionNotifier;
+import com.nova.chat.proxy.chat.ProxyChatCore;
+import com.nova.chat.proxy.platform.ProxyPlayer;
 import com.nova.chat.velocity.NovaChatVelocity;
 import com.nova.chat.velocity.config.NovaChatConfig;
+import com.nova.chat.velocity.platform.VelocityProxyPlatform;
+import com.nova.chat.velocity.platform.VelocityProxyPlayer;
 import com.velocitypowered.api.event.PostOrder;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.player.PlayerChatEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.proxy.Player;
-import net.kyori.adventure.sound.Sound;
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.event.HoverEvent;
-import net.kyori.adventure.text.format.NamedTextColor;
-import net.kyori.adventure.title.Title;
 
-import java.time.Duration;
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Listens for player chat events on Velocity proxy.
- * Implements cancel-and-resend strategy to handle chat signing issues.
- * 
- * In Velocity, chat messages are signed by the client for security.
- * When we intercept and modify messages, we need to cancel the original
- * and resend as a system message to avoid signature verification failures.
- * 
- * Requirements: 23.2 - Handle chat signing issues
+ * Velocity chat listener shell.
+ *
+ * <p>Implements cancel-and-resend strategy to handle chat signing issues: in
+ * REPLACE mode the original chat event is denied and the message is forwarded to
+ * the channel; in HYBRID mode vanilla chat proceeds untouched.
+ *
+ * <p>All handler bodies, state accessors and rendering live in the shared
+ * {@link ProxyChatCore}; this class keeps only the Velocity event subscription
+ * and the {@link Player} → {@link ProxyPlayer} adaptation.
+ *
+ * <p>Requirements: 23.2 - Handle chat signing issues
  */
 public class ChatListener {
-    
+
     private final NovaChatVelocity plugin;
-
-    /**
-     * Latest immutable config snapshot; volatile — proxy event thread reads,
-     * command thread writes via {@link #setConfig} / {@link #reload}.
-     */
-    private volatile NovaChatConfig config;
-
+    private final VelocityProxyPlatform platform;
+    private final ProxyChatCore core;
     private final MessageFormatter messageFormatter;
-    private final MentionNotifier mentionNotifier = new MentionNotifier();
-    
-    /** Player chat states indexed by UUID */
-    private final com.nova.chat.client.state.PlayerStateStore playerStates =
-            new com.nova.chat.client.state.PlayerStateStore();
-
-    /** Shared response dispatcher (DUP-3); created in {@link #rebindIncomingHandlers()}. */
-    private ChannelResponseDispatcher dispatcher;
 
     /**
-     * UUIDs of players already shown the first-join welcome line this proxy
-     * session (UX-DESIGN §8.1). Velocity has no hasPlayedBefore, so the welcome
-     * is gated by this memory set and cleared on disconnect. Fires on the first
-     * server a player connects to; server switches do not re-trigger it.
-     */
-    private final java.util.Set<UUID> welcomedPlayers = ConcurrentHashMap.newKeySet();
-
-    /**
-     * Players whose first server connection this proxy session has already been
-     * processed for by {@link com.nova.chat.velocity.listener.ServerSwitchHandler}
-     * (default-channel JOIN). Cleared on disconnect. This is the authoritative
-     * first-connection signal; {@code PlayerChannelState#getCurrentServer()} is
-     * not, because both listeners write it and their execution order is not
-     * guaranteed.
-     */
-    private final java.util.Set<UUID> firstConnections = ConcurrentHashMap.newKeySet();
-    
-    /**
-     * Global chat mode from configuration.
-     *
-     * <p>Marked {@code volatile} for cross-thread visibility: it is read in
-     * {@link #onPlayerChat} (which fires on the proxy main thread) and written
-     * from {@link #setGlobalMode} / {@link #reload} (command thread), matching
-     * the Folia adapter's {@code volatile} declaration.
-     */
-    private volatile ChatMode globalMode;
-    
-    /**
-     * Creates a new ChatListener.
+     * Creates a new ChatListener and binds the inbound packet handlers to the
+     * plugin's current network client.
      *
      * @param plugin the plugin instance
      */
     public ChatListener(NovaChatVelocity plugin) {
         this.plugin = plugin;
-        this.config = plugin.getConfig();
+        this.platform = new VelocityProxyPlatform(plugin);
         this.messageFormatter = new MessageFormatter(plugin);
-        this.globalMode = config.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
-        
+        // Production: the plugin owns the single shared chat core so the command
+        // layer and this listener share one player-state store. Test doubles
+        // (mocked plugin) return null, so build a private core instead.
+        ProxyChatCore shared = plugin.getChatCore();
+        this.core = shared != null ? shared : new ProxyChatCore(
+                platform,
+                plugin.getConfig(),
+                plugin.getIgnoreListService(),
+                plugin.getPrivateMessageService(),
+                plugin.getKnownChannelRegistry(),
+                plugin::getNetworkClient);
         // Register handler for incoming chat messages from backend
         rebindIncomingHandlers();
     }
@@ -117,553 +70,67 @@ public class ChatListener {
      * listener (H6 fix).
      */
     public void rebindIncomingHandlers() {
-        if (plugin.getNetworkClient() != null) {
-            this.dispatcher = new ChannelResponseDispatcher(
-                    plugin.getNetworkClient().getChannelResponseTracker(),
-                    new VelocityChannelResponseAdapter());
-            plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
-            plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
-            plugin.getNetworkClient().registerHandler(MentionPacket.class, this::handleMention);
-            plugin.getNetworkClient().registerHandler(TitlePacket.class, this::handleTitle);
-            plugin.getNetworkClient().registerHandler(ItemDisplayPacket.class, this::handleItemDisplay);
-            plugin.getNetworkClient().registerHandler(
-                    com.nova.chat.common.protocol.packets.PrivateMessagePacket.class,
-                    this::handlePrivateMessage);
-        }
+        core.rebindIncomingHandlers(plugin.getNetworkClient());
     }
 
-    /**
-     * Handles a completed (S→C) private message: the shared
-     * {@link com.nova.chat.client.privatemsg.PrivateMessageService} resolves
-     * which local players render which role (sender echo vs received line,
-     * receiver-side ignore filter, reply tracking). Like {@link #handleTitle},
-     * the thread-safe Adventure send needs no scheduler hop.
-     */
-    private void handlePrivateMessage(com.nova.chat.common.protocol.packets.PrivateMessagePacket packet) {
-        var deliveries = plugin.getPrivateMessageService().handleIncoming(
-                packet,
-                id -> plugin.getServer().getPlayer(id).isPresent(),
-                plugin.getIgnoreListService());
-        for (com.nova.chat.client.privatemsg.PrivateMessageService.Delivery delivery : deliveries) {
-            plugin.getServer().getPlayer(delivery.getPlayerId()).ifPresent(player ->
-                    player.sendMessage(messageFormatter.parseColors(delivery.getLine())));
-        }
-    }
-
-    /**
-     * Handles title packets by displaying them to players whose active channel
-     * matches the packet channel (Requirements 15.1, 15.5).
-     *
-     * <p>Velocity's {@link Player} is an Adventure {@code Audience}, so the title
-     * plays directly to the proxied client; like {@link #handleIncomingMessage},
-     * no scheduler hop is needed for the thread-safe Adventure send.
-     */
-    private void handleTitle(TitlePacket packet) {
-        String channelId = packet.getChannelId();
-        Component title = messageFormatter.parseColors(
-                packet.getTitle() != null ? packet.getTitle() : "");
-        Component subtitle = messageFormatter.parseColors(
-                packet.getSubtitle() != null ? packet.getSubtitle() : "");
-        // Packet timings are in ticks (20/s); Adventure wants durations (50ms/tick).
-        Title.Times times = Title.Times.times(
-                Duration.ofMillis(packet.getFadeIn() * 50L),
-                Duration.ofMillis(packet.getStay() * 50L),
-                Duration.ofMillis(packet.getFadeOut() * 50L));
-
-        for (Player player : plugin.getServer().getAllPlayers()) {
-            PlayerChannelState state = getState(player.getUniqueId());
-            if (state != null && channelId != null && channelId.equals(state.getActiveChannel())) {
-                player.showTitle(Title.title(title, subtitle, times));
-            }
-        }
-    }
-
-    /**
-     * Handles an inbound item display packet ({@code [item]}/{@code [i]} play,
-     * packet 0x10) by rendering one hoverable chat line to every player whose
-     * active channel matches the packet channel.
-     *
-     * <p>Receive-side semantics are "receive = render", matching the Bedrock
-     * clients; the backend currently registers no route for this packet. Like
-     * {@link #handleTitle}, the thread-safe Adventure send needs no scheduler
-     * hop; the hover detail uses Adventure's {@code HoverEvent.showText}. The
-     * line is formatted per viewer because the copy is locale-dependent.
-     *
-     * <p>Send side is intentionally absent on the proxy: Velocity has no
-     * access to the player's held item, so {@code [item]} tokens typed here
-     * pass through as plain text.
-     */
-    private void handleItemDisplay(ItemDisplayPacket packet) {
-        String channelId = packet.getChannelId();
-        for (Player player : plugin.getServer().getAllPlayers()) {
-            PlayerChannelState state = getState(player.getUniqueId());
-            if (state == null || channelId == null || !channelId.equals(state.getActiveChannel())) {
-                continue;
-            }
-            UUID viewerId = player.getUniqueId();
-            // Skip senders the viewer has ignored (/nc ignore)
-            com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
-            if (ignoreService != null && ignoreService.isIgnored(viewerId, packet.getSenderName())) {
-                continue;
-            }
-            Component line = messageFormatter.parseColors(
-                    ItemDisplayMessages.formatLine(viewerId, packet.getSenderName(), packet.getItemJson()));
-            Component hover = messageFormatter.parseColors(
-                    ItemDisplayMessages.formatHoverDetail(viewerId, packet.getItemJson()));
-            player.sendMessage(line.hoverEvent(HoverEvent.showText(hover)));
-        }
-    }
-
-    /** Legacy color prefix applied to @name mentions when rendering chat (UX-DESIGN §4.2). */
-    static final String MENTION_HIGHLIGHT_COLOR = MentionNotifier.DEFAULT_HIGHLIGHT_COLOR;
-    
-    /**
-     * Handles channel action responses from the backend by delegating the
-     * shared "consume pending → route success/failure" skeleton to the shared
-     * {@link ChannelResponseDispatcher} (DUP-3). The platform adapter owns player
-     * lookup, rendering and the Adventure action-bar status line.
-     */
-    private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
-        plugin.debug("Received channel action response: " + packet);
-        // Private-message rejections are unsolicited (no pending context in the
-        // shared tracker); the dispatcher would drop them, so route them to the
-        // PrivateMessageService for player-locale rendering instead.
-        if (com.nova.chat.client.privatemsg.PrivateMessageService.isPrivateMessageError(packet)) {
-            plugin.getPrivateMessageService()
-                    .renderError(packet, id -> plugin.getServer().getPlayer(id).isPresent())
-                    .ifPresent(delivery -> plugin.getServer().getPlayer(delivery.getPlayerId())
-                            .ifPresent(player -> player.sendMessage(
-                                    messageFormatter.parseColors(delivery.getLine()))));
-            return;
-        }
-        dispatcher.handle(packet);
-    }
-
-    /**
-     * Velocity-specific {@link ChannelResponseDispatcher.ChannelResponseAdapter}.
-     * The §7 status bar uses Adventure's {@code Audience#sendActionBar}; the
-     * KICK/MUTE notice is a title plus an action-bar reinforcement.
-     *
-     * <p>GAP-3 fix: every callback now hops to the Velocity scheduler via
-     * {@code plugin.getServer().getScheduler().buildTask(plugin, ...).schedule()}
-     * before touching any {@link Player} API, the shared {@link #playerStates}
-     * store, or the {@link #welcomedPlayers} set. The shared dispatcher fires
-     * these from the Netty event loop; without the hop the mutations race with
-     * {@link #onPlayerDisconnect} and the {@code PlayerChannelState} reads done
-     * on other threads, and the {@code playerStates}/{@code welcomedPlayers}
-     * collections (both {@link ConcurrentHashMap}-backed but not atomic across
-     * read-modify-write sequences) could see lost updates. This mirrors how
-     * {@code BukkitChannelResponseAdapter} hops to the Bukkit main thread via
-     * {@code getScheduler().runTask(plugin, ...)} on every callback.
-     *
-     * <p>The hop is to the Velocity plugin scheduler, which runs tasks on the
-     * proxy's main thread (the same thread that processes {@link PlayerChatEvent}
-     * and {@link com.velocitypowered.api.event.player.ServerConnectedEvent}),
-     * matching the main-thread contract the dispatcher comment assumes.
-     */
-    private final class VelocityChannelResponseAdapter implements ChannelResponseDispatcher.ChannelResponseAdapter {
-
-        @Override
-        public void setActiveChannel(UUID playerId, String channelId) {
-            plugin.getServer().getScheduler()
-                    .buildTask(plugin, () -> {
-                        PlayerChannelState state = getState(playerId);
-                        if (state != null) {
-                            state.setActiveChannel(channelId);
-                        }
-                    })
-                    .schedule();
-        }
-
-        @Override
-        public void rollbackJoin(UUID playerId, String attemptedChannel, String previousChannel) {
-            plugin.getServer().getScheduler()
-                    .buildTask(plugin, () -> {
-                        PlayerChannelState state = getState(playerId);
-                        if (state == null) {
-                            return;
-                        }
-                        // Only roll back if the optimistic channel is still in place; if the
-                        // player has since switched channels manually, leave their choice alone.
-                        String current = state.getActiveChannel();
-                        if (current != null && current.equals(attemptedChannel)) {
-                            state.setActiveChannel(previousChannel);
-                        }
-                    })
-                    .schedule();
-        }
-
-        @Override
-        public void sendJoinSuccess(UUID playerId, String channelId) {
-            plugin.getServer().getScheduler()
-                    .buildTask(plugin, () ->
-                            plugin.getServer().getPlayer(playerId).ifPresent(player ->
-                                    player.sendMessage(messageFormatter.formatSuccess(PlayerMessages.joined(playerId, channelId)))))
-                    .schedule();
-        }
-
-        @Override
-        public void sendLeaveSuccess(UUID playerId, String channelId) {
-            plugin.getServer().getScheduler()
-                    .buildTask(plugin, () ->
-                            plugin.getServer().getPlayer(playerId).ifPresent(player ->
-                                    player.sendMessage(messageFormatter.formatSuccess(
-                                            PlayerMessages.left(playerId, channelId, config.getDefaultChannel())))))
-                    .schedule();
-        }
-
-        @Override
-        public void sendJoinChannelStatusBar(UUID playerId, String channelId) {
-            // §7 status ("当前频道：X（模式）"): a one-shot Adventure action bar
-            // (Audience#sendActionBar(Component)), matching the other platforms'
-            // "flash the bar once" semantics. Vanilla fades it out; no polling.
-            plugin.getServer().getScheduler()
-                    .buildTask(plugin, () -> {
-                        if (channelId == null || channelId.isEmpty()) {
-                            return;
-                        }
-                        plugin.getServer().getPlayer(playerId).ifPresent(player -> {
-                            PlayerChannelState state = getState(playerId);
-                            ChatMode mode = state != null ? state.getChatMode() : ChatMode.HYBRID;
-                            player.sendActionBar(messageFormatter.parseColors(
-                                    PlayerMessages.currentChannelBar(playerId, channelId, mode)));
-                        });
-                    })
-                    .schedule();
-        }
-
-
-        @Override
-        public void sendLeaveChannelStatusBar(UUID playerId) {
-            // After a successful leave the active channel falls back locally
-            // (ChannelCommandService.leave → PlayerChannelState#leaveChannel), so
-            // resolve the current channel here and flash the same bar. Nothing to
-            // name when the player joined nothing else — skip.
-            plugin.getServer().getScheduler()
-                    .buildTask(plugin, () -> {
-                        plugin.getServer().getPlayer(playerId).ifPresent(player -> {
-                            PlayerChannelState state = getState(playerId);
-                            String channelId = state != null ? state.getActiveChannel() : null;
-                            if (channelId == null || channelId.isEmpty()) {
-                                return;
-                            }
-                            ChatMode mode = state.getChatMode();
-                            player.sendActionBar(messageFormatter.parseColors(
-                                    PlayerMessages.currentChannelBar(playerId, channelId, mode)));
-                        });
-                    })
-                    .schedule();
-        }
-
-        @Override
-        public void sendErrorMessage(UUID playerId, String text) {
-            plugin.getServer().getScheduler()
-                    .buildTask(plugin, () ->
-                            plugin.getServer().getPlayer(playerId).ifPresent(player ->
-                                    player.sendMessage(messageFormatter.formatError(text))))
-                    .schedule();
-        }
-
-        @Override
-        public void sendWhoResult(UUID playerId, String channelId, String displayName,
-                                  String membersCsv, String memberCount) {
-            plugin.getServer().getScheduler()
-                    .buildTask(plugin, () ->
-                            plugin.getServer().getPlayer(playerId).ifPresent(player -> {
-                                String text = WhoCommandService.formatMemberList(
-                                        playerId, channelId, displayName, membersCsv, memberCount);
-                                // Render each line independently so color codes per line are
-                                // parsed by the shared Adventure parser (Velocity has no native
-                                // multi-line chat component; splitting keeps the header/body
-                                // color codes intact).
-                                for (String line : text.split("\n")) {
-                                    if (!line.isEmpty()) {
-                                        player.sendMessage(messageFormatter.parseColors(line));
-                                    }
-                                }
-                            }))
-                    .schedule();
-        }
-
-        @Override
-        public void notifyKickMuteTarget(ChannelResponseDispatcher.KickMuteNotice notice) {
-            plugin.getServer().getScheduler()
-                    .buildTask(plugin, () ->
-                            plugin.getServer().getPlayer(notice.getTargetId()).ifPresent(target -> {
-                                UUID targetId = notice.getTargetId();
-                                String channelId = notice.getChannelId();
-                                String operator = notice.getOperator();
-                                Title.Times times = Title.Times.times(
-                                        Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
-                                        Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
-                                        Duration.ofMillis(MentionNotifier.DEFAULT_FADE_OUT * 50L));
-                                if (notice.getAction() == com.nova.chat.common.protocol.ChannelAction.KICK) {
-                                    Component title = messageFormatter.parseColors(I18n.tr(targetId, "chat.notice.kick_title"));
-                                    Component subtitle = messageFormatter.parseColors(
-                                            I18n.tr(targetId, "chat.notice.kick_subtitle", operator, channelId));
-                                    target.showTitle(Title.title(title, subtitle, times));
-                                    target.sendActionBar(messageFormatter.parseColors(
-                                            I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId)));
-                                    return;
-                                }
-                                String durationText = notice.getDurationText();
-                                Component title = messageFormatter.parseColors(I18n.tr(targetId, "chat.notice.mute_title"));
-                                Component subtitle = messageFormatter.parseColors(
-                                        I18n.tr(targetId, "chat.notice.mute_subtitle", channelId, durationText));
-                                target.showTitle(Title.title(title, subtitle, times));
-                                target.sendActionBar(messageFormatter.parseColors(
-                                        I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId)));
-                            }))
-                    .schedule();
-        }
-    }
-    
-    /**
-     * Handles incoming chat messages from the backend.
-     * Broadcasts to all players in the channel.
-     *
-     * @param packet the chat message packet
-     */
-    private void handleIncomingMessage(ChatMessagePacket packet) {
-        plugin.debug("Received chat message from backend: " + packet);
-        
-        String channelId = packet.getChannelId();
-        String senderName = packet.getSenderName();
-        String content = packet.getContent();
-        Map<String, String> placeholders = packet.getPlaceholders();
-        
-        // Get channel display name from placeholders or use channel ID
-        String channelName = placeholders.getOrDefault("channel_name", channelId);
-        
-        // Broadcast to all players in this channel
-        for (Player player : plugin.getServer().getAllPlayers()) {
-            // Skip senders the recipient has ignored (/nc ignore)
-            com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
-            if (ignoreService != null && ignoreService.isIgnored(player.getUniqueId(), senderName)) {
-                continue;
-            }
-            PlayerChannelState state = getState(player.getUniqueId());
-            if (state != null && channelId.equals(state.getActiveChannel())) {
-                Component formattedMessage = messageFormatter.formatChatMessage(
-                    player, channelId, channelName, senderName,
-                    MentionNotifier.highlightMentions(content, MENTION_HIGHLIGHT_COLOR),
-                    placeholders
-                );
-                player.sendMessage(formattedMessage);
-            }
-        }
-    }
-
-    /**
-     * Handles a mention notification packet by playing a sound and showing a
-     * title to the mentioned player (UX-DESIGN §4.1, Requirements 11.2).
-     *
-     * <p>Velocity's {@link Player} is an Adventure {@code Audience}, so title and
-     * sound play directly to the proxied client without a backend round-trip.
-     */
-    private void handleMention(MentionPacket packet) {
-        UUID mentionedId = packet.getMentionedId();
-        UUID mentionerId = packet.getMentionerId();
-        if (mentionedId == null || mentionerId == null) {
-            return;
-        }
-        // Ignored mentioner: no bell, no title (/nc ignore)
-        com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
-        if (ignoreService != null && ignoreService.isIgnored(mentionedId, packet.getMentionerName())) {
-            return;
-        }
-        plugin.getServer().getPlayer(mentionedId).ifPresent(player ->
-                mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
-                    String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
-                    String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
-                    Component title = Component.text(mentioner, NamedTextColor.YELLOW);
-                    Component subtitle = messageFormatter.parseColors(
-                            I18n.tr(mentionedId, "chat.mention.subtitle", channelId));
-                    Title.Times times = Title.Times.times(
-                            Duration.ofMillis(MentionNotifier.DEFAULT_FADE_IN * 50L),
-                            Duration.ofMillis(MentionNotifier.DEFAULT_STAY * 50L),
-                            Duration.ofMillis(MentionNotifier.DEFAULT_FADE_OUT * 50L));
-                    player.showTitle(Title.title(title, subtitle, times));
-                    try {
-                        net.kyori.adventure.key.Key key = net.kyori.adventure.key.Key.key("minecraft",
-                                MentionNotifier.DEFAULT_SOUND.toLowerCase(java.util.Locale.ROOT));
-                        player.playSound(Sound.sound(key, Sound.Source.PLAYER, 1.0f, 1.0f));
-                    } catch (Exception e) {
-                        plugin.debug("Failed to play mention sound: " + e.getMessage());
-                    }
-                }));
-    }
-    
     /**
      * Handles player chat events.
-     * Uses cancel-and-resend strategy to handle chat signing issues.
-     * 
-     * In REPLACE mode:
-     * 1. Cancel the original chat event (prevents signature verification issues)
-     * 2. Forward the message to the NovaLink backend
-     * 3. Backend broadcasts to all channel members
-     * 
-     * In HYBRID mode:
-     * - Let vanilla chat proceed normally
+     *
+     * <p>In REPLACE mode the original chat event is denied (preventing signature
+     * verification issues) and the message is forwarded to the channel; the
+     * backend broadcasts to all channel members. In HYBRID mode vanilla chat
+     * proceeds normally.
      *
      * @param event the chat event
      */
     @Subscribe(order = PostOrder.EARLY)
     public void onPlayerChat(PlayerChatEvent event) {
         Player player = event.getPlayer();
-        UUID playerId = player.getUniqueId();
-        
-        // Get or create player state
-        PlayerChannelState state = getOrCreateState(player);
-        ChatMode effectiveMode = state.isModeOverridden() ? state.getChatMode() : globalMode;
-        
-        plugin.debug("Player " + player.getUsername() + " chat event, mode: " + effectiveMode + 
-                    ", channel: " + state.getActiveChannel());
-        
-        // In HYBRID mode, let vanilla chat proceed
-        if (effectiveMode == ChatMode.HYBRID) {
-            plugin.debug("HYBRID mode: allowing vanilla chat for " + player.getUsername());
-            return;
-        }
-        
-        // In REPLACE mode, cancel the event and forward to channel
-        // This is the cancel-and-resend strategy to handle chat signing
-        event.setResult(PlayerChatEvent.ChatResult.denied());
-        
-        // Check if connected to backend
-        if (plugin.getNetworkClient() == null || !plugin.getNetworkClient().isAuthenticated()) {
-            player.sendMessage(messageFormatter.formatError(I18n.tr(playerId, "chat.network.not_connected_retry")));
-            return;
-        }
-        
-        // Channel-prefix routing (e.g. "!hi" -> global) before the
-        // active-channel send; escape/unknown-prefix cases fall through with
-        // the resolver-produced message (UX: prefix = /nc <channel> shorthand).
-        com.nova.chat.client.channel.ChannelPrefixResolver.Resolution resolution =
-                com.nova.chat.client.channel.ChannelPrefixResolver.resolve(
-                        config.getChannelPrefixes(), event.getMessage(),
-                        plugin.getKnownChannelRegistry() != null
-                                ? plugin.getKnownChannelRegistry().getAll() : null);
-        String targetChannel = resolution.isRedirect()
-                ? resolution.getChannelId() : state.getActiveChannel();
+        ProxyPlayer handle = new VelocityProxyPlayer(player);
 
-        // Forward message to backend
-        sendToChannel(player, targetChannel, resolution.getMessage());
+        ProxyChatCore.ChatDecision decision = core.decideOutbound(handle, event.getMessage());
+        if (decision.isPassthrough()) {
+            return;
+        }
+
+        // In REPLACE mode, cancel the event and forward to channel.
+        // This is the cancel-and-resend strategy to handle chat signing.
+        event.setResult(PlayerChatEvent.ChatResult.denied());
+
+        if (decision.isReply()) {
+            core.sendFormatted(handle, decision.getReplyMessage());
+            return;
+        }
+        core.sendToChannel(handle, decision.getChannelId(), decision.getContent());
     }
-    
+
     /**
-     * Handles player server switch events.
-     * Updates player state with new server information.
+     * Handles player server switch events: updates the player state with the new
+     * server and shows the first-join welcome once per session.
      *
      * @param event the server connected event
      */
     @Subscribe
     public void onServerConnected(ServerConnectedEvent event) {
-        Player player = event.getPlayer();
-        PlayerChannelState state = getOrCreateState(player);
-
-        String serverName = event.getServer().getServerInfo().getName();
-        state.setCurrentServer(serverName);
-
-        plugin.debug("Player " + player.getUsername() + " connected to server: " + serverName);
-
-        // UX-DESIGN §8.1: push the shared welcome line once per proxy session
-        // to first-time players (no hasPlayedBefore on a proxy). Fires on the
-        // first server the player joins; subsequent server switches are
-        // ignored because the UUID is already in the set.
-        if (welcomedPlayers.add(player.getUniqueId())) {
-            player.sendMessage(messageFormatter.parseColors(
-                    com.nova.chat.client.command.WelcomeMessageService.getWelcomeLine()));
-            plugin.debug("Sent first-join welcome to " + player.getUsername());
-        }
-
-        // Notify backend about server switch for cross-server routing
-        // The backend can use this to update player state
+        core.onServerConnected(
+                new VelocityProxyPlayer(event.getPlayer()),
+                event.getServer().getServerInfo().getName());
     }
-    
+
     /**
-     * Handles player disconnect events.
-     * Cleans up player state and tells the backend the player is gone.
-     *
-     * <p>The backend keeps every player it has seen in its online-state cache and
-     * only clears it on shutdown, so without a LEAVE the proxy player looks
-     * online forever: private messages are routed back to this proxy, which
-     * renders only the sender echo, and the sender sees a false "sent". The LEAVE
-     * is sent before the local state is dropped so it can name the channel the
-     * player is actually in.
+     * Handles player disconnect events: cleans up player state.
      *
      * @param event the disconnect event
      */
     @Subscribe
     public void onPlayerDisconnect(DisconnectEvent event) {
         UUID playerId = event.getPlayer().getUniqueId();
-        PlayerChannelState state = playerStates.get(playerId);
-        notifyBackendDisconnect(event.getPlayer(), state);
-        playerStates.remove(playerId);
-        welcomedPlayers.remove(playerId);
-        firstConnections.remove(playerId);
-        // Reply-target cleanup for /nc r (private messages); thread-safe map.
-        if (plugin.getPrivateMessageService() != null) {
-            plugin.getPrivateMessageService().onPlayerQuit(playerId);
-        }
+        core.onPlayerDisconnect(playerId);
         plugin.debug("Removed chat state for " + event.getPlayer().getUsername());
     }
 
-    /**
-     * Sends a LEAVE for every channel the departing player had joined, so the
-     * backend drops both the membership and the cached player state.
-     *
-     * <p>One packet per joined channel is required: {@code ChannelActionHandler}
-     * rejects a blank channel id (NC-400), and a player that joined several
-     * channels would otherwise stay a member of the rest.
-     *
-     * @param player the disconnecting player
-     * @param state  the player's chat state, or {@code null} if it was never created
-     */
-    private void notifyBackendDisconnect(Player player, PlayerChannelState state) {
-        if (state == null || plugin.getNetworkClient() == null
-                || !plugin.getNetworkClient().isAuthenticated()) {
-            return;
-        }
-        UUID playerId = player.getUniqueId();
-        String playerName = player.getUsername();
-        java.util.Set<String> channels = new java.util.LinkedHashSet<>(state.getJoinedChannels());
-        if (state.getActiveChannel() != null) {
-            channels.add(state.getActiveChannel());
-        }
-        for (String channelId : channels) {
-            if (channelId == null || channelId.isBlank()) {
-                continue;
-            }
-            ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.LEAVE, channelId);
-            packet.addExtra("playerId", playerId.toString());
-            packet.addExtra("playerName", playerName);
-            packet.addExtra("platform", PlatformType.VELOCITY.name());
-            // Distinguishes "player is logging off this network" from a plain
-            // /nc leave. The backend currently ignores this extra (see the
-            // companion change required in ChannelActionHandler#handleLeave);
-            // it is carried here so the cache eviction can be keyed on it.
-            packet.addExtra("logout", "true");
-            plugin.getNetworkClient().sendPacket(packet);
-            plugin.debug("Notified backend that " + playerName + " left channel " + channelId);
-        }
-    }
+    // ------------------------------------------------------------- state access
 
-    /**
-     * Atomically claims the player's first server connection of this proxy
-     * session.
-     *
-     * <p>Used by {@link com.nova.chat.velocity.listener.ServerSwitchHandler} so
-     * the "first join" decision never depends on listener execution order or on
-     * {@code PlayerChannelState#getCurrentServer()}, which both listeners write.
-     *
-     * @param playerId the connecting player
-     * @return {@code true} the first time this player connects in this session
-     */
-    public boolean claimFirstConnection(UUID playerId) {
-        return firstConnections.add(playerId);
-    }
-    
     /**
      * Sends a message to a specific channel.
      *
@@ -672,32 +139,9 @@ public class ChatListener {
      * @param message the message content
      */
     public void sendToChannel(Player player, String channelId, String message) {
-        if (plugin.getNetworkClient() == null || !plugin.getNetworkClient().isAuthenticated()) {
-            player.sendMessage(messageFormatter.formatError(I18n.tr(player.getUniqueId(), "chat.network.not_connected")));
-            return;
-        }
-        
-        ChatMessagePacket packet = new ChatMessagePacket(
-            player.getUniqueId(),
-            player.getUsername(),
-            config.getUsername(), // Client ID
-            channelId,
-            message
-        );
-        
-        // Add basic placeholders
-        packet.addPlaceholder("player", player.getUsername());
-        packet.addPlaceholder("display_name", player.getUsername());
-        
-        // Add server info if available
-        player.getCurrentServer().ifPresent(server -> 
-            packet.addPlaceholder("server", server.getServerInfo().getName())
-        );
-        
-        plugin.getNetworkClient().sendPacket(packet);
-        plugin.debug("Sent message to channel " + channelId + ": " + message);
+        core.sendToChannel(new VelocityProxyPlayer(player), channelId, message);
     }
-    
+
     /**
      * Gets or creates a player's chat state.
      *
@@ -705,8 +149,7 @@ public class ChatListener {
      * @return the player's chat state
      */
     public PlayerChannelState getOrCreateState(Player player) {
-        return playerStates.getOrCreate(player.getUniqueId(),
-            config.getDefaultChannel(), globalMode);
+        return core.getOrCreateState(new VelocityProxyPlayer(player));
     }
 
     /**
@@ -716,18 +159,18 @@ public class ChatListener {
      * @return the player's chat state, or null if not found
      */
     public PlayerChannelState getState(UUID playerId) {
-        return playerStates.get(playerId);
+        return core.getState(playerId);
     }
 
     /**
-     * Gets a player's chat state if it exists.
-     * Alias for getState() for command compatibility.
+     * Gets a player's chat state if it exists. Alias for getState() for command
+     * compatibility.
      *
      * @param playerId the player's UUID
      * @return the player's chat state, or null if not found
      */
     public PlayerChannelState getPlayerState(UUID playerId) {
-        return playerStates.getPlayer(playerId);
+        return core.getPlayerState(playerId);
     }
 
     /**
@@ -737,27 +180,27 @@ public class ChatListener {
      * @param state the chat state to set
      */
     public void setPlayerState(UUID playerId, PlayerChannelState state) {
-        playerStates.set(playerId, state);
+        core.setPlayerState(playerId, state);
     }
-    
+
     /**
      * Sets the global chat mode.
      *
      * @param mode the new global mode
      */
     public void setGlobalMode(ChatMode mode) {
-        this.globalMode = mode;
+        core.setGlobalMode(mode);
     }
-    
+
     /**
      * Gets the global chat mode.
      *
      * @return the global chat mode
      */
     public ChatMode getGlobalMode() {
-        return globalMode;
+        return core.getGlobalMode();
     }
-    
+
     /**
      * Toggles a player's chat mode.
      *
@@ -765,10 +208,9 @@ public class ChatListener {
      * @return the new chat mode
      */
     public ChatMode togglePlayerMode(Player player) {
-        PlayerChannelState state = getOrCreateState(player);
-        return state.toggleMode();
+        return core.togglePlayerMode(new VelocityProxyPlayer(player));
     }
-    
+
     /**
      * Sets a player's active channel.
      *
@@ -776,10 +218,9 @@ public class ChatListener {
      * @param channelId the channel ID
      */
     public void setPlayerChannel(Player player, String channelId) {
-        PlayerChannelState state = getOrCreateState(player);
-        state.setActiveChannel(channelId);
+        core.setPlayerChannel(new VelocityProxyPlayer(player), channelId);
     }
-    
+
     /**
      * Gets a player's active channel.
      *
@@ -787,10 +228,9 @@ public class ChatListener {
      * @return the active channel ID
      */
     public String getPlayerChannel(Player player) {
-        PlayerChannelState state = getOrCreateState(player);
-        return state.getActiveChannel();
+        return core.getPlayerChannel(new VelocityProxyPlayer(player));
     }
-    
+
     /**
      * Reloads configuration settings using the plugin's latest config snapshot.
      */
@@ -799,10 +239,9 @@ public class ChatListener {
     }
 
     /**
-     * Installs a new {@link NovaChatConfig} snapshot into this listener and
-     * cascades it to the message formatter. Called by the plugin main class
-     * after {@code loadConfiguration()} succeeds so subsequent hot-path lookups
-     * resolve against the freshly loaded values instead of a stale reference.
+     * Installs a new {@link NovaChatConfig} snapshot into the shared core so
+     * subsequent hot-path lookups resolve against the freshly loaded values
+     * instead of a stale reference.
      *
      * @param newConfig the freshly loaded config snapshot
      */
@@ -810,12 +249,10 @@ public class ChatListener {
         if (newConfig == null) {
             return;
         }
-        this.config = newConfig;
-        this.globalMode = newConfig.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
-        this.messageFormatter.setConfig(newConfig);
-        plugin.debug("ChatListener reloaded, global mode: " + globalMode);
+        core.setConfig(newConfig);
+        plugin.debug("ChatListener reloaded, global mode: " + core.getGlobalMode());
     }
-    
+
     /**
      * Gets the message formatter.
      *
@@ -823,5 +260,19 @@ public class ChatListener {
      */
     public MessageFormatter getMessageFormatter() {
         return messageFormatter;
+    }
+
+    /**
+     * @return the shared chat core (the command layer shares its player state)
+     */
+    public ProxyChatCore getChatCore() {
+        return core;
+    }
+
+    /**
+     * @return the Velocity platform adapter backing this listener
+     */
+    public VelocityProxyPlatform getPlatform() {
+        return platform;
     }
 }

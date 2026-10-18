@@ -2,6 +2,8 @@ package com.nova.chat.bungee.config;
 
 import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.common.config.YamlConfigUpdater;
+import com.nova.chat.proxy.config.ProxyConfig;
+import com.nova.chat.proxy.config.ProxyConfigView;
 import net.md_5.bungee.config.Configuration;
 import net.md_5.bungee.config.ConfigurationProvider;
 import net.md_5.bungee.config.YamlConfiguration;
@@ -9,41 +11,24 @@ import net.md_5.bungee.config.YamlConfiguration;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
 /**
  * Configuration wrapper for NovaChat BungeeCord plugin.
- * Parses and provides access to config.yml settings.
+ *
+ * <p>YAML reading, template installation/upgrade and dialect-level type
+ * validation stay here (platform-owned per the proxy layering); the value model
+ * and its accessors live in the shared {@link ProxyConfig}.
  */
-public class NovaChatConfig {
+public class NovaChatConfig implements ProxyConfigView {
     private static final Set<String> DYNAMIC_CONFIG_MAPPINGS = Set.of(
             "chat.channel-prefixes", "format.channels", "world-routing.mappings");
 
-    // Backend connection settings
-    private String backendHost;
-    private int backendPort;
-    private String username;
-    private String password;
-    private int reconnectDelay;
+    /** Shared immutable value model produced by {@link #parseConfig(Configuration)}. */
+    private ProxyConfig model = new ProxyConfig.Builder().build();
 
-    // Chat settings
-    private boolean replaceVanilla;
-    private String defaultChannel;
-    private String locale;
-    private Map<String, String> channelPrefixes;
-
-    // Format settings
-    private String prefix;
-    private String errorFormat;
-    private String successFormat;
-    private String defaultFormat;
-    private Map<String, String> channelFormats;
-
-    // Debug mode
-    private boolean debug;
     private YamlConfigUpdater.UpdateResult updateResult;
 
     /**
@@ -52,8 +37,6 @@ public class NovaChatConfig {
      * @param dataFolder the plugin data folder
      */
     public NovaChatConfig(File dataFolder) {
-        this.channelFormats = new HashMap<>();
-        this.channelPrefixes = new HashMap<>();
         loadConfig(dataFolder);
     }
 
@@ -78,51 +61,53 @@ public class NovaChatConfig {
     }
 
     /**
-     * Parses the YAML configuration.
+     * Parses the YAML configuration into the shared value model.
      */
     private void parseConfig(Configuration config) {
+        ProxyConfig.Builder builder = new ProxyConfig.Builder();
+
         // Backend settings
         Configuration backend = Objects.requireNonNull(config.getSection("backend"),
                 "Missing required configuration section: backend");
-        this.backendHost = requiredNonBlankString(backend, "host", "backend.host");
-        this.backendPort = requiredPort(backend, "port", "backend.port");
-        this.username = requiredString(backend, "username", "backend.username");
-        this.password = requiredString(backend, "password", "backend.password");
-        this.reconnectDelay = requiredPositiveInt(
-                backend, "reconnect-delay", "backend.reconnect-delay");
+        builder.backendHost(requiredNonBlankString(backend, "host", "backend.host"));
+        builder.backendPort(requiredPort(backend, "port", "backend.port"));
+        builder.username(requiredString(backend, "username", "backend.username"));
+        builder.password(requiredString(backend, "password", "backend.password"));
+        builder.reconnectDelay(requiredPositiveInt(
+                backend, "reconnect-delay", "backend.reconnect-delay"));
 
         // Chat settings
         Configuration chat = Objects.requireNonNull(config.getSection("chat"),
                 "Missing required configuration section: chat");
-        this.replaceVanilla = requiredBoolean(chat, "replace_vanilla", "chat.replace_vanilla");
-        this.defaultChannel = requiredNonBlankString(
-                chat, "default_channel", "chat.default_channel");
-        this.locale = requiredNonBlankString(chat, "locale", "chat.locale");
+        builder.replaceVanilla(requiredBoolean(chat, "replace_vanilla", "chat.replace_vanilla"));
+        builder.defaultChannel(requiredNonBlankString(
+                chat, "default_channel", "chat.default_channel"));
+        builder.locale(requiredNonBlankString(chat, "locale", "chat.locale"));
         Configuration prefixes = requiredSection(chat, "channel-prefixes", "chat.channel-prefixes");
         for (String key : prefixes.getKeys()) {
             String channelId = requiredString(prefixes, key, "chat.channel-prefixes." + key);
             if (!key.isEmpty() && !channelId.isEmpty()) {
-                channelPrefixes.put(key, channelId);
+                builder.channelPrefix(key, channelId);
             }
         }
 
         // Format settings
         Configuration format = Objects.requireNonNull(config.getSection("format"),
                 "Missing required configuration section: format");
-        this.prefix = requiredString(format, "prefix", "format.prefix");
-        this.errorFormat = requiredString(format, "error", "format.error");
-        this.successFormat = requiredString(format, "success", "format.success");
-        this.defaultFormat = requiredString(format, "default", "format.default");
+        builder.prefix(requiredString(format, "prefix", "format.prefix"));
+        builder.errorFormat(requiredString(format, "error", "format.error"));
+        builder.successFormat(requiredString(format, "success", "format.success"));
+        builder.defaultFormat(requiredString(format, "default", "format.default"));
 
         Configuration channels = requiredSection(format, "channels", "format.channels");
         for (String key : channels.getKeys()) {
-            channelFormats.put(key, requiredString(channels, key, "format.channels." + key));
+            builder.channelFormat(key, requiredString(channels, key, "format.channels." + key));
         }
 
         // Debug mode
-        this.debug = requiredBoolean(config, "debug", "debug");
+        builder.debug(requiredBoolean(config, "debug", "debug"));
 
-        toClientConnectionConfig();
+        this.model = builder.build();
     }
 
     private static Configuration requiredSection(Configuration parent, String key, String path) {
@@ -192,32 +177,39 @@ public class NovaChatConfig {
         return updateResult;
     }
 
+    @Override
     public String getBackendHost() {
-        return backendHost;
+        return model.getBackendHost();
     }
 
+    @Override
     public int getBackendPort() {
-        return backendPort;
+        return model.getBackendPort();
     }
 
+    @Override
     public String getUsername() {
-        return username;
+        return model.getUsername();
     }
 
+    @Override
     public String getPassword() {
-        return password;
+        return model.getPassword();
     }
 
+    @Override
     public int getReconnectDelay() {
-        return reconnectDelay;
+        return model.getReconnectDelay();
     }
 
+    @Override
     public boolean isReplaceVanilla() {
-        return replaceVanilla;
+        return model.isReplaceVanilla();
     }
 
+    @Override
     public String getDefaultChannel() {
-        return defaultChannel;
+        return model.getDefaultChannel();
     }
 
     /**
@@ -227,28 +219,35 @@ public class NovaChatConfig {
      *
      * @return the locale string read from {@code chat.locale}
      */
+    @Override
     public String getLocale() {
-        return locale;
+        return model.getLocale();
     }
 
+    @Override
     public String getPrefix() {
-        return prefix;
+        return model.getPrefix();
     }
 
+
+    @Override
     public String getErrorFormat() {
-        return errorFormat;
+        return model.getErrorFormat();
     }
 
+    @Override
     public String getSuccessFormat() {
-        return successFormat;
+        return model.getSuccessFormat();
     }
 
+    @Override
     public String getDefaultFormat() {
-        return defaultFormat;
+        return model.getDefaultFormat();
     }
 
+    @Override
     public Map<String, String> getChannelFormats() {
-        return channelFormats;
+        return model.getChannelFormats();
     }
 
     /**
@@ -258,8 +257,9 @@ public class NovaChatConfig {
      *
      * @return the prefix→channelId map, never null
      */
+    @Override
     public Map<String, String> getChannelPrefixes() {
-        return channelPrefixes;
+        return model.getChannelPrefixes();
     }
 
     /**
@@ -268,12 +268,14 @@ public class NovaChatConfig {
      * @param channelId the channel ID
      * @return the format string, or default format if not configured
      */
+    @Override
     public String getChannelFormat(String channelId) {
-        return channelFormats.getOrDefault(channelId, defaultFormat);
+        return model.getChannelFormat(channelId);
     }
 
+    @Override
     public boolean isDebug() {
-        return debug;
+        return model.isDebug();
     }
 
     /**
@@ -281,13 +283,8 @@ public class NovaChatConfig {
      *
      * <p>The initial reconnect delay comes from {@code backend.reconnect-delay}.
      */
+    @Override
     public ClientConnectionConfig toClientConnectionConfig() {
-        return ClientConnectionConfig.builder()
-                .host(backendHost)
-                .port(backendPort)
-                .username(username)
-                .password(password)
-                .initialReconnectDelaySeconds(reconnectDelay)
-                .build();
+        return model.toClientConnectionConfig();
     }
 }

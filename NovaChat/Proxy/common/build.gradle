@@ -1,0 +1,45 @@
+plugins {
+    // java-library so the shared protocol + client-core types that appear in the
+    // public ProxyPlatform / ProxyChatCore signatures are re-exported to the
+    // platform shells via `api` (consumers would otherwise have to re-declare them).
+    id 'java-library'
+}
+
+// Distinct artifact name so this module's jar coordinate
+// (com.nova:NovaChat-proxy-common) does NOT collide with :NovaChat:common
+// (com.nova:common). Both projects share the leaf name "common" on disk, so the
+// archive name is disambiguated exactly like NovaChat/MOD/common does.
+base {
+    archivesName = 'NovaChat-proxy-common'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+dependencies {
+    // Shared protocol (packets, ChannelAction, PlatformType)
+    api project(':NovaChat:common')
+
+    // Shared client runtime (Architecture B): SchedulerBridge, ColorRenderer,
+    // MessageFormatService, PlayerStateStore, ChannelResponseDispatcher, I18n.
+    api project(':NovaChat:client-core')
+
+    // Testing
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+    testImplementation "net.jqwik:jqwik:${jqwikVersion}"
+    testImplementation "org.assertj:assertj-core:${assertjVersion}"
+    testImplementation "org.mockito:mockito-core:${mockitoVersion}"
+    testImplementation "org.mockito:mockito-junit-jupiter:${mockitoVersion}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform {
+        includeEngines 'junit-jupiter', 'jqwik'
+    }
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
+}

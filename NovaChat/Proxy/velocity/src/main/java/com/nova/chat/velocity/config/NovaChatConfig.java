@@ -2,45 +2,30 @@ package com.nova.chat.velocity.config;
 
 import com.moandjiezana.toml.Toml;
 import com.nova.chat.client.network.ClientConnectionConfig;
+import com.nova.chat.proxy.config.ProxyConfig;
+import com.nova.chat.proxy.config.ProxyConfigView;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
 /**
  * Configuration wrapper for NovaChat Velocity plugin.
- * Parses and provides access to config.toml settings.
+ *
+ * <p>TOML reading, template installation/upgrade and dialect-level type
+ * validation stay here (platform-owned per the proxy layering); the value model
+ * and its accessors live in the shared {@link ProxyConfig}.
  */
-public class NovaChatConfig {
+public class NovaChatConfig implements ProxyConfigView {
     private static final Set<String> DYNAMIC_CONFIG_TABLES = Set.of(
             "chat.channel-prefixes", "format.channels", "world-routing.mappings");
 
-    // Backend connection settings
-    private String backendHost;
-    private int backendPort;
-    private String username;
-    private String password;
-    private int reconnectDelay;
+    /** Shared immutable value model produced by {@link #parseConfig(Toml)}. */
+    private ProxyConfig model = new ProxyConfig.Builder().build();
 
-    // Chat settings
-    private boolean replaceVanilla;
-    private String defaultChannel;
-    private String locale;
-    private Map<String, String> channelPrefixes;
-
-    // Format settings
-    private String prefix;
-    private String errorFormat;
-    private String successFormat;
-    private String defaultFormat;
-    private Map<String, String> channelFormats;
-
-    // Debug mode
-    private boolean debug;
     private TomlConfigUpdater.UpdateResult updateResult;
 
     /**
@@ -49,8 +34,6 @@ public class NovaChatConfig {
      * @param dataFolder the plugin data folder
      */
     public NovaChatConfig(Path dataFolder) {
-        this.channelFormats = new HashMap<>();
-        this.channelPrefixes = new HashMap<>();
         loadConfig(dataFolder);
     }
 
@@ -74,24 +57,26 @@ public class NovaChatConfig {
     }
 
     /**
-     * Parses the TOML configuration.
+     * Parses the TOML configuration into the shared value model.
      */
     private void parseConfig(Toml toml) {
+        ProxyConfig.Builder builder = new ProxyConfig.Builder();
+
         // Backend settings
         Toml backend = requiredTable(toml, "backend");
-        this.backendHost = requiredNonBlankString(backend, "host", "backend.host");
-        this.backendPort = requiredPort(backend, "port", "backend.port");
-        this.username = requiredString(backend, "username", "backend.username");
-        this.password = requiredString(backend, "password", "backend.password");
-        this.reconnectDelay = requiredPositiveInt(
-                backend, "reconnect-delay", "backend.reconnect-delay");
+        builder.backendHost(requiredNonBlankString(backend, "host", "backend.host"));
+        builder.backendPort(requiredPort(backend, "port", "backend.port"));
+        builder.username(requiredString(backend, "username", "backend.username"));
+        builder.password(requiredString(backend, "password", "backend.password"));
+        builder.reconnectDelay(requiredPositiveInt(
+                backend, "reconnect-delay", "backend.reconnect-delay"));
 
         // Chat settings
         Toml chat = requiredTable(toml, "chat");
-        this.replaceVanilla = requiredBoolean(chat, "replace_vanilla", "chat.replace_vanilla");
-        this.defaultChannel = requiredNonBlankString(
-                chat, "default_channel", "chat.default_channel");
-        this.locale = requiredNonBlankString(chat, "locale", "chat.locale");
+        builder.replaceVanilla(requiredBoolean(chat, "replace_vanilla", "chat.replace_vanilla"));
+        builder.defaultChannel(requiredNonBlankString(
+                chat, "default_channel", "chat.default_channel"));
+        builder.locale(requiredNonBlankString(chat, "locale", "chat.locale"));
 
         // Channel prefixes (prefix -> channel id; empty map = feature disabled)
         Toml prefixes = requiredTable(chat, "channel-prefixes");
@@ -103,16 +88,16 @@ public class NovaChatConfig {
             // toml4j keeps the quotes on quoted keys (e.g. "\"!\""); strip them.
             String key = stripQuotes(entry.getKey());
             if (!key.isEmpty() && !channelId.isEmpty()) {
-                channelPrefixes.put(key, channelId);
+                builder.channelPrefix(key, channelId);
             }
         }
 
         // Format settings
         Toml format = requiredTable(toml, "format");
-        this.prefix = requiredString(format, "prefix", "format.prefix");
-        this.errorFormat = requiredString(format, "error", "format.error");
-        this.successFormat = requiredString(format, "success", "format.success");
-        this.defaultFormat = requiredString(format, "default", "format.default");
+        builder.prefix(requiredString(format, "prefix", "format.prefix"));
+        builder.errorFormat(requiredString(format, "error", "format.error"));
+        builder.successFormat(requiredString(format, "success", "format.success"));
+        builder.defaultFormat(requiredString(format, "default", "format.default"));
 
         Toml channels = requiredTable(format, "channels");
         for (Map.Entry<String, Object> entry : channels.entrySet()) {
@@ -125,13 +110,13 @@ public class NovaChatConfig {
                 throw new IllegalArgumentException("Configuration value format.channels."
                         + entry.getKey() + " must be a string");
             }
-            channelFormats.put(entry.getKey(), channelFormat);
+            builder.channelFormat(entry.getKey(), channelFormat);
         }
 
         // Debug mode
-        this.debug = requiredBoolean(toml, "debug", "debug");
+        builder.debug(requiredBoolean(toml, "debug", "debug"));
 
-        toClientConnectionConfig();
+        this.model = builder.build();
     }
 
     private static Toml requiredTable(Toml parent, String key) {
@@ -180,6 +165,17 @@ public class NovaChatConfig {
                 "Missing or invalid boolean configuration value: " + path);
     }
 
+    /** Strips one layer of surrounding double quotes (toml4j quoted-key form). */
+    private static String stripQuotes(String key) {
+        if (key == null) {
+            return "";
+        }
+        if (key.length() >= 2 && key.startsWith("\"") && key.endsWith("\"")) {
+            return key.substring(1, key.length() - 1);
+        }
+        return key;
+    }
+
     // Getters
 
     public boolean wasConfigCreated() {
@@ -194,32 +190,39 @@ public class NovaChatConfig {
         return updateResult != null ? updateResult.backupPath() : null;
     }
 
+    @Override
     public String getBackendHost() {
-        return backendHost;
+        return model.getBackendHost();
     }
 
+    @Override
     public int getBackendPort() {
-        return backendPort;
+        return model.getBackendPort();
     }
 
+    @Override
     public String getUsername() {
-        return username;
+        return model.getUsername();
     }
 
+    @Override
     public String getPassword() {
-        return password;
+        return model.getPassword();
     }
 
+    @Override
     public int getReconnectDelay() {
-        return reconnectDelay;
+        return model.getReconnectDelay();
     }
 
+    @Override
     public boolean isReplaceVanilla() {
-        return replaceVanilla;
+        return model.isReplaceVanilla();
     }
 
+    @Override
     public String getDefaultChannel() {
-        return defaultChannel;
+        return model.getDefaultChannel();
     }
 
     /**
@@ -229,47 +232,43 @@ public class NovaChatConfig {
      *
      * @return the locale string read from {@code chat.locale}
      */
+    @Override
     public String getLocale() {
-        return locale;
+        return model.getLocale();
     }
 
     /**
      * @return the {@code chat.channel-prefixes} map (message prefix → channel id);
      *         empty when the feature is disabled
      */
+    @Override
     public Map<String, String> getChannelPrefixes() {
-        return channelPrefixes;
+        return model.getChannelPrefixes();
     }
 
-    /** Strips one layer of surrounding double quotes (toml4j quoted-key form). */
-    private static String stripQuotes(String key) {
-        if (key == null) {
-            return "";
-        }
-        if (key.length() >= 2 && key.startsWith("\"") && key.endsWith("\"")) {
-            return key.substring(1, key.length() - 1);
-        }
-        return key;
-    }
-
+    @Override
     public String getPrefix() {
-        return prefix;
+        return model.getPrefix();
     }
 
+    @Override
     public String getErrorFormat() {
-        return errorFormat;
+        return model.getErrorFormat();
     }
 
+    @Override
     public String getSuccessFormat() {
-        return successFormat;
+        return model.getSuccessFormat();
     }
 
+    @Override
     public String getDefaultFormat() {
-        return defaultFormat;
+        return model.getDefaultFormat();
     }
 
+    @Override
     public Map<String, String> getChannelFormats() {
-        return channelFormats;
+        return model.getChannelFormats();
     }
 
     /**
@@ -278,12 +277,14 @@ public class NovaChatConfig {
      * @param channelId the channel ID
      * @return the format string, or default format if not configured
      */
+    @Override
     public String getChannelFormat(String channelId) {
-        return channelFormats.getOrDefault(channelId, defaultFormat);
+        return model.getChannelFormat(channelId);
     }
 
+    @Override
     public boolean isDebug() {
-        return debug;
+        return model.isDebug();
     }
 
     /**
@@ -291,13 +292,8 @@ public class NovaChatConfig {
      *
      * <p>The initial reconnect delay comes from {@code backend.reconnect-delay}.
      */
+    @Override
     public ClientConnectionConfig toClientConnectionConfig() {
-        return ClientConnectionConfig.builder()
-                .host(backendHost)
-                .port(backendPort)
-                .username(username)
-                .password(password)
-                .initialReconnectDelaySeconds(reconnectDelay)
-                .build();
+        return model.toClientConnectionConfig();
     }
 }
