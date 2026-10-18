@@ -38,8 +38,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -132,6 +134,33 @@ public final class CoreNetworkClient {
 
     private final Map<Class<? extends Packet>, Consumer<Packet>> packetHandlers =
             new ConcurrentHashMap<>();
+
+    /**
+     * KeepAlive requestIds this client wrote recently (pings and replies). An
+     * inbound KeepAlive carrying one of them is our own echo and must never be
+     * answered — NovaProtocol has no direction bit, so this memory is the only
+     * reliable discriminator. Mirrors the backend's {@code RecentKeepAlives}.
+     */
+    private final RecentKeepAlives recentSentKeepAlives = new RecentKeepAlives(8, 60_000_000_000L);
+
+    /**
+     * Sliding one-second window for outbound KeepAlives. Second line of
+     * defence: even if direction recognition regresses, the client stops
+     * amplifying after a couple of packets per second.
+     */
+    private final KeepAliveBudget keepAliveBudget = new KeepAliveBudget();
+
+    /** Warn throttle for suppressed KeepAlives; single shared connection. */
+    private final AtomicLong lastKeepAliveWarnNanos = new AtomicLong(Long.MIN_VALUE);
+
+    /**
+     * Last round-trip latency measured from an echoed KeepAlive timestamp, in
+     * milliseconds; -1 until the peer echoes a ping we sent.
+     */
+    private volatile long lastKeepAliveLatencyMs = -1L;
+
+    /** Wall-clock millis at which {@link #lastKeepAliveLatencyMs} was measured. */
+    private volatile long lastKeepAliveLatencyAt = -1L;
 
     /**
      * Client nonce for the in-flight AUTH-002 challenge-response handshake.
@@ -357,6 +386,10 @@ public final class CoreNetworkClient {
                     connected.set(true);
                     connecting.set(false);
                     reconnectAttempts.set(0);
+                    // Ids written on the previous socket can no longer come
+                    // back; start the new generation with a clean slate so a
+                    // stale id cannot be mistaken for an echo.
+                    recentSentKeepAlives.clear();
                     logger.debug("TCP connection established, sending handshake...");
                     sendHandshake();
                 } else {
@@ -477,6 +510,18 @@ public final class CoreNetworkClient {
         }
         Channel ch = channel;
         if (ch != null && ch.isActive()) {
+            // KeepAlive direction + flood guard apply only to packets that
+            // actually hit the wire. Recording the id before the write is what
+            // lets the echo be recognized; the budget is the backstop if that
+            // recognition ever regresses. Doing this here (not per caller) also
+            // covers a platform facade that starts writing proactive pings.
+            if (packet instanceof KeepAlivePacket) {
+                if (!keepAliveBudget.tryAcquire()) {
+                    warnKeepAliveSuppressed();
+                    return;
+                }
+                recentSentKeepAlives.remember(packet.getRequestId());
+            }
             ch.writeAndFlush(packet);
             logger.debug("Sent packet: " + packet.getClass().getSimpleName());
         } else {
@@ -893,10 +938,72 @@ public final class CoreNetworkClient {
         }
     }
 
+    /**
+     * Answers peer-initiated KeepAlives and consumes our own echoes.
+     *
+     * <p>NovaProtocol KeepAlives carry no direction bit, so an inbound packet
+     * is one of two things:</p>
+     * <ul>
+     *   <li>the echo of a KeepAlive this client wrote — liveness confirmed;
+     *       record the round-trip latency and send <strong>nothing</strong>,
+     *       otherwise the two sides ping-pong forever;</li>
+     *   <li>a peer-initiated ping — answer it once, with the original requestId
+     *       and timestamp, subject to {@link #keepAliveBudget}.</li>
+     * </ul>
+     *
+     * <p>The requestId is the only discriminator (value equality: the decoder
+     * rebuilds the UUID instance). This mirrors the backend's
+     * {@code KeepAliveHandler} so neither side relies on the other's
+     * recognition logic to stop a loop.</p>
+     */
     private void handleKeepAlive(KeepAlivePacket packet) {
+        boolean ourEcho = recentSentKeepAlives.contains(packet.getRequestId());
+        if (ourEcho) {
+            long latency = packet.getLatency();
+            if (latency >= 0) {
+                lastKeepAliveLatencyMs = latency;
+                lastKeepAliveLatencyAt = System.currentTimeMillis();
+            }
+            logger.debug("KeepAlive echo received; latency " + latency + "ms");
+            return;
+        }
+
         KeepAlivePacket response = new KeepAlivePacket(packet.getTimestamp());
         response.setRequestId(packet.getRequestId());
+        // sendPacket applies the budget and remembers the id.
         sendPacket(response);
+    }
+
+    /**
+     * Logs a dropped KeepAlive at most once every five seconds. The budget can
+     * be spent by a loop, so an unthrottled warn would itself become the flood.
+     */
+    private void warnKeepAliveSuppressed() {
+        long now = System.nanoTime();
+        long previous = lastKeepAliveWarnNanos.get();
+        if (previous != Long.MIN_VALUE
+                && now - previous < TimeUnit.SECONDS.toNanos(5)) {
+            return;
+        }
+        if (lastKeepAliveWarnNanos.compareAndSet(previous, now)) {
+            logger.warn("KeepAlive flood guard: suppressed outbound reply (max "
+                    + keepAliveBudget.getMaxPerWindow() + " per second)");
+        }
+    }
+
+    /**
+     * @return round-trip latency measured from the last echoed KeepAlive in
+     *         milliseconds, or -1 when the peer has not echoed a ping yet
+     */
+    public long getLastKeepAliveLatencyMs() {
+        return lastKeepAliveLatencyMs;
+    }
+
+    /**
+     * @return wall-clock millis when the last latency sample was taken, or -1
+     */
+    public long getLastKeepAliveLatencyAt() {
+        return lastKeepAliveLatencyAt;
     }
 
     private void completeAuth(boolean success) {

@@ -144,7 +144,16 @@ Auth failure does **not** currently force disconnect; reconnect still follows TC
 
 ### 3.5 Keepalive
 
-On `KeepAlivePacket`: echo new `KeepAlivePacket(timestamp)` with same `requestId`. Runs on Netty thread (no scheduler hop).
+NovaProtocol KeepAlives carry no direction bit, so the client answers by memory, not by packet shape. Every outbound KeepAlive goes through `sendPacket`, which (a) charges the per-second `KeepAliveBudget` and (b) remembers the `requestId` in `RecentKeepAlives` (last 8 ids, 60s TTL, UUID value equality — the decoder rebuilds the instance).
+
+On receive:
+
+| inbound | meaning | action |
+|---------|---------|--------|
+| `requestId` in `RecentKeepAlives` | echo of our own ping/reply | record latency from the echoed timestamp, **send nothing** |
+| anything else | peer-initiated ping | answer once with the same `requestId` + timestamp, budget permitting |
+
+Budget overrun drops the packet and warns at most once per 5s. This mirrors the backend `KeepAliveHandler` so neither side depends on the other's recognition to stop a loop. Runs on Netty thread (no scheduler hop). `recentSentKeepAlives` is cleared when a new connection generation is established.
 
 ### 3.6 Send / receive
 
