@@ -107,6 +107,18 @@ function Stop-Pid([int]$procId) {
 }
 function Teardown-All {
     Log "--- teardown: stopping $($global:Pids.Count) process(es) ---"
+    # Close the backend's kept-open stdin pipe first. Closing it delivers EOF,
+    # which is the backend's graceful shutdown path (see the launch note in
+    # step 4); Stop-Process then handles anything still standing. The drain
+    # subscriptions are removed in the same pass so a later Add-Content cannot
+    # race the process going away.
+    if ($script:novaProcess -and -not $script:novaProcess.HasExited) {
+        try { $script:novaProcess.StandardInput.Close() } catch {}
+        Start-Sleep -Milliseconds 800
+    }
+    Get-EventSubscriber -ErrorAction SilentlyContinue |
+        Where-Object { $_.SourceIdentifier -like 'NovaLinkBackend*' } |
+        ForEach-Object { Unregister-Event -SubscriptionId $_.SubscriptionId -ErrorAction SilentlyContinue }
     for ($i = $global:Pids.Count - 1; $i -ge 0; $i--) { Stop-Pid $global:Pids[$i] }
     $global:Pids.Clear()
 }
@@ -186,15 +198,6 @@ motd=NovaChat E2E
 level-name=world
 gamemode=survival
 "@ | Set-Content -Path (Join-Path $serverDir "server.properties")
-# Install the NovaChat bukkit plugin.
-Copy-Item $bukkitJar.FullName -Destination (Join-Path $serverDir "plugins") -Force
-
-# ---------------------------------------------------------------------------
-# 5. Generate backend config + start backend.
-# ---------------------------------------------------------------------------
-Log "step 4: generating backend config + starting NovaLink backend"
-$novaDir = Join-Path $RunsDir "novalink"
-New-Item -ItemType Directory -Path $novaDir -Force | Out-Null
 # Random hex helper. Windows PowerShell 5.1 runs on .NET Framework, where the
 # static RandomNumberGenerator::GetBytes(int) overload and Convert::ToHexString
 # do not exist -- calling them throws "MethodNotFound". The instance
@@ -205,8 +208,46 @@ function New-RandomHex([int]$byteLen) {
     [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($buf)
     return [BitConverter]::ToString($buf).Replace('-', '')
 }
+# Generated before the plugin config is written: the same password has to land
+# in novalink.yml (clients[].password) and plugins/NovaChat/config.yml.
 $secretKey = New-RandomHex 32
 $clientPw  = New-RandomHex 16
+
+# Install the NovaChat bukkit plugin.
+Copy-Item $bukkitJar.FullName -Destination (Join-Path $serverDir "plugins") -Force
+
+# The plugin's bundled resources/config.yml is a user-facing template: backend
+# port 8888 and username "Survival_Server". With no config.yml in the data
+# folder, YamlConfigUpdater copies that template verbatim, so the plugin dials
+# 8888 while the backend listens on $NovaPort and the handshake never leaves the
+# box (every /nc join then answers NC-503 "not connected"). Write the real
+# credentials BEFORE first start, exactly as run-pmmp/endstone/levilamina do.
+# backend.username MUST match clients[].username in novalink.yml ("E2E_Client")
+# and backend.password MUST match {{CLIENT_PASSWORD}}, or the backend answers
+# the challenge with NC-401.
+$pluginDataDir = Join-Path $serverDir "plugins/NovaChat"
+New-Item -ItemType Directory -Path $pluginDataDir -Force | Out-Null
+$pluginConfig = Join-Path $pluginDataDir "config.yml"
+@"
+backend:
+  host: "127.0.0.1"
+  port: $NovaPort
+  username: "E2E_Client"
+  password: "$clientPw"
+  reconnect-delay: 5
+chat:
+  replace_vanilla: false
+  default_channel: "global"
+  locale: "en_US"
+debug: true
+"@ | Set-Content -Path $pluginConfig
+
+# ---------------------------------------------------------------------------
+# 5. Generate backend config + start backend.
+# ---------------------------------------------------------------------------
+Log "step 4: generating backend config + starting NovaLink backend"
+$novaDir = Join-Path $RunsDir "novalink"
+New-Item -ItemType Directory -Path $novaDir -Force | Out-Null
 $novaYml = Join-Path $novaDir "novalink.yml"
 $tpl = Get-Content (Join-Path $confDir "novalink.template.yml") -Raw
 $tpl = $tpl.Replace('{{NOVA_PORT}}', $NovaPort).Replace('{{NOVA_WS_PORT}}', $NovaWsPort).Replace('{{SECRET_KEY}}', $secretKey).Replace('{{CLIENT_PASSWORD}}', $clientPw)
@@ -219,18 +260,65 @@ $novaPidFile = Join-Path $novaDir "backend.pid"
 # Resolve the java executable. On Windows it is java.exe; on Unix just java.
 $javaExe = if ($isWin) { "java.exe" } else { "java" }
 $java = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME "bin/$javaExe" } else { "java" }
-$novaProc = Start-Process -FilePath $java -ArgumentList @("-cp", $cp, "com.nova.link.NovaLinkMain", $novaYml) `
-    -WorkingDirectory $novaDir -RedirectStandardOutput $novaStdout -RedirectStandardError $novaStderr -PassThru -NoNewWindow
-Track-Pid $novaProc.Id
-$novaProc.Id | Set-Content $novaPidFile
-Log "  backend pid=$($novaProc.Id) on port $NovaPort"
 
-# Wait for backend readiness: poll stdout for a ready line OR the TCP port.
+# Start the backend with stdin REDIRECTED to a pipe that we keep open.
+#
+# Start-Process gives the child no usable stdin: the JVM sees EOF immediately.
+# NovaLinkMain runs BackendConsole on the main thread, and readLine() throwing
+# EndOfFileException is treated as Ctrl+D -- an intentional shutdown. So the
+# backend logs "started successfully", prints "EOF received, shutting down...",
+# and exits ~1s later. The readiness loop below then sees a live port in its
+# first poll and reports success, while every plugin connection is refused
+# moments later. That is the NC-503 this harness used to produce.
+#
+# System.Diagnostics.Process with RedirectStandardInput = $true hands the JVM a
+# pipe; because we never write to and never close it, readLine() blocks instead
+# of returning EOF and the console stays alive for the whole run. The handle is
+# kept in $novaProcess (not the old $novaProc) so teardown can close it.
+# Start-Process is still used for Purpur and the bot below -- neither exits on
+# stdin EOF.
+$novaPsi = New-Object System.Diagnostics.ProcessStartInfo
+$novaPsi.FileName = $java
+# No Join-String here: that cmdlet is PowerShell 7+, and 5.1 is still a supported
+# runner. Each argument is quoted individually, which is what the JVM needs for
+# paths containing spaces.
+$novaPsi.Arguments = (@("-cp", $cp, "com.nova.link.NovaLinkMain", $novaYml) |
+    ForEach-Object { '"' + $_ + '"' }) -join ' '
+$novaPsi.WorkingDirectory = $novaDir
+$novaPsi.UseShellExecute = $false
+$novaPsi.RedirectStandardInput = $true
+$novaPsi.RedirectStandardOutput = $true
+$novaPsi.RedirectStandardError = $true
+$novaPsi.CreateNoWindow = $true
+$novaProcess = [System.Diagnostics.Process]::Start($novaPsi)
+Track-Pid $novaProcess.Id
+$novaProcess.Id | Set-Content $novaPidFile
+Log "  backend pid=$($novaProcess.Id) on port $NovaPort"
+# Drain the redirected pipes into the log files on background events. Doing this
+# synchronously (ReadToEnd) would block until the backend exited and starve the
+# readiness loop below; not draining at all would eventually block the JVM once
+# the OS pipe buffer filled. The handlers append as data arrives, so the file is
+# already complete when the readiness loop or an error dump reads it.
+$null = Register-ObjectEvent -InputObject $novaProcess -EventName OutputDataReceived -SourceIdentifier "NovaLinkBackendStdout" -Action {
+    if ($EventArgs.Data -ne $null) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data }
+} -MessageData $novaStdout
+$null = Register-ObjectEvent -InputObject $novaProcess -EventName ErrorDataReceived -SourceIdentifier "NovaLinkBackendStderr" -Action {
+    if ($EventArgs.Data -ne $null) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data }
+} -MessageData $novaStderr
+$novaProcess.BeginOutputReadLine()
+$novaProcess.BeginErrorReadLine()
+
+# Wait for backend readiness: a "started" log line AND an accepting TCP port.
+# Both are required. The log line alone used to be enough, and that is exactly
+# how the stdin-EOF shutdown slipped through: the line appears before the
+# console loop notices EOF, so a one-poll match declared a backend ready that
+# was already exiting. Requiring the port to accept pins it to a listener that
+# is still serving.
 $ready = $false
 $readyPattern = 'NovaLink.*started|NovaProtocol.*listening|WebSocket.*listening'
 for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Seconds 2
-    if ($novaProc.HasExited) {
+    if ($novaProcess.HasExited) {
         # The backend logs fatal startup errors to stdout (its logger writes
         # there), so dumping only stderr showed just the JAVA_TOOL_OPTIONS
         # banner and hid the actual cause. Show both.
@@ -240,12 +328,30 @@ for ($i = 0; $i -lt 30; $i++) {
         Get-Content $novaStderr -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object { Log "  $_" }
         Teardown-All; Show-FailureLogs "backend exited early"; exit 1
     }
+    $logReady = $false
     if (Test-Path $novaStdout) {
         $logContent = Get-Content $novaStdout -Raw -ErrorAction SilentlyContinue
-        if ($logContent -match $readyPattern) { $ready = $true; break }
+        if ($logContent -match $readyPattern) { $logReady = $true }
+    }
+    if ($logReady) {
+        $portOpen = $false
+        try {
+            $tcp = New-Object System.Net.Sockets.TcpClient
+            $portOpen = $tcp.ConnectAsync("127.0.0.1", $NovaPort).Wait(2000) -and $tcp.Connected
+            $tcp.Close()
+        } catch { $portOpen = $false }
+        if ($portOpen) { $ready = $true; break }
     }
 }
-if (-not $ready) { Log "WARN: backend readiness not confirmed in logs, proceeding (Purpur will retry connect)" }
+if (-not $ready) {
+    # Fatal, not a warning: a backend that never accepted a connection cannot
+    # serve a single /nc command, so continuing only produces the downstream
+    # NC-503 with none of the context that explains it.
+    Log "ERROR: backend did not become ready on 127.0.0.1:$NovaPort within 60s; stdout (tail):"
+    Get-Content $novaStdout -ErrorAction SilentlyContinue | Select-Object -Last 20 | ForEach-Object { Log "  $_" }
+    Teardown-All; exit 1
+}
+Log "  backend ready on 127.0.0.1:$NovaPort"
 
 # ---------------------------------------------------------------------------
 # 6. Start Purpur + wait for "Done".
@@ -320,7 +426,13 @@ if ($botProc.ExitCode -ne 0) {
 Log "step 7: asserting L1 results"
 $pass = $false
 if (Test-Path $resultsFile) {
-    $results = Get-Content $resultsFile -Raw | ConvertFrom-Json
+    # ReadAllText, not Get-Content -Raw: on Windows PowerShell 5.1 the latter
+    # decodes with the ANSI code page, so the Chinese "已加入频道" line the bot
+    # received came back as mojibake and ConvertFrom-Json rejected the whole
+    # file. Node always writes UTF-8; ReadAllText defaults to UTF-8 on both 5.1
+    # and 7+, matching the producer.
+    $resultsJson = [System.IO.File]::ReadAllText($resultsFile, [System.Text.Encoding]::UTF8)
+    $results = $resultsJson | ConvertFrom-Json
     $msgs = $results.received | ForEach-Object { $_.text }
     # L1 assertions: join succeeded (channel joined message), list shows global,
     # and at least one chat message was captured (round-trip).
