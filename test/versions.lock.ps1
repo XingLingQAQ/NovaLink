@@ -45,14 +45,12 @@ $LockedServers = @(
     # Bukkit platform: Purpur 1.21.11 build 2568. JDK 21.
     # Plugin declares api-version "1.21" (NovaChat/Plugin/bukkit/.../plugin.yml).
     #
-    # PINNED TO THE NEWEST VERSION THE BOT CAN JOIN, not the newest release.
-    # mineflayer 4.37.1's loader.js hard-codes latestSupportedVersion as the last
-    # entry of its testedVersions list, and that list stops at 1.21.11. Anything
-    # newer fails before a socket is opened, with either
-    # "unsupported protocol version: 26.2" (minecraft-data has no 26.2 protocol)
-    # or "Server version '26.1' is not supported" (prismarine-registry truncates
-    # 26.1.2 to 26.1 and compares it against 1.21.11). Raising this pin requires
-    # a mineflayer release that lists the target version as tested.
+    # Deliberately kept on 1.21.11 even though mineflayer 4.39.0 now accepts
+    # 26.1+: bukkit coverage is meant to stay on the long-lived 1.21 line, and
+    # folia covers the 26.x line. The old ceiling came from mineflayer 4.37.1,
+    # whose loader.js hard-codes latestSupportedVersion as the last entry of its
+    # testedVersions list (that list stopped at 1.21.11); 4.39.0 lists 26.1, so
+    # venturing past 1.21.11 here no longer needs a library bump.
     #
     # Auto-detect: api.purpurmc.org/v2/purpur/<MC> -> builds.latest, then
     #   download = https://api.purpurmc.org/v2/purpur/<MC>/<build>/download
@@ -96,12 +94,15 @@ $LockedServers = @(
         Eula    = $true
         Jdk     = 21
         File    = 'folia-26.1.2-8.jar'
-        # folia is the one server ahead of the bot: PaperMC publishes no
-        # 1.21.x folia build, and mineflayer 4.37.1 stops at 1.21.11. Ask the
-        # bot for 1.21.11 anyway -- the harness joins, chats and runs /nc over
-        # the chat protocol, none of which the newer server removed. Revisit
-        # when a mineflayer release lists a 26.x version as tested.
-        BotMcVersion = '1.21.11'
+        # The bot speaks the server's own version. mineflayer 4.39.0 lists 26.1
+        # as its latest tested version, so a 26.1.2 server is accepted (26.1.2
+        # is the same protocol 775 as 26.1; prismarine-registry normalises the
+        # patch number away). The old 1.21.11 downgrade existed only because
+        # mineflayer 4.37.1 stopped there and rejected 26.x outright -- it is
+        # no longer needed. Keep this in step with MC above: if MC moves to a
+        # version newer than mineflayer's testedVersions, the loader throws
+        # "Server version '<v>' is not supported" before a socket is opened.
+        BotMcVersion = '26.1.2'
         Kind    = 'jar'
         Auto    = $true
     }

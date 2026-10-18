@@ -131,8 +131,10 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 console.log(`Connecting to ${PLATFORM} Bedrock server at ${HOST}:${PORT} as ${USERNAME} (mc ${MC_VERSION})...`);
 
 // Bedrock ClientData (user-chain) fields PMMP 5.44+ requires that
-// bedrock-protocol 3.58.1's login.js does NOT set (it only builds a partial
-// ClientData payload). Without these, PMMP kicks the bot at login with:
+// bedrock-protocol 3.59.0's login.js does NOT set (it only builds a partial
+// ClientData payload; 3.59.0 adds FilterProfanity/ClientIsEditorCapable/
+// ClientEditorConnectionIntent for 1.26.30+, but not the rest). Without these,
+// PMMP kicks the bot at login with:
 //   "Required property 'ClientEditorConnectionIntent' of class ClientData is missing"
 //   (and PartyId / IsPartyLeader / FilterProfanity / PersonaSkin / PremiumSkin /
 //    PieceTintColors / ClientIsEditorCapable, all @required in PMMP's ClientData DTO)
@@ -158,7 +160,7 @@ const PMMP_CLIENT_DATA_FIELDS = {
 //
 // bedrock-protocol's login.js:7 does `require('minecraft-data')('bedrock_'+ver).defaultSkin`
 // and spreads it into the ClientData JWT payload (login.js:51). The installed
-// minecraft-data 3.113.1 ships a defaultSkin, but it is a 256x256 PERSONA skin
+// minecraft-data 3.117.0 still ships a defaultSkin, and it is still a 256x256 PERSONA skin
 // (SkinData = 262144 raw RGBA bytes, PersonaSkin:true, PersonaPieces referencing
 // marketplace pack IDs). PMMP 5.44's Skin::__construct() only accepts legacy
 // sizes {8192, 16384, 65536} (Skin::ACCEPTED_SKIN_SIZES) and rejects 262144 with:
