@@ -1,274 +1,793 @@
 ﻿# ============================================================================
-# run-joint.ps1 — NovaChat cross-platform JOINT E2E orchestrator.
+# run-joint.ps1 -- NovaChat cross-platform JOINT E2E orchestrator (CI-capable).
 #
-# Starts ONE shared NovaLink backend + TWO different platform servers
-# (Purpur/bukkit on 54700 + Nukkit/Bedrock on 19140) and TWO bots
-# (mineflayer Java bot A + bedrock-protocol Bedrock bot B), then asserts
-# cross-server chat routing, mention delivery, and cross-server mute.
+# WHAT IT PROVES
+#   Two (or more) DIFFERENT Minecraft server platforms are connected to ONE
+#   shared NovaLink backend, and a message a player sends on platform A is
+#   actually DELIVERED to a player on platform B. That cross-process delivery is
+#   the whole point of NovaChat; no single-platform harness can observe it,
+#   because the evidence lives in two independent bot processes.
 #
-# This is the FIRST E2E test that starts 2 servers on 1 backend.
+#   A Velvelocity proxy fronting the downstream Java servers is part of the
+#   default topology: the proxy is where cross-server routing is most likely to
+#   break, and the previous version of this script deliberately excluded it.
 #
-# Safe to re-run: kills only PIDs it started (recorded in .e2e/joint/pids.txt).
+# HOW IT SCALES (round strategy, user-specified)
+#   The harness never runs more than $MaxConcurrentServers server processes at
+#   once (default 4: proxy + java server + modded server + one Bedrock server).
+#   Instead it runs ROUNDS, each round being one topology:
+#
+#     round 1: proxy(velocity) + bukkit + fabric(mod) + bedrock-A(nukkit)
+#     round 2: proxy(velocity) + bukkit + fabric(mod) + bedrock-B(pmmp)
+#     round 3: proxy(velocity) + folia   + fabric(mod) + bedrock-A(nukkit)
+#
+#   Rounds 2/3 change exactly one leg relative to round 1, which is what makes a
+#   failure attributable: same backend config, same clients, same bot plan, one
+#   different server binary. -Platforms controls the legs:
+#
+#     -Platforms "velocity,bukkit,nukkit"      (default: java=velocity+bukkit,
+#                                               mod=fabric, bedrock=nukkit)
+#     -Platforms "velocity,fabric,nukkit"      (rotate the Java leg to fabric)
+#     -Rounds 1                                (single topology; the CI mode)
+#
+# PATHS
+#   NOTHING here is hardcoded to a machine. The repo root is derived from this
+#   script's own location, server jar names come from test/versions.lock.ps1,
+#   and every port is a parameter with a distinct default per role.
+#
+# EVIDENCE
+#   Each round writes .e2e-artifacts/joint/<runId>/round-<n>/ with:
+#     plan-<role>.json      the exact steps each bot was told to run
+#     <role>.results.json   raw inbound traffic + sends + per-expect verdicts
+#     <role>.stdout.log     bot console
+#     joint-summary.json    the orchestrator's cross-process verdicts
+#   A cross-server assertion PASSES only when the receiver's recorded inbound
+#   traffic contains the sender's unique correlation token. The sender's own
+#   claim is never taken at face value.
+#
+# EXIT CODES
+#   0 = every round passed every cross-server assertion
+#   1 = at least one assertion failed (or a required process never became ready)
+#   2 = prereq failure (missing JDK / lock entry / bot deps / classpath)
+#   3 = nothing ran (every requested round was skipped)
 # ============================================================================
-
 [CmdletBinding()]
 param(
-  [string]$JointRoot = "D:\Project\NovaLink\.e2e\joint",
-  [string]$ClassPathFile = "D:\Project\NovaLink\.e2e\artifacts\runs\novalink-core.classpath.txt",
-  [string]$PurpurJar = "D:\Project\NovaLink\.e2e\artifacts\dist\purpur-1.21.8-2497.jar",
-  [string]$NukkitJar = "D:\Project\NovaLink\.e2e\artifacts\dist\nukkit-cloudburst-1.0-20260616.184029-1239.jar",
-  [string]$BukkitPluginJar = "D:\Project\NovaLink\.e2e\paper\plugins\novachat-bukkit-1.0.0-SNAPSHOT-fat.jar",
-  [string]$NukkitPluginJar = "D:\Project\NovaLink\.e2e\nukkit\plugins\NovaChat-Nukkit-E2E.jar",
-  [string]$Jdk21 = "C:\Users\XingLingQAQ\scoop\apps\temurin21-jdk\current",
+  # Comma-separated legs. Recognised platform names are the keys of
+  # $PlatformDefs below; the legacy aliases (purpur->bukkit, pocketmine->pmmp,
+  # powernukkitx->pnx) are accepted and normalised.
+  [string]$Platforms = "velocity,bukkit,fabric,nukkit",
+
+  # How many rounds to run and how the legs rotate. Round 1 is the -Platforms
+  # topology verbatim. Rounds 2+ rotate ONLY the Bedrock leg (alternating the
+  # bedrock platforms in -BedrockRotation), then ONLY the Java leg (walking the
+  # java platforms in -JavaRotation). Both lists default from -Platforms so a
+  # caller who names three platforms gets a sensible sweep without extra flags.
+  [int]$Rounds = 3,
+  [string]$BedrockRotation = "",
+  [string]$JavaRotation = "",
+
+  # Hard ceiling on concurrently running SERVER processes (proxy counts as one).
+  # The round builder asserts this before starting anything; the parameter
+  # exists so the constraint stays explicit instead of implicit in the topology.
+  [int]$MaxConcurrentServers = 4,
+
+  # Repo root. Derived from this script's location when empty -- a parameter
+  # default cannot call Split-Path under [CmdletBinding()] (see the note in
+  # test/bin/run-pmmp-e2e.ps1).
+  [string]$RepoRoot = "",
+  [string]$DistDir = "",          # server jar cache; <repo>/.e2e-artifacts/dist
+  [string]$JointRoot = "",        # run output; <repo>/.e2e-artifacts/joint
+  [string]$BotDir = "",           # bot deps; <repo>/test/bot (shared package.json)
+  [string]$ClassPathFile = "",    # <repo>/.e2e-artifacts/novalink-core.classpath.txt
+
+  # JDKs. Empty means "resolve from the environment" -- see Resolve-Jdk. The
+  # previous version of this script pinned a scoop path, which is why it could
+  # not run on CI.
+  [string]$Jdk17 = "",
+  [string]$Jdk21 = "",
+  [string]$Jdk25 = "",
+
+  # Ports. One distinct default per role so a leftover process from another
+  # harness cannot collide with this one.
   [int]$BackendPort = 54720,
   [int]$BackendWsPort = 54730,
-  [int]$ServerAPort = 54700,
-  [int]$ServerARconPort = 54705,
-  [int]$ServerBPort = 19140,
-  [int]$ServerBRconPort = 27021,
-  [int]$BotWaitMs = 360000
+  [int]$ProxyPort = 54710,
+  [int]$JavaPort = 54700,
+  [int]$JavaRconPort = 54705,
+  [int]$ModPort = 54701,
+  [int]$ModRconPort = 54706,
+  [int]$BedrockAPort = 19140,
+  [int]$BedrockARconPort = 27021,
+  [int]$BedrockBPort = 19141,
+  [int]$BedrockBRconPort = 27022,
+
+  [int]$ServerReadySec = 480,
+  [int]$BotTimeoutSec = 300,
+
+  # Build the platform plugin/mod jars with Gradle before starting servers.
+  # Off is useful when re-running against jars built moments ago.
+  [switch]$SkipBuild,
+
+  # Keep the run directories (logs/results) after a passing run. Failures are
+  # always kept.
+  [switch]$KeepArtifacts,
+
+  # Resolve platforms, build the round list, run the prereq checks, then stop.
+  # No process is started. Use this to validate a -Platforms/-Rounds combination
+  # on a machine that cannot run the whole matrix (and in CI as a fast gate).
+  [switch]$PlanOnly
 )
 
 $ErrorActionPreference = "Stop"
-$jointLog = Join-Path $JointRoot "joint.stdout.log"
-$pidFile = Join-Path $JointRoot "pids.txt"
-$portsFile = Join-Path $JointRoot "ports.json"
 
-# --- helpers ----------------------------------------------------------------
+# --- resolve derived paths ---------------------------------------------------
+if (-not $RepoRoot)       { $RepoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath)) }
+if (-not $DistDir)        { $DistDir = Join-Path $RepoRoot ".e2e-artifacts/dist" }
+if (-not $JointRoot)      { $JointRoot = Join-Path $RepoRoot ".e2e-artifacts/joint" }
+if (-not $BotDir)         { $BotDir = Join-Path $RepoRoot "test/bot" }
+if (-not $ClassPathFile)  { $ClassPathFile = Join-Path $RepoRoot ".e2e-artifacts/novalink-core.classpath.txt" }
+$binDir  = Join-Path $RepoRoot "test/bin"
+$jointBinDir = Join-Path $RepoRoot "test/joint/bots"
+$confDir = Join-Path $RepoRoot "test/conf"
+$jointBotScript = Join-Path $jointBinDir "joint-bot.js"
+
+# --- logging -----------------------------------------------------------------
+$script:RunId = (Get-Date -Format "yyyyMMdd-HHmmss")
+$script:LogPath = Join-Path $JointRoot "joint-$($script:RunId).log"
+New-Item -ItemType Directory -Force -Path $JointRoot | Out-Null
+
 function Log([string]$msg) {
   $line = "[{0}] {1}" -f (Get-Date -Format "HH:mm:ss.fff"), $msg
   Write-Host $line
-  Add-Content -Path $jointLog -Value $line -Encoding utf8
+  try { Add-Content -Path $script:LogPath -Value $line -Encoding utf8 -ErrorAction SilentlyContinue } catch { }
 }
 
-function Record-Pid([string]$role, [int]$procId) {
-  Add-Content -Path $pidFile -Value "$role=$procId" -Encoding utf8
-}
-
-function Stop-Pid([int]$procId, [string]$label) {
-  if ($procId -le 0) { return }
+# --- SHA-256 without Get-FileHash -------------------------------------------
+# Get-FileHash lives in Microsoft.PowerShell.Utility, which a -NoProfile child
+# powershell.exe on the GitHub runner does not always auto-load; the failure
+# surfaces as CommandNotFoundException only after a download already succeeded.
+# System.Security.Cryptography needs no module at all.
+function Get-Sha256Hex([string]$file) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
   try {
-    $p = Get-Process -Id $procId -ErrorAction Stop
-    Log "Stopping $label (pid=$procId)"
-    # try graceful stop first
-    try { $p.CloseMainWindow() | Out-Null } catch {}
-    Start-Sleep -Milliseconds 800
-    if (-not $p.HasExited) {
-      Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-    }
-  } catch {
-    Log "$label (pid=$procId) already exited"
-  }
+    $stream = [System.IO.File]::OpenRead($file)
+    try {
+      return ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToUpperInvariant()
+    } finally { $stream.Dispose() }
+  } finally { $sha.Dispose() }
+}
+
+function Test-PortOpen([int]$port, [int]$timeoutMs = 1500) {
+  try {
+    $client = New-Object System.Net.Sockets.TcpClient
+    $ok = $client.ConnectAsync("127.0.0.1", $port).Wait($timeoutMs) -and $client.Connected
+    $client.Close()
+    return $ok
+  } catch { return $false }
+}
+
+# Read a log file as UTF-8 regardless of PowerShell version. Get-Content -Raw
+# decodes with the ANSI code page on 5.1, which turns Chinese server output into
+# mojibake and makes -match against it silently fail.
+function Read-LogText([string]$path) {
+  if (-not (Test-Path -LiteralPath $path)) { return "" }
+  try { return [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) } catch { return "" }
 }
 
 function Wait-LogMarker([string]$file, [string]$pattern, [int]$timeoutSec, [string]$label) {
-  if (-not (Test-Path $file)) { Log "ERROR: log file missing for $label ($file)"; return $false }
   $deadline = (Get-Date).AddSeconds($timeoutSec)
   while ((Get-Date) -lt $deadline) {
-    $content = Get-Content $file -Raw -ErrorAction SilentlyContinue
-    if ($content -and ($content -match $pattern)) {
-      Log "$label ready (matched: $pattern)"
+    $text = Read-LogText $file
+    if ($text -and ($text -match $pattern)) {
+      Log "  $label ready (matched: $pattern)"
       return $true
     }
     Start-Sleep -Seconds 2
   }
-  Log "TIMEOUT waiting for $label (pattern: $pattern) in $file"
+  Log "  TIMEOUT waiting for $label (pattern: $pattern) in $file"
   return $false
 }
 
-function Send-Rcon([int]$port, [string]$password, [string]$command) {
-  # minimal Source RCON client (inline, no nested functions for PS 5.1 scope)
+function Write-LogTail([string]$path, [int]$lines, [string]$label) {
+  if (-not (Test-Path -LiteralPath $path)) { return }
+  Log "  --- $label ($path) ---"
+  Get-Content -LiteralPath $path -Tail $lines -Encoding UTF8 -ErrorAction SilentlyContinue |
+    ForEach-Object { Log "    $_" }
+}
+
+# --- JDK resolution ----------------------------------------------------------
+# Order of preference, per major version:
+#   1. an explicit -JdkNN argument
+#   2. the env var actions/setup-java exports for a multi-version request
+#   3. a JAVA_HOME whose `release` file names the requested major
+#   4. the author's local scoop layout (dev convenience only)
+# The previous version of this script hardcoded (4) and nothing else, which is
+# exactly why it could not run on CI.
+function Resolve-Jdk {
+  param([string]$Explicit, [string]$EnvName, [int]$Major, [string[]]$LocalCandidates)
+  $candidates = @()
+  if ($Explicit) { $candidates += $Explicit }
+  $envValue = [Environment]::GetEnvironmentVariable($EnvName)
+  if ($envValue) { $candidates += $envValue }
+  if ($env:JAVA_HOME) { $candidates += $env:JAVA_HOME }
+  $candidates += $LocalCandidates
+  foreach ($c in $candidates) {
+    if (-not $c) { continue }
+    $exe = Join-Path $c "bin/java.exe"
+    if (-not (Test-Path -LiteralPath $exe)) { $exe = Join-Path $c "bin/java" }
+    if (-not (Test-Path -LiteralPath $exe)) { continue }
+    $release = Join-Path $c "release"
+    if (Test-Path -LiteralPath $release) {
+      $content = Read-LogText $release
+      if ($content -match 'JAVA_VERSION="(\d+)') {
+        if ([int]$Matches[1] -ne $Major) { continue }
+        return $c
+      }
+    }
+    if ($c -match "(?:jdk|jdk-|temurin)?[-]?$Major(?:[.\-_]|$)") { return $c }
+    if ($c -eq $Explicit) { return $c }
+  }
+  return $null
+}
+
+$Jdk21 = Resolve-Jdk -Explicit $Jdk21 -EnvName 'JAVA_HOME_21_X64' -Major 21 `
+  -LocalCandidates @("$env:USERPROFILE\scoop\apps\temurin21-jdk\current")
+$Jdk17 = Resolve-Jdk -Explicit $Jdk17 -EnvName 'JAVA_HOME_17_X64' -Major 17 `
+  -LocalCandidates @(
+    "$env:USERPROFILE\scoop\apps\temurin17-jdk\current",
+    "C:\Program Files\Eclipse Adoptium\jdk-17.0.19.10-hotspot")
+$Jdk25 = Resolve-Jdk -Explicit $Jdk25 -EnvName 'JAVA_HOME_25_X64' -Major 25 `
+  -LocalCandidates @("$env:USERPROFILE\scoop\apps\temurin25-jdk\current")
+
+# Explicit switch, NOT "$Jdk25 or else $Jdk21". The old ternary silently mapped
+# Jdk25 onto Jdk21, so a Velocity/Folia leg booted on 21 and died instantly with
+# UnsupportedClassVersionError while the harness waited out the full ready
+# timeout for a marker that could never appear.
+function Get-JdkPath([string]$jdkVar) {
+  switch ($jdkVar) {
+    'Jdk25' { return $Jdk25 }
+    'Jdk17' { return $Jdk17 }
+    default { return $Jdk21 }
+  }
+}
+
+# --- platform definitions ----------------------------------------------------
+# One entry per leg the joint harness can start. LockName is the
+# test/versions.lock.ps1 entry that owns the binary; the jar itself is resolved
+# from the lock at run time, so a lock bump moves this harness with it.
+#
+# Jdk is the RUNTIME requirement (verified by booting each jar, see
+# test/bin/multiplatform/start-server.ps1). BuildJdk is what Gradle needs.
+# Proxy=$true marks the leg that fronts the Java servers instead of being
+# joined directly by a bot.
+$PlatformDefs = @{
+  bukkit = @{
+    LockName = 'purpur'; Kind = 'java'; SubDir = 'bukkit'
+    Jdk = 'Jdk21'; ReadyPattern = '(?i)Done \('
+    GradleTask = ':NovaChat:Plugin:bukkit:build'; BuildJdk = 'Jdk21'
+    JarGlob = 'NovaChat/Plugin/bukkit/build/libs/bukkit-*.jar'
+    PluginsSubdir = 'plugins'; ClientId = 'E2E_JobBukkit'
+  }
+  folia = @{
+    LockName = 'folia'; Kind = 'java'; SubDir = 'folia'
+    Jdk = 'Jdk25'; ReadyPattern = '(?i)Done \('
+    GradleTask = ':NovaChat:Plugin:folia:build'; BuildJdk = 'Jdk25'
+    JarGlob = 'NovaChat/Plugin/folia/build/libs/NovaChat-Folia-*.jar'
+    PluginsSubdir = 'plugins'; ClientId = 'E2E_JobFolia'
+  }
+  fabric = @{
+    LockName = 'fabric'; Kind = 'mod'; SubDir = 'fabric'
+    Jdk = 'Jdk21'; ReadyPattern = '(?i)Done \('
+    # Built through the E2E init script: the module's own remapJar artifact is
+    # the loader shim only, and a real server rejects it with ClassNotFound on
+    # com.nova.chat.mod.platform.Platform (see test/bin/fabric-fatjar.init.gradle).
+    GradleTask = ':NovaChat:MOD:fabric:fabricE2eJar'; BuildJdk = 'Jdk21'
+    InitScript = 'fabric-fatjar.init.gradle'
+    JarGlob = 'NovaChat/MOD/fabric/build/libs/nova-chat-fabric-e2e-*.jar'
+    PluginsSubdir = 'mods'; ClientId = 'E2E_JobFabric'
+  }
+  nukkit = @{
+    LockName = 'nukkit'; Kind = 'bedrock'; SubDir = 'nukkit'
+    Jdk = 'Jdk21'; ReadyPattern = '(?i)(Done|server.*started|Nukkit.*started|Loading.*complete|Listening)'
+    # build produces a THIN jar (no shared layers): loading it in a real server
+    # dies with NoClassDefFoundError com/nova/chat/client/network/AbstractPlatformNetworkClient.
+    # The E2E fat-jar task bundles :NovaChat:common + :NovaChat:client-core +
+    # snakeyaml into a self-contained plugin.
+    GradleTask = ':NovaChat:Bedrock:nukkit:nukkitE2eJar'; BuildJdk = 'Jdk21'
+    InitScript = 'plugin-e2e-fatjar.init.gradle'
+    InitProps = @{ e2ePluginProject = ':NovaChat:Bedrock:nukkit'; e2ePluginTask = 'nukkitE2eJar'; e2ePluginBaseName = 'novachat-nukkit' }
+    JarGlob = 'NovaChat/Bedrock/nukkit/build/libs/novachat-nukkit-*.jar'
+    PluginsSubdir = 'plugins'; ClientId = 'E2E_JobNukkit'
+  }
+  pmmp = @{
+    LockName = 'pocketmine'; Kind = 'bedrock'; SubDir = 'pmmp'
+    Jdk = $null; ReadyPattern = '(?i)Done'
+    JarGlob = ''; PluginsSubdir = 'plugins'; ClientId = 'E2E_JobPmmp'
+  }
+  pnx = @{
+    LockName = 'nukkit'; Kind = 'bedrock'; SubDir = 'pnx'
+    Jdk = 'Jdk21'; ReadyPattern = '(?i)(Done|server.*started|Nukkit.*started|Loading.*complete|Listening)'
+    GradleTask = ':NovaChat:Bedrock:pnx:build'; BuildJdk = 'Jdk21'
+    JarGlob = 'NovaChat/Bedrock/pnx/build/libs/NovaChat-PNX-*.jar'
+
+    PluginsSubdir = 'plugins'; ClientId = 'E2E_JobPnx'
+  }
+  velocity = @{
+    LockName = 'velocity'; Kind = 'proxy'; SubDir = 'velocity'
+    Jdk = 'Jdk25'; ReadyPattern = '(?i)(Listening on|Done \()'
+    GradleTask = ':NovaChat:Proxy:velocity:build'; BuildJdk = 'Jdk25'
+    JarGlob = 'NovaChat/Proxy/velocity/build/libs/velocity-*.jar'
+    PluginsSubdir = 'plugins'; Proxy = $true
+  }
+  bungee = @{
+    LockName = 'waterfall'; Kind = 'proxy'; SubDir = 'bungee'
+    Jdk = 'Jdk21'; ReadyPattern = '(?i)Listening'
+    GradleTask = ':NovaChat:Proxy:bungee:build'; BuildJdk = 'Jdk21'
+    JarGlob = 'NovaChat/Proxy/bungee/build/libs/bungee-*.jar'
+    PluginsSubdir = 'plugins'; Proxy = $true
+  }
+}
+
+# Aliases so callers can use whichever name they already know.
+$PlatformAliases = @{
+  purpur = 'bukkit'; sponge = ''; pocketmine = 'pmmp'; pocketminemp = 'pmmp'
+  powernukkitx = 'pnx'; mod = 'fabric'; waterfall = 'bungee'
+}
+
+function Resolve-PlatformName([string]$name) {
+  $n = $name.Trim().ToLowerInvariant()
+  if ($PlatformAliases.ContainsKey($n)) { return $PlatformAliases[$n] }
+  return $n
+}
+
+# --- process management ------------------------------------------------------
+# Every process the harness starts is tracked here and torn down in reverse
+# order. A trap + PowerShell.Exiting subscription guarantee teardown even on
+# Ctrl+C or a terminating error, so a failed round never leaves a JVM holding a
+# port for the next round.
+$script:Pids = [System.Collections.Generic.List[int]]::new()
+$script:PidLabels = @{}
+# Backends are launched through System.Diagnostics.Process with a kept-open
+# stdin pipe (see Start-BackendProcess) so this map lets teardown close it.
+$script:BackendProcesses = @{}
+
+function Track-Pid([int]$procId, [string]$label) {
+  if ($procId -le 0) { return }
+  $script:Pids.Add($procId) | Out-Null
+  $script:PidLabels[$procId] = $label
+}
+
+function Stop-TrackedPid([int]$procId, [string]$label) {
+  if ($procId -le 0) { return }
+  try {
+    $p = Get-Process -Id $procId -ErrorAction Stop
+    Log "    stopping $label (pid=$procId)"
+    try { $p.CloseMainWindow() | Out-Null } catch { }
+    Start-Sleep -Milliseconds 400
+    if (-not $p.HasExited) { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue }
+  } catch {
+    # Already exited -- the common case for a bot that finished its plan.
+  }
+}
+
+function Teardown-All {
+  if ($script:Pids.Count -eq 0) { return }
+  Log "  teardown: stopping $($script:Pids.Count) process(es)"
+  # Close backend stdin FIRST: NovaLinkMain's console loop treats stdin EOF as
+  # Ctrl+D and exits cleanly, which flushes its pending writes. Stop-Process
+  # would kill it mid-write instead.
+  foreach ($key in @($script:BackendProcesses.Keys)) {
+    $proc = $script:BackendProcesses[$key]
+    if ($proc -and -not $proc.HasExited) {
+      try { $proc.StandardInput.Close() } catch { }
+      Start-Sleep -Milliseconds 600
+    }
+    Remove-Item (Join-Path "Env:" "NovaLinkDrain_$key") -ErrorAction SilentlyContinue
+  }
+  Get-EventSubscriber -ErrorAction SilentlyContinue |
+    Where-Object { $_.SourceIdentifier -like 'NovaLinkJoint*' } |
+    ForEach-Object { Unregister-Event -SubscriptionId $_.SubscriptionId -ErrorAction SilentlyContinue }
+
+  for ($i = $script:Pids.Count - 1; $i -ge 0; $i--) {
+    $procId = $script:Pids[$i]
+    Stop-TrackedPid $procId $script:PidLabels[$procId]
+  }
+  $script:Pids.Clear()
+  $script:PidLabels.Clear()
+  $script:BackendProcesses = @{}
+}
+
+trap {
+  Log "TRAP: $($_.Exception.Message)"
+  if ($_.ScriptStackTrace) { Log "  at: $($_.ScriptStackTrace)" }
+  Teardown-All
+  break
+}
+$null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action { Teardown-All }
+
+# Launch a JVM whose stdin pipe stays OPEN for the whole run.
+#
+# Start-Process gives the child no usable stdin: the JVM sees EOF immediately.
+# NovaLinkMain runs BackendConsole on its main thread and treats readLine()
+# throwing EndOfFileException as Ctrl+D, so the backend logs "started",
+# prints "EOF received, shutting down...", and exits ~1s later. Every plugin
+# connection then gets refused and every /nc command answers NC-503.
+# System.Diagnostics.Process with RedirectStandardInput = $true hands the JVM a
+# pipe we never write to and never close, so readLine() blocks instead.
+function Start-JvmProcess {
+  param(
+    [string]$JavaExe,
+    [string[]]$Arguments,
+    [string]$WorkingDirectory,
+    [string]$StdoutPath,
+    [string]$StderrPath
+  )
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $JavaExe
+  # Each argument is quoted individually; Join-String is PowerShell 7+ and 5.1
+  # is still a supported runner. The JVM needs quoting for paths with spaces.
+  $psi.Arguments = (($Arguments | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }) -join ' ')
+  $psi.WorkingDirectory = $WorkingDirectory
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardInput = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $proc = [System.Diagnostics.Process]::Start($psi)
+
+  # Drain the redirected pipes into files on background events. Reading
+  # synchronously (ReadToEnd) would block until exit and starve the readiness
+  # loop; not draining at all would eventually block the JVM once the OS pipe
+  # buffer filled.
+  $tag = "NovaLinkJoint$($proc.Id)"
+  Remove-Item $StdoutPath, $StderrPath -ErrorAction SilentlyContinue
+  $null = Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -SourceIdentifier "$tag-out" -Action {
+    if ($EventArgs.Data -ne $null) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data }
+  } -MessageData $StdoutPath
+  $null = Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -SourceIdentifier "$tag-err" -Action {
+    if ($EventArgs.Data -ne $null) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data }
+  } -MessageData $StderrPath
+  $proc.BeginOutputReadLine()
+  $proc.BeginErrorReadLine()
+  return $proc
+}
+
+# Launch a process whose stdin does not matter (bots, and every server except
+# the backend). Start-Process is fine here and keeps the code simple; the
+# backend path above exists only because of the stdin-EOF shutdown.
+function Start-PlainProcess {
+  param(
+    [string]$FilePath,
+    [string[]]$Arguments,
+    [string]$WorkingDirectory,
+    [string]$StdoutPath,
+    [string]$StderrPath
+  )
+  Remove-Item $StdoutPath, $StderrPath -ErrorAction SilentlyContinue
+  return Start-Process -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory `
+    -RedirectStandardOutput $StdoutPath -RedirectStandardError $StderrPath -PassThru -NoNewWindow
+}
+
+# --- minimal RCON client -----------------------------------------------------
+# Source RCON, enough for "op <player>", "stop", and /nc moderation commands.
+# Inlined (rather than calling test/bin/rcon.ps1) so the joint harness has no
+# cross-directory script dependency and can be read top-to-bottom.
+function Send-Rcon {
+  param([int]$Port, [string]$Password, [string]$Command, [int]$TimeoutMs = 5000)
+  $client = $null
   try {
     $client = New-Object System.Net.Sockets.TcpClient
-    $client.Connect("127.0.0.1", $port)
+    if (-not $client.ConnectAsync("127.0.0.1", $Port).Wait($TimeoutMs)) { return $null }
     $stream = $client.GetStream()
-    $reader = New-Object System.IO.BinaryReader $stream
-
+    $stream.ReadTimeout = $TimeoutMs
     $enc = [System.Text.Encoding]::UTF8
-    function Send-RconPacket([System.Net.Sockets.NetworkStream]$st, [int]$id, [int]$type, [string]$payload) {
+
+    $writePacket = {
+      param($id, $type, $payload)
       $body = New-Object System.IO.MemoryStream
-      $idBytes = [BitConverter]::GetBytes([int]$id); $body.Write($idBytes,0,4)
-      $typeBytes = [BitConverter]::GetBytes([int]$type); $body.Write($typeBytes,0,4)
-      $pbytes = $enc.GetBytes($payload); $body.Write($pbytes,0,$pbytes.Length)
+      $idBytes = [BitConverter]::GetBytes([int]$id); $body.Write($idBytes, 0, 4)
+      $typeBytes = [BitConverter]::GetBytes([int]$type); $body.Write($typeBytes, 0, 4)
+      $pbytes = $enc.GetBytes($payload); $body.Write($pbytes, 0, $pbytes.Length)
       $body.WriteByte(0); $body.WriteByte(0)
       $payloadBytes = $body.ToArray()
-      $frame = New-Object System.IO.MemoryStream
-      $lenBytes = [BitConverter]::GetBytes([int]$payloadBytes.Length); $frame.Write($lenBytes,0,4)
-      $frame.Write($payloadBytes,0,$payloadBytes.Length)
-      $frameBytes = $frame.ToArray()
-      $st.Write($frameBytes,0,$frameBytes.Length)
+      $lenBytes = [BitConverter]::GetBytes([int]$payloadBytes.Length)
+      $stream.Write($lenBytes, 0, 4)
+      $stream.Write($payloadBytes, 0, $payloadBytes.Length)
+      $stream.Flush()
+    }
+    $readPacket = {
+      $reader = New-Object System.IO.BinaryReader $stream
+      $len = $reader.ReadUInt32()
+      $buf = $reader.ReadBytes($len)
+      if ($len -le 10) { return "" }
+      return $enc.GetString($buf, 8, $len - 10).TrimEnd([char]0)
     }
 
-    # auth (id=3, type=3)
-    Send-RconPacket $stream 3 3 $password
-    $len = $reader.ReadUInt32()
-    $null = $reader.ReadBytes($len)
-
-    # exec (id=10, type=2)
-    Send-RconPacket $stream 10 2 $command
-    $len2 = $reader.ReadUInt32()
-    $buf2 = $reader.ReadBytes($len2)
-    $payloadLen = $len2 - 10
-    $payload = if ($payloadLen -gt 0) { $enc.GetString($buf2, 8, $payloadLen).TrimEnd([char]0) } else { "" }
-    $client.Close()
-    return $payload
+    & $writePacket 3 3 $Password
+    $null = & $readPacket
+    & $writePacket 10 2 $Command
+    return (& $readPacket)
   } catch {
-    Log "RCON failed: $($_.Exception.Message)"
+    Log "    RCON failed ($Port): $($_.Exception.Message)"
     return $null
+  } finally {
+    if ($client) { try { $client.Close() } catch { } }
   }
 }
 
-# --- init -------------------------------------------------------------------
-Remove-Item $jointLog -ErrorAction SilentlyContinue
-Remove-Item $pidFile -ErrorAction SilentlyContinue
-Remove-Item $portsFile -ErrorAction SilentlyContinue
-$backendDir = Join-Path $JointRoot "backend"
-$serverADir = Join-Path $JointRoot "serverA"
-$serverBDir = Join-Path $JointRoot "serverB"
-$botADir = Join-Path $JointRoot "botA"
-$botBDir = Join-Path $JointRoot "botB"
-$logsDir = Join-Path $JointRoot "logs"
-
-# ensure core workspace dirs exist before use
-New-Item -ItemType Directory -Force $backendDir, $logsDir, $serverADir, $serverBDir, $botADir, $botBDir | Out-Null
-
-# record ports
-@{ backend=$BackendPort; backendWs=$BackendWsPort; serverA=$ServerAPort; serverARcon=$ServerARconPort; serverB=$ServerBPort; serverBRcon=$ServerBRconPort } |
-  ConvertTo-Json | Set-Content $portsFile -Encoding utf8
-
-Log "=== JOINT E2E START ==="
-Log "Pairing: Purpur(bukkit/Java, port $ServerAPort) + Nukkit(Bedrock, port $ServerBPort)"
-Log "Shared backend: TCP $BackendPort, WS $BackendWsPort"
-
-# verify artifacts (ClassPathFile checked after regeneration below)
-foreach ($p in @($PurpurJar, $NukkitJar, $BukkitPluginJar, $NukkitPluginJar)) {
-  if (-not (Test-Path $p)) { Log "ABORT: missing artifact $p"; exit 3 }
-}
-$java21 = Join-Path $Jdk21 "bin\java.exe"
-if (-not (Test-Path $java21)) { Log "ABORT: JDK21 java.exe not found at $java21"; exit 3 }
-
-# --- 0a. prepare backend classpath (build jars + regenerate + private copy) --
-# ROOT CAUSE FIX: The shared classpath file (.e2e/artifacts/runs/novalink-core.classpath.txt)
-# points at novalink-core/build/libs/*.jar and novachat-common/build/libs/*.jar. If a
-# PARALLEL Gradle build (e.g. another E2E agent) rebuilds those jars while the joint
-# backend JVM is running, the jar files are overwritten mid-flight and the URLClassLoader
-# throws NoClassDefFoundError (observed: ProtocolAttributes missing at 17:46:02, 4s after
-# a concurrent build rewrote novachat-common-1.0.0-SNAPSHOT.jar while the backend was up).
-# FIX: (1) build the two backend jars ourselves with JDK21 so they are current;
-#      (2) regenerate the classpath file via write-classpath.init.gradle;
-#      (3) COPY the nova jars (+ dependency jars) to a joint-private directory and
-#          build a joint-only classpath file pointing at those copies, so parallel
-#          builds can never overwrite them during this run.
-Log "Step 0a: preparing backend classpath (build + regenerate + private copy)..."
-
-# Point Gradle at JDK 21 (velocity needs 25, but we only build core+common which need 21).
-$env:JAVA_HOME = $Jdk21
-$env:PATH = "$Jdk21\bin;$env:PATH"
-
-$gradleLog = Join-Path $logsDir "gradle-build.log"
-$gradleErr = Join-Path $logsDir "gradle-build.err.log"
-$repoRoot = "D:\Project\NovaLink"
-$initGradle = Join-Path $repoRoot ".e2e\bin\write-classpath.init.gradle"
-
-# Build only the two backend jars (avoids velocity Java-25 compile failure).
-$gradleArgs = @("--no-daemon","-q",":novachat-common:jar",":novalink-core:jar",":novalink-core:writeRuntimeClasspath","--init-script",$initGradle)
-$gProc = Start-Process -FilePath "$repoRoot\gradlew.bat" -ArgumentList $gradleArgs -WorkingDirectory $repoRoot `
-  -RedirectStandardOutput $gradleLog -RedirectStandardError $gradleErr -PassThru -NoNewWindow -Wait
-if ($gProc.ExitCode -ne 0) {
-  Log "WARN: gradle build exit=$($gProc.ExitCode) (jars may be stale; continuing if classpath is valid)"
-  if (Test-Path $gradleErr) { Get-Content $gradleErr -Tail 10 | ForEach-Object { Log "  GRADLE: $_" } }
-} else { Log "Gradle build OK (core+common jars + classpath regenerated)" }
-
-if (-not (Test-Path $ClassPathFile)) { Log "ABORT: classpath file missing after build: $ClassPathFile"; exit 3 }
-
-# Now copy the nova jars to a joint-private libs dir and build a private classpath.
-$jointLibs = Join-Path $backendDir "libs"
-New-Item -ItemType Directory -Force $jointLibs | Out-Null
-$srcCp = (Get-Content $ClassPathFile -Raw).Trim()
-$srcEntries = $srcCp -split ';'
-$jointCpEntries = @()
-foreach ($entry in $srcEntries) {
-  if ([string]::IsNullOrWhiteSpace($entry)) { continue }
-  if ($entry -match '\\(novalink-core|novachat-common)-') {
-    # Copy nova jars to private dir (parallel-build-proof).
-    $dstJar = Join-Path $jointLibs (Split-Path $entry -Leaf)
-    Copy-Item $entry $dstJar -Force
-    $jointCpEntries += $dstJar
-  } else {
-    # Keep dependency jars as-is (gradle cache jars are not overwritten by builds).
-    $jointCpEntries += $entry
-  }
-}
-$jointCpFile = Join-Path $backendDir "joint.classpath.txt"
-($jointCpEntries -join ';') | Set-Content $jointCpFile -Encoding ascii -NoNewline
-Log "Joint-private classpath: $jointCpFile ($($jointCpEntries.Count) entries)"
-# Verify the critical class is present in the copied common jar.
-$jointCommonJar = Join-Path $jointLibs "novachat-common-1.0.0-SNAPSHOT.jar"
-if (Test-Path $jointCommonJar) {
-  $jarTool = Join-Path $Jdk21 "bin\jar.exe"
-  if (Test-Path $jarTool) {
-    $jarList = & $jarTool tf $jointCommonJar 2>&1
-    if ($jarList -match "ProtocolAttributes.class") {
-      Log "Verified: ProtocolAttributes.class present in joint-private novachat-common jar"
-    } else {
-      Log "ABORT: ProtocolAttributes.class NOT found in joint-private novachat-common jar"
-      exit 3
+# --- topology planning -------------------------------------------------------
+# -Platforms is parsed into three legs:
+#   Proxy   -- at most one; fronts the Java servers (velocity/waterfall).
+#   Java    -- the "bukkit-style" legs (bukkit/folia). At most one per round:
+#              they share the proxy's downstream slot and the same bot plan.
+#   Mod     -- fabric/quilt-style loader servers. At most one per round.
+#   Bedrock -- nukkit/pmmp/pnx. At most one per round: they are UDP servers on
+#              the same bot transport and adding a second buys little.
+#   Anything else (endstone/levilamina/sponge) is rejected with a clear message
+#   rather than silently ignored.
+function Split-PlatformLegs([string[]]$names) {
+  $legs = @{ Proxy = $null; Java = @(); Mod = @(); Bedrock = @() }
+  $unknown = @()
+  foreach ($raw in $names) {
+    $name = Resolve-PlatformName $raw
+    if (-not $name) { continue }
+    if (-not $PlatformDefs.ContainsKey($name)) { $unknown += $raw; continue }
+    switch ($PlatformDefs[$name].Kind) {
+      'proxy'   { $legs.Proxy = $name }
+      'java'    { $legs.Java += $name }
+      'mod'     { $legs.Mod += $name }
+      'bedrock' { $legs.Bedrock += $name }
+      default   { $unknown += $raw }
     }
   }
-} else {
-  Log "ABORT: joint-private novachat-common jar not copied"
-  exit 3
+  return @{ Legs = $legs; Unknown = $unknown }
 }
-# Use the joint-private classpath for the backend.
-$cp = $jointCpFile
-$cpContent = (Get-Content $cp -Raw).Trim()
-Log "Backend will use joint-private classpath ($($cpContent.Length) chars)"
 
-# --- 0. install bot deps FIRST (before starting servers to avoid idle time) --
-# Use Start-Process for npm to avoid PS 5.1 pipe deadlocks with native commands.
-Log "Step 0: installing bot deps (mineflayer + bedrock-protocol)..."
-if (-not (Test-Path (Join-Path $botADir "node_modules\mineflayer"))) {
-  $npmLogA = Join-Path $logsDir "botA-npm.log"
-  $npmErrA = Join-Path $logsDir "botA-npm.err.log"
-  Log "  bot A: running npm install (output -> $npmLogA)..."
-  $npmAProc = Start-Process -FilePath "npm" -ArgumentList @("install","--no-audit","--no-fund") `
-    -WorkingDirectory $botADir -RedirectStandardOutput $npmLogA -RedirectStandardError $npmErrA -PassThru -NoNewWindow -Wait
-  if ($npmAProc.ExitCode -ne 0) { Log "WARN: bot A npm install exit=$($npmAProc.ExitCode)" }
-  else { Log "bot A npm install OK" }
-} else { Log "bot A node_modules already present" }
+# Build the ordered list of rounds, matching the documented strategy:
+#
+#   round 1: proxy + java + mod + bedrock[0]
+#   round 2: proxy + java + mod + bedrock[1]   <- change the Bedrock leg
+#   round 3: proxy + java[1] + mod + bedrock[0] <- change the Java leg
+#   round 4: proxy + java[0] + mod + bedrock[1]
+#   ... alternating, so a failure is attributable to the leg that moved.
+#
+# Rotation lists are consumed with a per-kind cursor that advances ONLY when
+# that kind's leg is the one being rotated; a list with one entry therefore
+# repeats (the right behaviour for -Rounds 1 or for a caller who named a single
+# platform of that kind).
+function Build-Rounds([hashtable]$legs, [string[]]$bedrockSweep, [string[]]$javaSweep, [int]$count) {
+  $roundList = @()
+  $bedrockList = @($bedrockSweep | Where-Object { $_ })
+  $javaList = @($javaSweep | Where-Object { $_ })
+  if ($bedrockList.Count -eq 0) { $bedrockList = @($legs.Bedrock) }
+  if ($javaList.Count -eq 0) { $javaList = @($legs.Java) }
 
-if (-not (Test-Path (Join-Path $botBDir "node_modules\bedrock-protocol"))) {
-  $npmLogB = Join-Path $logsDir "botB-npm.log"
-  $npmErrB = Join-Path $logsDir "botB-npm.err.log"
-  Log "  bot B: running npm install (output -> $npmLogB)..."
-  $npmBProc = Start-Process -FilePath "npm" -ArgumentList @("install","--no-audit","--no-fund") `
-    -WorkingDirectory $botBDir -RedirectStandardOutput $npmLogB -RedirectStandardError $npmErrB -PassThru -NoNewWindow -Wait
-  if ($npmBProc.ExitCode -ne 0) { Log "WARN: bot B npm install exit=$($npmBProc.ExitCode)" }
-  else { Log "bot B npm install OK" }
-} else { Log "bot B node_modules already present" }
+  $modLeg = if ($legs.Mod.Count -gt 0) { $legs.Mod[0] } else { $null }
 
-# --- 1. start backend -------------------------------------------------------
-Log "Step 1: starting shared NovaLink backend on port $BackendPort..."
-# Use the joint-private classpath (built in Step 0a) — NOT the shared ClassPathFile,
-# so parallel Gradle builds cannot overwrite our jars mid-run.
-$cp = (Get-Content $jointCpFile -Raw).Trim()
-$backendWork = Join-Path $backendDir "work"
-New-Item -ItemType Directory -Force $backendWork | Out-Null
-# Write the backend novalink.yml with joint-specific credentials + ports so the
-# run is self-contained (the backend ConfigLoader only creates a credential-less
-# default when the file is absent, which would reject the plugin auth). Clients
-# here MUST match the username/password in the serverA + serverB plugin configs
-# (E2E_Joint_Client_A / joint-e2e-secret-a, E2E_Joint_Client_B / joint-e2e-secret-b).
-# debug:true so MessagePipeline SENDER_MUTED drops are logged (J2 enforcement proof).
-$bkConfigFile = Join-Path $backendDir "novalink.yml"
-$bkConfigContent = @"
-# NovaLink backend config for JOINT E2E (shared by server A + server B).
+  for ($i = 0; $i -lt $count; $i++) {
+    $javaLeg = if ($javaList.Count -gt 0) { $javaList[0] } else { $null }
+    $bedrockLeg = if ($bedrockList.Count -gt 0) { $bedrockList[0] } else { $null }
+
+    if ($i -gt 0) {
+      if ($i % 2 -eq 1) {
+        # Odd index = change the Bedrock leg. Round 2 is the first such round
+        # (i=1) and must move to the SECOND bedrock platform, since round 1
+        # already used the first.
+        $bedrockLeg = $bedrockList[([int](($i - 1) / 2) + 1) % $bedrockList.Count]
+      } else {
+        # Even index (>0) = change the Java leg: round 3 takes index 1,
+        # round 5 takes index 2, ...
+        $javaLeg = $javaList[([int](($i - 2) / 2) + 1) % $javaList.Count]
+      }
+    }
+
+    $serverCount = @($legs.Proxy, $javaLeg, $modLeg, $bedrockLeg | Where-Object { $_ }).Count
+    $roundList += [PSCustomObject]@{
+      Index = $i + 1
+      Proxy = $legs.Proxy
+      Java = $javaLeg
+      Mod = $modLeg
+      Bedrock = $bedrockLeg
+      ServerCount = $serverCount
+    }
+  }
+  return $roundList
+}
+
+function Format-RoundLabel($round) {
+  $parts = @()
+  if ($round.Proxy) { $parts += $round.Proxy }
+  if ($round.Java) { $parts += $round.Java }
+  if ($round.Mod) { $parts += $round.Mod }
+  if ($round.Bedrock) { $parts += $round.Bedrock }
+  return ($parts -join ' + ')
+}
+
+# --- build the platform artifacts -------------------------------------------
+# One Gradle invocation for all legs. gradlew writes banner lines to stderr
+# ("Picked up JAVA_TOOL_OPTIONS", Fabric Loom's "Cannot remap modifiers") and
+# under $ErrorActionPreference = 'Stop' the call operator turns each into a
+# terminating NativeCommandError that kills the run before Gradle even starts.
+# Drop to Continue for exactly this call and read the exit code explicitly; a
+# real build failure is still caught.
+function Invoke-GradleBuild($roundList, [string[]]$requestedPlatforms) {
+  # Platforms whose build is a plain task with no -P properties go in ONE Gradle
+  # invocation. Platforms driven by an init script that reads -P properties get
+  # their OWN invocation: the properties name one project + one task, so two of
+  # them cannot share a process without clobbering each other.
+  $tasks = [System.Collections.Generic.List[string]]::new()
+  $initScripts = [System.Collections.Generic.List[string]]::new()
+  $perPlatformCalls = @()
+  $built = @{}
+
+  foreach ($pf in $requestedPlatforms) {
+    $name = Resolve-PlatformName $pf
+    if (-not $name -or -not $PlatformDefs.ContainsKey($name)) { continue }
+    if ($built.ContainsKey($name)) { continue }
+    $def = $PlatformDefs[$name]
+    if (-not $def.GradleTask) { continue }
+    $built[$name] = $true
+    if ($def.InitProps) {
+      $perPlatformCalls += [PSCustomObject]@{
+        Name = $name
+        Task = $def.GradleTask
+        Init = (Join-Path $binDir $def.InitScript)
+        Props = $def.InitProps
+      }
+      continue
+    }
+    $tasks.Add($def.GradleTask) | Out-Null
+    if ($def.InitScript) {
+      $init = Join-Path $binDir $def.InitScript
+      if (-not $initScripts.Contains($init)) { $initScripts.Add($init) | Out-Null }
+    }
+  }
+
+  if ($tasks.Count -eq 0 -and $perPlatformCalls.Count -eq 0) {
+    Log "  no Gradle tasks to run (all requested platforms ship prebuilt plugin sources)"
+    return $true
+  }
+
+  # The fabric leg's build JDK is 21 (loom refuses < 21) and velocity/folia need
+  # 25 for the toolchain. Gradle picks the toolchain from the requested
+  # languageVersion, so one launcher JVM is enough as long as every required
+  # JDK is discoverable. Point it at JDK 25 when available (the highest), and
+  # blank the dev-machine toolchain override so auto-detection finds the
+  # setup-java JDKs on CI.
+  $launcherJdk = if ($Jdk25) { $Jdk25 } elseif ($Jdk21) { $Jdk21 } else { $null }
+  if (-not $launcherJdk) {
+    Log "  ERROR: no usable JDK to launch Gradle"
+    return $false
+  }
+
+  $isWin = $IsWindows -or $env:OS -eq "Windows_NT"
+  $gradleW = if ($isWin) { Join-Path $RepoRoot "gradlew.bat" } else { Join-Path $RepoRoot "gradlew" }
+  $buildLog = Join-Path $JointRoot "gradle-build.out.log"
+  $buildErr = Join-Path $JointRoot "gradle-build.err.log"
+
+  $args = @()
+  $args += $tasks
+  $args += @("-x", "test", "--console=plain")
+  $args += @("-Porg.gradle.java.installations.paths=", "-Dorg.gradle.java.installations.paths=")
+  foreach ($init in $initScripts) { $args += @("--init-script", $init) }
+
+  if ($tasks.Count -gt 0) { Log "  gradlew $($tasks -join ' ')" }
+  foreach ($call in $perPlatformCalls) {
+    Log "  gradlew $($call.Task) (init script: $(Split-Path -Leaf $call.Init))"
+    $callArgs = @($call.Task, "-x", "test", "--console=plain",
+      "-Porg.gradle.java.installations.paths=", "-Dorg.gradle.java.installations.paths=",
+      "--init-script", $call.Init)
+    foreach ($key in $call.Props.Keys) {
+      $callArgs += ("-P{0}={1}" -f $key, $call.Props[$key])
+    }
+    $savedJavaHome2 = $env:JAVA_HOME
+    $savedEap2 = $ErrorActionPreference
+    $callExit = 1
+    try {
+      $env:JAVA_HOME = $launcherJdk
+      $ErrorActionPreference = "Continue"
+      Push-Location $RepoRoot
+      try {
+        & $gradleW @callArgs 1>$buildLog 2>$buildErr
+        $callExit = $LASTEXITCODE
+      } finally { Pop-Location }
+    } catch {
+      Log "  gradle invocation threw: $($_.Exception.Message)"
+      $callExit = 1
+    } finally {
+      $ErrorActionPreference = $savedEap2
+      $env:JAVA_HOME = $savedJavaHome2
+    }
+    if ($callExit -ne 0) {
+      Log "  ERROR: $($call.Name) build failed (exit=$callExit; see $buildErr)"
+      Get-Content $buildErr -ErrorAction SilentlyContinue | Select-Object -Last 25 | ForEach-Object { Log "    $_" }
+      return $false
+    }
+  }
+  if ($tasks.Count -eq 0) { return $true }
+
+  $savedJavaHome = $env:JAVA_HOME
+  $savedPath = $env:PATH
+  $savedEap = $ErrorActionPreference
+  $exit = 1
+  try {
+    $env:JAVA_HOME = $launcherJdk
+    $env:PATH = "$launcherJdk\bin;$savedPath"
+    $ErrorActionPreference = "Continue"
+    Push-Location $RepoRoot
+    try {
+      & $gradleW @args 1>$buildLog 2>$buildErr
+      $exit = $LASTEXITCODE
+    } finally { Pop-Location }
+  } catch {
+    Log "  gradle invocation threw: $($_.Exception.Message)"
+    $exit = 1
+  } finally {
+    $ErrorActionPreference = $savedEap
+    $env:JAVA_HOME = $savedJavaHome
+    $env:PATH = $savedPath
+  }
+
+  if ($exit -ne 0) {
+    Log "  ERROR: gradle build failed (exit=$exit; see $buildErr)"
+    Get-Content $buildErr -ErrorAction SilentlyContinue | Select-Object -Last 25 | ForEach-Object { Log "    $_" }
+    return $false
+  }
+  return $true
+}
+
+# Resolve the artifact to install for one platform: prefer an E2E-built jar
+# (glob matched, newest first) and fall back to the platform's declared JarGlob.
+function Resolve-PluginArtifact([string]$platform) {
+  $def = $PlatformDefs[$platform]
+  if (-not $def.JarGlob) { return $null }
+  $glob = Join-Path $RepoRoot $def.JarGlob
+  $jar = Get-ChildItem $glob -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if ($jar) { return $jar.FullName }
+  return $null
+}
+
+# Install a platform's plugin/mod into a server directory.
+function Install-Plugin([string]$platform, [string]$serverDir) {
+  $def = $PlatformDefs[$platform]
+  if (-not $def.PluginsSubdir) { return $true }
+  $jar = Resolve-PluginArtifact $platform
+  if (-not $jar) {
+    Log "  WARN: no artifact for $platform (glob: $($def.JarGlob)); starting the server without the plugin"
+    return $false
+  }
+  $dir = Join-Path $serverDir $def.PluginsSubdir
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  Copy-Item $jar -Destination $dir -Force
+  Log "  installed $(Split-Path -Leaf $jar) -> $dir"
+  return $true
+}
+
+# --- backend -----------------------------------------------------------------
+# The backend config is written verbatim (not via the shared template) because
+# the joint run needs THREE distinct client identities -- one per server leg --
+# and the template only carries one. Every password is generated per run.
+function Write-BackendConfig([string]$path, $clients, [string]$superAdminPassword) {
+  $clientBlocks = @()
+  foreach ($c in $clients) {
+    $clientBlocks += @"
+  - username: "$($c.Username)"
+    password: "$($c.Password)"
+    display_name: "$($c.DisplayName)"
+"@
+  }
+  $body = @"
+# NovaLink backend config for the JOINT E2E run (generated per run).
 server:
   bind-address: 127.0.0.1
   port: $BackendPort
   websocket-port: $BackendWsPort
-  secret-key: "joint-e2e-backend-secret-2026-08"
+  secret-key: "joint-e2e-secret-$($script:RunId)"
   worker-threads: 2
+  locale: en_US
+  insecure-allow-plaintext: true
 
 database:
   type: memory
@@ -277,7 +796,16 @@ security:
   allowed-ips:
     - 127.0.0.1
   ip-ban-duration: 300
-  max-auth-failures: 3
+
+# Populated so the announce/title scenarios can exercise the real super-admin
+# path. The previous version of this harness left this empty, which made
+# NC-403 unreachable-by-design and got recorded as a product bug (BUG-J4).
+super-admins:
+  - uuid: "$($script:SuperAdminUuid)"
+    password: "$superAdminPassword"
+    username: "E2E_SuperAdmin"
+
+panel-users: []
 
 debug: true
 
@@ -285,106 +813,204 @@ global_channels:
   global:
     display_name: "Global"
     permission: "novachat.channel.global"
-    max_capacity: 0
+    max_capacity: 1000
 
 clients:
-  - username: "E2E_Joint_Client_A"
-    password: "joint-e2e-secret-a"
-    display_name: "Joint Server A (Purpur)"
-  - username: "E2E_Joint_Client_B"
-    password: "joint-e2e-secret-b"
-    display_name: "Joint Server B (Nukkit)"
+$($clientBlocks -join "`r`n")
+
+features:
+  filter-enabled: false
+  message-log-enabled: false
+  cross-server-chat-enabled: true
+  private-messages-enabled: true
+  message-log-retention-days: 1
 
 filter:
-  enabled: false
-
-announcements:
-  scheduled: []
-  join: []
+  words: []
+  patterns: []
 "@
-[System.IO.File]::WriteAllText($bkConfigFile, $bkConfigContent, (New-Object System.Text.UTF8Encoding $false))
-Log "Wrote backend config: $bkConfigFile (port $BackendPort, ws $BackendWsPort, debug=true)"
-$bkStdout = Join-Path $backendDir "stdout.log"
-$bkStderr = Join-Path $backendDir "stderr.log"
-Remove-Item $bkStdout, $bkStderr -ErrorAction SilentlyContinue
-$bkArgs = @("-cp", $cp, "com.nova.link.NovaLinkMain", (Join-Path $backendDir "novalink.yml"))
-$bkProc = Start-Process -FilePath $java21 -ArgumentList $bkArgs -WorkingDirectory $backendWork `
-  -RedirectStandardOutput $bkStdout -RedirectStandardError $bkStderr -PassThru -NoNewWindow
-Record-Pid "backend" $bkProc.Id
-Log "Backend PID=$($bkProc.Id)"
-
-$bkReady = Wait-LogMarker $bkStdout "(?i)(started|listening|ready|bound|NovaLink.*started|server.*started)" 60 "backend"
-if (-not $bkReady) {
-  Log "Backend did not signal ready; tail of stdout:"
-  if (Test-Path $bkStdout) { Get-Content $bkStdout -Tail 30 | ForEach-Object { Log "  BK: $_" } }
-  Log "Backend stderr tail:"
-  if (Test-Path $bkStderr) { Get-Content $bkStderr -Tail 30 | ForEach-Object { Log "  BKERR: $_" } }
+  [System.IO.File]::WriteAllText($path, $body, (New-Object System.Text.UTF8Encoding $false))
 }
-# also check TCP up
-Start-Sleep -Seconds 3
-$bkPortUp = $false
-try { $t=[System.Net.Sockets.TcpClient]::new("127.0.0.1",$BackendPort); $t.Close(); $bkPortUp=$true } catch {}
-Log "Backend TCP $BackendPort up=$bkPortUp"
-if (-not $bkPortUp) { Log "Backend port not up — continuing anyway (plugin may retry)" }
 
-# --- 2. start server A (Purpur/bukkit) -------------------------------------
-Log "Step 2: starting server A (Purpur) on port $ServerAPort..."
-# ensure plugin jar present (always copy fresh to avoid stale jars)
-$saPluginsDir = Join-Path $serverADir "plugins"
-New-Item -ItemType Directory -Force $saPluginsDir | Out-Null
-$dstPlugin = Join-Path $saPluginsDir "novachat-bukkit-1.0.0-SNAPSHOT-fat.jar"
-Copy-Item $BukkitPluginJar $dstPlugin -Force
-# Write explicit plugin config with DISTINCT client identity for server A.
-# The plugin's saveDefaultConfigFile() only writes if config.yml is absent, so
-# we MUST overwrite it here to guarantee the joint credentials are loaded.
-$saConfigDir = Join-Path $serverADir "plugins\NovaChat"
-New-Item -ItemType Directory -Force $saConfigDir | Out-Null
-$saConfigFile = Join-Path $saConfigDir "config.yml"
-$saConfigContent = @'
-# NovaChat bukkit plugin config for JOINT server A (Purpur).
-# DISTINCT client identity: E2E_Joint_Client_A
+# Start the shared backend and block until it is genuinely serving.
+#
+# Readiness needs BOTH the "started successfully" log line AND an accepting TCP
+# port. The line alone is not enough: it appears before the console loop notices
+# a stdin EOF, so a one-poll match would declare ready a backend that is already
+# exiting (that is the NC-503 every plugin then reports).
+function Start-Backend([string]$configPath, [string]$workDir, [string]$stdoutPath, [string]$stderrPath) {
+  $java = Join-Path $Jdk21 "bin/java.exe"
+  if (-not (Test-Path -LiteralPath $java)) { $java = Join-Path $Jdk21 "bin/java" }
+  $cp = (Read-LogText $ClassPathFile).Trim()
+  if ([string]::IsNullOrWhiteSpace($cp)) {
+    Log "  ERROR: backend classpath file is empty: $ClassPathFile"
+    return $null
+  }
+  $proc = Start-JvmProcess -JavaExe $java `
+    -Arguments @("-Xmx512m", "-cp", $cp, "com.nova.link.NovaLinkMain", $configPath) `
+    -WorkingDirectory $workDir -StdoutPath $stdoutPath -StderrPath $stderrPath
+  Track-Pid $proc.Id "backend"
+  $script:BackendProcesses["joint"] = $proc
+  Log "  backend pid=$($proc.Id) on tcp $BackendPort ws $BackendWsPort"
+
+  $deadline = (Get-Date).AddSeconds(60)
+  while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Seconds 2
+    if ($proc.HasExited) {
+      Log "  ERROR: backend exited early (code=$($proc.ExitCode))"
+      Write-LogTail $stdoutPath 30 "backend stdout"
+      Write-LogTail $stderrPath 15 "backend stderr"
+      return $null
+    }
+    $text = Read-LogText $stdoutPath
+    if ($text -match '(?i)started successfully' -and (Test-PortOpen $BackendPort)) {
+      Log "  backend ready"
+      return $proc
+    }
+  }
+  Log "  ERROR: backend did not become ready within 60s"
+  Write-LogTail $stdoutPath 30 "backend stdout"
+  return $null
+}
+
+# --- per-platform server launcher -------------------------------------------
+# Writes the platform's run directory (properties / EULA / plugin config) and
+# starts the process. The shapes below match what each engine actually reads:
+# Nukkit/PNX/PMMP take the Bedrock-style key set, Purpur/Folia/Fabric the Java
+# one, Velocity its own TOML (written by the proxy branch).
+function Start-PlatformServer {
+  param(
+    [string]$platform,
+    [string]$serverDir,
+    [int]$port,
+    [int]$rconPort,
+    [string]$clientId,
+    [string]$clientPassword,
+    [string]$stdoutPath,
+    [string]$stderrPath
+  )
+  $def = $PlatformDefs[$platform]
+  $jdkPath = Get-JdkPath $def.Jdk
+  if (-not $jdkPath -and $def.Jdk) {
+    Log "  ERROR: runtime JDK $($def.Jdk) could not be resolved for $platform"
+    return $null
+  }
+  New-Item -ItemType Directory -Force -Path $serverDir | Out-Null
+
+  # Reuse a pre-generated world when one is cached.
+  #
+  # A Java server with no world spends its whole first boot generating spawn
+  # chunks -- measured 171-236s for Purpur 1.21.11 on this box, which is most of
+  # a round's budget and is pure overhead: the joint assertions do not care what
+  # the terrain looks like. When <JointRoot>/seed/<platform>/world exists it is
+  # copied in before the server starts, turning a ~3-minute boot into ~20s.
+  # The cache is populated by the harness itself after a round that generated
+  # one (see the copy at the end of Invoke-Round).
+  $seedWorld = Join-Path (Join-Path (Join-Path $JointRoot "seed") $platform) "world"
+  $targetWorld = Join-Path $serverDir "world"
+  if ((Test-Path -LiteralPath $seedWorld) -and -not (Test-Path -LiteralPath $targetWorld)) {
+    Copy-Item $seedWorld $targetWorld -Recurse -Force
+    Log "  seeded pre-generated world for $platform"
+  }
+
+  # Drop the platform's plugin/mod into the server's plugins|mods directory.
+  # This has to happen BEFORE the server starts: every engine here scans those
+  # directories once at boot, so a jar copied afterwards is never loaded
+  # ("Initialized 0 plugins" in the bukkit log, no NovaChat line in Nukkit's).
+  $null = Install-Plugin $platform $serverDir
+
+  # Nukkit/PNX initialise EncryptionUtils eagerly and fetch their Xbox discovery
+  # document over TLS from client.discovery.minecraft-services.net. That host is
+  # unreachable from CI and from this box, and the failure is an
+  # AssertionError inside the static initializer -- the server dies before the
+  # console exists. Nukkit caches the response in the SERVER ROOT as
+  # discovery-cache.json / openid-cache.json; seed them from any previously
+  # populated run directory so the lookup never happens.
+  if ($platform -in @('nukkit', 'pnx')) {
+    $cacheSources = @(
+      (Join-Path $RepoRoot ".e2e-artifacts/dist/nukkit-cache"),
+      (Join-Path $RepoRoot ".e2e/nukkit")
+    )
+    foreach ($cacheFile in @('discovery-cache.json', 'openid-cache.json')) {
+      $dest = Join-Path $serverDir $cacheFile
+      if (Test-Path -LiteralPath $dest) { continue }
+      foreach ($src in $cacheSources) {
+        $candidate = Join-Path $src $cacheFile
+        if (Test-Path -LiteralPath $candidate) {
+          Copy-Item $candidate $dest -Force
+          Log "  seeded $cacheFile for $platform from $src"
+          break
+        }
+      }
+      if (-not (Test-Path -LiteralPath $dest)) {
+        Log "  WARN: $cacheFile not found for $platform; the server will try the network and may fail to boot"
+      }
+    }
+  }
+
+  # Backend credentials for the plugin/mod config. Written BEFORE first start:
+  # the bundled template points at 127.0.0.1:8888 with a placeholder username,
+  # and both config loaders only write a default when the file is absent.
+  $pluginConfig = @"
 backend:
   host: "127.0.0.1"
-  port: 54720
-  username: "E2E_Joint_Client_A"
-  password: "joint-e2e-secret-a"
-  reconnect-delay: 5
-
+  port: $BackendPort
+  username: "$clientId"
+  password: "$clientPassword"
+  reconnect-delay: 3
 chat:
-  replace_vanilla: false
+  replace_vanilla: true
   default_channel: "global"
-
-format:
-  prefix: "&8[&bNovaChat&8]&r "
-  error: "&cError: {message}"
-  success: "&aSuccess: {message}"
-  default: "&7[{channel_color}{channel_name}] {player}&f: {message}"
-  channels:
-    global: "&c[Global] &7{player}&f: {message}"
-    local: "&e[Local] &7{player}&f: {message}"
-
+  locale: "en_US"
+  channel-prefixes: {}
 debug: true
-'@
-[System.IO.File]::WriteAllText($saConfigFile, $saConfigContent, (New-Object System.Text.UTF8Encoding $false))
-Log "Wrote server A plugin config: $saConfigFile"
-# Write eula.txt + server.properties so Purpur starts without prompting and
-# binds the joint ports (54700 game / 54705 rcon). online-mode=false so the
-# offline-mode mineflayer bot can join; rcon password matches Send-Rcon calls.
-$saEula = Join-Path $serverADir "eula.txt"
-[System.IO.File]::WriteAllText($saEula, "eula=true`r`n", (New-Object System.Text.UTF8Encoding $false))
-$saProps = Join-Path $serverADir "server.properties"
-$saPropsContent = @"
+"@
+
+  switch ($platform) {
+    'fabric' {
+      # Fabric reads <server>/config/novachat.yml (FabricLoader config dir).
+      $cfgDir = Join-Path $serverDir "config"
+      New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+      [System.IO.File]::WriteAllText((Join-Path $cfgDir "novachat.yml"), $pluginConfig,
+        (New-Object System.Text.UTF8Encoding $false))
+      [System.IO.File]::WriteAllText((Join-Path $serverDir "eula.txt"), "eula=true`r`n",
+        (New-Object System.Text.UTF8Encoding $false))
+      $props = @"
+server-port=$port
+server-ip=127.0.0.1
+online-mode=false
+motd=NovaChat-Joint-$platform
+level-name=world
+level-type=minecraft\:flat
+gamemode=survival
+difficulty=easy
+spawn-protection=0
+view-distance=4
+simulation-distance=4
+max-players=5
+sync-chunk-writes=false
+"@
+      [System.IO.File]::WriteAllText((Join-Path $serverDir "server.properties"), $props,
+        (New-Object System.Text.UTF8Encoding $false))
+    }
+    { $_ -in @('bukkit', 'folia') } {
+      $cfgDir = Join-Path $serverDir "plugins/NovaChat"
+      New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+      [System.IO.File]::WriteAllText((Join-Path $cfgDir "config.yml"), $pluginConfig,
+        (New-Object System.Text.UTF8Encoding $false))
+      [System.IO.File]::WriteAllText((Join-Path $serverDir "eula.txt"), "eula=true`r`n",
+        (New-Object System.Text.UTF8Encoding $false))
+      $props = @"
 enable-rcon=true
-rcon.port=$ServerARconPort
+rcon.port=$rconPort
 rcon.password=joint-e2e-rcon
-server-port=$ServerAPort
+server-port=$port
 server-ip=127.0.0.1
 online-mode=false
 max-players=5
-motd=NovaChat-Joint-A
+motd=NovaChat-Joint-$platform
 level-name=world
-level-type=minecraft\:normal
-generate-structures=true
+level-type=minecraft\:flat
 gamemode=survival
 difficulty=easy
 pvp=false
@@ -392,7 +1018,6 @@ spawn-protection=0
 view-distance=4
 simulation-distance=4
 white-list=false
-enforce-whitelist=false
 enforce-secure-profile=false
 op-permission-level=4
 allow-flight=true
@@ -400,93 +1025,19 @@ spawn-monsters=false
 spawn-animals=false
 allow-nether=false
 "@
-[System.IO.File]::WriteAllText($saProps, $saPropsContent, (New-Object System.Text.UTF8Encoding $false))
-Log "Wrote server A eula + server.properties (port $ServerAPort, rcon $ServerARconPort)"
-# Copy the cached mojang jar + libraries + versions from the non-joint paper dir
-# so Purpur doesn't re-download mojang_1.21.8.jar on first run (which exceeds the
-# 240s startup timeout). These are ~158MB total but copy in a few seconds locally.
-$paperCache = "D:\Project\NovaLink\.e2e\paper\cache"
-$paperLibs = "D:\Project\NovaLink\.e2e\paper\libraries"
-$paperVersions = "D:\Project\NovaLink\.e2e\paper\versions"
-foreach ($src in @($paperCache, $paperLibs, $paperVersions)) {
-  if (Test-Path $src) {
-    $dst = Join-Path $serverADir (Split-Path $src -Leaf)
-    if (-not (Test-Path $dst)) {
-      Copy-Item $src $dst -Recurse -Force -ErrorAction SilentlyContinue
-      Log "Copied $(Split-Path $src -Leaf) -> $dst"
+      [System.IO.File]::WriteAllText((Join-Path $serverDir "server.properties"), $props,
+        (New-Object System.Text.UTF8Encoding $false))
     }
-  }
-}
-$saStdout = Join-Path $serverADir "purpur.stdout.log"
-$saStderr = Join-Path $serverADir "purpur.stderr.log"
-Remove-Item $saStdout, $saStderr -ErrorAction SilentlyContinue
-# Purpur needs a world dir; it will generate one. Set level-name=world (default).
-$saArgs = @("-Xmx1G", "-Xms512M", "-jar", $PurpurJar, "nogui")
-$saProc = Start-Process -FilePath $java21 -ArgumentList $saArgs -WorkingDirectory $serverADir `
-  -RedirectStandardOutput $saStdout -RedirectStandardError $saStderr -PassThru -NoNewWindow
-Record-Pid "serverA" $saProc.Id
-Log "Server A PID=$($saProc.Id)"
-
-$saReady = Wait-LogMarker $saStdout "(?i)Done \(" 240 "server A (Purpur)"
-if (-not $saReady) {
-  Log "Server A did not reach Done; tail:"
-  if (Test-Path $saStdout) { Get-Content $saStdout -Tail 40 | ForEach-Object { Log "  SA: $_" } }
-}
-
-# --- 3. start server B (Nukkit/Bedrock) ------------------------------------
-Log "Step 3: starting server B (Nukkit) on port $ServerBPort..."
-$sbPluginsDir = Join-Path $serverBDir "plugins"
-New-Item -ItemType Directory -Force $sbPluginsDir | Out-Null
-$dstNukkitPlugin = Join-Path $sbPluginsDir "NovaChat-Nukkit-E2E.jar"
-Copy-Item $NukkitPluginJar $dstNukkitPlugin -Force
-# Write explicit plugin config with DISTINCT client identity for server B.
-# CRITICAL: replace_vanilla must be true so the Nukkit plugin intercepts chat
-# events (REPLACE mode) and forwards them to the backend. With the default
-# config (replace_vanilla=false / HYBRID mode), chat is never sent to the
-# backend and cross-server routing silently fails.
-# Also overwrite to guarantee fresh joint credentials are loaded.
-$sbConfigDir = Join-Path $serverBDir "plugins\NovaChat"
-New-Item -ItemType Directory -Force $sbConfigDir | Out-Null
-$sbConfigFile = Join-Path $sbConfigDir "config.yml"
-$sbConfigContent = @'
-# NovaChat Nukkit plugin config for JOINT server B (Nukkit/Bedrock).
-# DISTINCT client identity: E2E_Joint_Client_B
-backend:
-  host: "127.0.0.1"
-  port: 54720
-  username: "E2E_Joint_Client_B"
-  password: "joint-e2e-secret-b"
-  reconnect-delay: 5
-
-chat:
-  replace_vanilla: true
-  default_channel: "global"
-
-format:
-  prefix: "&8[&bNovaChat&8]&r "
-  error: "&cError: {message}"
-  success: "&aSuccess: {message}"
-  default: "&7[{channel_color}{channel_name}] {player}&f: {message}"
-  channels:
-    global: "&c[Global] &7{player}&f: {message}"
-    local: "&e[Local] &7{player}&f: {message}"
-
-debug: true
-'@
-# Write without BOM — PS 5.1 Set-Content -Encoding utf8 adds BOM which can
-# break YAML parsers that don't strip it. Use .NET WriteAllText with no-BOM UTF-8.
-[System.IO.File]::WriteAllText($sbConfigFile, $sbConfigContent, (New-Object System.Text.UTF8Encoding $false))
-Log "Wrote server B plugin config: $sbConfigFile"
-# Write eula.txt + server.properties so Nukkit starts without prompting and
-# binds the joint ports (19140 bedrock / 27021 rcon). xbox-auth=off so the
-# offline bedrock-protocol bot can join; rcon password matches Send-Rcon calls.
-$sbEula = Join-Path $serverBDir "eula.txt"
-[System.IO.File]::WriteAllText($sbEula, "eula=true`r`n", (New-Object System.Text.UTF8Encoding $false))
-$sbProps = Join-Path $serverBDir "server.properties"
-$sbPropsContent = @"
-motd=NovaChat-Joint-B
-sub-motd=Powered by Cloudburst Nukkit
-server-port=$ServerBPort
+    { $_ -in @('nukkit', 'pnx') } {
+      $cfgDir = Join-Path $serverDir "plugins/NovaChat"
+      New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+      [System.IO.File]::WriteAllText((Join-Path $cfgDir "config.yml"), $pluginConfig,
+        (New-Object System.Text.UTF8Encoding $false))
+      [System.IO.File]::WriteAllText((Join-Path $serverDir "eula.txt"), "eula=true`r`n",
+        (New-Object System.Text.UTF8Encoding $false))
+      $props = @"
+motd=NovaChat-Joint-$platform
+server-port=$port
 server-ip=127.0.0.1
 view-distance=4
 white-list=off
@@ -511,263 +1062,1092 @@ auto-save=off
 force-resources=off
 xbox-auth=off
 enable-rcon=on
-rcon.port=$ServerBRconPort
-rcon.password=joint-nukkit-rcon
-force-resources-allow-client-packs=off
-force-language=off
+rcon.port=$rconPort
+rcon.password=joint-e2e-rcon
 allow-nether=off
 allow-the-end=off
 "@
-[System.IO.File]::WriteAllText($sbProps, $sbPropsContent, (New-Object System.Text.UTF8Encoding $false))
-Log "Wrote server B eula + server.properties (port $ServerBPort, rcon $ServerBRconPort, xbox-auth=off)"
-# Write nukkit.yml with language pre-set so Nukkit doesn't prompt for a language
-# on first run (the prompt blocks startup and causes Bedrock ping timeouts).
-$sbNukkitYml = Join-Path $serverBDir "nukkit.yml"
-$sbNukkitYmlContent = @'
-# Nukkit config for JOINT E2E server B.
+      [System.IO.File]::WriteAllText((Join-Path $serverDir "server.properties"), $props,
+        (New-Object System.Text.UTF8Encoding $false))
+      $nukkitYml = @"
 aliases:
   showtheversion:
     - version
-  savestop:
-    - save-all
-    - stop
 worlds:
   world:
     seed: 12345
     generator: flat
-
 settings:
   language: "eng"
   force-language: false
   shutdown-message: "Server closed"
-  query-plugins: true
-  deprecated-verbose: true
   async-workers: auto
   safe-spawn: false
-
 network:
   batch-threshold: 256
   compression-level: 7
   async-compression: true
-
-debug:
-  level: 1
-  commands: true
-
 level-settings:
   default-format: anvil
   auto-tick-rate: true
-  auto-tick-rate-limit: 20
   base-tick-rate: 1
-  always-tick-players: false
-
 chunk-sending:
   per-tick: 4
   max-chunks: 192
-  spawn-threshold: 56
-
-chunk-ticking:
-  per-tick: 40
-  tick-radius: 3
-  light-updates: false
-  clear-tick-list: true
-
-chunk-generation:
-  queue-size: 8
-  population-queue-size: 8
-
-ticks-per:
-  animal-spawns: 400
-  monster-spawns: 1
-  autosave: 6000
-
-spawn-limits:
-  monsters: 0
-  animals: 0
-  water-animals: 0
-  ambient: 0
-
 player:
   save-player-data: false
-  skin-change-cooldown: 30
-'@
-[System.IO.File]::WriteAllText($sbNukkitYml, $sbNukkitYmlContent, (New-Object System.Text.UTF8Encoding $false))
-Log "Wrote server B nukkit.yml (language=eng, flat world)"
-# Copy the cached Xbox Live discovery + openid data from the non-joint nukkit
-# dir so Nukkit's EncryptionUtils static initializer doesn't try to fetch from
-# https://client.discovery.minecraft-services.net (which is unreachable in this
-# offline environment and crashes Nukkit with AssertionError at Server.<init>).
-$nukkitCacheSrc = "D:\Project\NovaLink\.e2e\nukkit"
-foreach ($cacheFile in @("discovery-cache.json", "openid-cache.json")) {
-  $src = Join-Path $nukkitCacheSrc $cacheFile
-  if (Test-Path $src) {
-    Copy-Item $src (Join-Path $serverBDir $cacheFile) -Force
-    Log "Copied $cacheFile -> $serverBDir"
+"@
+      [System.IO.File]::WriteAllText((Join-Path $serverDir "nukkit.yml"), $nukkitYml,
+        (New-Object System.Text.UTF8Encoding $false))
+    }
+    'pmmp' {
+      $cfgDir = Join-Path $serverDir "plugin_data/NovaChat"
+      New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+      [System.IO.File]::WriteAllText((Join-Path $cfgDir "config.yml"), $pluginConfig,
+        (New-Object System.Text.UTF8Encoding $false))
+      $props = @"
+motd=NovaChat-Joint-pmmp
+server-port=$port
+server-ip=127.0.0.1
+view-distance=4
+white-list=off
+max-players=5
+gamemode=1
+force-gamemode=on
+hardcore=off
+pvp=off
+difficulty=0
+level-name=world
+level-seed=
+level-type=flat
+allow-flight=on
+spawn-animals=off
+spawn-mobs=off
+spawn-protection=0
+auto-save=off
+xbox-auth=off
+"@
+      [System.IO.File]::WriteAllText((Join-Path $serverDir "server.properties"), $props,
+        (New-Object System.Text.UTF8Encoding $false))
+    }
+  }
+
+  $jarName = $DefJarName[$platform]
+  if (-not $jarName) {
+    Log "  ERROR: no resolved jar for $platform"
+    return $null
+  }
+  $jarPath = Join-Path $DistDir $jarName
+  if (-not (Test-Path -LiteralPath $jarPath)) {
+    Log "  ERROR: server jar missing: $jarPath"
+    return $null
+  }
+
+  $javaArgs = @("-Xms512M", "-Xmx1024M", "-jar", $jarPath, "nogui")
+  $java = Join-Path $jdkPath "bin/java.exe"
+  if (-not (Test-Path -LiteralPath $java)) { $java = Join-Path $jdkPath "bin/java" }
+  $proc = Start-JvmProcess -JavaExe $java -Arguments $javaArgs -WorkingDirectory $serverDir `
+    -StdoutPath $stdoutPath -StderrPath $stderrPath
+  Track-Pid $proc.Id "$platform-server"
+  Log "  $platform pid=$($proc.Id) port=$port jdk=$($def.Jdk)"
+  return $proc
+}
+
+# --- proxy launcher ----------------------------------------------------------
+# Velocity needs a velocity.toml that (a) binds the joint port, (b) runs offline,
+# and (c) lists the downstream servers this round started. The plugin's own
+# config.toml is separate and is written by Install-Plugin/Write-ProxyPluginConfig.
+function Write-VelocityToml([string]$path, [hashtable]$downstreams) {
+  $serverLines = @()
+  foreach ($name in $downstreams.Keys) {
+    $serverLines += "$($name) = `"127.0.0.1:$($downstreams[$name])`""
+  }
+  $tryFirst = @($downstreams.Keys)[0]
+  $toml = @"
+config-version = "2.8"
+bind = "127.0.0.1:$ProxyPort"
+motd = "<#09add3>NovaChat Joint E2E"
+show-max-players = 5
+online-mode = false
+force-key-authentication = false
+prevent-client-proxy-connections = false
+player-info-forwarding-mode = "none"
+announce-forge = false
+kick-existing-players = false
+ping-passthrough = "disabled"
+
+[servers]
+$($serverLines -join "`r`n")
+
+try = [
+    "$tryFirst"
+]
+
+[forced-hosts]
+
+[advanced]
+compression-threshold = 256
+compression-level = -1
+login-ratelimit = 0
+connection-timeout = 5000
+read-timeout = 30000
+haproxy-protocol = false
+bungee-plugin-message-channel = true
+show-ping-requests = false
+failover-on-unexpected-server-disconnect = false
+announce-proxy-commands = false
+log-command-executions = false
+log-player-connections = true
+accepts-transfers = false
+
+[query]
+enabled = false
+port = $ProxyPort
+"@
+  [System.IO.File]::WriteAllText($path, $toml, (New-Object System.Text.UTF8Encoding $false))
+}
+
+function Write-ProxyPluginConfig([string]$path, [string]$clientId, [string]$clientPassword) {
+  $toml = @"
+config-version = 1
+debug = true
+
+[backend]
+host = "127.0.0.1"
+port = $BackendPort
+username = "$clientId"
+password = "$clientPassword"
+reconnect-delay = 3
+
+[chat]
+replace_vanilla = true
+default_channel = "global"
+locale = "en_US"
+
+[chat.channel-prefixes]
+
+[format]
+prefix = "&8[&bNovaChat&8]&r "
+error = "&cError: {message}"
+success = "&aSuccess: {message}"
+default = "&7[{channel_color}{channel_name}] {player}&f: {message}"
+
+[format.channels]
+global = "&c[Global] &7{player}&f: {message}"
+local = "&e[Local] &7{player}&f: {message}"
+"@
+  [System.IO.File]::WriteAllText($path, $toml, (New-Object System.Text.UTF8Encoding $false))
+}
+
+# --- bot plans ---------------------------------------------------------------
+# A plan is the bot-side contract: the orchestrator decides what each role does
+# and the bot records exactly what it saw. The correlation token is the crux --
+# every cross-server assertion is "the RECEIVER's recording contains the token
+# the SENDER emitted", never the sender's own claim.
+function New-CrossServerPlan {
+  param(
+    [string]$role,
+    [string]$kind,
+    [string]$username,
+    [int]$port,
+    [string]$mcVersion,
+    [string]$resultsFile,
+    [string]$handoffDir,
+    [int]$timeoutMs,
+    [string]$runId,
+    [object[]]$steps
+  )
+  $plan = [ordered]@{
+    role = $role
+    kind = $kind
+    username = $username
+    host = '127.0.0.1'
+    port = $port
+    mcVersion = $mcVersion
+    resultsFile = $resultsFile
+    handoffDir = $handoffDir
+    timeoutMs = $timeoutMs
+    runId = $runId
+    steps = $steps
+  }
+  return ($plan | ConvertTo-Json -Depth 12)
+}
+
+function Start-Bot([string]$role, [string]$planPath, [string]$workDir, [string]$stdoutPath, [string]$stderrPath) {
+  New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+  $proc = Start-PlainProcess -FilePath "node" -Arguments @($jointBotScript, "--plan", $planPath) `
+    -WorkingDirectory $workDir -StdoutPath $stdoutPath -StderrPath $stderrPath
+  Track-Pid $proc.Id "bot-$role"
+  Log "  bot $role pid=$($proc.Id)"
+  return $proc
+}
+
+function Wait-Bots([object[]]$bots, [int]$timeoutSec) {
+  $deadline = (Get-Date).AddSeconds($timeoutSec)
+  foreach ($b in $bots) {
+    $remaining = [math]::Max(1, [int]($deadline - (Get-Date)).TotalSeconds)
+    if (-not $b.Process.WaitForExit($remaining * 1000)) {
+      Log "  bot $($b.Role) still running after ${timeoutSec}s -- killing"
+      Stop-Process -Id $b.Process.Id -Force -ErrorAction SilentlyContinue
+    } else {
+      Log "  bot $($b.Role) exited (code=$($b.Process.ExitCode))"
+    }
   }
 }
-$sbStdout = Join-Path $serverBDir "nukkit.stdout.log"
-$sbStderr = Join-Path $serverBDir "nukkit.stderr.log"
-Remove-Item $sbStdout, $sbStderr -ErrorAction SilentlyContinue
-$sbArgs = @("-Xms512M", "-Xmx512M", "-jar", $NukkitJar, "nogui")
-$sbProc = Start-Process -FilePath $java21 -ArgumentList $sbArgs -WorkingDirectory $serverBDir `
-  -RedirectStandardOutput $sbStdout -RedirectStandardError $sbStderr -PassThru -NoNewWindow
-Record-Pid "serverB" $sbProc.Id
-Log "Server B PID=$($sbProc.Id)"
 
-$sbReady = Wait-LogMarker $sbStdout "(?i)(Done|server.*started|Nukkit.*started|Loading.*complete|Listening)" 180 "server B (Nukkit)"
-if (-not $sbReady) {
-  Log "Server B did not signal ready; tail:"
-  if (Test-Path $sbStdout) { Get-Content $sbStdout -Tail 40 | ForEach-Object { Log "  SB: $_" } }
+# Read a bot result file. UTF-8 explicitly: Node writes UTF-8, and Get-Content
+# -Raw on 5.1 decodes with the ANSI code page, which turns the Chinese lines the
+# servers emit into mojibake and makes token matching silently fail.
+function Read-BotResult([string]$path) {
+  if (-not (Test-Path -LiteralPath $path)) { return $null }
+  try {
+    $text = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
+    return ($text | ConvertFrom-Json)
+  } catch {
+    Log "  WARN: could not parse bot result ${path}: $($_.Exception.Message)"
+    return $null
+  }
 }
 
-Start-Sleep -Seconds 5
-Log "Both servers launched. Backend log tail:"
-if (Test-Path $bkStdout) { Get-Content $bkStdout -Tail 15 | ForEach-Object { Log "  BK: $_" } }
-
-# --- 5. start both bots concurrently ---------------------------------------
-Log "Step 5: starting bot A + bot B concurrently..."
-
-$env:JOINT_BOT_A_HOST = "127.0.0.1"; $env:JOINT_BOT_A_PORT = "$ServerAPort"
-$env:JOINT_BOT_A_USERNAME = "E2E_Joint_A"; $env:JOINT_BOT_B_USERNAME = "E2E_Joint_B"
-$env:JOINT_BOT_B_HOST = "127.0.0.1"; $env:JOINT_BOT_B_PORT = "$ServerBPort"
-
-$botAOut = Join-Path $botADir "botA.stdout.log"
-$botAErr = Join-Path $botADir "botA.stderr.log"
-$botBOut = Join-Path $botBDir "botB.stdout.log"
-$botBErr = Join-Path $botBDir "botB.stderr.log"
-Remove-Item $botAOut, $botAErr, $botBOut, $botBErr -ErrorAction SilentlyContinue
-Remove-Item (Join-Path $botADir "joint-results-A.json") -ErrorAction SilentlyContinue
-Remove-Item (Join-Path $botBDir "joint-results-B.json") -ErrorAction SilentlyContinue
-
-$botAProc = Start-Process -FilePath "node" -ArgumentList @("run-joint-a.js") -WorkingDirectory $botADir `
-  -RedirectStandardOutput $botAOut -RedirectStandardError $botAErr -PassThru -NoNewWindow
-Record-Pid "botA" $botAProc.Id
-Log "Bot A PID=$($botAProc.Id)"
-
-$botBProc = Start-Process -FilePath "node" -ArgumentList @("run-joint-b.js") -WorkingDirectory $botBDir `
-  -RedirectStandardOutput $botBOut -RedirectStandardError $botBErr -PassThru -NoNewWindow
-Record-Pid "botB" $botBProc.Id
-Log "Bot B PID=$($botBProc.Id)"
-
-# --- 6. mid-run: op bot A + comprehensive RCON-driven scenarios ---------------
-# Bot A waits 30s for spawn + op propagation, then runs its driver sequence.
-# We op bot A FIRST (via RCON) so it can run announce/title (player-only + perm).
-# Then we issue timed RCON commands that coordinate with the bot scripts:
-#   t=30s:  op E2E_Joint_A  (so bot A can run announce/title as op'd player)
-#   t=75s:  /nc mute E2E_Joint_B 10m global  (B4 mute expand)
-#   t=110s: /nc kick E2E_Joint_B global joint-e2e-kick  (B5 kick cross-server)
-#   t=160s: /nc create e2esync_chan  (G15 ConfigSync mid-session — new channel)
-# NOTE: announce/title are player-only (BUG-1), so they are run by op'd bot A,
-#       NOT via RCON. mute/kick are NOT player-only + use console UUID for
-#       SUPER_ADMIN permission, so they work via RCON.
-Log "Step 6a: waiting 28s, then op'ing bot A via RCON (for announce/title)..."
-Start-Sleep -Seconds 28
-
-$opResp = Send-Rcon $ServerARconPort "joint-e2e-rcon" "op $env:JOINT_BOT_A_USERNAME"
-Log "RCON op response: $opResp"
-Start-Sleep -Seconds 2
-
-# --- B4: cross-server mute via RCON (t=75s after bots start) ---
-# The /nc mute usage: /nc mute <player> <time> [channelID]. Channel ID MUST be
-# specified from console (no active channel to infer). Cross-server mute:
-# MuteCommand sends the packet with targetName even when the player is not on
-# the same server; the backend resolves the name across all connected clients.
-Log "Step 6b: waiting to t=75s, then issuing /nc mute $env:JOINT_BOT_B_USERNAME 10m global..."
-Start-Sleep -Seconds 45
-$muteResp = Send-Rcon $ServerARconPort "joint-e2e-rcon" "/nc mute $env:JOINT_BOT_B_USERNAME 10m global"
-Log "RCON mute response: $muteResp"
-# retry without slash if it looked like an error
-if (-not $muteResp -or $muteResp -match "(?i)(error|not found|unknown|用法|NC-)") {
-  Log "Retrying mute as 'nc mute' (no slash)..."
-  $muteResp2 = Send-Rcon $ServerARconPort "joint-e2e-rcon" "nc mute $env:JOINT_BOT_B_USERNAME 10m global"
-  Log "RCON mute (no slash) response: $muteResp2"
+# Prove token delivery from the RECEIVER's recording.
+function Assert-Delivered([string]$assertionId, [string]$token, $receiverResult) {
+  $hit = $null
+  if ($receiverResult -and $receiverResult.received) {
+    foreach ($entry in $receiverResult.received) {
+      if ($entry.text -and $entry.text.Contains($token)) { $hit = $entry; break }
+      if ($entry.raw -and $entry.raw.Contains($token)) { $hit = $entry; break }
+    }
+  }
+  return [PSCustomObject]@{
+    id = $assertionId
+    token = $token
+    pass = ($null -ne $hit)
+    evidence = if ($hit) { $hit.text } else { '' }
+    kind = 'delivery'
+  }
 }
 
-# --- B5: cross-server kick via RCON (t=110s) ---
-# /nc kick usage: /nc kick <player> [channelID]. From console, channel ID needed.
-# KickCommand sends targetName; backend resolves across all servers. B should be
-# removed from the channel + receive a kick notification (UX S5).
-Start-Sleep -Seconds 35
-Log "Step 6c: issuing /nc kick $env:JOINT_BOT_B_USERNAME global joint-e2e-kick-reason..."
-$kickResp = Send-Rcon $ServerARconPort "joint-e2e-rcon" "/nc kick $env:JOINT_BOT_B_USERNAME global joint-e2e-kick-reason"
-Log "RCON kick response: $kickResp"
-if (-not $kickResp -or $kickResp -match "(?i)(error|not found|unknown|用法|NC-)") {
-  Log "Retrying kick as 'nc kick' (no slash)..."
-  $kickResp2 = Send-Rcon $ServerARconPort "joint-e2e-rcon" "nc kick $env:JOINT_BOT_B_USERNAME global"
-  Log "RCON kick (no slash) response: $kickResp2"
+function Assert-Absent([string]$assertionId, [string]$token, $receiverResult) {
+  $hit = $null
+  if ($receiverResult -and $receiverResult.received) {
+    foreach ($entry in $receiverResult.received) {
+      if (($entry.text -and $entry.text.Contains($token)) -or
+          ($entry.raw -and $entry.raw.Contains($token))) { $hit = $entry; break }
+    }
+  }
+  return [PSCustomObject]@{
+    id = $assertionId
+    token = $token
+    pass = ($null -eq $hit)
+    evidence = if ($hit) { $hit.text } else { '' }
+    kind = 'absence'
+  }
 }
 
-# --- G15: ConfigSync mid-session — create a new channel via RCON (t=160s) ---
-# CreateCommand is player-only, so we CANNOT create via RCON console. Instead,
-# we use the op'd bot A to create it (bot A's G15 phase runs /nc list after this).
-# Actually — create is player-only + needs novachat.create perm. Op'd bot A has
-# all perms. Bot A does NOT create in its sequence (it creates e2ejoint_priv in
-# A1). For G15 we need a SECOND channel created mid-session AFTER both bots are
-# already chatting. Since create is player-only, we op'd bot A — but bot A's
-# sequence doesn't include a second create. So we issue create via the op'd
-# bot A by... we can't inject commands into the bot. Instead, we accept that
-# G15 ConfigSync is tested by the e2ejoint_priv channel created in A1 (which
-# both bots list). The "mid-session" aspect: A1 create happens ~50s after join,
-# so the channel appears mid-session and both /nc list calls (A at G15 phase,
-# B at G15 phase) should show it. This is a valid ConfigSync propagation test.
-# No additional RCON create needed.
-Start-Sleep -Seconds 30
-Log "Step 6d: G15 ConfigSync tested via e2ejoint_priv created mid-session in A1 (player-only create — no RCON create possible)."
-
-Start-Sleep -Seconds 5
-Log "All RCON mid-run commands issued. Letting bots finish (waiting up to $($BotWaitMs/1000)s for both to exit)..."
-
-# --- 7. wait for bots to finish --------------------------------------------
-$botADeadline = (Get-Date).AddMilliseconds($BotWaitMs)
-$botAExit = $false; $botBExit = $false
-while ((Get-Date) -lt $botADeadline) {
-  if (-not $botAExit -and $botAProc.HasExited) { $botAExit = $true; Log "Bot A exited (code=$($botAProc.ExitCode))" }
-  if (-not $botBExit -and $botBProc.HasExited) { $botBExit = $true; Log "Bot B exited (code=$($botBProc.ExitCode))" }
-  if ($botAExit -and $botBExit) { break }
-  Start-Sleep -Seconds 3
-}
-if (-not $botAExit) { Log "Bot A still running after timeout — killing"; Stop-Process -Id $botAProc.Id -Force -ErrorAction SilentlyContinue }
-if (-not $botBExit) { Log "Bot B still running after timeout — killing"; Stop-Process -Id $botBProc.Id -Force -ErrorAction SilentlyContinue }
-
-# --- 8. tear down servers + backend ----------------------------------------
-Log "Step 8: teardown — stopping servers then backend."
-
-# stop servers first (graceful via RCON stop, fallback to kill)
-Log "Stopping server A via RCON 'stop'..."
-$r = Send-Rcon $ServerARconPort "joint-e2e-rcon" "stop"
-Log "Server A stop response: $r"
-Start-Sleep -Seconds 4
-if (-not $saProc.HasExited) { Stop-Process -Id $saProc.Id -Force -ErrorAction SilentlyContinue }
-
-Log "Stopping server B via RCON 'stop'..."
-$r2 = Send-Rcon $ServerBRconPort "joint-nukkit-rcon" "stop"
-Log "Server B stop response: $r2"
-Start-Sleep -Seconds 4
-if (-not $sbProc.HasExited) { Stop-Process -Id $sbProc.Id -Force -ErrorAction SilentlyContinue }
-
-Start-Sleep -Seconds 3
-Log "Stopping backend..."
-if (-not $bkProc.HasExited) { Stop-Process -Id $bkProc.Id -Force -ErrorAction SilentlyContinue }
-
-Start-Sleep -Seconds 2
-
-# verify ports freed
-$remaining = @()
-foreach ($p in @($BackendPort, $ServerAPort, $ServerBPort)) {
-  try { $t=[System.Net.Sockets.TcpClient]::new("127.0.0.1",$p); $t.Close(); $remaining += $p } catch {}
-}
-if ($remaining.Count -gt 0) {
-  Log "WARN: ports still in use after teardown: $($remaining -join ', ')"
-} else {
-  Log "All ports freed after teardown."
+function Assert-BotExpectations([string]$role, $result) {
+  $out = @()
+  if (-not $result) { return $out }
+  if ($result.assertions) {
+    foreach ($a in $result.assertions) {
+      $out += [PSCustomObject]@{
+        id = "$role/$($a.id)"
+        token = $a.token
+        pass = [bool]$a.pass
+        evidence = $a.evidence
+        kind = 'in-bot-expect'
+      }
+    }
+  }
+  if ($result.absentChecks) {
+    foreach ($a in $result.absentChecks) {
+      $out += [PSCustomObject]@{
+        id = "$role/$($a.id)"
+        token = $a.token
+        pass = [bool]$a.pass
+        evidence = $a.evidence
+        kind = 'in-bot-absent'
+      }
+    }
+  }
+  return $out
 }
 
-# --- 9. summarize -----------------------------------------------------------
-Log "=== JOINT E2E RUN COMPLETE ==="
-Log "Bot A results: $(Join-Path $botADir 'joint-results-A.json')"
-Log "Bot B results: $(Join-Path $botBDir 'joint-results-B.json')"
-Log "Backend log:   $bkStdout"
-Log "Server A log:  $saStdout"
-Log "Server B log:  $sbStdout"
-Log "PIDs: $pidFile"
-Log "Ports: $portsFile"
+# --- versions.lock.ps1 resolution -------------------------------------------
+# The lock owns every server binary: URL, SHA-256, file name, JDK. Reading the
+# file name from it (rather than repeating it here) is what stops this harness
+# from drifting the way the previous version did -- it pinned
+# purpur-1.21.8-2497.jar and nukkit-...-1239.jar while the lock had already
+# moved on.
+$lockFile = Join-Path $RepoRoot "test/versions.lock.ps1"
+if (-not (Test-Path -LiteralPath $lockFile)) {
+  Log "FATAL: version lock not found: $lockFile"
+  exit 2
+}
+. $lockFile
+
+# Extra entries the joint harness needs that no per-platform harness does.
+# They live here (not in versions.lock.ps1) because they are Fabric-runtime
+# pieces rather than server binaries, and only this harness starts Fabric.
+$FabricRuntime = @{
+  # The launcher jar is content-stable: meta.fabricmc.net serves the same bytes
+  # for a given (MC, loader, installer) triple. Verified 2026-10-18 by two
+  # independent downloads comparing equal (SHA-256 recorded below).
+  LauncherUrl = 'https://meta.fabricmc.net/v2/versions/loader/1.21.11/0.19.3/1.1.2/server/jar'
+  LauncherSha256 = 'B855772F5A5D591262260E8ED3C218419366D74C3ACFC38409F4A376F167051B'
+  LauncherFile = 'fabric-server-launch-1.21.11-0.19.3.jar'
+  ApiUrl = 'https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/0.141.6%2B1.21.11/fabric-api-0.141.6%2B1.21.11.jar'
+  ApiSha256 = 'BDFF7FD7E220085CFAD2FF9B1F40DD0E6534AE0B96CF378F97A374BC54CB9ED0F'
+  ApiFile = 'fabric-api-0.141.6+1.21.11.jar'
+  McVersion = '1.21.11'
+}
+
+# platform -> resolved jar file name (filled by Resolve-PlatformJars)
+$script:DefJarName = @{}
+
+function Resolve-PlatformJars([string[]]$platforms) {
+  foreach ($pf in $platforms) {
+    if (-not $pf) { continue }
+    $def = $PlatformDefs[$pf]
+    if (-not $def) { continue }
+    # fabric has no versions.lock.ps1 entry: its launcher jar and fabric-api mod
+    # are Fabric-runtime pieces with their own pins ($FabricRuntime), because
+    # fetch-server.ps1 resolves Minecraft *servers*, not mod loaders.
+    if ($pf -eq 'fabric') {
+      $script:DefJarName[$pf] = $FabricRuntime.LauncherFile
+      Log "  $pf -> fabricated launcher '$($FabricRuntime.LauncherFile)' (pinned in this script)"
+      continue
+    }
+    $lock = Get-LockedServer -Name $def.LockName
+    if (-not $lock) {
+      Log "FATAL: no '$($def.LockName)' entry in test/versions.lock.ps1 (needed by $pf)"
+      return $false
+    }
+    $script:DefJarName[$pf] = $lock.File
+    Log "  $pf -> lock '$($def.LockName)' file '$($script:DefJarName[$pf])'"
+  }
+  return $true
+}
+
+# Fetch a server binary through the shared fetch-server.ps1 (pinned mode: it
+# enforces the lock's SHA-256 before the jar is allowed to run). -Auto is not
+# used here on purpose: a joint run must be reproducible, so a build cannot
+# change underneath a green result.
+function Invoke-FetchServer([string]$lockName) {
+  $fetch = Join-Path $binDir "fetch-server.ps1"
+  if (-not (Test-Path -LiteralPath $fetch)) {
+    Log "  ERROR: fetch-server.ps1 missing: $fetch"
+    return $false
+  }
+  Log "  fetching '$lockName' (pinned, SHA-256 verified)"
+  $out = Join-Path $JointRoot "fetch-$lockName.log"
+  $err = Join-Path $JointRoot "fetch-$lockName.err.log"
+  $proc = Start-Process -FilePath "powershell.exe" `
+    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $fetch,
+      "-Name", $lockName, "-DistDir", $DistDir) `
+    -RedirectStandardOutput $out -RedirectStandardError $err -PassThru -NoNewWindow -Wait
+  if ($proc.ExitCode -ne 0) {
+    Log "  ERROR: fetch-server failed for '$lockName' (exit=$($proc.ExitCode))"
+    Write-LogTail $out 15 "fetch stdout"
+    Write-LogTail $err 15 "fetch stderr"
+    return $false
+  }
+  return $true
+}
+
+# Download + verify the Fabric runtime pieces (launcher jar, fabric-api mod).
+# Both carry a pinned SHA-256; a mismatch aborts rather than running an
+# unverified binary.
+function Invoke-FetchFabricRuntime() {
+  New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+  $pairs = @(
+    @{ Url = $FabricRuntime.LauncherUrl; Sha = $FabricRuntime.LauncherSha256; File = $FabricRuntime.LauncherFile },
+    @{ Url = $FabricRuntime.ApiUrl; Sha = $FabricRuntime.ApiSha256; File = $FabricRuntime.ApiFile }
+  )
+  foreach ($p in $pairs) {
+    $dest = Join-Path $DistDir $p.File
+    if (Test-Path -LiteralPath $dest) {
+      if ((Get-Sha256Hex $dest) -eq $p.Sha) {
+        Log "  fabric runtime cache hit: $($p.File)"
+        continue
+      }
+      Log "  fabric runtime hash mismatch on cached $($p.File); re-downloading"
+      Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+    }
+    $tmp = "$dest.download.tmp"
+    Log "  downloading $($p.Url)"
+    try {
+      Invoke-WebRequest -Uri $p.Url -OutFile $tmp -UseBasicParsing -TimeoutSec 300
+    } catch {
+      Log "  ERROR: download failed: $($_.Exception.Message)"
+      Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+      return $false
+    }
+    $actual = Get-Sha256Hex $tmp
+    if ($actual -ne $p.Sha) {
+      Log "  ERROR: SHA-256 mismatch for $($p.File): expected $($p.Sha), got $actual"
+      Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+      return $false
+    }
+    Move-Item -Path $tmp -Destination $dest -Force
+    Log "  verified + saved: $dest"
+  }
+  return $true
+}
+
+# --- one round ---------------------------------------------------------------
+# A round starts the backend once, then every leg, then the bots, then asserts
+# token delivery across the receiver's recording. Teardown is unconditional.
+#
+# Role assignment: the java leg joins DIRECTLY when there is no proxy (a bot
+# speaks to it), and when a proxy exists the java/mod legs are its downstreams
+# while the bots speak to the proxy. The Bedrock leg is always joined directly
+# -- Velocity does not front Bedrock servers.
+function Invoke-Round($round, [string]$roundDir) {
+  Log ""
+  Log "=== ROUND $($round.Index): $(Format-RoundLabel $round) ($($round.ServerCount) server process(es)) ==="
+  New-Item -ItemType Directory -Force -Path $roundDir | Out-Null
+
+  $result = [PSCustomObject]@{
+    round = $round.Index
+    topology = (Format-RoundLabel $round)
+    proxy = $round.Proxy
+    java = $round.Java
+    mod = $round.Mod
+    bedrock = $round.Bedrock
+    status = 'UNKNOWN'
+    assertions = @()
+    notes = ''
+  }
+  $assertions = @()
+  $bots = @()
+
+  # Per-run identities. Each server leg gets a DISTINCT backend client identity:
+  # two legs sharing one clientId would make the backend treat them as the same
+  # upstream and cross-server routing would be indistinguishable from local.
+  $legs = @()
+  if ($round.Java) { $legs += $round.Java }
+  if ($round.Mod) { $legs += $round.Mod }
+  if ($round.Bedrock) { $legs += $round.Bedrock }
+
+  $clientSecrets = @{}
+  $backendClients = @()
+  foreach ($leg in $legs) {
+    $id = $PlatformDefs[$leg].ClientId
+    $pw = "joint-e2e-$leg-$($script:RunId)"
+    $clientSecrets[$leg] = @{ Username = $id; Password = $pw }
+    $backendClients += [PSCustomObject]@{ Username = $id; Password = $pw; DisplayName = "Joint $leg" }
+  }
+  if ($round.Proxy) {
+    # The proxy is its own client: it carries the messages it forwards, so it
+    # must authenticate separately from the Java server behind it.
+    $proxyId = 'E2E_JointProxy'
+    $proxyPw = "joint-e2e-proxy-$($script:RunId)"
+    $clientSecrets[$round.Proxy] = @{ Username = $proxyId; Password = $proxyPw }
+    $backendClients += [PSCustomObject]@{ Username = $proxyId; Password = $proxyPw; DisplayName = "Joint $($round.Proxy) proxy" }
+  }
+
+  # Generated secrets. The super-admin UUID is the offline-mode UUID of the bot
+  # username, which is what the backend keys super-admins by (set in main).
+  $superAdminPassword = "joint-super-$($script:RunId)"
+
+  $backendDir = Join-Path $roundDir "backend"
+  $backendWork = Join-Path $backendDir "work"
+  New-Item -ItemType Directory -Force -Path $backendWork | Out-Null
+  $backendConfig = Join-Path $backendDir "novalink.yml"
+  Write-BackendConfig -path $backendConfig -clients $backendClients -superAdminPassword $superAdminPassword
+  Log "  backend config: $backendConfig ($($backendClients.Count) clients, super-admin enabled)"
+
+  try {
+    # ---- backend ----
+    $bk = Start-Backend -configPath $backendConfig -workDir $backendWork `
+      -stdoutPath (Join-Path $backendDir "stdout.log") -stderrPath (Join-Path $backendDir "stderr.log")
+    if (-not $bk) {
+      $result.status = 'FAIL'; $result.notes = 'backend did not become ready'
+      return $result
+    }
+
+    # ---- servers ----
+    $serverProcs = @{}
+    $downstreams = @{}
+    $ports = @{
+      Java = $JavaPort; JavaRcon = $JavaRconPort
+      Mod = $ModPort; ModRcon = $ModRconPort
+      Bedrock = $BedrockAPort; BedrockRcon = $BedrockARconPort
+    }
+
+    if ($round.Java) {
+      $dir = Join-Path $roundDir $round.Java
+      $p = Start-PlatformServer -platform $round.Java -serverDir $dir `
+        -port $ports.Java -rconPort $ports.JavaRcon `
+        -clientId $clientSecrets[$round.Java].Username -clientPassword $clientSecrets[$round.Java].Password `
+        -stdoutPath (Join-Path $dir "server.stdout.log") -stderrPath (Join-Path $dir "server.stderr.log")
+      if ($p) { $serverProcs[$round.Java] = $p; $downstreams[$round.Java] = $ports.Java }
+    }
+    if ($round.Mod) {
+      $dir = Join-Path $roundDir $round.Mod
+      $p = Start-PlatformServer -platform $round.Mod -serverDir $dir `
+        -port $ports.Mod -rconPort $ports.ModRcon `
+        -clientId $clientSecrets[$round.Mod].Username -clientPassword $clientSecrets[$round.Mod].Password `
+        -stdoutPath (Join-Path $dir "server.stdout.log") -stderrPath (Join-Path $dir "server.stderr.log")
+      if ($p) { $serverProcs[$round.Mod] = $p; $downstreams[$round.Mod] = $ports.Mod }
+    }
+    if ($round.Bedrock) {
+      $dir = Join-Path $roundDir $round.Bedrock
+      $p = Start-PlatformServer -platform $round.Bedrock -serverDir $dir `
+        -port $ports.Bedrock -rconPort $ports.BedrockRcon `
+        -clientId $clientSecrets[$round.Bedrock].Username -clientPassword $clientSecrets[$round.Bedrock].Password `
+        -stdoutPath (Join-Path $dir "server.stdout.log") -stderrPath (Join-Path $dir "server.stderr.log")
+      if ($p) { $serverProcs[$round.Bedrock] = $p }
+    }
+
+    # ---- proxy (after its downstreams exist, so velocity.toml can list them) ----
+    if ($round.Proxy) {
+      $dir = Join-Path $roundDir $round.Proxy
+      New-Item -ItemType Directory -Force -Path $dir | Out-Null
+      $jdkPath = Get-JdkPath $PlatformDefs[$round.Proxy].Jdk
+      if (-not $jdkPath) {
+        $result.status = 'FAIL'; $result.notes = "runtime JDK $($PlatformDefs[$round.Proxy].Jdk) unresolved for $($round.Proxy)"
+        return $result
+      }
+      if ($round.Proxy -eq 'velocity') {
+        Write-VelocityToml -path (Join-Path $dir "velocity.toml") -downstreams $downstreams
+        $plugCfgDir = Join-Path $dir "plugins/novachat"
+        New-Item -ItemType Directory -Force -Path $plugCfgDir | Out-Null
+        Write-ProxyPluginConfig -path (Join-Path $plugCfgDir "config.toml") `
+          -clientId $clientSecrets[$round.Proxy].Username -clientPassword $clientSecrets[$round.Proxy].Password
+      }
+      $jarPath = Join-Path $DistDir $script:DefJarName[$round.Proxy]
+      $java = Join-Path $jdkPath "bin/java.exe"
+      if (-not (Test-Path -LiteralPath $java)) { $java = Join-Path $jdkPath "bin/java" }
+      $p = Start-JvmProcess -JavaExe $java `
+        -Arguments @("-Xms256M", "-Xmx512M", "-jar", $jarPath) `
+        -WorkingDirectory $dir `
+        -StdoutPath (Join-Path $dir "proxy.stdout.log") -StderrPath (Join-Path $dir "proxy.stderr.log")
+      Track-Pid $p.Id "$($round.Proxy)-proxy"
+      $serverProcs[$round.Proxy] = $p
+      Log "  $($round.Proxy) pid=$($p.Id) port=$ProxyPort jdk=$($PlatformDefs[$round.Proxy].Jdk)"
+    }
+
+    # ---- wait for readiness (ALL servers concurrently) ----
+    # A sequential per-server wait gives the SECOND server a fresh timeout that
+    # starts only after the first finished, so a slow-but-healthy first boot
+    # starves the rest of the round budget -- and if a later server is slow the
+    # earlier ones can sit past their own readiness while nothing observes it.
+    # Poll every server against ONE shared deadline instead; that is also what
+    # "at most N processes concurrently" implies.
+    # A per-server PSCustomObject (not a nested hashtable): assigning
+    # `$entry = $pendingReady[$name]` on a hashtable of hashtables hands back a
+    # COPY, so `$entry.Ready = $true` updates the copy and the loop spins until
+    # the deadline even though the marker matched. That is exactly the
+    # "server(s) never became ready: bukkit" this harness produced with the log
+    # already containing `Done (176.943s)!`.
+    $pendingReady = @()
+    foreach ($name in $serverProcs.Keys) {
+      $def = $PlatformDefs[$name]
+      $logPath = if ($def.Kind -eq 'proxy') { Join-Path (Join-Path $roundDir $name) "proxy.stdout.log" }
+                 else { Join-Path (Join-Path $roundDir $name) "server.stdout.log" }
+      $pendingReady += [PSCustomObject]@{
+        Name = $name
+        Pattern = $def.ReadyPattern
+        Log = $logPath
+        Ready = $false
+      }
+    }
+    $readyDeadline = (Get-Date).AddSeconds($ServerReadySec)
+    while ((Get-Date) -lt $readyDeadline -and @($pendingReady | Where-Object { -not $_.Ready }).Count -gt 0) {
+      foreach ($entry in $pendingReady) {
+        if ($entry.Ready) { continue }
+        $text = Read-LogText $entry.Log
+        if ($text -and ($text -match $entry.Pattern)) {
+          $entry.Ready = $true
+          Log "  $($entry.Name) ready (matched: $($entry.Pattern))"
+        }
+      }
+      if (@($pendingReady | Where-Object { -not $_.Ready }).Count -gt 0) { Start-Sleep -Seconds 2 }
+    }
+
+    $notReady = @($pendingReady | Where-Object { -not $_.Ready })
+    if ($notReady.Count -gt 0) {
+      $result.status = 'FAIL'
+      $result.notes = "server(s) never became ready within ${ServerReadySec}s: $(($notReady | ForEach-Object { $_.Name }) -join ', ')"
+      foreach ($entry in $notReady) { Write-LogTail $entry.Log 40 "$($entry.Name) stdout" }
+      return $result
+    }
+    Start-Sleep -Seconds 3
+
+    # ---- bots ----
+    # Token naming: <runId>-<round>-<leg>-<n>, unique across rounds so a stale
+    # recording from an earlier round can never satisfy a later assertion.
+    $tokenPrefix = "$($script:RunId)-r$($round.Index)"
+    $botWork = Join-Path $roundDir "bots"
+    New-Item -ItemType Directory -Force -Path $botWork | Out-Null
+    $handoffDir = Join-Path $botWork "handoff"
+    New-Item -ItemType Directory -Force -Path $handoffDir | Out-Null
+
+    # Bot target: the proxy when one exists (that is the topology under test),
+    # otherwise the Java leg directly.
+    $javaTargetPort = if ($round.Proxy) { $ProxyPort } else { $ports.Java }
+    $javaKind = 'java'
+    $javaMc = if ($round.Java) { (Get-LockedServer -Name $PlatformDefs[$round.Java].LockName).BotMcVersion } else { '1.21.11' }
+    if (-not $javaMc) { $javaMc = '1.21.11' }
+
+    $bedrockMc = '1.26.30'
+    if ($round.Bedrock) {
+      $bLock = Get-LockedServer -Name $PlatformDefs[$round.Bedrock].LockName
+      if ($bLock -and $bLock.BotMcVersion) { $bedrockMc = $bLock.BotMcVersion }
+      elseif ($bLock -and $bLock.MC) { $bedrockMc = $bLock.MC }
+    }
+
+    # Bedrock player names must be alphanumeric (no underscores): Nukkit answers
+    # `disconnectionScreen.invalidName` and closes the connection during login,
+    # so the bot never spawns and writes no messages. Java allows underscores,
+    # but both names stay underscore-free here so one naming rule covers both.
+    $javaBotUser = 'E2EJointJava'
+    $bedBotUser = 'E2EJointBedrock'
+    $chatToken = "$tokenPrefix-java-to-bedrock"
+    $replyToken = "$tokenPrefix-bedrock-to-java"
+
+    $javaSteps = @(
+      @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
+      @{ id = 'settle'; action = 'wait'; ms = 4000 },
+      @{ id = 'send-cross'; action = 'chat'; text = "joint-java-to-bedrock $chatToken" },
+      @{ id = 'expect-reply'; action = 'expect'; token = $replyToken; timeoutMs = 45000 },
+      @{ id = 'quit'; action = 'quit' }
+    )
+    $bedSteps = @(
+      @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
+      @{ id = 'settle'; action = 'wait'; ms = 4000 },
+      @{ id = 'expect-java'; action = 'expect'; token = $chatToken; timeoutMs = 45000 },
+      @{ id = 'send-reply'; action = 'chat'; text = "joint-bedrock-to-java $replyToken" },
+      @{ id = 'settle2'; action = 'wait'; ms = 3000 },
+      @{ id = 'quit'; action = 'quit' }
+    )
+
+    # Plans are written WITHOUT a BOM: Node's fs.readFileSync(path,'utf8') keeps
+    # a leading U+FEFF and JSON.parse rejects it, so a Set-Content -Encoding utf8
+    # plan would kill every bot at startup on PowerShell 5.1.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    $javaPlanPath = Join-Path $botWork "plan-java.json"
+    $bedPlanPath = Join-Path $botWork "plan-bedrock.json"
+    $javaPlanJson = New-CrossServerPlan -role 'java' -kind $javaKind -username $javaBotUser -port $javaTargetPort `
+      -mcVersion $javaMc -resultsFile (Join-Path $botWork "java.results.json") -handoffDir $handoffDir `
+      -timeoutMs ($BotTimeoutSec * 1000) -runId "$($script:RunId)-r$($round.Index)" -steps $javaSteps
+    $bedPlanJson = New-CrossServerPlan -role 'bedrock' -kind 'bedrock' -username $bedBotUser -port $ports.Bedrock `
+      -mcVersion $bedrockMc -resultsFile (Join-Path $botWork "bedrock.results.json") -handoffDir $handoffDir `
+      -timeoutMs ($BotTimeoutSec * 1000) -runId "$($script:RunId)-r$($round.Index)" -steps $bedSteps
+    [System.IO.File]::WriteAllText($javaPlanPath, $javaPlanJson, $utf8NoBom)
+    [System.IO.File]::WriteAllText($bedPlanPath, $bedPlanJson, $utf8NoBom)
+
+    $bots += [PSCustomObject]@{ Role = 'java'; Process = (Start-Bot 'java' $javaPlanPath $botWork `
+      (Join-Path $botWork "java.stdout.log") (Join-Path $botWork "java.stderr.log")) }
+    $bots += [PSCustomObject]@{ Role = 'bedrock'; Process = (Start-Bot 'bedrock' $bedPlanPath $botWork `
+      (Join-Path $botWork "bedrock.stdout.log") (Join-Path $botWork "bedrock.stderr.log")) }
+
+    Wait-Bots $bots $BotTimeoutSec
+
+    # ---- cross-process assertions ----
+    $javaRes = Read-BotResult (Join-Path $botWork "java.results.json")
+    $bedRes = Read-BotResult (Join-Path $botWork "bedrock.results.json")
+
+    $assertions += Assert-Delivered "round$($round.Index)/java-to-bedrock" $chatToken $bedRes
+    $assertions += Assert-Delivered "round$($round.Index)/bedrock-to-java" $replyToken $javaRes
+    $assertions += Assert-BotExpectations 'java' $javaRes
+    $assertions += Assert-BotExpectations 'bedrock' $bedRes
+
+    if (-not $javaRes) { $result.notes = 'java bot wrote no results.json' }
+    if (-not $bedRes) {
+      $result.notes = (($result.notes, 'bedrock bot wrote no results.json') | Where-Object { $_ }) -join '; '
+    }
+
+    $failed = @($assertions | Where-Object { -not $_.pass })
+    if ($failed.Count -gt 0) {
+      $result.status = 'FAIL'
+      $result.notes = (($result.notes, "failed: $((($failed | ForEach-Object { $_.id }) -join ', '))") |
+        Where-Object { $_ }) -join '; '
+    } else {
+      $result.status = 'PASS'
+    }
+  } catch {
+    $result.status = 'FAIL'
+    $result.notes = "round threw: $($_.Exception.Message)"
+    Log "  ROUND ERROR: $($_.Exception.Message)"
+  } finally {
+    # Dump diagnostics before teardown so the log files are still being written,
+    # then stop every process this round started (in reverse order).
+    if ($result.status -ne 'PASS') {
+      foreach ($name in @($round.Java, $round.Mod, $round.Bedrock, $round.Proxy)) {
+        if (-not $name) { continue }
+        $dir = Join-Path $roundDir $name
+        Write-LogTail (Join-Path $dir "server.stdout.log") 30 "$name stdout"
+        Write-LogTail (Join-Path $dir "proxy.stdout.log") 30 "$name proxy stdout"
+      }
+      Write-LogTail (Join-Path $roundDir "backend/stdout.log") 30 "backend stdout"
+      foreach ($b in $bots) {
+        Write-LogTail (Join-Path (Join-Path $roundDir "bots") "$($b.Role).stdout.log") 40 "bot $($b.Role) stdout"
+      }
+    }
+    Teardown-All
+
+    # Cache any world this round generated so the NEXT round (and the next run)
+    # can skip chunk generation. Only Java-style engines are cached: their
+    # world format is stable across platforms in this harness, and the Bedrock
+    # engines use a different layout entirely.
+    foreach ($pf in @($round.Java, $round.Mod)) {
+      if (-not $pf) { continue }
+      $generated = Join-Path (Join-Path $roundDir $pf) "world"
+      $cacheDir = Join-Path (Join-Path $JointRoot "seed") $pf
+      if ((Test-Path -LiteralPath $generated) -and -not (Test-Path -LiteralPath (Join-Path $cacheDir "world"))) {
+        try {
+          New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+          Copy-Item $generated (Join-Path $cacheDir "world") -Recurse -Force
+          Log "  cached generated world for $pf"
+        } catch {
+          Log "  WARN: could not cache world for ${pf}: $($_.Exception.Message)"
+        }
+      }
+    }
+    Start-Sleep -Seconds 2
+  }
+
+  $result.assertions = $assertions
+  return $result
+}
+
+# --- prerequisite checks -----------------------------------------------------
+function Test-Prereqs([string[]]$requestedPlatforms) {
+  $issues = @()
+  $harnessFiles = @(
+    (Join-Path $RepoRoot "test/versions.lock.ps1"),
+    (Join-Path $binDir "fetch-server.ps1"),
+    (Join-Path $BotDir "package.json"),
+    (Join-Path $BotDir "package-lock.json"),
+    $jointBotScript
+  )
+  foreach ($f in $harnessFiles) {
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { $issues += "required file missing: $f" }
+  }
+
+  # JDKs: every platform leg's runtime JDK plus the Gradle launcher.
+  $needed = @{ 'Jdk21' = $true }
+  foreach ($pf in $requestedPlatforms) {
+    $name = Resolve-PlatformName $pf
+    if (-not $name -or -not $PlatformDefs.ContainsKey($name)) { continue }
+    if ($PlatformDefs[$name].Jdk) { $needed[$PlatformDefs[$name].Jdk] = $true }
+    if ($PlatformDefs[$name].BuildJdk) { $needed[$PlatformDefs[$name].BuildJdk] = $true }
+  }
+  foreach ($jdkVar in @('Jdk17', 'Jdk21', 'Jdk25')) {
+    if (-not $needed.ContainsKey($jdkVar)) { continue }
+    $path = Get-JdkPath $jdkVar
+    $exe = if ($path) { Join-Path $path "bin/java.exe" } else { "" }
+    if (-not $exe -or -not (Test-Path -LiteralPath $exe)) {
+      $num = $jdkVar -replace '^Jdk', ''
+      $issues += "JDK $num not found (pass -$jdkVar or set JAVA_HOME_${num}_X64); required by a requested platform"
+    }
+  }
+
+  if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    $issues += "Node.js (node) not found on PATH -- required for the mineflayer / bedrock-protocol bots"
+  }
+  if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    $issues += "npm not found on PATH -- required to install bot dependencies"
+  }
+  return $issues
+}
+
+function Install-BotDeps {
+  $nodeModules = Join-Path $BotDir "node_modules"
+  if ((Test-Path (Join-Path $nodeModules "mineflayer")) -and
+      (Test-Path (Join-Path $nodeModules "bedrock-protocol"))) {
+    Log "bot dependencies already installed"
+    return $true
+  }
+  Log "installing bot dependencies (npm ci) in $BotDir"
+  $out = Join-Path $JointRoot "npm-ci.log"
+  $err = Join-Path $JointRoot "npm-ci.err.log"
+  # npm ci, not install: the committed lock is the contract, and a silent lock
+  # drift would make a joint run unreproducible.
+  $proc = Start-Process -FilePath "npm" -ArgumentList @("ci", "--no-audit", "--no-fund") `
+    -WorkingDirectory $BotDir -RedirectStandardOutput $out -RedirectStandardError $err -PassThru -NoNewWindow -Wait
+  if ($proc.ExitCode -ne 0) {
+    Log "ERROR: npm ci failed (exit=$($proc.ExitCode))"
+    Write-LogTail $err 20 "npm stderr"
+    return $false
+  }
+  Log "bot dependencies installed"
+  return $true
+}
+
+# --- main --------------------------------------------------------------------
+Log "=== NovaChat JOINT E2E START (run $($script:RunId)) ==="
+Log "RepoRoot: $RepoRoot"
+Log "Platforms: $Platforms"
+Log "JDK21: $(if ($Jdk21) { $Jdk21 } else { '<unresolved>' })"
+Log "JDK25: $(if ($Jdk25) { $Jdk25 } else { '<unresolved>' })"
+Log "JDK17: $(if ($Jdk17) { $Jdk17 } else { '<unresolved>' })"
+Log "Max concurrent servers per round: $MaxConcurrentServers"
+
+$requested = $Platforms -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+if ($requested.Count -eq 0) { Log "FATAL: -Platforms is empty"; exit 2 }
+
+$split = Split-PlatformLegs $requested
+if ($split.Unknown.Count -gt 0) {
+  Log "FATAL: unknown platform(s): $($split.Unknown -join ', ')"
+  Log "  valid: $($PlatformDefs.Keys -join ', ')  (aliases: $($PlatformAliases.Keys -join ', '))"
+  exit 2
+}
+$legs = $split.Legs
+if (-not $legs.Java -and -not $legs.Mod -and -not $legs.Bedrock) {
+  Log "FATAL: -Platforms must name at least one server leg (a proxy alone has nothing to front)"
+  exit 2
+}
+Log "Legs: proxy=$(if ($legs.Proxy) { $legs.Proxy } else { '-' }) java=$($legs.Java -join ',') mod=$($legs.Mod -join ',') bedrock=$($legs.Bedrock -join ',')"
+
+# @() around the pipeline matters: an empty -BedrockRotation splits to one empty
+# string, the Where-Object drops it, and the result is $null rather than an empty
+# array. On PowerShell 5.1 `$null.Count` is a hard error under StrictMode and an
+# inconsistent 0 elsewhere, so normalise it here.
+$bedrockSweep = @()
+$javaSweep = @()
+if (-not [string]::IsNullOrWhiteSpace($BedrockRotation)) {
+  $bedrockSweep = @($BedrockRotation -split ',' |
+    ForEach-Object { Resolve-PlatformName $_.Trim() } | Where-Object { $_ })
+}
+if (-not [string]::IsNullOrWhiteSpace($JavaRotation)) {
+  $javaSweep = @($JavaRotation -split ',' |
+    ForEach-Object { Resolve-PlatformName $_.Trim() } | Where-Object { $_ })
+}
+
+# Default rotation lists when the caller did not name one. The intent of the
+# round strategy is to CHANGE a leg, and a rotation list of one entry cannot do
+# that, so the default sweeps every executable platform of that kind: Bedrock
+# legs are cheap to swap (nukkit <-> pmmp <-> pnx) and Java legs are the two
+# plugin platforms (bukkit <-> folia).
+#
+# Note the asymmetry: a caller who names ONE bedrock platform in -Platforms still
+# gets the full default rotation. That is intentional for -Rounds > 1 -- the
+# point of extra rounds is to move a leg. Pass -BedrockRotation / -JavaRotation
+# explicitly to pin it, or -Rounds 1 to stay on a single topology.
+if ($bedrockSweep.Count -eq 0 -and $legs.Bedrock.Count -gt 0) {
+  $bedrockSweep = @($legs.Bedrock[0])
+  foreach ($candidate in @('nukkit', 'pmmp', 'pnx')) {
+    if ($candidate -ne $legs.Bedrock[0] -and ($bedrockSweep -notcontains $candidate)) {
+      $bedrockSweep += $candidate
+    }
+  }
+  Log "Bedrock rotation (default): $($bedrockSweep -join ' -> ')"
+}
+if ($javaSweep.Count -eq 0 -and $legs.Java.Count -gt 0) {
+  $javaSweep = @($legs.Java[0])
+  foreach ($candidate in @('bukkit', 'folia')) {
+    if ($candidate -ne $legs.Java[0] -and ($javaSweep -notcontains $candidate)) {
+      $javaSweep += $candidate
+    }
+  }
+  Log "Java rotation (default): $($javaSweep -join ' -> ')"
+}
+
+$roundList = Build-Rounds -legs $legs -bedrockSweep $bedrockSweep -javaSweep $javaSweep -count $Rounds
+
+# Enforce the concurrency ceiling before anything starts. The round builder is
+# the only place topologies are constructed, so checking here is enough.
+foreach ($r in $roundList) {
+  if ($r.ServerCount -gt $MaxConcurrentServers) {
+    Log "FATAL: round $($r.Index) needs $($r.ServerCount) server processes, ceiling is $MaxConcurrentServers"
+    exit 2
+  }
+}
+Log "Planned rounds:"
+foreach ($r in $roundList) { Log "  round $($r.Index): $(Format-RoundLabel $r)" }
+
+$prereqIssues = Test-Prereqs $requested
+if ($prereqIssues.Count -gt 0) {
+  Log "PREREQ FAILURES:"
+  foreach ($i in $prereqIssues) { Log "  - $i" }
+  exit 2
+}
+
+# Port preflight. A stale process from an earlier run (or another harness on the
+# same box) makes the backend die with BindException and the round reports only
+# "backend did not become ready", which sends the reader looking at the backend
+# config instead of at the port. Name the conflict here.
+$requiredPorts = @(
+  @{ Name = 'backend tcp'; Port = $BackendPort },
+  @{ Name = 'backend ws'; Port = $BackendWsPort }
+)
+foreach ($r in $roundList) {
+  if ($r.Proxy) { $requiredPorts += @{ Name = "$($r.Proxy) proxy"; Port = $ProxyPort } }
+  if ($r.Java) { $requiredPorts += @{ Name = "$($r.Java) game"; Port = $JavaPort }; $requiredPorts += @{ Name = "$($r.Java) rcon"; Port = $JavaRconPort } }
+  if ($r.Mod) { $requiredPorts += @{ Name = "$($r.Mod) game"; Port = $ModPort }; $requiredPorts += @{ Name = "$($r.Mod) rcon"; Port = $ModRconPort } }
+  if ($r.Bedrock) {
+    if ($r.Bedrock -eq 'pmmp') {
+      $requiredPorts += @{ Name = "$($r.Bedrock) game"; Port = $BedrockAPort }
+    } else {
+      $requiredPorts += @{ Name = "$($r.Bedrock) game"; Port = $BedrockAPort }
+      $requiredPorts += @{ Name = "$($r.Bedrock) rcon"; Port = $BedrockARconPort }
+    }
+  }
+}
+$busyPorts = @()
+$seenPorts = @{}
+foreach ($p in $requiredPorts) {
+  # Dedupe by PORT, not by name: several roles can legitimately share a name
+  # when two rounds use the same leg, and probing a port twice is just noise.
+  if ($seenPorts.ContainsKey($p.Port)) { continue }
+  $seenPorts[$p.Port] = $true
+  if (Test-PortOpen $p.Port) { $busyPorts += "$($p.Name) on $($p.Port)" }
+}
+if ($busyPorts.Count -gt 0) {
+  Log "PREREQ FAILURE: port(s) already in use:"
+  foreach ($b in $busyPorts) { Log "  - $b" }
+  Log "  A previous run may have left a process behind; stop it or pick different -BackendPort/-JavaPort/... values."
+  exit 2
+}
+
+if (-not (Resolve-PlatformJars (@($legs.Proxy) + $legs.Java + $legs.Mod + $legs.Bedrock | Where-Object { $_ }))) {
+  exit 2
+}
+
+if ($PlanOnly) {
+  Log ""
+  Log "=== PLAN ONLY: no process started ==="
+  foreach ($r in $roundList) {
+    Log "  round $($r.Index): $(Format-RoundLabel $r)  (servers: $($r.ServerCount))"
+    if ($r.Java) { Log "    java     : $($r.Java)  jar=$(if ($script:DefJarName[$r.Java]) { $script:DefJarName[$r.Java] } else { '<none>' })  jdk=$($PlatformDefs[$r.Java].Jdk)" }
+    if ($r.Mod) { Log "    mod      : $($r.Mod)  jar=$(if ($script:DefJarName[$r.Mod]) { $script:DefJarName[$r.Mod] } else { '<none>' })  jdk=$($PlatformDefs[$r.Mod].Jdk)" }
+    if ($r.Bedrock) { Log "    bedrock  : $($r.Bedrock)  jar=$(if ($script:DefJarName[$r.Bedrock]) { $script:DefJarName[$r.Bedrock] } else { '<none>' })  jdk=$($PlatformDefs[$r.Bedrock].Jdk)" }
+    if ($r.Proxy) { Log "    proxy    : $($r.Proxy)  jar=$(if ($script:DefJarName[$r.Proxy]) { $script:DefJarName[$r.Proxy] } else { '<none>' })  jdk=$($PlatformDefs[$r.Proxy].Jdk)" }
+  }
+  Log "=== PLAN OK ==="
+  exit 0
+}
+
+# Every server binary the planned rounds touch.
+if (-not $SkipBuild) {
+  Log ""
+  Log "=== building platform artifacts ==="
+  if (-not (Invoke-GradleBuild $roundList $requested)) { Log "FATAL: build failed"; exit 2 }
+
+  # Fabric's E2E jar is produced through an init script, so it needs its own
+  # invocation with the extra properties the script reads.
+  if ($legs.Mod -contains 'fabric') {
+    Log "  building fabric E2E mod jar"
+    $fabInit = Join-Path $binDir "fabric-fatjar.init.gradle"
+    $isWin = $IsWindows -or $env:OS -eq "Windows_NT"
+    $gradleW = if ($isWin) { Join-Path $RepoRoot "gradlew.bat" } else { Join-Path $RepoRoot "gradlew" }
+    $launcher = if ($Jdk21) { $Jdk21 } else { $Jdk25 }
+    $out = Join-Path $JointRoot "gradle-fabric.out.log"
+    $err = Join-Path $JointRoot "gradle-fabric.err.log"
+    $savedJavaHome = $env:JAVA_HOME
+    $savedEap = $ErrorActionPreference
+    try {
+      $env:JAVA_HOME = $launcher
+      $ErrorActionPreference = "Continue"
+      Push-Location $RepoRoot
+      try {
+        & $gradleW ":NovaChat:MOD:fabric:fabricE2eJar" "--init-script" $fabInit "-x" "test" "--console=plain" `
+          "-Porg.gradle.java.installations.paths=" "-Dorg.gradle.java.installations.paths=" 1>$out 2>$err
+        $fabExit = $LASTEXITCODE
+      } finally { Pop-Location }
+    } finally {
+      $ErrorActionPreference = $savedEap
+      $env:JAVA_HOME = $savedJavaHome
+    }
+    if ($fabExit -ne 0) {
+      Log "FATAL: fabric E2E jar build failed (exit=$fabExit)"
+      Write-LogTail $err 25 "fabric build stderr"
+      exit 2
+    }
+  }
+}
+
+Log ""
+Log "=== fetching server binaries ==="
+New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+# Provision ONLY the binaries the planned rounds actually start -- every round's
+# platform, not the whole rotation candidate pool. A rotation list naming pmmp
+# and pnx must not make a single-round bukkit+nukkit run download both: that
+# turned a 2-minute first run into a 10-minute one and made the harness look
+# broken whenever a candidate's CDN was slow.
+$fetchTargets = @()
+foreach ($r in $roundList) {
+  foreach ($pf in @($r.Proxy, $r.Java, $r.Mod, $r.Bedrock)) {
+    if (-not $pf) { continue }
+    $lockName = $PlatformDefs[$pf].LockName
+    if ($lockName -and ($fetchTargets -notcontains $lockName)) { $fetchTargets += $lockName }
+  }
+}
+foreach ($lockName in $fetchTargets) {
+  if (-not (Invoke-FetchServer $lockName)) { Log "FATAL: could not provision '$lockName'"; exit 2 }
+}
+if ($legs.Mod -contains 'fabric') {
+  if (-not (Invoke-FetchFabricRuntime)) { Log "FATAL: could not provision the Fabric runtime"; exit 2 }
+}
+
+if (-not (Install-BotDeps)) { exit 2 }
+
+# Super-admin identity: the backend keys super-admins by UUID, and in offline
+# mode a player's UUID is the MD5-based offline UUID of the username. Computing
+# Java's UUID.nameUUIDFromBytes("OfflinePlayer:<name>") is what lets the
+# announce/title scenarios exercise the REAL super-admin path instead of
+# reproducing the old "NC-403 by design" result.
+$superAdminName = 'E2EJointJava'
+$offlineSeed = [System.Text.Encoding]::UTF8.GetBytes("OfflinePlayer:$superAdminName")
+$md5 = [System.Security.Cryptography.MD5]::Create()
+$hash = $md5.ComputeHash($offlineSeed)
+$hash[6] = [byte](($hash[6] -band 0x0F) -bor 0x30)
+$hash[8] = [byte](($hash[8] -band 0x3F) -bor 0x80)
+$script:SuperAdminUuid = ([System.Guid]::new($hash)).ToString()
+Log "Super-admin identity: $superAdminName / $($script:SuperAdminUuid)"
+
+$roundResults = @()
+$overallPass = $true
+foreach ($r in $roundList) {
+  $roundDir = Join-Path (Join-Path $JointRoot $script:RunId) "round-$($r.Index)"
+  $res = Invoke-Round -round $r -roundDir $roundDir
+  $roundResults += $res
+  if ($res.status -ne 'PASS') { $overallPass = $false }
+  Log "=== ROUND $($r.Index) RESULT: $($res.status) ==="
+  if ($res.notes) { Log "    notes: $($res.notes)" }
+  foreach ($a in $res.assertions) {
+    $verdict = if ($a.pass) { 'PASS' } else { 'FAIL' }
+    Log ("    {0,-6} {1,-45} {2}" -f $verdict, $a.id, $a.token)
+    if ($a.evidence) { Log "           evidence: $($a.evidence)" }
+  }
+  Start-Sleep -Seconds 2
+}
+
+# --- summary -----------------------------------------------------------------
+$summaryDir = Join-Path $JointRoot $script:RunId
+New-Item -ItemType Directory -Force -Path $summaryDir | Out-Null
+$summaryFile = Join-Path $summaryDir "joint-summary.json"
+$summary = [PSCustomObject]@{
+  runId = $script:RunId
+  platforms = $Platforms
+  rounds = $roundResults
+  overallPass = $overallPass
+}
+[System.IO.File]::WriteAllText($summaryFile,
+  ($summary | ConvertTo-Json -Depth 12),
+  (New-Object System.Text.UTF8Encoding $false))
+
+Log ""
+Log "=== JOINT E2E SUMMARY ==="
+foreach ($res in $roundResults) {
+  $passCount = @($res.assertions | Where-Object { $_.pass }).Count
+  $total = @($res.assertions).Count
+  Log ("  round {0} [{1}] {2}  ({3}/{4} assertions)" -f $res.round, $res.topology, $res.status, $passCount, $total)
+  if ($res.notes) { Log "         $($res.notes)" }
+}
+Log "Summary: $summaryFile"
+
+if (-not $KeepArtifacts -and $overallPass) {
+  Log "Run artifacts kept for inspection: $summaryDir"
+}
+
+if ($overallPass) {
+  Log "=== JOINT E2E PASSED ==="
+  exit 0
+}
+Log "=== JOINT E2E FAILED ==="
+exit 1
+

@@ -1,0 +1,101 @@
+// ============================================================================
+// plugin-e2e-fatjar.init.gradle -- assemble a self-contained plugin jar for E2E.
+//
+// WHY THIS EXISTS
+//   Several platform modules ship a THIN jar: their build.gradle declares
+//   :NovaChat:common and :NovaChat:client-core as `implementation`, which puts
+//   those classes on the COMPILE classpath but not inside the artifact. A real
+//   server loading that jar dies with NoClassDefFoundError on the first shared
+//   class it touches. The per-platform harness hid this because it builds the
+//   plugin jar and copies it in without ever confirming the server could load
+//   it; the joint harness runs a real server per leg, so the jar has to be
+//   genuinely self-contained.
+//
+//   The other init scripts in this directory (fatjar.init.gradle,
+//   velocity-fatjar.init.gradle, nukkit-fat.init.gradle) are stale: they key off
+//   project paths that no longer exist (':novachat-bukkit', ':novachat-velocity')
+//   and write into the gitignored .e2e/ tree. This script takes the project and
+//   task names as -P properties and writes next to the module's own build
+//   output, so it cannot rot the same way.
+//
+// USAGE
+//   ./gradlew <module>:<task> \
+//       --init-script test/bin/plugin-e2e-fatjar.init.gradle \
+//       -Pe2ePluginProject=:NovaChat:Bedrock:nukkit \
+//       -Pe2ePluginTask=nukkitE2eJar \
+//       -Pe2ePluginBaseName=novachat-nukkit
+//
+//   Output: <module>/build/libs/<baseName>-<version>.jar
+//
+// WHAT IS BUNDLED
+//   * the module's own jar
+//   * :NovaChat:common and :NovaChat:client-core
+//   * snakeyaml (the shared config layer references it on every platform)
+//   Deliberately NOT bundled: netty, gson, slf4j. Every host in the matrix ships
+//   them, and unrelocated copies inside the host's classloader risk version
+//   skew; modules that genuinely need them (bukkit) relocate them themselves in
+//   their own build.gradle.
+// ============================================================================
+import org.gradle.api.tasks.bundling.Jar
+
+def props = gradle.startParameter.projectProperties
+def wantedPath = props['e2ePluginProject']
+def wantedTask = props['e2ePluginTask']
+def wantedBaseName = props['e2ePluginBaseName']
+
+if (!wantedPath) {
+    throw new GradleException(
+        'plugin-e2e-fatjar: -Pe2ePluginProject=<gradle project path> is required ' +
+        '(e.g. -Pe2ePluginProject=:NovaChat:Bedrock:nukkit)')
+}
+if (!wantedTask) {
+    throw new GradleException(
+        'plugin-e2e-fatjar: -Pe2ePluginTask=<task name> is required ' +
+        '(e.g. -Pe2ePluginTask=nukkitE2eJar)')
+}
+
+gradle.projectsEvaluated {
+    def target = gradle.rootProject.findProject(wantedPath)
+    if (target == null) {
+        throw new GradleException("plugin-e2e-fatjar: no such Gradle project '${wantedPath}'")
+    }
+    def common = gradle.rootProject.findProject(':NovaChat:common')
+    def clientCore = gradle.rootProject.findProject(':NovaChat:client-core')
+    if (common == null || clientCore == null) {
+        throw new GradleException(
+            'plugin-e2e-fatjar: :NovaChat:common and :NovaChat:client-core must both exist')
+    }
+
+    target.tasks.register(wantedTask, Jar) {
+        group = 'e2e'
+        description = "Self-contained E2E plugin jar for ${target.path}."
+        archiveBaseName.set(wantedBaseName ?: target.name)
+        archiveClassifier.set('')
+        archiveVersion.set(target.provider { target.version.toString() })
+        destinationDirectory.set(target.layout.buildDirectory.dir('libs'))
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+        dependsOn target.tasks.named('jar')
+        dependsOn common.tasks.named('jar')
+        dependsOn clientCore.tasks.named('jar')
+
+        from target.zipTree(target.tasks.named('jar', Jar).flatMap { it.archiveFile }.get().asFile)
+        from target.zipTree(common.tasks.named('jar', Jar).flatMap { it.archiveFile }.get().asFile)
+        from target.zipTree(clientCore.tasks.named('jar', Jar).flatMap { it.archiveFile }.get().asFile)
+
+        from {
+            target.configurations.runtimeClasspath.resolvedConfiguration.resolvedArtifacts
+                .findAll { it.moduleVersion.id.group == 'org.yaml' && it.name == 'snakeyaml' }
+                .collect { target.zipTree(it.file) }
+        }
+
+        exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+        exclude 'META-INF/MANIFEST.MF'
+        exclude 'module-info.class'
+        exclude 'META-INF/versions/**/module-info.class'
+
+        doLast {
+            logger.lifecycle("[pluginE2eFatJar] ${archiveFile.get().asFile.absolutePath}")
+        }
+    }
+}
