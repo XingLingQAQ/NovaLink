@@ -2,6 +2,7 @@ package com.nova.chat.velocity;
 
 import com.google.inject.Inject;
 import com.nova.chat.client.command.ChannelCommandService;
+import com.nova.chat.client.network.AbstractPlatformNetworkClient;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
@@ -9,6 +10,8 @@ import com.nova.chat.proxy.chat.ProxyChatCore;
 import com.nova.chat.proxy.command.ProxyCommandCore;
 import com.nova.chat.proxy.config.ProxyMode;
 import com.nova.chat.proxy.engine.ProxyServerSwitchCore;
+import com.nova.chat.proxy.lite.LocalAuthority;
+import com.nova.chat.proxy.lite.LocalAuthorityClient;
 import com.nova.chat.velocity.chat.MessageFormatter;
 import com.nova.chat.velocity.platform.VelocityProxyPlatform;
 import com.nova.chat.velocity.chat.ChatListener;
@@ -33,6 +36,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -68,6 +72,17 @@ public class NovaChatVelocity {
     
     /** Network client for backend connection */
     private NetworkClient networkClient;
+
+    /**
+     * Lite-mode transport stand-in: an in-process local authority instead of a
+     * Netty backend link. Exactly one of {@link #networkClient} and this field
+     * is non-null, decided by {@code mode} at startup and fixed for the process
+     * lifetime (a reload that changes the mode is rejected).
+     */
+    private LocalAuthorityClient localAuthorityClient;
+
+    /** Lite authority bound to the shared chat core, or null in relay mode. */
+    private LocalAuthority liteAuthority;
     
     /** Chat listener for handling chat events */
     private ChatListener chatListener;
@@ -187,11 +202,16 @@ public class NovaChatVelocity {
     public void onProxyShutdown(ProxyShutdownEvent event) {
         logger.info("NovaChat Velocity plugin disabling...");
         
-        // Disconnect from backend
+        // Disconnect from backend (relay) or stop the local dispatcher (lite)
         if (networkClient != null) {
             networkClient.disconnect();
             networkClient = null;
         }
+        if (localAuthorityClient != null) {
+            localAuthorityClient.shutdown();
+            localAuthorityClient = null;
+        }
+        liteAuthority = null;
 
         // Flush pending ignore-list writes and stop the save thread
         if (ignoreListService != null) {
@@ -334,6 +354,13 @@ public class NovaChatVelocity {
      * {@code /nc join} completion and channel-prefix routing see the locally
      * declared channels. No {@link NetworkClient} is created: lite has no
      * backend to talk to.
+     *
+     * <p>The shared cores still need a client-shaped object to route their
+     * upstream packets into the local authority, so a
+     * {@link LocalAuthorityClient} is created instead. It is bound to the
+     * authority in {@link #initializeProxyCores()}, once the chat core exists.
+     * A reload reuses the same client: the cores registered their downstream
+     * handlers on it and must keep them.
      */
     private void initializeLiteMode() {
         // Reuse the registry object on reload: ProxyChatCore and ProxyCommandCore
@@ -344,7 +371,16 @@ public class NovaChatVelocity {
         }
         knownChannelRegistry.replaceAll(config.getLiteChannels().keySet());
         networkClient = null;
-        logger.info("NovaChat running in lite mode (no backend connection); "
+        if (localAuthorityClient == null) {
+            // initializeNetworkClient runs before initializeProxyCores, so the
+            // adapter may not exist yet; create it once and let the core
+            // initialization below reuse it.
+            if (platform == null) {
+                platform = new VelocityProxyPlatform(this);
+            }
+            localAuthorityClient = LocalAuthorityClient.create(platform);
+        }
+        logger.info("NovaChat running in lite mode (local authority, no backend connection); "
                 + config.getLiteChannels().size() + " local channel(s) declared");
     }
 
@@ -356,14 +392,16 @@ public class NovaChatVelocity {
      * services.
      */
     private void initializeProxyCores() {
-        platform = new VelocityProxyPlatform(this);
+        if (platform == null) {
+            platform = new VelocityProxyPlatform(this);
+        }
         chatCore = new ProxyChatCore(
                 platform,
                 config,
                 ignoreListService,
                 privateMessageService,
                 knownChannelRegistry,
-                this::getNetworkClient);
+                this::getPlatformNetworkClient);
         commandCore = new ProxyCommandCore(
                 platform,
                 chatCore,
@@ -374,6 +412,16 @@ public class NovaChatVelocity {
                 this::getConfig);
         serverSwitchCore = new ProxyServerSwitchCore(platform, chatCore);
         messageFormatter = new MessageFormatter(this);
+
+        // Lite: bind the local authority once the chat core (state store,
+        // formatter, ignore lists) exists. The client itself was created in
+        // initializeLiteMode so the core's client supplier saw it at build time.
+        if (localAuthorityClient != null) {
+            liteAuthority = new LocalAuthority(
+                    platform, chatCore, ignoreListService);
+            localAuthorityClient.bind(liteAuthority);
+        }
+
         // H6: the ChatListener shell binds inbound handlers in its constructor;
         // this is the first point where the network client exists.
         if (chatCore.getNetworkClient() != null) {
@@ -408,7 +456,7 @@ public class NovaChatVelocity {
      */
     private void initializeChannelCommandService() {
         channelCommandService = ChannelCommandService.forPlatform(
-                () -> networkClient, PlatformType.VELOCITY);
+                this::getPlatformNetworkClient, PlatformType.VELOCITY);
     }
 
     /**
@@ -458,7 +506,10 @@ public class NovaChatVelocity {
             chatListener.reload();
         }
 
-        // Reconnect if connection settings changed
+        // Reconnect if connection settings changed. In lite mode
+        // initializeNetworkClient rebinds nothing: it re-seeds the roster from
+        // the reloaded lite.channels and keeps the existing local authority
+        // client, whose handler registrations must survive the reload.
         if (networkClient != null) {
             networkClient.disconnect();
         }
@@ -514,11 +565,56 @@ public class NovaChatVelocity {
     
     /**
      * Gets the network client.
-     * 
-     * @return the network client
+     *
+     * <p>In lite mode this returns the {@link LocalAuthorityClient} (typed as
+     * {@link NetworkClient} because that is the historical return type and the
+     * shared cores need the common base class). Run-time callers that need the
+     * Netty-specific surface must check the mode first.
+     *
+     * @return the transport-facing client (relay Netty facade or lite local
+     *         authority), or null before startup
      */
     public NetworkClient getNetworkClient() {
         return networkClient;
+    }
+
+    /**
+     * Gets the client the shared cores must send through, independent of mode.
+     *
+     * <p>{@link #getNetworkClient()} is the historical Velocity-typed accessor
+     * (used by the chat listener and tests); the shared cores only need the
+     * {@link AbstractPlatformNetworkClient} base, so lite can supply the local
+     * authority client without pretending it is a Netty facade.
+     *
+     * @return the transport-facing client, or null before startup
+     */
+    public AbstractPlatformNetworkClient getPlatformNetworkClient() {
+        return networkClient != null ? networkClient : localAuthorityClient;
+    }
+
+    /**
+     * Gets the lite-mode transport stand-in.
+     *
+     * @return the local authority client, or null in relay mode
+     */
+    public LocalAuthorityClient getLocalAuthorityClient() {
+        return localAuthorityClient;
+    }
+
+    /**
+     * Drops the player from the local authority's channel table (lite only).
+     *
+     * <p>Relay orders the backend to evict the player with a logout LEAVE; lite
+     * has no backend, so the shell calls this from its disconnect listener.
+     * No-op in relay mode and before the authority is bound.
+     *
+     * @param playerId the disconnecting player
+     */
+    public void onLitePlayerDisconnect(UUID playerId) {
+        LocalAuthority authority = liteAuthority;
+        if (authority != null) {
+            authority.onPlayerDisconnect(playerId);
+        }
     }
 
     /**
