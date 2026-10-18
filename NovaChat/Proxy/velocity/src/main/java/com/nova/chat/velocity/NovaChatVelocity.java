@@ -5,6 +5,11 @@ import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
+import com.nova.chat.proxy.chat.ProxyChatCore;
+import com.nova.chat.proxy.command.ProxyCommandCore;
+import com.nova.chat.proxy.engine.ProxyServerSwitchCore;
+import com.nova.chat.velocity.chat.MessageFormatter;
+import com.nova.chat.velocity.platform.VelocityProxyPlatform;
 import com.nova.chat.velocity.chat.ChatListener;
 import com.nova.chat.velocity.chat.MentionTabCompleter;
 import com.nova.chat.velocity.command.NovaChatCommand;
@@ -103,6 +108,21 @@ public class NovaChatVelocity {
      */
     private com.nova.chat.client.privatemsg.PrivateMessageService privateMessageService;
 
+    /** Shared proxy chat core (chat handlers, state, outbound intercept). */
+    private ProxyChatCore chatCore;
+
+    /** Shared proxy command core (11 subcommands + completions). */
+    private ProxyCommandCore commandCore;
+
+    /** Shared server-switch core. */
+    private ProxyServerSwitchCore serverSwitchCore;
+
+    /** Velocity platform adapter (Adventure rendering, scheduler, logger). */
+    private VelocityProxyPlatform platform;
+
+    /** Velocity-side message formatter shell (renders shared strings). */
+    private MessageFormatter messageFormatter;
+
     /** Debug mode flag */
     private boolean debugMode = false;
     
@@ -147,6 +167,10 @@ public class NovaChatVelocity {
 
         // Shared command intent service (Architecture B client-core)
         initializeChannelCommandService();
+
+        // Shared proxy cores (chat / command / server switch) built on the
+        // Velocity platform adapter. Both proxies share this layer.
+        initializeProxyCores();
 
         // Register event listeners
         registerListeners();
@@ -276,6 +300,39 @@ public class NovaChatVelocity {
             .schedule();
     }
     
+    /**
+     * Builds the shared proxy cores (chat / command / server switch).
+     *
+     * <p>These are platform-agnostic classes from {@code :NovaChat:Proxy:proxy-common};
+     * this method only supplies the Velocity adapter plus the shared client-core
+     * services.
+     */
+    private void initializeProxyCores() {
+        platform = new VelocityProxyPlatform(this);
+        chatCore = new ProxyChatCore(
+                platform,
+                config,
+                ignoreListService,
+                privateMessageService,
+                knownChannelRegistry,
+                this::getNetworkClient);
+        commandCore = new ProxyCommandCore(
+                platform,
+                chatCore,
+                channelCommandService,
+                ignoreListService,
+                privateMessageService,
+                knownChannelRegistry,
+                this::getConfig);
+        serverSwitchCore = new ProxyServerSwitchCore(platform, chatCore);
+        messageFormatter = new MessageFormatter(this);
+        // H6: the ChatListener shell binds inbound handlers in its constructor;
+        // this is the first point where the network client exists.
+        if (chatCore.getNetworkClient() != null) {
+            chatCore.rebindIncomingHandlers(chatCore.getNetworkClient());
+        }
+    }
+
     /**
      * Registers event listeners.
      */
@@ -442,6 +499,51 @@ public class NovaChatVelocity {
         return privateMessageService;
     }
     
+    /**
+     * Gets the shared proxy chat core.
+     *
+     * @return the chat core, never null after initialization
+     */
+    public ProxyChatCore getChatCore() {
+        return chatCore;
+    }
+
+    /**
+     * Gets the shared proxy command core.
+     *
+     * @return the command core, never null after initialization
+     */
+    public ProxyCommandCore getCommandCore() {
+        return commandCore;
+    }
+
+    /**
+     * Gets the shared server-switch core.
+     *
+     * @return the server-switch core, never null after initialization
+     */
+    public ProxyServerSwitchCore getServerSwitchCore() {
+        return serverSwitchCore;
+    }
+
+    /**
+     * Gets the Velocity platform adapter.
+     *
+     * @return the platform adapter, never null after initialization
+     */
+    public VelocityProxyPlatform getProxyPlatform() {
+        return platform;
+    }
+
+    /**
+     * Gets the message formatter shell.
+     *
+     * @return the message formatter
+     */
+    public MessageFormatter getMessageFormatter() {
+        return messageFormatter;
+    }
+
     /**
      * Gets the mention Tab completer.
      * 

@@ -2,9 +2,9 @@ package com.nova.chat.bungee.listener;
 
 import com.nova.chat.bungee.NovaChatBungee;
 import com.nova.chat.bungee.chat.ChatListener;
+import com.nova.chat.bungee.platform.BungeeProxyPlayer;
 import com.nova.chat.client.state.PlayerChannelState;
-import com.nova.chat.common.protocol.ChannelAction;
-import com.nova.chat.common.protocol.packets.ChannelActionPacket;
+import com.nova.chat.proxy.engine.ProxyServerSwitchCore;
 import net.md_5.bungee.api.config.ServerInfo;
 import net.md_5.bungee.api.connection.ProxiedPlayer;
 import net.md_5.bungee.api.event.ServerConnectedEvent;
@@ -15,21 +15,25 @@ import net.md_5.bungee.event.EventHandler;
 /**
  * Handles server switching events for cross-server message routing.
  *
- * When a player switches servers:
- * 1. Updates player state with new server information
- * 2. Handles channel transitions based on server-specific channels
+ * <p>On a server connection it records the new server and then joins the default
+ * channel (first connection of the session) or re-requests the active channel.
  *
- * <p>The backend learns about the new server from the JOIN packet below (its
- * {@code server} extra), which is a real channel action it understands. There
- * is no separate "server switch" packet: {@code ChannelAction} has no value for
- * it and {@code StarLink}'s {@code ChannelActionHandler} only dispatches the
- * declared actions.
+ * <p>The first-connection decision is the shared atomic claim
+ * ({@link com.nova.chat.proxy.chat.ProxyChatCore#claimFirstConnection}), not
+ * {@code getCurrentServer() == null}. BungeeCord's {@code EventBus} keeps
+ * same-priority listeners in a {@code HashMap}, so the execution order between
+ * this handler and the chat listener is JVM-start random; on the bad order the
+ * default-channel JOIN and the welcome message were both skipped.
  *
- * Requirements: 4.3, 5.3 - Cross-server message routing
+ * <p>The backend learns about the new server from the JOIN packet's
+ * {@code server} extra; there is no separate "server switch" packet.
+ *
+ * <p>Requirements: 4.3, 5.3 - Cross-server message routing
  */
 public class ServerSwitchHandler implements Listener {
 
     private final NovaChatBungee plugin;
+    private final ProxyServerSwitchCore core;
 
     /**
      * Creates a new ServerSwitchHandler.
@@ -38,11 +42,13 @@ public class ServerSwitchHandler implements Listener {
      */
     public ServerSwitchHandler(NovaChatBungee plugin) {
         this.plugin = plugin;
+        this.core = plugin.getServerSwitchCore();
     }
 
+
     /**
-     * Handles server switch events.
-     * This is called when a player switches from one server to another.
+     * Handles server switch events: re-requests the active channel on the new
+     * server.
      *
      * @param event the server switch event
      */
@@ -52,31 +58,21 @@ public class ServerSwitchHandler implements Listener {
         ServerInfo fromServer = event.getFrom();
 
         if (fromServer != null && player.getServer() != null) {
-            String fromServerName = fromServer.getName();
-            String toServerName = player.getServer().getInfo().getName();
+            plugin.debug("Player " + player.getName() + " switching from "
+                    + fromServer.getName() + " to " + player.getServer().getInfo().getName());
 
-            plugin.debug("Player " + player.getName() + " switching from " + fromServerName + " to " + toServerName);
-
-            // Handle channel transition
             ChatListener chatListener = plugin.getChatListener();
             if (chatListener != null) {
                 PlayerChannelState state = chatListener.getOrCreateState(player);
-                handleChannelTransition(player, state, toServerName);
+                core.handleChannelTransition(new BungeeProxyPlayer(player), state,
+                        player.getServer().getInfo().getName());
             }
         }
     }
 
     /**
-     * Handles server connected events after the player has connected.
-     * Updates player state and handles initial channel join.
-     *
-     * <p><b>Listener order:</b> Bungee's {@code EventBus} stores same-priority
-     * listeners in a {@code HashMap}, so the order between this handler and
-     * {@link ChatListener#onServerConnected(ServerConnectedEvent)} varies per JVM
-     * start. The first-connection decision therefore comes from
-     * {@link ChatListener#claimFirstConnection(java.util.UUID)}, an atomic
-     * per-session claim, not from {@code state.getCurrentServer() == null}
-     * (both handlers write {@code currentServer}).
+     * Handles server connected events: updates the player state and joins the
+     * default channel (first connection) or handles the channel transition.
      *
      * @param event the server connected event
      */
@@ -85,74 +81,16 @@ public class ServerSwitchHandler implements Listener {
         ProxiedPlayer player = event.getPlayer();
         String serverName = event.getServer().getInfo().getName();
 
-        // Update player state with new server
-        ChatListener chatListener = plugin.getChatListener();
-        if (chatListener != null) {
-            PlayerChannelState state = chatListener.getOrCreateState(player);
-            state.setCurrentServer(serverName);
+        BungeeProxyPlayer handle = new BungeeProxyPlayer(player);
+        boolean first = core.onServerConnected(handle, serverName);
 
-            plugin.debug("Player " + player.getName() + " connected to server: " + serverName);
-
-            if (chatListener.claimFirstConnection(player.getUniqueId())) {
-                joinDefaultChannel(player, state, serverName);
-                // UX-DESIGN §8.1: push the shared first-join welcome line once
-                // per proxy session (Bungee has no hasPlayedBefore).
+        // UX-DESIGN §8.1: push the shared first-join welcome line once per proxy
+        // session (Bungee has no hasPlayedBefore).
+        if (first) {
+            ChatListener chatListener = plugin.getChatListener();
+            if (chatListener != null) {
                 chatListener.pushWelcomeIfFirst(player);
             }
-        }
-    }
-
-    /**
-     * Handles channel transitions when a player switches servers.
-     *
-     * For SERVER-scoped channels:
-     * - Player may need to leave server-specific channels
-     * - Player may need to join new server-specific channels
-     *
-     * For GLOBAL-scoped channels:
-     * - Player remains in the channel across servers
-     *
-     * @param player the player
-     * @param state the player's chat state
-     * @param newServer the server the player is joining
-     */
-    private void handleChannelTransition(ProxiedPlayer player, PlayerChannelState state, String newServer) {
-        if (plugin.getNetworkClient() == null || !plugin.getNetworkClient().isAuthenticated()) {
-            return;
-        }
-
-        String currentChannel = state.getActiveChannel();
-
-        // Send a join request for the current channel on the new server
-        // The backend will determine if the player can stay in the channel
-        ChannelActionPacket joinPacket = new ChannelActionPacket(ChannelAction.JOIN, currentChannel);
-        joinPacket.addExtra("player_uuid", player.getUniqueId().toString());
-        joinPacket.addExtra("player_name", player.getName());
-        joinPacket.addExtra("server", newServer);
-
-        plugin.getNetworkClient().sendPacket(joinPacket);
-        plugin.debug("Requested channel join after server switch: " + currentChannel + " on " + newServer);
-    }
-
-    /**
-     * Joins the default channel for a player on initial connection.
-     *
-     * @param player the player
-     * @param state the player's chat state
-     * @param server the server name
-     */
-    private void joinDefaultChannel(ProxiedPlayer player, PlayerChannelState state, String server) {
-        String defaultChannel = plugin.getPluginConfig().getDefaultChannel();
-        state.setActiveChannel(defaultChannel);
-
-        if (plugin.getNetworkClient() != null && plugin.getNetworkClient().isAuthenticated()) {
-            ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.JOIN, defaultChannel);
-            packet.addExtra("player_uuid", player.getUniqueId().toString());
-            packet.addExtra("player_name", player.getName());
-            packet.addExtra("server", server);
-
-            plugin.getNetworkClient().sendPacket(packet);
-            plugin.debug("Player " + player.getName() + " joined default channel: " + defaultChannel);
         }
     }
 }

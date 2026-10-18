@@ -370,10 +370,8 @@ class ChatListenerConcurrencyTest {
         }
         runConcurrently(bodies);
 
-        // (b) No lost sends, no duplicated sends. Per-player expectations
-        // (chat + item + private message reach player0/player1). The mention
-        // path renders a title + action bar, NOT a chat line, so it contributes
-        // no line send:
+        // (b) No lost sends, no duplicated sends. The mention path renders a
+        // title + ACTION_BAR, NOT a chat line, so it contributes no line send:
         //     player0: chat + item + pm-echo       = 3 x DISPATCHES
         //     player1: chat + item + pm-received   = 3 x DISPATCHES
         //     others:  chat + item                 = 2 x DISPATCHES

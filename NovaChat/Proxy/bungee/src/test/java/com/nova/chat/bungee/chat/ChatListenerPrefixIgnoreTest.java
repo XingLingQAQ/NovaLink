@@ -11,9 +11,7 @@ import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
-import net.md_5.bungee.api.ChatMessageType;
 import net.md_5.bungee.api.ProxyServer;
-import net.md_5.bungee.api.Title;
 import net.md_5.bungee.api.chat.BaseComponent;
 import net.md_5.bungee.api.connection.ProxiedPlayer;
 import net.md_5.bungee.api.event.ChatEvent;
@@ -72,11 +70,11 @@ class ChatListenerPrefixIgnoreTest {
     @Mock
     private ProxyServer proxy;
     @Mock
-    private Title title;
-    @Mock
     private ProxiedPlayer player;
     @Mock
     private ChatEvent event;
+    @Mock
+    private net.md_5.bungee.api.Title title;
 
     private KnownChannelRegistry registry;
     private IgnoreListService ignoreListService;
@@ -115,6 +113,10 @@ class ChatListenerPrefixIgnoreTest {
         doReturn(List.of(player)).when(proxy).getPlayers();
         when(proxy.getPlayer(PLAYER_ID)).thenReturn(player);
 
+        when(event.getSender()).thenReturn(player);
+        when(event.isCommand()).thenReturn(false);
+        when(event.isProxyCommand()).thenReturn(false);
+
         // Mention notifications render a proxy title + ACTION_BAR line.
         when(proxy.createTitle()).thenReturn(title);
         when(title.title(any(BaseComponent[].class))).thenReturn(title);
@@ -122,10 +124,6 @@ class ChatListenerPrefixIgnoreTest {
         when(title.fadeIn(any(int.class))).thenReturn(title);
         when(title.stay(any(int.class))).thenReturn(title);
         when(title.fadeOut(any(int.class))).thenReturn(title);
-
-        when(event.getSender()).thenReturn(player);
-        when(event.isCommand()).thenReturn(false);
-        when(event.isProxyCommand()).thenReturn(false);
 
         listener = new ChatListener(plugin);
         listener.getOrCreateState(player); // active channel = "local"
@@ -226,8 +224,8 @@ class ChatListenerPrefixIgnoreTest {
         mentionHandler.accept(new MentionPacket(IGNORED_SENDER_ID, "Steve", PLAYER_ID,
                 "local", "hi @Viewer", System.currentTimeMillis()));
         verify(title, never()).send(any());
-        verify(player, never()).sendMessage(any(ChatMessageType.class), any(BaseComponent[].class));
-        verify(player, never()).sendMessage(any(BaseComponent[].class));
+        verify(player, never()).sendMessage(
+                any(net.md_5.bungee.api.ChatMessageType.class), any(BaseComponent[].class));
     }
 
     @Test
@@ -237,7 +235,8 @@ class ChatListenerPrefixIgnoreTest {
                 "local", "hi @Viewer", System.currentTimeMillis()));
         // Title + ACTION_BAR line, not a chat line.
         verify(title).send(player);
-        verify(player).sendMessage(eq(ChatMessageType.ACTION_BAR), any(BaseComponent[].class));
+        verify(player).sendMessage(
+                eq(net.md_5.bungee.api.ChatMessageType.ACTION_BAR), any(BaseComponent[].class));
         verify(player, never()).sendMessage(any(BaseComponent[].class));
     }
 
