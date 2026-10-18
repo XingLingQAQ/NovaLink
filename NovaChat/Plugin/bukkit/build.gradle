@@ -73,7 +73,11 @@ shadowJar {
 
     // Relocate dependencies to avoid conflicts with other plugins on the server.
     relocate 'io.netty', 'com.nova.chat.bukkit.libs.netty'
-    relocate 'com.google.code.gson', 'com.nova.chat.bukkit.libs.gson'
+    // Package name, not the Maven groupId: Gson's classes live in
+    // com.google.gson, so 'com.google.code.gson' never matched anything and
+    // this relocation silently did nothing (folia/pnx/sponge already use the
+    // correct form).
+    relocate 'com.google.gson', 'com.nova.chat.bukkit.libs.gson'
 
     exclude 'META-INF/*.SF'
     exclude 'META-INF/*.DSA'

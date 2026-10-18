@@ -71,6 +71,17 @@ public abstract class AbstractJdbcProvider implements DatabaseProvider {
 
             logger.info("{} initialized", getProviderType());
         } catch (Exception e) {
+            // A pool created before the failure would otherwise leak: HikariCP
+            // holds open connections, and on Windows SQLite keeps the database
+            // file locked until every connection is closed.
+            if (dataSource != null) {
+                try {
+                    dataSource.close();
+                } catch (Exception closeFailure) {
+                    e.addSuppressed(closeFailure);
+                }
+                dataSource = null;
+            }
             throw new DatabaseException("Failed to initialize " + getProviderType() + " connection", e);
         }
     }

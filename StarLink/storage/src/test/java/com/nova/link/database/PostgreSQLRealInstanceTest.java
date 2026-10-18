@@ -47,9 +47,12 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * <p>The test is gated by {@link #pgReachable()}: it connects to a real
  * PostgreSQL instance whose connection coordinates are supplied via the
  * {@code NOVALINK_PG_HOST}, {@code NOVALINK_PG_PORT}, {@code NOVALINK_PG_DB},
- * {@code NOVALINK_PG_USER}, and {@code NOVALINK_PG_PASSWORD} environment
- * variables (defaults {@code 127.0.0.1}, {@code 5432}, {@code novalink_test},
- * {@code novalink}, empty password). When the server is unreachable the test
+ * {@code NOVALINK_PG_USER}, {@code NOVALINK_PG_PASSWORD},
+ * {@code NOVALINK_PG_SSL_MODE}, and {@code NOVALINK_PG_ALLOW_PLAINTEXT}
+ * environment variables (defaults {@code 127.0.0.1}, {@code 5432},
+ * {@code novalink_test}, {@code novalink}, empty password, the provider's
+ * fail-closed TLS default, and {@code false}). When the server is unreachable
+ * or rejects the configured TLS mode the test
  * is skipped via {@link org.junit.jupiter.api.Assumptions#assumeTrue} so a
  * Docker-less CI/dev box stays green without false negatives — mirroring the
  * skip posture of {@link PostgreSQLIntegrationTest}'s Docker probe but
@@ -79,6 +82,18 @@ class PostgreSQLRealInstanceTest {
     private static final String PG_DB = System.getenv().getOrDefault("NOVALINK_PG_DB", "novalink_test");
     private static final String PG_USER = System.getenv().getOrDefault("NOVALINK_PG_USER", "novalink");
     private static final String PG_PASSWORD = System.getenv().getOrDefault("NOVALINK_PG_PASSWORD", "");
+    /**
+     * TLS mode used for BOTH the reachability probe and the provider under
+     * test, so the gate can never disagree with what the test actually opens.
+     * Defaults to the provider's own fail-closed default; a host-installed
+     * server without TLS (`ssl = off`) needs {@code NOVALINK_PG_SSL_MODE=disable}
+     * plus {@code NOVALINK_PG_ALLOW_PLAINTEXT=true}, which is the same explicit
+     * opt-in production requires.
+     */
+    private static final String PG_SSL_MODE = System.getenv().getOrDefault(
+            "NOVALINK_PG_SSL_MODE", PostgreSQLProvider.DEFAULT_SSL_MODE);
+    private static final boolean PG_ALLOW_PLAINTEXT = Boolean.parseBoolean(
+            System.getenv().getOrDefault("NOVALINK_PG_ALLOW_PLAINTEXT", "false"));
 
     private PostgreSQLProvider provider;
 
@@ -87,22 +102,28 @@ class PostgreSQLRealInstanceTest {
      * attempt. Returns false (not throws) on any connection failure so the
      * caller can skip the test via {@code assumeTrue} instead of failing it.
      *
-     * <p>The probe uses a login-timeout of 2 seconds so an unreachable host
-     * fails fast rather than blocking the full default socket timeout.
+     * <p>The probe reuses {@link PostgreSQLProvider#buildJdbcUrl()} so the
+     * TLS policy it tests is exactly the one the provider will apply; a
+     * server that rejects it (or an unreachable host) skips rather than
+     * fails. The probe uses a login-timeout of 2 seconds so an unreachable
+     * host fails fast rather than blocking the full default socket timeout.
      *
      * @return true if a connection can be established within 2 seconds
      */
     private static boolean pgReachable() {
-        String url = "jdbc:postgresql://" + PG_HOST + ":" + PG_PORT + "/" + PG_DB;
         Properties props = new Properties();
         props.setProperty("user", PG_USER);
         if (PG_PASSWORD != null && !PG_PASSWORD.isEmpty()) {
             props.setProperty("password", PG_PASSWORD);
         }
         props.setProperty("loginTimeout", "2");
-        try (Connection conn = DriverManager.getConnection(url, props)) {
-            return conn.isValid(2);
-        } catch (SQLException e) {
+        try {
+            String url = new PostgreSQLProvider(PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASSWORD, 5,
+                    PG_SSL_MODE, PG_ALLOW_PLAINTEXT).buildJdbcUrl();
+            try (Connection conn = DriverManager.getConnection(url, props)) {
+                return conn.isValid(2);
+            }
+        } catch (SQLException | RuntimeException e) {
             return false;
         }
     }
@@ -134,7 +155,8 @@ class PostgreSQLRealInstanceTest {
         assumeTrue(pgReachable(), "PostgreSQL not reachable at " + PG_HOST + ":" + PG_PORT
                 + "/" + PG_DB + " — skipping real-instance test");
 
-        provider = new PostgreSQLProvider(PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASSWORD, 5);
+        provider = new PostgreSQLProvider(PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASSWORD, 5,
+                PG_SSL_MODE, PG_ALLOW_PLAINTEXT);
         provider.initialize();
     }
 
@@ -240,7 +262,8 @@ class PostgreSQLRealInstanceTest {
 
         // Reopen a fresh provider against the SAME database — the row must
         // survive because the column is persisted, not in-memory.
-        provider = new PostgreSQLProvider(PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASSWORD, 5);
+        provider = new PostgreSQLProvider(PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASSWORD, 5,
+                PG_SSL_MODE, PG_ALLOW_PLAINTEXT);
         provider.initialize();
 
         Optional<Channel> loaded = provider.loadChannel("ch-slow-reopen");
