@@ -19,6 +19,9 @@
 #   0 = L1 pass
 #   1 = L1 fail (assertion mismatch or a process crashed)
 #   2 = prereq error (build/download failed)
+#   3 = skipped: no PHP runtime carries the PocketMine extensions, so the
+#       server cannot boot and zero assertions ran. The reason is logged and
+#       written to <runsDir>/skip-reason.txt for the orchestrator summary.
 # ============================================================================
 [CmdletBinding()]
 param(
@@ -121,6 +124,164 @@ New-Item -ItemType Directory -Path $RunsDir -Force | Out-Null
 New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
 
 # ---------------------------------------------------------------------------
+# 0. Resolve a PHP runtime that can actually boot PocketMine-MP.
+#
+# PocketMine-MP requires ten extensions, and five of them (chunkutils2,
+# crypto, encoding, morton, pmmpthread) are PocketMine-private C extensions
+# that exist in NO standard PHP distribution and in NO PECL package. The
+# server exits with "Selected PHP binary does not satisfy some requirements"
+# before loading a single plugin. The only practical source is pmmp's own
+# prebuilt binary (github.com/pmmp/PHP-Binaries, asset
+# PHP-<ver>-Windows-x64-PM5.zip), which bundles all ten.
+#
+# So: provision that zip from the version lock, then VERIFY the runtime by
+# asking it for its module list. Verification is not decoration -- a cached
+# extract, a stale system PHP on PATH, or a partially unpacked tree all look
+# present until php -m is asked, and the failure they cause inside PocketMine
+# is an opaque ten-line ERROR block. Checking here turns that into one line
+# naming the missing extensions.
+#
+# No usable runtime is a SKIP (exit 3), not a FAIL: the harness did not run,
+# so claiming either PASS or FAIL would be a lie about NovaLink's health. The
+# orchestrator reports "pmmp SKIPPED (<reason>)" and strict CI mode still
+# fails the job, so a missing runtime can never masquerade as green.
+# ---------------------------------------------------------------------------
+$phpExtensionsRequired = @(
+    'chunkutils2', 'crypto', 'encoding', 'gmp', 'igbinary',
+    'leveldb', 'morton', 'pmmpthread', 'yaml', 'zip'
+)
+
+# Read the extension list from a php.exe. Returns @{ Ok; Version; Modules;
+# Missing }. `php -m` exits non-zero when a .dll in php.ini fails to load, so
+# the exit code is deliberately ignored -- the module list is what matters,
+# and a startup warning is reported as a missing extension.
+function Get-PhpRuntimeInfo([string]$exe) {
+    $info = @{ Ok = $false; Version = ''; Modules = @(); Missing = @() }
+    if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { return $info }
+    $savedEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        # A broken php.ini prints startup warnings before the version banner,
+        # so take the first line that actually looks like the PHP banner.
+        $versionLine = (& $exe -v 2>$null | Where-Object { $_ -match '^PHP \d' } | Select-Object -First 1)
+        $moduleLines = @(& $exe -m 2>$null)
+    } catch {
+        return $info
+    } finally {
+        $ErrorActionPreference = $savedEap
+    }
+    if (-not $versionLine) { return $info }
+    # Normalise: php -m prints one extension per line, but on Windows the
+    # section headers ([PHP Modules] / [Zend Modules]) and a trailing blank
+    # line come along. Trim + lowercase, then compare set-wise.
+    $modules = @($moduleLines |
+        ForEach-Object { $_.Trim().ToLowerInvariant() } |
+        Where-Object { $_ -and -not $_.StartsWith('[') })
+    $missing = @($phpExtensionsRequired | Where-Object { $modules -notcontains $_ })
+    $info.Version = $versionLine
+    $info.Modules = $modules
+    $info.Missing = $missing
+    $info.Ok = ($missing.Count -eq 0)
+    return $info
+}
+
+$phpExe = $null
+$phpInfo = $null
+
+# Candidate A: the pmmp prebuilt runtime, present as a cached extract.
+$pmmpPhpDir = Join-Path $DistDir 'php-runtime'
+$pmmpPhpExeRel = 'bin/php/php.exe'
+$pmmpPhpExe = Join-Path $pmmpPhpDir $pmmpPhpExeRel
+if (Test-Path -LiteralPath $pmmpPhpExe) {
+    $candidate = Get-PhpRuntimeInfo $pmmpPhpExe
+    if ($candidate.Ok) {
+        $phpExe = $pmmpPhpExe
+        $phpInfo = $candidate
+    } else {
+        Log "  cached PMMP PHP at $pmmpPhpExe is unusable (missing: $($candidate.Missing -join ', ')); re-provisioning"
+        Remove-Item -LiteralPath $pmmpPhpDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Candidate B: provision from the version lock via fetch-server.ps1. The lock
+# pins both the release URL and its SHA-256, so this is reproducible and a
+# corrupted/tampered download is rejected before it is ever unpacked.
+if (-not $phpExe) {
+    $phpLock = $null
+    $lockFile = Join-Path (Split-Path -Parent $binDir) 'versions.lock.ps1'
+    if (Test-Path -LiteralPath $lockFile) {
+        . $lockFile
+        $phpLock = Get-LockedServer -Name 'pmmp-php'
+    }
+    if (-not $phpLock) {
+        Log "  no 'pmmp-php' entry in test/versions.lock.ps1; cannot provision the PMMP PHP runtime"
+    } else {
+        Log "step 0: fetching the PMMP PHP runtime ($($phpLock.File))"
+        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $binDir 'fetch-server.ps1') -Name 'pmmp-php' -DistDir $DistDir
+        $phpZip = Join-Path $DistDir $phpLock.File
+        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $phpZip)) {
+            Log "  unpacking PMMP PHP runtime: $($phpLock.File)"
+            # A half-written extract from a killed run would otherwise be
+            # mistaken for a good one, so clear it before expanding.
+            if (Test-Path -LiteralPath $pmmpPhpDir) { Remove-Item -LiteralPath $pmmpPhpDir -Recurse -Force }
+            Expand-Archive -LiteralPath $phpZip -DestinationPath $pmmpPhpDir -Force
+            $candidate = Get-PhpRuntimeInfo (Join-Path $pmmpPhpDir $pmmpPhpExeRel)
+            if ($candidate.Ok) {
+                $phpExe = Join-Path $pmmpPhpDir $pmmpPhpExeRel
+                $phpInfo = $candidate
+            } else {
+                Log "  provisioned PMMP PHP is missing: $($candidate.Missing -join ', ')"
+            }
+        } else {
+            Log "  fetch-server.ps1 could not download $($phpLock.File) (exit $LASTEXITCODE)"
+        }
+    }
+}
+
+# Candidate C: system PHP. Only useful if the host already has the PMMP
+# extensions (e.g. a dev box that installed them by hand); on a stock runner
+# this always fails verification, which is the correct outcome.
+if (-not $phpExe) {
+    $phpCmd = Get-Command php -ErrorAction SilentlyContinue
+    if ($phpCmd) {
+        $candidate = Get-PhpRuntimeInfo $phpCmd.Source
+        if ($candidate.Ok) {
+            Log "  using system PHP at $($phpCmd.Source) (it carries all required extensions)"
+            $phpExe = $phpCmd.Source
+            $phpInfo = $candidate
+        } else {
+            Log "  system PHP at $($phpCmd.Source) is missing: $($candidate.Missing -join ', ')"
+        }
+    } else {
+        Log "  no php on PATH"
+    }
+}
+
+if (-not $phpExe) {
+    $reason = "no PHP runtime with the PocketMine extensions (chunkutils2/crypto/encoding/gmp/igbinary/leveldb/morton/pmmpthread/yaml/zip)"
+    Log "SKIP: $reason - pmmp E2E not run."
+    Log "  The PMMP PHP build is published at https://github.com/pmmp/PHP-Binaries/releases"
+    Log "  (asset PHP-<ver>-Windows-x64-PM5.zip). It is pinned in test/versions.lock.ps1"
+    Log "  as 'pmmp-php'; re-run fetch-server.ps1 -Name pmmp-php to provision it."
+    Set-Content -LiteralPath (Join-Path $RunsDir 'skip-reason.txt') -Value 'PMMP PHP runtime unavailable'
+    exit 3
+}
+
+Log "  php: $phpExe ($($phpInfo.Version))"
+
+# PocketMine bootstraps through its own php.ini (extension_dir=ext, all the
+# pmmp DLLs enabled). That ini is discovered relative to php.exe, so it is
+# found regardless of the working directory -- but an inherited PHP_INI_SCAN_DIR
+# (setup-php sets one; scoop sets one) would pull a SECOND ini set into the
+# process. Clear it and pin PHPRC to the runtime's own ini so the child server
+# and the phar build both get exactly the intended configuration.
+$phpIni = Join-Path (Split-Path -Parent $phpExe) 'php.ini'
+if (Test-Path -LiteralPath $phpIni) {
+    $env:PHPRC = $phpIni
+}
+$env:PHP_INI_SCAN_DIR = ''
+
+# ---------------------------------------------------------------------------
 # 1. Locate the NovaLink backend artifact. Prefer the shadow fat jar (built by
 #    StarLink/core's com.gradleup.shadow plugin -> *-all.jar); only fall back
 #    to the gradle classpath export when NO fat jar exists. The fat jar path
@@ -185,53 +346,8 @@ if (-not $pmmpPhar) {
 }
 Log "  phar: $($pmmpPhar.FullName)"
 
-# Locate the PHP runtime. PocketMine-MP requires a SPECIALIZED PHP build with
-# custom extensions (chunkutils2, pmmpthread, leveldb, yaml, etc.) -- the stock
-# system PHP (scoop/winget) does NOT have them and PMMP will exit early with
-# "Selected PHP binary does not satisfy some requirements". fetch-server.ps1
-# -Name pocketmine is expected to provision the PMMP PHP binary (a zip from
-# pmmp/PHP-Binaries). We extract it and use its bin/php/php.exe.
-$phpExe = $null
-$pmmpPhpZip = Get-ChildItem (Join-Path $DistDir "PHP-*-Windows-x64-PM5.zip") -ErrorAction SilentlyContinue | Select-Object -First 1
-$pmmpPhpDir = Join-Path $DistDir "php-runtime"
-# The PMMP PHP zip extracts to bin/php/php.exe (nested). Check that real path.
-$pmmpPhpExeRel = "bin/php/php.exe"
-if ($pmmpPhpZip -and -not (Test-Path (Join-Path $pmmpPhpDir $pmmpPhpExeRel))) {
-    Log "  unpacking PMMP PHP runtime: $($pmmpPhpZip.Name)"
-    if (Test-Path $pmmpPhpDir) { Remove-Item $pmmpPhpDir -Recurse -Force }
-    Expand-Archive -Path $pmmpPhpZip.FullName -DestinationPath $pmmpPhpDir -Force
-}
-$pmmpPhp = Join-Path $pmmpPhpDir $pmmpPhpExeRel
-if (Test-Path $pmmpPhp) {
-    $phpExe = $pmmpPhp
-} else {
-    # Fallback: a php.exe anywhere under dist (e.g. fetch-server dropped a
-    # pre-extracted php tree). Recurse so a nested bin/php/php.exe still hits.
-    $phpFromFetch = Get-ChildItem $DistDir -Recurse -Filter 'php.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($phpFromFetch) {
-        $phpExe = $phpFromFetch.FullName
-    } else {
-        # Last resort: system PHP on PATH. This will only work if the system
-        # PHP happens to have all PMMP extensions (it usually does NOT).
-        $phpCmd = Get-Command php -ErrorAction SilentlyContinue
-        if ($phpCmd) { $phpExe = $phpCmd.Source }
-    }
-}
-if (-not $phpExe) {
-    Log "ERROR: no PHP runtime found. Download the PMMP PHP binary from https://github.com/pmmp/PHP-Binaries/releases (PHP-*-Windows-x64-PM5.zip) into $DistDir"
-    exit 2
-}
-# Probe the runtime version for the log. Wrapped because `php -v` can write to
-# stderr, and under $ErrorActionPreference = "Stop" (set at the top of this
-# script) even a `2>$null` redirect turns that into a terminating error -- which
-# would abort the whole platform run over a purely cosmetic log line. The probe
-# is best-effort: an empty result is reported as unknown.
-$savedEap = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-$phpVersion = (& $phpExe -v 2>$null | Select-Object -First 1)
-$ErrorActionPreference = $savedEap
-if (-not $phpVersion) { $phpVersion = "unknown" }
-Log "  php: $phpExe ($phpVersion)"
+# The PHP runtime is resolved and extension-verified before step 1 (see the
+# prereq gate above), so nothing else here needs to locate it.
 
 # ---------------------------------------------------------------------------
 # 3. Lay down PocketMine run directory + install the NovaChat pmmp plugin.
@@ -407,6 +523,16 @@ for ($i = 0; $i -lt ($ServerReadySec / 5); $i++) {
         Get-Content $pmmpStdout -ErrorAction SilentlyContinue | Select-Object -Last 25 | ForEach-Object { Log "  $_" }
         Log "ERROR: PocketMine exited early; stderr:"
         Get-Content $pmmpStderr -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object { Log "  $_" }
+        # The extension check above should have caught this before boot, but
+        # PocketMine can still reject the runtime (e.g. a version it does not
+        # accept). That is a missing prerequisite, not a NovaLink regression,
+        # so report SKIPPED rather than the FAIL this would otherwise become.
+        $earlyOut = Get-Content $pmmpStdout -Raw -ErrorAction SilentlyContinue
+        if ($earlyOut -match 'does not satisfy some requirements|Unable to find the .* extension') {
+            Log "SKIP: PocketMine rejected the PHP runtime's extensions - no NovaLink assertion ran."
+            Set-Content -LiteralPath (Join-Path $RunsDir 'skip-reason.txt') -Value 'PMMP PHP extensions rejected'
+            Teardown-All; exit 3
+        }
         Teardown-All; Show-FailureLogs "PocketMine exited early"; exit 1
     }
     if (Test-Path $pmmpStdout) {
