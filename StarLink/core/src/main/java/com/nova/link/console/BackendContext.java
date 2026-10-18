@@ -67,6 +67,13 @@ public final class BackendContext {
      */
     private java.util.concurrent.ExecutorService restWorkerPool;
 
+    /**
+     * §11.6 提案 06 campaign orchestrator (setter-injected: it is created late
+     * in the startup sequence, after the audit store). Shut down with the rest
+     * of the schedulers, before the database closes.
+     */
+    private com.nova.link.announcement.CampaignManager campaignManager;
+
     public BackendContext(ConfigManager configManager,
                           AuthManager authManager,
                           PermissionManager permissionManager,
@@ -137,5 +144,10 @@ public final class BackendContext {
     public java.util.concurrent.ExecutorService getRestWorkerPool() { return restWorkerPool; }
     public void setRestWorkerPool(java.util.concurrent.ExecutorService restWorkerPool) {
         this.restWorkerPool = restWorkerPool;
+    }
+
+    public com.nova.link.announcement.CampaignManager getCampaignManager() { return campaignManager; }
+    public void setCampaignManager(com.nova.link.announcement.CampaignManager campaignManager) {
+        this.campaignManager = campaignManager;
     }
 }

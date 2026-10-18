@@ -367,8 +367,31 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         HealthMetricsService built = new HealthMetricsService(
                 networkHandler, channelManager, webhookManager,
                 announcementManager, db, configManager, webSocketGateway);
+        // Embedded cores restart in place; uptime must come from the backend's
+        // own start time, not the host JVM's.
+        long startedAt = backendStartedAtMillis;
+        if (startedAt > 0) {
+            built.setStartedAtMillis(startedAt);
+        }
         healthMetricsService = built;
         return built;
+    }
+
+    /** Backend instance start time for uptime reporting (0 = unknown). */
+    private volatile long backendStartedAtMillis;
+
+    /**
+     * Sets the backend start timestamp used by {@link #healthMetricsService()}
+     * for uptime reporting. Called by the core once the listeners are up.
+     *
+     * @param startedAtMillis epoch millis, or 0 to keep the JVM start time
+     */
+    public void setBackendStartedAtMillis(long startedAtMillis) {
+        this.backendStartedAtMillis = startedAtMillis;
+        HealthMetricsService cached = healthMetricsService;
+        if (cached != null && startedAtMillis > 0) {
+            cached.setStartedAtMillis(startedAtMillis);
+        }
     }
 
     /**

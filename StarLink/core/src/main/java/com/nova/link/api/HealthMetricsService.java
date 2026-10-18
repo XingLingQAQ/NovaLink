@@ -8,7 +8,6 @@ import com.nova.link.network.ClientConnection;
 import com.nova.link.network.ServerNetworkHandler;
 import com.nova.link.websocket.WebSocketGateway;
 
-import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -50,6 +49,14 @@ public final class HealthMetricsService {
     private final ConfigManager configManager;
     private final WebSocketGateway webSocketGateway;
 
+    /**
+     * Epoch millis of this backend instance's start. Uptime is reported from
+     * here, not from the JVM's {@code RuntimeMXBean} — in an embedded host
+     * (Bukkit/Velocity/Bungee/Fabric plugin) the JVM has been up for hours
+     * before NovaLink starts, and a restarted core must report its own uptime.
+     */
+    private volatile long startedAtMillis = System.currentTimeMillis();
+
     public HealthMetricsService(ServerNetworkHandler networkHandler,
                                 ChannelManager channelManager,
                                 WebhookManager webhookManager,
@@ -83,6 +90,24 @@ public final class HealthMetricsService {
     }
 
     /**
+     * Sets the backend start timestamp used for uptime reporting. Called by the
+     * core/REST wiring once the listeners are up; a zero/negative value keeps
+     * the current timestamp.
+     *
+     * @param startedAtMillis epoch millis of the backend start
+     */
+    public void setStartedAtMillis(long startedAtMillis) {
+        if (startedAtMillis > 0) {
+            this.startedAtMillis = startedAtMillis;
+        }
+    }
+
+    /** @return backend uptime in milliseconds since {@link #setStartedAtMillis}. */
+    private long uptimeMillis() {
+        return Math.max(0L, System.currentTimeMillis() - startedAtMillis);
+    }
+
+    /**
      * Liveness + readiness snapshot. Does NOT leak secrets, passwords, or
      * webhook URLs — only aggregate counts and boolean health flags.
      *
@@ -98,7 +123,8 @@ public final class HealthMetricsService {
      * @return an ordered map suitable for JSON serialization
      */
     public Map<String, Object> health() {
-        long uptimeMillis = ManagementFactory.getRuntimeMXBean().getUptime();
+        long uptimeMillis = uptimeMillis();
+
         boolean dbAvailable = databaseProvider != null;
         boolean dbAlive = dbAvailable && databaseProvider.isConnected();
 
@@ -204,7 +230,7 @@ public final class HealthMetricsService {
      * back every value (no reflection, no WebhookManager modification).
      */
     public String prometheusMetrics() {
-        long uptimeSeconds = ManagementFactory.getRuntimeMXBean().getUptime() / 1000L;
+        long uptimeSeconds = uptimeMillis() / 1000L;
         int physicalConnections = 0;
         int authenticatedConnections = 0;
         if (networkHandler != null) {
@@ -237,7 +263,7 @@ public final class HealthMetricsService {
 
         StringBuilder sb = new StringBuilder(1024);
 
-        sb.append("# HELP nova_link_uptime_seconds JVM uptime since backend start.\n");
+        sb.append("# HELP nova_link_uptime_seconds Backend uptime since this NovaLink instance started.\n");
         sb.append("# TYPE nova_link_uptime_seconds gauge\n");
         sb.append("nova_link_uptime_seconds ").append(uptimeSeconds).append("\n\n");
 
