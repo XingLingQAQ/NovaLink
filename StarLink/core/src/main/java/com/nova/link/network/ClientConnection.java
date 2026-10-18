@@ -43,10 +43,32 @@ public class ClientConnection {
     private volatile long ping;
     private volatile long lastPingAt;
 
-    // requestId of the last server-initiated KeepAlive ping. When the client
-    // echoes it back, the backend recognizes the echo (and must NOT re-echo,
-    // which would otherwise create an infinite ping-pong loop).
-    private final AtomicReference<UUID> pendingKeepAliveId = new AtomicReference<>();
+    /**
+     * The last server-initiated KeepAlive ping awaiting its echo. The echo is
+     * recognized by requestId (value equality — the decoder rebuilds the UUID)
+     * and, failing that, by the timestamp the client echoes verbatim.
+     */
+    private final AtomicReference<PendingKeepAlive> pendingKeepAlive = new AtomicReference<>();
+
+    /**
+     * requestIds of the KeepAlives this connection has sent recently (pings and
+     * replies alike). Any inbound KeepAlive carrying one of them is an echo of
+     * our own packet and must never be answered — that is the direction
+     * discriminator the wire protocol itself does not carry.
+     */
+    private final RecentKeepAlives recentKeepAlives = new RecentKeepAlives(8, 60_000_000_000L);
+
+    /**
+     * Sliding one-second window for outbound KeepAlives, shared by the
+     * write-idle path and the reply path. A healthy connection emits at most
+     * one per idle interval (>= 1s); anything above the cap is a loop or a
+     * misbehaving peer and is dropped with a warning instead of propagated.
+     */
+    private final KeepAliveBudget keepAliveBudget = new KeepAliveBudget();
+
+    /** A server-initiated ping: id plus the timestamp the client echoes back. */
+    private record PendingKeepAlive(UUID requestId, long timestamp) {
+    }
 
     public ClientConnection(Channel channel) {
         this.channel = channel;
@@ -389,28 +411,85 @@ public class ClientConnection {
     }
 
     /**
-     * Sets the timestamp of the last keepalive received from this client.
+     * Records the requestId and timestamp of a server-initiated KeepAlive ping.
      *
-     * @param lastPingAt the timestamp in ms
-     */
-    /**
-     * Records the requestId of a server-initiated KeepAlive ping.
+     * <p>Deliberately last-ping-wins: if a second write-idle fires before the
+     * first echo arrives, only the newest ping is recognized. The older echo is
+     * then answered once — a single extra round trip, not a loop.</p>
      *
      * @param requestId the ping's requestId
+     * @param timestamp the ping's timestamp (client echoes it verbatim)
      */
-    public void setPendingKeepAliveId(UUID requestId) {
-        pendingKeepAliveId.set(requestId);
+    public void setPendingKeepAlive(UUID requestId, long timestamp) {
+        pendingKeepAlive.set(new PendingKeepAlive(requestId, timestamp));
     }
 
     /**
-     * Atomically checks whether the given requestId matches the outstanding
-     * server-initiated KeepAlive ping and clears it on match.
+     * Atomically checks whether the given requestId and/or echoed timestamp
+     * identifies the outstanding server-initiated KeepAlive ping, clearing it
+     * on match.
      *
-     * @param requestId the requestId of a received KeepAlive packet
+     * <p>The comparison MUST be value-based ({@link UUID#equals}), not
+     * reference-based. An incoming packet is decoded by
+     * {@code Packet.decode}, which rebuilds the id as
+     * {@code new UUID(mostSig, leastSig)} — a different instance that is equal
+     * by value. {@code AtomicReference.compareAndSet} compares references, so a
+     * raw CAS here never matched on the server's own echo path: the backend
+     * treated every echo as a fresh client ping, re-echoed it, and the client
+     * (which answers unconditionally) bounced it back forever.</p>
+     *
+     * @param requestId the requestId of a received KeepAlive packet (may be null)
+     * @param timestamp the timestamp carried by that packet
      * @return true if this packet is the echo of the server's own ping
      */
-    public boolean consumePendingKeepAliveId(UUID requestId) {
-        return requestId != null && pendingKeepAliveId.compareAndSet(requestId, null);
+    public boolean consumePendingKeepAliveEcho(UUID requestId, long timestamp) {
+        while (true) {
+            PendingKeepAlive pending = pendingKeepAlive.get();
+            if (pending == null) {
+                return false;
+            }
+            boolean idMatch = requestId != null && requestId.equals(pending.requestId());
+            if (!idMatch && timestamp != pending.timestamp()) {
+                return false;
+            }
+            if (pendingKeepAlive.compareAndSet(pending, null)) {
+                return true;
+            }
+            // Lost a race to a newer ping or another echo; retry against the
+            // current value so only one consumer reports the match.
+        }
+    }
+
+    /**
+     * @return true when a server-initiated ping is still awaiting its echo
+     */
+    public boolean hasPendingKeepAlive() {
+        return pendingKeepAlive.get() != null;
+    }
+
+    /**
+     * Records an id as "sent by us" so a later inbound KeepAlive carrying it is
+     * recognized as an echo regardless of which pending slot it hits.
+     *
+     * @param requestId the outgoing packet's requestId
+     */
+    public void rememberSentKeepAlive(UUID requestId) {
+        recentKeepAlives.remember(requestId);
+    }
+
+    /**
+     * @param requestId an inbound KeepAlive requestId (may be null)
+     * @return true when this id belongs to a KeepAlive this connection sent
+     */
+    public boolean wasKeepAliveSentByUs(UUID requestId) {
+        return recentKeepAlives.contains(requestId);
+    }
+
+    /**
+     * @return the per-connection server-initiated KeepAlive budget
+     */
+    public KeepAliveBudget getKeepAliveBudget() {
+        return keepAliveBudget;
     }
 
     public void setLastPingAt(long lastPingAt) {

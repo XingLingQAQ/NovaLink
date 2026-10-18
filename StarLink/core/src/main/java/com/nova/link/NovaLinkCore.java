@@ -37,6 +37,7 @@ import com.nova.link.network.ClientConnection;
 import com.nova.link.network.AdminActionHandler;
 import com.nova.link.network.ChannelActionHandler;
 import com.nova.link.network.ItemDisplayHandler;
+import com.nova.link.network.KeepAliveHandler;
 import com.nova.link.network.PrivateMessageHandler;
 import com.nova.link.network.RateLimiter;
 import com.nova.link.network.InsecureModeGate;
@@ -121,6 +122,13 @@ public final class NovaLinkCore implements AutoCloseable {
 
     /** Serializes start/stop so they never interleave. */
     private final Object lifecycleLock = new Object();
+
+    /**
+     * Owns KeepAlive emission and inbound-echo recognition for the current
+     * instance. Created per start so a restarted core never inherits stale
+     * flood-guard state; looked up by the static handler wiring below.
+     */
+    private volatile KeepAliveHandler keepAliveHandler;
 
     private volatile boolean running;
     private volatile long startedAtMillis;
@@ -224,6 +232,7 @@ public final class NovaLinkCore implements AutoCloseable {
             context = null;
             listenerCloser = null;
             databaseCloser = null;
+            keepAliveHandler = null;
             startedAtMillis = 0L;
             long elapsedMs = (System.nanoTime() - begin) / 1_000_000L;
             logger.info("NovaLink core stopped in {} ms", elapsedMs);
@@ -386,6 +395,10 @@ public final class NovaLinkCore implements AutoCloseable {
         int workerThreads = config.getServer().getWorkerThreads();
         ServerNetworkHandler networkHandler = new ServerNetworkHandler(workerThreads);
         started.push(closeable("network-handler", networkHandler::shutdown));
+        // KeepAlive owner shared by the write-idle send path (NettyServer) and
+        // the inbound handler below, so both consult the same loop guard and
+        // per-connection flood budget.
+        keepAliveHandler = new KeepAliveHandler();
         MessageRouter messageRouter = new MessageRouter(channelManager, networkHandler);
         messageRouter.setMuteManager(muteManager);
         messageRouter.setBanManager(banManager);
@@ -527,7 +540,8 @@ public final class NovaLinkCore implements AutoCloseable {
                 workerThreads,
                 config.getServer().getIdleTimeoutSeconds(),
                 networkHandler,
-                tlsConfig
+                tlsConfig,
+                keepAliveHandler
         );
 
         // Build a ConsoleCommandHandler for the REST /api/console endpoint.
@@ -582,6 +596,10 @@ public final class NovaLinkCore implements AutoCloseable {
             // bounded by the number of live connections.
             if (connection != null) {
                 rateLimiter.remove(connection.getConnectionId());
+                // Same for the KeepAlive flood-guard warn throttle.
+                if (keepAliveHandler != null) {
+                    keepAliveHandler.forget(connection.getConnectionId());
+                }
             }
             String clientId = connection != null ? connection.getClientId() : null;
             // An old generation can report channelInactive after a newer
@@ -746,7 +764,8 @@ public final class NovaLinkCore implements AutoCloseable {
                 privateMessagesEnabled::get,
                 chatLogger,
                 nonceCache,
-                databaseProvider
+                databaseProvider,
+                keepAliveHandler
         );
 
         CompletableFuture<Void> startFuture = CompletableFuture.allOf(
@@ -1479,7 +1498,8 @@ public final class NovaLinkCore implements AutoCloseable {
                                                java.util.function.BooleanSupplier privateMessagesEnabled,
                                                ChatLogger chatLogger,
                                                NonceCache nonceCache,
-                                               DatabaseProvider databaseProvider) {
+                                               DatabaseProvider databaseProvider,
+                                               KeepAliveHandler keepAliveHandler) {
         // ==================== AUTH-002 challenge-response handshake ====================
         // Replaces the replayable static-hash HandshakePacket (0x01) flow with a
         // 3-packet dance: HandshakeInit (0x15) → HandshakeChallenge (0x16) →
@@ -1720,22 +1740,9 @@ public final class NovaLinkCore implements AutoCloseable {
         //  - echo of a server-initiated ping (sent by ServerChannelHandler on
         //    write-idle for echo-only Java clients): record latency and DO NOT
         //    re-echo, otherwise both sides would ping-pong forever.
-        networkHandler.registerHandler(KeepAlivePacket.class, (connection, packet) -> {
-            // Compute round-trip latency from the packet timestamp and store it
-            // on the connection so the panel can display real ping.
-            long latency = packet.getLatency();
-            if (latency >= 0) {
-                connection.setPing(latency);
-                connection.setLastPingAt(System.currentTimeMillis());
-            }
-            if (connection.consumePendingKeepAliveId(packet.getRequestId())) {
-                // Echo of our own ping — liveness confirmed, nothing to send.
-                return;
-            }
-            KeepAlivePacket response = new KeepAlivePacket(packet.getTimestamp());
-            response.setRequestId(packet.getRequestId());
-            connection.sendPacket(response);
-        });
+        // Recognition + the per-connection flood budget live in KeepAliveHandler
+        // so the write-idle send path and this receive path share one guard.
+        networkHandler.registerHandler(KeepAlivePacket.class, keepAliveHandler);
 
         // Admin action handler (super admin auth / spy / reload / status)
         networkHandler.registerHandler(AdminActionPacket.class, (connection, packet) -> {

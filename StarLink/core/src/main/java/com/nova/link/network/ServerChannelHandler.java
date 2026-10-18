@@ -24,10 +24,18 @@ public class ServerChannelHandler extends SimpleChannelInboundHandler<Packet> {
     private static final Logger logger = LoggerFactory.getLogger(ServerChannelHandler.class);
 
     private final ServerNetworkHandler networkHandler;
+    private final KeepAliveHandler keepAliveHandler;
     private ClientConnection connection;
 
-    public ServerChannelHandler(ServerNetworkHandler networkHandler) {
+    /**
+     * @param networkHandler routes inbound packets to their registered handlers
+     * @param keepAliveHandler owns server-initiated pings (loop guard + budget);
+     *                         {@code null} disables write-idle heartbeats
+     */
+    public ServerChannelHandler(ServerNetworkHandler networkHandler,
+                                KeepAliveHandler keepAliveHandler) {
         this.networkHandler = networkHandler;
+        this.keepAliveHandler = keepAliveHandler;
     }
 
     @Override
@@ -67,13 +75,15 @@ public class ServerChannelHandler extends SimpleChannelInboundHandler<Packet> {
                 // Close triggers channelInactive → networkHandler.onClientDisconnected cleanup.
                 ctx.close();
             } else if (idleEvent.state() == IdleState.WRITER_IDLE) {
-                KeepAlivePacket ping = new KeepAlivePacket(System.currentTimeMillis());
-                if (connection != null) {
-                    connection.setPendingKeepAliveId(ping.getRequestId());
+                if (connection != null && keepAliveHandler != null) {
+                    KeepAlivePacket ping = keepAliveHandler.pingIdleConnection(
+                            connection, System.currentTimeMillis());
+                    if (ping != null) {
+                        ctx.writeAndFlush(ping);
+                        logger.debug("Sent server-initiated KeepAlive ping to {}",
+                                connection.getRemoteAddress());
+                    }
                 }
-                ctx.writeAndFlush(ping);
-                logger.debug("Sent server-initiated KeepAlive ping to {}",
-                        connection != null ? connection.getRemoteAddress() : "unknown");
             }
             return;
         }
