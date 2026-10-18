@@ -75,6 +75,11 @@ public class NettyServer {
     private final PacketRegistry packetRegistry;
     private final ServerNetworkHandler networkHandler;
     /**
+     * Server-initiated KeepAlive owner: loop guard, echo recognition, and the
+     * per-connection rate budget. Shared by every accepted channel.
+     */
+    private final KeepAliveHandler keepAliveHandler;
+    /**
      * AUTH-002: built once at construction from {@link TlsConfig}. When non-null
      * an {@link SslHandler} is prepended at the HEAD of every accepted channel's
      * pipeline so the challenge-response handshake runs inside TLS.
@@ -139,6 +144,28 @@ public class NettyServer {
      */
     public NettyServer(String bindAddress, int port, int workerThreads, int idleTimeoutSeconds,
                        ServerNetworkHandler networkHandler, TlsConfig tls) {
+        this(bindAddress, port, workerThreads, idleTimeoutSeconds, networkHandler, tls, null);
+    }
+
+    /**
+     * Full constructor: adds the shared {@link KeepAliveHandler} that owns
+     * write-idle pings and inbound-echo recognition.
+     *
+     * @param bindAddress        the address to bind to
+     * @param port               the port to listen on
+     * @param workerThreads      the number of worker threads
+     * @param idleTimeoutSeconds read-idle timeout in seconds; {@code 0} disables
+     *                           idle detection (write-idle heartbeats fire at a
+     *                           third of this value)
+     * @param networkHandler     the handler for processing packets
+     * @param tls                optional TLS configuration; {@code null} for plaintext
+     * @param keepAliveHandler   shared KeepAlive owner; {@code null} builds a
+     *                           private instance so write-idle pings keep working
+     *                           for callers that only use the shorter constructors
+     */
+    public NettyServer(String bindAddress, int port, int workerThreads, int idleTimeoutSeconds,
+                       ServerNetworkHandler networkHandler, TlsConfig tls,
+                       KeepAliveHandler keepAliveHandler) {
         this.bindAddress = bindAddress;
         this.port = port;
         this.workerThreads = workerThreads;
@@ -147,6 +174,16 @@ public class NettyServer {
         this.packetRegistry = NovaProtocol.createRegistry();
         this.sslContext = buildSslContext(tls);
         this.mutualTls = tls != null && tls.isConfigured() && tls.isMutualTls();
+        this.keepAliveHandler = keepAliveHandler != null
+                ? keepAliveHandler
+                : new KeepAliveHandler();
+    }
+
+    /**
+     * @return the shared KeepAlive owner used for this server's channels
+     */
+    public KeepAliveHandler getKeepAliveHandler() {
+        return keepAliveHandler;
     }
 
     /**
@@ -250,7 +287,8 @@ public class NettyServer {
                             pipeline.addLast("packetEncoder", new PacketEncoder(packetRegistry));
                             
                             // Business logic handler
-                            pipeline.addLast("handler", new ServerChannelHandler(networkHandler));
+                            pipeline.addLast("handler",
+                                    new ServerChannelHandler(networkHandler, keepAliveHandler));
                         }
                     });
 

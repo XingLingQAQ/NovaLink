@@ -24,13 +24,15 @@ import static org.mockito.Mockito.verify;
 class ServerChannelHandlerIdleTest {
 
     private ServerNetworkHandler networkHandler;
+    private KeepAliveHandler keepAliveHandler;
     private EmbeddedChannel channel;
     private ClientConnection connection;
 
     @BeforeEach
     void setUp() {
         networkHandler = mock(ServerNetworkHandler.class);
-        channel = new EmbeddedChannel(new ServerChannelHandler(networkHandler));
+        keepAliveHandler = new KeepAliveHandler();
+        channel = new EmbeddedChannel(new ServerChannelHandler(networkHandler, keepAliveHandler));
 
         ArgumentCaptor<ClientConnection> captor = ArgumentCaptor.forClass(ClientConnection.class);
         verify(networkHandler).onClientConnected(captor.capture());
@@ -63,7 +65,7 @@ class ServerChannelHandlerIdleTest {
     }
 
     @Test
-    @DisplayName("write-idle sends a server-initiated KeepAlive ping and records its requestId")
+    @DisplayName("write-idle sends a server-initiated KeepAlive ping and records it as pending")
     void writerIdleSendsKeepAlivePing() {
         channel.pipeline().fireUserEventTriggered(IdleStateEvent.WRITER_IDLE_STATE_EVENT);
         channel.runPendingTasks();
@@ -74,8 +76,11 @@ class ServerChannelHandlerIdleTest {
 
         KeepAlivePacket ping = (KeepAlivePacket) outbound;
         // The echo of our ping must be recognized exactly once (loop guard).
-        assertThat(connection.consumePendingKeepAliveId(ping.getRequestId())).isTrue();
-        assertThat(connection.consumePendingKeepAliveId(ping.getRequestId())).isFalse();
+        assertThat(connection.consumePendingKeepAliveEcho(
+                ping.getRequestId(), ping.getTimestamp())).isTrue();
+        assertThat(connection.consumePendingKeepAliveEcho(
+                ping.getRequestId(), ping.getTimestamp())).isFalse();
+        assertThat(connection.wasKeepAliveSentByUs(ping.getRequestId())).isTrue();
     }
 
     @Test
@@ -86,8 +91,8 @@ class ServerChannelHandlerIdleTest {
         assertThat((Object) channel.readOutbound()).isNotNull();
 
         // A different requestId (client-initiated ping) must not match.
-        assertThat(connection.consumePendingKeepAliveId(UUID.randomUUID())).isFalse();
-        assertThat(connection.consumePendingKeepAliveId(null)).isFalse();
+        assertThat(connection.consumePendingKeepAliveEcho(UUID.randomUUID(), 123L)).isFalse();
+        assertThat(connection.consumePendingKeepAliveEcho(null, 123L)).isFalse();
     }
 
     @Test
