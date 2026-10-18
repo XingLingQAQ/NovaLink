@@ -10,7 +10,7 @@
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
-    "bedrock-protocol": "3.58.1",
-    "mineflayer": "^4.37.1"
+    "bedrock-protocol": "3.59.0",
+    "mineflayer": "^4.39.0"
   }
 }

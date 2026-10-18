@@ -133,10 +133,15 @@ jobs:
       # Bedrock platforms use bedrock-protocol (run-e2e-bedrock.js). Both are
       # npm-installed from test/bot/package-lock.json.
       # ---------------------------------------------------------------------
-      # mineflayer 4.37.1 and minecraft-protocol 1.66.2 declare node >= 22
+      # mineflayer 4.39.0 and minecraft-protocol 1.68.0 declare node >= 22
       # (npm warns EBADENGINE on 18). The install itself succeeds on 18, so the
       # mismatch only shows up at runtime: the bot exits in a few hundred ms and
       # writes no results.json, which the harness reports as an L1 failure.
+      # bedrock-protocol is pinned to 3.59.0, not 3.60.x: 3.60.0+ declares
+      # node >= 24 AND pulls prismarine-xbox-services from a git ref that is
+      # not published to npm, which npm's git allow-list blocks by default
+      # (npm 11 still needs --allow-git=all). 3.59.0 supports Bedrock 1.26.45
+      # and installs from the registry alone.
       - name: Set up Node 22 (mineflayer + bedrock-protocol bots)
         uses: actions/setup-node@v4
         with:
