@@ -165,8 +165,11 @@ if ($javaPlatforms.Count -gt 0 -and -not (Test-Path $classPathFile)) {
 #   ServerReadyPattern - the regex that marks server readiness.
 #   ResultsFile       - where the bot writes results.json.
 #   ChatPhrase        - the chat phrase the bot sends for the round-trip.
-#   Jdk               - the JDK the backend needs (the server itself is PHP/native
-#                       for the three Bedrock platforms; Jdk is for the backend).
+#   Jdk               - the JDK the platform's server/backend runs on. Doc-only
+#                       metadata: the field is not consumed by the dispatch
+#                       below (run-multiplatform-e2e.ps1 owns the real runtime
+#                       JDK selection). Kept in step with versions.lock.ps1 and
+#                       that script's $PlatformDefs so the table cannot mislead.
 $PlatformDefs = @{
     bukkit = @{
         Dispatch           = "self"
@@ -188,7 +191,7 @@ $PlatformDefs = @{
         ServerReadyPattern = 'Done \('
         ResultsFile        = "bot-results.json"
         ChatPhrase         = "hello from e2e bot"
-        Jdk                = 21
+        Jdk                = 25
     }
     velocity = @{
         Dispatch           = "multiplatform"
@@ -243,7 +246,7 @@ $PlatformDefs = @{
         ServerReadyPattern = 'Sponge server started|Done \('
         ResultsFile        = "bot-results.json"
         ChatPhrase         = "hello from e2e bot"
-        Jdk                = 17
+        Jdk                = 21
     }
     # ---- Three non-Java Bedrock platforms (added 2026-08-09) ----
     # endstone: BDS server + Endstone python host + novachat_endstone pip plugin.

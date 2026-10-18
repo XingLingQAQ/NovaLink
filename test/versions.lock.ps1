@@ -83,7 +83,10 @@ $LockedServers = @(
     # Auto-detect: scrape papermc.io/downloads/folia for the first
     #   https://fill-data.papermc.io/v1/objects/<sha>/folia-<MC>-<build>.jar
     # URL -- the <sha> in the path IS the content hash, so Auto mode can verify.
-    # JDK 21.
+    # JDK 25, not 21: the jar's own version.json declares "java_version": 25,
+    # and booting it on 21 exits immediately with "Minecraft 26.1 and newer
+    # requires running the server with Java 25 or above". Verified 2026-10-18
+    # (JDK 21 -> that error; JDK 25 -> "Done (39.332s)!").
     @{
         Name    = 'folia'
         MC      = '26.1.2'
@@ -92,7 +95,7 @@ $LockedServers = @(
         Url     = 'https://fill-data.papermc.io/v1/objects/607afd1c3320008e1ffd2eaee6780ace4419d5f8c527b75e79f259be79ebf57b/folia-26.1.2-8.jar'
         Sha256  = '607AFD1C3320008E1FFD2EAEE6780ACE4419D5F8C527B75E79F259BE79EBF57B'
         Eula    = $true
-        Jdk     = 21
+        Jdk     = 25
         File    = 'folia-26.1.2-8.jar'
         # The bot speaks the server's own version. mineflayer 4.39.0 lists 26.1
         # as its latest tested version, so a 26.1.2 server is accepted (26.1.2
@@ -130,6 +133,10 @@ $LockedServers = @(
 
     # BungeeCord proxy: Waterfall 1.21 build 615. JDK 21.
     # (Waterfall EOL 2026-06 but archived builds remain on fill-data CDN.)
+    # 21 is sufficient: the highest non-multi-release class in the jar is
+    # class-file 66.0, but those are jline's Java-22 FFM console helpers which
+    # the proxy never loads on Windows. Verified booting to "Listening" on 21
+    # (2026-10-18).
     # Auto-detect: scrape papermc.io/downloads/waterfall for the first
     #   https://fill-data.papermc.io/v1/objects/<sha>/waterfall-<MC>-<b>.jar
     @{
@@ -168,7 +175,11 @@ $LockedServers = @(
         Auto    = $true
     }
 
-    # Sponge: SpongeVanilla 1.21.10-17.0.0 (SpongeAPI 17.0.0 / MC 1.21.10). JDK 17.
+    # Sponge: SpongeVanilla 1.21.10-17.0.0 (SpongeAPI 17.0.0 / MC 1.21.10). JDK 21.
+    # The runtime is 21, not 17: the universal jar's installer/bootstrap classes
+    # are class-file 65.0, so JDK 17 fails at launch with
+    # UnsupportedClassVersionError. Verified 2026-10-18 (JDK 17 -> UCVE;
+    # JDK 21 -> "Done (29.131s)!").
     # Plugin compiles against spongeapi 8.2.0 but the runtime server is the
     # universal jar from repo.spongepowered.org maven-releases.
     # Auto-detect: scrape spongepowered.org/downloads/spongevanilla for the
@@ -183,7 +194,7 @@ $LockedServers = @(
         Url     = 'https://repo.spongepowered.org/repository/maven-releases/org/spongepowered/spongevanilla/1.21.10-17.0.0/spongevanilla-1.21.10-17.0.0-universal.jar'
         Sha256  = ''  # Auto-computed on first download.
         Eula    = $false
-        Jdk     = 17
+        Jdk     = 21
         File    = 'spongevanilla-1.21.10-17.0.0-universal.jar'
         # MC above carries the Sponge build suffix ("1.21.10-17.0.0"), which is
         # not a protocol version; the bot needs the bare Minecraft version.

@@ -10,10 +10,10 @@
 #   1. Restores the committed test/ harness (scripts + versions.lock.ps1).
 #   2. Restores the server-binary cache keyed on versions.lock.ps1 (so a lock
 #      bump invalidates and forces a fresh verified download).
-#   3. Sets up EVERY toolchain the E2E matrix can reach: JDK 17 (sponge) +
-#      JDK 21 (most platforms) + JDK 25 (velocity toolchain) + Node (mineflayer
-#      + bedrock-protocol bots) + PHP (pmmp) + Python (endstone) + MSVC +
-#      xmake (levilamina dll build).
+#   3. Sets up EVERY toolchain the E2E matrix can reach: JDK 17 + JDK 21
+#      (most platforms) + JDK 25 (folia + velocity, both runtime and plugin
+#      build) + Node (mineflayer + bedrock-protocol bots) + PHP (pmmp) +
+#      Python (endstone) + MSVC + xmake (levilamina dll build).
 #   4. Runs `./gradlew realE2E -PenableRealE2E=true` which dispatches to
 #      test/bin/run-e2e-orchestrator.ps1 for the requested platform subset.
 #   5. On failure, uploads e2e artifacts (logs, results.json, bot-results.json)
@@ -115,11 +115,14 @@ jobs:
         run: ./test/bin/verify-orchestration-paths.ps1
 
       # ---------------------------------------------------------------------
-      # JDK: 17 (sponge) + 21 (primary, most platforms) + 25 (velocity
-      # toolchain). setup-java registers all three as Gradle toolchain
-      # candidates. This mirrors nova-ci.yml and adds JDK 17 for sponge.
+      # JDK: 17 + 21 (primary, most platforms) + 25 (folia + velocity, runtime
+      # and plugin build). setup-java registers all three as Gradle toolchain
+      # candidates. Sponge moved 17 -> 21 (its universal jar's bootstrap is
+      # class-file 65.0), and folia/velocity moved to 25 at RUNTIME as well
+      # (26.1+ refuses < 25; Velocity 4.x classes are class-file 69.0). JDK 17
+      # stays installed so the harness keeps a complete toolchain set.
       # ---------------------------------------------------------------------
-      - name: Set up JDK 17 (sponge) + 21 (primary) + 25 (velocity toolchain)
+      - name: Set up JDK 17 + 21 (primary) + 25 (folia/velocity)
         uses: actions/setup-java@v5
         with:
           distribution: temurin

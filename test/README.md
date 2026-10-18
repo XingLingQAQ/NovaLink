@@ -77,11 +77,11 @@ of them).
 | Platform | Engine (declared) | Source API for `-Auto` | Kind | Pinned? | Auto verified locally? |
 |----------|-------------------|------------------------|------|---------|-------------------------|
 | `purpur` | Purpur 26.2 (build 2620), JDK 21 | `api.purpurmc.org/v2/purpur/<MC>` → `builds.latest` → `/<MC>/<build>/download` | jar | YES (real SHA-256) | pinned verified 2026-08-12 |
-| `folia` | Folia 26.1.2-8, JDK 21 | scrape `papermc.io/downloads/folia` → `fill-data.papermc.io/.../folia-<MC>-<b>.jar` (SHA in path) | jar | content-addressed (SHA in URL) | resolver implemented |
+| `folia` | Folia 26.1.2-8, JDK 25 | scrape `papermc.io/downloads/folia` → `fill-data.papermc.io/.../folia-<MC>-<b>.jar` (SHA in path) | jar | content-addressed (SHA in URL) | resolver implemented |
 | `velocity` | Velocity 4.1.0-SNAPSHOT-16, JDK 25 | scrape `papermc.io/downloads/velocity` → `fill-data.papermc.io/.../velocity-4.1.0-SNAPSHOT-<b>.jar` | jar | content-addressed | resolver implemented |
 | `waterfall` | Waterfall 1.21-615, JDK 21 (BungeeCord API-compatible, EOL 2026-06) | scrape `papermc.io/downloads/waterfall` → `fill-data.papermc.io/.../waterfall-<MC>-<b>.jar` | jar | content-addressed | resolver implemented |
 | `nukkit` | Cloudburst 1.0-SNAPSHOT build 1242, JDK 21 | `repo.opencollab.dev/maven-snapshots/.../maven-metadata.xml` → timestamp+buildNumber | jar | hash auto-computed | resolver implemented |
-| `sponge` | SpongeVanilla 1.21.10-17.0.0, JDK 17 | scrape `spongepowered.org/downloads/spongevanilla` → `.../spongevanilla-<ver>-universal.jar` | jar | hash auto-computed | resolver implemented |
+| `sponge` | SpongeVanilla 1.21.10-17.0.0, JDK 21 | scrape `spongepowered.org/downloads/spongevanilla` → `.../spongevanilla-<ver>-universal.jar` | jar | hash auto-computed | resolver implemented |
 | `bds` | Bedrock Dedicated Server (serves endstone + levilamina) | minecraft.net pocketbedlinks JSON (see "BDS" below) | zip | documented placeholder | **documented-only** (minecraft.net blocks this env) |
 | `pocketmine` | PocketMine-MP 5.44.3 (api 5.0.0+), PHP | `update.pmmp.io/api?channel=stable` → `download_url` (GitHub release phar) | phar | hash auto-computed | **auto verified 2026-08-09** |
 
