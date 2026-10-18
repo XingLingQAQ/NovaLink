@@ -1057,7 +1057,13 @@ chat:
   default_channel: "global"
   locale: "en_US"
   channel-prefixes: {}
-debug: true
+# Off for the joint run. Packet-level debug emits two lines per keep-alive and
+# the backend pings every 30s; on a client whose keep-alive echo is not
+# recognised that becomes a tight loop and the resulting ~2700 lines/s starve
+# this harness's PowerShell event pump (the ready marker is in the log, but the
+# poll never observes it). Diagnostics that matter here are lifecycle lines,
+# which are INFO.
+debug: false
 "@
 
   switch ($platform) {
@@ -1308,7 +1314,10 @@ port = $ProxyPort
 function Write-ProxyPluginConfig([string]$path, [string]$clientId, [string]$clientPassword) {
   $toml = @"
 config-version = 1
-debug = true
+# Off for the joint run: packet-level debug floods proxy.stdout.log (two lines
+# per keep-alive) and starves the harness's log poll. Lifecycle lines, which
+# the proxy-plugin assertion keys on, are INFO either way.
+debug = false
 
 [backend]
 host = "127.0.0.1"
@@ -1439,6 +1448,31 @@ function Assert-Absent([string]$assertionId, [string]$token, $receiverResult) {
     pass = ($null -eq $hit)
     evidence = if ($hit) { $hit.text } else { '' }
     kind = 'absence'
+  }
+}
+
+# Prove a proxy leg actually loaded the plugin. Without this the round can go
+# green while the proxy ran bare: the downstream servers talk to the backend on
+# their own, so every cross-server assertion passes without the proxy doing
+# anything. A proxy named in -Platforms is part of the topology under test, so
+# "it started" is not enough -- its log must carry the plugin's own init line.
+function Assert-ProxyPluginLoaded([string]$assertionId, [string]$proxyName, [string]$logPath) {
+  $pattern = 'NovaChat Velocity plugin enabled|NovaChat plugin enabled|Loaded plugin novachat'
+  $text = Read-LogText $logPath
+  $pass = [bool]($text -and ($text -match $pattern))
+  $evidence = ''
+  if ($pass) {
+    $line = ($text -split "`n" | Where-Object { $_ -match $pattern } | Select-Object -First 1)
+    $evidence = if ($line) { $line.Trim() } else { '' }
+  } else {
+    $evidence = "no plugin init line in $(Split-Path -Leaf $logPath)"
+  }
+  return [PSCustomObject]@{
+    id = $assertionId
+    token = $proxyName
+    pass = $pass
+    evidence = $evidence
+    kind = 'proxy-plugin'
   }
 }
 
@@ -1707,6 +1741,11 @@ function Invoke-Round($round, [string]$roundDir) {
         $result.status = 'FAIL'; $result.notes = "runtime JDK $($PlatformDefs[$round.Proxy].Jdk) unresolved for $($round.Proxy)"
         return $result
       }
+      # The plugin jar has to be in place BEFORE the proxy boots: Velocity scans
+      # plugins/ once. Installing it was missing here, which made every proxy
+      # round silently test a bare proxy -- the downstream legs connect to the
+      # backend themselves, so all cross-server assertions still passed.
+      $null = Install-Plugin $round.Proxy $dir
       if ($round.Proxy -eq 'velocity') {
         Write-VelocityToml -path (Join-Path $dir "velocity.toml") -downstreams $downstreams
         $plugCfgDir = Join-Path $dir "plugins/novachat"
@@ -1892,6 +1931,10 @@ function Invoke-Round($round, [string]$roundDir) {
     $assertions += Assert-Delivered "round$($round.Index)/bedrock-to-java" $replyToken $javaRes
     $assertions += Assert-BotExpectations 'java' $javaRes
     $assertions += Assert-BotExpectations 'bedrock' $bedRes
+    if ($round.Proxy) {
+      $assertions += Assert-ProxyPluginLoaded "round$($round.Index)/proxy-plugin-loaded" $round.Proxy `
+        (Join-Path (Join-Path $roundDir $round.Proxy) "proxy.stdout.log")
+    }
 
     if (-not $javaRes) { $result.notes = 'java bot wrote no results.json' }
     if (-not $bedRes) {
