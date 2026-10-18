@@ -23,6 +23,7 @@ dependencies {
     implementation project(':NovaChat:common')
     // Shared client runtime (Architecture B — not used by StarLink:core)
     implementation project(':NovaChat:client-core')
+    implementation project(':NovaChat:Proxy:proxy-common')
 
     // Netty. compileOnly: Velocity ships its own Netty and exposes it to
     // plugins through the proxy's parent ClassLoader. Shading a second copy
@@ -135,6 +136,7 @@ shadowJar {
     dependencies {
         include(project(':NovaChat:common'))
         include(project(':NovaChat:client-core'))
+        include(project(':NovaChat:Proxy:proxy-common'))
         include(dependency('org.yaml:snakeyaml'))
         include(dependency('com.moandjiezana.toml:toml4j'))
     }
