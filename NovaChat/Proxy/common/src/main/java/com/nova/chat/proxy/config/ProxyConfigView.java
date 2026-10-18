@@ -16,6 +16,21 @@ import java.util.Map;
 public interface ProxyConfigView {
 
     /**
+     * @return the operating mode, never null
+     */
+    ProxyMode getMode();
+
+    /**
+     * Returns this proxy's client identity independent of the mode: the backend
+     * username in relay, {@code lite.server-id} in lite. Used wherever the
+     * packet's {@code clientId} is stamped, so lite sends a real identity
+     * instead of an empty backend username.
+     *
+     * @return the client identity, never null
+     */
+    String getClientId();
+
+    /**
      * @return the backend host
      */
     String getBackendHost();
@@ -101,8 +116,13 @@ public interface ProxyConfigView {
      * Maps the settings onto the shared {@link ClientConnectionConfig}.
      *
      * @return the connection config for the shared network client
+     * @throws IllegalStateException in lite mode, where no backend is configured
      */
     default ClientConnectionConfig toClientConnectionConfig() {
+        if (getMode() == ProxyMode.LITE) {
+            throw new IllegalStateException(
+                    "toClientConnectionConfig() is only available in relay mode");
+        }
         return ClientConnectionConfig.builder()
                 .host(getBackendHost())
                 .port(getBackendPort())

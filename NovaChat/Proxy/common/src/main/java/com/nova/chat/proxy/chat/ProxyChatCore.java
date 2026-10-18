@@ -380,7 +380,7 @@ public class ProxyChatCore {
         ChatMessagePacket packet = new ChatMessagePacket(
                 player.getUniqueId(),
                 player.getName(),
-                states.getConfig().getUsername(), // Client ID
+                states.getConfig().getClientId(), // Client ID (relay username / lite server-id)
                 channelId,
                 message
         );

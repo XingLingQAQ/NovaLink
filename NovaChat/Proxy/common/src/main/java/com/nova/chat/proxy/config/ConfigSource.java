@@ -54,6 +54,39 @@ public interface ConfigSource {
     Map<String, Object> requiredTable(String key) throws ConfigException;
 
     /**
+     * Reports whether a key is present in the document.
+     *
+     * <p>Needed because the two dialects disagree about missing keys: toml4j
+     * returns {@code null} for an absent table, while BungeeCord's
+     * {@code Configuration#getSection} returns an empty section for one. The
+     * shared model must not read a key that is absent and treat the dialect's
+     * placeholder as a configured value.
+     *
+     * @param key dot path of the setting
+     * @return {@code true} when the document defines the key
+     * @throws ConfigException when the document cannot be inspected
+     */
+    boolean contains(String key) throws ConfigException;
+
+    /**
+     * @param key dot path of the setting
+     * @return the string value, or {@code null} when the key is absent
+     * @throws ConfigException when the key is present but not a string
+     */
+    default String optionalString(String key) throws ConfigException {
+        return contains(key) ? requiredString(key) : null;
+    }
+
+    /**
+     * @param key dot path of the table
+     * @return the table's entries, or {@code null} when the key is absent
+     * @throws ConfigException when the key is present but not a table
+     */
+    default Map<String, Object> optionalTable(String key) throws ConfigException {
+        return contains(key) ? requiredTable(key) : null;
+    }
+
+    /**
      * Raised when the document cannot satisfy the requested key.
      */
     class ConfigException extends Exception {

@@ -13,6 +13,7 @@ import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
 import com.nova.chat.proxy.chat.ProxyChatCore;
 import com.nova.chat.proxy.command.ProxyCommandCore;
+import com.nova.chat.proxy.config.ProxyMode;
 import com.nova.chat.proxy.engine.ProxyServerSwitchCore;
 import com.nova.chat.bungee.chat.MessageFormatter;
 import com.nova.chat.bungee.platform.BungeeProxyPlatform;
@@ -203,29 +204,16 @@ public class NovaChatBungee extends Plugin {
 
     /**
      * Loads or reloads the plugin configuration.
+     *
+     * <p>The new document is parsed first; the running snapshot is replaced only
+     * once it validated, so a bad file leaves the previous values in effect.
      */
     public boolean loadConfiguration() {
         NovaChatConfig previousConfig = config;
         boolean previousDebugMode = debugMode;
         try {
             NovaChatConfig loaded = new NovaChatConfig(getDataFolder());
-            config = loaded;
-            debugMode = loaded.isDebug();
-
-            if (loaded.getUpdateResult().created()) {
-                getLogger().info("Created config.yml from the bundled template");
-            } else if (loaded.getUpdateResult().updated()) {
-                getLogger().info("Added new config.yml fields; previous file saved to "
-                        + loaded.getUpdateResult().backupPath());
-            }
-
-            I18n.setDefaultLocale(LocaleResolver.parseOrDefault(
-                    loaded.getLocale(), LocaleResolver.ROOT_LOCALE));
-            I18n.invalidate();
-
-            if (debugMode) {
-                getLogger().info("[Debug] Configuration loaded successfully");
-            }
+            applyConfiguration(loaded);
             return true;
         } catch (Exception e) {
             config = previousConfig;
@@ -237,14 +225,52 @@ public class NovaChatBungee extends Plugin {
     }
 
     /**
+     * Installs a validated configuration snapshot and logs the upgrade outcome.
+     *
+     * @param loaded the freshly parsed configuration
+     */
+    private void applyConfiguration(NovaChatConfig loaded) {
+        config = loaded;
+        debugMode = loaded.isDebug();
+
+        if (loaded.getUpdateResult().created()) {
+            getLogger().info("Created config.yml from the bundled template");
+        } else if (loaded.getUpdateResult().updated()) {
+            getLogger().info("Added new config.yml fields; previous file saved to "
+                    + loaded.getUpdateResult().backupPath());
+        }
+
+        I18n.setDefaultLocale(LocaleResolver.parseOrDefault(
+                loaded.getLocale(), LocaleResolver.ROOT_LOCALE));
+        I18n.invalidate();
+
+        if (debugMode) {
+            getLogger().info("[Debug] Configuration loaded successfully");
+        }
+    }
+
+    /**
      * Initializes the network client and connects to the backend.
+     *
+     * <p>In {@code lite} mode this only seeds the local channel roster: no
+     * {@link NetworkClient} is created and no connection is attempted, so
+     * {@link #getNetworkClient()} keeps returning null for the lifetime of the
+     * process. Every consumer of the client is null-tolerant (see
+     * {@code ProxyChatCore} / {@code ProxyServerSwitchCore} /
+     * {@code ProxyCommandCore}), so the shared cores degrade to "backend not
+     * connected" replies instead of throwing.
      */
     private void initializeNetworkClient() {
         if (config == null) {
             getLogger().severe("Cannot initialize network client: configuration not loaded");
             return;
         }
-        
+
+        if (config.getMode() == ProxyMode.LITE) {
+            initializeLiteMode();
+            return;
+        }
+
         knownChannelRegistry = new com.nova.chat.client.channel.KnownChannelRegistry();
         networkClient = new NetworkClient(this, config);
 
@@ -254,8 +280,8 @@ public class NovaChatBungee extends Plugin {
         // and consumers degrade gracefully (no crash).
         com.nova.chat.client.channel.ConfigSyncHandlerRegistrar.register(
                 networkClient, knownChannelRegistry,
-                config != null ? config.getUsername() : null);
-        
+                config != null ? config.getClientId() : null);
+
         // Connect asynchronously
         getProxy().getScheduler().runAsync(this, () -> {
             networkClient.connect(
@@ -263,7 +289,7 @@ public class NovaChatBungee extends Plugin {
                 config.getBackendPort()
             ).thenAccept(success -> {
                 if (success) {
-                    getLogger().info("Connected to NovaLink backend at " + 
+                    getLogger().info("Connected to NovaLink backend at " +
                         config.getBackendHost() + ":" + config.getBackendPort());
                 } else {
                     getLogger().warning("Failed to connect to NovaLink backend. Will retry...");
@@ -271,7 +297,28 @@ public class NovaChatBungee extends Plugin {
             });
         });
     }
-    
+
+    /**
+     * Seeds the state that lite mode still needs without a backend.
+     *
+     * <p>The roster is filled from {@code lite.channels} so {@code /nc list},
+     * {@code /nc join} completion and channel-prefix routing see the locally
+     * declared channels. No {@link NetworkClient} is created: lite has no
+     * backend to talk to.
+     */
+    private void initializeLiteMode() {
+        // Reuse the registry object on reload: ProxyChatCore and ProxyCommandCore
+        // hold the reference taken at startup, so replacing it would leave them
+        // looking at a stale roster.
+        if (knownChannelRegistry == null) {
+            knownChannelRegistry = new com.nova.chat.client.channel.KnownChannelRegistry();
+        }
+        knownChannelRegistry.replaceAll(config.getLiteChannels().keySet());
+        networkClient = null;
+        getLogger().info("NovaChat running in lite mode (no backend connection); "
+                + config.getLiteChannels().size() + " local channel(s) declared");
+    }
+
     /**
      * Builds the shared proxy cores (chat / command / server switch).
      *
@@ -345,18 +392,38 @@ public class NovaChatBungee extends Plugin {
     
     /**
      * Reloads the plugin configuration and reconnects to backend if needed.
+     *
+     * <p>Changing {@code mode} requires a restart: lite and relay build a
+     * different object graph (no NetworkClient, no ConfigSync registration,
+     * different channel roster source), and rebuilding it under live players is
+     * out of scope. A reload whose new file changes the mode is rejected and the
+     * running snapshot stays untouched.
      */
     public void reload() {
-        if (!loadConfiguration()) {
-            getLogger().warning("Configuration reload rejected; continuing with previous values");
+        ProxyMode runningMode = config != null ? config.getMode() : null;
+
+        NovaChatConfig loaded;
+        try {
+            loaded = new NovaChatConfig(getDataFolder());
+        } catch (Exception e) {
+            getLogger().log(Level.SEVERE,
+                    "Configuration reload rejected; continuing with previous values", e);
             return;
         }
-        
+
+        if (runningMode != null && loaded.getMode() != runningMode) {
+            getLogger().severe("Configuration reload rejected: mode changed from " + runningMode
+                    + " to " + loaded.getMode() + "; restart the proxy to switch modes");
+            return;
+        }
+
+        applyConfiguration(loaded);
+
         // Reload chat listener settings
         if (chatListener != null) {
             chatListener.reload();
         }
-        
+
         // Reconnect if connection settings changed
         if (networkClient != null) {
             networkClient.disconnect();

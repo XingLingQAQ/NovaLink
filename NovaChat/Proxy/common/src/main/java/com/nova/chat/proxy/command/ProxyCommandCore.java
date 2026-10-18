@@ -515,7 +515,7 @@ public class ProxyCommandCore {
         }
         for (String line : PrivateMessageCommandService.msg(
                 this::sendPrivateMessagePacket,
-                player.getUniqueId(), player.getName(), config().getUsername(), args)) {
+                player.getUniqueId(), player.getName(), config().getClientId(), args)) {
             playerReply(player, chatCore.getFormatter().parseColors(line));
         }
     }
@@ -535,7 +535,7 @@ public class ProxyCommandCore {
         }
         for (String line : PrivateMessageCommandService.reply(
                 privateMessageService, this::sendPrivateMessagePacket,
-                player.getUniqueId(), player.getName(), config().getUsername(), args)) {
+                player.getUniqueId(), player.getName(), config().getClientId(), args)) {
             playerReply(player, chatCore.getFormatter().parseColors(line));
         }
     }

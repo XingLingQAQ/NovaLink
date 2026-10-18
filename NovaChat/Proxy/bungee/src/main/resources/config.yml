@@ -4,7 +4,14 @@
 
 config-version: 1
 
-# 后端连接设置
+# 运行模式 / Operating mode
+#   relay - 连接外部 NovaLink 后端（默认；与旧版本行为一致）
+#   lite  - 不连接后端，由代理自身提供聊天
+# 模板默认必须保持 relay：升级旧配置时更新器会把 mode 写回用户文件，
+# 默认写成 lite 会让升级用户静默断开后端。
+mode: "relay"
+
+# 后端连接设置（仅 mode: "relay" 时必填并在启动时校验）
 backend:
   host: "127.0.0.1"
   port: 8888
@@ -47,3 +54,54 @@ format:
 
 # 调试模式
 debug: false
+
+# ==========================================
+# lite 模式设置 (仅 mode: "lite" 时读取和校验)
+# ==========================================
+# relay 模式下本节被忽略；模板会保留它，所以 lite 只忽略而不是要求删除。
+lite:
+  # 本代理的客户端标识（非空），用于替代 backend.username
+  server-id: "proxy-1"
+
+  # 本地频道定义
+  # 字段与后端 novalink.yml 的 global_channels 对齐：
+  #   display-name  显示名称（可省略，默认取频道 id）
+  #   permission    加入所需权限节点（可省略 = 无要求）
+  #   max-capacity  最大成员数，>= 0，0 = 无限制
+  #   slow-mode     同一玩家两条消息的最小间隔秒数，>= 0，0 = 关闭
+  # 至少需要一个频道；chat.default_channel 与 chat.channel-prefixes 指向的频道
+  # 必须都在这里定义。
+  channels:
+    global:
+      display-name: "全服"
+      permission: "novachat.channel.global"
+      max-capacity: 1000
+      slow-mode: 0
+    local:
+      display-name: "本地"
+      max-capacity: 0
+      slow-mode: 0
+
+  # 本地存储（对齐后端 novalink.yml 的 database 段）
+  #   type: memory | sqlite | mysql | postgresql
+  # 只有选中的类型对应的段会被校验，其余段可以保留不填。
+  storage:
+    type: "memory"
+
+    # sqlite：type: "sqlite" 时 file-path 必填
+    sqlite:
+      file-path: "data/novachat.db"
+
+    # mysql：type: "mysql" 时 host/database 非空、port 1-65535、pool-size > 0
+    mysql:
+      host: "127.0.0.1"
+      port: 3306
+      database: "novachat"
+      pool-size: 10
+
+    # postgresql：type: "postgresql" 时规则同 mysql
+    postgresql:
+      host: "127.0.0.1"
+      port: 5432
+      database: "novachat"
+      pool-size: 10
