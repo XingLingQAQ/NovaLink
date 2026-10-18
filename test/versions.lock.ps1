@@ -262,6 +262,42 @@ $LockedServers = @(
         Kind    = 'phar'  # PHP phar; run directly by php executable, not extracted.
         Auto    = $true
     }
+
+    # PocketMine-MP's PHP runtime (pmmp/PHP-Binaries). This is NOT optional:
+    # PocketMine requires ten extensions, five of which -- chunkutils2, crypto,
+    # encoding, morton, pmmpthread -- are PocketMine-private C extensions that
+    # ship in no standard PHP distribution and in no PECL package. Stock PHP
+    # (setup-php, scoop, winget) therefore cannot run the server at all:
+    #   [ERROR] Selected PHP binary does not satisfy some requirements.
+    # pmmp publishes a prebuilt zip per PHP branch+arch that bundles all ten.
+    # run-pmmp-e2e.ps1 extracts it to dist/php-runtime/ and uses its php.exe.
+    #
+    # Pinned to the immutable php-build-524 tag rather than the moving
+    # `pm5-php-8.4-latest` tag: both currently serve the identical asset
+    # (SHA-256 verified 2026-10-18), but only the build tag cannot change
+    # underneath a fixed hash. PHP 8.4.16 ZTS satisfies PocketMine 5.44.3's
+    # composer requirement `php: ^8.1`.
+    #
+    # Windows x64 only -- the E2E matrix runs on windows-2022, and the zip is
+    # a Windows build (bin/php/php.exe + php8ts.dll). There is a Linux tarball
+    # in the same release if the harness ever moves off Windows.
+    @{
+        Name    = 'pmmp-php'
+        MC      = '8.4.16'
+        Build   = '524'
+        Engine  = 'php'
+        Url     = 'https://github.com/pmmp/PHP-Binaries/releases/download/php-build-524/PHP-8.4-Windows-x64-PM5.zip'
+        Sha256  = 'CF4023B8549C99EEC47CFD403805AC7D78100FA366394DAB4E45BB544DCC9BE4'
+        Eula    = $false
+        Jdk     = 0
+        File    = 'PHP-8.4-Windows-x64-PM5.zip'
+        # Deliberately NOT 'zip': fetch-server.ps1's Kind=zip path exists for
+        # BDS and extracts to dist/<name>-<MC>/, which is not where the runner
+        # looks for this runtime (dist/php-runtime/). Leaving it as a plain
+        # archive keeps extraction in one place -- run-pmmp-e2e.ps1.
+        Kind    = 'archive'
+        Auto    = $false  # No auto-detect resolver; the pin is the contract.
+    }
 )
 
 function Get-LockedServer([string]$Name) {

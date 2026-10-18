@@ -10,10 +10,12 @@
 #   1. Restores the committed test/ harness (scripts + versions.lock.ps1).
 #   2. Restores the server-binary cache keyed on versions.lock.ps1 (so a lock
 #      bump invalidates and forces a fresh verified download).
-#   3. Sets up EVERY toolchain the E2E matrix can reach: JDK 17 + JDK 21
-#      (most platforms) + JDK 25 (folia + velocity, both runtime and plugin
-#      build) + Node (mineflayer + bedrock-protocol bots) + PHP (pmmp) +
-#      Python (endstone) + MSVC + xmake (levilamina dll build).
+#   3. Sets up EVERY toolchain the E2E matrix can reach: JDK 21 (most
+#      platforms) + JDK 25 (folia + velocity, both runtime and plugin build) +
+#      Node (mineflayer + bedrock-protocol bots) + Python (endstone) + MSVC +
+#      xmake (levilamina dll build). Neither a system PHP nor JDK 17 is set up:
+#      PocketMine needs pmmp's own PHP build (see the pmmp note below), which
+#      the harness provisions, and sponge runs on 21 now.
 #   4. Runs `./gradlew realE2E -PenableRealE2E=true` which dispatches to
 #      test/bin/run-e2e-orchestrator.ps1 for the requested platform subset.
 #   5. On failure, uploads e2e artifacts (logs, results.json, bot-results.json)
@@ -159,16 +161,44 @@ jobs:
         run: npm --prefix test/bot ci --no-audit --no-fund
 
       # ---------------------------------------------------------------------
-      # PHP 8.2 (pmmp). shivammathur/setup-php with sockets+mbstring+openssl
-      # -- same as nova-ci.yml. Only the pmmp platform actually invokes PHP,
-      # but setup is cheap and keeps the matrix uniform.
+      # PHP (pmmp) -- NO setup-php step, intentionally.
+      #
+      # PocketMine-MP 5.x refuses to boot unless TEN extensions are present,
+      # and five of them (chunkutils2, crypto, encoding, morton, pmmpthread)
+      # are PocketMine-private C extensions that exist in no standard PHP
+      # distribution and in no PECL package. shivammathur/setup-php can only
+      # install what PECL/php-src ships, so it could never satisfy the server:
+      #   [ERROR] Selected PHP binary does not satisfy some requirements.
+      # Installing the five PECL-able ones (gmp/igbinary/yaml/zip) would not
+      # change that -- the other five are unobtainable.
+      #
+      # pmmp publishes prebuilt PHP builds bundling all ten at
+      # github.com/pmmp/PHP-Binaries (asset PHP-<ver>-Windows-x64-PM5.zip).
+      # The harness downloads that zip itself: run-pmmp-e2e.ps1 step 0 fetches
+      # it via fetch-server.ps1 from the `pmmp-php` pin in
+      # test/versions.lock.ps1 (immutable tag + SHA-256), extracts it to
+      # .e2e-artifacts/dist/php-runtime/, and verifies the module list before
+      # starting the server. Doing it in the harness rather than here keeps the
+      # runtime usable from a local run and from CI with one code path.
+      #
+      # The dist cache step below covers this zip too (same dist dir + same
+      # versions.lock.ps1 hash), so it is downloaded once per lock revision.
+      #
+      # If that download is blocked, run-pmmp-e2e.ps1 exits 3 (SKIPPED) with a
+      # reason instead of failing with PocketMine's opaque extension list.
+      # Strict mode (-Pe2eRequireAllPlatforms=true) still fails the job, so a
+      # missing runtime is never reported as green.
       # ---------------------------------------------------------------------
-      - name: Set up PHP 8.2 (pmmp)
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.2'
-          extensions: sockets, mbstring, openssl
-          coverage: none
+      - name: Note PHP provisioning (pmmp)
+        if: matrix.platform == 'pmmp'
+        shell: pwsh
+        run: |
+          Write-Host "pmmp: PHP is provisioned by test/bin/run-pmmp-e2e.ps1 (pmmp/PHP-Binaries), not setup-php."
+          Write-Host "pmmp: pin is the 'pmmp-php' entry in test/versions.lock.ps1; cached under .e2e-artifacts/dist."
+          $sysPhp = Get-Command php -ErrorAction SilentlyContinue
+          if ($sysPhp) {
+            Write-Host "pmmp: note - a system PHP is on PATH at $($sysPhp.Source); it lacks the PocketMine extensions and will not be used."
+          }
 
       # ---------------------------------------------------------------------
       # Python 3.12 (endstone). endstone's BDS host loads a python plugin;
