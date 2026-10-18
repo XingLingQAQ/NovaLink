@@ -337,6 +337,19 @@ public class ChannelActionHandler {
             state.setPlatform(platform);
         }
         playerStateManager.leaveChannel(playerId, channelId);
+
+        // A logout LEAVE (proxy/game server reporting that the player left the
+        // network) must also drop the network-wide cache entry: leaving only the
+        // channel keeps the player resolvable by name, so DMs and mentions still
+        // target someone who is gone. A plain /nc leave keeps the entry — the
+        // player is still online, just not in this channel. Evict after the
+        // state update so the snapshot saved on the way out reflects the leave.
+        if (isLogout(packet)) {
+            playerStateManager.removeFromCache(playerId, true);
+            logger.debug("Evicted player {} from the cache on logout (client {})",
+                    playerId, connection.getClientId());
+        }
+
         notifyPlayerUpdate();
         firePresenceWebhook("player.leave", playerId, playerName,
                 connection.getClientId(), channelId);
@@ -1020,6 +1033,17 @@ public class ChannelActionHandler {
         } catch (IllegalArgumentException e) {
             return null;
         }
+    }
+
+    /**
+     * True when a LEAVE marks a logout rather than a plain {@code /nc leave}.
+     * The proxies set {@code logout=true} when the player disconnects from the
+     * whole network; the flag is parsed tolerantly because it travels as a
+     * string extra in a protocol shared with non-JVM clients.
+     */
+    private boolean isLogout(ChannelActionPacket packet) {
+        String raw = packet.getExtra("logout");
+        return raw != null && "true".equalsIgnoreCase(raw.trim());
     }
 
     private String firstNonBlank(String a, String b) {

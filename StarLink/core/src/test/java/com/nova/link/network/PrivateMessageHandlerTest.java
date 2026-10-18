@@ -78,6 +78,12 @@ class PrivateMessageHandlerTest {
         alexState = new PlayerState(alexId, "Alex");
         alexState.setClientId("Creative");
         when(playerStateManager.getAllPlayerStates()).thenReturn(List.of(steveState, alexState));
+        // Online players are cached; PrivateMessageHandler consults this leg
+        // explicitly to detect a player who logged out behind a proxy.
+        when(playerStateManager.getCachedState(steveId))
+                .thenReturn(java.util.Optional.of(steveState));
+        when(playerStateManager.getCachedState(alexId))
+                .thenReturn(java.util.Optional.of(alexState));
     }
 
     private ClientConnection mockConn(String clientId, boolean auth, boolean active) {
@@ -204,6 +210,74 @@ class PrivateMessageHandlerTest {
 
         ChannelActionResponsePacket error = capturedError(survivalConn);
         assertThat(error.getErrorCode()).isEqualTo("NC-404");
+    }
+
+    // ==================== proxy logout: cache-based offline detection ====================
+
+    @Test
+    @DisplayName("proxy logout: target missing from the player cache answers NC-404, not a fake success")
+    void loggedOutTargetBehindSharedProxy() {
+        // Behind a proxy all players share ONE authenticated TCP connection,
+        // so findByClientId("Creative") stays live after the player logs out.
+        // Only the player cache knows the target is gone.
+        when(playerStateManager.getCachedState(alexId)).thenReturn(java.util.Optional.empty());
+
+        handler(null).handle(survivalConn, packet("Alex"));
+
+        ChannelActionResponsePacket error = capturedError(survivalConn);
+        assertThat(error.isSuccess()).isFalse();
+        assertThat(error.getErrorCode()).isEqualTo("NC-404");
+        assertThat(error.getExtra("reason")).isEqualTo("private_message");
+        assertThat(error.getExtra("detail")).isEqualTo("not_online");
+        assertThat(error.getMessage()).isEqualTo(I18n.tr("network.error.player_not_online", "Alex"));
+        // No delivery to the shared proxy connection and no audit line.
+        verify(creativeConn, never()).sendPacket(any());
+        verify(chatLogger, never()).logPrivateMessage(anyString(), anyString(),
+                anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("a target evicted between name resolution and delivery is still rejected")
+    void targetEvictedAfterResolution() {
+        // Resolution scans getAllPlayerStates(); the cache re-check by id closes
+        // the race where a logout lands in between. Simulate the two views
+        // disagreeing: the name scan still sees the state, the id lookup does not.
+        when(playerStateManager.getAllPlayerStates()).thenReturn(List.of(steveState, alexState));
+        when(playerStateManager.getCachedState(alexId)).thenReturn(java.util.Optional.empty());
+
+        handler(null).handle(survivalConn, packet("Alex"));
+
+        assertThat(capturedError(survivalConn).getExtra("detail")).isEqualTo("not_online");
+        verify(creativeConn, never()).sendPacket(any());
+    }
+
+    @Test
+    @DisplayName("direct mode: cached target whose server connection is down answers NC-404")
+    void directModeOfflineServerStillRejected() {
+        // Direct (non-proxy) deployments have one connection per game server.
+        // The player is still cached (their world/server did not report a
+        // logout) but the server's connection dropped: the connection leg must
+        // keep rejecting so direct-mode offline detection does not regress.
+        when(networkHandler.findByClientId("Creative")).thenReturn(null);
+
+        handler(null).handle(survivalConn, packet("Alex"));
+
+        ChannelActionResponsePacket error = capturedError(survivalConn);
+        assertThat(error.getErrorCode()).isEqualTo("NC-404");
+        assertThat(error.getExtra("detail")).isEqualTo("not_online");
+        verify(creativeConn, never()).sendPacket(any());
+    }
+
+    @Test
+    @DisplayName("direct mode: cached target on its own live connection still receives the DM")
+    void directModeOnlineDelivers() {
+        // Regression guard for the same path: both legs pass, so delivery is
+        // unchanged from the pre-fix behavior.
+        handler(null).handle(survivalConn, packet("Alex"));
+
+        verify(creativeConn).sendPacket(any(PrivateMessagePacket.class));
+        verify(chatLogger).logPrivateMessage(steveId.toString(), "Steve",
+                alexId.toString(), "Alex", "hi there");
     }
 
     @Test

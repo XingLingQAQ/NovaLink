@@ -272,7 +272,31 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
             return;
         }
 
-        // The target's client must be connected; otherwise the player is offline.
+        // Offline detection has two legs, and BOTH must pass:
+        //
+        // 1. The player cache. PlayerStateManager's cache holds online players
+        //    only: a logout LEAVE evicts the entry (ChannelActionHandler
+        //    handleLeave), so a vanished cache entry means the player is gone.
+        //    This is the authoritative signal behind a proxy, where every
+        //    downstream server shares ONE TCP connection: the clientId lookup
+        //    below always resolves to that live connection, so it can never
+        //    distinguish a logged-out player from an online one. Re-checking the
+        //    cache by id (rather than trusting the name scan above) also closes
+        //    the race where the player logs out between resolution and delivery.
+        //
+        // 2. The connection the player was last seen on. Direct (non-proxy)
+        //    deployments have one connection per game server, so a player whose
+        //    state is still cached but whose server connection dropped is
+        //    offline. Keeping this leg is what preserves the existing direct-mode
+        //    behavior; it is redundant (and harmless) behind a proxy.
+        UUID targetId = targetState.getPlayerId();
+        if (playerStateManager.getCachedState(targetId).isEmpty()) {
+            logger.debug("PrivateMessage drop: target '{}' no longer cached (offline)", targetName);
+            sendError(connection, packet, NovaConstants.ERROR_NOT_FOUND,
+                    I18n.tr("network.error.player_not_online", targetName != null ? targetName : ""),
+                    "not_online");
+            return;
+        }
         String targetClientId = targetState.getClientId();
         ClientConnection targetConnection = (targetClientId == null || targetClientId.isEmpty())
                 ? null
