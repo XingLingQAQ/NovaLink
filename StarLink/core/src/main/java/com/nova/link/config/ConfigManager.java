@@ -294,9 +294,16 @@ public class ConfigManager {
             Path parentDir = configPath.getParent();
 
             // When configPath is a simple relative file name like "novalink.yml",
-            // getParent() is null. In that case, watch the current working directory.
+            // getParent() is null. Fall back to the file's absolute parent (i.e.
+            // the working directory it resolves against) rather than the bare
+            // "." relative path — an embedded core always passes an absolute
+            // path, but this keeps direct ConfigManager use consistent.
             if (parentDir == null) {
-                parentDir = Paths.get(".");
+                parentDir = configPath.toAbsolutePath().getParent();
+            }
+            if (parentDir == null) {
+                logger.warn("Cannot resolve parent directory for {}, config watcher not started", configPath);
+                return;
             }
             
             watchService = FileSystems.getDefault().newWatchService();

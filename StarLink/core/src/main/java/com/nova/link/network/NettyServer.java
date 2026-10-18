@@ -24,7 +24,9 @@ import javax.net.ssl.SSLException;
 import java.io.File;
 import java.net.InetSocketAddress;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Netty-based TCP server for NovaLink backend.
@@ -36,6 +38,35 @@ public class NettyServer {
 
     private static final Logger logger = LoggerFactory.getLogger(NettyServer.class);
     private static final int LEGACY_IDLE_TIMEOUT_SECONDS = 90;
+
+    /**
+     * Quiet period / timeout for {@link EventLoopGroup#shutdownGracefully} in
+     * {@link #shutdownEventLoops}. The Netty defaults (2s quiet + 15s timeout)
+     * made every embedded stop() take at least 4 seconds when TCP and WS were
+     * shut down one after another. 0 quiet + 5s cap closes immediately and
+     * still bounds the wait.
+     */
+    private static final long SHUTDOWN_QUIET_SECONDS = 0L;
+    private static final long SHUTDOWN_TIMEOUT_SECONDS = 5L;
+
+    private static final AtomicInteger GROUP_SEQUENCE = new AtomicInteger();
+
+    /**
+     * Creates daemon event-loop threads. Netty's default factory produces
+     * non-daemon threads, so a leaked group keeps the host JVM alive after an
+     * embedded {@code stop()} — unacceptable in a plugin. Names keep the
+     * {@code nioEventLoopGroup-} prefix so existing thread-audit tests (and
+     * operational tooling) still recognise them.
+     */
+    private static ThreadFactory daemonEventLoopFactory(int groupIndex) {
+        AtomicInteger threadIndex = new AtomicInteger();
+        return runnable -> {
+            Thread thread = new Thread(runnable,
+                    "nioEventLoopGroup-" + groupIndex + "-" + threadIndex.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
 
     private final String bindAddress;
     private final int port;
@@ -167,9 +198,10 @@ public class NettyServer {
         }
 
         // Create boss group (accepts connections) with 1 thread
-        bossGroup = new NioEventLoopGroup(1);
+        int groupIndex = GROUP_SEQUENCE.incrementAndGet();
+        bossGroup = new NioEventLoopGroup(1, daemonEventLoopFactory(groupIndex));
         // Create worker group (handles I/O) with configured threads
-        workerGroup = new NioEventLoopGroup(workerThreads);
+        workerGroup = new NioEventLoopGroup(workerThreads, daemonEventLoopFactory(groupIndex));
 
         try {
             ServerBootstrap bootstrap = new ServerBootstrap();
@@ -279,7 +311,8 @@ public class NettyServer {
         CompletableFuture<Void> workerFuture = new CompletableFuture<>();
 
         if (bossGroup != null) {
-            bossGroup.shutdownGracefully().addListener(f -> {
+            bossGroup.shutdownGracefully(SHUTDOWN_QUIET_SECONDS, SHUTDOWN_TIMEOUT_SECONDS,
+                    TimeUnit.SECONDS).addListener(f -> {
                 bossGroup = null;
                 bossFuture.complete(null);
             });
@@ -288,7 +321,8 @@ public class NettyServer {
         }
 
         if (workerGroup != null) {
-            workerGroup.shutdownGracefully().addListener(f -> {
+            workerGroup.shutdownGracefully(SHUTDOWN_QUIET_SECONDS, SHUTDOWN_TIMEOUT_SECONDS,
+                    TimeUnit.SECONDS).addListener(f -> {
                 workerGroup = null;
                 workerFuture.complete(null);
             });

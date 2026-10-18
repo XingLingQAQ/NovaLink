@@ -50,6 +50,22 @@ public class WebSocketGateway {
     private volatile boolean running = false;
 
     /**
+     * Lifecycle state machine. {@link #running} was previously set only AFTER
+     * the WebSocket server finished binding, so a {@link #shutdown()} issued
+     * while {@link #start()} was still in flight returned immediately and the
+     * listener that came up moments later was never stopped.
+     *
+     * <p>States: {@code NEW} → {@code STARTING} → {@code RUNNING} →
+     * {@code STOPPING} → {@code STOPPED}. {@code STOPPING} is sticky: a start
+     * that completes while a stop is in progress shuts its listener down
+     * instead of publishing it.
+     */
+    private enum State { NEW, STARTING, RUNNING, STOPPING, STOPPED }
+
+    private final Object lifecycleLock = new Object();
+    private State state = State.NEW;
+
+    /**
      * Creates a new WebSocket gateway.
      *
      * @param bindAddress    the address to bind to
@@ -199,62 +215,107 @@ public class WebSocketGateway {
      * @return a CompletableFuture that completes when the gateway is started
      */
     public CompletableFuture<Void> start() {
-        if (running) {
-            return CompletableFuture.failedFuture(
-                    new IllegalStateException("WebSocket gateway is already running"));
+        synchronized (lifecycleLock) {
+            if (state == State.STARTING || state == State.RUNNING) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("WebSocket gateway is already running"));
+            }
+            if (state == State.STOPPING || state == State.STOPPED) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("WebSocket gateway is stopped"));
+            }
+            state = State.STARTING;
         }
 
-        return webSocketServer.start().thenRun(() -> {
-            running = true;
-            
-            // Start periodic status updates
-            statusScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r, "WebSocket-Status-Scheduler");
-                t.setDaemon(true);
-                return t;
-            });
-            
-            statusScheduler.scheduleAtFixedRate(() -> {
-                try {
-                    if (messageHandler.getSessionCount() > 0) {
-                        messageHandler.broadcastServerStatus();
-                        messageHandler.broadcastChannelUpdate();
-                    }
-                } catch (Exception e) {
-                    logger.error("Error broadcasting status update", e);
+        return webSocketServer.start().handle((ignored, error) -> {
+            if (error != null) {
+                synchronized (lifecycleLock) {
+                    state = State.STOPPED;
                 }
-            }, STATUS_UPDATE_INTERVAL, STATUS_UPDATE_INTERVAL, TimeUnit.SECONDS);
-            
+                throw error instanceof java.util.concurrent.CompletionException
+                        ? (java.util.concurrent.CompletionException) error
+                        : new java.util.concurrent.CompletionException(error);
+            }
+
+            synchronized (lifecycleLock) {
+                if (state == State.STOPPING) {
+                    // stop() was called while the bind was in flight. The
+                    // listener must not be published; tear it down here.
+                    logger.info("WebSocket gateway start completed during shutdown; stopping it");
+                    webSocketServer.shutdown().join();
+                    state = State.STOPPED;
+                    return null;
+                }
+                running = true;
+                startStatusScheduler();
+                state = State.RUNNING;
+            }
+
             logger.info("WebSocket gateway started on {}:{}", bindAddress, port);
+            return null;
         });
     }
 
+    /** Schedules the periodic panel status broadcast (daemon thread). */
+    private void startStatusScheduler() {
+        statusScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "WebSocket-Status-Scheduler");
+            t.setDaemon(true);
+            return t;
+        });
+
+        statusScheduler.scheduleAtFixedRate(() -> {
+            try {
+                if (messageHandler.getSessionCount() > 0) {
+                    messageHandler.broadcastServerStatus();
+                    messageHandler.broadcastChannelUpdate();
+                }
+            } catch (Exception e) {
+                logger.error("Error broadcasting status update", e);
+            }
+        }, STATUS_UPDATE_INTERVAL, STATUS_UPDATE_INTERVAL, TimeUnit.SECONDS);
+    }
+
     /**
-     * Stops the WebSocket gateway.
+     * Stops the WebSocket gateway. Idempotent; works even if {@link #start()}
+     * is still in flight (the start completion path then stops the listener
+     * it just bound).
      *
      * @return a CompletableFuture that completes when the gateway is stopped
      */
     public CompletableFuture<Void> shutdown() {
-        if (!running) {
-            return CompletableFuture.completedFuture(null);
-        }
+        synchronized (lifecycleLock) {
+            if (state == State.STOPPING || state == State.STOPPED) {
+                return CompletableFuture.completedFuture(null);
+            }
+            boolean neverStarted = state == State.NEW;
+            state = State.STOPPING;
+            running = false;
 
-        running = false;
-        
-        // Stop status scheduler
-        if (statusScheduler != null) {
-            statusScheduler.shutdown();
-            try {
-                if (!statusScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+            // Stop status scheduler
+            if (statusScheduler != null) {
+                statusScheduler.shutdown();
+                try {
+                    if (!statusScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                        statusScheduler.shutdownNow();
+                    }
+                } catch (InterruptedException e) {
                     statusScheduler.shutdownNow();
+                    Thread.currentThread().interrupt();
                 }
-            } catch (InterruptedException e) {
-                statusScheduler.shutdownNow();
-                Thread.currentThread().interrupt();
+                statusScheduler = null;
+            }
+
+            if (neverStarted) {
+                state = State.STOPPED;
+                return CompletableFuture.completedFuture(null);
             }
         }
-        
+
         return webSocketServer.shutdown().thenRun(() -> {
+            synchronized (lifecycleLock) {
+                state = State.STOPPED;
+            }
             logger.info("WebSocket gateway stopped");
         });
     }
@@ -382,6 +443,16 @@ public class WebSocketGateway {
      */
     public int getPort() {
         return port;
+    }
+
+    /**
+     * Gets the actually bound port (the configured port may be {@code 0} for
+     * an OS-assigned ephemeral port).
+     *
+     * @return the bound port, or the configured port when not bound
+     */
+    public int getBoundPort() {
+        return webSocketServer.getBoundPort();
     }
 
     /**

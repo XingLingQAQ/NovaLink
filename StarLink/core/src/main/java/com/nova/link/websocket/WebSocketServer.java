@@ -23,7 +23,9 @@ import javax.net.ssl.SSLException;
 import java.io.File;
 import java.net.InetSocketAddress;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * WebSocket server for NovaLink web panel connections.
@@ -46,6 +48,31 @@ public class WebSocketServer {
     
     /** Idle timeout in seconds */
     private static final int IDLE_TIMEOUT_SECONDS = 60;
+
+    /**
+     * Quiet period / timeout for {@link EventLoopGroup#shutdownGracefully}.
+     * Netty's defaults (2s quiet, 15s timeout) made every embedded stop() wait
+     * seconds for a listener that had no traffic to drain.
+     */
+    private static final long SHUTDOWN_QUIET_SECONDS = 0L;
+    private static final long SHUTDOWN_TIMEOUT_SECONDS = 5L;
+
+    private static final AtomicInteger GROUP_SEQUENCE = new AtomicInteger();
+
+    /**
+     * Creates daemon event-loop threads. Netty's default factory produces
+     * non-daemon threads; a leaked group would keep a host JVM (plugin) alive
+     * after stop(). Names keep the {@code nioEventLoopGroup-} prefix.
+     */
+    private static ThreadFactory daemonEventLoopFactory(int groupIndex) {
+        AtomicInteger threadIndex = new AtomicInteger();
+        return runnable -> {
+            Thread thread = new Thread(runnable,
+                    "nioEventLoopGroup-" + groupIndex + "-" + threadIndex.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
 
     private final String bindAddress;
     private final int port;
@@ -159,8 +186,9 @@ public class WebSocketServer {
             return future;
         }
 
-        bossGroup = new NioEventLoopGroup(1);
-        workerGroup = new NioEventLoopGroup();
+        int groupIndex = GROUP_SEQUENCE.incrementAndGet();
+        bossGroup = new NioEventLoopGroup(1, daemonEventLoopFactory(groupIndex));
+        workerGroup = new NioEventLoopGroup(daemonEventLoopFactory(groupIndex));
 
         try {
             ServerBootstrap bootstrap = new ServerBootstrap();
@@ -272,7 +300,8 @@ public class WebSocketServer {
         CompletableFuture<Void> workerFuture = new CompletableFuture<>();
 
         if (bossGroup != null) {
-            bossGroup.shutdownGracefully().addListener(f -> {
+            bossGroup.shutdownGracefully(SHUTDOWN_QUIET_SECONDS, SHUTDOWN_TIMEOUT_SECONDS,
+                    TimeUnit.SECONDS).addListener(f -> {
                 bossGroup = null;
                 bossFuture.complete(null);
             });
@@ -281,7 +310,8 @@ public class WebSocketServer {
         }
 
         if (workerGroup != null) {
-            workerGroup.shutdownGracefully().addListener(f -> {
+            workerGroup.shutdownGracefully(SHUTDOWN_QUIET_SECONDS, SHUTDOWN_TIMEOUT_SECONDS,
+                    TimeUnit.SECONDS).addListener(f -> {
                 workerGroup = null;
                 workerFuture.complete(null);
             });
@@ -319,6 +349,19 @@ public class WebSocketServer {
      * @return the port
      */
     public int getPort() {
+        return port;
+    }
+
+    /**
+     * Gets the actually bound port. When the server is constructed with port
+     * {@code 0} the OS picks an ephemeral port; embedders need the real value.
+     *
+     * @return the bound port, or the configured port when not bound yet
+     */
+    public int getBoundPort() {
+        if (serverChannel != null && serverChannel.localAddress() instanceof InetSocketAddress addr) {
+            return addr.getPort();
+        }
         return port;
     }
 
