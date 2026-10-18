@@ -66,6 +66,21 @@ public interface ProxyConfigView {
     String getDefaultChannel();
 
     /**
+     * Returns the locally declared lite channels.
+     *
+     * <p>The default is empty so relay configurations (and test doubles built
+     * for relay behaviour) do not have to carry a lite section. In lite mode
+     * the shells' config wrappers override this with
+     * {@code lite.channels}; the local authority reads it through the live
+     * config supplier so a reload is picked up without rebuilding the core.
+     *
+     * @return channel id → channel definition; empty in relay mode
+     */
+    default Map<String, LiteChannelConfig> getLiteChannels() {
+        return Map.of();
+    }
+
+    /**
      * @return the configured default locale (e.g. {@code "zh_CN"})
      */
     String getLocale();

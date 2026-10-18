@@ -541,6 +541,33 @@ class ProxyConfigTest {
     }
 
     @Test
+    @DisplayName("relay exposes no lite channels, so the local authority stays inert")
+    void relayHasNoLiteChannels() throws Exception {
+        ProxyConfig relay = ProxyConfig.from(new MapSource().templateDefaults());
+
+        assertThat(relay.getMode()).isEqualTo(ProxyMode.RELAY);
+        assertThat(relay.getLiteChannels()).isEmpty();
+        assertThat(relay.getClientId()).isEqualTo("");
+    }
+
+    @Test
+    @DisplayName("the config view exposes the parsed lite channels and their fields")
+    void liteChannelsAreExposedThroughTheView() throws Exception {
+        ProxyConfigView view = ProxyConfig.from(new MapSource().liteDefaults());
+
+        LiteChannelConfig global = view.getLiteChannels().get("global");
+        assertThat(global.getDisplayName()).isEqualTo("全服");
+        assertThat(global.getPermission()).isEqualTo("novachat.channel.global");
+        assertThat(global.getMaxCapacity()).isEqualTo(1000);
+        assertThat(global.getSlowMode()).isZero();
+
+        LiteChannelConfig local = view.getLiteChannels().get("local");
+        assertThat(local.getDisplayName()).isEqualTo("本地");
+        assertThat(local.getPermission()).isNull();
+        assertThat(local.getMaxCapacity()).isZero();
+    }
+
+    @Test
     @DisplayName("lite ignores backend values that are present but invalid")
     void liteIgnoresInvalidBackendValues() throws Exception {
         MapSource source = new MapSource().liteDefaults()

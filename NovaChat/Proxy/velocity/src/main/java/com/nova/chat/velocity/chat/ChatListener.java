@@ -126,6 +126,9 @@ public class ChatListener {
     public void onPlayerDisconnect(DisconnectEvent event) {
         UUID playerId = event.getPlayer().getUniqueId();
         core.onPlayerDisconnect(playerId);
+        // Lite has no backend to receive the logout LEAVE, so the local
+        // authority drops the membership itself. No-op in relay mode.
+        plugin.onLitePlayerDisconnect(playerId);
         plugin.debug("Removed chat state for " + event.getPlayer().getUsername());
     }
 

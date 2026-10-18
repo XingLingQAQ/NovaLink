@@ -114,6 +114,7 @@ public class NovaChatConfig implements ProxyConfigView {
     /**
      * @return the declared {@code lite.channels}; empty in relay mode
      */
+    @Override
     public Map<String, LiteChannelConfig> getLiteChannels() {
         return model.getLiteChannels();
     }
