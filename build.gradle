@@ -186,15 +186,26 @@ tasks.register('realE2E', Exec) {
     // Default 30 min total; override with -Pe2eTimeoutSec=600.
     def timeoutSec = providers.gradleProperty('e2eTimeoutSec').orElse('1800').get().toInteger()
 
+    // Strict mode: a SKIPPED platform (no assertions ran) counts as a failure.
+    // OFF by default so local runs / offline dev boxes stay usable; CI passes
+    // -Pe2eRequireAllPlatforms=true so a platform that never ran cannot go green.
+    def requireAllPlatforms = providers.gradleProperty('e2eRequireAllPlatforms').orElse('false').get() == 'true'
+
     workingDir = rootProject.projectDir
-    commandLine 'powershell.exe',
+    def e2eArgs = [
         '-ExecutionPolicy', 'Bypass',
         '-NoProfile',
         '-File', e2eOrchestrator.absolutePath,
         '-Platforms', platforms,
         '-TimeoutSec', '420',
         '-BotWaitSec', '150'
+    ]
+    if (requireAllPlatforms) { e2eArgs += ['-RequireAllPlatforms'] }
+    commandLine(['powershell.exe'] + e2eArgs)
     timeout = java.time.Duration.ofSeconds(timeoutSec)
+    // Real-server E2E is never up-to-date; force a run so the outcome summary
+    // printed below always describes THIS run rather than a cached one.
+    outputs.upToDateWhen { false }
     // ignoreExitValue defaults to false: platform and prerequisite failures
     // both fail the Gradle task.
 
@@ -202,10 +213,34 @@ tasks.register('realE2E', Exec) {
         logger.lifecycle('[realE2E] Orchestrator: ' + e2eOrchestrator)
         logger.lifecycle('[realE2E] Starting real-server E2E for platforms: ' + platforms)
         logger.lifecycle('[realE2E] Timeout: ' + timeoutSec + 's. This will spawn real server + bot processes.')
+        logger.lifecycle('[realE2E] RequireAllPlatforms: ' + requireAllPlatforms + (requireAllPlatforms ? ' (SKIPPED counts as failure)' : ''))
         logger.lifecycle('[realE2E] Results summary: ' + e2eSummaryFile)
     }
+}
 
+// Outcome report runs as a FINALIZER: it must execute even when realE2E fails
+// (the whole point -- that is when a SKIPPED platform used to masquerade as
+// PASS). A doLast on the Exec task would be skipped on failure.
+tasks.register('reportE2EOutcomes') {
+    group = 'verification'
+    description = 'Prints the per-platform E2E outcome (PASS/FAIL/SKIPPED) after realE2E, including on failure.'
     doLast {
+        def orchestratorSummaryFile = file('.e2e-artifacts/runs/e2e-orchestrator-summary.json')
+        if (orchestratorSummaryFile.exists()) {
+            logger.lifecycle('[realE2E] --- Platform Outcomes ---')
+            try {
+                def rows = new groovy.json.JsonSlurper().parseText(orchestratorSummaryFile.text)
+                // CI runs one platform per matrix job, so the file holds a bare
+                // object rather than an array. Normalize before iterating.
+                if (!(rows instanceof List)) { rows = [rows] }
+                rows.each { row ->
+                    def detail = row.status == 'SKIPPED' && row.skippedReason ? ' (' + row.skippedReason + ')' : ''
+                    logger.lifecycle(String.format('  %-10s %s%s', row.platform, row.status, detail))
+                }
+            } catch (Exception e) {
+                logger.lifecycle('[realE2E] Could not parse orchestrator summary JSON: ' + e.message)
+            }
+        }
         if (e2eSummaryFile.exists()) {
             logger.lifecycle('[realE2E] --- Results Summary ---')
             def summaryJson = e2eSummaryFile.text
@@ -213,8 +248,10 @@ tasks.register('realE2E', Exec) {
                 def parsed = groovy.json.JsonSlurper.newInstance().parseText(summaryJson)
                 if (parsed instanceof List) {
                     parsed.each { row ->
-                        def l1 = row.l1Pass ? 'PASS' : 'FAIL'
-                        def chat = row.chatRoundTrip ? 'MATCH' : 'NO-MATCH'
+                        // SKIPPED rows ran no assertions; "L1: FAIL" would be as
+                        // wrong as "PASS". Keep them neutral.
+                        def l1 = row.status == 'SKIPPED' ? 'N/A' : (row.l1Pass ? 'PASS' : 'FAIL')
+                        def chat = row.status == 'SKIPPED' ? 'N/A' : (row.chatRoundTrip ? 'MATCH' : 'NO-MATCH')
                         def line = String.format('  %-10s | L1: %-4s | chat: %-9s | %s',
                             row.platform, l1, chat, row.status)
                         logger.lifecycle(line)
@@ -230,6 +267,7 @@ tasks.register('realE2E', Exec) {
         }
     }
 }
+tasks.named('realE2E') { finalizedBy('reportE2EOutcomes') }
 
 // Gate: only include realE2E in check when -PenableRealE2E=true is passed.
 // Plain `gradlew check` does NOT run E2E.

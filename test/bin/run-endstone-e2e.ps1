@@ -24,6 +24,10 @@
 #   0 = L1 pass
 #   1 = L1 fail (assertion mismatch or a process crashed)
 #   2 = prereq error (build/download failed)
+#   3 = SKIPPED (a required binary is unavailable, so NO test ran)
+#
+# Exit 3 is deliberately distinct from 0: a platform that ran zero assertions
+# must never be reported as PASS. run-e2e-orchestrator.ps1 maps 3 to SKIPPED.
 # ============================================================================
 [CmdletBinding()]
 param(
@@ -188,13 +192,15 @@ if ($LASTEXITCODE -ne 0) { Log "ERROR: fetch-server failed for bds"; exit 2 }
 # The BDS zip lands in $DistDir (freshly downloaded by fetch-server, a locally-
 # cached zip per versions.lock.ps1 bds notes, or a cache hit from a prior run).
 # Unpack it into the run directory. When fetch-server exits 0 but no BDS zip is
-# present, that is the documented SKIP signal from Resolve-BdsLatest -- emit a
-# SKIP marker and exit 0 so the nightly stays green on a BDS download-block
-# instead of reddening with exit 2.
+# present, that is the documented SKIP signal from Resolve-BdsLatest.
+# Record the machine-readable reason and exit 3 (SKIPPED) -- NOT 0. Exiting 0
+# here made CI report "endstone PASS" for a platform that never started a
+# server or ran the bot (run 39056124289).
 $bdsZip = Get-ChildItem (Join-Path $DistDir "bedrock-server*.zip") -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $bdsZip) {
     Log "SKIP: BDS server binary unavailable - endstone E2E not run (fetch-server exited 0 with no download; minecraft.net pocketbedlinks unreachable from this env)"
-    exit 0
+    Set-Content -Path (Join-Path $RunsDir "skip-reason.txt") -Value "BDS unavailable"
+    exit 3
 }
 $serverDir = Join-Path $RunsDir "bds"
 New-Item -ItemType Directory -Path $serverDir -Force | Out-Null
