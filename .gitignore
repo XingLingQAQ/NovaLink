@@ -88,3 +88,6 @@ screenshots/
 
 # Gradle userHome cache (per-user build cache, not for repo)
 .gradle-user/
+
+# Agent git worktrees (scratch space for parallel work; never committed)
+.worktrees/
