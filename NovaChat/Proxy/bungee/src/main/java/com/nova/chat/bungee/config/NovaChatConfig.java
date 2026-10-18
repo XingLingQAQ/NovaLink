@@ -2,8 +2,12 @@ package com.nova.chat.bungee.config;
 
 import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.common.config.YamlConfigUpdater;
+import com.nova.chat.proxy.config.ConfigSource;
+import com.nova.chat.proxy.config.LiteChannelConfig;
+import com.nova.chat.proxy.config.LiteStorageConfig;
 import com.nova.chat.proxy.config.ProxyConfig;
 import com.nova.chat.proxy.config.ProxyConfigView;
+import com.nova.chat.proxy.config.ProxyMode;
 import net.md_5.bungee.config.Configuration;
 import net.md_5.bungee.config.ConfigurationProvider;
 import net.md_5.bungee.config.YamlConfiguration;
@@ -12,19 +16,29 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 
 /**
  * Configuration wrapper for NovaChat BungeeCord plugin.
  *
- * <p>YAML reading, template installation/upgrade and dialect-level type
- * validation stay here (platform-owned per the proxy layering); the value model
- * and its accessors live in the shared {@link ProxyConfig}.
+ * <p>YAML reading and template installation/upgrade stay here (platform-owned
+ * per the proxy layering); the schema and its validation live in the shared
+ * {@link ProxyConfig}, fed through {@link BungeeConfigSource} so BungeeCord and
+ * Velocity accept and reject exactly the same documents.
  */
 public class NovaChatConfig implements ProxyConfigView {
+
+    /**
+     * Mappings whose existing children are entirely user-owned, so the template
+     * updater must not add the template's entries back into them.
+     *
+     * <p>{@code lite.channels} is a dynamic collection: the template ships an
+     * example channel and an operator deleting it must not have it restored on
+     * the next start.
+     */
     private static final Set<String> DYNAMIC_CONFIG_MAPPINGS = Set.of(
-            "chat.channel-prefixes", "format.channels", "world-routing.mappings");
+            "chat.channel-prefixes", "format.channels", "world-routing.mappings",
+            "lite.channels");
 
     /** Shared immutable value model produced by {@link #parseConfig(Configuration)}. */
     private ProxyConfig model = new ProxyConfig.Builder().build();
@@ -55,8 +69,11 @@ public class NovaChatConfig implements ProxyConfigView {
                 .load(configFile);
             parseConfig(config);
         } catch (Exception e) {
+            // Keep the validation text in the wrapper message: the plugin only
+            // logs the top-level message, and "Failed to install..." alone gives
+            // an operator no clue which key is wrong.
             throw new IllegalStateException(
-                    "Failed to install, upgrade, or load " + configFile, e);
+                    "Failed to install, upgrade, or load " + configFile + ": " + e.getMessage(), e);
         }
     }
 
@@ -64,117 +81,48 @@ public class NovaChatConfig implements ProxyConfigView {
      * Parses the YAML configuration into the shared value model.
      */
     private void parseConfig(Configuration config) {
-        ProxyConfig.Builder builder = new ProxyConfig.Builder();
-
-        // Backend settings
-        Configuration backend = Objects.requireNonNull(config.getSection("backend"),
-                "Missing required configuration section: backend");
-        builder.backendHost(requiredNonBlankString(backend, "host", "backend.host"));
-        builder.backendPort(requiredPort(backend, "port", "backend.port"));
-        builder.username(requiredString(backend, "username", "backend.username"));
-        builder.password(requiredString(backend, "password", "backend.password"));
-        builder.reconnectDelay(requiredPositiveInt(
-                backend, "reconnect-delay", "backend.reconnect-delay"));
-
-        // Chat settings
-        Configuration chat = Objects.requireNonNull(config.getSection("chat"),
-                "Missing required configuration section: chat");
-        builder.replaceVanilla(requiredBoolean(chat, "replace_vanilla", "chat.replace_vanilla"));
-        builder.defaultChannel(requiredNonBlankString(
-                chat, "default_channel", "chat.default_channel"));
-        builder.locale(requiredNonBlankString(chat, "locale", "chat.locale"));
-        Configuration prefixes = requiredSection(chat, "channel-prefixes", "chat.channel-prefixes");
-        for (String key : prefixes.getKeys()) {
-            String channelId = requiredString(prefixes, key, "chat.channel-prefixes." + key);
-            if (!key.isEmpty() && !channelId.isEmpty()) {
-                builder.channelPrefix(key, channelId);
-            }
+        try {
+            this.model = ProxyConfig.from(new BungeeConfigSource(config));
+        } catch (ConfigSource.ConfigException e) {
+            throw new IllegalArgumentException(e.getMessage(), e);
         }
-
-        // Format settings
-        Configuration format = Objects.requireNonNull(config.getSection("format"),
-                "Missing required configuration section: format");
-        builder.prefix(requiredString(format, "prefix", "format.prefix"));
-        builder.errorFormat(requiredString(format, "error", "format.error"));
-        builder.successFormat(requiredString(format, "success", "format.success"));
-        builder.defaultFormat(requiredString(format, "default", "format.default"));
-
-        Configuration channels = requiredSection(format, "channels", "format.channels");
-        for (String key : channels.getKeys()) {
-            builder.channelFormat(key, requiredString(channels, key, "format.channels." + key));
-        }
-
-        // Debug mode
-        builder.debug(requiredBoolean(config, "debug", "debug"));
-
-        this.model = builder.build();
-    }
-
-    private static Configuration requiredSection(Configuration parent, String key, String path) {
-        Configuration section = parent.getSection(key);
-        if (section == null) {
-            throw new IllegalArgumentException("Configuration value " + path + " must be a mapping");
-        }
-        return section;
-    }
-
-    private static String requiredString(Configuration parent, String key, String path) {
-        Object value = parent.get(key);
-        if (!(value instanceof String stringValue)) {
-            throw new IllegalArgumentException("Configuration value " + path + " must be a string");
-        }
-        return stringValue;
-    }
-
-    private static String requiredNonBlankString(Configuration parent, String key, String path) {
-        String value = requiredString(parent, key, path);
-        if (value.isBlank()) {
-            throw new IllegalArgumentException("Configuration value " + path + " must not be blank");
-        }
-        return value;
-    }
-
-    private static int requiredInt(Configuration parent, String key, String path) {
-        Object value = parent.get(key);
-        if (!(value instanceof Number numberValue)
-                || !Double.isFinite(numberValue.doubleValue())
-                || numberValue.doubleValue() != Math.rint(numberValue.doubleValue())
-                || numberValue.doubleValue() < Integer.MIN_VALUE
-                || numberValue.doubleValue() > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException("Configuration value " + path + " must be an integer");
-        }
-        return numberValue.intValue();
-    }
-
-    private static int requiredPositiveInt(Configuration parent, String key, String path) {
-        int value = requiredInt(parent, key, path);
-        if (value <= 0) {
-            throw new IllegalArgumentException("Configuration value " + path + " must be greater than 0");
-        }
-        return value;
-    }
-
-    private static int requiredPort(Configuration parent, String key, String path) {
-        int value = requiredInt(parent, key, path);
-        if (value < 1 || value > 65535) {
-            throw new IllegalArgumentException(
-                    "Configuration value " + path + " must be between 1 and 65535");
-        }
-        return value;
-    }
-
-    private static boolean requiredBoolean(Configuration parent, String key, String path) {
-        Object value = parent.get(key);
-        if (!(value instanceof Boolean booleanValue)) {
-            throw new IllegalArgumentException("Configuration value " + path + " must be a boolean");
-        }
-        return booleanValue;
     }
 
     // Getters
 
     public YamlConfigUpdater.UpdateResult getUpdateResult() {
         return updateResult;
+    }
+
+    @Override
+    public ProxyMode getMode() {
+        return model.getMode();
+    }
+
+    @Override
+    public String getClientId() {
+        return model.getClientId();
+    }
+
+    /**
+     * @return the {@code lite.server-id}, or null in relay mode
+     */
+    public String getServerId() {
+        return model.getServerId();
+    }
+
+    /**
+     * @return the declared {@code lite.channels}; empty in relay mode
+     */
+    public Map<String, LiteChannelConfig> getLiteChannels() {
+        return model.getLiteChannels();
+    }
+
+    /**
+     * @return the parsed {@code lite.storage}, or null in relay mode
+     */
+    public LiteStorageConfig getLiteStorage() {
+        return model.getLiteStorage();
     }
 
     @Override
@@ -224,11 +172,11 @@ public class NovaChatConfig implements ProxyConfigView {
         return model.getLocale();
     }
 
+
     @Override
     public String getPrefix() {
         return model.getPrefix();
     }
-
 
     @Override
     public String getErrorFormat() {
@@ -282,6 +230,8 @@ public class NovaChatConfig implements ProxyConfigView {
      * Maps platform config to the shared {@link ClientConnectionConfig}.
      *
      * <p>The initial reconnect delay comes from {@code backend.reconnect-delay}.
+     *
+     * @throws IllegalStateException in lite mode, where no backend is configured
      */
     @Override
     public ClientConnectionConfig toClientConnectionConfig() {

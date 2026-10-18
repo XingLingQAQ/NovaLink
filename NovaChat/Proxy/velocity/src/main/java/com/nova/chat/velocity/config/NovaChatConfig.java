@@ -2,26 +2,43 @@ package com.nova.chat.velocity.config;
 
 import com.moandjiezana.toml.Toml;
 import com.nova.chat.client.network.ClientConnectionConfig;
+import com.nova.chat.proxy.config.ConfigSource;
+import com.nova.chat.proxy.config.LiteChannelConfig;
+import com.nova.chat.proxy.config.LiteStorageConfig;
 import com.nova.chat.proxy.config.ProxyConfig;
 import com.nova.chat.proxy.config.ProxyConfigView;
+import com.nova.chat.proxy.config.ProxyMode;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 
 /**
  * Configuration wrapper for NovaChat Velocity plugin.
  *
- * <p>TOML reading, template installation/upgrade and dialect-level type
- * validation stay here (platform-owned per the proxy layering); the value model
- * and its accessors live in the shared {@link ProxyConfig}.
+ * <p>TOML reading and template installation/upgrade stay here (platform-owned
+ * per the proxy layering); the schema and its validation live in the shared
+ * {@link ProxyConfig}, fed through {@link TomlConfigSource} so Velocity and
+ * BungeeCord accept and reject exactly the same documents.
  */
 public class NovaChatConfig implements ProxyConfigView {
+
+    /**
+     * Tables whose existing children are entirely user-owned, so the template
+     * updater must not add the template's entries back into them.
+     *
+     * <p>{@code lite.channels} is a dynamic collection: the template ships an
+     * example channel and an operator deleting it must not have it restored on
+     * the next start. The table itself is still appended when missing entirely
+     * (a table header is not an assignment), which is why lite channels cannot
+     * be declared with {@code [[array-of-tables]]}: the updater's header pattern
+     * does not match those, so they would be re-appended wholesale.
+     */
     private static final Set<String> DYNAMIC_CONFIG_TABLES = Set.of(
-            "chat.channel-prefixes", "format.channels", "world-routing.mappings");
+            "chat.channel-prefixes", "format.channels", "world-routing.mappings",
+            "lite.channels");
 
     /** Shared immutable value model produced by {@link #parseConfig(Toml)}. */
     private ProxyConfig model = new ProxyConfig.Builder().build();
@@ -51,8 +68,11 @@ public class NovaChatConfig implements ProxyConfigView {
             Toml toml = new Toml().read(configPath.toFile());
             parseConfig(toml);
         } catch (Exception e) {
+            // Keep the validation text in the wrapper message: the plugin only
+            // logs the top-level message, and "Failed to install..." alone gives
+            // an operator no clue which key is wrong.
             throw new IllegalStateException(
-                    "Failed to install, upgrade, or load " + configPath, e);
+                    "Failed to install, upgrade, or load " + configPath + ": " + e.getMessage(), e);
         }
     }
 
@@ -60,120 +80,11 @@ public class NovaChatConfig implements ProxyConfigView {
      * Parses the TOML configuration into the shared value model.
      */
     private void parseConfig(Toml toml) {
-        ProxyConfig.Builder builder = new ProxyConfig.Builder();
-
-        // Backend settings
-        Toml backend = requiredTable(toml, "backend");
-        builder.backendHost(requiredNonBlankString(backend, "host", "backend.host"));
-        builder.backendPort(requiredPort(backend, "port", "backend.port"));
-        builder.username(requiredString(backend, "username", "backend.username"));
-        builder.password(requiredString(backend, "password", "backend.password"));
-        builder.reconnectDelay(requiredPositiveInt(
-                backend, "reconnect-delay", "backend.reconnect-delay"));
-
-        // Chat settings
-        Toml chat = requiredTable(toml, "chat");
-        builder.replaceVanilla(requiredBoolean(chat, "replace_vanilla", "chat.replace_vanilla"));
-        builder.defaultChannel(requiredNonBlankString(
-                chat, "default_channel", "chat.default_channel"));
-        builder.locale(requiredNonBlankString(chat, "locale", "chat.locale"));
-
-        // Channel prefixes (prefix -> channel id; empty map = feature disabled)
-        Toml prefixes = requiredTable(chat, "channel-prefixes");
-        for (Map.Entry<String, Object> entry : prefixes.entrySet()) {
-            if (!(entry.getValue() instanceof String channelId)) {
-                throw new IllegalArgumentException("Configuration value chat.channel-prefixes."
-                        + entry.getKey() + " must be a string");
-            }
-            // toml4j keeps the quotes on quoted keys (e.g. "\"!\""); strip them.
-            String key = stripQuotes(entry.getKey());
-            if (!key.isEmpty() && !channelId.isEmpty()) {
-                builder.channelPrefix(key, channelId);
-            }
+        try {
+            this.model = ProxyConfig.from(new TomlConfigSource(toml));
+        } catch (ConfigSource.ConfigException e) {
+            throw new IllegalArgumentException(e.getMessage(), e);
         }
-
-        // Format settings
-        Toml format = requiredTable(toml, "format");
-        builder.prefix(requiredString(format, "prefix", "format.prefix"));
-        builder.errorFormat(requiredString(format, "error", "format.error"));
-        builder.successFormat(requiredString(format, "success", "format.success"));
-        builder.defaultFormat(requiredString(format, "default", "format.default"));
-
-        Toml channels = requiredTable(format, "channels");
-        for (Map.Entry<String, Object> entry : channels.entrySet()) {
-            if ("debug".equals(entry.getKey()) && entry.getValue() instanceof Boolean) {
-                // Older templates stored the root debug flag in this table.
-                // TomlConfigUpdater copies it to the root during migration.
-                continue;
-            }
-            if (!(entry.getValue() instanceof String channelFormat)) {
-                throw new IllegalArgumentException("Configuration value format.channels."
-                        + entry.getKey() + " must be a string");
-            }
-            builder.channelFormat(entry.getKey(), channelFormat);
-        }
-
-        // Debug mode
-        builder.debug(requiredBoolean(toml, "debug", "debug"));
-
-        this.model = builder.build();
-    }
-
-    private static Toml requiredTable(Toml parent, String key) {
-        return Objects.requireNonNull(parent.getTable(key),
-                "Missing required configuration table: " + key);
-    }
-
-    private static String requiredString(Toml parent, String key, String path) {
-        return Objects.requireNonNull(parent.getString(key),
-                "Missing required configuration value: " + path);
-    }
-
-    private static String requiredNonBlankString(Toml parent, String key, String path) {
-        String value = requiredString(parent, key, path);
-        if (value.isBlank()) {
-            throw new IllegalArgumentException("Configuration value " + path + " must not be blank");
-        }
-        return value;
-    }
-
-    private static Long requiredLong(Toml parent, String key, String path) {
-        return Objects.requireNonNull(parent.getLong(key),
-                "Missing required configuration value: " + path);
-    }
-
-    private static int requiredPositiveInt(Toml parent, String key, String path) {
-        long value = requiredLong(parent, key, path);
-        if (value <= 0 || value > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException(
-                    "Configuration value " + path + " must be between 1 and " + Integer.MAX_VALUE);
-        }
-        return (int) value;
-    }
-
-    private static int requiredPort(Toml parent, String key, String path) {
-        long value = requiredLong(parent, key, path);
-        if (value < 1 || value > 65535) {
-            throw new IllegalArgumentException(
-                    "Configuration value " + path + " must be between 1 and 65535");
-        }
-        return (int) value;
-    }
-
-    private static boolean requiredBoolean(Toml parent, String key, String path) {
-        return Objects.requireNonNull(parent.getBoolean(key),
-                "Missing or invalid boolean configuration value: " + path);
-    }
-
-    /** Strips one layer of surrounding double quotes (toml4j quoted-key form). */
-    private static String stripQuotes(String key) {
-        if (key == null) {
-            return "";
-        }
-        if (key.length() >= 2 && key.startsWith("\"") && key.endsWith("\"")) {
-            return key.substring(1, key.length() - 1);
-        }
-        return key;
     }
 
     // Getters
@@ -188,6 +99,37 @@ public class NovaChatConfig implements ProxyConfigView {
 
     public Path getConfigBackupPath() {
         return updateResult != null ? updateResult.backupPath() : null;
+    }
+
+    @Override
+    public ProxyMode getMode() {
+        return model.getMode();
+    }
+
+    @Override
+    public String getClientId() {
+        return model.getClientId();
+    }
+
+    /**
+     * @return the {@code lite.server-id}, or null in relay mode
+     */
+    public String getServerId() {
+        return model.getServerId();
+    }
+
+    /**
+     * @return the declared {@code lite.channels}; empty in relay mode
+     */
+    public Map<String, LiteChannelConfig> getLiteChannels() {
+        return model.getLiteChannels();
+    }
+
+    /**
+     * @return the parsed {@code lite.storage}, or null in relay mode
+     */
+    public LiteStorageConfig getLiteStorage() {
+        return model.getLiteStorage();
     }
 
     @Override
@@ -291,6 +233,8 @@ public class NovaChatConfig implements ProxyConfigView {
      * Maps platform config to the shared {@link ClientConnectionConfig}.
      *
      * <p>The initial reconnect delay comes from {@code backend.reconnect-delay}.
+     *
+     * @throws IllegalStateException in lite mode, where no backend is configured
      */
     @Override
     public ClientConnectionConfig toClientConnectionConfig() {
