@@ -14,16 +14,20 @@
 # build->backend->server->bot->assert->teardown flow. This script is the
 # shared "start ONE server process" primitive the orchestrators call.
 #
-# Platforms + their pinned server jars (see test/versions.lock.ps1):
+# Platforms + their pinned server jars (see test/versions.lock.ps1).
+# The JDK column is the RUNTIME requirement, verified against each jar on
+# 2026-10-18 by booting it:
 #   bukkit   -> purpur    (JDK 21, EULA required)
-#   folia    -> folia     (JDK 21, EULA required)
-#   velocity -> velocity  (JDK 25, no EULA)
+#   folia    -> folia     (JDK 25, EULA required -- 26.1+ refuses < 25)
+#   velocity -> velocity  (JDK 25, no EULA -- 4.x classes are class-file 69.0)
 #   bungee   -> waterfall (JDK 21, no EULA, backgrounded; original
 #                          .e2e/bin/start-waterfall.ps1 ran in foreground)
-#   sponge   -> spongevanilla (JDK 17, no EULA)
+#   sponge   -> spongevanilla (JDK 21, no EULA -- bootstrap is class-file 65.0)
 #   nukkit   -> nukkit    (JDK 21, no EULA)
 #   pnx      -> nukkit    (JDK 21, no EULA; PNX runs on the Cloudburst Nukkit
 #                          server jar -- see .e2e/bin/start-pnx.ps1 caveat)
+# The caller (run-multiplatform-e2e.ps1) passes -JdkHome, so these are docs,
+# not dispatch: this script just runs whatever java it is handed.
 #
 # Exit codes:
 #   0 = server started, PID written to $PidFile

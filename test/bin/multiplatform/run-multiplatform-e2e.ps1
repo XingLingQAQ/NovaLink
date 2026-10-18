@@ -317,7 +317,10 @@ $PlatformDefs = @{
   }
   velocity = @{
     LockName = 'velocity'; BotScript = 'run-e2e.js';     BotKind = 'java'
-    ReadyPattern = "(?i)(Listening|Booting|Started|Done)"; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
+    # Velocity 4.x requires Java 25 at RUNTIME as well (docs.papermc.io: "at
+    # least Java 25"); the 4.1.0 jar's classes are class-file 69.0, so 21 dies
+    # with UnsupportedClassVersionError (verified 2026-10-18).
+    ReadyPattern = "(?i)(Listening|Booting|Started|Done)"; Jdk = "Jdk25"; ChatPhrase = "hello from e2e bot"
     Note = "velocity needs an extra downstream purpur; this orchestrator runs the velocity proxy only (see start-server.ps1 -Platform velocity)"
     # Velocity proxy plugin (thin jar, no shadow). Velocity API requires JDK 25
     # (toolchain.languageVersion=25 + sourceCompatibility=VERSION_25 in build.gradle).
@@ -339,7 +342,11 @@ $PlatformDefs = @{
   }
   folia = @{
     LockName = 'folia';    BotScript = 'run-e2e.js';     BotKind = 'java'
-    ReadyPattern = "(?i)Done \("; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
+    # JDK 25 for the SERVER too, not just the plugin build. Folia 26.1.2's
+    # version.json declares java_version 25 and booting on 21 exits with
+    # "Minecraft 26.1 and newer requires running the server with Java 25 or
+    # above" (verified 2026-10-18); on 25 it reaches "Done (".
+    ReadyPattern = "(?i)Done \("; Jdk = "Jdk25"; ChatPhrase = "hello from e2e bot"
     # Gradle task + jar glob for the per-platform plugin build step.
     # Folia API 26.x declares org.gradle.jvm.version=25, so the plugin must be
     # compiled with JDK 25 (build.gradle sourceCompatibility=VERSION_25; no
@@ -361,18 +368,19 @@ $PlatformDefs = @{
   }
   sponge = @{
     LockName = 'sponge';   BotScript = 'run-e2e.js';     BotKind = 'java'
-    ReadyPattern = "(?i)(Done|Sponge.*ready|Loading.*complete|Listening)"; Jdk = "Jdk17"; ChatPhrase = "hello from e2e bot"
+    # JDK 21, not 17: the SpongeVanilla universal jar's installer/bootstrap is
+    # class-file 65.0, so 17 dies at launch with UnsupportedClassVersionError;
+    # on 21 it reaches "Done (" (verified 2026-10-18).
+    ReadyPattern = "(?i)(Done|Sponge.*ready|Loading.*complete|Listening)"; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
     # Sponge plugin (fat jar via shadow; archiveBaseName=NovaChat-Sponge).
     # META-INF/sponge_plugins.json is at the jar root. Installed into the
     # SpongeVanilla server's mods/ dir (Sponge plugins load from mods/).
     GradleTask  = ":NovaChat:Sponge:sponge:build"
     JarGlob     = "NovaChat/Sponge/sponge/build/libs/NovaChat-Sponge-*.jar"
-    # Build with 21 even though the server runs on 17. Gradle configures every
-    # subproject before running a task, and :NovaChat:MOD:fabric applies
-    # fabric-loom 1.17.17, which refuses to load on a JVM below 21. Building
-    # sponge on 17 therefore died in configuration with "Dependency requires at
-    # least JVM runtime version 21", before sponge was even reached. The Jdk
-    # field stays at 17: that one launches the SpongeVanilla server.
+    # Build and run on the same JDK 21. Gradle configures every subproject before
+    # running a task, and :NovaChat:MOD:fabric applies fabric-loom 1.17.17, which
+    # refuses to load on a JVM below 21 -- so 17 was never a viable build JVM
+    # either.
     BuildJdk    = "Jdk21"
     PluginsSubdir = "sponge/mods"
   }
@@ -397,18 +405,26 @@ function Test-Prereqs([string[]]$platforms) {
       $issues += "required harness file missing: $harnessFile"
     }
   }
-  # JDK checks
-  $java21 = Join-Path $Jdk21 "bin\java.exe"
-  if (-not (Test-Path $java21)) {
-    $issues += "JDK 21 java.exe not found at $java21 (set -Jdk21 or JAVA_HOME)"
+  # JDK checks. JDK 21 is the fallback for every platform that does not pin a
+  # different runtime, so it is required unconditionally; 17 and 25 are only
+  # required when a requested platform actually asks for them (the plugin build
+  # JDKs count too -- folia/velocity compile on 25).
+  $neededJdks = @{ 'Jdk21' = $true }
+  foreach ($pf in $platforms) {
+    $pdef = $PlatformDefs[$pf]
+    if (-not $pdef) { continue }
+    if ($pdef.Jdk)      { $neededJdks[$pdef.Jdk] = $true }
+    if ($pdef.BuildJdk) { $neededJdks[$pdef.BuildJdk] = $true }
   }
-  $java17 = Join-Path $Jdk17 "bin\java.exe"
-  if (-not (Test-Path $java17)) {
-    $issues += "JDK 17 java.exe not found at $java17 (set -Jdk17; required for sponge)"
-  }
-  $java25 = Join-Path $Jdk25 "bin\java.exe"
-  if (-not (Test-Path $java25)) {
-    $issues += "JDK 25 java.exe not found at $java25 (set -Jdk25; required to build folia + velocity plugins)"
+  $jdkHomes = @{ 'Jdk17' = $Jdk17; 'Jdk21' = $Jdk21; 'Jdk25' = $Jdk25 }
+  foreach ($jdkVar in @('Jdk17','Jdk21','Jdk25')) {
+    if (-not $neededJdks.ContainsKey($jdkVar)) { continue }
+    $jdkHome = $jdkHomes[$jdkVar]
+    $jdkNum = $jdkVar -replace '^Jdk',''
+    $jdkExe = if ($jdkHome) { Join-Path $jdkHome "bin\java.exe" } else { "" }
+    if ($jdkExe -and (Test-Path $jdkExe)) { continue }
+    $users = @($platforms | Where-Object { $PlatformDefs[$_] -and ($PlatformDefs[$_].Jdk -eq $jdkVar -or $PlatformDefs[$_].BuildJdk -eq $jdkVar) })
+    $issues += "JDK $jdkNum java.exe not found at '$jdkExe' (set -$jdkVar or JAVA_HOME_${jdkNum}_X64; needed by $($users -join ', '))"
   }
   # Node.js
   $nodeExe = (Get-Command node -ErrorAction SilentlyContinue)
@@ -449,11 +465,27 @@ function Invoke-Platform([string]$pf) {
     pids = @()
   }
 
-  # set JDK env for this platform's scripts
+  # set JDK env for this platform's scripts. Resolve through a switch rather
+  # than "Jdk17 or else Jdk21": the old ternary silently mapped Jdk25 to Jdk21,
+  # so folia booted on 21 and died instantly with "Minecraft 26.1 and newer
+  # requires running the server with Java 25 or above" while the harness kept
+  # waiting 480s for a ready marker that could never appear.
   $jdkVar = $def.Jdk
-  $jdkPath = if ($jdkVar -eq "Jdk17") { $Jdk17 } else { $Jdk21 }
+  $jdkPath = switch ($jdkVar) {
+    "Jdk25" { $Jdk25 }
+    "Jdk17" { $Jdk17 }
+    default { $Jdk21 }
+  }
+  if (-not $jdkPath) {
+    $result.status = "FAIL"; $result.notes = "runtime JDK $jdkVar could not be resolved"
+    Log "  ERROR: runtime JDK $jdkVar could not be resolved (check -Jdk17/-Jdk21/-Jdk25 or the JAVA_HOME_NN_X64 env vars)"
+    return $result
+  }
   $env:JAVA_HOME = $jdkPath
   $env:PATH = "$jdkPath\bin;$env:PATH"
+  # Print the resolved runtime JDK: a wrong one now costs a 480s ready-timeout
+  # with no hint as to why, which is exactly how the folia JDK21 bug hid.
+  Log "  runtime JDK: $jdkVar ($jdkPath)"
 
   # platforms with a Note are intentionally skipped by this orchestrator
   if ($def.Note) {
