@@ -172,7 +172,19 @@ function Test-PortOpen([int]$port, [int]$timeoutMs = 1500) {
 # mojibake and makes -match against it silently fail.
 function Read-LogText([string]$path) {
   if (-not (Test-Path -LiteralPath $path)) { return "" }
-  try { return [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) } catch { return "" }
+  # Open explicitly with FileShare.ReadWrite: the log files are being appended
+  # to by a StreamWriter for the whole run, and File.ReadAllText's default
+  # sharing mode makes this throw "file is being used by another process". The
+  # caller treats "" as "no marker yet", so an IOException here silently
+  # converts a healthy boot into a timeout.
+  try {
+    $share = [System.IO.FileShare]::ReadWrite
+    $stream = [System.IO.FileStream]::new($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+    try {
+      $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
+      try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+    } finally { $stream.Dispose() }
+  } catch { return "" }
 }
 
 function Wait-LogMarker([string]$file, [string]$pattern, [int]$timeoutSec, [string]$label) {
@@ -299,11 +311,15 @@ $PlatformDefs = @{
     InitProps = @{ e2ePluginProject = ':NovaChat:Bedrock:nukkit'; e2ePluginTask = 'nukkitE2eJar'; e2ePluginBaseName = 'novachat-nukkit' }
     JarGlob = 'NovaChat/Bedrock/nukkit/build/libs/novachat-nukkit-*.jar'
     PluginsSubdir = 'plugins'; ClientId = 'E2E_JobNukkit'
+    # Both engines below run BDS-protocol 1.26.x; bedrock-protocol rejects a
+    # client one revision behind with disconnectionScreen.outdatedClient.
+    BotMcVersion = '1.26.40'
   }
   pmmp = @{
     LockName = 'pocketmine'; Kind = 'bedrock'; SubDir = 'pmmp'
     Jdk = $null; ReadyPattern = '(?i)Done'
     JarGlob = ''; PluginsSubdir = 'plugins'; ClientId = 'E2E_JobPmmp'
+    BotMcVersion = '1.26.40'
   }
   pnx = @{
     LockName = 'nukkit'; Kind = 'bedrock'; SubDir = 'pnx'
@@ -312,6 +328,7 @@ $PlatformDefs = @{
     JarGlob = 'NovaChat/Bedrock/pnx/build/libs/NovaChat-PNX-*.jar'
 
     PluginsSubdir = 'plugins'; ClientId = 'E2E_JobPnx'
+    BotMcVersion = '1.26.40'
   }
   velocity = @{
     LockName = 'velocity'; Kind = 'proxy'; SubDir = 'velocity'
@@ -349,8 +366,16 @@ function Resolve-PlatformName([string]$name) {
 $script:Pids = [System.Collections.Generic.List[int]]::new()
 $script:PidLabels = @{}
 # Backends are launched through System.Diagnostics.Process with a kept-open
-# stdin pipe (see Start-BackendProcess) so this map lets teardown close it.
+# stdin pipe (see Start-JvmProcess) so this map lets teardown close it.
 $script:BackendProcesses = @{}
+# One entry per Start-JvmProcess call: the StreamWriter pair draining that
+# process's stdout/stderr. They stay open for the process's whole life (see the
+# note in Start-JvmProcess) and are closed in Teardown-All.
+$script:DrainWriters = @{}
+# Strong references to every Process object this script launches. Without them
+# the GC can finalize a Process whose redirected stdin pipe is still load
+# bearing -- see the note in Start-JvmProcess.
+$script:LiveProcesses = @{}
 
 function Track-Pid([int]$procId, [string]$label) {
   if ($procId -le 0) { return }
@@ -393,6 +418,20 @@ function Teardown-All {
     $procId = $script:Pids[$i]
     Stop-TrackedPid $procId $script:PidLabels[$procId]
   }
+
+  # Flush + close the log writers LAST, after the processes are gone: closing
+  # them earlier would drop whatever the process wrote in its final moments
+  # (the shutdown lines a failure diagnosis depends on).
+  foreach ($key in @($script:DrainWriters.Keys)) {
+    foreach ($w in $script:DrainWriters[$key]) {
+      if ($w) {
+        try { $w.Flush(); $w.Dispose() } catch { }
+      }
+    }
+  }
+  $script:DrainWriters = @{}
+  $script:LiveProcesses = @{}
+
   $script:Pids.Clear()
   $script:PidLabels.Clear()
   $script:BackendProcesses = @{}
@@ -440,14 +479,65 @@ function Start-JvmProcess {
   # synchronously (ReadToEnd) would block until exit and starve the readiness
   # loop; not draining at all would eventually block the JVM once the OS pipe
   # buffer filled.
+  #
+  # The writer is a StreamWriter held OPEN for the life of the process, NOT
+  # Add-Content inside the event action. A Bukkit server with NovaChat's debug
+  # logging on emits thousands of lines per minute, and Add-Content reopens the
+  # file for every single line: under that rate PowerShell 5.1's event queue
+  # drops events and the handler races other writers, which produced a 3.9 MB
+  # log containing only KeepAlive lines and NO `Done (…)` line at all -- so the
+  # readiness poll timed out on a server that had in fact booted. One open
+  # writer with AutoFlush keeps every line and makes it visible immediately.
   $tag = "NovaLinkJoint$($proc.Id)"
-  Remove-Item $StdoutPath, $StderrPath -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $StdoutPath, $StderrPath -Force -ErrorAction SilentlyContinue
+  # New-Object with a multi-argument ctor is ambiguous here (PowerShell may bind
+  # the argument array as one object); the explicit [type]::new ctor is
+  # unambiguous on both 5.1 and 7+. Creating the writer can also fail if the
+  # parent directory is missing, so surface that instead of silently returning a
+  # process whose output goes nowhere -- which is exactly how a round reported
+  # "backend did not become ready" with no backend log at all.
+  $outDir = Split-Path -Parent $StdoutPath
+  if ($outDir) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
+  # FileShare.ReadWrite is REQUIRED, not cosmetic. StreamWriter's constructor
+  # opens the file with FileShare.Read at best (and no sharing on some
+  # runtimes), so the readiness poll's ReadAllText could not open the log at all
+  # and `Read-LogText` swallowed the IOException into "" -- the loop then waited
+  # out its full 60s on a backend that had logged "started successfully" eight
+  # seconds in. Sharing read+write lets the poll read a file that is being
+  # appended to.
+  $share = [System.IO.FileShare]::ReadWrite
+  try {
+    $outStream = [System.IO.FileStream]::new($StdoutPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, $share)
+    $errStream = [System.IO.FileStream]::new($StderrPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, $share)
+    $outWriter = [System.IO.StreamWriter]::new($outStream, [System.Text.UTF8Encoding]::new($false))
+    $errWriter = [System.IO.StreamWriter]::new($errStream, [System.Text.UTF8Encoding]::new($false))
+    $outWriter.AutoFlush = $true
+    $errWriter.AutoFlush = $true
+  } catch {
+    Log "  ERROR: could not open log writers for $tag ($StdoutPath): $($_.Exception.Message)"
+    try { $proc.Kill() } catch { }
+    return $null
+  }
+  $script:DrainWriters[$tag] = @($outWriter, $errWriter)
+  # Hold a strong reference to the Process object itself. Its finalizer closes
+  # the redirected stdin handle, which the backend reads as Ctrl+D and shuts
+  # down cleanly (`Console loop exited; NovaLink main thread returning.`) about
+  # two seconds after "started successfully" -- the round then reports "backend
+  # did not become ready" even though the log shows a healthy boot followed by a
+  # graceful stop. Keeping the object alive for the script's lifetime keeps the
+  # pipe open, which is the whole reason this launcher exists.
+  $script:LiveProcesses[$tag] = $proc
+
   $null = Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -SourceIdentifier "$tag-out" -Action {
-    if ($EventArgs.Data -ne $null) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data }
-  } -MessageData $StdoutPath
+    if ($EventArgs.Data -ne $null) {
+      try { $Event.MessageData.WriteLine($EventArgs.Data) } catch { }
+    }
+  } -MessageData $outWriter
   $null = Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -SourceIdentifier "$tag-err" -Action {
-    if ($EventArgs.Data -ne $null) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data }
-  } -MessageData $StderrPath
+    if ($EventArgs.Data -ne $null) {
+      try { $Event.MessageData.WriteLine($EventArgs.Data) } catch { }
+    }
+  } -MessageData $errWriter
   $proc.BeginOutputReadLine()
   $proc.BeginErrorReadLine()
   return $proc
@@ -849,6 +939,10 @@ function Start-Backend([string]$configPath, [string]$workDir, [string]$stdoutPat
   $proc = Start-JvmProcess -JavaExe $java `
     -Arguments @("-Xmx512m", "-cp", $cp, "com.nova.link.NovaLinkMain", $configPath) `
     -WorkingDirectory $workDir -StdoutPath $stdoutPath -StderrPath $stderrPath
+  if (-not $proc) {
+    Log "  ERROR: backend process could not be started"
+    return $null
+  }
   Track-Pid $proc.Id "backend"
   $script:BackendProcesses["joint"] = $proc
   Log "  backend pid=$($proc.Id) on tcp $BackendPort ws $BackendWsPort"
@@ -1148,6 +1242,10 @@ xbox-auth=off
   if (-not (Test-Path -LiteralPath $java)) { $java = Join-Path $jdkPath "bin/java" }
   $proc = Start-JvmProcess -JavaExe $java -Arguments $javaArgs -WorkingDirectory $serverDir `
     -StdoutPath $stdoutPath -StderrPath $stderrPath
+  if (-not $proc) {
+    Log "  ERROR: $platform process could not be started"
+    return $null
+  }
   Track-Pid $proc.Id "$platform-server"
   Log "  $platform pid=$($proc.Id) port=$port jdk=$($def.Jdk)"
   return $proc
@@ -1623,6 +1721,10 @@ function Invoke-Round($round, [string]$roundDir) {
         -Arguments @("-Xms256M", "-Xmx512M", "-jar", $jarPath) `
         -WorkingDirectory $dir `
         -StdoutPath (Join-Path $dir "proxy.stdout.log") -StderrPath (Join-Path $dir "proxy.stderr.log")
+      if (-not $p) {
+        $result.status = 'FAIL'; $result.notes = "$($round.Proxy) proxy could not be started"
+        return $result
+      }
       Track-Pid $p.Id "$($round.Proxy)-proxy"
       $serverProcs[$round.Proxy] = $p
       Log "  $($round.Proxy) pid=$($p.Id) port=$ProxyPort jdk=$($PlatformDefs[$round.Proxy].Jdk)"
@@ -1644,12 +1746,24 @@ function Invoke-Round($round, [string]$roundDir) {
     $pendingReady = @()
     foreach ($name in $serverProcs.Keys) {
       $def = $PlatformDefs[$name]
-      $logPath = if ($def.Kind -eq 'proxy') { Join-Path (Join-Path $roundDir $name) "proxy.stdout.log" }
-                 else { Join-Path (Join-Path $roundDir $name) "server.stdout.log" }
+      $dir = Join-Path $roundDir $name
+      # Some engines do not write their readiness line to stdout. Paper-family
+      # servers (Purpur/Folia) install their own log4j appender and send almost
+      # everything to logs/latest.log; the stdout our launcher captures ends up
+      # with the paperclip bootstrap lines and little else. Watch BOTH files and
+      # treat a match in either as ready.
+      $logs = @()
+      if ($def.Kind -eq 'proxy') {
+        $logs += (Join-Path $dir "proxy.stdout.log")
+      } else {
+        $logs += (Join-Path $dir "server.stdout.log")
+        $logs += (Join-Path $dir "logs/latest.log")
+      }
       $pendingReady += [PSCustomObject]@{
         Name = $name
         Pattern = $def.ReadyPattern
-        Log = $logPath
+        Logs = $logs
+        Log = $logs[0]      # diagnostics: the file we would tail on failure
         Ready = $false
       }
     }
@@ -1657,10 +1771,13 @@ function Invoke-Round($round, [string]$roundDir) {
     while ((Get-Date) -lt $readyDeadline -and @($pendingReady | Where-Object { -not $_.Ready }).Count -gt 0) {
       foreach ($entry in $pendingReady) {
         if ($entry.Ready) { continue }
-        $text = Read-LogText $entry.Log
-        if ($text -and ($text -match $entry.Pattern)) {
-          $entry.Ready = $true
-          Log "  $($entry.Name) ready (matched: $($entry.Pattern))"
+        foreach ($logFile in $entry.Logs) {
+          $text = Read-LogText $logFile
+          if ($text -and ($text -match $entry.Pattern)) {
+            $entry.Ready = $true
+            Log "  $($entry.Name) ready (matched in $(Split-Path -Leaf $logFile))"
+            break
+          }
         }
       }
       if (@($pendingReady | Where-Object { -not $_.Ready }).Count -gt 0) { Start-Sleep -Seconds 2 }
@@ -1691,11 +1808,33 @@ function Invoke-Round($round, [string]$roundDir) {
     $javaMc = if ($round.Java) { (Get-LockedServer -Name $PlatformDefs[$round.Java].LockName).BotMcVersion } else { '1.21.11' }
     if (-not $javaMc) { $javaMc = '1.21.11' }
 
-    $bedrockMc = '1.26.30'
+    # Bedrock protocol version the bot speaks.
+    #
+    # Order: the platform's explicit BotMcVersion (PlatformDefs), then the
+    # lock's BotMcVersion, then a safe default.
+    #
+    # The lock's MC field is NEVER used here. For Bedrock engines it holds the
+    # SERVER release line, not a protocol version: `nukkit` has MC
+    # "1.0-SNAPSHOT", which bedrock-protocol rejects outright with
+    # "Unsupported version 1.0-SNAPSHOT". Every Bedrock bot died before login
+    # and each cross-server assertion failed for the wrong reason.
+    #
+    # The value must match the server's protocol: Nukkit 1.26.40 answers
+    # "disconnectionScreen.outdatedClient" to a 1.26.30 client, so the default
+    # tracks the newest protocol minecraft-data ships for this line.
+    $bedrockMc = '1.26.40'
     if ($round.Bedrock) {
-      $bLock = Get-LockedServer -Name $PlatformDefs[$round.Bedrock].LockName
-      if ($bLock -and $bLock.BotMcVersion) { $bedrockMc = $bLock.BotMcVersion }
-      elseif ($bLock -and $bLock.MC) { $bedrockMc = $bLock.MC }
+      $bDef = $PlatformDefs[$round.Bedrock]
+      if ($bDef.BotMcVersion) {
+        $bedrockMc = $bDef.BotMcVersion
+      } else {
+        $bLock = Get-LockedServer -Name $bDef.LockName
+        if ($bLock -and $bLock.BotMcVersion) {
+          $bedrockMc = $bLock.BotMcVersion
+        } else {
+          Log "  NOTE: no BotMcVersion for $($round.Bedrock); using protocol $bedrockMc"
+        }
+      }
     }
 
     # Bedrock player names must be alphanumeric (no underscores): Nukkit answers
