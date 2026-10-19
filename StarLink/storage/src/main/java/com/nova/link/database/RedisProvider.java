@@ -194,14 +194,26 @@ public class RedisProvider implements DatabaseProvider {
 
     @Override
     public List<PlayerState> getAllPlayerStates() throws DatabaseException {
+        // Read the index on one borrowed connection, then release it before
+        // hydrating each player. loadPlayerState borrows its own connection, so
+        // calling it while this one is still checked out is a nested borrow
+        // that starves the pool under concurrency.
+        Set<String> playerIds;
         try (Jedis jedis = jedisPool.getResource()) {
-            Set<String> playerIds = jedis.smembers(PLAYER_INDEX);
+            playerIds = new HashSet<>(jedis.smembers(PLAYER_INDEX));
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to load all player states from Redis", e);
+        }
+
+        try {
             List<PlayerState> states = new ArrayList<>();
             for (String playerId : playerIds) {
                 loadPlayerState(UUID.fromString(playerId)).ifPresent(states::add);
             }
             return states;
-        } catch (Exception e) {
+        } catch (DatabaseException e) {
+            throw e;
+        } catch (RuntimeException e) {
             throw new DatabaseException("Failed to load all player states from Redis", e);
         }
     }
@@ -262,14 +274,24 @@ public class RedisProvider implements DatabaseProvider {
 
     @Override
     public List<Channel> getAllChannels() throws DatabaseException {
+        // Same shape as getAllPlayerStates: release the index connection before
+        // the per-channel loadChannel calls borrow their own.
+        Set<String> channelIds;
         try (Jedis jedis = jedisPool.getResource()) {
-            Set<String> channelIds = jedis.smembers(CHANNEL_INDEX);
+            channelIds = new HashSet<>(jedis.smembers(CHANNEL_INDEX));
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to load all channels from Redis", e);
+        }
+
+        try {
             List<Channel> channels = new ArrayList<>();
             for (String channelId : channelIds) {
                 loadChannel(channelId).ifPresent(channels::add);
             }
             return channels;
-        } catch (Exception e) {
+        } catch (DatabaseException e) {
+            throw e;
+        } catch (RuntimeException e) {
             throw new DatabaseException("Failed to load all channels from Redis", e);
         }
     }

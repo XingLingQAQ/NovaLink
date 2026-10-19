@@ -185,16 +185,32 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             return Optional.empty();
         }
 
+        try (Connection conn = dataSource.getConnection()) {
+            return loadPlayerState(conn, playerId);
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load player state", e);
+        }
+    }
+
+    /**
+     * Single-connection implementation of {@link #loadPlayerState(UUID)}. Both
+     * the public entry point and {@link #getAllPlayerStates()} route through
+     * here so the mute lookup reuses the caller's connection instead of
+     * borrowing a second one — a nested borrow blocks forever on a pool of
+     * size 1 until the connection timeout expires.
+     */
+    private Optional<PlayerState> loadPlayerState(Connection conn, UUID playerId) throws SQLException {
         String sql = "SELECT * FROM players WHERE player_id = ?";
 
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-
+        PlayerState state = null;
+        // The player row is fully hydrated and the ResultSet closed before the
+        // mute query runs, so this connection never has two open result sets.
+        try (PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setString(1, playerId.toString());
 
             try (ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) {
-                    PlayerState state = new PlayerState(playerId);
+                    state = new PlayerState(playerId);
                     state.setPlayerName(rs.getString("player_name"));
                     state.setClientId(rs.getString("client_id"));
                     state.setCurrentWorld(rs.getString("current_world"));
@@ -208,23 +224,22 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
                     state.setPlatform(rs.getString("platform"));
                     state.setDmEnabled(rs.getBoolean("dm_enabled"));
                     state.setLastSeen(rs.getLong("last_seen"));
-
-                    // Load mutes
-                    List<MuteInfo> mutes = loadMutes(playerId);
-                    Map<String, MuteInfo> muteMap = new HashMap<>();
-                    for (MuteInfo mute : mutes) {
-                        muteMap.put(mute.getChannelId() != null ? mute.getChannelId() : GLOBAL_KEY, mute);
-                    }
-                    state.setMutes(muteMap);
-
-                    return Optional.of(state);
                 }
             }
-        } catch (SQLException e) {
-            throw new DatabaseException("Failed to load player state", e);
         }
 
-        return Optional.empty();
+        if (state == null) {
+            return Optional.empty();
+        }
+
+        // Load mutes on the same connection (no nested borrow).
+        Map<String, MuteInfo> muteMap = new HashMap<>();
+        for (MuteInfo mute : loadMutes(conn, playerId)) {
+            muteMap.put(mute.getChannelId() != null ? mute.getChannelId() : GLOBAL_KEY, mute);
+        }
+        state.setMutes(muteMap);
+
+        return Optional.of(state);
     }
 
     @Override
@@ -268,15 +283,21 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
     @Override
     public List<PlayerState> getAllPlayerStates() throws DatabaseException {
         List<PlayerState> states = new ArrayList<>();
-        String sql = "SELECT player_id FROM players";
 
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql);
-             ResultSet rs = stmt.executeQuery()) {
+        try (Connection conn = dataSource.getConnection()) {
+            List<UUID> playerIds = new ArrayList<>();
+            // Collect the ids first and close the cursor before hydrating each
+            // row: the per-player hydration runs further queries on this same
+            // connection, and a pool of size 1 cannot supply a second one.
+            try (PreparedStatement stmt = conn.prepareStatement("SELECT player_id FROM players");
+                 ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    playerIds.add(UUID.fromString(rs.getString("player_id")));
+                }
+            }
 
-            while (rs.next()) {
-                UUID playerId = UUID.fromString(rs.getString("player_id"));
-                loadPlayerState(playerId).ifPresent(states::add);
+            for (UUID playerId : playerIds) {
+                loadPlayerState(conn, playerId).ifPresent(states::add);
             }
         } catch (SQLException e) {
             throw new DatabaseException("Failed to load all player states", e);
@@ -334,11 +355,22 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             return Optional.empty();
         }
 
+        try (Connection conn = dataSource.getConnection()) {
+            return loadChannel(conn, channelId);
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load channel", e);
+        }
+    }
+
+    /**
+     * Single-connection implementation of {@link #loadChannel(String)}, shared
+     * with {@link #getAllChannels()} so hydrating a channel never borrows a
+     * second pooled connection while the caller still holds one.
+     */
+    private Optional<Channel> loadChannel(Connection conn, String channelId) throws SQLException {
         String sql = "SELECT * FROM channels WHERE channel_id = ?";
 
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-
+        try (PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setString(1, channelId);
 
             try (ResultSet rs = stmt.executeQuery()) {
@@ -371,8 +403,6 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
                     return Optional.of(channel);
                 }
             }
-        } catch (SQLException e) {
-            throw new DatabaseException("Failed to load channel", e);
         }
 
         return Optional.empty();
@@ -398,14 +428,18 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
     @Override
     public List<Channel> getAllChannels() throws DatabaseException {
         List<Channel> channels = new ArrayList<>();
-        String sql = "SELECT channel_id FROM channels";
 
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql);
-             ResultSet rs = stmt.executeQuery()) {
+        try (Connection conn = dataSource.getConnection()) {
+            List<String> channelIds = new ArrayList<>();
+            try (PreparedStatement stmt = conn.prepareStatement("SELECT channel_id FROM channels");
+                 ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    channelIds.add(rs.getString("channel_id"));
+                }
+            }
 
-            while (rs.next()) {
-                loadChannel(rs.getString("channel_id")).ifPresent(channels::add);
+            for (String channelId : channelIds) {
+                loadChannel(conn, channelId).ifPresent(channels::add);
             }
         } catch (SQLException e) {
             throw new DatabaseException("Failed to load all channels", e);
@@ -469,28 +503,36 @@ public class PostgreSQLProvider extends AbstractJdbcProvider {
             return Collections.emptyList();
         }
 
+        try (Connection conn = dataSource.getConnection()) {
+            return loadMutes(conn, playerId);
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to load mutes", e);
+        }
+    }
+
+    /**
+     * Single-connection implementation of {@link #loadMutes(UUID)}. Exists so
+     * aggregating reads ({@code loadPlayerState}) can reuse the connection they
+     * already hold instead of borrowing a second one.
+     */
+    private List<MuteInfo> loadMutes(Connection conn, UUID playerId) throws SQLException {
         List<MuteInfo> mutes = new ArrayList<>();
         String sql = "SELECT * FROM mutes WHERE player_id = ?";
 
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-
+        try (PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setString(1, playerId.toString());
 
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
-                    MuteInfo mute = new MuteInfo(
+                    mutes.add(new MuteInfo(
                             rs.getString("channel_id"),
                             rs.getLong("expire_time"),
                             rs.getString("reason"),
                             parseUuid(rs.getString("operator_id")),
                             rs.getLong("created_at")
-                    );
-                    mutes.add(mute);
+                    ));
                 }
             }
-        } catch (SQLException e) {
-            throw new DatabaseException("Failed to load mutes", e);
         }
 
         return mutes;

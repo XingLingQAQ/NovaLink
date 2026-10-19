@@ -472,12 +472,15 @@ public final class LiteChannelStore implements AutoCloseable {
                 if (parent != null) {
                     Files.createDirectories(parent);
                 }
-                // Minimum 2, not 1: the storage providers acquire a second
-                // connection while holding the first (SQLiteProvider
-                // #loadPlayerState keeps its ResultSet open and calls
-                // loadMutes(), which pools its own connection). A one-slot pool
-                // deadlocks there and surfaces as a 10 s HikariCP connection
-                // timeout, which would make every restore fail on SQLite.
+                // Minimum 2 is headroom, not a correctness requirement. The
+                // providers used to borrow a second connection while holding
+                // the first (loadPlayerState kept its ResultSet open and called
+                // loadMutes(), which pooled its own connection), so a one-slot
+                // pool deadlocked into a Hikari timeout and every restore
+                // failed. That root cause is fixed in :StarLink:storage — every
+                // aggregate now reuses the caller's connection — and
+                // SQLiteProviderPoolSizeOneTest covers poolSize=1 directly. The
+                // floor stays only so a busy proxy has a spare slot.
                 yield new SQLiteProvider(file.toString(), Math.max(2, config.getPoolSize()));
             }
             case MEMORY -> throw new IllegalStateException(
