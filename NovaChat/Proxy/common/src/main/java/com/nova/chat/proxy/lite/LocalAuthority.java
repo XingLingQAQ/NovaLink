@@ -20,6 +20,7 @@ import com.nova.chat.proxy.config.LiteChannelConfig;
 import com.nova.chat.proxy.config.ProxyConfigView;
 import com.nova.chat.proxy.platform.ProxyPlatform;
 import com.nova.chat.proxy.platform.ProxyPlayer;
+import com.nova.link.database.MuteInfo;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -58,6 +59,10 @@ import java.util.concurrent.ConcurrentMap;
  *   <li><b>Private messages</b> — {@code msg} / {@code reply} resolved against
  *       the proxy's online players. A missing target produces an explicit
  *       {@code not_online} error response (never a silent success).</li>
+ *   <li><b>Mutes</b> — MUTE / UNMUTE over the same channel definitions, enforced
+ *       on every outgoing chat line (NC-436) and persisted through
+ *       {@link LiteChannelStore} so a moderation decision survives a restart.
+ *       Only the console may moderate; see {@link #canModerate}.</li>
  * </ul>
  *
  * <p><b>Threading:</b> {@link #handle(Packet)} is synchronized and is invoked
@@ -66,13 +71,16 @@ import java.util.concurrent.ConcurrentMap;
  * keeps the optimistic local updates performed by {@code ChannelCommandService}
  * ordered before the asynchronous response.
  *
- * <p><b>Phase 1 scope:</b> mutes, kicks, bans, titles, announcements, filters
- * and storage-backed state are intentionally absent; unsupported channel
- * actions answer {@link ErrorCode#NOT_IMPLEMENTED}.
+ * <p><b>Scope:</b> kicks, bans, channel create/delete/invite, titles,
+ * announcements and filters are still absent, and such actions answer
+ * {@link ErrorCode#NOT_IMPLEMENTED}.
  */
 public final class LocalAuthority {
 
     private static final UUID NIL_UUID = new UUID(0L, 0L);
+
+    /** The moderation node the platform mute command gates on. */
+    private static final String MODERATION_PERMISSION = "novachat.mute";
 
     private final ProxyPlatform platform;
     private final ProxyChatCore chatCore;
@@ -109,6 +117,29 @@ public final class LocalAuthority {
      * packet burst cannot queue one database read per packet.
      */
     private final Set<UUID> restoreRequested = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Live mute table: player → channel key → record.
+     *
+     * <p>The channel key is the channel id, or {@code DatabaseProvider.GLOBAL_KEY}
+     * ({@code "__global__"}) for a mute that applies everywhere. A {@code null}
+     * channel id means "all channels" on the wire, so it is normalised to that
+     * key here — the same normalisation the shared provider performs when it
+     * loads a player state — to keep this a flat map instead of a
+     * nullable-key special case.
+     *
+     * <p>This table — not the database — decides enforcement: a mute write is
+     * queued onto the storage I/O thread and may land after the response, and a
+     * failed write must not silently reintroduce a muted player's right to speak.
+     */
+    private final ConcurrentMap<UUID, ConcurrentMap<String, MuteInfo>> mutes =
+            new ConcurrentHashMap<>();
+
+    /**
+     * Players whose persisted mutes have already been requested once, mirroring
+     * {@link #restoreRequested} so a packet burst cannot queue one read per packet.
+     */
+    private final Set<UUID> mutesRestoreRequested = ConcurrentHashMap.newKeySet();
 
     /**
      * @param platform the platform adapter (player lookup, rendering dispatch)
@@ -201,6 +232,15 @@ public final class LocalAuthority {
             return List.of();
         }
 
+        // Mutes are checked before slow mode: a muted player must not also burn
+        // their send slot, and NC-436 tells them why they were rejected.
+        if (isMuted(senderId, channelId)) {
+            platform.logDebug("Lite mute rejected " + packet.getSenderName()
+                    + " in " + channelId);
+            notifySender(senderId, ErrorCode.MUTED);
+            return List.of();
+        }
+
         int slowMode = channel.getSlowMode();
         long remaining = slowModeTracker.tryAcquire(senderId, channelId, slowMode);
         if (remaining > 0) {
@@ -268,6 +308,8 @@ public final class LocalAuthority {
             case JOIN -> join(packet);
             case LEAVE -> leave(packet);
             case WHO -> who(packet);
+            case MUTE -> mute(packet);
+            case UNMUTE -> unmute(packet);
             default -> {
                 platform.logDebug("Lite authority does not implement channel action " + action);
                 yield failure(action, packet, ErrorCode.NOT_IMPLEMENTED);
@@ -302,6 +344,7 @@ public final class LocalAuthority {
         // membership back. Deferred onto the storage thread and applied through
         // the platform dispatch hop, so a slow database cannot delay this JOIN.
         restoreOnce(playerId);
+        restoreMutesOnce(playerId);
 
         // Capacity is checked against the authority's membership table, not the
         // shared player state: the client's optimistic JOIN would otherwise
@@ -397,6 +440,316 @@ public final class LocalAuthority {
         response.addExtra("memberCount", String.valueOf(names.size()));
         response.addExtra("displayName", channel.getDisplayName());
         return response;
+    }
+
+    // -------------------------------------------------------------- moderation
+
+    /**
+     * Handles MUTE.
+     *
+     * <p>Validation order and error codes mirror the backend's
+     * {@code ChannelActionHandler#handleMute}: operator, target, channel,
+     * channel existence, then permission. A {@code null} or blank channel id is
+     * rejected here rather than treated as "global" — the backend does the same,
+     * so a client that wants a network-wide mute has to say which channel it
+     * means; this authority has no global-mute command of its own yet.
+     */
+    private ChannelActionResponsePacket mute(ChannelActionPacket packet) {
+        String channelId = packet.getChannelId();
+        UUID operatorId = resolveOperatorId(packet);
+        if (operatorId == null) {
+            return failure(ChannelAction.MUTE, packet, ErrorCode.BAD_REQUEST);
+        }
+        UUID targetId = resolveTargetId(packet);
+        if (targetId == null) {
+            return failure(ChannelAction.MUTE, packet, ErrorCode.TARGET_OFFLINE);
+        }
+        if (channelId == null || channelId.isBlank()) {
+            return failure(ChannelAction.MUTE, packet, ErrorCode.BAD_REQUEST);
+        }
+        if (!channels().containsKey(channelId)) {
+            return failure(ChannelAction.MUTE, packet, ErrorCode.NOT_FOUND);
+        }
+        if (!canModerate(operatorId)) {
+            return failure(ChannelAction.MUTE, packet, ErrorCode.FORBIDDEN);
+        }
+        if (targetId.equals(operatorId)) {
+            return failure(ChannelAction.MUTE, packet, ErrorCode.SELF_ACTION);
+        }
+
+        long durationMs = parseDurationMs(packet);
+        String reason = firstNonBlank(packet.getExtra("reason"),
+                packet.getExtra("muteReason"), "Muted by admin");
+        // expireTime <= 0 means permanent, which is exactly how the shared
+        // provider stores it ("0 means permanent" in MuteInfo, and the cleanup
+        // SQL only deletes rows with expire_time > 0).
+        long expireTime = durationMs > 0 ? System.currentTimeMillis() + durationMs : 0L;
+        MuteInfo mute = new MuteInfo(channelId, expireTime, reason, operatorId);
+        muteTable(targetId).put(channelId, mute);
+
+        if (store.isPersistent()) {
+            store.saveMute(targetId, mute);
+        }
+        platform.logDebug("Lite authority muted " + targetId + " in " + channelId
+                + " (durationMs=" + durationMs + ") by " + operatorId);
+
+        ChannelActionResponsePacket response = success(ChannelAction.MUTE, packet, channelId);
+        response.addExtra("targetId", targetId.toString());
+        response.addExtra("durationMs", String.valueOf(durationMs));
+        String operatorName = packet.getExtra("operatorName");
+        if (operatorName != null && !operatorName.isEmpty()) {
+            response.addExtra("operatorName", operatorName);
+        }
+        return response;
+    }
+
+    /**
+     * Handles UNMUTE: the mirror of {@link #mute}, with the same ordering. An
+     * unmute for a player who is not muted still succeeds, matching the
+     * backend's idempotent {@code unmutePlayer}.
+     */
+    private ChannelActionResponsePacket unmute(ChannelActionPacket packet) {
+        String channelId = packet.getChannelId();
+        UUID operatorId = resolveOperatorId(packet);
+        if (operatorId == null) {
+            return failure(ChannelAction.UNMUTE, packet, ErrorCode.BAD_REQUEST);
+        }
+        UUID targetId = resolveTargetId(packet);
+        if (targetId == null) {
+            return failure(ChannelAction.UNMUTE, packet, ErrorCode.TARGET_OFFLINE);
+        }
+        if (channelId == null || channelId.isBlank()) {
+            return failure(ChannelAction.UNMUTE, packet, ErrorCode.BAD_REQUEST);
+        }
+        if (!channels().containsKey(channelId)) {
+            return failure(ChannelAction.UNMUTE, packet, ErrorCode.NOT_FOUND);
+        }
+        if (!canModerate(operatorId)) {
+            return failure(ChannelAction.UNMUTE, packet, ErrorCode.FORBIDDEN);
+        }
+
+        ConcurrentMap<String, MuteInfo> table = mutes.get(targetId);
+        boolean removed = table != null && table.remove(channelId) != null;
+        if (removed && store.isPersistent()) {
+            store.deleteMute(targetId, channelId);
+        }
+        platform.logDebug("Lite authority unmuted " + targetId + " in " + channelId
+                + " (was muted=" + removed + ")");
+
+        ChannelActionResponsePacket response = success(ChannelAction.UNMUTE, packet, channelId);
+        response.addExtra("targetId", targetId.toString());
+        return response;
+    }
+
+    /**
+     * Whether this operator may moderate.
+     *
+     * <p>Lite has no permission hierarchy (the backend resolves a four-level
+     * {@code PermissionManager} role plus a console sentinel), so this uses the
+     * one moderation node the ecosystem already has: {@code novachat.mute}, the
+     * same node the platform {@code MuteCommand} gates on. The console identity
+     * is always allowed.
+     *
+     * <p>The channel's join {@code permission} is deliberately *not* used — it
+     * is a membership gate, not a moderation gate, and reusing it would let
+     * every member of an open channel mute everyone else.
+     *
+     * @param operatorId the resolved operator
+     * @return {@code true} when the operator may moderate
+     */
+    private boolean canModerate(UUID operatorId) {
+        if (operatorId == null) {
+            return false;
+        }
+        if (operatorId.equals(NIL_UUID)) {
+            return true;
+        }
+        ProxyPlayer operator = platform.getPlayer(operatorId);
+        return operator != null && operator.hasPermission(MODERATION_PERMISSION);
+    }
+
+    /**
+     * Resolves the acting operator.
+     *
+     * <p>Moderation packets carry {@code operatorId} (see the platform
+     * {@code MuteCommand}); {@code resolvePlayerId} cannot be reused because it
+     * looks for {@code playerId}/{@code player_id}/{@code player_uuid}, none of
+     * which the command stamps.
+     *
+     * @param packet the request
+     * @return the operator, or null when absent/unparseable
+     */
+    private UUID resolveOperatorId(ChannelActionPacket packet) {
+        UUID id = parseUuid(packet.getExtra("operatorId"));
+        if (id == null) {
+            id = parseUuid(packet.getExtra("operator_id"));
+        }
+        return id;
+    }
+
+    /**
+     * Resolves the moderation target.
+     *
+     * <p>The target id is only stamped when the target happens to be on the
+     * same sub-server as the operator, so on a proxy the name is usually the
+     * only thing that arrives. Resolution therefore prefers the explicit id and
+     * falls back to the online-player lookup by name.
+     *
+     * @param packet the request
+     * @return the target, or null when it cannot be resolved on this proxy
+     */
+    private UUID resolveTargetId(ChannelActionPacket packet) {
+        UUID id = parseUuid(packet.getExtra("targetId"));
+        if (id == null) {
+            id = parseUuid(packet.getExtra("target_id"));
+        }
+        if (id == null) {
+            ProxyPlayer byName = findOnlineByName(packet.getExtra("targetName"));
+            if (byName == null) {
+                byName = findOnlineByName(packet.getExtra("target_name"));
+            }
+            id = byName != null ? byName.getUniqueId() : null;
+        }
+        return id;
+    }
+
+    /**
+     * Parses the requested mute duration, mirroring the backend's
+     * {@code parseDurationMs}: {@code durationMs}/{@code duration_ms} first as
+     * milliseconds, then {@code duration}/{@code durationSeconds} as seconds.
+     *
+     * @param packet the request
+     * @return the duration in milliseconds, {@code 0} for permanent
+     */
+    private static long parseDurationMs(ChannelActionPacket packet) {
+        Long millis = parseLong(firstNonBlank(packet.getExtra("durationMs"),
+                packet.getExtra("duration_ms")));
+        if (millis != null) {
+            return Math.max(0L, millis);
+        }
+        Long seconds = parseLong(firstNonBlank(packet.getExtra("duration"),
+                packet.getExtra("durationSeconds")));
+        if (seconds != null) {
+            return seconds <= 0 ? 0L : seconds * 1000L;
+        }
+        return 0L;
+    }
+
+    private static Long parseLong(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * @param playerId the player
+     * @return that player's mutable channel-keyed mute table
+     */
+    private ConcurrentMap<String, MuteInfo> muteTable(UUID playerId) {
+        return mutes.computeIfAbsent(playerId, ignored -> new ConcurrentHashMap<>());
+    }
+
+    /**
+     * Whether the player is currently muted in this channel, either directly or
+     * through a network-wide mute.
+     *
+     * <p>Expiry is evaluated here against {@code System.currentTimeMillis()},
+     * the same clock {@code SlowModeTracker} uses, so an expired row stops
+     * blocking even before the shutdown sweep deletes it.
+     *
+     * @param playerId the sender
+     * @param channelId the channel being spoken in
+     * @return {@code true} when the message must be rejected
+     */
+    private boolean isMuted(UUID playerId, String channelId) {
+        if (playerId == null) {
+            return false;
+        }
+        ConcurrentMap<String, MuteInfo> table = mutes.get(playerId);
+        if (table == null) {
+            return false;
+        }
+        return isActive(table.get(channelId))
+                || isActive(table.get(com.nova.link.database.DatabaseProvider.GLOBAL_KEY));
+    }
+
+    private static boolean isActive(MuteInfo mute) {
+        return mute != null && !mute.isExpired();
+    }
+
+    /**
+     * Applies persisted mute rows for one player, dropping entries that have
+     * already expired so a stale row cannot re-block a player after a restart.
+     *
+     * @param playerId the restored player
+     * @param rows the raw rows from the store, expired included
+     */
+    private void applyRestoredMutes(UUID playerId, List<MuteInfo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        int applied = 0;
+        for (MuteInfo mute : rows) {
+            if (!isActive(mute)) {
+                continue;
+            }
+            String key = mute.getChannelId() != null
+                    ? mute.getChannelId()
+                    : com.nova.link.database.DatabaseProvider.GLOBAL_KEY;
+            muteTable(playerId).put(key, mute);
+            applied++;
+        }
+        if (applied > 0) {
+            platform.logDebug("Lite authority restored " + applied
+                    + " mute(s) for " + playerId);
+        }
+    }
+
+    /**
+     * Queues a one-time restore of the player's persisted mutes.
+     *
+     * <p>Mirrors {@link #restoreOnce}: the read runs on the storage I/O thread
+     * and the result is applied through the platform dispatch hop, so this never
+     * blocks the caller.
+     *
+     * @param playerId the player to restore
+     */
+    private void restoreMutesOnce(UUID playerId) {
+        if (playerId == null || !store.isPersistent() || !mutesRestoreRequested.add(playerId)) {
+            return;
+        }
+        store.loadMutes(playerId, rows -> platform.execute(() -> applyRestoredMutes(playerId, rows)));
+    }
+
+    /**
+     * Applies mute rows without going through the store.
+     *
+     * <p>Package-private test seam: it lets a test place a row that a real
+     * database could hold but the client cannot currently produce (a global
+     * mute, or one whose deadline has already passed) without opening a
+     * database.
+     *
+     * @param playerId the muted player
+     * @param rows the rows to apply
+     */
+    void restoreMutesForTests(UUID playerId, List<MuteInfo> rows) {
+        synchronized (this) {
+            applyRestoredMutes(playerId, rows);
+        }
     }
 
     // -------------------------------------------------------- private messages
@@ -518,6 +871,11 @@ public final class LocalAuthority {
         // the state on disconnect, so without this the same session's reconnect
         // would skip the restore and the player would lose their channels.
         restoreRequested.remove(playerId);
+        // Same for mutes: the next session must be able to re-read them, and the
+        // enforcement table is dropped so a long-lived proxy does not accumulate
+        // an entry per player that ever connected. The persisted rows survive.
+        mutesRestoreRequested.remove(playerId);
+        mutes.remove(playerId);
         // The persisted membership is deliberately kept: that is the whole point
         // of the store, a reconnecting player must find their channels again.
         // Only the cache entry is dropped so it does not grow without bound.
@@ -587,6 +945,7 @@ public final class LocalAuthority {
      */
     public void onPlayerConnect(UUID playerId) {
         restoreOnce(playerId);
+        restoreMutesOnce(playerId);
     }
 
     /**
