@@ -28,6 +28,11 @@ include 'NovaChat:Proxy:bungee'
 // module itself (compileJava -> compileJava circular dependency).
 include 'NovaChat:Proxy:proxy-common'
 project(':NovaChat:Proxy:proxy-common').projectDir = file('NovaChat/Proxy/common')
+// Wire format + identity rules for the sub-server <-> proxy plugin messaging
+// channel (novachat:main). Deliberately tiny and dependency-free apart from
+// :NovaChat:common so BOTH sides can share one codec: the proxy plugins and the
+// Bukkit sub-server plugin (which must not inherit the proxy layers).
+include 'NovaChat:Proxy:channel'
 include 'NovaChat:Bedrock:nukkit'
 // Shared mod sources (version detection, common networking).
 include 'NovaChat:MOD'

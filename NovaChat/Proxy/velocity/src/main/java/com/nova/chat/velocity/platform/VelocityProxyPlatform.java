@@ -10,6 +10,9 @@ import com.nova.chat.proxy.platform.ProxyPlatform;
 import com.nova.chat.proxy.platform.ProxyPlayer;
 import com.nova.chat.velocity.NovaChatVelocity;
 import com.velocitypowered.api.proxy.Player;
+import com.velocitypowered.api.proxy.ServerConnection;
+import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.sound.Sound;
 import net.kyori.adventure.text.Component;
@@ -296,6 +299,54 @@ public final class VelocityProxyPlatform implements ProxyPlatform {
     @Override
     public void reloadConfiguration() {
         plugin.reload();
+    }
+
+    /**
+     * Sends one plugin message to a downstream server through one of its
+     * players' connections.
+     *
+     * <p>Velocity's {@code RegisteredServer#sendPluginMessage} writes to
+     * <em>every</em> player on the server, which would deliver one copy of the
+     * payload per player to the downstream plugin. Picking a single
+     * {@code ServerConnection} keeps it to exactly one delivery. With no players
+     * on the server there is no connection to write to at all: return
+     * {@code false} so the caller reports the drop (plugin messaging's inherent
+     * limitation) instead of pretending the message was sent.
+     */
+    @Override
+    public boolean sendPluginMessage(String serverName, String channel, byte[] payload) {
+        if (serverName == null || channel == null || payload == null) {
+            return false;
+        }
+        RegisteredServer target = plugin.getServer().getServer(serverName).orElse(null);
+        if (target == null) {
+            logDebug("Cannot send plugin message to unknown server '" + serverName + "'");
+            return false;
+        }
+        MinecraftChannelIdentifier identifier;
+        try {
+            identifier = MinecraftChannelIdentifier.from(channel);
+        } catch (RuntimeException e) {
+            logWarn("Cannot send plugin message on invalid channel '" + channel + "'");
+            return false;
+        }
+        for (Player player : target.getPlayersConnected()) {
+            ServerConnection connection = player.getCurrentServer().orElse(null);
+            if (connection == null
+                    || !serverName.equalsIgnoreCase(connection.getServerInfo().getName())) {
+                continue;
+            }
+            try {
+                return connection.sendPluginMessage(identifier, payload);
+            } catch (RuntimeException e) {
+                logDebug("Plugin message write to '" + serverName + "' failed: "
+                        + e.getMessage());
+                return false;
+            }
+        }
+        // No player on that server: the downstream connection does not exist.
+        logDebug("Cannot send plugin message to '" + serverName + "': no players online");
+        return false;
     }
 
     /**

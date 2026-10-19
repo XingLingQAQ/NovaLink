@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit;
 
 import com.nova.chat.bukkit.api.NovaChatAPI;
+import com.nova.chat.bukkit.channel.ProxyChannelClient;
 import com.nova.chat.bukkit.chat.ChatInterceptor;
 import com.nova.chat.bukkit.chat.MentionTabCompleter;
 import com.nova.chat.bukkit.command.MessageHelper;
@@ -98,9 +99,16 @@ public class NovaChatBukkit extends JavaPlugin {
      */
     private ChannelCommandService channelCommandService;
 
+    /**
+     * Sub-server half of the {@code novachat:main} plugin-messaging channel
+     * (chat/command/state upstream, fan-out downstream). Null when the bridge
+     * is disabled or registration failed.
+     */
+    private com.nova.chat.bukkit.channel.ProxyChannelClient proxyChannelClient;
+
     /** Debug mode flag */
     private boolean debugMode = false;
-    
+
     @Override
     public void onEnable() {
         instance = this;
@@ -144,6 +152,9 @@ public class NovaChatBukkit extends JavaPlugin {
         // Initialize network client
         initializeNetworkClient();
 
+        // Register the proxy plugin-messaging channel (novachat:main).
+        initializeProxyChannel();
+
         // Shared command intent service (Architecture B client-core)
         initializeChannelCommandService();
 
@@ -160,6 +171,12 @@ public class NovaChatBukkit extends JavaPlugin {
     public void onDisable() {
         getLogger().info("NovaChat Bukkit plugin disabling...");
         
+        // Stop the plugin-messaging channel before the backend link goes away.
+        if (proxyChannelClient != null) {
+            proxyChannelClient.unregister();
+            proxyChannelClient = null;
+        }
+
         // Disconnect from backend
         if (networkClient != null) {
             networkClient.disconnect();
@@ -299,6 +316,32 @@ public class NovaChatBukkit extends JavaPlugin {
         });
     }
     
+    /**
+     * Creates and registers the sub-server half of the {@code novachat:main}
+     * plugin-messaging channel.
+     *
+     * <p>The bridge is created even when disabled so {@code /nc reload} can
+     * turn it on without a restart; {@code send} consults the live config
+     * snapshot. Downstream packets are dispatched through the existing
+     * {@link NetworkClient} handlers (identical packet types and rendering).
+     */
+    private void initializeProxyChannel() {
+        ProxyChannelClient client = new ProxyChannelClient(this,
+                (senderId, packet, excluded) -> {
+                    NetworkClient network = networkClient;
+                    if (network != null) {
+                        network.dispatchChannelPacket(packet, excluded);
+                    } else {
+                        debug("Dropped downstream " + packet.getClass().getSimpleName()
+                                + " from " + senderId + ": network facade unavailable");
+                    }
+                });
+        // Kept even when registration fails: outgoing sends still consult the
+        // live config, and a later reload can retry the registration.
+        proxyChannelClient = client;
+        client.register();
+    }
+
     /**
      * Builds {@link ChannelCommandService} with a PacketSender that delegates to
      * the live {@link NetworkClient}. Send is accepted only when the client is
@@ -461,6 +504,15 @@ public class NovaChatBukkit extends JavaPlugin {
      */
     public NetworkClient getNetworkClient() {
         return networkClient;
+    }
+
+    /**
+     * Gets the sub-server half of the proxy plugin-messaging channel.
+     *
+     * @return the channel client, or null before startup / after shutdown
+     */
+    public ProxyChannelClient getProxyChannelClient() {
+        return proxyChannelClient;
     }
 
     /**

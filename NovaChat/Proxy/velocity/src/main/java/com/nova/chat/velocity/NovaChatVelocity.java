@@ -19,6 +19,7 @@ import com.nova.chat.velocity.chat.MentionTabCompleter;
 import com.nova.chat.velocity.command.NovaChatCommand;
 import com.nova.chat.velocity.config.NovaChatConfig;
 import com.nova.chat.velocity.listener.LocaleCaptureListener;
+import com.nova.chat.velocity.listener.PluginMessageListener;
 import com.nova.chat.velocity.listener.ServerSwitchHandler;
 import com.nova.chat.velocity.network.NetworkClient;
 import com.velocitypowered.api.command.CommandManager;
@@ -133,6 +134,19 @@ public class NovaChatVelocity {
     /** Shared server-switch core. */
     private ProxyServerSwitchCore serverSwitchCore;
 
+    /**
+     * Proxy half of the sub-server plugin-messaging channel. Built with the
+     * shared cores so it can route upstream chat through the lite authority or
+     * the relay backend link without either shell owning that decision.
+     */
+    private com.nova.chat.proxy.channel.ProxyChannelHandler proxyChannelHandler;
+
+    /** Listener for {@code novachat:main} plugin messages (registered on enable). */
+    private PluginMessageListener pluginMessageListener;
+
+    /** Channel identifier registered with Velocity so the proxy accepts the channel. */
+    private com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier channelIdentifier;
+
     /** Velocity platform adapter (Adventure rendering, scheduler, logger). */
     private VelocityProxyPlatform platform;
 
@@ -189,6 +203,9 @@ public class NovaChatVelocity {
         // Velocity platform adapter. Both proxies share this layer.
         initializeProxyCores();
 
+        // Accept novachat:main from downstream servers (plugin messaging).
+        initializePluginChannel();
+
         // Register event listeners
         registerListeners();
         
@@ -201,7 +218,18 @@ public class NovaChatVelocity {
     @Subscribe
     public void onProxyShutdown(ProxyShutdownEvent event) {
         logger.info("NovaChat Velocity plugin disabling...");
-        
+
+        if (channelIdentifier != null) {
+            try {
+                server.getChannelRegistrar().unregister(channelIdentifier);
+            } catch (RuntimeException e) {
+                logger.warn("Failed to unregister the plugin-messaging channel", e);
+            }
+            channelIdentifier = null;
+        }
+        pluginMessageListener = null;
+        proxyChannelHandler = null;
+
         // Disconnect from backend (relay) or stop the local dispatcher (lite)
         if (networkClient != null) {
             networkClient.disconnect();
@@ -422,10 +450,62 @@ public class NovaChatVelocity {
             localAuthorityClient.bind(liteAuthority);
         }
 
+        // Plugin messaging: lite routes through the authority, relay through the
+        // backend link. The sink resolves the live client on every send so a
+        // reload that swaps NetworkClient is picked up without rebuilding this
+        // handler.
+        proxyChannelHandler = new com.nova.chat.proxy.channel.ProxyChannelHandler(
+                platform,
+                chatCore,
+                liteAuthority != null ? liteAuthority::handle : null,
+                liteAuthority == null ? this::relayChannelPacket : null);
+
         // H6: the ChatListener shell binds inbound handlers in its constructor;
         // this is the first point where the network client exists.
         if (chatCore.getNetworkClient() != null) {
             chatCore.rebindIncomingHandlers(chatCore.getNetworkClient());
+        }
+    }
+
+    /**
+     * Forwards one packet received on the plugin-messaging channel to the
+     * backend (relay mode). The packet is sent unchanged: its {@code clientId}
+     * already identifies the sub-server that produced it, so backend
+     * attribution is preserved.
+     *
+     * @param packet the upstream packet
+     */
+    private void relayChannelPacket(com.nova.chat.common.protocol.Packet packet) {
+        AbstractPlatformNetworkClient client = getPlatformNetworkClient();
+        if (client == null || !client.isAuthenticated()) {
+            debug("Dropped plugin-message packet " + packet.getClass().getSimpleName()
+                    + ": backend link is not authenticated");
+            return;
+        }
+        client.sendPacket(packet);
+    }
+
+    /**
+     * Registers the {@code novachat:main} channel with Velocity.
+     *
+     * <p>Registration is what makes the proxy fire {@code PluginMessageEvent}
+     * for this channel; without it server-originated payloads are forwarded to
+     * the player's client (or dropped) instead of reaching the handler. It is
+     * idempotent on the proxy side, so a reload does not need to repeat it.
+     */
+    private void initializePluginChannel() {
+        if (channelIdentifier != null) {
+            return;
+        }
+        try {
+            channelIdentifier = com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier
+                    .from(com.nova.chat.channel.ProxyChannelProtocol.CHANNEL_ID);
+            server.getChannelRegistrar().register(channelIdentifier);
+            logger.info("Registered plugin-messaging channel "
+                    + com.nova.chat.channel.ProxyChannelProtocol.CHANNEL_ID);
+        } catch (RuntimeException e) {
+            channelIdentifier = null;
+            logger.warn("Failed to register the plugin-messaging channel", e);
         }
     }
 
@@ -448,6 +528,12 @@ public class NovaChatVelocity {
         // Register locale capture listener for per-player i18n (Architecture B)
         localeCaptureListener = new LocaleCaptureListener(this);
         server.getEventManager().register(this, localeCaptureListener);
+
+        // Plugin messaging: downstream servers -> proxy (and the downstream
+        // fan-out results). Registered after the shared cores so the handler
+        // exists by the time the first payload can arrive.
+        pluginMessageListener = new PluginMessageListener(this);
+        server.getEventManager().register(this, pluginMessageListener);
     }
     
     /**
@@ -687,6 +773,24 @@ public class NovaChatVelocity {
      */
     public ProxyServerSwitchCore getServerSwitchCore() {
         return serverSwitchCore;
+    }
+
+    /**
+     * Gets the proxy half of the plugin-messaging channel.
+     *
+     * @return the channel handler, or null before startup / after shutdown
+     */
+    public com.nova.chat.proxy.channel.ProxyChannelHandler getProxyChannelHandler() {
+        return proxyChannelHandler;
+    }
+
+    /**
+     * Gets the plugin-message listener.
+     *
+     * @return the listener, or null before startup / after shutdown
+     */
+    public PluginMessageListener getPluginMessageListener() {
+        return pluginMessageListener;
     }
 
     /**

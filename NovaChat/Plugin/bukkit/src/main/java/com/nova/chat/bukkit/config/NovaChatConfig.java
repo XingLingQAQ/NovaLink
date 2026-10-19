@@ -34,6 +34,10 @@ public class NovaChatConfig {
     private final String defaultFormat;
     private final Map<String, String> channelFormats;
 
+    // Plugin-messaging bridge to the proxy (novachat:main)
+    private final boolean pluginMessagingEnabled;
+    private final String pluginMessagingServerId;
+
     // Debug mode
     private final boolean debug;
 
@@ -79,10 +83,29 @@ public class NovaChatConfig {
             channelFormats.put(key, requiredString(config, "format.channels." + key));
         }
 
+        // Plugin messaging: optional section so configs installed before the
+        // channel existed keep loading (the template updater adds it on the
+        // next start, but a missing section must not be fatal either).
+        this.pluginMessagingEnabled = optionalBoolean(config, "plugin-messaging.enabled", true);
+        String configuredServerId = optionalString(config, "plugin-messaging.server-id", "");
+        this.pluginMessagingServerId = configuredServerId != null && !configuredServerId.isBlank()
+                ? configuredServerId.trim()
+                : this.username;
+
         // Debug mode
         this.debug = requiredBoolean(config, "debug");
 
         toClientConnectionConfig();
+    }
+
+    private static boolean optionalBoolean(FileConfiguration config, String path,
+                                           boolean fallback) {
+        return config.isBoolean(path) ? config.getBoolean(path) : fallback;
+    }
+
+    private static String optionalString(FileConfiguration config, String path,
+                                         String fallback) {
+        return config.isString(path) ? config.getString(path) : fallback;
     }
 
     private static String requiredString(FileConfiguration config, String path) {
@@ -163,6 +186,26 @@ public class NovaChatConfig {
 
     public boolean isReplaceVanilla() {
         return replaceVanilla;
+    }
+
+    /**
+     * @return whether the {@code novachat:main} plugin-messaging bridge is
+     *         enabled (default true)
+     */
+    public boolean isPluginMessagingEnabled() {
+        return pluginMessagingEnabled;
+    }
+
+    /**
+     * Returns the identity this server declares on the plugin-messaging
+     * channel. The proxy verifies it against the server the message actually
+     * arrived from, so it must equal the name the proxy uses for this server.
+     *
+     * @return the configured server id, or {@code backend.username} when the
+     *         key is blank/absent
+     */
+    public String getPluginMessagingServerId() {
+        return pluginMessagingServerId;
     }
 
     public String getDefaultChannel() {

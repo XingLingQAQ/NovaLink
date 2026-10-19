@@ -286,6 +286,39 @@ public final class BungeeProxyPlatform implements ProxyPlatform {
     }
 
     /**
+     * Sends one plugin message to a downstream server.
+     *
+     * <p>BungeeCord addresses plugin messages through a {@code ServerInfo},
+     * which writes through one of that server's player connections. When no
+     * player is connected there is no downstream connection at all, so
+     * {@code queue=true} cannot help: the method reports {@code false} and the
+     * caller records the drop instead of pretending the message was sent.
+     */
+    @Override
+    public boolean sendPluginMessage(String serverName, String channel, byte[] payload) {
+        if (serverName == null || channel == null || payload == null) {
+            return false;
+        }
+        net.md_5.bungee.api.config.ServerInfo target =
+                plugin.getProxy().getServerInfo(serverName);
+        if (target == null) {
+            logDebug("Cannot send plugin message to unknown server '" + serverName + "'");
+            return false;
+        }
+        if (target.getPlayers().isEmpty()) {
+            logDebug("Cannot send plugin message to '" + serverName + "': no players online");
+            return false;
+        }
+        try {
+            return target.sendData(channel, payload, true);
+        } catch (RuntimeException e) {
+            logDebug("Plugin message write to '" + serverName + "' failed: "
+                    + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Unwraps a player handle to its BungeeCord player.
      *
      * @param player the handle

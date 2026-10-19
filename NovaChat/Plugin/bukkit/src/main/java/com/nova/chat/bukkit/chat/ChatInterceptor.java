@@ -93,7 +93,24 @@ public class ChatInterceptor implements Listener {
      *
      * @param packet the chat message packet
      */
-    private void handleIncomingMessage(ChatMessagePacket packet) {
+    public void handleIncomingMessage(ChatMessagePacket packet) {
+        handleIncomingMessage(packet, java.util.Set.of());
+    }
+
+    /**
+     * Handles an inbound fan-out line and renders it to local players.
+     *
+     * <p>{@code excludedRecipients} is the set the proxy has already rendered
+     * the line to (players connected through the proxy). The sub-server renders
+     * only the remainder: players connected straight to this server, whom the
+     * proxy cannot see. Without this every proxied player would see the line
+     * twice.
+     *
+     * @param packet the chat message packet
+     * @param excludedRecipients player UUIDs already served by the proxy
+     */
+    public void handleIncomingMessage(ChatMessagePacket packet,
+                                      java.util.Set<UUID> excludedRecipients) {
         plugin.debug("Received chat message from backend: " + packet);
         
         String channelId = packet.getChannelId();
@@ -124,6 +141,10 @@ public class ChatInterceptor implements Listener {
         // Run on main thread for Bukkit API calls
         Bukkit.getScheduler().runTask(plugin, () -> {
             for (Player player : Bukkit.getOnlinePlayers()) {
+                // The proxy already rendered this line to its own players.
+                if (excludedRecipients.contains(player.getUniqueId())) {
+                    continue;
+                }
                 // Skip senders the recipient has ignored (/nc ignore)
                 com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
                 if (ignoreService != null && ignoreService.isIgnored(player.getUniqueId(), senderName)) {
@@ -173,13 +194,7 @@ public class ChatInterceptor implements Listener {
         
         // In REPLACE mode, cancel vanilla chat and forward to channel
         event.setCancelled(true);
-        
-        // Check if connected to backend
-        if (!plugin.getNetworkClient().isAuthenticated()) {
-            player.sendMessage(formatError(I18n.tr(playerId, "chat.network.not_connected_retry")));
-            return;
-        }
-        
+
         // Channel-prefix routing (e.g. "!hi" -> global) before the
         // active-channel send; escape/unknown-prefix cases fall through
         // with the resolver-produced message (UX: prefix = /nc <channel> shorthand).
@@ -189,8 +204,26 @@ public class ChatInterceptor implements Listener {
         String targetChannel = resolution.isRedirect()
                 ? resolution.getChannelId() : state.getActiveChannel();
 
-        // Forward message to backend
-        sendToChannel(player, targetChannel, resolution.getMessage());
+        // Preferred transport: the backend link, exactly as before.
+        com.nova.chat.bukkit.network.NetworkClient client = plugin.getNetworkClient();
+        if (client != null && client.isAuthenticated()) {
+            sendToChannel(player, targetChannel, resolution.getMessage());
+            return;
+        }
+
+        // Backend unavailable (lite mode has none at all): hand the message to
+        // the proxy over plugin messaging. Without this the line is cancelled
+        // locally and the proxy never sees it (the NC-503 gap).
+        com.nova.chat.bukkit.channel.ProxyChannelClient channel =
+                plugin.getProxyChannelClient();
+        if (channel != null && channel.isEnabled()
+                && channel.send(buildChatPacket(player, targetChannel, resolution.getMessage()))) {
+            plugin.debug("Forwarded chat to the proxy over novachat:main: "
+                    + resolution.getMessage());
+            return;
+        }
+
+        player.sendMessage(formatError(I18n.tr(playerId, "chat.network.not_connected_retry")));
     }
     
     /**
@@ -232,7 +265,26 @@ public class ChatInterceptor implements Listener {
             player.sendMessage(formatError(I18n.tr(player.getUniqueId(), "chat.network.not_connected")));
             return;
         }
-        
+
+        ChatMessagePacket packet = buildChatPacket(player, channelId, message);
+
+        plugin.getNetworkClient().sendPacket(packet);
+        plugin.debug("Sent message to channel " + channelId + ": " + message);
+
+        // [item]/[i] display play: piggybacks on the outbound path (UX spec §4).
+        maybeSendItemDisplay(player, channelId, message);
+    }
+
+    /**
+     * Builds the outbound chat packet shared by the backend path and the
+     * plugin-messaging path, including the placeholders the proxy resolves.
+     *
+     * @param player the sending player
+     * @param channelId the target channel
+     * @param message the message content
+     * @return a packet ready for either transport
+     */
+    private ChatMessagePacket buildChatPacket(Player player, String channelId, String message) {
         ChatMessagePacket packet = new ChatMessagePacket(
             player.getUniqueId(),
             player.getName(),
@@ -240,17 +292,12 @@ public class ChatInterceptor implements Listener {
             channelId,
             message
         );
-        
+
         // Add basic placeholders that will be resolved on the plugin side
         packet.addPlaceholder("player", player.getName());
         packet.addPlaceholder("display_name", player.getDisplayName());
         packet.addPlaceholder("world", player.getWorld().getName());
-        
-        plugin.getNetworkClient().sendPacket(packet);
-        plugin.debug("Sent message to channel " + channelId + ": " + message);
-
-        // [item]/[i] display play: piggybacks on the outbound path (UX spec §4).
-        maybeSendItemDisplay(player, channelId, message);
+        return packet;
     }
 
     /**

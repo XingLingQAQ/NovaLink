@@ -1,0 +1,44 @@
+plugins {
+    // java-library: the shared protocol types (Packet, PacketRegistry) appear in
+    // this module's public signatures and must be re-exported to the proxy
+    // plugins and the Bukkit plugin that depend on it.
+    id 'java-library'
+}
+
+// No collision on the leaf name "channel", but keep the artifact explicit so a
+// fat-jar listing is unambiguous about what was shaded.
+base {
+    archivesName = 'NovaChat-proxy-channel'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+dependencies {
+    // Existing protocol codec (Packet, PacketRegistry, PacketBuffer,
+    // ProtocolLimits). This module deliberately does NOT define a new packet
+    // format: payloads are an envelope around the exact bytes
+    // PacketRegistry#encode produces.
+    api project(':NovaChat:common')
+
+    // ByteBuf is needed to run the existing codec. Provided by the proxy at
+    // runtime (never shaded by velocity/bungee) and relocated by the Bukkit fat
+    // jar, which is why every consumer already controls its own netty copy.
+    implementation "io.netty:netty-all:${nettyVersion}"
+
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+    testImplementation "net.jqwik:jqwik:${jqwikVersion}"
+    testImplementation "org.assertj:assertj-core:${assertjVersion}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform {
+        includeEngines 'junit-jupiter', 'jqwik'
+    }
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
+}

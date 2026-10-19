@@ -5,6 +5,7 @@ import com.nova.chat.bungee.chat.MentionTabCompleter;
 import com.nova.chat.bungee.command.NovaChatCommand;
 import com.nova.chat.bungee.config.NovaChatConfig;
 import com.nova.chat.bungee.listener.LocaleCaptureListener;
+import com.nova.chat.bungee.listener.PluginMessageListener;
 import com.nova.chat.bungee.listener.ServerSwitchHandler;
 import com.nova.chat.bungee.network.NetworkClient;
 import com.nova.chat.client.command.ChannelCommandService;
@@ -111,6 +112,18 @@ public class NovaChatBungee extends Plugin {
     /** Shared server-switch core. */
     private ProxyServerSwitchCore serverSwitchCore;
 
+    /**
+     * Proxy half of the sub-server plugin-messaging channel: lite routes through
+     * the authority, relay through the backend link.
+     */
+    private com.nova.chat.proxy.channel.ProxyChannelHandler proxyChannelHandler;
+
+    /** Listener for {@code novachat:main} plugin messages (registered on enable). */
+    private PluginMessageListener pluginMessageListener;
+
+    /** Whether {@code novachat:main} is currently registered with the proxy. */
+    private boolean pluginChannelRegistered;
+
     /** BungeeCord platform adapter (md_5 rendering, scheduler, logger). */
     private BungeeProxyPlatform platform;
 
@@ -160,6 +173,9 @@ public class NovaChatBungee extends Plugin {
         // BungeeCord platform adapter. Both proxies share this layer.
         initializeProxyCores();
 
+        // Accept novachat:main from downstream servers (plugin messaging).
+        initializePluginChannel();
+
         // Register event listeners
         registerListeners();
 
@@ -172,7 +188,20 @@ public class NovaChatBungee extends Plugin {
     @Override
     public void onDisable() {
         getLogger().info("NovaChat BungeeCord plugin disabling...");
-        
+
+        if (pluginChannelRegistered) {
+            try {
+                getProxy().unregisterChannel(
+                        com.nova.chat.channel.ProxyChannelProtocol.CHANNEL_ID);
+            } catch (RuntimeException e) {
+                getLogger().log(Level.WARNING,
+                        "Failed to unregister the plugin-messaging channel", e);
+            }
+            pluginChannelRegistered = false;
+        }
+        pluginMessageListener = null;
+        proxyChannelHandler = null;
+
         // Disconnect from backend (relay) or stop the local dispatcher (lite)
         if (networkClient != null) {
             networkClient.disconnect();
@@ -385,10 +414,61 @@ public class NovaChatBungee extends Plugin {
             localAuthorityClient.bind(liteAuthority);
         }
 
+        // Plugin messaging: lite routes through the authority, relay through the
+        // backend link. The sink resolves the live client on every send so a
+        // reload that swaps NetworkClient is picked up without rebuilding this
+        // handler.
+        proxyChannelHandler = new com.nova.chat.proxy.channel.ProxyChannelHandler(
+                platform,
+                chatCore,
+                liteAuthority != null ? liteAuthority::handle : null,
+                liteAuthority == null ? this::relayChannelPacket : null);
+
         // H6: the ChatListener shell binds inbound handlers in its constructor;
         // this is the first point where the network client exists.
         if (chatCore.getNetworkClient() != null) {
             chatCore.rebindIncomingHandlers(chatCore.getNetworkClient());
+        }
+    }
+
+    /**
+     * Forwards one packet received on the plugin-messaging channel to the
+     * backend (relay mode). The packet is sent unchanged: its {@code clientId}
+     * already identifies the sub-server that produced it, so backend
+     * attribution is preserved.
+     *
+     * @param packet the upstream packet
+     */
+    private void relayChannelPacket(com.nova.chat.common.protocol.Packet packet) {
+        AbstractPlatformNetworkClient client = getPlatformNetworkClient();
+        if (client == null || !client.isAuthenticated()) {
+            debug("Dropped plugin-message packet " + packet.getClass().getSimpleName()
+                    + ": backend link is not authenticated");
+            return;
+        }
+        client.sendPacket(packet);
+    }
+
+    /**
+     * Registers the {@code novachat:main} channel with BungeeCord.
+     *
+     * <p>Registration is what makes the proxy fire {@code PluginMessageEvent}
+     * for this channel; without it server-originated payloads are forwarded to
+     * the player's client (or dropped) instead of reaching the handler.
+     */
+    private void initializePluginChannel() {
+        if (pluginChannelRegistered) {
+            return;
+        }
+        try {
+            getProxy().registerChannel(com.nova.chat.channel.ProxyChannelProtocol.CHANNEL_ID);
+            pluginChannelRegistered = true;
+            getLogger().info("Registered plugin-messaging channel "
+                    + com.nova.chat.channel.ProxyChannelProtocol.CHANNEL_ID);
+        } catch (RuntimeException e) {
+            pluginChannelRegistered = false;
+            getLogger().log(Level.WARNING,
+                    "Failed to register the plugin-messaging channel", e);
         }
     }
 
@@ -411,6 +491,12 @@ public class NovaChatBungee extends Plugin {
         // Register locale capture listener for per-player i18n (Architecture B)
         localeCaptureListener = new LocaleCaptureListener(this);
         getProxy().getPluginManager().registerListener(this, localeCaptureListener);
+
+        // Plugin messaging: downstream servers -> proxy (and the downstream
+        // fan-out results). Registered after the shared cores so the handler
+        // exists by the time the first payload can arrive.
+        pluginMessageListener = new PluginMessageListener(this);
+        getProxy().getPluginManager().registerListener(this, pluginMessageListener);
     }
     
     /**
@@ -639,6 +725,24 @@ public class NovaChatBungee extends Plugin {
      */
     public ProxyServerSwitchCore getServerSwitchCore() {
         return serverSwitchCore;
+    }
+
+    /**
+     * Gets the proxy half of the plugin-messaging channel.
+     *
+     * @return the channel handler, or null before startup / after shutdown
+     */
+    public com.nova.chat.proxy.channel.ProxyChannelHandler getProxyChannelHandler() {
+        return proxyChannelHandler;
+    }
+
+    /**
+     * Gets the plugin-message listener.
+     *
+     * @return the listener, or null before startup / after shutdown
+     */
+    public PluginMessageListener getPluginMessageListener() {
+        return pluginMessageListener;
     }
 
     /**

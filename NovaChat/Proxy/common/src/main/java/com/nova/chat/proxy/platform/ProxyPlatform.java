@@ -263,15 +263,26 @@ public interface ProxyPlatform {
     void reloadConfiguration();
 
     /**
-     * Sends a plugin message to a backend server (or the player's current
-     * backend). Reserved for the relay phase; the current extraction leaves the
-     * default no-op so no shell has to implement it yet.
+     * Sends one plugin message to a downstream server.
+     *
+     * <p>Plugin messaging has no server-addressed transport: the only way to
+     * reach a sub-server is through a player connection on it. Implementations
+     * therefore pick one player currently on {@code serverName} and write the
+     * payload through that connection, and they return {@code false} when no
+     * such player exists — the message is then genuinely undeliverable and the
+     * caller must report the drop instead of pretending success. They must not
+     * fan the payload out to every player on the server: the downstream would
+     * receive one copy per player.
+     *
+     * <p>The default returns {@code false} so lightweight platform doubles
+     * (tests) do not have to implement it; both real shells do.
      *
      * @param serverName the downstream server name, or {@code null} for the
      *                   player's current server
-     * @param channel the plugin-message channel
+     * @param channel the plugin-message channel (for NovaChat:
+     *                {@code novachat:main})
      * @param payload the raw payload
-     * @return {@code true} when the message was handed to the platform
+     * @return {@code true} when the message was handed to a live connection
      */
     default boolean sendPluginMessage(String serverName, String channel, byte[] payload) {
         return false;
