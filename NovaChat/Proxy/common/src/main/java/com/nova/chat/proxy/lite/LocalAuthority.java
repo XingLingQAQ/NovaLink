@@ -7,13 +7,17 @@ import com.nova.chat.client.privatemsg.PrivateMessageService;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.AdminAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.ProtocolLimits;
+import com.nova.chat.common.protocol.packets.AdminActionPacket;
+import com.nova.chat.common.protocol.packets.AdminActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
 import com.nova.chat.common.protocol.packets.PrivateMessagePacket;
+import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.proxy.chat.ProxyChatCore;
 import com.nova.chat.proxy.chat.SlowModeTracker;
 import com.nova.chat.proxy.config.LiteChannelConfig;
@@ -33,6 +37,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.IntConsumer;
+import java.util.Locale;
 
 /**
  * In-process replacement for the NovaLink backend when the proxy runs in
@@ -90,6 +96,9 @@ public final class LocalAuthority {
 
     /** The moderation node the platform ban command gates on. */
     private static final String BAN_PERMISSION = "novachat.ban";
+
+    /** The node the platform title command gates on. */
+    private static final String TITLE_PERMISSION = "novachat.title";
 
     /** Mirrors {@code DatabaseProvider.GLOBAL_KEY}; a null scope keys the global ban. */
     private static final String GLOBAL_KEY = DatabaseProvider.GLOBAL_KEY;
@@ -218,6 +227,9 @@ public final class LocalAuthority {
         }
         if (packet instanceof PrivateMessagePacket message) {
             return handlePrivateMessage(message);
+        }
+        if (packet instanceof AdminActionPacket admin) {
+            return handleAdminAction(admin);
         }
         platform.logDebug("Lite authority ignoring unsupported packet: "
                 + packet.getClass().getSimpleName());
@@ -478,6 +490,89 @@ public final class LocalAuthority {
         response.addExtra("memberCount", String.valueOf(names.size()));
         response.addExtra("displayName", channel.getDisplayName());
         return response;
+    }
+
+    // -------------------------------------------------------------------- title
+
+    /**
+     * Handles ANNOUNCE and TITLE, which the platform commands send as
+     * {@code AdminActionPacket} with a {@code type} extra rather than as their
+     * own packet types.
+     *
+     * <p>Both reuse {@code AdminAction.STATUS} on the wire, matching the
+     * backend, so the {@code type} extra is what actually selects the branch.
+     * An unknown or absent type falls through to a plain STATUS answer instead
+     * of being rejected, again matching the backend.
+     *
+     * @param packet the admin action
+     * @return the packets to fan out
+     */
+    private List<Packet> handleAdminAction(AdminActionPacket packet) {
+        String type = packet.getExtra("type");
+        String normalized = type != null ? type.trim().toUpperCase(Locale.ROOT) : "";
+        return switch (normalized) {
+            case "TITLE" -> handleTitle(packet);
+            default -> List.of(AdminActionResponsePacket.success(AdminAction.STATUS, "System status: OK"));
+        };
+    }
+
+    /**
+     * Turns a TITLE admin action into a {@link TitlePacket} for the channel.
+     *
+     * <p>The rendering itself stays in {@link ProxyChatCore#handleTitle}: this
+     * only validates and converts, so recipient selection (active channel) and
+     * the platform call keep living in one place.
+     *
+     * <p>Timing overrides are optional and only applied when they parse, so a
+     * malformed extra cannot make the title invisible by setting a zero
+     * duration.
+     */
+    private List<Packet> handleTitle(AdminActionPacket packet) {
+        String channelId = packet.getTarget();
+        String title = packet.getExtra("title");
+        if (channelId == null || channelId.isBlank()) {
+            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
+                    ErrorCode.BAD_REQUEST.getCode(), "Channel ID is required"));
+        }
+        if (title == null || title.isBlank()) {
+            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
+                    ErrorCode.BAD_REQUEST.getCode(), "Title is required"));
+        }
+        LiteChannelConfig channel = channels().get(channelId);
+        if (channel == null) {
+            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
+                    ErrorCode.NOT_FOUND.getCode(), "Channel not found: " + channelId));
+        }
+        UUID operatorId = packet.getPlayerId();
+        if (!canModerate(operatorId, TITLE_PERMISSION)) {
+            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
+                    ErrorCode.FORBIDDEN.getCode(), "Insufficient permissions"));
+        }
+
+        TitlePacket out = new TitlePacket(channelId, title, packet.getExtra("subtitle"),
+                operatorId);
+        out.setRequestId(packet.getRequestId());
+        applyTicks(packet, "fadeIn", out::setFadeIn);
+        applyTicks(packet, "stay", out::setStay);
+        applyTicks(packet, "fadeOut", out::setFadeOut);
+
+        platform.logDebug("Lite authority sent a title to " + channelId
+                + " by " + operatorId + " (" + title + ")");
+        return List.of(out, AdminActionResponsePacket.success(AdminAction.STATUS, "Title sent"));
+    }
+
+    /**
+     * Applies a non-negative tick override, ignoring anything unparseable.
+     *
+     * @param packet the source
+     * @param key the extra name
+     * @param setter the target setter
+     */
+    private static void applyTicks(AdminActionPacket packet, String key, IntConsumer setter) {
+        Long value = parseLong(packet.getExtra(key));
+        if (value != null && value >= 0) {
+            setter.accept((int) Math.min(Integer.MAX_VALUE, value.longValue()));
+        }
     }
 
     // -------------------------------------------------------------- moderation
