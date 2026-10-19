@@ -7,6 +7,7 @@ import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelScope;
 import com.nova.link.channel.ChannelSource;
 import com.nova.link.database.DatabaseException;
+import com.nova.link.database.BanInfo;
 import com.nova.link.database.DatabaseProvider;
 import com.nova.link.database.MuteInfo;
 import com.nova.link.database.MySQLProvider;
@@ -375,6 +376,118 @@ public final class LiteChannelStore implements AutoCloseable {
         }
         submit(() -> readMutes(playerId, sink));
     }
+    // ------------------------------------------------------------------- bans
+
+    /**
+     * Queues one ban record.
+     *
+     * <p>Same three contracts as {@link #saveMute}: {@code memory} is a no-op,
+     * the write runs on the storage I/O thread, and a failure degrades to memory
+     * with one warn instead of throwing into the caller.
+     *
+     * <p>A {@code null} channel id means a global ban, matching the shared
+     * {@code DatabaseProvider.GLOBAL_KEY} convention.
+     *
+     * @param playerId the banned player
+     * @param ban the record to persist (null is ignored)
+     */
+    public void saveBan(UUID playerId, BanInfo ban) {
+        if (!persistent || playerId == null || ban == null || closing.get()) {
+            return;
+        }
+        submit(() -> writeBan(playerId, ban));
+    }
+
+    /**
+     * Queues removal of one ban row.
+     *
+     * @param playerId the player to unban (null is ignored)
+     * @param channelId the channel, or {@code null} for the global ban
+     */
+    public void deleteBan(UUID playerId, String channelId) {
+        if (!persistent || playerId == null || closing.get()) {
+            return;
+        }
+        submit(() -> removeBan(playerId, channelId));
+    }
+
+    /**
+     * Queues a read of every persisted ban row for one player.
+     *
+     * <p>Like {@link #loadMutes}, the sink receives raw rows including expired
+     * ones; the caller filters against its own clock.
+     *
+     * @param playerId the player to restore (null is ignored)
+     * @param sink receives the rows
+     */
+    public void loadBans(UUID playerId, Consumer<List<BanInfo>> sink) {
+        if (!persistent || playerId == null || sink == null || closing.get()) {
+            return;
+        }
+        submit(() -> readBans(playerId, sink));
+    }
+
+    /** Runs on the I/O thread: upsert one ban row. */
+    private void writeBan(UUID playerId, BanInfo ban) {
+        ensureBackend();
+        DatabaseProvider current = provider;
+        if (current == null) {
+            reportWriteFailure(new IllegalStateException("lite storage backend is not connected"));
+            return;
+        }
+        try {
+            // saveBan is a DELETE+INSERT transaction in every provider, so
+            // re-banning the same (player, channel) overwrites.
+            current.saveBan(playerId, ban);
+            writeFailureReported.set(false);
+            debug.accept("Lite storage persisted ban for " + playerId
+                    + " in " + describeChannel(ban.getChannelId())
+                    + " (expires=" + ban.getExpireTime() + ")");
+        } catch (DatabaseException | RuntimeException e) {
+            reportWriteFailure(e);
+        }
+    }
+
+    /** Runs on the I/O thread: delete one ban row. */
+    private void removeBan(UUID playerId, String channelId) {
+        ensureBackend();
+        DatabaseProvider current = provider;
+        if (current == null) {
+            return;
+        }
+        try {
+            current.deleteBan(playerId, channelId);
+            debug.accept("Lite storage deleted ban for " + playerId
+                    + " in " + describeChannel(channelId));
+        } catch (DatabaseException | RuntimeException e) {
+            // Best-effort: the in-memory table already dropped the ban, so a
+            // failed delete only leaves a stale row behind.
+            debug.accept("Lite storage could not delete ban for " + playerId
+                    + ": " + describe(e));
+        }
+    }
+
+    /** Runs on the I/O thread: read every ban row for one player. */
+    private void readBans(UUID playerId, Consumer<List<BanInfo>> sink) {
+        ensureBackend();
+        DatabaseProvider current = provider;
+        if (current == null) {
+            return;
+        }
+        try {
+            List<BanInfo> loaded = current.loadBans(playerId);
+            if (loaded == null || loaded.isEmpty()) {
+                return;
+            }
+            sink.accept(Collections.unmodifiableList(new ArrayList<>(loaded)));
+        } catch (DatabaseException | RuntimeException e) {
+            // A failed restore leaves the player unbanned, the same degradation
+            // direction as a failed mute restore.
+            debug.accept("Lite storage could not restore bans for " + playerId
+                    + ": " + describe(e));
+        }
+    }
+
 
     // -------------------------------------------------------------- lifecycle
 

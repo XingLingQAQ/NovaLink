@@ -20,6 +20,8 @@ import com.nova.chat.proxy.config.LiteChannelConfig;
 import com.nova.chat.proxy.config.ProxyConfigView;
 import com.nova.chat.proxy.platform.ProxyPlatform;
 import com.nova.chat.proxy.platform.ProxyPlayer;
+import com.nova.link.database.BanInfo;
+import com.nova.link.database.DatabaseProvider;
 import com.nova.link.database.MuteInfo;
 
 import java.nio.charset.StandardCharsets;
@@ -86,6 +88,12 @@ public final class LocalAuthority {
     /** The moderation node the platform kick command gates on. */
     private static final String KICK_PERMISSION = "novachat.kick";
 
+    /** The moderation node the platform ban command gates on. */
+    private static final String BAN_PERMISSION = "novachat.ban";
+
+    /** Mirrors {@code DatabaseProvider.GLOBAL_KEY}; a null scope keys the global ban. */
+    private static final String GLOBAL_KEY = DatabaseProvider.GLOBAL_KEY;
+
     private final ProxyPlatform platform;
     private final ProxyChatCore chatCore;
     private final IgnoreListService ignoreListService;
@@ -144,6 +152,19 @@ public final class LocalAuthority {
      * {@link #restoreRequested} so a packet burst cannot queue one read per packet.
      */
     private final Set<UUID> mutesRestoreRequested = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Live ban table, keyed like {@link #mutes}: player → scope key → record.
+     *
+     * <p>A ban is stronger than a mute in one respect: it also evicts the
+     * player from the channel and refuses a rejoin, so enforcement has to be
+     * consulted on the join path as well as the chat path.
+     */
+    private final ConcurrentMap<UUID, ConcurrentMap<String, BanInfo>> bans =
+            new ConcurrentHashMap<>();
+
+    /** Players whose persisted bans have already been requested once. */
+    private final Set<UUID> bansRestoreRequested = ConcurrentHashMap.newKeySet();
 
     /**
      * @param platform the platform adapter (player lookup, rendering dispatch)
@@ -315,6 +336,8 @@ public final class LocalAuthority {
             case MUTE -> mute(packet);
             case UNMUTE -> unmute(packet);
             case KICK -> kick(packet);
+            case BAN -> ban(packet);
+            case UNBAN -> unban(packet);
             default -> {
                 platform.logDebug("Lite authority does not implement channel action " + action);
                 yield failure(action, packet, ErrorCode.NOT_IMPLEMENTED);
@@ -350,6 +373,16 @@ public final class LocalAuthority {
         // the platform dispatch hop, so a slow database cannot delay this JOIN.
         restoreOnce(playerId);
         restoreMutesOnce(playerId);
+        restoreBansOnce(playerId);
+
+        // A ban outranks a mute for the join path: it refuses entry instead of
+        // only silencing the player, and it covers the rejoin a kicked player is
+        // otherwise free to perform.
+        if (isBanned(playerId, channelId)) {
+            platform.logDebug("Lite ban rejected " + playerName(packet, player)
+                    + " joining " + channelId);
+            return failure(ChannelAction.JOIN, packet, ErrorCode.FORBIDDEN);
+        }
 
         // Capacity is checked against the authority's membership table, not the
         // shared player state: the client's optimistic JOIN would otherwise
@@ -600,6 +633,210 @@ public final class LocalAuthority {
             response.addExtra("operatorName", operatorName);
         }
         return response;
+    }
+
+    /**
+     * Handles BAN.
+     *
+     * <p>Differs from MUTE in two ways that matter:
+     * <ul>
+     *   <li>A blank channel id is legal and means a network-wide ban; a mute
+     *       requires a channel.</li>
+     *   <li>A ban also removes the target from the channel it covers. Otherwise
+     *       the player would keep receiving that channel's traffic while being
+     *       unable to speak, which is not what a ban means.</li>
+     * </ul>
+     *
+     * <p>Rejoining is blocked separately in {@code join}; this method only
+     * records the ban and applies its immediate effect.
+     */
+    private ChannelActionResponsePacket ban(ChannelActionPacket packet) {
+        String channelId = packet.getChannelId();
+        UUID operatorId = resolveOperatorId(packet);
+        if (operatorId == null) {
+            return failure(ChannelAction.BAN, packet, ErrorCode.BAD_REQUEST);
+        }
+        UUID targetId = resolveTargetId(packet);
+        if (targetId == null) {
+            return failure(ChannelAction.BAN, packet, ErrorCode.TARGET_OFFLINE);
+        }
+        boolean global = channelId == null || channelId.isBlank();
+        if (!global && !channels().containsKey(channelId)) {
+            return failure(ChannelAction.BAN, packet, ErrorCode.NOT_FOUND);
+        }
+        if (!canModerate(operatorId, BAN_PERMISSION)) {
+            return failure(ChannelAction.BAN, packet, ErrorCode.FORBIDDEN);
+        }
+        if (targetId.equals(operatorId)) {
+            return failure(ChannelAction.BAN, packet, ErrorCode.SELF_ACTION);
+        }
+
+        long durationMs = parseDurationMs(packet);
+        String reason = firstNonBlank(packet.getExtra("reason"),
+                packet.getExtra("banReason"), "Banned by admin");
+        long expireTime = durationMs > 0 ? System.currentTimeMillis() + durationMs : 0L;
+        String scope = global ? null : channelId;
+        BanInfo ban = new BanInfo(scope, expireTime, reason, operatorId);
+        banTable(targetId).put(banKey(scope), ban);
+
+        List<String> evicted = new ArrayList<>();
+        if (global) {
+            for (Map.Entry<String, Set<UUID>> entry : members.entrySet()) {
+                if (entry.getValue().remove(targetId)) {
+                    evicted.add(entry.getKey());
+                }
+            }
+        } else if (members.get(channelId) != null && members.get(channelId).remove(targetId)) {
+            evicted.add(channelId);
+        }
+        PlayerChannelState state = stateOf(targetId);
+        if (state != null && !evicted.isEmpty()) {
+            for (String evictedChannel : evicted) {
+                state.leaveChannel(evictedChannel);
+            }
+            persist(targetId, state);
+        }
+
+        if (store.isPersistent()) {
+            store.saveBan(targetId, ban);
+        }
+        platform.logDebug("Lite authority banned " + targetId + " in "
+                + describeBanScope(scope) + " (durationMs=" + durationMs
+                + ", evicted=" + evicted + ") by " + operatorId);
+
+        ChannelActionResponsePacket response = success(ChannelAction.BAN, packet, channelId);
+        response.addExtra("targetId", targetId.toString());
+        response.addExtra("durationMs", String.valueOf(durationMs));
+        String operatorName = firstNonBlank(packet.getExtra("operatorName"),
+                packet.getExtra("operator_name"));
+        if (operatorName != null && !operatorName.isEmpty()) {
+            response.addExtra("operatorName", operatorName);
+        }
+        return response;
+    }
+
+    /**
+     * Handles UNBAN: the mirror of {@link #ban}. Unbanning a player who is not
+     * banned still succeeds, matching the backend's idempotent unban.
+     */
+    private ChannelActionResponsePacket unban(ChannelActionPacket packet) {
+        String channelId = packet.getChannelId();
+        UUID operatorId = resolveOperatorId(packet);
+        if (operatorId == null) {
+            return failure(ChannelAction.UNBAN, packet, ErrorCode.BAD_REQUEST);
+        }
+        UUID targetId = resolveTargetId(packet);
+        if (targetId == null) {
+            return failure(ChannelAction.UNBAN, packet, ErrorCode.TARGET_OFFLINE);
+        }
+        boolean global = channelId == null || channelId.isBlank();
+        if (!global && !channels().containsKey(channelId)) {
+            return failure(ChannelAction.UNBAN, packet, ErrorCode.NOT_FOUND);
+        }
+        if (!canModerate(operatorId, BAN_PERMISSION)) {
+            return failure(ChannelAction.UNBAN, packet, ErrorCode.FORBIDDEN);
+        }
+
+        String scope = global ? null : channelId;
+        ConcurrentMap<String, BanInfo> table = bans.get(targetId);
+        boolean removed = table != null && table.remove(banKey(scope)) != null;
+        if (removed && store.isPersistent()) {
+            store.deleteBan(targetId, scope);
+        }
+        platform.logDebug("Lite authority unbanned " + targetId + " in "
+                + describeBanScope(scope) + " (was banned=" + removed + ")");
+
+        ChannelActionResponsePacket response = success(ChannelAction.UNBAN, packet, channelId);
+        response.addExtra("targetId", targetId.toString());
+        return response;
+    }
+
+    /**
+     * Whether the player is currently banned from this channel, either directly
+     * or through a network-wide ban.
+     *
+     * @param playerId the player
+     * @param channelId the channel they are trying to enter
+     * @return {@code true} when entry must be refused
+     */
+    private boolean isBanned(UUID playerId, String channelId) {
+        if (playerId == null) {
+            return false;
+        }
+        ConcurrentMap<String, BanInfo> table = bans.get(playerId);
+        if (table == null) {
+            return false;
+        }
+        return isActiveBan(table.get(banKey(channelId)))
+                || isActiveBan(table.get(GLOBAL_KEY));
+    }
+
+    private static boolean isActiveBan(BanInfo ban) {
+        return ban != null && !ban.isExpired();
+    }
+
+    /** @return the map key for a scope; null means the global ban */
+    private static String banKey(String channelId) {
+        return channelId != null ? channelId : GLOBAL_KEY;
+    }
+
+    private static String describeBanScope(String scope) {
+        return scope != null ? scope : "<global>";
+    }
+
+    private ConcurrentMap<String, BanInfo> banTable(UUID playerId) {
+        return bans.computeIfAbsent(playerId, ignored -> new ConcurrentHashMap<>());
+    }
+
+    /**
+     * Applies persisted ban rows, dropping already-expired ones.
+     *
+     * @param playerId the restored player
+     * @param rows the raw rows from the store
+     */
+    private void applyRestoredBans(UUID playerId, List<BanInfo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        int applied = 0;
+        for (BanInfo ban : rows) {
+            if (!isActiveBan(ban)) {
+                continue;
+            }
+            banTable(playerId).put(banKey(ban.getChannelId()), ban);
+            applied++;
+        }
+        if (applied > 0) {
+            platform.logDebug("Lite authority restored " + applied
+                    + " ban(s) for " + playerId);
+        }
+    }
+
+    /**
+     * Queues a one-time restore of the player's persisted bans, mirroring the
+     * mute restore.
+     *
+     * @param playerId the player to restore
+     */
+    private void restoreBansOnce(UUID playerId) {
+        if (playerId == null || !store.isPersistent() || !bansRestoreRequested.add(playerId)) {
+            return;
+        }
+        store.loadBans(playerId, rows -> platform.execute(() -> applyRestoredBans(playerId, rows)));
+    }
+
+    /**
+     * Applies ban rows without going through the store.
+     *
+     * <p>Package-private test seam, the twin of {@code restoreMutesForTests}.
+     *
+     * @param playerId the banned player
+     * @param rows the rows to apply
+     */
+    void restoreBansForTests(UUID playerId, List<BanInfo> rows) {
+        synchronized (this) {
+            applyRestoredBans(playerId, rows);
+        }
     }
 
 
@@ -938,6 +1175,8 @@ public final class LocalAuthority {
         // an entry per player that ever connected. The persisted rows survive.
         mutesRestoreRequested.remove(playerId);
         mutes.remove(playerId);
+        bansRestoreRequested.remove(playerId);
+        bans.remove(playerId);
         // The persisted membership is deliberately kept: that is the whole point
         // of the store, a reconnecting player must find their channels again.
         // Only the cache entry is dropped so it does not grow without bound.
@@ -1008,6 +1247,7 @@ public final class LocalAuthority {
     public void onPlayerConnect(UUID playerId) {
         restoreOnce(playerId);
         restoreMutesOnce(playerId);
+        restoreBansOnce(playerId);
     }
 
     /**
