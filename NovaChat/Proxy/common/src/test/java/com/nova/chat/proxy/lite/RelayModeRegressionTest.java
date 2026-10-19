@@ -29,6 +29,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import static com.nova.chat.proxy.lite.LiteTestFixture.FakePlatform;
+import static com.nova.chat.proxy.lite.LiteTestFixture.FakePlayer;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -107,58 +109,7 @@ class RelayModeRegressionTest {
 
     // ---------------------------------------------------------------- fixtures
 
-    private static final class FakePlayer implements ProxyPlayer {
-        private final UUID id = UUID.randomUUID();
-        private final String name;
-        private final Set<String> permissions = java.util.concurrent.ConcurrentHashMap.newKeySet();
-        private final List<String> messages = new ArrayList<>();
 
-        private FakePlayer(String name) {
-            this.name = name;
-        }
-
-        @Override public UUID getUniqueId() { return id; }
-        @Override public String getName() { return name; }
-        @Override public String getDisplayName() { return name; }
-        @Override public String getCurrentServer() { return null; }
-        @Override public boolean hasPermission(String permission) { return permissions.contains(permission); }
-    }
-
-    private static final class FakePlatform implements ProxyPlatform {
-        private final Map<UUID, FakePlayer> players = new LinkedHashMap<>();
-
-        private FakePlayer add(String name) {
-            FakePlayer player = new FakePlayer(name);
-            players.put(player.id, player);
-            return player;
-        }
-
-        @Override public Collection<? extends ProxyPlayer> getOnlinePlayers() { return List.copyOf(players.values()); }
-        @Override public ProxyPlayer getPlayer(UUID playerId) { return players.get(playerId); }
-        @Override public void sendMessage(ProxyPlayer player, String legacyText) {
-            ((FakePlayer) player).messages.add(legacyText);
-        }
-        @Override public void sendHoverableMessage(ProxyPlayer player, String text, String hover) { }
-        @Override public void showTitle(ProxyPlayer player, String title, String subtitle,
-                                        int fadeIn, int stay, int fadeOut) { }
-        @Override public void playSound(ProxyPlayer player, String soundId, float volume, float pitch) { }
-        @Override public void notifyMention(ProxyPlayer player, String highlight, String subtitle) { }
-        @Override public void sendActionBar(ProxyPlayer player, String legacyText) { }
-        @Override public void showChannelStatusBar(ProxyPlayer player, String channelId, ChatMode mode) { }
-        @Override public void notifyKickMute(ProxyPlayer player, ChannelAction action, String channelId,
-                                             String operator, String durationText) { }
-        @Override public boolean consoleHasPermission(String permission) { return true; }
-        @Override public void execute(Runnable task) { }
-        @Override public void runAsync(Runnable task) { }
-        @Override public void runLater(Runnable task, long delaySeconds) { }
-        @Override public void logInfo(String message) { }
-        @Override public void logWarn(String message) { }
-        @Override public void logDebug(String message) { }
-        @Override public void logError(String message) { }
-        @Override public void logError(String message, Throwable cause) { }
-        @Override public PlatformType getPlatformType() { return PlatformType.VELOCITY; }
-        @Override public void reloadConfiguration() { }
-    }
 
     /** The bundled relay template shape (no lite section at all). */
     private static final class RelaySource implements com.nova.chat.proxy.config.ConfigSource {

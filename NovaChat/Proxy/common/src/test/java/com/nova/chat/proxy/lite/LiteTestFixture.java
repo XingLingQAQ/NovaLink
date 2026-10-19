@@ -127,6 +127,9 @@ final class LiteTestFixture {
 
         @Override
         public void notifyMention(ProxyPlayer player, String highlight, String subtitle) {
+            // Rendered the way the real platforms do: a title carrying the
+            // highlight and subtitle, so a test can assert what was seen.
+            ((FakePlayer) player).titles.add(highlight + "|" + subtitle);
         }
 
         @Override
