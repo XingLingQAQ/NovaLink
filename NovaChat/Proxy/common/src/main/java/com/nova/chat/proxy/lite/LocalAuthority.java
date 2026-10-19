@@ -100,6 +100,15 @@ public final class LocalAuthority {
     /** The node the platform title command gates on. */
     private static final String TITLE_PERMISSION = "novachat.title";
 
+    /** The node the platform announce command gates on. */
+    private static final String ANNOUNCE_PERMISSION = "novachat.announce";
+
+    /** Prefix the backend puts in front of an announcement body. */
+    private static final String ANNOUNCE_PREFIX = "【公告】 ";
+
+    /** Shown as the sender when the request carries no operator name. */
+    private static final String ANNOUNCE_FALLBACK_NAME = "公告";
+
     /** Mirrors {@code DatabaseProvider.GLOBAL_KEY}; a null scope keys the global ban. */
     private static final String GLOBAL_KEY = DatabaseProvider.GLOBAL_KEY;
 
@@ -512,8 +521,68 @@ public final class LocalAuthority {
         String normalized = type != null ? type.trim().toUpperCase(Locale.ROOT) : "";
         return switch (normalized) {
             case "TITLE" -> handleTitle(packet);
+            case "ANNOUNCE" -> handleAnnounce(packet);
             default -> List.of(AdminActionResponsePacket.success(AdminAction.STATUS, "System status: OK"));
         };
+    }
+
+    /**
+     * Turns an ANNOUNCE admin action into a chat line for the channel.
+     *
+     * <p>The backend routes this through {@code messageRouter}; lite has no
+     * router, so it builds the {@link ChatMessagePacket} that
+     * {@link ProxyChatCore#handleIncomingMessage} already knows how to fan out.
+     * That keeps recipient selection, ignore filtering and per-viewer
+     * formatting in one place instead of duplicating them here.
+     *
+     * <p>The announcement is prefixed the same way the backend does it
+     * ({@code "【公告】 "}), so an operator sees identical output in lite and
+     * relay mode. The sender is the operator, so the line renders with their
+     * name exactly like a normal chat message.
+     *
+     * @param packet the admin action
+     * @return the packets to fan out
+     */
+    private List<Packet> handleAnnounce(AdminActionPacket packet) {
+        String channelId = packet.getTarget();
+        String content = packet.getExtra("content");
+        if (channelId == null || channelId.isBlank()) {
+            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
+                    ErrorCode.BAD_REQUEST.getCode(), "Channel ID is required"));
+        }
+        if (content == null || content.isBlank()) {
+            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
+                    ErrorCode.BAD_REQUEST.getCode(), "Announcement content is required"));
+        }
+        LiteChannelConfig channel = channels().get(channelId);
+        if (channel == null) {
+            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
+                    ErrorCode.NOT_FOUND.getCode(), "Channel not found: " + channelId));
+        }
+        UUID operatorId = packet.getPlayerId();
+        if (!canModerate(operatorId, ANNOUNCE_PERMISSION)) {
+            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
+                    ErrorCode.FORBIDDEN.getCode(), "Insufficient permissions"));
+        }
+        if (content.getBytes(StandardCharsets.UTF_8).length > ProtocolLimits.MAX_MESSAGE_CONTENT) {
+            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
+                    ErrorCode.BAD_REQUEST.getCode(), "Announcement is too long"));
+        }
+
+        String operatorName = packet.getExtra("operatorName");
+        if (operatorName == null || operatorName.isBlank()) {
+            operatorName = ANNOUNCE_FALLBACK_NAME;
+        }
+        ChatMessagePacket out = new ChatMessagePacket(
+                operatorId, operatorName, null, channelId, ANNOUNCE_PREFIX + content);
+        out.setRequestId(packet.getRequestId());
+        out.addPlaceholder("player", operatorName);
+        out.addPlaceholder("display_name", operatorName);
+        out.addPlaceholder("channel_name", channel.getDisplayName());
+
+        platform.logDebug("Lite authority announced to " + channelId
+                + " by " + operatorId + " (" + content.length() + " chars)");
+        return List.of(out, AdminActionResponsePacket.success(AdminAction.STATUS, "Announcement sent"));
     }
 
     /**
