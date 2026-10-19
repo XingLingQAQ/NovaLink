@@ -71,6 +71,10 @@ local = "&e[本地] &7{player}&f: {message}"
 [lite]
 server-id = "proxy-1"
 
+# 禁言/解禁的权限节点：lite 模式没有后端的权限分级，
+# 只有持有 novachat.mute 的玩家（以及控制台）才能禁言。
+# 频道自身的 permission 只是"能否加入"，不能用来禁言。
+
 # 本地频道定义
 # 字段与后端 novalink.yml 的 global_channels 对齐：
 #   display-name  显示名称（可省略，默认取频道 id）
