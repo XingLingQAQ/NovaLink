@@ -26,6 +26,11 @@ dependencies {
     // MessageFormatService, PlayerStateStore, ChannelResponseDispatcher, I18n.
     api project(':NovaChat:client-core')
 
+    // Wire format of the sub-server <-> proxy plugin-messaging channel. The
+    // platform shells (and the Bukkit plugin) shade this module together with
+    // proxy-common, so the envelope codec has exactly one implementation.
+    api project(':NovaChat:Proxy:channel')
+
     // Testing
     testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"

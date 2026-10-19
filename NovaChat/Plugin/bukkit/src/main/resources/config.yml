@@ -63,5 +63,19 @@ format:
   # 默认格式 (未配置的频道使用此格式)
   default: "&7[{channel_color}{channel_name}] {player}&f: {message}"
 
+# ==========================================
+# 子服 <-> 代理 plugin messaging 通道
+# ==========================================
+# 通道标识固定为 novachat:main（Velocity / BungeeCord 均接受该格式）。
+# 启用后，当后端连接不可用（例如 lite 模式根本没有后端）时，玩家聊天会改由
+# 代理转发，代理再通过同一通道把扇出结果发回本服。后端连接可用时保持原路径
+# 不变，避免同一句话被投递两次。
+plugin-messaging:
+  enabled: true
+  # 本服在代理配置中的服务器名（velocity.toml [servers] / bungee config.yml
+  # 的 servers 下的键）。代理会校验消息里声明的 server id 与实际来源一致，
+  # 不一致的消息会被丢弃并告警。留空时回退到 backend.username。
+  server-id: ""
+
 # 调试模式
 debug: false

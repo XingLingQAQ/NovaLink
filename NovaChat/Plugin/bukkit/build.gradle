@@ -13,6 +13,10 @@ dependencies {
     implementation project(':NovaChat:common')
     // Shared client runtime (Architecture B — not used by StarLink:core)
     implementation project(':NovaChat:client-core')
+    // Wire format of the sub-server <-> proxy plugin-messaging channel. Small
+    // and layered separately from the proxy plugins so the sub-server ships the
+    // codec without inheriting the proxy cores.
+    implementation project(':NovaChat:Proxy:channel')
 
     // Netty
     implementation "io.netty:netty-all:${nettyVersion}"
@@ -86,6 +90,7 @@ shadowJar {
     dependencies {
         include(project(':NovaChat:common'))
         include(project(':NovaChat:client-core'))
+        include(project(':NovaChat:Proxy:channel'))
         include(dependency('io.netty:.*'))
         include(dependency('com.google.code.gson:gson'))
     }

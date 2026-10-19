@@ -116,6 +116,7 @@ shadowJar {
         include(project(':NovaChat:common'))
         include(project(':NovaChat:client-core'))
         include(project(':NovaChat:Proxy:proxy-common'))
+        include(project(':NovaChat:Proxy:channel'))
         include(dependency('org.yaml:snakeyaml'))
     }
 }

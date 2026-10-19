@@ -178,6 +178,45 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         return knownChannelRegistry.getAll();
     }
 
+    /**
+     * Dispatches one packet that arrived over the proxy plugin-messaging
+     * channel instead of the backend link.
+     *
+     * <p>Downstream packets are identical to their backend counterparts, so
+     * they reuse the same handlers — including their main-thread hops and
+     * ignore/permission filters. Chat is the only packet type that also needs
+     * the proxy's "already rendered" list, because the sub-server renders
+     * solely to players the proxy cannot see.
+     *
+     * @param packet the decoded packet
+     * @param excludedRecipients players the proxy already rendered it to
+     */
+    public void dispatchChannelPacket(Packet packet,
+                                      java.util.Set<java.util.UUID> excludedRecipients) {
+        if (packet instanceof com.nova.chat.common.protocol.packets.ChatMessagePacket chat) {
+            com.nova.chat.bukkit.chat.ChatInterceptor interceptor = plugin.getChatInterceptor();
+            if (interceptor == null) {
+                plugin.debug("Dropped plugin-message chat: interceptor not initialized");
+                return;
+            }
+            interceptor.handleIncomingMessage(chat,
+                    excludedRecipients != null ? excludedRecipients : java.util.Set.of());
+        } else if (packet instanceof TitlePacket title) {
+            handleTitle(title);
+        } else if (packet instanceof MentionPacket mention) {
+            handleMention(mention);
+        } else if (packet instanceof ItemDisplayPacket itemDisplay) {
+            handleItemDisplay(itemDisplay);
+        } else if (packet instanceof PrivateMessagePacket privateMessage) {
+            handlePrivateMessage(privateMessage);
+        } else if (packet instanceof ChannelActionResponsePacket response) {
+            handleChannelActionResponse(response);
+        } else {
+            plugin.debug("Ignoring unsupported plugin-message packet "
+                    + packet.getClass().getSimpleName());
+        }
+    }
+
     // --- Bukkit-specific handlers ---
 
     /**
