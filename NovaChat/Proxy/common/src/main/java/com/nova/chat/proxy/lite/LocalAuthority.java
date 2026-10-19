@@ -62,7 +62,8 @@ import java.util.concurrent.ConcurrentMap;
  *   <li><b>Mutes</b> — MUTE / UNMUTE over the same channel definitions, enforced
  *       on every outgoing chat line (NC-436) and persisted through
  *       {@link LiteChannelStore} so a moderation decision survives a restart.
- *       Only the console may moderate; see {@link #canModerate}.</li>
+ *       Moderation is gated on the platform command nodes ({@code novachat.mute},
+ *       {@code novachat.kick}) plus the console identity; see {@link #canModerate}.
  * </ul>
  *
  * <p><b>Threading:</b> {@link #handle(Packet)} is synchronized and is invoked
@@ -80,7 +81,10 @@ public final class LocalAuthority {
     private static final UUID NIL_UUID = new UUID(0L, 0L);
 
     /** The moderation node the platform mute command gates on. */
-    private static final String MODERATION_PERMISSION = "novachat.mute";
+    private static final String MUTE_PERMISSION = "novachat.mute";
+
+    /** The moderation node the platform kick command gates on. */
+    private static final String KICK_PERMISSION = "novachat.kick";
 
     private final ProxyPlatform platform;
     private final ProxyChatCore chatCore;
@@ -310,6 +314,7 @@ public final class LocalAuthority {
             case WHO -> who(packet);
             case MUTE -> mute(packet);
             case UNMUTE -> unmute(packet);
+            case KICK -> kick(packet);
             default -> {
                 platform.logDebug("Lite authority does not implement channel action " + action);
                 yield failure(action, packet, ErrorCode.NOT_IMPLEMENTED);
@@ -470,7 +475,7 @@ public final class LocalAuthority {
         if (!channels().containsKey(channelId)) {
             return failure(ChannelAction.MUTE, packet, ErrorCode.NOT_FOUND);
         }
-        if (!canModerate(operatorId)) {
+        if (!canModerate(operatorId, MUTE_PERMISSION)) {
             return failure(ChannelAction.MUTE, packet, ErrorCode.FORBIDDEN);
         }
         if (targetId.equals(operatorId)) {
@@ -524,7 +529,7 @@ public final class LocalAuthority {
         if (!channels().containsKey(channelId)) {
             return failure(ChannelAction.UNMUTE, packet, ErrorCode.NOT_FOUND);
         }
-        if (!canModerate(operatorId)) {
+        if (!canModerate(operatorId, MUTE_PERMISSION)) {
             return failure(ChannelAction.UNMUTE, packet, ErrorCode.FORBIDDEN);
         }
 
@@ -540,6 +545,63 @@ public final class LocalAuthority {
         response.addExtra("targetId", targetId.toString());
         return response;
     }
+    /**
+     * Handles KICK: removes the target from the channel.
+     *
+     * <p>Compared with a mute this adds one precondition — the target must
+     * actually be a member (NC-433 otherwise) — and drops the target's
+     * membership the same way a LEAVE does, so the client's view and the
+     * authority's table agree. That membership is persisted, so a kicked player
+     * does not come back on reconnect.
+     *
+     * <p>Kicks are events, not state: there is nothing extra to persist beyond
+     * the resulting membership, unlike a mute.
+     */
+    private ChannelActionResponsePacket kick(ChannelActionPacket packet) {
+        String channelId = packet.getChannelId();
+        UUID operatorId = resolveOperatorId(packet);
+        if (operatorId == null) {
+            return failure(ChannelAction.KICK, packet, ErrorCode.BAD_REQUEST);
+        }
+        UUID targetId = resolveTargetId(packet);
+        if (targetId == null) {
+            return failure(ChannelAction.KICK, packet, ErrorCode.TARGET_OFFLINE);
+        }
+        if (channelId == null || channelId.isBlank()) {
+            return failure(ChannelAction.KICK, packet, ErrorCode.BAD_REQUEST);
+        }
+        if (!channels().containsKey(channelId)) {
+            return failure(ChannelAction.KICK, packet, ErrorCode.NOT_FOUND);
+        }
+        if (!canModerate(operatorId, KICK_PERMISSION)) {
+            return failure(ChannelAction.KICK, packet, ErrorCode.FORBIDDEN);
+        }
+        if (targetId.equals(operatorId)) {
+            return failure(ChannelAction.KICK, packet, ErrorCode.SELF_ACTION);
+        }
+
+        Set<UUID> channelMembers = members.get(channelId);
+        if (channelMembers == null || !channelMembers.remove(targetId)) {
+            return failure(ChannelAction.KICK, packet, ErrorCode.NOT_IN_CHANNEL);
+        }
+        PlayerChannelState state = stateOf(targetId);
+        if (state != null) {
+            state.leaveChannel(channelId);
+            persist(targetId, state);
+        }
+        platform.logDebug("Lite authority kicked " + targetId + " from " + channelId
+                + " by " + operatorId);
+
+        ChannelActionResponsePacket response = success(ChannelAction.KICK, packet, channelId);
+        response.addExtra("targetId", targetId.toString());
+        String operatorName = firstNonBlank(packet.getExtra("operatorName"),
+                packet.getExtra("operator_name"));
+        if (operatorName != null && !operatorName.isEmpty()) {
+            response.addExtra("operatorName", operatorName);
+        }
+        return response;
+    }
+
 
     /**
      * Whether this operator may moderate.
@@ -557,7 +619,7 @@ public final class LocalAuthority {
      * @param operatorId the resolved operator
      * @return {@code true} when the operator may moderate
      */
-    private boolean canModerate(UUID operatorId) {
+    private boolean canModerate(UUID operatorId, String permission) {
         if (operatorId == null) {
             return false;
         }
@@ -565,7 +627,7 @@ public final class LocalAuthority {
             return true;
         }
         ProxyPlayer operator = platform.getPlayer(operatorId);
-        return operator != null && operator.hasPermission(MODERATION_PERMISSION);
+        return operator != null && operator.hasPermission(permission);
     }
 
     /**
