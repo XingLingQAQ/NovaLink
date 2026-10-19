@@ -37,6 +37,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+import static com.nova.chat.proxy.lite.LiteTestFixture.FakePlatform;
+import static com.nova.chat.proxy.lite.LiteTestFixture.FakePlayer;
+import static com.nova.chat.proxy.lite.LiteTestFixture.MapSource;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -77,7 +80,7 @@ class LocalAuthorityBanTest {
         moderator = platform.add("Mod");
         moderator.permissions.add("novachat.ban");
 
-        ProxyConfig config = ProxyConfig.from(new MapSource(liteDefaults()));
+        ProxyConfig config = ProxyConfig.from(new MapSource(LiteTestFixture.config(GLOBAL, LOCAL)));
         KnownChannelRegistry registry = new KnownChannelRegistry();
         registry.replaceAll(Set.of(GLOBAL, LOCAL));
         chatCore = new ProxyChatCore(platform, config, new IgnoreListService(),
@@ -266,7 +269,7 @@ class LocalAuthorityBanTest {
      */
     private LocalAuthority authority(LiteChannelStore store) {
         try {
-            ProxyConfig config = ProxyConfig.from(new MapSource(liteDefaults()));
+            ProxyConfig config = ProxyConfig.from(new MapSource(LiteTestFixture.config(GLOBAL, LOCAL)));
             KnownChannelRegistry registry = new KnownChannelRegistry();
             registry.replaceAll(Set.of(GLOBAL, LOCAL));
             chatCore = new ProxyChatCore(platform, config, new IgnoreListService(),
@@ -403,211 +406,5 @@ class LocalAuthorityBanTest {
         return packet;
     }
 
-    private static Map<String, Object> liteDefaults() {
-        Map<String, Object> values = new LinkedHashMap<>();
-        values.put("mode", "lite");
-        values.put("lite.server-id", "proxy-1");
-        values.put("chat.replace_vanilla", true);
-        values.put("chat.default_channel", LOCAL);
-        values.put("chat.locale", "zh_CN");
-        values.put("chat.channel-prefixes", Map.of());
-        values.put("format.prefix", "");
-        values.put("format.error", "{message}");
-        values.put("format.success", "{message}");
-        values.put("format.default", "[{channel_name}] {player}: {message}");
-        values.put("format.channels", Map.of(
-                GLOBAL, "[{channel_name}] {player}: {message}",
-                LOCAL, "[{channel_name}] {player}: {message}"));
-        values.put("debug", false);
-
-        Map<String, Object> channels = new LinkedHashMap<>();
-        channels.put(GLOBAL, channel(GLOBAL));
-        channels.put(LOCAL, channel(LOCAL));
-        values.put("lite.channels", channels);
-        values.put("lite.storage", Map.of("type", "memory"));
-        return values;
-    }
-
-    private static Map<String, Object> channel(String id) {
-        Map<String, Object> channel = new LinkedHashMap<>();
-        channel.put("display-name", id);
-        channel.put("max-capacity", 0L);
-        channel.put("slow-mode", 0L);
-        return channel;
-    }
-
-    private static final class FakePlayer implements ProxyPlayer {
-        private final UUID id = UUID.randomUUID();
-        private final String name;
-        private final Set<String> permissions = ConcurrentHashMap.newKeySet();
-        private final List<String> messages = new ArrayList<>();
-
-        private FakePlayer(String name) {
-            this.name = name;
-        }
-
-        @Override public UUID getUniqueId() { return id; }
-        @Override public String getName() { return name; }
-        @Override public String getDisplayName() { return name; }
-        @Override public String getCurrentServer() { return null; }
-        @Override public boolean hasPermission(String permission) {
-            return permissions.contains(permission);
-        }
-    }
-
-    private static final class FakePlatform implements ProxyPlatform {
-        private final Map<UUID, FakePlayer> players = new LinkedHashMap<>();
-
-        private FakePlayer add(String name) {
-            FakePlayer player = new FakePlayer(name);
-            players.put(player.id, player);
-            return player;
-        }
-
-        @Override
-        public Collection<? extends ProxyPlayer> getOnlinePlayers() {
-            return List.copyOf(players.values());
-        }
-
-        @Override
-        public ProxyPlayer getPlayer(UUID playerId) {
-            return players.get(playerId);
-        }
-
-        @Override
-        public void sendMessage(ProxyPlayer player, String legacyText) {
-            ((FakePlayer) player).messages.add(legacyText);
-        }
-
-        @Override
-        public void sendHoverableMessage(ProxyPlayer player, String legacyText, String hoverText) {
-            ((FakePlayer) player).messages.add(legacyText);
-        }
-
-        @Override
-        public void showTitle(ProxyPlayer player, String title, String subtitle,
-                              int fadeIn, int stay, int fadeOut) { }
-
-        @Override
-        public void playSound(ProxyPlayer player, String soundId, float volume, float pitch) { }
-
-        @Override
-        public void notifyMention(ProxyPlayer player, String highlight, String subtitle) { }
-
-        @Override
-        public void sendActionBar(ProxyPlayer player, String legacyText) { }
-
-        @Override
-        public void showChannelStatusBar(ProxyPlayer player, String channelId, ChatMode mode) { }
-
-        @Override
-        public void notifyKickMute(ProxyPlayer player, ChannelAction action, String channelId,
-                                   String operator, String durationText) { }
-
-        @Override
-        public boolean consoleHasPermission(String permission) { return true; }
-
-        @Override
-        public void execute(Runnable task) { task.run(); }
-
-        @Override
-        public void runAsync(Runnable task) { task.run(); }
-
-        @Override
-        public void runLater(Runnable task, long delaySeconds) { task.run(); }
-
-        @Override public void logInfo(String message) { }
-        @Override public void logWarn(String message) { }
-        @Override public void logDebug(String message) { }
-        @Override public void logError(String message) { }
-        @Override public void logError(String message, Throwable cause) { }
-
-        @Override
-        public PlatformType getPlatformType() {
-            return PlatformType.VELOCITY;
-        }
-
-        @Override
-        public void reloadConfiguration() { }
-    }
-
-    private static final class MapSource implements com.nova.chat.proxy.config.ConfigSource {
-        private final Map<String, Object> values = new LinkedHashMap<>();
-
-        private MapSource(Map<String, Object> values) {
-            this.values.putAll(values);
-        }
-
-        private Object lookup(String path) {
-            String[] segments = path.split("\\.");
-            for (int length = segments.length; length > 0; length--) {
-                String prefix = String.join(".",
-                        java.util.Arrays.copyOf(segments, length));
-                if (!values.containsKey(prefix)) {
-                    continue;
-                }
-                Object current = values.get(prefix);
-                for (int i = length; i < segments.length; i++) {
-                    if (!(current instanceof Map<?, ?> map)) {
-                        return null;
-                    }
-                    current = map.get(segments[i]);
-                    if (current == null) {
-                        return null;
-                    }
-                }
-                return current;
-            }
-            return null;
-        }
-
-        @Override
-        public String requiredString(String path) throws ConfigException {
-            Object value = lookup(path);
-            if (value == null) {
-                throw new ConfigException("missing " + path);
-            }
-            return value.toString();
-        }
-
-        @Override
-        public String optionalString(String path) {
-            Object value = lookup(path);
-            return value != null ? value.toString() : null;
-        }
-
-        @Override
-        public int requiredInt(String path) throws ConfigException {
-            Object value = lookup(path);
-            if (!(value instanceof Number number)) {
-                throw new ConfigException("missing int " + path);
-            }
-            return number.intValue();
-        }
-
-        @Override
-        public boolean requiredBoolean(String path) throws ConfigException {
-            Object value = lookup(path);
-            if (!(value instanceof Boolean flag)) {
-                throw new ConfigException("missing boolean " + path);
-            }
-            return flag;
-        }
-
-        @Override
-        public Map<String, Object> requiredTable(String path) throws ConfigException {
-            Object value = lookup(path);
-            if (!(value instanceof Map<?, ?> map)) {
-                throw new ConfigException("missing table " + path);
-            }
-            Map<String, Object> copy = new LinkedHashMap<>();
-            map.forEach((key, entry) -> copy.put(String.valueOf(key), entry));
-            return copy;
-        }
-
-        @Override
-        public boolean contains(String path) {
-            return lookup(path) != null;
-        }
-    }
+    // ------------------------------------------------------------- fakes
 }

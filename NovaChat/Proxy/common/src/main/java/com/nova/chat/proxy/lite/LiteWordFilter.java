@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
@@ -208,7 +207,6 @@ public final class LiteWordFilter {
     public String toString() {
         return "LiteWordFilter{words=" + words.size()
                 + ", patterns=" + regexPatterns.size()
-                + ", sample=" + (words.isEmpty() ? "-" : words.iterator().next().toLowerCase(Locale.ROOT))
                 + "}";
     }
 }

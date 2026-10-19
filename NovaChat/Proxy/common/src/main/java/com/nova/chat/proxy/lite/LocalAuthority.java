@@ -11,13 +11,11 @@ import com.nova.chat.common.protocol.AdminAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.ProtocolLimits;
 import com.nova.chat.common.protocol.packets.AdminActionPacket;
-import com.nova.chat.common.protocol.packets.AdminActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
 import com.nova.chat.common.protocol.packets.PrivateMessagePacket;
-import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.proxy.chat.ProxyChatCore;
 import com.nova.chat.proxy.chat.SlowModeTracker;
 import com.nova.chat.proxy.config.LiteChannelConfig;
@@ -37,7 +35,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.function.IntConsumer;
 import java.util.Locale;
 
 /**
@@ -80,9 +77,10 @@ import java.util.Locale;
  * keeps the optimistic local updates performed by {@code ChannelCommandService}
  * ordered before the asynchronous response.
  *
- * <p><b>Scope:</b> kicks, bans, channel create/delete/invite, titles,
- * announcements and filters are still absent, and such actions answer
- * {@link ErrorCode#NOT_IMPLEMENTED}.
+ * <p><b>Scope:</b> channel create/delete/invite are still absent and answer
+ * {@link ErrorCode#NOT_IMPLEMENTED}. Moderation (mute, kick, ban), broadcasts
+ * (title, announce) and word filtering are implemented; the last two live in
+ * {@link LiteBroadcasts} and {@link LiteWordFilter} respectively.
  */
 public final class LocalAuthority {
 
@@ -96,18 +94,6 @@ public final class LocalAuthority {
 
     /** The moderation node the platform ban command gates on. */
     private static final String BAN_PERMISSION = "novachat.ban";
-
-    /** The node the platform title command gates on. */
-    private static final String TITLE_PERMISSION = "novachat.title";
-
-    /** The node the platform announce command gates on. */
-    private static final String ANNOUNCE_PERMISSION = "novachat.announce";
-
-    /** Prefix the backend puts in front of an announcement body. */
-    private static final String ANNOUNCE_PREFIX = "【公告】 ";
-
-    /** Shown as the sender when the request carries no operator name. */
-    private static final String ANNOUNCE_FALLBACK_NAME = "公告";
 
     /** Mirrors {@code DatabaseProvider.GLOBAL_KEY}; a null scope keys the global ban. */
     private static final String GLOBAL_KEY = DatabaseProvider.GLOBAL_KEY;
@@ -147,6 +133,12 @@ public final class LocalAuthority {
      * filter is a no-op, so the chat path needs no null check of its own.
      */
     private volatile LiteWordFilter wordFilter = LiteWordFilter.of(null, null);
+
+    /** Shared moderation gate (mute, kick, ban, title, announce). */
+    private final LitePermissions permissions;
+
+    /** ANNOUNCE and TITLE conversion; rendering stays in the chat core. */
+    private final LiteBroadcasts broadcasts;
 
     /**
      * Players whose persisted membership has already been requested once, so a
@@ -220,6 +212,8 @@ public final class LocalAuthority {
         this.chatCore = chatCore;
         this.ignoreListService = ignoreListService;
         this.store = store != null ? store : LiteChannelStore.memory();
+        this.permissions = new LitePermissions(platform);
+        this.broadcasts = new LiteBroadcasts(platform, this.permissions);
     }
 
     /**
@@ -533,147 +527,16 @@ public final class LocalAuthority {
         return response;
     }
 
-    // -------------------------------------------------------------------- title
+    // --------------------------------------------------------------- broadcasts
 
     /**
-     * Handles ANNOUNCE and TITLE, which the platform commands send as
-     * {@code AdminActionPacket} with a {@code type} extra rather than as their
-     * own packet types.
-     *
-     * <p>Both reuse {@code AdminAction.STATUS} on the wire, matching the
-     * backend, so the {@code type} extra is what actually selects the branch.
-     * An unknown or absent type falls through to a plain STATUS answer instead
-     * of being rejected, again matching the backend.
+     * Dispatches ANNOUNCE/TITLE work to {@link LiteBroadcasts}.
      *
      * @param packet the admin action
      * @return the packets to fan out
      */
     private List<Packet> handleAdminAction(AdminActionPacket packet) {
-        String type = packet.getExtra("type");
-        String normalized = type != null ? type.trim().toUpperCase(Locale.ROOT) : "";
-        return switch (normalized) {
-            case "TITLE" -> handleTitle(packet);
-            case "ANNOUNCE" -> handleAnnounce(packet);
-            default -> List.of(AdminActionResponsePacket.success(AdminAction.STATUS, "System status: OK"));
-        };
-    }
-
-    /**
-     * Turns an ANNOUNCE admin action into a chat line for the channel.
-     *
-     * <p>The backend routes this through {@code messageRouter}; lite has no
-     * router, so it builds the {@link ChatMessagePacket} that
-     * {@link ProxyChatCore#handleIncomingMessage} already knows how to fan out.
-     * That keeps recipient selection, ignore filtering and per-viewer
-     * formatting in one place instead of duplicating them here.
-     *
-     * <p>The announcement is prefixed the same way the backend does it
-     * ({@code "【公告】 "}), so an operator sees identical output in lite and
-     * relay mode. The sender is the operator, so the line renders with their
-     * name exactly like a normal chat message.
-     *
-     * @param packet the admin action
-     * @return the packets to fan out
-     */
-    private List<Packet> handleAnnounce(AdminActionPacket packet) {
-        String channelId = packet.getTarget();
-        String content = packet.getExtra("content");
-        if (channelId == null || channelId.isBlank()) {
-            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
-                    ErrorCode.BAD_REQUEST.getCode(), "Channel ID is required"));
-        }
-        if (content == null || content.isBlank()) {
-            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
-                    ErrorCode.BAD_REQUEST.getCode(), "Announcement content is required"));
-        }
-        LiteChannelConfig channel = channels().get(channelId);
-        if (channel == null) {
-            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
-                    ErrorCode.NOT_FOUND.getCode(), "Channel not found: " + channelId));
-        }
-        UUID operatorId = packet.getPlayerId();
-        if (!canModerate(operatorId, ANNOUNCE_PERMISSION)) {
-            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
-                    ErrorCode.FORBIDDEN.getCode(), "Insufficient permissions"));
-        }
-        if (content.getBytes(StandardCharsets.UTF_8).length > ProtocolLimits.MAX_MESSAGE_CONTENT) {
-            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
-                    ErrorCode.BAD_REQUEST.getCode(), "Announcement is too long"));
-        }
-
-        String operatorName = packet.getExtra("operatorName");
-        if (operatorName == null || operatorName.isBlank()) {
-            operatorName = ANNOUNCE_FALLBACK_NAME;
-        }
-        ChatMessagePacket out = new ChatMessagePacket(
-                operatorId, operatorName, null, channelId, ANNOUNCE_PREFIX + content);
-        out.setRequestId(packet.getRequestId());
-        out.addPlaceholder("player", operatorName);
-        out.addPlaceholder("display_name", operatorName);
-        out.addPlaceholder("channel_name", channel.getDisplayName());
-
-        platform.logDebug("Lite authority announced to " + channelId
-                + " by " + operatorId + " (" + content.length() + " chars)");
-        return List.of(out, AdminActionResponsePacket.success(AdminAction.STATUS, "Announcement sent"));
-    }
-
-    /**
-     * Turns a TITLE admin action into a {@link TitlePacket} for the channel.
-     *
-     * <p>The rendering itself stays in {@link ProxyChatCore#handleTitle}: this
-     * only validates and converts, so recipient selection (active channel) and
-     * the platform call keep living in one place.
-     *
-     * <p>Timing overrides are optional and only applied when they parse, so a
-     * malformed extra cannot make the title invisible by setting a zero
-     * duration.
-     */
-    private List<Packet> handleTitle(AdminActionPacket packet) {
-        String channelId = packet.getTarget();
-        String title = packet.getExtra("title");
-        if (channelId == null || channelId.isBlank()) {
-            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
-                    ErrorCode.BAD_REQUEST.getCode(), "Channel ID is required"));
-        }
-        if (title == null || title.isBlank()) {
-            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
-                    ErrorCode.BAD_REQUEST.getCode(), "Title is required"));
-        }
-        LiteChannelConfig channel = channels().get(channelId);
-        if (channel == null) {
-            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
-                    ErrorCode.NOT_FOUND.getCode(), "Channel not found: " + channelId));
-        }
-        UUID operatorId = packet.getPlayerId();
-        if (!canModerate(operatorId, TITLE_PERMISSION)) {
-            return List.of(AdminActionResponsePacket.failure(AdminAction.STATUS,
-                    ErrorCode.FORBIDDEN.getCode(), "Insufficient permissions"));
-        }
-
-        TitlePacket out = new TitlePacket(channelId, title, packet.getExtra("subtitle"),
-                operatorId);
-        out.setRequestId(packet.getRequestId());
-        applyTicks(packet, "fadeIn", out::setFadeIn);
-        applyTicks(packet, "stay", out::setStay);
-        applyTicks(packet, "fadeOut", out::setFadeOut);
-
-        platform.logDebug("Lite authority sent a title to " + channelId
-                + " by " + operatorId + " (" + title + ")");
-        return List.of(out, AdminActionResponsePacket.success(AdminAction.STATUS, "Title sent"));
-    }
-
-    /**
-     * Applies a non-negative tick override, ignoring anything unparseable.
-     *
-     * @param packet the source
-     * @param key the extra name
-     * @param setter the target setter
-     */
-    private static void applyTicks(AdminActionPacket packet, String key, IntConsumer setter) {
-        Long value = parseLong(packet.getExtra(key));
-        if (value != null && value >= 0) {
-            setter.accept((int) Math.min(Integer.MAX_VALUE, value.longValue()));
-        }
+        return broadcasts.handle(packet, channels());
     }
 
     // -------------------------------------------------------------- moderation
@@ -1043,24 +906,17 @@ public final class LocalAuthority {
      * {@code PermissionManager} role plus a console sentinel), so this uses the
      * one moderation node the ecosystem already has: {@code novachat.mute}, the
      * same node the platform {@code MuteCommand} gates on. The console identity
-     * is always allowed.
+    /**
+     * Whether this operator may perform a moderation action.
      *
-     * <p>The channel's join {@code permission} is deliberately *not* used — it
-     * is a membership gate, not a moderation gate, and reusing it would let
-     * every member of an open channel mute everyone else.
+     * <p>Delegates to {@link LitePermissions}, which owns the rule.
      *
      * @param operatorId the resolved operator
-     * @return {@code true} when the operator may moderate
+     * @param permission the node that gates this action
+     * @return {@code true} when the operator may perform it
      */
     private boolean canModerate(UUID operatorId, String permission) {
-        if (operatorId == null) {
-            return false;
-        }
-        if (operatorId.equals(NIL_UUID)) {
-            return true;
-        }
-        ProxyPlayer operator = platform.getPlayer(operatorId);
-        return operator != null && operator.hasPermission(permission);
+        return permissions.canModerate(operatorId, permission);
     }
 
     /**
@@ -1179,7 +1035,7 @@ public final class LocalAuthority {
             return false;
         }
         return isActive(table.get(channelId))
-                || isActive(table.get(com.nova.link.database.DatabaseProvider.GLOBAL_KEY));
+                || isActive(table.get(GLOBAL_KEY));
     }
 
     private static boolean isActive(MuteInfo mute) {
@@ -1204,7 +1060,7 @@ public final class LocalAuthority {
             }
             String key = mute.getChannelId() != null
                     ? mute.getChannelId()
-                    : com.nova.link.database.DatabaseProvider.GLOBAL_KEY;
+                    : GLOBAL_KEY;
             muteTable(playerId).put(key, mute);
             applied++;
         }
@@ -1327,9 +1183,11 @@ public final class LocalAuthority {
     // ---------------------------------------------------------------- helpers
 
     /** @return the live lite channel definitions (re-read after a reload) */
-    private java.util.Map<String, LiteChannelConfig> channels() {
+    private Map<String, LiteChannelConfig> channels() {
         return config().getLiteChannels();
-    }    private ProxyConfigView config() {
+    }
+
+    private ProxyConfigView config() {
         return chatCore.getStates().getConfig();
     }
 
