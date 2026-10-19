@@ -2,6 +2,7 @@ package com.nova.chat.proxy.channel;
 
 import com.nova.chat.channel.ProxyChannelException;
 import com.nova.chat.channel.ProxyChannelProtocol;
+import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
@@ -253,12 +254,48 @@ public class ProxyChannelHandler {
                 // only to the source) keeps this rule identical to the
                 // proxy-player path; each server excludes its own proxy players.
                 broadcastChat(chat);
+            } else if (response instanceof ChannelActionResponsePacket actionResponse
+                    && isTargetedModeration(actionResponse)) {
+                // A moderation response names a target that may be connected
+                // straight to any sub-server, not necessarily the one that
+                // issued the command. Echoing only to the source leaves that
+                // player unnotified, so broadcast instead; servers with no
+                // pending context drop the response, which makes the extra
+                // copies harmless.
+                for (String serverName : downstreamServers()) {
+                    sendDownstream(serverName, actionResponse,
+                            proxyPlayersOn(serverName));
+                }
             } else {
                 sendDownstream(sourceServerName, response,
                         proxyPlayersOn(sourceServerName));
             }
         }
         return Outcome.ACCEPTED;
+    }
+
+    /**
+     * Whether this action response concerns a specific player who may be on
+     * another server.
+     *
+     * <p>Only these need broadcasting: JOIN/LEAVE/WHO answer the caller, whose
+     * connection is by definition the source server, while MUTE/KICK/BAN notify
+     * a target that can be anywhere.
+     *
+     * @param response the action response
+     * @return {@code true} when the response names a target player
+     */
+    private static boolean isTargetedModeration(ChannelActionResponsePacket response) {
+        ChannelAction action = response.getAction();
+        if (action != ChannelAction.MUTE && action != ChannelAction.KICK
+                && action != ChannelAction.BAN && action != ChannelAction.UNBAN
+                && action != ChannelAction.UNMUTE) {
+            return response.isSuccess() && response.getExtra("targetId") != null;
+        }
+        // A rejected command has nobody to notify, and the operator who issued
+        // it is on the source server anyway, so broadcasting it would only
+        // multiply the same error across servers.
+        return response.isSuccess() && response.getExtra("targetId") != null;
     }
 
     /**

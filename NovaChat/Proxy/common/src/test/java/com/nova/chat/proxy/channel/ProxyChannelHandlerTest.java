@@ -9,6 +9,7 @@ import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PlatformType;
+import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.proxy.chat.ProxyChatCore;
 import com.nova.chat.proxy.config.ProxyConfig;
@@ -65,6 +66,45 @@ class ProxyChannelHandlerTest {
 
     // ------------------------------------------------------------- acceptance
 
+    @Test
+    @DisplayName("a moderation response reaches the target's server, not just the source")
+    void moderationResponseReachesTheTargetServer() throws Exception {
+        // The muted player sits on a different sub-server than the operator.
+        FakePlayer target = platform.add("Carol", "creative-02");
+
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(
+                true, ChannelAction.MUTE, "global", "", "Player muted");
+        response.addExtra("targetId", target.getUniqueId().toString());
+
+        ProxyChannelHandler handler = new ProxyChannelHandler(platform, chatCore,
+                request -> List.of(response), null);
+
+        handler.handleFromServer(SOURCE, ProxyChannelProtocol.encode(SOURCE,
+                chat("trigger")));
+
+        assertThat(platform.sentMessages)
+                .as("the target's server must receive the notice too")
+                .anyMatch(sent -> sent.serverName.equals("creative-02"));
+    }
+
+    @Test
+    @DisplayName("a rejected moderation command is not broadcast")
+    void rejectedModerationIsNotBroadcast() throws Exception {
+        FakePlayer target = platform.add("Carol", "creative-02");
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(
+                false, ChannelAction.MUTE, "global", "NC-403", "Insufficient permissions");
+        response.addExtra("targetId", target.getUniqueId().toString());
+
+        ProxyChannelHandler handler = new ProxyChannelHandler(platform, chatCore,
+                request -> List.of(response), null);
+
+        handler.handleFromServer(SOURCE, ProxyChannelProtocol.encode(SOURCE,
+                chat("trigger")));
+
+        assertThat(platform.sentMessages)
+                .as("only the source server gets the error back")
+                .allMatch(sent -> sent.serverName.equals(SOURCE));
+    }
     @Test
     @DisplayName("a valid upstream chat packet is accepted, rendered, and echoed to its server")
     void upstreamChatIsAcceptedAndFannedOut() throws Exception {
