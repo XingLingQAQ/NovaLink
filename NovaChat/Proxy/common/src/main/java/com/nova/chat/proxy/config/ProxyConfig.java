@@ -4,6 +4,9 @@ import com.nova.chat.client.network.ClientConnectionConfig;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -71,6 +74,15 @@ public final class ProxyConfig implements ProxyConfigView {
     private final Map<String, LiteChannelConfig> liteChannels;
     private final LiteStorageConfig liteStorage;
 
+    /** Whether the sensitive-word filter rewrites outgoing chat ({@code lite.filter.enabled}). */
+    private final boolean wordFilterEnabled;
+
+    /** Literal words to replace with {@code ***} ({@code lite.filter.custom-words}). */
+    private final List<String> wordFilterWords;
+
+    /** Regex sources to replace with {@code ***} ({@code lite.filter.custom-patterns}). */
+    private final List<String> wordFilterPatterns;
+
     private ProxyConfig(Builder builder) {
         this.mode = builder.mode;
         this.backendHost = builder.backendHost;
@@ -91,6 +103,9 @@ public final class ProxyConfig implements ProxyConfigView {
         this.serverId = builder.serverId;
         this.liteChannels = Collections.unmodifiableMap(new LinkedHashMap<>(builder.liteChannels));
         this.liteStorage = builder.liteStorage;
+        this.wordFilterEnabled = builder.wordFilterEnabled;
+        this.wordFilterWords = List.copyOf(builder.wordFilterWords);
+        this.wordFilterPatterns = List.copyOf(builder.wordFilterPatterns);
     }
 
     /**
@@ -174,7 +189,16 @@ public final class ProxyConfig implements ProxyConfigView {
     private static void parseLite(ConfigSource source, Builder builder)
             throws ConfigSource.ConfigException {
         builder.serverId = nonBlank(
-                source.requiredString("lite.server-id"), "lite.server-id");
+                source.requiredString("lite.server-id"), "lite.server-id");
+
+        // Optional: an absent lite.filter section means "off", so an existing
+        // config keeps behaving exactly as it did before this feature existed.
+        Map<String, Object> filter = source.optionalTable("lite.filter");
+        if (filter != null) {
+            builder.wordFilterEnabled = Boolean.TRUE.equals(filter.get("enabled"));
+            builder.wordFilterWords = splitCsv(filter.get("custom-words"));
+            builder.wordFilterPatterns = splitCsv(filter.get("custom-patterns"));
+        }
 
         Map<String, Object> channels = source.requiredTable("lite.channels");
         if (channels.isEmpty()) {
@@ -400,6 +424,63 @@ public final class ProxyConfig implements ProxyConfigView {
      * @return the {@code lite.channels} declarations (id → channel); empty in
      *         relay mode
      */
+    /**
+     * @return whether outgoing chat is passed through the sensitive-word filter
+     */
+    public boolean isWordFilterEnabled() {
+        return wordFilterEnabled;
+    }
+
+    /**
+     * @return the literal words the filter replaces
+     */
+    public List<String> getWordFilterWords() {
+        return wordFilterWords;
+    }
+
+    /**
+     * @return the regex sources the filter applies
+     */
+    public List<String> getWordFilterPatterns() {
+        return wordFilterPatterns;
+    }
+
+    /**
+     * Splits a comma-separated config value into trimmed, non-blank entries.
+     *
+     * <p>Words are carried as one CSV string rather than a YAML/TOML list so the
+     * same key works across both dialect sources without extending
+     * {@link ConfigSource} with a list accessor that every implementation would
+     * then have to provide.
+     *
+     * @param raw the configured value, or null
+     * @return the entries, never null
+     */
+    private static List<String> splitCsv(Object raw) {
+        if (raw == null) {
+            return new ArrayList<>();
+        }
+        if (raw instanceof String text) {
+            List<String> out = new ArrayList<>();
+            for (String part : text.split(",")) {
+                String trimmed = part.trim();
+                if (!trimmed.isEmpty()) {
+                    out.add(trimmed);
+                }
+            }
+            return out;
+        }
+        if (raw instanceof Collection<?> values) {
+            List<String> out = new ArrayList<>();
+            for (Object value : values) {
+                if (value != null && !value.toString().isBlank()) {
+                    out.add(value.toString().trim());
+                }
+            }
+            return out;
+        }
+        return new ArrayList<>();
+    }
     public Map<String, LiteChannelConfig> getLiteChannels() {
         return liteChannels;
     }
@@ -509,6 +590,9 @@ public final class ProxyConfig implements ProxyConfigView {
         private String serverId;
         private final Map<String, LiteChannelConfig> liteChannels = new LinkedHashMap<>();
         private LiteStorageConfig liteStorage;
+        private boolean wordFilterEnabled;
+        private List<String> wordFilterWords = new ArrayList<>();
+        private List<String> wordFilterPatterns = new ArrayList<>();
 
         /**
          * @param value the operating mode (null means {@link ProxyMode#RELAY})

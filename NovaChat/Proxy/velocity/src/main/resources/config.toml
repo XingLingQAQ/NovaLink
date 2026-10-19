@@ -92,6 +92,15 @@ local = { display-name = "本地", max-capacity = 0, slow-mode = 0 }
 # 本地存储（对齐后端 novalink.yml 的 database 段）
 #   type: memory | sqlite | mysql | postgresql
 # 只有选中的类型对应的段会被校验，其余段可以保留不填。
+# 敏感词过滤（可选；缺省 = 关闭）
+#   enabled         是否过滤聊天内容
+#   custom-words    以逗号分隔的词表，按整词、大小写不敏感匹配
+#   custom-patterns 以逗号分隔的正则，大小写不敏感；写错的正则会被跳过
+# 命中后统一替换成 ***，与后端 novalink.yml 的 filter 段语义一致。
+[lite.filter]
+enabled = false
+custom-words = ""
+custom-patterns = ""
 [lite.storage]
 type = "memory"
 

@@ -230,6 +230,51 @@ class LocalAuthorityMuteTest {
         assertThat(response.getErrorCode()).isEqualTo(ErrorCode.NOT_FOUND.getCode());
     }
 
+    // ------------------------------------------------------------- word filter
+
+    @Test
+    @DisplayName("the word filter rewrites a message before fan-out")
+    void wordFilterRewritesOutgoingChat() {
+        joinAll(GLOBAL);
+        authority.setWordFilter(LiteWordFilter.of(List.of("damn"), null));
+
+        List<Packet> out = send(chat(bob, GLOBAL, "that is damn rude"));
+
+        ChatMessagePacket delivered = out.stream()
+                .filter(ChatMessagePacket.class::isInstance)
+                .map(ChatMessagePacket.class::cast)
+                .findFirst()
+                .orElseThrow();
+        assertThat(delivered.getContent())
+                .as("the viewer must never see the raw word")
+                .isEqualTo("that is *** rude");
+    }
+
+    @Test
+    @DisplayName("a filter that matches nothing leaves the message alone")
+    void wordFilterLeavesCleanMessagesAlone() {
+        joinAll(GLOBAL);
+        authority.setWordFilter(LiteWordFilter.of(List.of("damn"), null));
+
+        List<Packet> out = send(chat(bob, GLOBAL, "perfectly polite"));
+
+        ChatMessagePacket delivered = out.stream()
+                .filter(ChatMessagePacket.class::isInstance)
+                .map(ChatMessagePacket.class::cast)
+                .findFirst()
+                .orElseThrow();
+        assertThat(delivered.getContent()).isEqualTo("perfectly polite");
+    }
+
+    @Test
+    @DisplayName("a muted player's line is dropped before the filter runs")
+    void muteBeatsFilter() {
+        joinAll(GLOBAL);
+        authority.setWordFilter(LiteWordFilter.of(List.of("damn"), null));
+        mute(moderator, bob, GLOBAL, "10m");
+
+        assertThat(chatReaches(bob, GLOBAL, "damn")).isFalse();
+    }
     // -------------------------------------------------------------- persistence
 
     @Test
@@ -363,6 +408,13 @@ class LocalAuthorityMuteTest {
         return out.stream().anyMatch(ChatMessagePacket.class::isInstance);
     }
 
+    private static ChatMessagePacket chat(FakePlayer sender, String channelId, String content) {
+        ChatMessagePacket packet = new ChatMessagePacket(
+                sender.id, sender.name, "proxy-1", channelId, content);
+        packet.addPlaceholder("player", sender.name);
+        packet.addPlaceholder("display_name", sender.name);
+        return packet;
+    }
     private List<Packet> send(Packet packet) {
         return send(authority, packet);
     }

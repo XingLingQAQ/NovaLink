@@ -287,6 +287,24 @@ public class NovaChatBungee extends Plugin {
      *
      * @param loaded the freshly parsed configuration
      */
+    /**
+     * Installs the sensitive-word filter on the lite authority from config.
+     *
+     * @param model the parsed configuration
+     * @param authority the lite authority to configure
+     */
+    private static void applyWordFilter(com.nova.chat.proxy.config.ProxyConfig model,
+                                        com.nova.chat.proxy.lite.LocalAuthority authority) {
+        if (model == null || authority == null) {
+            return;
+        }
+        if (!model.isWordFilterEnabled()) {
+            authority.setWordFilter(com.nova.chat.proxy.lite.LiteWordFilter.of(null, null));
+            return;
+        }
+        authority.setWordFilter(com.nova.chat.proxy.lite.LiteWordFilter.of(
+                model.getWordFilterWords(), model.getWordFilterPatterns()));
+    }
     private void applyConfiguration(NovaChatConfig loaded) {
         config = loaded;
         debugMode = loaded.isDebug();
@@ -451,6 +469,7 @@ public class NovaChatBungee extends Plugin {
         if (localAuthorityClient != null) {
             liteAuthority = new LocalAuthority(
                     platform, chatCore, ignoreListService, liteChannelStore);
+            applyWordFilter(config != null ? config.getModel() : null, liteAuthority);
             localAuthorityClient.bind(liteAuthority);
         }
 

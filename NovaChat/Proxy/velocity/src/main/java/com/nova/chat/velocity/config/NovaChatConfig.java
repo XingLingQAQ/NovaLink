@@ -89,6 +89,13 @@ public class NovaChatConfig implements ProxyConfigView {
 
     // Getters
 
+    /**
+     * @return the parsed configuration model, for values not exposed through
+     *         {@link ProxyConfigView}
+     */
+    public ProxyConfig getModel() {
+        return model;
+    }
     public boolean wasConfigCreated() {
         return updateResult != null && updateResult.created();
     }

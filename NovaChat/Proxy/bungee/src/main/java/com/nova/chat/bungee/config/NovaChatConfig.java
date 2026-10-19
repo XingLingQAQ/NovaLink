@@ -43,6 +43,14 @@ public class NovaChatConfig implements ProxyConfigView {
     /** Shared immutable value model produced by {@link #parseConfig(Configuration)}. */
     private ProxyConfig model = new ProxyConfig.Builder().build();
 
+    /**
+     * @return the parsed configuration model, for values not exposed through
+     *         {@link ProxyConfigView}
+     */
+    public ProxyConfig getModel() {
+        return model;
+    }
+
     private YamlConfigUpdater.UpdateResult updateResult;
 
     /**

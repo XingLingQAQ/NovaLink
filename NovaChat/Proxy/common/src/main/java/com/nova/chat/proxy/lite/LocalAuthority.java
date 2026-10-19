@@ -143,6 +143,12 @@ public final class LocalAuthority {
     private final LiteChannelStore store;
 
     /**
+     * Optional sensitive-word filter for outgoing chat. Never null: an empty
+     * filter is a no-op, so the chat path needs no null check of its own.
+     */
+    private volatile LiteWordFilter wordFilter = LiteWordFilter.of(null, null);
+
+    /**
      * Players whose persisted membership has already been requested once, so a
      * packet burst cannot queue one database read per packet.
      */
@@ -217,6 +223,18 @@ public final class LocalAuthority {
     }
 
     /**
+     * Replaces the sensitive-word filter.
+     *
+     * <p>Separate from the constructor because the filter is configuration-loaded
+     * and hot-reloadable, while the rest of the dependency graph is fixed.
+     *
+     * @param filter the filter to enforce; null resets to a no-op
+     */
+    public void setWordFilter(LiteWordFilter filter) {
+        this.wordFilter = filter != null ? filter : LiteWordFilter.of(null, null);
+    }
+
+    /**
      * Handles one upstream packet and returns the downstream packets the client
      * must deliver to its registered handlers.
      *
@@ -264,6 +282,20 @@ public final class LocalAuthority {
         if (content.getBytes(StandardCharsets.UTF_8).length > ProtocolLimits.MAX_MESSAGE_CONTENT) {
             notifySender(senderId, ErrorCode.BAD_REQUEST);
             return List.of();
+        }
+
+        // Filtering happens after the length check (so the limit applies to what
+        // the player typed) and before fan-out (so no viewer ever sees the raw
+        // text). The replacement is length-neutral in practice but not by
+        // contract, hence the order.
+        String filtered = wordFilter.filter(content);
+        if (!filtered.equals(content)) {
+            platform.logDebug("Lite word filter rewrote a message from " + packet.getSenderName()
+                    + " in " + channelId + " (" + wordFilter.countMatches(content)
+                    + " match(es))");
+            packet.setContent(filtered);
+            // Keep the local variable in step: the mention scan below reads it.
+            content = filtered;
         }
 
         LiteChannelConfig channel = channels().get(channelId);

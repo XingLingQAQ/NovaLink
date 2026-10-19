@@ -487,6 +487,7 @@ public class NovaChatVelocity {
         if (localAuthorityClient != null) {
             liteAuthority = new LocalAuthority(
                     platform, chatCore, ignoreListService, liteChannelStore);
+            applyWordFilter(getConfig().getModel(), liteAuthority);
             localAuthorityClient.bind(liteAuthority);
         }
 
@@ -694,6 +695,27 @@ public class NovaChatVelocity {
      * 
      * @return the configuration
      */
+    /**
+     * Installs the sensitive-word filter on the lite authority from config.
+     *
+     * <p>A disabled filter is installed as an empty one rather than skipped,
+     * because a reload must be able to turn filtering back off as well as on.
+     *
+     * @param model the parsed configuration
+     * @param authority the lite authority to configure
+     */
+    private static void applyWordFilter(com.nova.chat.proxy.config.ProxyConfig model,
+                                        com.nova.chat.proxy.lite.LocalAuthority authority) {
+        if (model == null || authority == null) {
+            return;
+        }
+        if (!model.isWordFilterEnabled()) {
+            authority.setWordFilter(com.nova.chat.proxy.lite.LiteWordFilter.of(null, null));
+            return;
+        }
+        authority.setWordFilter(com.nova.chat.proxy.lite.LiteWordFilter.of(
+                model.getWordFilterWords(), model.getWordFilterPatterns()));
+    }
     public NovaChatConfig getConfig() {
         return config;
     }
