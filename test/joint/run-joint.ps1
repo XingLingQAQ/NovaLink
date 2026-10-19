@@ -133,6 +133,26 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# --- normalise the process environment ---------------------------------------
+# Windows treats environment names case-insensitively, but a process block can
+# still carry two spellings of the same name (proxies are the common case:
+# "NO_PROXY" and "no_proxy" both set by the surrounding tooling). Start-Process
+# rebuilds the child block in a case-insensitive dictionary and throws
+# "Item has already been added. Key in dictionary: 'NO_PROXY'" before the child
+# even starts, which killed a round inside Invoke-FetchServer. Collapse each
+# case-insensitive group to its upper-case spelling (keeping the value) so every
+# later Start-Process call has a well-formed block.
+$envNames = @([System.Environment]::GetEnvironmentVariables('Process').Keys)
+$envGroups = $envNames | Group-Object { $_.ToUpperInvariant() } | Where-Object { $_.Count -gt 1 }
+foreach ($group in $envGroups) {
+  $keep = @($group.Group | Where-Object { $_ -ceq $group.Name })[0]
+  if (-not $keep) { $keep = $group.Group[0] }
+  foreach ($spelling in $group.Group) {
+    if ($spelling -ceq $keep) { continue }
+    [System.Environment]::SetEnvironmentVariable($spelling, $null, 'Process')
+  }
+}
+
 # --- resolve derived paths ---------------------------------------------------
 if (-not $RepoRoot)       { $RepoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath)) }
 if (-not $DistDir)        { $DistDir = Join-Path $RepoRoot ".e2e-artifacts/dist" }
