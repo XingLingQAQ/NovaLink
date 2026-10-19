@@ -105,6 +105,18 @@ param(
   [int]$ServerReadySec = 480,
   [int]$BotTimeoutSec = 300,
 
+  # Proxy operating mode. "relay" is the historical topology: the proxy and
+  # every downstream server each authenticate against the NovaLink backend.
+  # "lite" makes the proxy self-contained (mode = "lite", lite.channels,
+  # lite.storage.type = memory) and starts NO backend at all.
+  #
+  # Lite changes what the round can prove, so the round is asserted differently
+  # -- see Invoke-LiteProbe. In particular no downstream plugin can participate:
+  # there is no backend for them to connect to, and nothing in-tree carries
+  # player chat from a downstream server to the proxy (no plugin messaging).
+  [ValidateSet("relay", "lite")]
+  [string]$ProxyMode = "relay",
+
   # Build the platform plugin/mod jars with Gradle before starting servers.
   # Off is useful when re-running against jars built moments ago.
   [switch]$SkipBuild,
@@ -1311,13 +1323,19 @@ port = $ProxyPort
   [System.IO.File]::WriteAllText($path, $toml, (New-Object System.Text.UTF8Encoding $false))
 }
 
-function Write-ProxyPluginConfig([string]$path, [string]$clientId, [string]$clientPassword) {
-  $toml = @"
-config-version = 1
-# Off for the joint run: packet-level debug floods proxy.stdout.log (two lines
-# per keep-alive) and starves the harness's log poll. Lifecycle lines, which
-# the proxy-plugin assertion keys on, are INFO either way.
-debug = false
+# Proxy plugin configuration. The shape depends on the mode:
+#   relay -- backend credentials are required and parsed.
+#   lite  -- no backend section is read at all (ProxyConfig skips it), and the
+#            lite.server-id / lite.channels / lite.storage sections are required
+#            and validated. chat.default_channel MUST name a declared channel,
+#            so the sample channel is called "global" to match it.
+#
+# debug = true in lite is deliberate: the local authority's chat, join and DM
+# decisions are only logged through platform.logDebug, and this harness proves
+# that path is actually reached rather than inferring it from "the proxy booted".
+function Write-ProxyPluginConfig([string]$path, [string]$clientId, [string]$clientPassword,
+                                 [string]$mode = "relay") {
+  $relaySection = @"
 
 [backend]
 host = "127.0.0.1"
@@ -1325,6 +1343,30 @@ port = $BackendPort
 username = "$clientId"
 password = "$clientPassword"
 reconnect-delay = 3
+"@
+  $liteSection = @"
+
+# Lite probe config (see -ProxyMode lite in this harness).
+[lite]
+server-id = "$clientId"
+
+[lite.channels]
+global = { display-name = "Global", max-capacity = 0, slow-mode = 0 }
+local  = { display-name = "Local",  max-capacity = 0, slow-mode = 0 }
+
+[lite.storage]
+type = "memory"
+"@
+  $modeSection = if ($mode -eq "lite") { $liteSection } else { $relaySection }
+  $debugFlag = if ($mode -eq "lite") { "true" } else { "false" }
+  $toml = @"
+config-version = 1
+mode = "$mode"
+# Relay: packet-level debug floods proxy.stdout.log (two lines per keep-alive)
+# and starves the harness's log poll, so it stays off. Lite: on, because the
+# authority's decisions are only emitted through logDebug.
+debug = $debugFlag
+$modeSection
 
 [chat]
 replace_vanilla = true
@@ -1473,6 +1515,53 @@ function Assert-ProxyPluginLoaded([string]$assertionId, [string]$proxyName, [str
     pass = $pass
     evidence = $evidence
     kind = 'proxy-plugin'
+  }
+}
+
+# Prove a marker appears in a log. Used by the lite probe, where the evidence
+# that the LOCAL AUTHORITY (not merely the proxy) did the work is a debug line
+# the authority emits only on the path under test. "The proxy booted" is not
+# enough: relay mode boots the same way, and a bare proxy would pass every
+# substrate-level check.
+function Assert-LogContains([string]$assertionId, [string]$token, [string]$logPath,
+                            [string]$pattern) {
+  $text = Read-LogText $logPath
+  $pass = [bool]($text -and ($text -match $pattern))
+  $evidence = ''
+  if ($pass) {
+    $line = ($text -split "`n" | Where-Object { $_ -match $pattern } | Select-Object -First 1)
+    $evidence = if ($line) { $line.Trim() } else { '' }
+  } else {
+    $evidence = "pattern not found in $(Split-Path -Leaf $logPath): $pattern"
+  }
+  return [PSCustomObject]@{
+    id = $assertionId
+    token = $token
+    pass = $pass
+    evidence = $evidence
+    kind = 'proxy-log'
+  }
+}
+
+# Prove a marker does NOT appear in a log. This is what makes the "no backend"
+# claim falsifiable: if the lite proxy ever dials 127.0.0.1:<BackendPort> the
+# relay client logs a connect/retry line, and this fails the round instead of
+# letting a silently-relay proxy look like a working lite one.
+function Assert-LogAbsent([string]$assertionId, [string]$token, [string]$logPath,
+                          [string]$pattern) {
+  $text = Read-LogText $logPath
+  $hit = [bool]($text -and ($text -match $pattern))
+  $evidence = ''
+  if ($hit) {
+    $evidence = ($text -split "`n" | Where-Object { $_ -match $pattern } | Select-Object -First 1)
+    $evidence = if ($evidence) { $evidence.Trim() } else { '' }
+  }
+  return [PSCustomObject]@{
+    id = $assertionId
+    token = $token
+    pass = (-not $hit)
+    evidence = $evidence
+    kind = 'proxy-log-absent'
   }
 }
 
@@ -1626,6 +1715,375 @@ function Invoke-FetchFabricRuntime() {
   return $true
 }
 
+# --- lite probe --------------------------------------------------------------
+# Lite mode is a different product shape from relay, so it gets its own round.
+# What this round can and cannot prove, stated up front so a green result is
+# never read as more than it is:
+#
+#   PROVES (evidence is the proxy's own log or a bot's recording):
+#     * the plugin loads and the LOCAL AUTHORITY starts: the proxy logs the
+#       lite-mode line and never logs a relay connect/retry, so it cannot be a
+#       silently-relaying proxy wearing the lite config;
+#     * the lite config sections (server-id / channels / storage) validate;
+#     * two players connected to the PROXY exchange chat through the authority:
+#       the receiver records the sender's correlation token, and the sender
+#       records the DM echo;
+#     * /nc join on a declared channel is acknowledged locally and /nc who is
+#       answered by the authority;
+#     * an UNDECLARED channel is rejected (NC-404), proving the local channel
+#       table -- not a backend -- is the authority.
+#
+#   RECORDS BUT DOES NOT PROVE:
+#     * anything a DOWNSTREAM server's player does. There is no plugin
+#       messaging in this tree: ProxyPlatform#sendPluginMessage is a default
+#       no-op and no platform registers an incoming plugin channel, so a line
+#       typed on the Bukkit/Nukkit server has no path to the proxy. The lite
+#       authority only ever sees players connected to the PROXY itself.
+#       The downstream legs still boot with their plugins so the run is a real
+#       topology, and their bots record exactly what they saw. Their outcome is
+#       reported as `downstream-player-*` assertions of kind 'diagnostic': they
+#       describe the gap, they do not gate the round.
+function Invoke-LiteRound($round, [string]$roundDir) {
+  Log ""
+  Log "=== LITE ROUND $($round.Index): lite $(Format-RoundLabel $round) ==="
+  New-Item -ItemType Directory -Force -Path $roundDir | Out-Null
+
+  $result = [PSCustomObject]@{
+    round = $round.Index
+    topology = "lite: $(Format-RoundLabel $round)"
+    proxy = $round.Proxy
+    java = $round.Java
+    mod = $round.Mod
+    bedrock = $round.Bedrock
+    status = 'UNKNOWN'
+    assertions = @()
+    notes = ''
+  }
+  $assertions = @()
+  $bots = @()
+
+  if (-not $round.Proxy) {
+    $result.status = 'FAIL'; $result.notes = 'lite mode requires a proxy leg'; return $result
+  }
+
+  $ports = @{
+    Java = $JavaPort; JavaRcon = $JavaRconPort
+    Mod = $ModPort; ModRcon = $ModRconPort
+    Bedrock = $BedrockAPort; BedrockRcon = $BedrockARconPort
+  }
+  $downstreams = @{}
+  $serverProcs = @{}
+  $tokenPrefix = "$($script:RunId)-r$($round.Index)"
+
+  try {
+    # ---- downstream servers ----
+    # They exist so the probe runs the real topology. Their plugins cannot
+    # connect (no backend), which is exactly the gap this round measures.
+    if ($round.Java) {
+      $d = Join-Path $roundDir $round.Java
+      $p = Start-PlatformServer -platform $round.Java -serverDir $d `
+        -port $ports.Java -rconPort $ports.JavaRcon `
+        -clientId 'E2E_LiteBukkit' -clientPassword 'lite-probe' `
+        -stdoutPath (Join-Path $d "server.stdout.log") -stderrPath (Join-Path $d "server.stderr.log")
+      if ($p) { $serverProcs[$round.Java] = $p; $downstreams[$round.Java] = $ports.Java }
+    }
+    if ($round.Mod) {
+      $d = Join-Path $roundDir $round.Mod
+      $p = Start-PlatformServer -platform $round.Mod -serverDir $d `
+        -port $ports.Mod -rconPort $ports.ModRcon `
+        -clientId 'E2E_LiteMod' -clientPassword 'lite-probe' `
+        -stdoutPath (Join-Path $d "server.stdout.log") -stderrPath (Join-Path $d "server.stderr.log")
+      if ($p) { $serverProcs[$round.Mod] = $p; $downstreams[$round.Mod] = $ports.Mod }
+    }
+    if ($round.Bedrock) {
+      $d = Join-Path $roundDir $round.Bedrock
+      $p = Start-PlatformServer -platform $round.Bedrock -serverDir $d `
+        -port $ports.Bedrock -rconPort $ports.BedrockRcon `
+        -clientId 'E2E_LiteBedrock' -clientPassword 'lite-probe' `
+        -stdoutPath (Join-Path $d "server.stdout.log") -stderrPath (Join-Path $d "server.stderr.log")
+      if ($p) { $serverProcs[$round.Bedrock] = $p }
+    }
+
+    # ---- proxy ----
+    $dir = Join-Path $roundDir $round.Proxy
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $jdkPath = Get-JdkPath $PlatformDefs[$round.Proxy].Jdk
+    if (-not $jdkPath) {
+      $result.status = 'FAIL'; $result.notes = "runtime JDK $($PlatformDefs[$round.Proxy].Jdk) unresolved for $($round.Proxy)"
+      return $result
+    }
+    $null = Install-Plugin $round.Proxy $dir
+    Write-VelocityToml -path (Join-Path $dir "velocity.toml") -downstreams $downstreams
+    $plugCfgDir = Join-Path $dir "plugins/novachat"
+    New-Item -ItemType Directory -Force -Path $plugCfgDir | Out-Null
+    Write-ProxyPluginConfig -path (Join-Path $plugCfgDir "config.toml") `
+      -clientId 'E2E_LiteProxy' -clientPassword '' -mode 'lite'
+    $jarPath = Join-Path $DistDir $script:DefJarName[$round.Proxy]
+    $java = Join-Path $jdkPath "bin/java.exe"
+    if (-not (Test-Path -LiteralPath $java)) { $java = Join-Path $jdkPath "bin/java" }
+    $p = Start-JvmProcess -JavaExe $java `
+      -Arguments @("-Xms256M", "-Xmx512M", "-jar", $jarPath) `
+      -WorkingDirectory $dir `
+      -StdoutPath (Join-Path $dir "proxy.stdout.log") -StderrPath (Join-Path $dir "proxy.stderr.log")
+    if (-not $p) {
+      $result.status = 'FAIL'; $result.notes = "$($round.Proxy) proxy could not be started"; return $result
+    }
+    Track-Pid $p.Id "$($round.Proxy)-proxy"
+    $serverProcs[$round.Proxy] = $p
+    Log "  $($round.Proxy) pid=$($p.Id) port=$ProxyPort jdk=$($PlatformDefs[$round.Proxy].Jdk)"
+
+    # ---- readiness: ALL processes ----
+    # The proxy gate is plugin-init AND listening: its own ready pattern fires
+    # for a bare proxy too, and a bare proxy would prove nothing about lite.
+    $proxyLog = Join-Path $dir "proxy.stdout.log"
+    $deadline = (Get-Date).AddSeconds($ServerReadySec)
+    $ready = $false
+    while ((Get-Date) -lt $deadline) {
+      $text = Read-LogText $proxyLog
+      if ($text -match 'NovaChat Velocity plugin enabled' -and $text -match 'Listening on') { $ready = $true; break }
+      Start-Sleep -Seconds 2
+    }
+    if (-not $ready) {
+      $result.status = 'FAIL'; $result.notes = 'lite proxy never loaded the plugin / never listened'
+      Write-LogTail $proxyLog 40 'lite proxy stdout'
+      return $result
+    }
+
+    # Downstream readiness uses each engine's own pattern against ONE shared
+    # deadline. A slow engine must not fail the round (the proxy-level
+    # assertions do not depend on it) but a per-server fresh timeout would
+    # multiply the wait by the number of legs, so all of them are polled
+    # together and whatever is not up by then is recorded as ready=false.
+    $pendingDown = @()
+    foreach ($name in $serverProcs.Keys) {
+      if ($name -eq $round.Proxy) { continue }
+      $pendingDown += [PSCustomObject]@{ Name = $name; Ready = $false }
+    }
+    $dEnd = (Get-Date).AddSeconds($ServerReadySec)
+    while ((Get-Date) -lt $dEnd -and @($pendingDown | Where-Object { -not $_.Ready }).Count -gt 0) {
+      foreach ($entry in $pendingDown) {
+        if ($entry.Ready) { continue }
+        $def = $PlatformDefs[$entry.Name]
+        foreach ($lf in @((Join-Path (Join-Path $roundDir $entry.Name) "server.stdout.log"),
+                          (Join-Path (Join-Path $roundDir $entry.Name) "logs/latest.log"))) {
+          $t = Read-LogText $lf
+          if ($t -and ($t -match $def.ReadyPattern)) { $entry.Ready = $true; break }
+        }
+      }
+      if (@($pendingDown | Where-Object { -not $_.Ready }).Count -gt 0) { Start-Sleep -Seconds 2 }
+    }
+    foreach ($entry in $pendingDown) { Log "  downstream $($entry.Name) ready=$($entry.Ready)" }
+    Start-Sleep -Seconds 3
+
+    # ---- bots ----
+    $botWork = Join-Path $roundDir "bots"
+    $downWork = Join-Path $botWork "downstream"
+    New-Item -ItemType Directory -Force -Path $botWork | Out-Null
+    New-Item -ItemType Directory -Force -Path $downWork | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $botWork "handoff") | Out-Null
+    $javaMc = '1.21.11'
+    if ($round.Java) {
+      $lock = Get-LockedServer -Name $PlatformDefs[$round.Java].LockName
+      if ($lock -and $lock.BotMcVersion) { $javaMc = $lock.BotMcVersion }
+    }
+
+    $fanoutToken = "$tokenPrefix-lite-fanout"
+    $dmToken = "$tokenPrefix-lite-dm"
+    $downToken = "$tokenPrefix-downstream-chat"
+
+    # Alice and Bob connect to the PROXY. Only these two are visible to the
+    # lite authority.
+    #
+    # Ordering matters: the bot only records a token once its plan has declared
+    # interest in it (joint-bot.js keeps `expectedTokens` for match recording),
+    # so Bob must arm his EXPECT before Alice's line arrives. Both bots take
+    # ~35-40 s to log in through mineflayer, and they land within a second of
+    # each other, so Bob arms immediately after spawn (1 s settle) while Alice
+    # spends 8 s settling before she speaks: that puts the arm ~7 s ahead of the
+    # message instead of 3 s behind it (which is what the first attempt did).
+    $aliceSteps = @(
+      @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
+      @{ id = 'settle'; action = 'wait'; ms = 8000 },
+      @{ id = 'send-fanout'; action = 'chat'; text = "lite hello $fanoutToken" },
+      @{ id = 'expect-dm'; action = 'expect'; token = $dmToken; timeoutMs = 60000 },
+      @{ id = 'quit'; action = 'quit' }
+    )
+    $bobSteps = @(
+      @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
+      @{ id = 'settle'; action = 'wait'; ms = 1000 },
+      @{ id = 'expect-fanout'; action = 'expect'; token = $fanoutToken; timeoutMs = 60000 },
+      @{ id = 'who'; action = 'cmd'; text = '/nc who global' },
+      @{ id = 'settle2'; action = 'wait'; ms = 2000 },
+      @{ id = 'bad-channel'; action = 'cmd'; text = '/nc join nosuchchannel' },
+      @{ id = 'settle3'; action = 'wait'; ms = 2000 },
+      @{ id = 'dm'; action = 'cmd'; text = "/nc msg E2ELiteAlice lite dm $dmToken" },
+      @{ id = 'settle4'; action = 'wait'; ms = 3000 },
+      @{ id = 'quit'; action = 'quit' }
+    )
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    $alicePlanPath = Join-Path $botWork "plan-alice.json"
+    $bobPlanPath = Join-Path $botWork "plan-bob.json"
+    $alicePlanJson = New-CrossServerPlan -role 'alice' -kind 'java' -username 'E2ELiteAlice' -port $ProxyPort `
+      -mcVersion $javaMc -resultsFile (Join-Path $botWork "alice.results.json") -handoffDir (Join-Path $botWork "handoff") `
+      -timeoutMs ($BotTimeoutSec * 1000) -runId "$tokenPrefix-lite" -steps $aliceSteps
+    $bobPlanJson = New-CrossServerPlan -role 'bob' -kind 'java' -username 'E2ELiteBob' -port $ProxyPort `
+      -mcVersion $javaMc -resultsFile (Join-Path $botWork "bob.results.json") -handoffDir (Join-Path $botWork "handoff") `
+      -timeoutMs ($BotTimeoutSec * 1000) -runId "$tokenPrefix-lite" -steps $bobSteps
+    [System.IO.File]::WriteAllText($alicePlanPath, $alicePlanJson, $utf8NoBom)
+    [System.IO.File]::WriteAllText($bobPlanPath, $bobPlanJson, $utf8NoBom)
+
+    # Bob goes first: his plan's `expect` must be registered before Alice's line
+    # is sent. Alice then joins, and her 3s settle gives Bob time to land on the
+    # proxy (he spends 6s settling before his expect blocks on the token).
+    $bots += [PSCustomObject]@{ Role = 'bob'; Process = (Start-Bot 'bob' $bobPlanPath $botWork `
+      (Join-Path $botWork "bob.stdout.log") (Join-Path $botWork "bob.stderr.log")) }
+    Start-Sleep -Seconds 3
+    $bots += [PSCustomObject]@{ Role = 'alice'; Process = (Start-Bot 'alice' $alicePlanPath $botWork `
+      (Join-Path $botWork "alice.stdout.log") (Join-Path $botWork "alice.stderr.log")) }
+
+    # ---- downstream player probe (diagnostic, never gates the round) ----
+    # One bot joins the BUKKIT downstream directly and says one line. Its own
+    # recording is the evidence for what a downstream player can (not) reach.
+    $downRes = $null
+    if ($round.Java) {
+      $downSteps = @(
+        @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
+        @{ id = 'settle'; action = 'wait'; ms = 2500 },
+        @{ id = 'chat'; action = 'chat'; text = "downstream hello $downToken" },
+        @{ id = 'settle2'; action = 'wait'; ms = 2500 },
+        @{ id = 'quit'; action = 'quit' }
+      )
+      $downPlanPath = Join-Path $downWork "plan-downstream.json"
+      $downPlanJson = New-CrossServerPlan -role 'downstream' -kind 'java' -username 'E2EDownstream' -port $ports.Java `
+        -mcVersion $javaMc -resultsFile (Join-Path $downWork "downstream.results.json") `
+        -handoffDir (Join-Path $botWork "handoff") -timeoutMs ($BotTimeoutSec * 1000) `
+        -runId "$tokenPrefix-downstream" -steps $downSteps
+      [System.IO.File]::WriteAllText($downPlanPath, $downPlanJson, $utf8NoBom)
+      $downBot = [PSCustomObject]@{ Role = 'downstream'; Process = (Start-Bot 'downstream' $downPlanPath $downWork `
+        (Join-Path $downWork "downstream.stdout.log") (Join-Path $downWork "downstream.stderr.log")) }
+      $bots += $downBot
+    }
+
+    Wait-Bots $bots $BotTimeoutSec
+
+    # ---- assertions ----
+    $aliceRes = Read-BotResult (Join-Path $botWork "alice.results.json")
+    $bobRes = Read-BotResult (Join-Path $botWork "bob.results.json")
+    if ($round.Java) {
+      $downRes = Read-BotResult (Join-Path $downWork "downstream.results.json")
+    }
+
+    # 1. The plugin loaded at all (same guarantee the relay round makes).
+    $assertions += Assert-ProxyPluginLoaded "round$($round.Index)/proxy-plugin-loaded" $round.Proxy $proxyLog
+    # 2. The LOCAL AUTHORITY is the running mode. This is the line the shell
+    #    emits only after building the lite object graph.
+    $assertions += Assert-LogContains "round$($round.Index)/lite-mode-active" 'local-authority' $proxyLog `
+      'NovaChat running in lite mode \(local authority, no backend connection\)'
+    # 3. No backend dial. A relay client that fell back to the backend would
+    #    log one of these; their absence is what distinguishes lite from relay.
+    $assertions += Assert-LogAbsent "round$($round.Index)/lite-no-backend-connect" 'no-backend-dial' $proxyLog `
+      'Connected to NovaLink backend|Reconnecting to NovaLink|Lost connection to NovaLink'
+    # 4. The authority accepted the chat and joined the channel: its own debug
+    #    lines name the channel. (The proxy is configured with debug = true.)
+    $assertions += Assert-LogContains "round$($round.Index)/lite-authority-joined" 'join' $proxyLog `
+      'Lite authority joined E2ELiteAlice to channel global'
+    $assertions += Assert-LogContains "round$($round.Index)/lite-authority-fanout" 'chat' $proxyLog `
+      'Lite send: ChatMessagePacket'
+    # 5. Direct message went through the authority (packet type, no backend).
+    $assertions += Assert-LogContains "round$($round.Index)/lite-authority-dm" 'dm' $proxyLog `
+      'Lite send: PrivateMessagePacket'
+    # 6. The receiver really saw the sender's token, and the DM echo reached
+    #    the sender. Both are receiver-recorded evidence, never the sender's claim.
+    if ($bobRes) {
+      $assertions += Assert-Delivered "round$($round.Index)/lite-chat-fanout" $fanoutToken $bobRes
+    }
+    if ($aliceRes) {
+      $assertions += Assert-Delivered "round$($round.Index)/lite-direct-message" $dmToken $aliceRes
+    }
+    $assertions += Assert-BotExpectations 'alice' $aliceRes
+    $assertions += Assert-BotExpectations 'bob' $bobRes
+
+    # 7. An undeclared channel is rejected locally with NC-404. This proves the
+    #    authority's own channel table -- not a backend's -- gates joins.
+    if ($bobRes) {
+      $assertions += Assert-Delivered "round$($round.Index)/lite-undeclared-channel-rejected" 'NC-404' $bobRes
+    }
+    # 8. /nc who was answered by the authority's own membership table. The
+    #    token is the WHO HEADER with its member count, not a player name: a
+    #    name would also match the earlier chat line and pass vacuously.
+    if ($bobRes) {
+      $assertions += Assert-Delivered "round$($round.Index)/lite-who-lists-members" 'online members (2)' $bobRes
+    }
+
+    # ---- diagnostic: what a DOWNSTREAM player can reach ----
+    # Reported, never gated: they document the plugin-messaging gap rather than
+    # asserting a green outcome. `pass` here means "the lite delivery reached a
+    # downstream player", which is the behaviour the product does NOT have yet.
+    if ($downRes) {
+      $assertions += Assert-Delivered "round$($round.Index)/downstream-player-saw-fanout" $fanoutToken $downRes
+      $assertions += Assert-Delivered "round$($round.Index)/downstream-player-saw-dm" $dmToken $downRes
+      # Positive evidence of the gap: the downstream plugin cancelled the line
+      # and told the player it is not connected to a backend (NC-503).
+      $assertions += Assert-Delivered "round$($round.Index)/downstream-player-blocked-nc503" 'NC-503' $downRes
+      # REPLACE mode cancels the event, so the downstream player never even sees
+      # their own line echoed back.
+      $assertions += Assert-Absent "round$($round.Index)/downstream-player-own-line-not-echoed" $downToken $downRes
+      $downKinds = @($downRes.received | ForEach-Object { $_.kind } | Sort-Object -Unique)
+      $downNote = "downstream bot received kinds: $($downKinds -join ', ')"
+      Log "  $downNote"
+      $result.notes = $downNote
+    } else {
+      Log "  downstream bot wrote no results.json (server may not have booted)"
+      $result.notes = 'downstream bot wrote no results.json'
+    }
+
+    # Diagnostic assertions must not gate the round; mark them by id prefix and
+    # label their `pass` as the observation, not as a requirement. `saw-fanout`
+    # passing would mean lite CAN reach downstream players, which today it
+    # cannot; `blocked-nc503` passing is the gap, stated as evidence.
+    $gating = @($assertions | Where-Object { $_.id -notmatch '/downstream-player-' })
+    $failed = @($gating | Where-Object { -not $_.pass })
+    foreach ($a in @($assertions | Where-Object { $_.id -match '/downstream-player-' })) {
+      $a.kind = 'diagnostic'
+      if ($a.id -match 'own-line-not-echoed') {
+        $a.evidence = if ($a.pass) { 'downstream player did not see its own line (vanilla chat cancelled)' }
+                      else { "downstream player DID see its own line: $($a.evidence)" }
+      } elseif ($a.pass) {
+        $a.evidence = "observed: $($a.evidence)"
+      } else {
+        $a.evidence = 'not observed'
+      }
+    }
+    if ($failed.Count -gt 0) {
+      $result.status = 'FAIL'
+      $result.notes = (($result.notes, "failed: $((($failed | ForEach-Object { $_.id }) -join ', '))") |
+        Where-Object { $_ }) -join '; '
+    } else {
+      $result.status = 'PASS'
+    }
+  } catch {
+    $result.status = 'FAIL'
+    $result.notes = "lite round threw: $($_.Exception.Message)"
+    Log "  LITE ROUND ERROR: $($_.Exception.Message)"
+  } finally {
+    if ($result.status -ne 'PASS') {
+      if ($round.Proxy) {
+        Write-LogTail (Join-Path (Join-Path $roundDir $round.Proxy) "proxy.stdout.log") 50 "lite proxy stdout"
+      }
+      foreach ($b in $bots) {
+        $roleDir = if ($b.Role -eq 'downstream') { 'bots/downstream' } else { 'bots' }
+        Write-LogTail (Join-Path (Join-Path $roundDir $roleDir) "$($b.Role).stdout.log") 40 "bot $($b.Role) stdout"
+      }
+    }
+    Teardown-All
+    Start-Sleep -Seconds 2
+  }
+
+  $result.assertions = $assertions
+  return $result
+}
+
 # --- one round ---------------------------------------------------------------
 # A round starts the backend once, then every leg, then the bots, then asserts
 # token delivery across the receiver's recording. Teardown is unconditional.
@@ -1686,16 +2144,24 @@ function Invoke-Round($round, [string]$roundDir) {
   $backendWork = Join-Path $backendDir "work"
   New-Item -ItemType Directory -Force -Path $backendWork | Out-Null
   $backendConfig = Join-Path $backendDir "novalink.yml"
-  Write-BackendConfig -path $backendConfig -clients $backendClients -superAdminPassword $superAdminPassword
-  Log "  backend config: $backendConfig ($($backendClients.Count) clients, super-admin enabled)"
+  if ($ProxyMode -eq 'relay') {
+    Write-BackendConfig -path $backendConfig -clients $backendClients -superAdminPassword $superAdminPassword
+    Log "  backend config: $backendConfig ($($backendClients.Count) clients, super-admin enabled)"
+  } else {
+    Log "  lite mode: no backend is started (the proxy is self-contained)"
+  }
 
   try {
     # ---- backend ----
-    $bk = Start-Backend -configPath $backendConfig -workDir $backendWork `
-      -stdoutPath (Join-Path $backendDir "stdout.log") -stderrPath (Join-Path $backendDir "stderr.log")
-    if (-not $bk) {
-      $result.status = 'FAIL'; $result.notes = 'backend did not become ready'
-      return $result
+    # Lite has no backend at all: the proxy runs a LocalAuthority in-process and
+    # every downstream plugin would have nothing to authenticate against.
+    if ($ProxyMode -eq 'relay') {
+      $bk = Start-Backend -configPath $backendConfig -workDir $backendWork `
+        -stdoutPath (Join-Path $backendDir "stdout.log") -stderrPath (Join-Path $backendDir "stderr.log")
+      if (-not $bk) {
+        $result.status = 'FAIL'; $result.notes = 'backend did not become ready'
+        return $result
+      }
     }
 
     # ---- servers ----
@@ -1751,7 +2217,8 @@ function Invoke-Round($round, [string]$roundDir) {
         $plugCfgDir = Join-Path $dir "plugins/novachat"
         New-Item -ItemType Directory -Force -Path $plugCfgDir | Out-Null
         Write-ProxyPluginConfig -path (Join-Path $plugCfgDir "config.toml") `
-          -clientId $clientSecrets[$round.Proxy].Username -clientPassword $clientSecrets[$round.Proxy].Password
+          -clientId $clientSecrets[$round.Proxy].Username -clientPassword $clientSecrets[$round.Proxy].Password `
+          -mode $ProxyMode
       }
       $jarPath = Join-Path $DistDir $script:DefJarName[$round.Proxy]
       $java = Join-Path $jdkPath "bin/java.exe"
@@ -2063,6 +2530,7 @@ function Install-BotDeps {
 Log "=== NovaChat JOINT E2E START (run $($script:RunId)) ==="
 Log "RepoRoot: $RepoRoot"
 Log "Platforms: $Platforms"
+Log "ProxyMode: $ProxyMode"
 Log "JDK21: $(if ($Jdk21) { $Jdk21 } else { '<unresolved>' })"
 Log "JDK25: $(if ($Jdk25) { $Jdk25 } else { '<unresolved>' })"
 Log "JDK17: $(if ($Jdk17) { $Jdk17 } else { '<unresolved>' })"
@@ -2152,10 +2620,13 @@ if ($prereqIssues.Count -gt 0) {
 # same box) makes the backend die with BindException and the round reports only
 # "backend did not become ready", which sends the reader looking at the backend
 # config instead of at the port. Name the conflict here.
-$requiredPorts = @(
-  @{ Name = 'backend tcp'; Port = $BackendPort },
-  @{ Name = 'backend ws'; Port = $BackendWsPort }
-)
+# Lite starts no backend, so its ports are not required (and must not block a
+# lite probe just because something unrelated holds the relay backend port).
+$requiredPorts = @()
+if ($ProxyMode -eq 'relay') {
+  $requiredPorts += @{ Name = 'backend tcp'; Port = $BackendPort }
+  $requiredPorts += @{ Name = 'backend ws'; Port = $BackendWsPort }
+}
 foreach ($r in $roundList) {
   if ($r.Proxy) { $requiredPorts += @{ Name = "$($r.Proxy) proxy"; Port = $ProxyPort } }
   if ($r.Java) { $requiredPorts += @{ Name = "$($r.Java) game"; Port = $JavaPort }; $requiredPorts += @{ Name = "$($r.Java) rcon"; Port = $JavaRconPort } }
@@ -2285,14 +2756,23 @@ $roundResults = @()
 $overallPass = $true
 foreach ($r in $roundList) {
   $roundDir = Join-Path (Join-Path $JointRoot $script:RunId) "round-$($r.Index)"
-  $res = Invoke-Round -round $r -roundDir $roundDir
+  # Lite and relay are separate rounds: lite starts no backend, its proxy-level
+  # assertions come from the authority's own log, and its downstream players are
+  # recorded as diagnostics rather than gating evidence.
+  $res = if ($ProxyMode -eq 'lite') {
+    Invoke-LiteRound -round $r -roundDir $roundDir
+  } else {
+    Invoke-Round -round $r -roundDir $roundDir
+  }
   $roundResults += $res
   if ($res.status -ne 'PASS') { $overallPass = $false }
   Log "=== ROUND $($r.Index) RESULT: $($res.status) ==="
   if ($res.notes) { Log "    notes: $($res.notes)" }
   foreach ($a in $res.assertions) {
-    $verdict = if ($a.pass) { 'PASS' } else { 'FAIL' }
-    Log ("    {0,-6} {1,-45} {2}" -f $verdict, $a.id, $a.token)
+    # Diagnostics are reported but never claimed as PASS/FAIL evidence.
+    $verdict = if ($a.kind -eq 'diagnostic') { 'INFO' }
+               elseif ($a.pass) { 'PASS' } else { 'FAIL' }
+    Log ("    {0,-6} {1,-52} {2}" -f $verdict, $a.id, $a.token)
     if ($a.evidence) { Log "           evidence: $($a.evidence)" }
   }
   Start-Sleep -Seconds 2
@@ -2305,6 +2785,7 @@ $summaryFile = Join-Path $summaryDir "joint-summary.json"
 $summary = [PSCustomObject]@{
   runId = $script:RunId
   platforms = $Platforms
+  proxyMode = $ProxyMode
   rounds = $roundResults
   overallPass = $overallPass
 }
