@@ -134,6 +134,102 @@ class ProxyChannelHandlerTest {
         assertThat(alice.messages).isEmpty();
     }
 
+    // ------------------------------------------------------ proxy-side fan-out
+
+    @Test
+    @DisplayName("a proxy player's chat is pushed down to every server with players")
+    void proxyChatIsBroadcastDownstream() throws Exception {
+        FakePlayer carol = platform.add("Carol", "survival-02");
+        ProxyChannelHandler handler = new ProxyChannelHandler(platform, chatCore,
+                request -> List.of(), null);
+
+        ChatMessagePacket chat = chat("from the proxy");
+        handler.broadcastProxyChat(chat);
+
+        assertThat(platform.sentMessages).hasSize(2);
+        assertThat(platform.sentMessages)
+                .extracting(sent -> sent.serverName)
+                .containsExactlyInAnyOrder(SOURCE, "survival-02");
+        for (SentMessage sent : platform.sentMessages) {
+            ProxyChannelProtocol.Decoded decoded = ProxyChannelProtocol.decode(sent.payload);
+            assertThat(decoded.getPacket()).isInstanceOf(ChatMessagePacket.class);
+            assertThat(((ChatMessagePacket) decoded.getPacket()).getContent())
+                    .isEqualTo("from the proxy");
+            // Each server excludes exactly its own proxy players: those are the
+            // ones the proxy already rendered the line to.
+            Set<UUID> expected = SOURCE.equals(sent.serverName)
+                    ? Set.of(alice.id, bob.id) : Set.of(carol.id);
+            assertThat(decoded.getExcludedRecipients()).isEqualTo(expected);
+        }
+    }
+
+    @Test
+    @DisplayName("chat from a sub-server reaches the other sub-servers' direct players")
+    void upstreamChatIsBroadcastToOtherServers() throws Exception {
+        FakePlayer carol = platform.add("Carol", "survival-02");
+        ChatMessagePacket chat = chat("network wide");
+
+        ProxyChannelHandler handler = new ProxyChannelHandler(platform, chatCore,
+                request -> List.of(chat), null);
+        handler.handleFromServer(SOURCE, ProxyChannelProtocol.encode(SOURCE, chat));
+
+        assertThat(platform.sentMessages)
+                .extracting(sent -> sent.serverName)
+                .containsExactlyInAnyOrder(SOURCE, "survival-02");
+        ProxyChannelProtocol.Decoded other = platform.sentMessages.stream()
+                .filter(sent -> "survival-02".equals(sent.serverName))
+                .map(sent -> {
+                    try {
+                        return ProxyChannelProtocol.decode(sent.payload);
+                    } catch (ProxyChannelException e) {
+                        throw new AssertionError(e);
+                    }
+                })
+                .findFirst()
+                .orElseThrow();
+        // Only Carol is a proxy player on that server; the proxy rendered it to
+        // her, so the sub-server must not render it again.
+        assertThat(other.getExcludedRecipients()).containsExactly(carol.id);
+    }
+
+    @Test
+    @DisplayName("relay mode has no proxy-side broadcast: the backend owns fan-out")
+    void relayModeDoesNotBroadcastDownstream() throws Exception {
+        ProxyChannelHandler handler = new ProxyChannelHandler(platform, chatCore,
+                null, packet -> { });
+
+        handler.broadcastProxyChat(chat("relay chat"));
+
+        assertThat(platform.sentMessages).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a server whose send fails does not stop the other servers")
+    void broadcastContinuesAfterOneFailedServer() throws Exception {
+        platform.add("Carol", "survival-02");
+        platform.refuseServer = SOURCE;
+        ProxyChannelHandler handler = new ProxyChannelHandler(platform, chatCore,
+                request -> List.of(), null);
+
+        handler.broadcastProxyChat(chat("one server is empty"));
+
+        assertThat(platform.sentMessages)
+                .extracting(sent -> sent.serverName)
+                .containsExactly("survival-02");
+    }
+
+    @Test
+    @DisplayName("no downstream servers means no broadcast attempts")
+    void broadcastWithoutPlayersDoesNothing() {
+        platform.players.clear();
+        ProxyChannelHandler handler = new ProxyChannelHandler(platform, chatCore,
+                request -> List.of(), null);
+
+        handler.broadcastProxyChat(chat("nobody anywhere"));
+
+        assertThat(platform.sentMessages).isEmpty();
+    }
+
     // ------------------------------------------------------------- rejection
 
     @Test
@@ -275,6 +371,8 @@ class ProxyChannelHandlerTest {
         private final Map<UUID, FakePlayer> players = new LinkedHashMap<>();
         private final List<SentMessage> sentMessages = new CopyOnWriteArrayList<>();
         private boolean refuseSends;
+        /** Server whose sends fail (simulates "no players on that server"). */
+        private String refuseServer;
 
         private FakePlayer add(String name, String server) {
             FakePlayer player = new FakePlayer(name, server);
@@ -312,7 +410,7 @@ class ProxyChannelHandlerTest {
         @Override public PlatformType getPlatformType() { return PlatformType.VELOCITY; }
         @Override public void reloadConfiguration() { }
         @Override public boolean sendPluginMessage(String serverName, String channel, byte[] payload) {
-            if (refuseSends) {
+            if (refuseSends || (refuseServer != null && refuseServer.equals(serverName))) {
                 return false;
             }
             sentMessages.add(new SentMessage(serverName, channel, payload));

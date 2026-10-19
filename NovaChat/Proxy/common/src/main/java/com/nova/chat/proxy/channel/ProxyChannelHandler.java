@@ -44,10 +44,17 @@ import java.util.function.Function;
  *       {@link com.nova.chat.proxy.lite.LocalAuthority} (passed as a function so
  *       this class has no compile-time dependency on a concrete authority) and
  *       the resulting downstream packets are (a) rendered to players connected
- *       to the proxy and (b) sent back to the originating sub-server so it can
- *       render players the proxy cannot see. In relay the packet is handed to
- *       the proxy's backend link; the backend owns fan-out.</li>
+ *       to the proxy and (b) sent down to every sub-server that has players, so
+ *       players connected straight to a sub-server (whom the proxy cannot see)
+ *       also get the line. In relay the packet is handed to the proxy's backend
+ *       link; the backend owns fan-out.</li>
  * </ul>
+ *
+ * <p><b>Chat is network-wide.</b> A chat line must reach every sub-server, not
+ * just the one it came from: a player may be connected straight to any of them.
+ * {@link #broadcastProxyChat} covers lines typed by proxy players (the proxy's
+ * own fan-out only reaches its own roster); {@code handleLite} covers lines that
+ * came up from a sub-server.
  *
  * <p><b>Duplicate suppression.</b> When the proxy sends a fan-out packet back
  * down, the envelope carries the UUIDs of the proxy's own players on that
@@ -104,6 +111,59 @@ public class ProxyChannelHandler {
         this.chatCore = Objects.requireNonNull(chatCore, "chatCore");
         this.localAuthority = localAuthority;
         this.relaySink = relaySink;
+    }
+
+    // -------------------------------------------------- proxy-side fan-out
+
+    /**
+     * Called when a player connected to the proxy sends chat.
+     *
+     * <p>The proxy's own chat path renders the line only to its own players.
+     * Players connected straight to a downstream server never see it, because
+     * nothing carries the line across. This pushes the same line down to every
+     * server that has players, so the sub-server can render it to exactly the
+     * players the proxy did not serve.
+     *
+     * <p>Only lite mode does this. In relay the backend owns fan-out, and it
+     * already reaches the sub-servers through its own connections.
+     *
+     * @param packet the accepted chat line (already validated by the authority)
+     */
+    public void broadcastProxyChat(ChatMessagePacket packet) {
+        if (packet == null || localAuthority == null) {
+            return;
+        }
+        broadcastChat(packet);
+    }
+
+    /**
+     * Sends one chat line to every server that has players.
+     *
+     * @param packet the chat line
+     */
+    private void broadcastChat(ChatMessagePacket packet) {
+        for (String serverName : downstreamServers()) {
+            // The exclusion list is that server's own proxy players: they have
+            // already been rendered to by {@code deliverLocally} (or by the
+            // proxy's own outbound path). Using the whole proxy roster here
+            // would be harmless for rendering but would tell the sub-server
+            // that players on other servers are proxied through it.
+            sendDownstream(serverName, packet, proxyPlayersOn(serverName));
+        }
+    }
+
+    /**
+     * @return every downstream server that currently has a player on the proxy
+     */
+    private Set<String> downstreamServers() {
+        Set<String> servers = new java.util.LinkedHashSet<>();
+        for (ProxyPlayer player : platform.getOnlinePlayers()) {
+            String server = player.getCurrentServer();
+            if (server != null && !server.isBlank()) {
+                servers.add(server);
+            }
+        }
+        return servers;
     }
 
     /**
@@ -185,10 +245,18 @@ public class ProxyChannelHandler {
             return Outcome.ACCEPTED;
         }
 
-        Set<UUID> alreadyRendered = proxyPlayersOn(sourceServerName);
         for (Packet response : downstream) {
             deliverLocally(response);
-            sendDownstream(sourceServerName, response, alreadyRendered);
+            if (response instanceof ChatMessagePacket chat) {
+                // Chat is a network-wide line: any sub-server may have players
+                // connected straight to it. Broadcasting (rather than echoing
+                // only to the source) keeps this rule identical to the
+                // proxy-player path; each server excludes its own proxy players.
+                broadcastChat(chat);
+            } else {
+                sendDownstream(sourceServerName, response,
+                        proxyPlayersOn(sourceServerName));
+            }
         }
         return Outcome.ACCEPTED;
     }

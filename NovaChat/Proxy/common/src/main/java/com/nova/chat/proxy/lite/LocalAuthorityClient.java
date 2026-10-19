@@ -6,6 +6,7 @@ import com.nova.chat.common.protocol.NovaProtocol;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketRegistry;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
+import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.proxy.platform.ProxyPlatform;
 
 import java.util.List;
@@ -82,6 +83,12 @@ public final class LocalAuthorityClient extends AbstractPlatformNetworkClient
     private volatile LocalAuthority authority;
 
     /**
+     * Called for every accepted proxy-side chat line, so the shell can push it
+     * downstream. Set by the platform shell; null means "lite chat stays local".
+     */
+    private volatile Consumer<ChatMessagePacket> chatBroadcast;
+
+    /**
      * @param dispatcher schedules the asynchronous round-trip
      * @param responseDelayMillis delay before an upstream packet is processed
      * @param debugLogger debug sink (null-tolerant)
@@ -115,6 +122,21 @@ public final class LocalAuthorityClient extends AbstractPlatformNetworkClient
      */
     public void bind(LocalAuthority authority) {
         this.authority = authority;
+    }
+
+    /**
+     * Binds the proxy-side chat fan-out to the downstream sub-servers.
+     *
+     * <p>Without it a proxy player's chat is rendered only to other players on
+     * the proxy: players connected straight to a sub-server never see it. The
+     * sink is invoked with the accepted chat packet, in the same dispatch
+     * ordered after the authority round-trip, so the packet already carries the
+     * authority's placeholders (channel name, display name, server).
+     *
+     * @param sink the downstream broadcast, or null to disable
+     */
+    public void bindChatBroadcast(Consumer<ChatMessagePacket> sink) {
+        this.chatBroadcast = sink;
     }
 
     // ----------------------------------------------------- AbstractPlatformNetworkClient
@@ -240,6 +262,20 @@ public final class LocalAuthorityClient extends AbstractPlatformNetworkClient
         }
         for (Packet response : downstream) {
             deliver(response);
+            // Fan the accepted line out to the downstream servers so players
+            // connected straight to them see it too. Relay does not need this:
+            // the backend owns fan-out there.
+            if (response instanceof ChatMessagePacket chat) {
+                Consumer<ChatMessagePacket> broadcast = this.chatBroadcast;
+                if (broadcast != null) {
+                    try {
+                        broadcast.accept(chat);
+                    } catch (Throwable t) {
+                        debug("Chat broadcast to downstream servers failed: "
+                                + t.getClass().getName() + ": " + t.getMessage());
+                    }
+                }
+            }
         }
     }
 

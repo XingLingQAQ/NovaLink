@@ -37,6 +37,7 @@ public class NovaChatConfig {
     // Plugin-messaging bridge to the proxy (novachat:main)
     private final boolean pluginMessagingEnabled;
     private final String pluginMessagingServerId;
+    private final java.util.List<String> pluginMessagingProxyAddresses;
 
     // Debug mode
     private final boolean debug;
@@ -91,6 +92,8 @@ public class NovaChatConfig {
         this.pluginMessagingServerId = configuredServerId != null && !configuredServerId.isBlank()
                 ? configuredServerId.trim()
                 : this.username;
+        this.pluginMessagingProxyAddresses = optionalStringList(
+                config, "plugin-messaging.proxy-addresses");
 
         // Debug mode
         this.debug = requiredBoolean(config, "debug");
@@ -106,6 +109,25 @@ public class NovaChatConfig {
     private static String optionalString(FileConfiguration config, String path,
                                          String fallback) {
         return config.isString(path) ? config.getString(path) : fallback;
+    }
+
+    /**
+     * Reads an optional string list, tolerating a single scalar value.
+     *
+     * @param config the configuration
+     * @param path the list path
+     * @return the entries, or an empty list when the key is absent
+     */
+    private static java.util.List<String> optionalStringList(FileConfiguration config,
+                                                             String path) {
+        if (config.isList(path)) {
+            java.util.List<String> values = config.getStringList(path);
+            return values != null ? java.util.List.copyOf(values) : java.util.List.of();
+        }
+        String single = optionalString(config, path, null);
+        return single != null && !single.isBlank()
+                ? java.util.List.of(single.trim())
+                : java.util.List.of();
     }
 
     private static String requiredString(FileConfiguration config, String path) {
@@ -206,6 +228,21 @@ public class NovaChatConfig {
      */
     public String getPluginMessagingServerId() {
         return pluginMessagingServerId;
+    }
+
+    /**
+     * Addresses the proxy connects from, used to pick a plugin-message carrier
+     * that is actually connected through the proxy.
+     *
+     * <p>Empty means "loopback only": a proxy co-located with this server
+     * connects from {@code 127.0.0.1}. A remote proxy must be listed here (or
+     * kept as a name that resolves to it), otherwise the bridge can only learn
+     * a carrier from a downstream payload it has already received.
+     *
+     * @return the configured addresses, never null
+     */
+    public java.util.List<String> getPluginMessagingProxyAddresses() {
+        return pluginMessagingProxyAddresses;
     }
 
     public String getDefaultChannel() {
