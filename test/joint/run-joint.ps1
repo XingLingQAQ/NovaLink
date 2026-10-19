@@ -1012,8 +1012,23 @@ function Start-PlatformServer {
   # copied in before the server starts, turning a ~3-minute boot into ~20s.
   # The cache is populated by the harness itself after a round that generated
   # one (see the copy at the end of Invoke-Round).
+  #
+  # A HALF-COPIED cache is worse than no cache: Purpur sees level.dat/region
+  # missing, decides the world is new, then trips over the leftover session.lock
+  # and hangs after "[ERROR]: No key layers in MapLike[{}]" -- no "Preparing
+  # level", no "Done (", so the round dies on a ready-timeout that says nothing
+  # about the real cause. Require the files a usable world actually needs and
+  # drop the cache when they are absent, so the next round regenerates.
   $seedWorld = Join-Path (Join-Path (Join-Path $JointRoot "seed") $platform) "world"
   $targetWorld = Join-Path $serverDir "world"
+  if (Test-Path -LiteralPath $seedWorld) {
+    $seedComplete = (Test-Path -LiteralPath (Join-Path $seedWorld "level.dat")) -and
+                    (@(Get-ChildItem -LiteralPath (Join-Path $seedWorld "region") -Filter "*.mca" -ErrorAction SilentlyContinue).Count -gt 0)
+    if (-not $seedComplete) {
+      Log "  WARN: cached world for $platform is incomplete (no level.dat/region); discarding it"
+      Remove-Item -LiteralPath $seedWorld -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
   if ((Test-Path -LiteralPath $seedWorld) -and -not (Test-Path -LiteralPath $targetWorld)) {
     Copy-Item $seedWorld $targetWorld -Recurse -Force
     Log "  seeded pre-generated world for $platform"
@@ -2620,7 +2635,14 @@ function Invoke-Round($round, [string]$roundDir) {
       if (-not $pf) { continue }
       $generated = Join-Path (Join-Path $roundDir $pf) "world"
       $cacheDir = Join-Path (Join-Path $JointRoot "seed") $pf
-      if ((Test-Path -LiteralPath $generated) -and -not (Test-Path -LiteralPath (Join-Path $cacheDir "world"))) {
+      # Only cache a world that actually finished generating. A round whose
+      # server never reached "Done (" leaves a world dir with no level.dat and
+      # an empty region/; caching that poisons every later round (see the
+      # completeness check in Start-PlatformServer).
+      $worldComplete = (Test-Path -LiteralPath (Join-Path $generated "level.dat")) -and
+                       (Test-Path -LiteralPath (Join-Path $generated "region")) -and
+                       @(Get-ChildItem -LiteralPath (Join-Path $generated "region") -Filter "*.mca" -ErrorAction SilentlyContinue).Count -gt 0
+      if ($worldComplete -and -not (Test-Path -LiteralPath (Join-Path $cacheDir "world"))) {
         try {
           New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
           Copy-Item $generated (Join-Path $cacheDir "world") -Recurse -Force
@@ -2628,6 +2650,8 @@ function Invoke-Round($round, [string]$roundDir) {
         } catch {
           Log "  WARN: could not cache world for ${pf}: $($_.Exception.Message)"
         }
+      } elseif (-not $worldComplete) {
+        Log "  not caching world for ${pf}: no complete world was generated"
       }
     }
     Start-Sleep -Seconds 2
