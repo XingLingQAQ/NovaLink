@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # run-joint.ps1 -- NovaChat cross-platform JOINT E2E orchestrator (CI-capable).
 #
 # WHAT IT PROVES
@@ -2181,19 +2181,15 @@ function Invoke-LiteRound($round, [string]$roundDir) {
       $assertions += Assert-LogAbsent "round$($round.Index)/downstream-render-no-async-violation" 'async-event' $javaLog `
         'ChannelMessageEvent may only be triggered asynchronously'
 
-      # DIAGNOSTIC, never gated: a proxy-ORIGINATED line reaching a
-      # direct-connect sub-server player. ProxyChannelHandler only ever calls
-      # sendPluginMessage from handleLite(), i.e. as a reply to an inbound
-      # sub-server packet; chat typed by a proxy player goes through
-      # LocalAuthorityClient -> LocalAuthority -> ProxyChatCore and is rendered
-      # to proxy players only. There is no proxy -> downstream push, so this is
-      # expected to fail today. It is reported as an observation, not as a
-      # requirement, and is the concrete gap to close next.
-      $proxyPush = Assert-Delivered "round$($round.Index)/proxy-to-downstream-chat" $fanoutToken $downRes
-      $proxyPush.kind = 'diagnostic'
-      $proxyPush.evidence = if ($proxyPush.pass) { "observed: $($proxyPush.evidence)" }
-                            else { 'not observed: no proxy -> downstream push for proxy-originated chat' }
-      $assertions += $proxyPush
+      # GATED: a proxy-ORIGINATED line reaching a direct-connect sub-server
+      # player. Proxy players only see what ProxyChatCore renders locally, so
+      # this token can arrive on the downstream bot only through
+      # LocalAuthorityClient.bindChatBroadcast -> ProxyChannelHandler
+      # .broadcastProxyChat. It used to be a diagnostic while that push did not
+      # exist; it is now the assertion that proves the push works, so a
+      # regression in the broadcast path fails the round instead of hiding in
+      # an observation.
+      $assertions += Assert-Delivered "round$($round.Index)/proxy-to-downstream-chat" $fanoutToken $downRes
 
       $downKinds = @($downRes.received | ForEach-Object { $_.kind } | Sort-Object -Unique)
       $downNote = "downstream bot received kinds: $($downKinds -join ', ')"
