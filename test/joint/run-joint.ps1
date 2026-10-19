@@ -1057,6 +1057,11 @@ function Start-PlatformServer {
   # Backend credentials for the plugin/mod config. Written BEFORE first start:
   # the bundled template points at 127.0.0.1:8888 with a placeholder username,
   # and both config loaders only write a default when the file is absent.
+  #
+  # In lite there is no backend process at all, so the reconnect loop's WARN
+  # lines are pure noise -- but debug = true is what surfaces the
+  # plugin-messaging transport decisions, which is what this run needs.
+  $debugFlag = if ($ProxyMode -eq 'lite') { 'true' } else { 'false' }
   $pluginConfig = @"
 backend:
   host: "127.0.0.1"
@@ -1069,14 +1074,41 @@ chat:
   default_channel: "global"
   locale: "en_US"
   channel-prefixes: {}
-# Off for the joint run. Packet-level debug emits two lines per keep-alive and
-# the backend pings every 30s; on a client whose keep-alive echo is not
-# recognised that becomes a tight loop and the resulting ~2700 lines/s starve
-# this harness's PowerShell event pump (the ready marker is in the log, but the
-# poll never observes it). Diagnostics that matter here are lifecycle lines,
+# Off in relay. Packet-level debug emits two lines per keep-alive and the
+# backend pings every 30s; on a client whose keep-alive echo is not recognised
+# that becomes a tight loop and the resulting ~2700 lines/s starve this
+# harness's PowerShell event pump (the ready marker is in the log, but the poll
+# never observes it). Diagnostics that matter in relay are lifecycle lines,
 # which are INFO.
-debug: false
+#
+# On in lite. Lite has no backend link at all, so there is no keep-alive flood,
+# and the plugin-messaging transport only reports itself at debug level
+# ("Forwarded chat to the proxy over novachat:main", "Sent ChatMessagePacket to
+# the proxy through <carrier>"). Without those lines a silently-lost plugin
+# message is indistinguishable from one that was never attempted.
+debug: $debugFlag
 "@
+
+  # Plugin-messaging identity for the legs that can run behind a proxy.
+  #
+  # The proxy rejects any envelope whose declared server id does not match the
+  # server the payload actually arrived from (ProxyChannelHandler.Outcome
+  # REJECTED_SERVER_ID). Write-VelocityToml keys [servers] by the LEG NAME
+  # ($round.Java / $round.Mod), so server-id must be that same name -- not the
+  # backend username and not a display name. Leaving it empty falls back to
+  # backend.username (here E2E_LiteBukkit), which never matches and makes a
+  # working channel look broken.
+  #
+  # Only bukkit/folia parse this section; fabric/nukkit/pnx take no section so
+  # their loaders never see an unknown key.
+  if ($platform -in @('bukkit', 'folia')) {
+    $pluginConfig += @"
+
+plugin-messaging:
+  enabled: true
+  server-id: "$platform"
+"@
+  }
 
   switch ($platform) {
     'fabric' {
@@ -1892,26 +1924,50 @@ function Invoke-LiteRound($round, [string]$roundDir) {
     $downToken = "$tokenPrefix-downstream-chat"
 
     # Alice and Bob connect to the PROXY. Only these two are visible to the
-    # lite authority.
+    # lite authority. E2EDownstream (started below) connects STRAIGHT to the
+    # sub-server and is invisible to the proxy.
     #
-    # Ordering matters: the bot only records a token once its plan has declared
-    # interest in it (joint-bot.js keeps `expectedTokens` for match recording),
-    # so Bob must arm his EXPECT before Alice's line arrives. Both bots take
-    # ~35-40 s to log in through mineflayer, and they land within a second of
-    # each other, so Bob arms immediately after spawn (1 s settle) while Alice
-    # spends 8 s settling before she speaks: that puts the arm ~7 s ahead of the
-    # message instead of 3 s behind it (which is what the first attempt did).
+    # Ordering matters twice over:
+    #
+    #  1. A bot records only the tokens its plan has declared interest in
+    #     (joint-bot.js `expectedTokens`), so an `expect` must be armed before
+    #     the line arrives. Bob arms right after his join; Alice waits 12 s
+    #     before speaking so Bob's arm is well ahead of her message.
+    #
+    #  2. The sub-server writes upstream through ONE arbitrary online player's
+    #     connection (ProxyChannelClient picks `getOnlinePlayers().iterator()
+    #     .next()`), and a plugin message rides that player's own connection.
+    #     If the carrier is the DIRECT-connect bot, the payload goes to that
+    #     bot's client instead of to the proxy and is silently lost. Starting
+    #     the direct bot LAST keeps both earlier entrants proxy-connected, so
+    #     the carrier is a proxied player. The bukkit log assertion
+    #     `upstream-carrier-is-proxied` below fails loudly if that ever stops
+    #     holding, instead of surfacing as "plugin messaging is broken".
     $aliceSteps = @(
       @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
-      @{ id = 'settle'; action = 'wait'; ms = 8000 },
+      # Deterministic, not a fixed sleep: the direct-connect bot publishes this
+      # once it has spawned, so Alice speaks only after it is in the sub-server
+      # roster and able to receive the downstream fan-out.
+      @{ id = 'wait-downstream'; action = 'handoffGet'; key = 'downready'; timeoutMs = 150000 },
+      @{ id = 'settle'; action = 'wait'; ms = 3000 },
       @{ id = 'send-fanout'; action = 'chat'; text = "lite hello $fanoutToken" },
+      # This expect must be ARMED (declared) before the downstream player
+      # speaks, because joint-bot.js only records tokens its plan declared
+      # interest in. The downstream plan therefore waits 12 s after publishing
+      # `downready`; by then this arm is live.
+      @{ id = 'expect-downstream'; action = 'expect'; token = $downToken; timeoutMs = 60000 },
       @{ id = 'expect-dm'; action = 'expect'; token = $dmToken; timeoutMs = 60000 },
       @{ id = 'quit'; action = 'quit' }
     )
     $bobSteps = @(
       @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
       @{ id = 'settle'; action = 'wait'; ms = 1000 },
-      @{ id = 'expect-fanout'; action = 'expect'; token = $fanoutToken; timeoutMs = 60000 },
+      # Order = the order the lines arrive. Bob may only RECORD a token after
+      # his plan names it (joint-bot.js `expectedTokens`), so an expect armed
+      # after its line has gone by never matches. Alice's fan-out comes first
+      # (downready + ~3 s), the downstream player's line second (+12 s).
+      @{ id = 'expect-fanout'; action = 'expect'; token = $fanoutToken; timeoutMs = 150000 },
+      @{ id = 'expect-downstream'; action = 'expect'; token = $downToken; timeoutMs = 120000 },
       @{ id = 'who'; action = 'cmd'; text = '/nc who global' },
       @{ id = 'settle2'; action = 'wait'; ms = 2000 },
       @{ id = 'bad-channel'; action = 'cmd'; text = '/nc join nosuchchannel' },
@@ -1934,31 +1990,80 @@ function Invoke-LiteRound($round, [string]$roundDir) {
     [System.IO.File]::WriteAllText($bobPlanPath, $bobPlanJson, $utf8NoBom)
 
     # Bob goes first: his plan's `expect` must be registered before Alice's line
-    # is sent. Alice then joins, and her 3s settle gives Bob time to land on the
-    # proxy (he spends 6s settling before his expect blocks on the token).
+    # is sent. Alice then joins and blocks on the downstream-ready handoff, so
+    # her message cannot be sent before the direct-connect player exists.
     $bots += [PSCustomObject]@{ Role = 'bob'; Process = (Start-Bot 'bob' $bobPlanPath $botWork `
       (Join-Path $botWork "bob.stdout.log") (Join-Path $botWork "bob.stderr.log")) }
     Start-Sleep -Seconds 3
     $bots += [PSCustomObject]@{ Role = 'alice'; Process = (Start-Bot 'alice' $alicePlanPath $botWork `
       (Join-Path $botWork "alice.stdout.log") (Join-Path $botWork "alice.stderr.log")) }
 
-    # ---- downstream player probe (diagnostic, never gates the round) ----
-    # One bot joins the BUKKIT downstream directly and says one line. Its own
-    # recording is the evidence for what a downstream player can (not) reach.
+    # Wait for BOTH proxy players to be in the sub-server's player list before
+    # starting the direct-connect bot, then give it a head start on logging in.
+    #
+    # Why this is a wait and not a sleep: the sub-server sends upstream through
+    # `getOnlinePlayers().iterator().next()` (ProxyChannelClient), and CraftServer
+    # returns `PlayerList.players` -- insertion-ordered. If the direct-connect
+    # bot is first, the payload is written to ITS connection, the proxy never
+    # sees it, and the run looks like a broken channel. Start order alone does
+    # not decide join order (measured: the bot started last joined first), so
+    # poll each bot's own stdout for its spawn line.
+    $spawnDeadline = (Get-Date).AddSeconds(180)
+    foreach ($role in @('bob', 'alice')) {
+      $spawnLog = Join-Path $botWork "$role.stdout.log"
+      while ((Get-Date) -lt $spawnDeadline) {
+        $t = Read-LogText $spawnLog
+        if ($t -and $t -match 'spawn:\s*spawned') { break }
+        Start-Sleep -Milliseconds 500
+      }
+      Log "  $role spawn observed: $([bool]($t -and $t -match 'spawn:\s*spawned'))"
+    }
+
+    # ---- downstream player probe: the plugin-messaging leg ----
+    # One bot connects STRAIGHT to the BUKKIT downstream (port $ports.Java, not
+    # the proxy) and speaks. This is the player the lite proxy cannot see, so
+    # their line can only reach the proxy over novachat:main -- the whole point
+    # of the channel under test.
+    #
+    # Started AFTER Alice and Bob (see the carrier note above): the upstream
+    # write rides one arbitrary online player's connection, and the direct bot
+    # must not be a candidate.
+    #
+    # No `/nc join` here on purpose. The default channel from config.yml is
+    # already "global", and the join COMMAND does not use the plugin-messaging
+    # transport (it gates on the backend link), so issuing it would inject an
+    # NC-503 that says nothing about the chat path. With it absent, every
+    # NC-503 this bot records comes from chat, which is what the assertion
+    # below is about.
     $downRes = $null
     if ($round.Java) {
       $downSteps = @(
-        @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
-        @{ id = 'settle'; action = 'wait'; ms = 2500 },
+        @{ id = 'settle'; action = 'wait'; ms = 2000 },
+        # Announce that this player is in the sub-server roster: Alice blocks on
+        # it before speaking, so the fan-out cannot be sent while the only
+        # downstream recipient is still logging in.
+        @{ id = 'publish-ready'; action = 'handoffSet'; key = 'downready'; pattern = '^spawned$' },
+        # 12 s: Alice arms `expect-downstream` ~3 s after this handoff, and a
+        # bot only records tokens its plan has declared. Speaking earlier
+        # would make the line arrive before either proxy bot armed for it.
+        @{ id = 'settle2'; action = 'wait'; ms = 12000 },
+        # Speak first: the upstream leg is the half the product claims today.
         @{ id = 'chat'; action = 'chat'; text = "downstream hello $downToken" },
-        @{ id = 'settle2'; action = 'wait'; ms = 2500 },
+        @{ id = 'settle3'; action = 'wait'; ms = 4000 },
+        # Then wait for Alice's fan-out to arrive DOWNSTREAM. This is the leg
+        # under question: proxy-originated chat has to be pushed to sub-servers
+        # for a direct-connect player to see it.
+        @{ id = 'expect-fanout'; action = 'expect'; token = $fanoutToken; timeoutMs = 60000 },
+        @{ id = 'settle4'; action = 'wait'; ms = 2000 },
         @{ id = 'quit'; action = 'quit' }
       )
       $downPlanPath = Join-Path $downWork "plan-downstream.json"
+      # Same runId as alice/bob: the handoff rendezvous scans the directory for
+      # "<runId>-*-<key>.json", so a different runId would never be found.
       $downPlanJson = New-CrossServerPlan -role 'downstream' -kind 'java' -username 'E2EDownstream' -port $ports.Java `
         -mcVersion $javaMc -resultsFile (Join-Path $downWork "downstream.results.json") `
         -handoffDir (Join-Path $botWork "handoff") -timeoutMs ($BotTimeoutSec * 1000) `
-        -runId "$tokenPrefix-downstream" -steps $downSteps
+        -runId "$tokenPrefix-lite" -steps $downSteps
       [System.IO.File]::WriteAllText($downPlanPath, $downPlanJson, $utf8NoBom)
       $downBot = [PSCustomObject]@{ Role = 'downstream'; Process = (Start-Bot 'downstream' $downPlanPath $downWork `
         (Join-Path $downWork "downstream.stdout.log") (Join-Path $downWork "downstream.stderr.log")) }
@@ -2016,45 +2121,119 @@ function Invoke-LiteRound($round, [string]$roundDir) {
       $assertions += Assert-Delivered "round$($round.Index)/lite-who-lists-members" 'online members (2)' $bobRes
     }
 
-    # ---- diagnostic: what a DOWNSTREAM player can reach ----
-    # Reported, never gated: they document the plugin-messaging gap rather than
-    # asserting a green outcome. `pass` here means "the lite delivery reached a
-    # downstream player", which is the behaviour the product does NOT have yet.
+    # 9. Proxy-side channel activity. "No error" is not evidence: the channel
+    #    must be registered, must have actually accepted a payload from the
+    #    sub-server, and must have written at least one fan-out back down. The
+    #    rejection patterns are asserted absent so a server-id mismatch fails
+    #    loudly instead of silently dropping every packet.
+    $assertions += Assert-LogContains "round$($round.Index)/proxy-channel-registered" 'novachat:main' $proxyLog `
+      'Registered plugin-messaging channel novachat:main'
+    $assertions += Assert-LogContains "round$($round.Index)/proxy-channel-accepted" 'accepted' $proxyLog `
+      'Lite send: ChatMessagePacket'
+    $assertions += Assert-LogContains "round$($round.Index)/proxy-channel-sent-downstream" 'downstream' $proxyLog `
+      'Sent downstream ChatMessagePacket'
+    # The upstream write rides ONE player's connection (plugin messaging has no
+    # server-addressed write): ProxyChannelClient picks
+    # getOnlinePlayers().iterator().next(). If that carrier is a DIRECT-connect
+    # player the payload is written to that client, the proxy never sees it,
+    # and the channel looks dead for no visible reason. Assert the carrier and
+    # the proxy-side receipt separately so each half is named.
+    $javaLog = Join-Path (Join-Path $roundDir $round.Java) "server.stdout.log"
+    if ($round.Java) {
+      $assertions += Assert-LogContains "round$($round.Index)/upstream-carrier-is-proxied" 'carrier' $javaLog `
+        'Sent ChatMessagePacket to the proxy through E2ELite(Alice|Bob)'
+      $assertions += Assert-LogAbsent "round$($round.Index)/upstream-carrier-not-direct" 'carrier-direct' $javaLog `
+        'Sent ChatMessagePacket to the proxy through E2EDownstream'
+    }
+    $assertions += Assert-LogContains "round$($round.Index)/proxy-received-downstream-chat" 'upstream-received' $proxyLog `
+      "Received chat message from backend: .*$downToken"
+    $assertions += Assert-LogAbsent "round$($round.Index)/proxy-channel-no-server-id-reject" 'REJECTED_SERVER_ID' $proxyLog `
+      'Rejected novachat:main payload: claimed server id'
+    $assertions += Assert-LogAbsent "round$($round.Index)/proxy-channel-no-malformed-drop" 'malformed' $proxyLog `
+      'Dropped malformed novachat:main payload'
+
+    # ---- plugin messaging: cross-boundary delivery, in both directions ----
+    # These GATE the round. Before the novachat:main channel existed every one of
+    # them failed (the downstream player's line never reached the proxy, and
+    # their own chat was cancelled into NC-503); they are the point of the run.
+    #
+    #   proxy -> sub-server : Alice's fanout token reaching a player who is
+    #                         connected STRAIGHT to the sub-server. The proxy
+    #                         cannot render to that player (it does not know they
+    #                         exist), so only plugin messaging can carry it.
+    #   sub-server -> proxy : the downstream bot's own line reaching Alice/Bob
+    #                         (asserted by their in-bot `expect-downstream`).
+    #   no NC-503           : the downstream plugin no longer cancels the line
+    #                         into "not connected to the backend".
     if ($downRes) {
-      $assertions += Assert-Delivered "round$($round.Index)/downstream-player-saw-fanout" $fanoutToken $downRes
-      $assertions += Assert-Delivered "round$($round.Index)/downstream-player-saw-dm" $dmToken $downRes
-      # Positive evidence of the gap: the downstream plugin cancelled the line
-      # and told the player it is not connected to a backend (NC-503).
-      $assertions += Assert-Delivered "round$($round.Index)/downstream-player-blocked-nc503" 'NC-503' $downRes
-      # REPLACE mode cancels the event, so the downstream player never even sees
-      # their own line echoed back.
-      $assertions += Assert-Absent "round$($round.Index)/downstream-player-own-line-not-echoed" $downToken $downRes
+      # GATING. The sender's own line coming back proves both halves: the
+      # sub-server reached the proxy (otherwise the authority never saw it and
+      # produced no fan-out) and the proxy wrote a fan-out back to the
+      # sub-server (otherwise the direct-connect player, who is not among the
+      # excluded proxy players, would have nothing to render).
+      $assertions += Assert-Delivered "round$($round.Index)/downstream-upstream-roundtrip" $downToken $downRes
+      $assertions += Assert-Absent "round$($round.Index)/downstream-no-nc503" 'NC-503' $downRes
+      # The downstream echo arrives on the server main thread. If the plugin's
+      # inbound handler fires an EVENT_ASYNC event from there, Paper/Purpur
+      # throws and the whole render aborts -- the packet was received yet the
+      # player sees nothing. Name that failure instead of reporting a generic
+      # missing token.
+      $assertions += Assert-LogAbsent "round$($round.Index)/downstream-render-no-async-violation" 'async-event' $javaLog `
+        'ChannelMessageEvent may only be triggered asynchronously'
+
+      # DIAGNOSTIC, never gated: a proxy-ORIGINATED line reaching a
+      # direct-connect sub-server player. ProxyChannelHandler only ever calls
+      # sendPluginMessage from handleLite(), i.e. as a reply to an inbound
+      # sub-server packet; chat typed by a proxy player goes through
+      # LocalAuthorityClient -> LocalAuthority -> ProxyChatCore and is rendered
+      # to proxy players only. There is no proxy -> downstream push, so this is
+      # expected to fail today. It is reported as an observation, not as a
+      # requirement, and is the concrete gap to close next.
+      $proxyPush = Assert-Delivered "round$($round.Index)/proxy-to-downstream-chat" $fanoutToken $downRes
+      $proxyPush.kind = 'diagnostic'
+      $proxyPush.evidence = if ($proxyPush.pass) { "observed: $($proxyPush.evidence)" }
+                            else { 'not observed: no proxy -> downstream push for proxy-originated chat' }
+      $assertions += $proxyPush
+
       $downKinds = @($downRes.received | ForEach-Object { $_.kind } | Sort-Object -Unique)
       $downNote = "downstream bot received kinds: $($downKinds -join ', ')"
       Log "  $downNote"
       $result.notes = $downNote
     } else {
       Log "  downstream bot wrote no results.json (server may not have booted)"
+      $assertions += [PSCustomObject]@{
+        id = "round$($round.Index)/downstream-bot-ran"; token = 'results'
+        pass = $false; evidence = 'no downstream.results.json'; kind = 'delivery'
+      }
       $result.notes = 'downstream bot wrote no results.json'
     }
 
-    # Diagnostic assertions must not gate the round; mark them by id prefix and
-    # label their `pass` as the observation, not as a requirement. `saw-fanout`
-    # passing would mean lite CAN reach downstream players, which today it
-    # cannot; `blocked-nc503` passing is the gap, stated as evidence.
-    $gating = @($assertions | Where-Object { $_.id -notmatch '/downstream-player-' })
-    $failed = @($gating | Where-Object { -not $_.pass })
-    foreach ($a in @($assertions | Where-Object { $_.id -match '/downstream-player-' })) {
-      $a.kind = 'diagnostic'
-      if ($a.id -match 'own-line-not-echoed') {
-        $a.evidence = if ($a.pass) { 'downstream player did not see its own line (vanilla chat cancelled)' }
-                      else { "downstream player DID see its own line: $($a.evidence)" }
-      } elseif ($a.pass) {
-        $a.evidence = "observed: $($a.evidence)"
-      } else {
-        $a.evidence = 'not observed'
+    # Duplicate-render guard: the proxy lists the players it already rendered to
+    # in excludedRecipients, so a proxied player must see each line exactly once.
+    # A count > 1 on a proxy bot means the de-duplication broke (the sub-server
+    # rendered the same line the proxy had already delivered).
+    foreach ($pair in @(@{ Role = 'alice'; Res = $aliceRes }, @{ Role = 'bob'; Res = $bobRes })) {
+      if (-not $pair.Res) { continue }
+      foreach ($tok in @(@{ Name = 'fanout'; Value = $fanoutToken }, @{ Name = 'downstream'; Value = $downToken })) {
+        $hits = @($pair.Res.received | Where-Object {
+          ($_.text -and $_.text.Contains($tok.Value)) -or ($_.raw -and $_.raw.Contains($tok.Value))
+        })
+        # mineflayer emits one `messagestr` per line; a `chat`/`systemChat` copy
+        # of the SAME line is a second event for the same wire message, so count
+        # only messagestr (the canonical "one line arrived" signal).
+        $lineHits = @($hits | Where-Object { $_.kind -eq 'messagestr' })
+        $assertions += [PSCustomObject]@{
+          id = "round$($round.Index)/no-duplicate-render-$($pair.Role)-$($tok.Name)"
+          token = $tok.Value
+          pass = ($lineHits.Count -le 1)
+          evidence = "messagestr matches: $($lineHits.Count) (all kinds: $($hits.Count))"
+          kind = 'dedup'
+        }
       }
     }
+
+    # `diagnostic` observations are recorded, never gated.
+    $failed = @($assertions | Where-Object { -not $_.pass -and $_.kind -ne 'diagnostic' })
     if ($failed.Count -gt 0) {
       $result.status = 'FAIL'
       $result.notes = (($result.notes, "failed: $((($failed | ForEach-Object { $_.id }) -join ', '))") |
