@@ -8,6 +8,7 @@ import com.nova.link.channel.ChannelScope;
 import com.nova.link.channel.ChannelSource;
 import com.nova.link.database.DatabaseException;
 import com.nova.link.database.DatabaseProvider;
+import com.nova.link.database.MuteInfo;
 import com.nova.link.database.MySQLProvider;
 import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
@@ -18,10 +19,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -49,8 +52,11 @@ import java.util.function.Consumer;
  * channel ({@link PlayerState#getJoinedChannels()} /
  * {@link PlayerState#getActiveChannel()}); plus, once at startup, the channel
  * definitions declared under {@code lite.channels} so the database row set
- * reflects the live roster. Mutes, kicks, chat history and private messages are
- * out of scope for this stage.
+ * reflects the live roster. Mute records are persisted too (see
+ * {@link #saveMute}, {@link #loadMutes}, {@link #deleteMute}) so a moderation
+ * decision survives a restart. Kicks and titles are deliberately not persisted:
+ * they are events, not state. Chat history and private messages are out of
+ * scope.
  *
  * <p><b>{@code memory} is a true no-op.</b> When {@code lite.storage.type} is
  * {@code memory} the store keeps no provider, creates no executor and performs
@@ -312,6 +318,64 @@ public final class LiteChannelStore implements AutoCloseable {
         submit(() -> readPlayer(playerId, sink));
     }
 
+    // ------------------------------------------------------------------ mutes
+
+    /**
+     * Queues one mute record.
+     *
+     * <p>Same contract as {@link #savePlayer(PlayerSnapshot)}: the caller passes
+     * an immutable {@link MuteInfo} and returns; the row is written on the I/O
+     * thread. A no-op for {@code memory}, and once the store has been closed.
+     *
+     * <p>The record is a straight passthrough of the shared
+     * {@link com.nova.link.database.MuteInfo} the backend already uses, so lite
+     * and relay persist byte-identical rows through the same
+     * {@link DatabaseProvider#saveMute} call. A {@code null} channel id means a
+     * global mute, matching the backend's {@code DatabaseProvider.GLOBAL_KEY}
+     * treatment.
+     *
+     * @param playerId the muted player
+     * @param mute the record to persist (null is ignored)
+     */
+    public void saveMute(UUID playerId, MuteInfo mute) {
+        if (!persistent || playerId == null || mute == null || closing.get()) {
+            return;
+        }
+        submit(() -> writeMute(playerId, mute));
+    }
+
+    /**
+     * Queues removal of one mute row.
+     *
+     * @param playerId the player to unmute (null is ignored)
+     * @param channelId the channel, or {@code null} for the global mute
+     */
+    public void deleteMute(UUID playerId, String channelId) {
+        if (!persistent || playerId == null || closing.get()) {
+            return;
+        }
+        submit(() -> removeMute(playerId, channelId));
+    }
+
+    /**
+     * Queues a read of every persisted mute row for one player.
+     *
+     * <p>The sink receives the raw rows (expired ones included) on the I/O
+     * thread; filtering is left to the caller because expiry is evaluated
+     * against the authority's injectable clock, not the wall clock this class
+     * would otherwise have to read on a second thread.
+     *
+     * @param playerId the player to restore (null is ignored)
+     * @param sink receives the rows; not invoked when nothing is stored, the
+     *             backend is down, or this is the {@code memory} store
+     */
+    public void loadMutes(UUID playerId, Consumer<List<MuteInfo>> sink) {
+        if (!persistent || playerId == null || sink == null || closing.get()) {
+            return;
+        }
+        submit(() -> readMutes(playerId, sink));
+    }
+
     // -------------------------------------------------------------- lifecycle
 
     /**
@@ -355,6 +419,12 @@ public final class LiteChannelStore implements AutoCloseable {
         if (!persistent || !closing.compareAndSet(false, true)) {
             return;
         }
+        // Queue the one-shot expired-mute sweep *before* the drain, so the single
+        // flush below covers it too instead of paying the timeout twice. It runs
+        // after every pending write because the I/O queue is serial, and both the
+        // submit and the flush are best-effort: shutdown must not be delayed past
+        // DEFAULT_FLUSH_TIMEOUT_MILLIS by a hung backend.
+        submit(this::cleanupExpiredMutes);
         flush(DEFAULT_FLUSH_TIMEOUT_MILLIS);
 
         ExecutorService current = executor;
@@ -391,9 +461,16 @@ public final class LiteChannelStore implements AutoCloseable {
      * the store stays in memory-only mode for the rest of the process, which is
      * the documented degradation, and retrying on every queued write would turn
      * a down database into a connection-attempt storm.
+     *
+     * <p>Deliberately does <em>not</em> consult {@link #closing}: that flag
+     * stops new submissions at {@link #savePlayer}/{@link #saveMute}/etc., but a
+     * task that was already accepted before {@code close()} must still run to
+     * completion. Aborting the lazy open here dropped exactly those final writes
+     * — a JOIN or mute issued immediately before shutdown vanished while
+     * {@code close()} reported a clean drain.
      */
     private void ensureBackend() {
-        if (provider != null || closing.get()) {
+        if (provider != null) {
             return;
         }
         if (!backendAttempted.compareAndSet(false, true)) {
@@ -404,9 +481,6 @@ public final class LiteChannelStore implements AutoCloseable {
 
     /** Runs on the I/O thread: connect, migrate, then mirror the channel roster. */
     private void openBackend() {
-        if (closing.get()) {
-            return;
-        }
         DatabaseProvider created = null;
         try {
             created = createProvider();
@@ -611,6 +685,103 @@ public final class LiteChannelStore implements AutoCloseable {
             // starts in the configured default channel, as before persistence.
             debug.accept("Lite storage could not restore " + playerId + ": " + describe(e));
         }
+    }
+
+    /** Runs on the I/O thread: upsert one mute row. */
+    private void writeMute(UUID playerId, MuteInfo mute) {
+        ensureBackend();
+        DatabaseProvider current = provider;
+        if (current == null) {
+            reportWriteFailure(new IllegalStateException("lite storage backend is not connected"));
+            return;
+        }
+        try {
+            // saveMute is already a DELETE+INSERT transaction in every provider,
+            // so re-muting the same (player, channel) overwrites instead of
+            // tripping UNIQUE(player_id, channel_id).
+            current.saveMute(playerId, mute);
+            writeFailureReported.set(false);
+            debug.accept("Lite storage persisted mute for " + playerId
+                    + " in " + describeChannel(mute.getChannelId())
+                    + " (expires=" + mute.getExpireTime() + ")");
+        } catch (DatabaseException | RuntimeException e) {
+            reportWriteFailure(e);
+        }
+    }
+
+    /** Runs on the I/O thread: delete one mute row. */
+    private void removeMute(UUID playerId, String channelId) {
+        ensureBackend();
+        DatabaseProvider current = provider;
+        if (current == null) {
+            return;
+        }
+        try {
+            current.deleteMute(playerId, channelId);
+            debug.accept("Lite storage deleted mute for " + playerId
+                    + " in " + describeChannel(channelId));
+        } catch (DatabaseException | RuntimeException e) {
+            // Best-effort, like the membership writes: the in-memory table has
+            // already dropped the mute, so a failed delete only means a stale
+            // row survives until the next successful write or cleanup.
+            debug.accept("Lite storage could not delete mute for " + playerId
+                    + ": " + describe(e));
+        }
+    }
+
+    /** Runs on the I/O thread: read every mute row for one player. */
+    private void readMutes(UUID playerId, Consumer<List<MuteInfo>> sink) {
+        ensureBackend();
+        DatabaseProvider current = provider;
+        if (current == null) {
+            return;
+        }
+        try {
+            List<MuteInfo> loaded = current.loadMutes(playerId);
+            if (loaded == null || loaded.isEmpty()) {
+                return;
+            }
+            // Defensive copy: the provider's list is not documented as immutable
+            // and the sink runs on the dispatch hop, not here.
+            sink.accept(Collections.unmodifiableList(new ArrayList<>(loaded)));
+        } catch (DatabaseException | RuntimeException e) {
+            // A failed restore leaves the player unmuted, the same degradation
+            // direction as a failed membership restore (fresh default state).
+            debug.accept("Lite storage could not restore mutes for " + playerId
+                    + ": " + describe(e));
+        }
+    }
+
+    /**
+     * Deletes rows whose expiry has passed.
+     *
+     * <p>Called once from {@link #close()} on the I/O thread, before the pool
+     * shuts down. Lite deliberately keeps no cleanup timer: expiry is decided
+     * lazily on read against the authority's clock, so this only bounds table
+     * growth for long-lived installs. Best-effort — a failure is not worth
+     * blocking a shutdown over.
+     */
+    private void cleanupExpiredMutes() {
+        DatabaseProvider current = provider;
+        if (current == null) {
+            return;
+        }
+        try {
+            int removed = current.cleanupExpiredMutes();
+            if (removed > 0) {
+                debug.accept("Lite storage cleaned up " + removed + " expired mute(s)");
+            }
+        } catch (DatabaseException | RuntimeException e) {
+            debug.accept("Lite storage could not clean up expired mutes: " + describe(e));
+        }
+    }
+
+    /**
+     * @param channelId a channel id or null
+     * @return a log-friendly channel label
+     */
+    private static String describeChannel(String channelId) {
+        return channelId != null ? channelId : "<global>";
     }
 
     private void submit(Runnable task) {
