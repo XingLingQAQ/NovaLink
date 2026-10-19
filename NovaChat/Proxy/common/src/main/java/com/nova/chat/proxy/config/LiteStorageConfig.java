@@ -47,17 +47,26 @@ public final class LiteStorageConfig {
     private final String host;
     private final int port;
     private final String database;
+    private final String username;
+    private final String password;
     private final int poolSize;
     private final String filePath;
+    private final String sslMode;
+    private final boolean allowPlaintext;
 
     private LiteStorageConfig(Type type, String host, int port, String database,
-                              int poolSize, String filePath) {
+                              String username, String password, int poolSize, String filePath,
+                              String sslMode, boolean allowPlaintext) {
         this.type = type;
         this.host = host;
         this.port = port;
         this.database = database;
+        this.username = username;
+        this.password = password;
         this.poolSize = poolSize;
         this.filePath = filePath;
+        this.sslMode = sslMode;
+        this.allowPlaintext = allowPlaintext;
     }
 
     /**
@@ -73,8 +82,12 @@ public final class LiteStorageConfig {
         String host = null;
         int port = 0;
         String database = null;
+        String username = null;
+        String password = null;
         int poolSize = 0;
         String filePath = null;
+        String sslMode = null;
+        boolean allowPlaintext = false;
 
         switch (type) {
             case MYSQL, POSTGRESQL -> {
@@ -99,6 +112,15 @@ public final class LiteStorageConfig {
                     throw new ConfigSource.ConfigException(
                             "Configuration value " + prefix + ".pool-size must be greater than 0");
                 }
+                // Credentials are optional so an existing document (which the
+                // template updater cannot rewrite in place) keeps loading: an
+                // empty username/password means "let the server decide", exactly
+                // as the backend's database section behaves.
+                username = source.optionalString(prefix + ".username");
+                password = source.optionalString(prefix + ".password");
+                sslMode = source.optionalString(prefix + ".ssl-mode");
+                String plaintext = source.optionalString(prefix + ".allow-plaintext");
+                allowPlaintext = plaintext != null && Boolean.parseBoolean(plaintext.trim());
             }
             case SQLITE -> {
                 filePath = source.requiredString("lite.storage.sqlite.file-path");
@@ -112,7 +134,34 @@ public final class LiteStorageConfig {
             }
         }
 
-        return new LiteStorageConfig(type, host, port, database, poolSize, filePath);
+        return new LiteStorageConfig(type, host, port, database, username, password,
+                poolSize, filePath, sslMode, allowPlaintext);
+    }
+
+    /**
+     * Builds a configuration programmatically, without a configuration document.
+     *
+     * <p>Production always goes through {@link #parse(ConfigSource)}; this exists
+     * so tests can drive a backend directly. For {@code SQLITE} the
+     * {@code hostOrFilePath} argument is the file path.
+     *
+     * @param type the backend type
+     * @param hostOrFilePath the host (MySQL/PostgreSQL) or file path (SQLite);
+     *                       ignored for memory
+     * @param port the port, or 0
+     * @param database the database name, or null
+     * @return the settings
+     */
+    public static LiteStorageConfig forTests(Type type, String hostOrFilePath,
+                                             int port, String database) {
+        return switch (type) {
+            case SQLITE -> new LiteStorageConfig(type, null, 0, null,
+                    null, null, 0, hostOrFilePath, null, false);
+            case MEMORY -> new LiteStorageConfig(type, null, 0, null,
+                    null, null, 0, null, null, false);
+            case MYSQL, POSTGRESQL -> new LiteStorageConfig(type, hostOrFilePath, port, database,
+                    null, null, Math.max(1, port > 0 ? 2 : 2), null, null, false);
+        };
     }
 
     /**
@@ -155,5 +204,36 @@ public final class LiteStorageConfig {
      */
     public String getFilePath() {
         return filePath;
+    }
+
+    /**
+     * @return the mysql/postgresql username, or null when not configured
+     */
+    public String getUsername() {
+        return username;
+    }
+
+    /**
+     * @return the mysql/postgresql password, or null when not configured
+     */
+    public String getPassword() {
+        return password;
+    }
+
+    /**
+     * @return the mysql/postgresql TLS mode, or null to use the provider's
+     *         fail-closed default
+     */
+    public String getSslMode() {
+        return sslMode;
+    }
+
+    /**
+     * @return whether an unencrypted JDBC connection was explicitly accepted.
+     *         Required by the storage providers before they will honour an
+     *         {@code ssl-mode} of {@code DISABLED}/{@code disable}
+     */
+    public boolean isAllowPlaintext() {
+        return allowPlaintext;
     }
 }

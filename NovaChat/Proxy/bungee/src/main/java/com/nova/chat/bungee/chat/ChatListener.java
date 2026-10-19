@@ -119,6 +119,10 @@ public class ChatListener implements Listener {
     public void onServerConnected(ServerConnectedEvent event) {
         core.recordServer(new BungeeProxyPlayer(event.getPlayer()),
                 event.getServer().getInfo().getName());
+        // Lite: pull the player's persisted channel membership back. The read is
+        // queued off-thread, so this does not block the connect event. No-op in
+        // relay mode.
+        plugin.onLitePlayerConnect(event.getPlayer().getUniqueId());
     }
 
     /**

@@ -93,10 +93,15 @@ lite:
       file-path: "data/novachat.db"
 
     # mysql：type: "mysql" 时 host/database 非空、port 1-65535、pool-size > 0
+    # username/password 可省略：留空时由数据库服务端决定（与后端 database 段一致）
+    # ssl-mode 省略时使用驱动的安全默认值（REQUIRED）；显式设成 DISABLED 必须同时
+    # 把 allow-plaintext 设为 true，否则存储层会拒绝开启明文连接。
     mysql:
       host: "127.0.0.1"
       port: 3306
       database: "novachat"
+      username: "novachat"
+      password: "change-me"
       pool-size: 10
 
     # postgresql：type: "postgresql" 时规则同 mysql
@@ -104,4 +109,6 @@ lite:
       host: "127.0.0.1"
       port: 5432
       database: "novachat"
+      username: "novachat"
+      password: "change-me"
       pool-size: 10

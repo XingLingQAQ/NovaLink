@@ -84,6 +84,13 @@ public class NovaChatVelocity {
 
     /** Lite authority bound to the shared chat core, or null in relay mode. */
     private LocalAuthority liteAuthority;
+
+    /**
+     * Lite-mode channel-membership persistence, or null before startup / in
+     * relay mode. Owned by {@link #localAuthorityClient}, which flushes and
+     * closes it on shutdown.
+     */
+    private com.nova.chat.proxy.lite.LiteChannelStore liteChannelStore;
     
     /** Chat listener for handling chat events */
     private ChatListener chatListener;
@@ -240,6 +247,9 @@ public class NovaChatVelocity {
             localAuthorityClient = null;
         }
         liteAuthority = null;
+        // The client closes the store it was bound to; null it out so a
+        // re-enable creates a fresh one instead of reusing a closed pool.
+        liteChannelStore = null;
 
         // Flush pending ignore-list writes and stop the save thread
         if (ignoreListService != null) {
@@ -408,8 +418,38 @@ public class NovaChatVelocity {
             }
             localAuthorityClient = LocalAuthorityClient.create(platform);
         }
+        initializeLiteStorage();
         logger.info("NovaChat running in lite mode (local authority, no backend connection); "
                 + config.getLiteChannels().size() + " local channel(s) declared");
+    }
+
+    /**
+     * Opens the lite-mode membership store declared under {@code lite.storage}.
+     *
+     * <p>Created once per process: a reload must not reopen the pool, because the
+     * bound authority captures the store instance and closing it would strand
+     * every later write. An unavailable backend is reported by the store itself
+     * (one warn line) and degrades to memory-only, so this never fails startup.
+     */
+    private void initializeLiteStorage() {
+        if (liteChannelStore != null) {
+            return;
+        }
+        liteChannelStore = com.nova.chat.proxy.lite.LiteChannelStore.create(
+                config.getLiteStorage(),
+                dataDirectory,
+                config.getLiteChannels(),
+                platform != null ? platform.getPlatformType().name() : null,
+                logger::warn,
+                this::debug);
+        liteChannelStore.open();
+        if (localAuthorityClient != null) {
+            // Makes shutdown flush + close the pool on the plugin-disable path.
+            localAuthorityClient.bindStore(liteChannelStore);
+        }
+        if (config.getLiteStorage() != null) {
+            logger.info("Lite storage backend: " + config.getLiteStorage().getType());
+        }
     }
 
     /**
@@ -446,7 +486,7 @@ public class NovaChatVelocity {
         // initializeLiteMode so the core's client supplier saw it at build time.
         if (localAuthorityClient != null) {
             liteAuthority = new LocalAuthority(
-                    platform, chatCore, ignoreListService);
+                    platform, chatCore, ignoreListService, liteChannelStore);
             localAuthorityClient.bind(liteAuthority);
         }
 
@@ -709,6 +749,22 @@ public class NovaChatVelocity {
         LocalAuthority authority = liteAuthority;
         if (authority != null) {
             authority.onPlayerDisconnect(playerId);
+        }
+    }
+
+    /**
+     * Restores a connecting player's persisted channel membership (lite only).
+     *
+     * <p>Queues the restore on the storage thread; safe from the proxy event
+     * thread and a no-op in relay mode, before the authority is bound, and for
+     * the {@code memory} backend.
+     *
+     * @param playerId the connecting player
+     */
+    public void onLitePlayerConnect(UUID playerId) {
+        LocalAuthority authority = liteAuthority;
+        if (authority != null) {
+            authority.onPlayerConnect(playerId);
         }
     }
 

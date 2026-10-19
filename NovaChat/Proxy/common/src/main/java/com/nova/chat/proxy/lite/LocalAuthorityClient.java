@@ -83,6 +83,12 @@ public final class LocalAuthorityClient extends AbstractPlatformNetworkClient
     private volatile LocalAuthority authority;
 
     /**
+     * Membership persistence owned by this client's lifetime, or null when the
+     * shell did not supply one (memory mode, or a caller that did not opt in).
+     */
+    private volatile LiteChannelStore store;
+
+    /**
      * Called for every accepted proxy-side chat line, so the shell can push it
      * downstream. Set by the platform shell; null means "lite chat stays local".
      */
@@ -122,6 +128,32 @@ public final class LocalAuthorityClient extends AbstractPlatformNetworkClient
      */
     public void bind(LocalAuthority authority) {
         this.authority = authority;
+    }
+
+    /**
+     * Attaches the membership store this client owns, so {@link #close()} can
+     * flush it and release the database pool.
+     *
+     * <p>The store is closed by the client rather than by the shell because the
+     * client's dispatcher is what queues the writes: closing the pool before the
+     * queue drained would drop the final JOIN/LEAVE. Rebinding is allowed; the
+     * previously bound store is closed so a reload cannot leak a pool.
+     *
+     * @param store the store to own, or null to detach
+     */
+    public void bindStore(LiteChannelStore store) {
+        LiteChannelStore previous = this.store;
+        if (previous != null && previous != store) {
+            previous.close();
+        }
+        this.store = store;
+    }
+
+    /**
+     * @return the bound membership store, or null when none was bound
+     */
+    public LiteChannelStore getStore() {
+        return store;
     }
 
     /**
@@ -231,6 +263,13 @@ public final class LocalAuthorityClient extends AbstractPlatformNetworkClient
     @Override
     public void close() {
         if (active.compareAndSet(true, false)) {
+            // Flush queued membership writes before the dispatcher stops, then
+            // release the pool. Both are idempotent and never throw.
+            LiteChannelStore bound = this.store;
+            this.store = null;
+            if (bound != null) {
+                bound.close();
+            }
             dispatcher.shutdown();
             debug("Lite client shut down");
         }

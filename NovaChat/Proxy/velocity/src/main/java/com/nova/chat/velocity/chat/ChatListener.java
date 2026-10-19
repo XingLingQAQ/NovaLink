@@ -115,6 +115,10 @@ public class ChatListener {
         core.onServerConnected(
                 new VelocityProxyPlayer(event.getPlayer()),
                 event.getServer().getServerInfo().getName());
+        // Lite: pull the player's persisted channel membership back. The read is
+        // queued off-thread, so this does not block the connect event. No-op in
+        // relay mode.
+        plugin.onLitePlayerConnect(event.getPlayer().getUniqueId());
     }
 
     /**

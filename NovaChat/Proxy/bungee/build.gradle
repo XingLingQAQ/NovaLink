@@ -112,12 +112,32 @@ shadowJar {
     exclude 'META-INF/versions/**/module-info.class'
     exclude 'module-info.class'
 
+    // Lite-mode persistence (see StarLink/storage/build.gradle for the full
+    // rationale). Without mergeServiceFiles() the three JDBC drivers' shared
+    // META-INF/services/java.sql.Driver descriptor collapses to one entry and
+    // DriverManager cannot find the other two. duplicatesStrategy INCLUDE is
+    // required alongside it on Shadow 9.x: the default EXCLUDE drops duplicate
+    // service files before the transformer can merge them.
+    //
+    // NEVER relocate org.sqlite -- sqlite-jdbc locates its native library by
+    // package name, so relocation fails at runtime with "no SQLite JNI library
+    // found".
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    mergeServiceFiles()
+
     dependencies {
         include(project(':NovaChat:common'))
         include(project(':NovaChat:client-core'))
         include(project(':NovaChat:Proxy:proxy-common'))
         include(project(':NovaChat:Proxy:channel'))
         include(dependency('org.yaml:snakeyaml'))
+
+        // Storage layer + connection pool + JDBC drivers for lite.storage.
+        include(project(':StarLink:storage'))
+        include(dependency('com.zaxxer:HikariCP'))
+        include(dependency('com.mysql:mysql-connector-j'))
+        include(dependency('org.postgresql:postgresql'))
+        include(dependency('org.xerial:sqlite-jdbc'))
     }
 }
 

@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -98,6 +99,18 @@ public final class LocalAuthority {
     private final MentionNotifier mentionNotifier = new MentionNotifier();
 
     /**
+     * Persistence for the membership state above; never null, but a no-op that
+     * does no I/O and owns no thread when {@code lite.storage.type=memory}.
+     */
+    private final LiteChannelStore store;
+
+    /**
+     * Players whose persisted membership has already been requested once, so a
+     * packet burst cannot queue one database read per packet.
+     */
+    private final Set<UUID> restoreRequested = ConcurrentHashMap.newKeySet();
+
+    /**
      * @param platform the platform adapter (player lookup, rendering dispatch)
      * @param chatCore the shared chat core (state store, formatter, downstream
      *                 handlers; also owns reply-target tracking through its
@@ -107,9 +120,26 @@ public final class LocalAuthority {
     public LocalAuthority(ProxyPlatform platform,
                           ProxyChatCore chatCore,
                           IgnoreListService ignoreListService) {
+        this(platform, chatCore, ignoreListService, LiteChannelStore.memory());
+    }
+
+    /**
+     * @param platform the platform adapter (player lookup, rendering dispatch)
+     * @param chatCore the shared chat core (state store, formatter, downstream
+     *                 handlers)
+     * @param ignoreListService nullable; per-player ignore lists
+     * @param store the membership store to mirror into; {@code null} means
+     *              {@link LiteChannelStore#memory()}, so a caller that does not
+     *              care about persistence keeps the exact previous behaviour
+     */
+    public LocalAuthority(ProxyPlatform platform,
+                          ProxyChatCore chatCore,
+                          IgnoreListService ignoreListService,
+                          LiteChannelStore store) {
         this.platform = platform;
         this.chatCore = chatCore;
         this.ignoreListService = ignoreListService;
+        this.store = store != null ? store : LiteChannelStore.memory();
     }
 
     /**
@@ -268,6 +298,11 @@ public final class LocalAuthority {
             return failure(ChannelAction.JOIN, packet, ErrorCode.FORBIDDEN);
         }
 
+        // First interaction of this player with the authority: pull the persisted
+        // membership back. Deferred onto the storage thread and applied through
+        // the platform dispatch hop, so a slow database cannot delay this JOIN.
+        restoreOnce(playerId);
+
         // Capacity is checked against the authority's membership table, not the
         // shared player state: the client's optimistic JOIN would otherwise
         // make the joiner count against itself on a re-join.
@@ -288,6 +323,7 @@ public final class LocalAuthority {
         }
         state.joinChannel(channelId);
         state.setActiveChannel(channelId);
+        persist(playerId, state);
         platform.logDebug("Lite authority joined " + playerName(packet, player)
                 + " to channel " + channelId);
         return success(ChannelAction.JOIN, packet, channelId);
@@ -324,6 +360,7 @@ public final class LocalAuthority {
         PlayerChannelState state = stateOf(playerId);
         if (state != null) {
             state.leaveChannel(channelId);
+            persist(playerId, state);
         }
         platform.logDebug("Lite authority removed " + playerName(packet, platform.getPlayer(playerId))
                 + " from channel " + channelId);
@@ -444,9 +481,7 @@ public final class LocalAuthority {
     /** @return the live lite channel definitions (re-read after a reload) */
     private java.util.Map<String, LiteChannelConfig> channels() {
         return config().getLiteChannels();
-    }
-
-    private ProxyConfigView config() {
+    }    private ProxyConfigView config() {
         return chatCore.getStates().getConfig();
     }
 
@@ -479,6 +514,130 @@ public final class LocalAuthority {
             channelMembers.remove(playerId);
         }
         slowModeTracker.forgetPlayer(playerId);
+        // Allow a reconnecting player to be restored again: ProxyChatCore drops
+        // the state on disconnect, so without this the same session's reconnect
+        // would skip the restore and the player would lose their channels.
+        restoreRequested.remove(playerId);
+        // The persisted membership is deliberately kept: that is the whole point
+        // of the store, a reconnecting player must find their channels again.
+        // Only the cache entry is dropped so it does not grow without bound.
+        store.evictPlayer(playerId);
+    }
+
+    // ---------------------------------------------------------- persistence
+
+    /**
+     * Mirrors a player's current membership into the store.
+     *
+     * <p>The snapshot is captured here, synchronously, because the state object
+     * keeps mutating after this authority call returns (the client applies
+     * optimistic updates, a later JOIN changes the active channel). Only the DB
+     * write is deferred, so this never blocks the caller on I/O. A {@code memory}
+     * store makes the whole call a no-op.
+     *
+     * @param playerId the acting player
+     * @param state the state to snapshot, or null when it was never created
+     */
+    private void persist(UUID playerId, PlayerChannelState state) {
+        if (playerId == null || state == null || !store.isPersistent()) {
+            return;
+        }
+        ProxyPlayer player = platform.getPlayer(playerId);
+        store.savePlayer(new LiteChannelStore.PlayerSnapshot(
+                playerId,
+                player != null ? player.getName() : null,
+                state.getJoinedChannels(),
+                state.getActiveChannel()));
+    }
+
+    /**
+     * Restores a player's persisted membership into the live state.
+     *
+     * <p>Queued from the player's first contact with the authority; the read
+     * itself runs on the storage I/O thread and applies the result back through
+     * the platform's dispatch hop, because {@link PlayerChannelState} is read by
+     * the chat hot path. Channels that the configuration no longer declares are
+     * dropped rather than restored, so a removed {@code lite.channels} entry does
+     * not resurrect as a joinable-but-undefined channel.
+     *
+     * @param playerId the player to restore
+     */
+    private void restore(UUID playerId) {
+        if (playerId == null || !store.isPersistent()) {
+            return;
+        }
+        store.loadPlayer(playerId, snapshot -> {
+            if (snapshot == null || snapshot.isEmpty()) {
+                return;
+            }
+            platform.execute(() -> applyRestored(playerId, snapshot));
+        });
+    }
+
+    /**
+     * Restores a connecting player's persisted channel membership.
+     *
+     * <p>Called by the platform shell when a player joins the network (and again
+     * from the first JOIN as a fallback). The database read is queued on the
+     * storage thread and the result is applied through the platform dispatch hop,
+     * so this returns immediately and never blocks the connect event. Repeated
+     * calls for one player are no-ops.
+     *
+     * @param playerId the connecting player
+     */
+    public void onPlayerConnect(UUID playerId) {
+        restoreOnce(playerId);
+    }
+
+    /**
+     * Queues a restore only the first time this authority sees the player, so a
+     * burst of packets from one client cannot queue one read per packet.
+     *
+     * @param playerId the player to restore
+     */
+    private void restoreOnce(UUID playerId) {
+        if (store.isPersistent() && restoreRequested.add(playerId)) {
+            restore(playerId);
+        }
+    }
+
+    /**
+     * Applies a restored snapshot to the live state and membership table.
+     *
+     * @param playerId the restored player
+     * @param snapshot the persisted membership
+     */
+    private synchronized void applyRestored(UUID playerId, LiteChannelStore.PlayerSnapshot snapshot) {
+        // The read completed asynchronously, so the player may already have left
+        // this proxy: restoring then would resurrect state nobody reads.
+        if (platform.getPlayer(playerId) == null) {
+            return;
+        }
+        // The connect path normally created the state before requesting the
+        // restore, but a JOIN can be the first thing the authority sees (plugin
+        // messaging, a command before the server-connect event). Create the
+        // default state rather than silently dropping the persisted membership.
+        PlayerChannelState state = chatCore.getStates().getOrCreateState(playerId);
+        Map<String, LiteChannelConfig> configured = channels();
+        List<String> restored = new ArrayList<>();
+        for (String channelId : snapshot.joinedChannels()) {
+            if (channelId != null && configured.containsKey(channelId)) {
+                restored.add(channelId);
+            }
+        }
+        if (restored.isEmpty()) {
+            return;
+        }
+        for (String channelId : restored) {
+            members.computeIfAbsent(channelId, ignored -> ConcurrentHashMap.newKeySet()).add(playerId);
+            state.joinChannel(channelId);
+        }
+        String active = snapshot.activeChannel();
+        if (active != null && restored.contains(active)) {
+            state.setActiveChannel(active);
+        }
+        platform.logDebug("Lite authority restored " + restored.size()
+                + " channel(s) for " + playerId + " (active=" + snapshot.activeChannel() + ")");
     }
 
     /**

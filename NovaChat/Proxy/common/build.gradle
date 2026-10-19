@@ -31,6 +31,14 @@ dependencies {
     // proxy-common, so the envelope codec has exactly one implementation.
     api project(':NovaChat:Proxy:channel')
 
+    // Persistence primitives for lite-mode channel membership (DatabaseProvider
+    // + its JDBC/SQLite/MySQL/PostgreSQL implementations and PlayerState).
+    // `implementation`, not `api`: the storage types stay an internal detail of
+    // LiteChannelStore, so the platform shells never compile against them. The
+    // dependency is still on this module's runtimeElements, which is what lets
+    // the shells' shadowJar white-list pull it into the plugin jar.
+    implementation project(':StarLink:storage')
+
     // Testing
     testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"
