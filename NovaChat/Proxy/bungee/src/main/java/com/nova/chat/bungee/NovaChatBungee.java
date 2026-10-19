@@ -424,6 +424,15 @@ public class NovaChatBungee extends Plugin {
                 liteAuthority != null ? liteAuthority::handle : null,
                 liteAuthority == null ? this::relayChannelPacket : null);
 
+        // Lite: a proxy player's chat must also reach players connected straight
+        // to a sub-server, whom the proxy's own fan-out cannot see. The
+        // authority client calls this for every accepted chat line.
+        if (localAuthorityClient != null) {
+            com.nova.chat.proxy.channel.ProxyChannelHandler channelHandler = proxyChannelHandler;
+            localAuthorityClient.bindChatBroadcast(
+                    channelHandler != null ? channelHandler::broadcastProxyChat : null);
+        }
+
         // H6: the ChatListener shell binds inbound handlers in its constructor;
         // this is the first point where the network client exists.
         if (chatCore.getNetworkClient() != null) {

@@ -10,7 +10,6 @@ import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
-import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -20,7 +19,9 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
  * Intercepts player chat events and forwards messages to the NovaLink backend.
@@ -48,7 +49,43 @@ public class ChatInterceptor implements Listener {
 
     /** Shared [item]/[i] token detection + per-player cooldown (client-core). */
     private final ItemDisplayTokens itemDisplayTokens = new ItemDisplayTokens();
-    
+
+    /**
+     * Thread hop for the inbound render path.
+     *
+     * <p>{@link ChannelMessageEvent} is declared async, so it may only be fired
+     * off the main thread. The backend link already dispatches on Netty, but
+     * the plugin-message callback runs on the server main thread — the exact
+     * combination Paper rejects with
+     * {@code IllegalStateException: ChannelMessageEvent may only be triggered
+     * asynchronously}. Both callers therefore go through this hook, which the
+     * plugin wires to {@code runTaskAsynchronously}.
+     */
+    private final Consumer<Runnable> asyncDispatcher;
+
+    /**
+     * @param plugin the plugin instance
+     */
+    public ChatInterceptor(NovaChatBukkit plugin) {
+        this(plugin, task -> plugin.getServer().getScheduler()
+                .runTaskAsynchronously(plugin, task));
+    }
+
+    /**
+     * @param plugin the plugin instance
+     * @param asyncDispatcher runs one task off the main thread; must not run it
+     *                        synchronously when called from the main thread
+     */
+    ChatInterceptor(NovaChatBukkit plugin, Consumer<Runnable> asyncDispatcher) {
+        this.plugin = plugin;
+        this.asyncDispatcher = asyncDispatcher;
+        this.config = plugin.getNovaChatConfig();
+        this.messageFormatter = new MessageFormatter(plugin);
+        this.globalMode = config.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
+
+        // Register handler for incoming chat messages from backend
+        rebindIncomingHandlers();
+    }
     /**
      * Global chat mode from configuration.
      *
@@ -58,21 +95,6 @@ public class ChatInterceptor implements Listener {
      * the Folia adapter's {@code volatile} declaration.
      */
     private volatile ChatMode globalMode;
-    
-    /**
-     * Creates a new ChatInterceptor.
-     *
-     * @param plugin the plugin instance
-     */
-    public ChatInterceptor(NovaChatBukkit plugin) {
-        this.plugin = plugin;
-        this.config = plugin.getNovaChatConfig();
-        this.messageFormatter = new MessageFormatter(plugin);
-        this.globalMode = config.isReplaceVanilla() ? ChatMode.REPLACE : ChatMode.HYBRID;
-        
-        // Register handler for incoming chat messages from backend
-        rebindIncomingHandlers();
-    }
 
     /**
      * Registers the handler for incoming chat messages from the backend.
@@ -112,35 +134,55 @@ public class ChatInterceptor implements Listener {
     public void handleIncomingMessage(ChatMessagePacket packet,
                                       java.util.Set<UUID> excludedRecipients) {
         plugin.debug("Received chat message from backend: " + packet);
-        
+
+        // The event is async-only. The backend link already calls us on Netty,
+        // but the plugin-message callback lands on the main thread, so hop off
+        // it before firing. Messages that already arrive off-thread are handled
+        // in place: an extra hop would reorder them relative to each other.
+        if (plugin.getServer().isPrimaryThread()) {
+            Set<UUID> excluded = excludedRecipients != null ? excludedRecipients : Set.of();
+            asyncDispatcher.accept(() -> dispatchIncoming(packet, excluded));
+            return;
+        }
+        dispatchIncoming(packet, excludedRecipients != null ? excludedRecipients : Set.of());
+    }
+
+    /**
+     * Fires the async {@link ChannelMessageEvent} and renders the surviving
+     * line to the local players the proxy did not already serve.
+     *
+     * <p>Must run off the main thread (the event is async-only); the render
+     * loop hops back to the main thread for Bukkit API calls.
+     */
+    private void dispatchIncoming(ChatMessagePacket packet, Set<UUID> excludedRecipients) {
         String channelId = packet.getChannelId();
         String senderName = packet.getSenderName();
         String content = packet.getContent();
         UUID senderId = packet.getSenderId();
         Map<String, String> placeholders = packet.getPlaceholders();
-        
+
         // Fire ChannelMessageEvent for other plugins (Requirements: 25.1)
         ChannelMessageEvent event = new ChannelMessageEvent(
             senderId, senderName, channelId, content, placeholders
         );
-        Bukkit.getPluginManager().callEvent(event);
-        
+        plugin.getServer().getPluginManager().callEvent(event);
+
         // Check if event was cancelled
         if (event.isCancelled()) {
             plugin.debug("ChannelMessageEvent was cancelled for message from " + senderName);
             return;
         }
-        
+
         // Use potentially modified message from event
         String finalContent = event.getMessage();
-        
+
         // Get channel display name from placeholders or use channel ID
         String channelName = placeholders.getOrDefault("channel_name", channelId);
-        
+
         // Format the message for display
         // Run on main thread for Bukkit API calls
-        Bukkit.getScheduler().runTask(plugin, () -> {
-            for (Player player : Bukkit.getOnlinePlayers()) {
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            for (Player player : plugin.getServer().getOnlinePlayers()) {
                 // The proxy already rendered this line to its own players.
                 if (excludedRecipients.contains(player.getUniqueId())) {
                     continue;

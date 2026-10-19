@@ -191,6 +191,83 @@ class LocalAuthorityClientTest {
     }
 
     @Test
+    @DisplayName("an accepted chat is handed to the downstream broadcast hook")
+    void acceptedChatIsBroadcastDownstream() {
+        List<Runnable> pending = new ArrayList<>();
+        List<ChatMessagePacket> broadcast = new ArrayList<>();
+
+        try (LocalAuthorityClient client = client(pending::add)) {
+            client.bind(authority());
+            client.bindChatBroadcast(broadcast::add);
+
+            client.sendPacket(chat(alice, GLOBAL, "reach the downstream"));
+            pending.get(0).run();
+
+            assertThat(broadcast).hasSize(1);
+            assertThat(broadcast.get(0).getContent()).isEqualTo("reach the downstream");
+            // The authority enriched the packet before fan-out, so the
+            // downstream envelope carries the resolved channel name.
+            assertThat(broadcast.get(0).getPlaceholders().get("channel_name")).isEqualTo("全服");
+        }
+    }
+
+    @Test
+    @DisplayName("a rejected chat is not broadcast downstream")
+    void rejectedChatIsNotBroadcast() {
+        List<Runnable> pending = new ArrayList<>();
+        List<ChatMessagePacket> broadcast = new ArrayList<>();
+
+        try (LocalAuthorityClient client = client(pending::add)) {
+            client.bind(authority());
+            client.bindChatBroadcast(broadcast::add);
+
+            // "missing" is not declared in lite.channels: the authority rejects it.
+            client.sendPacket(chat(alice, "missing", "nope"));
+            pending.get(0).run();
+
+            assertThat(broadcast).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("channel actions do not trigger the downstream chat broadcast")
+    void channelActionsAreNotBroadcast() {
+        List<Runnable> pending = new ArrayList<>();
+        List<ChatMessagePacket> broadcast = new ArrayList<>();
+
+        try (LocalAuthorityClient client = client(pending::add)) {
+            client.bind(authority());
+            client.bindChatBroadcast(broadcast::add);
+
+            client.sendPacket(action(alice, ChannelAction.JOIN, GLOBAL));
+            pending.get(0).run();
+
+            assertThat(broadcast).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("a failing broadcast hook does not stop handler delivery")
+    void failingBroadcastDoesNotBreakDelivery() {
+        List<Runnable> pending = new ArrayList<>();
+        AtomicReference<ChatMessagePacket> received = new AtomicReference<>();
+
+        try (LocalAuthorityClient client = client(pending::add)) {
+            client.bind(authority());
+            client.bindChatBroadcast(packet -> {
+                throw new IllegalStateException("downstream link down");
+            });
+            client.registerHandler(ChatMessagePacket.class, received::set);
+
+            client.sendPacket(chat(alice, GLOBAL, "still delivered"));
+            pending.get(0).run();
+
+            assertThat(received.get()).isNotNull();
+            assertThat(received.get().getContent()).isEqualTo("still delivered");
+        }
+    }
+
+    @Test
     @DisplayName("the default dispatcher runs the authority off the calling thread")
     void defaultDispatcherIsOffThread() throws Exception {
         CountDownLatch delivered = new CountDownLatch(1);
