@@ -47,6 +47,9 @@ final class LiteTestFixture {
         /** Titles rendered as {@code "title|subtitle"}. */
         final List<String> titles = new ArrayList<>();
 
+        /** Mention notices rendered as {@code "highlight|subtitle"}. */
+        final List<String> mentions = new ArrayList<>();
+
         /** Title timings rendered as {@code "fadeIn/stay/fadeOut"}. */
         final List<String> titleTimings = new ArrayList<>();
 
@@ -127,9 +130,7 @@ final class LiteTestFixture {
 
         @Override
         public void notifyMention(ProxyPlayer player, String highlight, String subtitle) {
-            // Rendered the way the real platforms do: a title carrying the
-            // highlight and subtitle, so a test can assert what was seen.
-            ((FakePlayer) player).titles.add(highlight + "|" + subtitle);
+            ((FakePlayer) player).mentions.add(highlight + "|" + subtitle);
         }
 
         @Override

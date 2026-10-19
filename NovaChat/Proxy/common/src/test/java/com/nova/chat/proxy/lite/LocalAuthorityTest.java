@@ -147,7 +147,7 @@ class LocalAuthorityTest {
         send(chat(alice, GLOBAL, "hey @Bob look"));
 
         assertThat(bob.messages).anyMatch(line -> line.contains("&e@Bob"));
-        assertThat(bob.titles).anyMatch(title -> title.contains("Alice"));
+        assertThat(bob.mentions).anyMatch(mention -> mention.contains("Alice"));
     }
 
     @Test
