@@ -28,6 +28,38 @@ permissions:
   novachat.admin:
     description: Client administrator permission
     default: op
+    children:
+      novachat.mute: true
+      novachat.kick: true
+      novachat.ban: true
+      novachat.announce: true
+      novachat.title: true
+      novachat.reload: true
+      novachat.debug: true
+  novachat.mute:
+    description: Mute players in channels
+    default: op
+  novachat.kick:
+    description: Kick players from channels
+    default: op
+  novachat.ban:
+    description: Ban and unban players from channels or network-wide
+    default: op
+  novachat.announce:
+    description: Send announcements to channels
+    default: op
+  novachat.title:
+    description: Send title messages to channels
+    default: op
+  novachat.auth:
+    description: Super admin authentication (hidden command)
+    default: false
+  novachat.reload:
+    description: Reload plugin configuration
+    default: op
+  novachat.debug:
+    description: Toggle debug mode
+    default: op
   novachat.bypass.world:
     description: Bypass world restrictions for channels
     default: op

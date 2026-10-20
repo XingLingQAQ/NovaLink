@@ -66,6 +66,16 @@ public class NovaChatCommand extends Command implements CommandExecutor {
         // Admin commands
         subCommands.put("reload", new ReloadCommand(plugin));
         subCommands.put("debug", new DebugCommand(plugin));
+
+        // Moderation commands. Without a super-admin session announce/title are
+        // rejected by the backend with NC-403, so /nc auth ships alongside them.
+        subCommands.put("mute", new MuteCommand(plugin));
+        subCommands.put("kick", new KickCommand(plugin));
+        subCommands.put("ban", new BanCommand(plugin));
+        subCommands.put("unban", new UnbanCommand(plugin));
+        subCommands.put("announce", new AnnounceCommand(plugin));
+        subCommands.put("title", new TitleCommand(plugin));
+        subCommands.put("auth", new AuthCommand(plugin));
     }
 
     @Override

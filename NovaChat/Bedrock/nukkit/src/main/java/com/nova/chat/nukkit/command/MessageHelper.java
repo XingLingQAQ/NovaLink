@@ -3,6 +3,7 @@ package com.nova.chat.nukkit.command;
 import cn.nukkit.Player;
 import cn.nukkit.command.CommandSender;
 import cn.nukkit.utils.TextFormat;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.nukkit.NovaChatNukkit;
 import com.nova.chat.nukkit.config.NovaChatConfig;
 
@@ -54,6 +55,40 @@ public class MessageHelper {
      */
     public void sendRawMessage(CommandSender sender, String message) {
         sender.sendMessage(translateColors(message));
+    }
+
+    /**
+     * Sends the usage line for a command.
+     *
+     * @param sender the command sender
+     * @param usage  the usage string
+     */
+    public void sendUsage(CommandSender sender, String usage) {
+        sender.sendMessage(translateColors("&c"
+                + I18n.tr(playerIdOf(sender), "chat.error.usage_prefix", usage)));
+    }
+
+    /**
+     * Sends a hint line under a previous message.
+     *
+     * @param sender     the command sender
+     * @param suggestion the hint
+     */
+    public void sendSuggestion(CommandSender sender, String suggestion) {
+        sender.sendMessage(translateColors("  &7"
+                + I18n.tr(playerIdOf(sender), "error.suggestion_prefix") + " &f" + suggestion));
+    }
+
+    /**
+     * Resolves a sender's player UUID, or {@code null} for console/RCON so
+     * {@link I18n#tr(java.util.UUID, String, Object...)} falls back to the
+     * default locale.
+     *
+     * @param sender the command sender
+     * @return the UUID for a player, otherwise {@code null}
+     */
+    private static java.util.UUID playerIdOf(CommandSender sender) {
+        return sender instanceof Player ? ((Player) sender).getUniqueId() : null;
     }
 
     /**
