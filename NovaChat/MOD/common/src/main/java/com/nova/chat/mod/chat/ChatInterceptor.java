@@ -122,6 +122,13 @@ public class ChatInterceptor implements ChatHandler {
         networkClient.registerHandler(
                 com.nova.chat.common.protocol.packets.PrivateMessagePacket.class,
                 this::handlePrivateMessage);
+        // /nc auth, /nc announce, /nc title answer on this packet; without a
+        // handler the operator never learns whether the super-admin session was
+        // established or why the broadcast failed.
+        networkClient.registerHandler(
+                com.nova.chat.common.protocol.packets.AdminActionResponsePacket.class,
+                new AdminResponseRenderer(platform, networkClient::consumePendingAdminRequest,
+                        line -> platform.logWarn("[NovaChat console] " + line)));
     }
 
     /**

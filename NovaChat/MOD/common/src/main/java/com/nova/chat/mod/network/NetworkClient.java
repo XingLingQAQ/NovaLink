@@ -55,6 +55,55 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
     }
 
     /**
+     * In-flight admin-action requests mapped to the sender that issued them, so
+     * the asynchronous {@link com.nova.chat.common.protocol.packets.AdminActionResponsePacket}
+     * can be routed back. Mirrors the Folia {@code AsyncNetworkClient} map and
+     * Bukkit's {@code pendingAdminRequests}.
+     */
+    private final java.util.concurrent.ConcurrentMap<java.util.UUID, java.util.UUID>
+            pendingAdminRequests = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Sends a packet. For an
+     * {@link com.nova.chat.common.protocol.packets.AdminActionPacket} the
+     * {@code requestId -> senderId} correlation is recorded before the wire
+     * send so the response can be rendered to whoever issued the command.
+     *
+     * <p>Channel-action correlation stays inside the shared
+     * {@link com.nova.chat.client.network.CoreNetworkClient}.
+     */
+    @Override
+    public void sendPacket(Packet packet) {
+        if (packet instanceof com.nova.chat.common.protocol.packets.AdminActionPacket admin
+                && admin.getPlayerId() != null && admin.getRequestId() != null) {
+            pendingAdminRequests.put(admin.getRequestId(), admin.getPlayerId());
+        }
+        super.sendPacket(packet);
+    }
+
+    /**
+     * Removes and returns the sender recorded for an admin-action request id.
+     * Removal is deliberate: a response is rendered exactly once, so a second
+     * or unsolicited response reads as "no pending request".
+     *
+     * @param requestId the response's request id
+     * @return the originating sender id, or null when nothing is pending
+     */
+    public java.util.UUID consumePendingAdminRequest(java.util.UUID requestId) {
+        if (requestId == null) {
+            return null;
+        }
+        return pendingAdminRequests.remove(requestId);
+    }
+
+    /**
+     * @return the number of admin actions awaiting a response, for diagnostics
+     */
+    public int pendingAdminRequestCount() {
+        return pendingAdminRequests.size();
+    }
+
+    /**
      * @return the platform this client is bridging
      */
     public Platform getPlatform() {

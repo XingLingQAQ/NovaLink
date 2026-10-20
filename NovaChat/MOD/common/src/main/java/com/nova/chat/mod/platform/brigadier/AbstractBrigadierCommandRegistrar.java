@@ -3,19 +3,28 @@ package com.nova.chat.mod.platform.brigadier;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
+import com.nova.chat.common.NovaConstants;
+import com.nova.chat.mod.command.AnnounceCommand;
+import com.nova.chat.mod.command.AuthCommand;
+import com.nova.chat.mod.command.BanCommand;
 import com.nova.chat.mod.command.HelpCommand;
 import com.nova.chat.mod.command.IgnoreCommand;
 import com.nova.chat.mod.command.JoinCommand;
+import com.nova.chat.mod.command.KickCommand;
 import com.nova.chat.mod.command.LeaveCommand;
 import com.nova.chat.mod.command.ListCommand;
 import com.nova.chat.mod.command.MsgCommand;
+import com.nova.chat.mod.command.MuteCommand;
 import com.nova.chat.mod.command.ReloadCommand;
 import com.nova.chat.mod.command.ReplyCommand;
+import com.nova.chat.mod.command.TitleCommand;
 import com.nova.chat.mod.command.ToggleCommand;
+import com.nova.chat.mod.command.UnbanCommand;
 import com.nova.chat.mod.command.UnignoreCommand;
 import com.nova.chat.mod.command.WhoCommand;
 import com.nova.chat.mod.platform.CommandHandler;
 import com.nova.chat.mod.platform.CommandManager;
+import com.nova.chat.mod.platform.ConsoleCapableCommand;
 import com.nova.chat.mod.platform.ModServices;
 import com.nova.chat.mod.platform.Platform;
 
@@ -26,7 +35,8 @@ import com.nova.chat.mod.platform.Platform;
  * <p>Owns the parts of the per-loader {@code CommandRegistrar} classes that are
  * byte-identical across all three loaders:
  * <ul>
- *   <li>the 11 shared handler registrations on {@link CommandManager} —
+ *   <li>the shared handler registrations on {@link CommandManager} (11 baseline
+ *       + 6 moderation + hidden {@code auth}) —
  *       {@link #registerSharedStateAndHandlers};</li>
  *   <li>the {@code novachat} + {@code nc} brigadier subtree shape —
  *       {@link #buildLiteral}, parameterised by the loader-supplied
@@ -37,7 +47,9 @@ import com.nova.chat.mod.platform.Platform;
  *   <li>{@code executeSubCommand} — the player-extraction, services-attach and
  *       handler-dispatch path, delegating player lookup, admin check and
  *       context construction to the {@link BrigadierHooks} methods the
- *       loader shim overrides;</li>
+ *       loader shim overrides. A non-player source is refused unless the
+ *       handler implements {@link ConsoleCapableCommand}; those run with the
+ *       all-zero console sentinel identity instead;</li>
  *   <li>{@code executeDebug} — prints the same 5-line banner the per-loader
  *       implementations printed, with the platform name supplied by
  *       {@link BrigadierHooks#platformDisplayName()}.</li>
@@ -87,8 +99,30 @@ public abstract class AbstractBrigadierCommandRegistrar<S> implements BrigadierH
             "msg", "r", "ignore", "unignore", "reload"
     };
 
+    /**
+     * The moderation subcommand names, matching the bukkit/folia sets. All six
+     * are admin-gated ({@link #isAdmin}) and console-capable, mirroring the
+     * references' {@code isPlayerOnly() == false} shells.
+     */
+    public static final String[] MODERATION_COMMAND_NAMES = {
+            "mute", "kick", "ban", "unban", "announce", "title"
+    };
+
+    /**
+     * Hidden subcommand names: registered and runnable, never listed in
+     * {@code /nc help} (matching bukkit/folia's hidden {@code auth}).
+     */
+    public static final String[] HIDDEN_COMMAND_NAMES = {"auth"};
+
     /** The two top-level literal names ({@code novachat} + the {@code nc} alias). */
     public static final String[] LITERAL_NAMES = {"novachat", "nc"};
+
+    /**
+     * Display name carried by a console/RCON sender, matching the backend's
+     * {@code ConsoleSentinel.CONSOLE_NAME} so console-issued moderation reads
+     * the same as it does from the backend console.
+     */
+    public static final String CONSOLE_SENDER_NAME = "Console";
 
     protected static CommandManager commandManager;
     protected static ModServices services;
@@ -97,13 +131,15 @@ public abstract class AbstractBrigadierCommandRegistrar<S> implements BrigadierH
     }
 
     // ------------------------------------------------------------------
-    // 11 shared handler registrations (byte-identical across all 3 loaders)
+    // shared handler registrations (identical across all 3 loaders)
     // ------------------------------------------------------------------
 
     /**
-     * Stashes the shared manager / services and registers the 11 shared command
-     * handlers (help/join/leave/list/who/toggle/msg/r/ignore/unignore/reload)
-     * on the {@link CommandManager}. Each loader's
+     * Stashes the shared manager / services and registers the shared command
+     * handlers on the {@link CommandManager}: the 11 baseline commands
+     * (help/join/leave/list/who/toggle/msg/r/ignore/unignore/reload), the six
+     * moderation commands ({@link #MODERATION_COMMAND_NAMES}) and the hidden
+     * super-admin {@code auth} ({@link #HIDDEN_COMMAND_NAMES}). Each loader's
      * {@code registerCommands(manager, services)} calls this.
      */
     public final void registerSharedStateAndHandlers(CommandManager manager, ModServices svc) {
@@ -120,6 +156,15 @@ public abstract class AbstractBrigadierCommandRegistrar<S> implements BrigadierH
         manager.registerCommand("ignore", new IgnoreCommand());
         manager.registerCommand("unignore", new UnignoreCommand());
         manager.registerCommand("reload", new ReloadCommand());
+
+        // Moderation (admin-gated, console-capable) + the hidden super-admin auth.
+        manager.registerCommand("mute", new MuteCommand());
+        manager.registerCommand("kick", new KickCommand());
+        manager.registerCommand("ban", new BanCommand());
+        manager.registerCommand("unban", new UnbanCommand());
+        manager.registerCommand("announce", new AnnounceCommand());
+        manager.registerCommand("title", new TitleCommand());
+        manager.registerCommand("auth", new AuthCommand());
     }
 
     // ------------------------------------------------------------------
@@ -140,7 +185,7 @@ public abstract class AbstractBrigadierCommandRegistrar<S> implements BrigadierH
 
     /**
      * Builds one top-level literal subtree (e.g. {@code novachat} or
-     * {@code nc}) with all 11 subcommands. The shape is identical to the
+     * {@code nc}) with all 18 subcommands. The shape is identical to the
      * per-loader implementations:
      * <ul>
      *   <li>{@code help}, {@code leave}, {@code list}, {@code who},
@@ -152,8 +197,21 @@ public abstract class AbstractBrigadierCommandRegistrar<S> implements BrigadierH
      *   <li>{@code ignore [target]} — no-arg + optional word target;</li>
      *   <li>{@code unignore <target>} — required word target;</li>
      *   <li>{@code reload}, {@code debug} — admin-gated ({@link #isAdmin});</li>
+     *   <li>{@code mute <player> <duration> [channel]} — word + word + word;</li>
+     *   <li>{@code kick <player> [channel]} — word + optional word;</li>
+     *   <li>{@code ban <player> [duration|channel] [channel|duration]} — two
+     *       neutral positional words, disambiguated by the handler;</li>
+     *   <li>{@code unban <target> [channel]} — word + optional word;</li>
+     *   <li>{@code announce <channel> <content>} — word + greedyString;</li>
+     *   <li>{@code title <channel> <title> [subtitle]} — word + word +
+     *       optional greedyString;</li>
+     *   <li>{@code auth <password>} — greedyString, hidden from help;</li>
      *   <li>root executes {@code help} as the default.</li>
      * </ul>
+     *
+     * <p>The moderation literals and {@code auth} carry the same
+     * {@link #isAdmin} requirement as {@code reload}/{@code debug} — the only
+     * permission gate the mod layer has.
      *
      * <p>Calls the {@link BrigadierHooks} methods ({@link #literal},
      * {@link #argument}, {@link #word}, {@link #greedyString},
@@ -226,6 +284,86 @@ public abstract class AbstractBrigadierCommandRegistrar<S> implements BrigadierH
                 .then(literal("debug")
                         .requires(this::isAdmin)
                         .executes(this::executeDebug))
+
+                // --- moderation (mirrors the bukkit/folia argument shapes) ---
+                .then(literal("mute")
+                        .requires(this::isAdmin)
+                        .then(argument("player", word())
+                                .then(argument("duration", word())
+                                        .executes(ctx -> executeSubCommand(ctx, "mute",
+                                                new String[]{readString(ctx, "player"),
+                                                        readString(ctx, "duration")}))
+                                        .then(argument("channel", word())
+                                                .executes(ctx -> executeSubCommand(ctx, "mute",
+                                                        new String[]{readString(ctx, "player"),
+                                                                readString(ctx, "duration"),
+                                                                readString(ctx, "channel")}))))))
+                .then(literal("kick")
+                        .requires(this::isAdmin)
+                        .then(argument("player", word())
+                                .executes(ctx -> executeSubCommand(ctx, "kick",
+                                        new String[]{readString(ctx, "player")}))
+                                .then(argument("channel", word())
+                                        .executes(ctx -> executeSubCommand(ctx, "kick",
+                                                new String[]{readString(ctx, "player"),
+                                                        readString(ctx, "channel")})))))
+                .then(literal("ban")
+                        .requires(this::isAdmin)
+                        .then(argument("player", word())
+                                .executes(ctx -> executeSubCommand(ctx, "ban",
+                                        new String[]{readString(ctx, "player")}))
+                                // duration and channel may be given in either order,
+                                // so the two positional names stay neutral; the
+                                // handler disambiguates by shape (as the references do).
+                                .then(argument("durationOrChannel", word())
+                                        .executes(ctx -> executeSubCommand(ctx, "ban",
+                                                new String[]{readString(ctx, "player"),
+                                                        readString(ctx, "durationOrChannel")}))
+                                        .then(argument("channelOrDuration", word())
+                                                .executes(ctx -> executeSubCommand(ctx, "ban",
+                                                        new String[]{readString(ctx, "player"),
+                                                                readString(ctx, "durationOrChannel"),
+                                                                readString(ctx, "channelOrDuration")}))))))
+                .then(literal("unban")
+                        .requires(this::isAdmin)
+                        // word() admits the '-' in a UUID, so an offline target
+                        // can still be named exactly
+                        .then(argument("target", word())
+                                .executes(ctx -> executeSubCommand(ctx, "unban",
+                                        new String[]{readString(ctx, "target")}))
+                                .then(argument("channel", word())
+                                        .executes(ctx -> executeSubCommand(ctx, "unban",
+                                                new String[]{readString(ctx, "target"),
+                                                        readString(ctx, "channel")})))))
+                .then(literal("announce")
+                        .requires(this::isAdmin)
+                        .then(argument("channel", word())
+                                .then(argument("content", greedyString())
+                                        .executes(ctx -> executeSubCommand(ctx, "announce",
+                                                new String[]{readString(ctx, "channel"),
+                                                        readString(ctx, "content")})))))
+                .then(literal("title")
+                        .requires(this::isAdmin)
+                        .then(argument("channel", word())
+                                .then(argument("title", word())
+                                        .executes(ctx -> executeSubCommand(ctx, "title",
+                                                new String[]{readString(ctx, "channel"),
+                                                        readString(ctx, "title")}))
+                                        // the rest of the line is the subtitle, matching
+                                        // the references' args[2..] join
+                                        .then(argument("subtitle", greedyString())
+                                                .executes(ctx -> executeSubCommand(ctx, "title",
+                                                        new String[]{readString(ctx, "channel"),
+                                                                readString(ctx, "title"),
+                                                                readString(ctx, "subtitle")}))))))
+                // hidden: never listed in help, still runnable
+                .then(literal("auth")
+                        .requires(this::isAdmin)
+                        // greedyString so a password may contain characters word()
+                        // rejects (&, !, @) without quoting gymnastics
+                        .then(argument("password", greedyString())
+                                .executes(ctx -> executeSubCommand(ctx, "auth",
+                                        new String[]{readString(ctx, "password")}))))
                 .executes(ctx -> executeSubCommand(ctx, "help", new String[0]));
     }
 
@@ -255,11 +393,6 @@ public abstract class AbstractBrigadierCommandRegistrar<S> implements BrigadierH
      */
     protected final int executeSubCommand(CommandContext<S> ctx, String subCommand, String[] args) {
         S source = ctx.getSource();
-        ServerPlayerInfo player = lookupPlayer(source);
-        if (player == null) {
-            sendFailure(source, "This command can only be executed by a player");
-            return 0;
-        }
         if (commandManager == null) {
             sendFailure(source, "NovaChat is not initialized");
             return 0;
@@ -269,6 +402,26 @@ public abstract class AbstractBrigadierCommandRegistrar<S> implements BrigadierH
             sendFailure(source, "Unknown subcommand: " + subCommand);
             return 0;
         }
+        ServerPlayerInfo player = lookupPlayer(source);
+
+        // Console/RCON is only reachable for handlers that opt in via
+        // ConsoleCapableCommand (the moderation shells, mirroring bukkit/folia's
+        // isPlayerOnly() == false). Everything else keeps the original
+        // player-only refusal.
+        if (player == null) {
+            if (!(handler instanceof ConsoleCapableCommand)) {
+                sendFailure(source, "This command can only be executed by a player");
+                return 0;
+            }
+            Platform consolePlatform = getPlatform();
+            com.nova.chat.mod.platform.CommandContext consoleContext = createContext(
+                    java.util.UUID.fromString(NovaConstants.CONSOLE_SENTINEL_UUID),
+                    CONSOLE_SENDER_NAME, consolePlatform, isAdmin(source), source);
+            consoleContext.withServices(services);
+            boolean consoleSuccess = handler.execute(args, consoleContext);
+            return consoleSuccess ? 1 : 0;
+        }
+
         Platform platform = getPlatform();
         boolean admin = isAdmin(source);
         com.nova.chat.mod.platform.CommandContext cmdContext = createContext(

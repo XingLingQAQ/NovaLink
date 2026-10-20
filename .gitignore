@@ -89,5 +89,8 @@ screenshots/
 # Gradle userHome cache (per-user build cache, not for repo)
 .gradle-user/
 
+# NeoForge userdev run directory (generated JVM/test args at build time)
+NovaChat/MOD/neoforge/runs/
+
 # Agent git worktrees (scratch space for parallel work; never committed)
 .worktrees/

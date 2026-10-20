@@ -55,6 +55,12 @@ dependencies {
     // mod-common runtime classpath, so the common jar stays Minecraft-free.
     compileOnly "com.mojang:brigadier:1.3.10"
 
+    // The registrar's brigadier tree is asserted by the registration test, so
+    // the test classpath needs the same API. compileOnly is not inherited by
+    // the test source set; this is the same artifact, test-scope only — the
+    // produced jar still does not ship it (each loader supplies it at runtime).
+    testImplementation "com.mojang:brigadier:1.3.10"
+
     // Testing
     testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"
