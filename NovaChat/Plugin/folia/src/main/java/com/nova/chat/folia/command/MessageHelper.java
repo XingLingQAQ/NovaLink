@@ -59,6 +59,16 @@ public class MessageHelper {
     }
 
     /**
+     * Sends a suggestion message to the sender.
+     *
+     * @param sender     the command sender
+     * @param suggestion the suggestion
+     */
+    public void sendSuggestion(CommandSender sender, String suggestion) {
+        sender.sendMessage(colorize("  &7" + I18n.tr(playerIdOf(sender), "error.suggestion_prefix") + " &f" + suggestion));
+    }
+
+    /**
      * Sends a raw message without prefix.
      *
      * @param sender  the command sender

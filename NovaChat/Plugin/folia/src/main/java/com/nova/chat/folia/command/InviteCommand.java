@@ -1,0 +1,117 @@
+package com.nova.chat.folia.command;
+
+import com.nova.chat.client.error.ErrorCode;
+import com.nova.chat.client.i18n.I18n;
+import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.packets.ChannelActionPacket;
+import com.nova.chat.folia.NovaChatFolia;
+import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
+
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * Invite command - allows channel admins to invite players to a channel.
+ *
+ * <p>Mirrors the Bukkit shell: same permission node, same packet action and
+ * extras, same i18n keys.
+ */
+public class InviteCommand extends AbstractSubCommand {
+
+    public InviteCommand(NovaChatFolia plugin) {
+        super(plugin);
+    }
+
+    @Override
+    public String getName() {
+        return "invite";
+    }
+
+    @Override
+    public String getDescription() {
+        return "邀请玩家加入频道";
+    }
+
+    @Override
+    public String getUsage() {
+        return "/nc invite <玩家> [频道ID]";
+    }
+
+    @Override
+    public String getPermission() {
+        return "novachat.invite";
+    }
+
+    @Override
+    public boolean isPlayerOnly() {
+        return true;
+    }
+
+    @Override
+    public boolean execute(CommandSender sender, String[] args) {
+        if (args.length < 1) {
+            messageHelper.sendUsage(sender, getUsage());
+            return true;
+        }
+
+        if (!checkConnection(sender)) {
+            return true;
+        }
+
+        Player player = (Player) sender;
+        String targetName = args[0];
+        String channelId;
+
+        if (args.length > 1) {
+            channelId = args[1];
+        } else {
+            // Use current channel
+            PlayerChannelState state = getPlayerState(player);
+            if (state == null || state.getActiveChannel() == null) {
+                sendError(sender, ErrorCode.NOT_IN_CHANNEL,
+                        I18n.tr(player.getUniqueId(), "chat.invite.specify_channel"));
+                return true;
+            }
+            channelId = state.getActiveChannel();
+        }
+
+        // Check if target player exists locally; if not, still send the packet
+        // with the target name so the backend can resolve across all servers.
+        Player target = parsePlayer(targetName);
+        String targetId = (target != null) ? target.getUniqueId().toString() : null;
+
+        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.INVITE, channelId);
+        packet.addExtra("playerId", player.getUniqueId().toString());
+        packet.addExtra("playerName", player.getName());
+        if (targetId != null) {
+            packet.addExtra("targetId", targetId);
+        }
+        packet.addExtra("targetName", targetName);
+
+        if (sendPacket(packet)) {
+            messageHelper.sendMessage(sender, I18n.tr(player.getUniqueId(), "chat.invite.progress", targetName, channelId));
+        } else {
+            sendRequestFailed(sender);
+        }
+
+        return true;
+    }
+
+    @Override
+    public List<String> tabComplete(CommandSender sender, String[] args) {
+        if (args.length == 1) {
+            return getOnlinePlayerNames(args[0]);
+        }
+        if (args.length == 2) {
+            List<String> known = getKnownChannelIds(args[1]);
+            if (!known.isEmpty()) {
+                return known;
+            }
+            return Arrays.asList("global", "local");
+        }
+        return Collections.emptyList();
+    }
+}

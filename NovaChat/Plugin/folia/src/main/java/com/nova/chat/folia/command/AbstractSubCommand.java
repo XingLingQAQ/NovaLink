@@ -1,6 +1,8 @@
 package com.nova.chat.folia.command;
 
+import com.nova.chat.client.error.ErrorCode;
 import com.nova.chat.client.error.ErrorMessageFormatter;
+import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.folia.NovaChatFolia;
 import com.nova.chat.folia.network.AsyncNetworkClient;
@@ -73,6 +75,49 @@ public abstract class AbstractSubCommand implements SubCommand {
         return true;
     }
 
+    /**
+     * Sends an error built from a shared {@link ErrorCode} plus a platform message.
+     *
+     * @param sender  the sender
+     * @param code    the error code
+     * @param message the message to show instead of the code's default
+     */
+    protected void sendError(CommandSender sender, ErrorCode code, String message) {
+        messageHelper.sendError(sender, ErrorMessageFormatter.format(code, message));
+    }
+
+    /**
+     * Sends an error with a custom message and suggestion, e.g. an invalid
+     * duration followed by the accepted formats.
+     *
+     * @param sender     the sender
+     * @param code       the error code
+     * @param message    the message to show instead of the code's default
+     * @param suggestion the hint line shown instead of the code's default (blank/null omits it)
+     */
+    protected void sendError(CommandSender sender, ErrorCode code, String message, String suggestion) {
+        // Built here rather than via ErrorMessageFormatter because that class has
+        // no custom-suggestion overload and would keep the code's default
+        // suggestion. Bukkit's NovaError replaces it; the shape is the same.
+        StringBuilder formatted = new StringBuilder()
+                .append('[').append(code.getCode()).append("] ").append(message);
+        if (suggestion != null && !suggestion.isBlank()) {
+            formatted.append('\n')
+                    .append(I18n.tr(playerIdOf(sender), "error.suggestion_prefix"))
+                    .append(' ').append(suggestion);
+        }
+        messageHelper.sendError(sender, formatted.toString());
+    }
+
+    /**
+     * Sends the generic "backend request failed" error (NC-503), matching the
+     * Bukkit shell that uses {@code NovaError.serviceUnavailable()}.
+     *
+     * @param sender the sender
+     */
+    protected void sendRequestFailed(CommandSender sender) {
+        messageHelper.sendError(sender, ErrorMessageFormatter.format(ErrorCode.SERVICE_UNAVAILABLE));
+    }
 
     /**
      * Gets the player's chat state.
