@@ -16,9 +16,12 @@ import com.nova.chat.proxy.platform.ProxyPlayer;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -47,15 +50,20 @@ import java.util.function.Function;
  *       the resulting downstream packets are (a) rendered to players connected
  *       to the proxy and (b) sent down to every sub-server that has players, so
  *       players connected straight to a sub-server (whom the proxy cannot see)
- *       also get the line. In relay the packet is handed to the proxy's backend
- *       link; the backend owns fan-out.</li>
+ *       also get the line. In relay the upstream packet is handed to the proxy's
+ *       backend link, and the backend's replies come back through the chat core,
+ *       which fans them out down this same channel (see
+ *       {@code ProxyChatCore#bindDownstreamFanOut}). The backend's own fan-out
+ *       only reaches connections that exist on it, and in relay a sub-server has
+ *       no backend connection: the proxy is the only bridge.</li>
  * </ul>
  *
  * <p><b>Chat is network-wide.</b> A chat line must reach every sub-server, not
  * just the one it came from: a player may be connected straight to any of them.
  * {@link #broadcastProxyChat} covers lines typed by proxy players (the proxy's
  * own fan-out only reaches its own roster); {@code handleLite} covers lines that
- * came up from a sub-server.
+ * came up from a sub-server; {@link #broadcastDownstream} covers lines the
+ * backend pushed in relay.
  *
  * <p><b>Duplicate suppression.</b> When the proxy sends a fan-out packet back
  * down, the envelope carries the UUIDs of the proxy's own players on that
@@ -70,6 +78,17 @@ import java.util.function.Function;
  * from any thread. No additional hop is introduced.
  */
 public class ProxyChannelHandler {
+
+    /**
+     * Minimum interval between two "downstream delivery dropped" warnings for
+     * the same server, in seconds. Chosen so a busy network still surfaces the
+     * failure promptly without one warning per chat line.
+     */
+    static final long DROPPED_DELIVERY_WARN_INTERVAL_SECONDS = 30L;
+
+    /** Same interval as {@link System#nanoTime()} units. */
+    private static final long DROPPED_DELIVERY_WARN_INTERVAL_NANOS =
+            java.util.concurrent.TimeUnit.SECONDS.toNanos(DROPPED_DELIVERY_WARN_INTERVAL_SECONDS);
 
     /** Result of one inbound plugin message; exposed for tests and diagnostics. */
     public enum Outcome {
@@ -95,6 +114,9 @@ public class ProxyChannelHandler {
 
     /** Relay-mode backend sink, or null in lite mode. */
     private final Consumer<Packet> relaySink;
+
+    /** serverName → {@link System#nanoTime()} of the last delivery warning. */
+    private final Map<String, Long> lastDeliveryWarning = new ConcurrentHashMap<>();
 
     /**
      * @param platform the platform adapter (player roster, downstream send, logs)
@@ -125,24 +147,32 @@ public class ProxyChannelHandler {
      * server that has players, so the sub-server can render it to exactly the
      * players the proxy did not serve.
      *
-     * <p>Only lite mode does this. In relay the backend owns fan-out, and it
-     * already reaches the sub-servers through its own connections.
+     * <p>Both modes need this: in lite there is no backend at all, and in relay
+     * the backend cannot see proxy-player chat through a fan-out that stops at
+     * this proxy. The former {@code localAuthority == null} guard conflated the
+     * two and silently disabled the downstream leg in every relay deployment.
      *
      * @param packet the accepted chat line (already validated by the authority)
      */
     public void broadcastProxyChat(ChatMessagePacket packet) {
-        if (packet == null || localAuthority == null) {
-            return;
-        }
-        broadcastChat(packet);
+        broadcastDownstream(packet);
     }
 
     /**
-     * Sends one chat line to every server that has players.
+     * Sends one packet to every server that has players, excluding each
+     * server's own proxy-connected players.
      *
-     * @param packet the chat line
+     * <p>Used for every packet a sub-server may still have to render after the
+     * proxy did: chat, titles, mentions, item displays and private messages.
+     * The packet types are chosen by the caller ({@code ProxyChatCore}), because
+     * only it knows which ones are renderable on a sub-server.
+     *
+     * @param packet the packet to fan out; null is ignored
      */
-    private void broadcastChat(ChatMessagePacket packet) {
+    public void broadcastDownstream(Packet packet) {
+        if (packet == null) {
+            return;
+        }
         for (String serverName : downstreamServers()) {
             // The exclusion list is that server's own proxy players: they have
             // already been rendered to by {@code deliverLocally} (or by the
@@ -253,7 +283,7 @@ public class ProxyChannelHandler {
                 // connected straight to it. Broadcasting (rather than echoing
                 // only to the source) keeps this rule identical to the
                 // proxy-player path; each server excludes its own proxy players.
-                broadcastChat(chat);
+                broadcastDownstream(chat);
             } else if (response instanceof ChannelActionResponsePacket actionResponse
                     && isTargetedModeration(actionResponse)) {
                 // A moderation response names a target that may be connected
@@ -327,8 +357,13 @@ public class ProxyChannelHandler {
      *
      * <p>A failure here is expected when the server has no players online: the
      * Minecraft connection to it does not exist, so plugin messaging cannot
-     * deliver. It is logged as debug and the packet is dropped — never reported
-     * as sent.
+     * deliver. The packet is dropped and never reported as sent.
+     *
+     * <p>In relay this drop means a line the backend accepted was never delivered
+     * to that sub-server's players, so it is raised to a warning. Chat makes it
+     * fire on every line, hence the per-server rate limit: one warning per
+     * server per {@link #DROPPED_DELIVERY_WARN_INTERVAL_MILLIS}, so an operator
+     * sees the broken delivery without the log drowning.
      */
     private void sendDownstream(String serverName, Packet packet, Set<UUID> excluded) {
         byte[] payload;
@@ -342,13 +377,47 @@ public class ProxyChannelHandler {
         boolean sent = platform.sendPluginMessage(
                 serverName, ProxyChannelProtocol.CHANNEL_ID, payload);
         if (!sent) {
-            platform.logDebug("Dropped downstream " + packet.getClass().getSimpleName()
-                    + " for " + serverName + ": no players online on that server");
+            warnDroppedDelivery(serverName, packet);
             return;
         }
         platform.logDebug("Sent downstream " + packet.getClass().getSimpleName()
                 + " to " + serverName + " (excluding " + excluded.size()
                 + " proxy-rendered player(s))");
+    }
+
+    /**
+     * Logs one rate-limited warning per server when a downstream send fails.
+     *
+     * <p>The first failure for a server is always reported; repeats inside the
+     * window are debug-only. The window state is read and written on the send
+     * thread, so a benign race can at worst emit one extra warning — never
+     * suppress the first one.
+     *
+     * @param serverName the server the packet could not reach
+     * @param packet the packet that was dropped
+     */
+    private void warnDroppedDelivery(String serverName, Packet packet) {
+        long now = System.nanoTime();
+        AtomicBoolean warn = new AtomicBoolean();
+        // compute() is atomic per key, so two threads failing on the same server
+        // at the same time cannot both decide to warn.
+        lastDeliveryWarning.compute(serverName, (key, previous) -> {
+            if (previous == null || now - previous >= DROPPED_DELIVERY_WARN_INTERVAL_NANOS) {
+                warn.set(true);
+                return now;
+            }
+            return previous;
+        });
+        if (!warn.get()) {
+            platform.logDebug("Dropped downstream " + packet.getClass().getSimpleName()
+                    + " for " + serverName + ": no players online on that server");
+            return;
+        }
+        platform.logWarn("Dropped downstream " + packet.getClass().getSimpleName()
+                + " for " + serverName + ": no player connection available to carry it."
+                + " Players connected directly to that server did not receive it"
+                + " (further drops for this server are logged at debug for "
+                + DROPPED_DELIVERY_WARN_INTERVAL_SECONDS + "s).");
     }
 
     // ---------------------------------------------------------------- helpers

@@ -184,31 +184,33 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      *
      * <p>Downstream packets are identical to their backend counterparts, so
      * they reuse the same handlers — including their main-thread hops and
-     * ignore/permission filters. Chat is the only packet type that also needs
-     * the proxy's "already rendered" list, because the sub-server renders
-     * solely to players the proxy cannot see.
+     * ignore/permission filters. Every renderable type also honours the proxy's
+     * "already rendered" list, because the sub-server renders solely to players
+     * the proxy cannot see; without that filter a proxy-connected player would
+     * see the same line twice (once from the proxy, once from here).
      *
      * @param packet the decoded packet
      * @param excludedRecipients players the proxy already rendered it to
      */
     public void dispatchChannelPacket(Packet packet,
                                       java.util.Set<java.util.UUID> excludedRecipients) {
+        java.util.Set<java.util.UUID> excluded = excludedRecipients != null
+                ? excludedRecipients : java.util.Set.of();
         if (packet instanceof com.nova.chat.common.protocol.packets.ChatMessagePacket chat) {
             com.nova.chat.bukkit.chat.ChatInterceptor interceptor = plugin.getChatInterceptor();
             if (interceptor == null) {
                 plugin.debug("Dropped plugin-message chat: interceptor not initialized");
                 return;
             }
-            interceptor.handleIncomingMessage(chat,
-                    excludedRecipients != null ? excludedRecipients : java.util.Set.of());
+            interceptor.handleIncomingMessage(chat, excluded);
         } else if (packet instanceof TitlePacket title) {
-            handleTitle(title);
+            handleTitle(title, excluded);
         } else if (packet instanceof MentionPacket mention) {
-            handleMention(mention);
+            handleMention(mention, excluded);
         } else if (packet instanceof ItemDisplayPacket itemDisplay) {
-            handleItemDisplay(itemDisplay);
+            handleItemDisplay(itemDisplay, excluded);
         } else if (packet instanceof PrivateMessagePacket privateMessage) {
-            handlePrivateMessage(privateMessage);
+            handlePrivateMessage(privateMessage, excluded);
         } else if (packet instanceof ChannelActionResponsePacket response) {
             handleChannelActionResponse(response);
         } else {
@@ -223,6 +225,14 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * Handles title packets by displaying them to players whose active channel matches the packet channel.
      */
     private void handleTitle(TitlePacket packet) {
+        handleTitle(packet, java.util.Set.of());
+    }
+
+    /**
+     * @param packet the title
+     * @param excluded players the proxy already showed it to
+     */
+    private void handleTitle(TitlePacket packet, java.util.Set<UUID> excluded) {
         // Must run on main thread for Bukkit API
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             try {
@@ -236,6 +246,9 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 String renderedSubtitle = formatter.translateColorCodes(subtitle != null ? subtitle : "");
 
                 for (org.bukkit.entity.Player player : plugin.getServer().getOnlinePlayers()) {
+                    if (excluded.contains(player.getUniqueId())) {
+                        continue;
+                    }
                     var state = plugin.getChatInterceptor().getOrCreateState(player);
                     if (state != null && channelId != null && channelId.equals(state.getActiveChannel())) {
                         player.sendTitle(renderedTitle, renderedSubtitle,
@@ -264,6 +277,14 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * handler directly after reflecting the core dispatch.
      */
     void handleItemDisplay(ItemDisplayPacket packet) {
+        handleItemDisplay(packet, java.util.Set.of());
+    }
+
+    /**
+     * @param packet the item display line
+     * @param excluded players the proxy already rendered it to
+     */
+    void handleItemDisplay(ItemDisplayPacket packet, java.util.Set<UUID> excluded) {
         // Must run on main thread for Bukkit API
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             try {
@@ -271,6 +292,9 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 var formatter = plugin.getChatInterceptor().getMessageFormatter();
 
                 for (org.bukkit.entity.Player player : plugin.getServer().getOnlinePlayers()) {
+                    if (excluded.contains(player.getUniqueId())) {
+                        continue;
+                    }
                     var state = plugin.getChatInterceptor().getOrCreateState(player);
                     if (state == null || channelId == null || !channelId.equals(state.getActiveChannel())) {
                         continue;
@@ -305,6 +329,14 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * players on other servers are expected to be routed there by the backend.
      */
     private void handleMention(MentionPacket packet) {
+        handleMention(packet, java.util.Set.of());
+    }
+
+    /**
+     * @param packet the mention notification
+     * @param excluded players the proxy already notified
+     */
+    private void handleMention(MentionPacket packet, java.util.Set<UUID> excluded) {
         // Must run on main thread for Bukkit API
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             try {
@@ -312,6 +344,9 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 UUID mentionerId = packet.getMentionerId();
                 if (mentionedId == null || mentionerId == null) {
                     return;
+                }
+                if (excluded.contains(mentionedId)) {
+                    return; // the proxy already showed this notification
                 }
                 org.bukkit.entity.Player player = plugin.getServer().getPlayer(mentionedId);
                 if (player == null) {
@@ -366,12 +401,24 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * handler directly after reflecting the core dispatch.
      */
     void handlePrivateMessage(PrivateMessagePacket packet) {
+        handlePrivateMessage(packet, java.util.Set.of());
+    }
+
+    /**
+     * @param packet the completed private message
+     * @param excluded players the proxy already rendered it to
+     */
+    void handlePrivateMessage(PrivateMessagePacket packet, java.util.Set<UUID> excluded) {
         // Must run on main thread for Bukkit API
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             try {
+                // The proxy rendered its own copy to the players it can see, so
+                // treat those as "not local" here: otherwise a proxied player
+                // reads the same DM twice.
                 var deliveries = plugin.getPrivateMessageService().handleIncoming(
                         packet,
-                        id -> plugin.getServer().getPlayer(id) != null,
+                        id -> !excluded.contains(id)
+                                && plugin.getServer().getPlayer(id) != null,
                         plugin.getIgnoreListService());
                 var formatter = plugin.getChatInterceptor().getMessageFormatter();
                 for (PrivateMessageService.Delivery delivery : deliveries) {

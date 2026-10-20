@@ -11,6 +11,9 @@ import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.MentionPacket;
+import com.nova.chat.common.protocol.packets.PrivateMessagePacket;
+import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.proxy.chat.ProxyChatCore;
 import com.nova.chat.proxy.config.ProxyConfig;
 import com.nova.chat.proxy.platform.ProxyPlatform;
@@ -233,14 +236,27 @@ class ProxyChannelHandlerTest {
     }
 
     @Test
-    @DisplayName("relay mode has no proxy-side broadcast: the backend owns fan-out")
-    void relayModeDoesNotBroadcastDownstream() throws Exception {
+    @DisplayName("relay mode still broadcasts a proxy player's chat downstream")
+    void relayModeBroadcastsProxyChatDownstream() throws Exception {
+        FakePlayer carol = platform.add("Carol", "survival-02");
         ProxyChannelHandler handler = new ProxyChannelHandler(platform, chatCore,
                 null, packet -> { });
 
         handler.broadcastProxyChat(chat("relay chat"));
 
-        assertThat(platform.sentMessages).isEmpty();
+        // The relay backend only sees connections that exist on it; a sub-server
+        // has none, so the proxy must carry the line down itself.
+        assertThat(platform.sentMessages)
+                .extracting(sent -> sent.serverName)
+                .containsExactlyInAnyOrder(SOURCE, "survival-02");
+        Set<UUID> excludedOnSource =
+                ProxyChannelProtocol.decode(platform.sentMessages.get(0).payload)
+                        .getExcludedRecipients();
+        assertThat(excludedOnSource).containsExactlyInAnyOrder(alice.id, bob.id);
+        Set<UUID> excludedOnCarol =
+                ProxyChannelProtocol.decode(platform.sentMessages.get(1).payload)
+                        .getExcludedRecipients();
+        assertThat(excludedOnCarol).containsExactly(carol.id);
     }
 
     @Test
@@ -268,6 +284,182 @@ class ProxyChannelHandlerTest {
         handler.broadcastProxyChat(chat("nobody anywhere"));
 
         assertThat(platform.sentMessages).isEmpty();
+    }
+
+    // ------------------------------------------------- relay downstream fan-out
+
+    /**
+     * Builds the production relay graph: the shell binds the chat core's
+     * down-path to the channel handler's broadcast (no lite authority, a relay
+     * sink that goes nowhere in these tests).
+     */
+    private ProxyChannelHandler relayHandler() {
+        ProxyChannelHandler handler = new ProxyChannelHandler(platform, chatCore,
+                null, packet -> { });
+        chatCore.bindDownstreamFanOut(handler::broadcastDownstream);
+        return handler;
+    }
+
+    @Test
+    @DisplayName("relay: a backend chat line is pushed down to every server with players")
+    void relayBackendChatReachesEveryServer() throws Exception {
+        FakePlayer carol = platform.add("Carol", "survival-02");
+        relayHandler();
+
+        chatCore.handleIncomingMessage(chat("from the backend"));
+
+        assertThat(platform.sentMessages)
+                .extracting(sent -> sent.serverName)
+                .containsExactlyInAnyOrder(SOURCE, "survival-02");
+        for (SentMessage sent : platform.sentMessages) {
+            ProxyChannelProtocol.Decoded decoded = ProxyChannelProtocol.decode(sent.payload);
+            assertThat(decoded.getPacket()).isInstanceOf(ChatMessagePacket.class);
+            assertThat(((ChatMessagePacket) decoded.getPacket()).getContent())
+                    .isEqualTo("from the backend");
+        }
+        assertThat(carol.id).isNotNull();
+    }
+
+    @Test
+    @DisplayName("relay: a proxy player sees the line once and is excluded downstream")
+    void proxyPlayerDoesNotSeeTheLineTwice() throws Exception {
+        FakePlayer carol = platform.add("Carol", "survival-02");
+        relayHandler();
+
+        chatCore.handleIncomingMessage(chat("dedup in relay"));
+
+        // Rendered exactly once by the proxy's own loop...
+        assertThat(alice.messages).hasSize(1);
+        // ...and every server is told to skip precisely its own proxy players,
+        // which is what stops the sub-server from rendering it again.
+        for (SentMessage sent : platform.sentMessages) {
+            Set<UUID> excluded =
+                    ProxyChannelProtocol.decode(sent.payload).getExcludedRecipients();
+            Set<UUID> expected = SOURCE.equals(sent.serverName)
+                    ? Set.of(alice.id, bob.id) : Set.of(carol.id);
+            assertThat(excluded)
+                    .as("exclusion is per server for %s", sent.serverName)
+                    .isEqualTo(expected);
+        }
+    }
+
+    @Test
+    @DisplayName("relay: a player proxied on server A does not suppress server B")
+    void exclusionSetIsPerServer() throws Exception {
+        // Move Bob to a second server; Alice stays proxied on the source.
+        FakePlayer bobOnB = platform.add("Bob2", "survival-02");
+        relayHandler();
+
+        chatCore.handleIncomingMessage(chat("two servers, different rosters"));
+
+        Set<UUID> excludedOnSource = ProxyChannelProtocol.decode(
+                sentTo(SOURCE).payload).getExcludedRecipients();
+        Set<UUID> excludedOnB = ProxyChannelProtocol.decode(
+                sentTo("survival-02").payload).getExcludedRecipients();
+
+        assertThat(excludedOnSource)
+                .as("both proxy players on the source are excluded there")
+                .containsExactlyInAnyOrder(alice.id, bob.id);
+        assertThat(excludedOnB)
+                .as("only the player on server B is excluded there")
+                .containsExactly(bobOnB.id);
+    }
+
+    /** @param serverName the target server
+     *  @return the single message sent to that server */
+    private SentMessage sentTo(String serverName) {
+        return platform.sentMessages.stream()
+                .filter(sent -> serverName.equals(sent.serverName))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("nothing sent to " + serverName));
+    }
+
+    @Test
+    @DisplayName("relay: a backend title is pushed down to every server with players")
+    void relayBackendTitleReachesEveryServer() throws Exception {
+        platform.add("Carol", "survival-02");
+        relayHandler();
+
+        chatCore.handleTitle(new TitlePacket("global", "Hello", "World",
+                UUID.randomUUID()));
+
+        assertThat(platform.sentMessages)
+                .extracting(sent -> sent.serverName)
+                .containsExactlyInAnyOrder(SOURCE, "survival-02");
+        assertThat(platform.sentMessages)
+                .allSatisfy(sent -> assertThat(ProxyChannelProtocol.decode(sent.payload)
+                        .getPacket()).isInstanceOf(TitlePacket.class));
+    }
+
+    @Test
+    @DisplayName("relay: a backend mention is pushed down so a direct player is notified")
+    void relayBackendMentionReachesEveryServer() throws Exception {
+        platform.add("Carol", "survival-02");
+        relayHandler();
+
+        chatCore.handleMention(new MentionPacket(UUID.randomUUID(), "Alice",
+                UUID.randomUUID(), "global", "hi @Bob", System.currentTimeMillis()));
+
+        assertThat(platform.sentMessages)
+                .extracting(sent -> sent.serverName)
+                .containsExactlyInAnyOrder(SOURCE, "survival-02");
+        assertThat(platform.sentMessages)
+                .allSatisfy(sent -> assertThat(ProxyChannelProtocol.decode(sent.payload)
+                        .getPacket()).isInstanceOf(MentionPacket.class));
+    }
+
+    @Test
+    @DisplayName("relay: a backend private message is pushed down for a direct target")
+    void relayBackendPrivateMessageReachesEveryServer() throws Exception {
+        platform.add("Carol", "survival-02");
+        relayHandler();
+
+        UUID senderId = UUID.randomUUID();
+        UUID targetId = UUID.randomUUID();
+        chatCore.handlePrivateMessage(new PrivateMessagePacket(senderId, "Alice",
+                SOURCE, "Dave", targetId, "psst", System.currentTimeMillis()));
+
+        // Neither party is on the proxy; the sub-servers are the only way this
+        // DM can reach anybody.
+        assertThat(platform.sentMessages)
+                .extracting(sent -> sent.serverName)
+                .containsExactlyInAnyOrder(SOURCE, "survival-02");
+        assertThat(platform.sentMessages)
+                .allSatisfy(sent -> assertThat(ProxyChannelProtocol.decode(sent.payload)
+                        .getPacket()).isInstanceOf(PrivateMessagePacket.class));
+    }
+
+    @Test
+    @DisplayName("relay: a failing downstream send warns once, then rate-limits")
+    void droppedDeliveryWarnsOncePerServer() throws Exception {
+        platform.refuseServer = SOURCE;
+        relayHandler();
+
+        for (int i = 0; i < 5; i++) {
+            chatCore.handleIncomingMessage(chat("line " + i));
+        }
+
+        assertThat(platform.warnings)
+                .as("one warning per server per interval, not one per line")
+                .hasSize(1);
+        assertThat(platform.warnings.get(0)).contains(SOURCE);
+    }
+
+    @Test
+    @DisplayName("lite renders through the authority without a core fan-out binding")
+    void litePathIsUnaffectedByTheRelayHook() throws Exception {
+        ChatMessagePacket chat = chat("lite line");
+        ProxyChannelHandler handler = new ProxyChannelHandler(platform, chatCore,
+                request -> List.of(chat), null);
+
+        handler.handleFromServer(SOURCE, ProxyChannelProtocol.encode(SOURCE, chat));
+
+        // Exactly one downstream copy per server: the authority path broadcasts
+        // for chat, and no core hook is bound, so nothing is sent twice.
+        assertThat(platform.sentMessages)
+                .as("lite chat is fanned out once, by the authority path")
+                .hasSize(1);
+        assertThat(platform.sentMessages.get(0).serverName).isEqualTo(SOURCE);
     }
 
     // ------------------------------------------------------------- rejection
@@ -410,6 +602,7 @@ class ProxyChannelHandlerTest {
     private static final class FakePlatform implements ProxyPlatform {
         private final Map<UUID, FakePlayer> players = new LinkedHashMap<>();
         private final List<SentMessage> sentMessages = new CopyOnWriteArrayList<>();
+        private final List<String> warnings = new CopyOnWriteArrayList<>();
         private boolean refuseSends;
         /** Server whose sends fail (simulates "no players on that server"). */
         private String refuseServer;
@@ -443,7 +636,7 @@ class ProxyChannelHandlerTest {
         @Override public void runAsync(Runnable task) { task.run(); }
         @Override public void runLater(Runnable task, long delaySeconds) { task.run(); }
         @Override public void logInfo(String message) { }
-        @Override public void logWarn(String message) { }
+        @Override public void logWarn(String message) { warnings.add(message); }
         @Override public void logDebug(String message) { }
         @Override public void logError(String message) { }
         @Override public void logError(String message, Throwable cause) { }

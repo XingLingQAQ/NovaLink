@@ -492,6 +492,21 @@ public class NovaChatBungee extends Plugin {
                     channelHandler != null ? channelHandler::broadcastProxyChat : null);
         }
 
+        // Relay: the mirror image. Everything the backend pushes back (chat,
+        // titles, mentions, private messages) is rendered by the chat core to
+        // the proxy's own roster only; the backend's fan-out stops at this
+        // proxy's connection, so sub-servers are never reached. Handing each
+        // inbound packet to the channel handler re-delivers it down to every
+        // sub-server that has players.
+        //
+        // Bound only in relay: lite already broadcasts from the authority client
+        // above, and binding both would send every line twice.
+        if (localAuthorityClient == null) {
+            com.nova.chat.proxy.channel.ProxyChannelHandler channelHandler = proxyChannelHandler;
+            chatCore.bindDownstreamFanOut(
+                    channelHandler != null ? channelHandler::broadcastDownstream : null);
+        }
+
         // H6: the ChatListener shell binds inbound handlers in its constructor;
         // this is the first point where the network client exists.
         if (chatCore.getNetworkClient() != null) {

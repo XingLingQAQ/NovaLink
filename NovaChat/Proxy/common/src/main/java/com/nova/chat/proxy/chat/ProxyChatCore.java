@@ -16,6 +16,7 @@ import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
@@ -31,6 +32,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -104,6 +106,13 @@ public class ProxyChatCore {
     private ChannelResponseDispatcher dispatcher;
 
     /**
+     * Relay down-path: receives every packet the backend pushed to this proxy,
+     * after it has been rendered to the proxy's own players. Null in lite,
+     * where {@code LocalAuthorityClient} owns the downstream broadcast itself.
+     */
+    private volatile Consumer<Packet> downstreamFanOut;
+
+    /**
      * @param platform the platform adapter
      * @param config the initial configuration snapshot
      * @param ignoreListService shared ignore lists
@@ -151,6 +160,23 @@ public class ProxyChatCore {
     }
 
     /**
+     * Binds the relay down-path: every packet the backend pushes to the proxy is
+     * handed to {@code sink} after (or independently of) local rendering, so a
+     * shell can re-deliver it to sub-servers over plugin messaging.
+     *
+     * <p>Mirrors {@code LocalAuthorityClient#bindChatBroadcast}: the core stays
+     * free of a compile-time dependency on the channel handler, and only the
+     * shell knows whether a downstream transport exists. Relay binds it; lite
+     * must not, because {@code LocalAuthorityClient} already broadcasts there
+     * and binding both would send every line twice.
+     *
+     * @param sink the downstream fan-out, or null to disable
+     */
+    public void bindDownstreamFanOut(Consumer<Packet> sink) {
+        this.downstreamFanOut = sink;
+    }
+
+    /**
      * Handles an inbound channel chat message by rendering one line to every
      * player on the packet's channel who has not ignored the sender.
      *
@@ -158,6 +184,7 @@ public class ProxyChatCore {
      */
     public void handleIncomingMessage(ChatMessagePacket packet) {
         platform.logDebug("Received chat message from backend: " + packet);
+        fanOutDownstream(packet);
 
         String channelId = packet.getChannelId();
         String senderName = packet.getSenderName();
@@ -192,6 +219,7 @@ public class ProxyChatCore {
         String channelId = packet.getChannelId();
         String title = packet.getTitle() != null ? packet.getTitle() : "";
         String subtitle = packet.getSubtitle() != null ? packet.getSubtitle() : "";
+        fanOutDownstream(packet);
 
         for (ProxyPlayer player : platform.getOnlinePlayers()) {
             PlayerChannelState state = states.getState(player.getUniqueId());
@@ -249,6 +277,7 @@ public class ProxyChatCore {
         if (mentionedId == null || mentionerId == null) {
             return;
         }
+        fanOutDownstream(packet);
         ProxyPlayer player = platform.getPlayer(mentionedId);
         if (player == null) {
             return;
@@ -275,6 +304,10 @@ public class ProxyChatCore {
      * @param packet the private message packet
      */
     public void handlePrivateMessage(PrivateMessagePacket packet) {
+        // Relay DM: the target may be connected straight to a sub-server, where
+        // this encapsulation never sees a local player. Hand the completed
+        // packet down before the (possibly empty) local delivery loop.
+        fanOutDownstream(packet);
         if (privateMessageService == null) {
             return;
         }
@@ -285,6 +318,29 @@ public class ProxyChatCore {
             if (player != null) {
                 platform.sendMessage(player, delivery.getLine());
             }
+        }
+    }
+
+    /**
+     * Hands one backend-originated packet to the relay down-path, if bound.
+     *
+     * <p>Called before the local render loop, so a failure in the downstream
+     * transport cannot suppress rendering to proxy-connected players. The
+     * fan-out itself is expected to swallow and log its own errors; this guard
+     * only keeps a faulty sink from breaking the inbound handler.
+     *
+     * @param packet the packet the backend pushed
+     */
+    private void fanOutDownstream(Packet packet) {
+        Consumer<Packet> sink = this.downstreamFanOut;
+        if (sink == null || packet == null) {
+            return;
+        }
+        try {
+            sink.accept(packet);
+        } catch (RuntimeException e) {
+            platform.logError("Downstream fan-out failed for "
+                    + packet.getClass().getSimpleName(), e);
         }
     }
 
