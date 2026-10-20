@@ -884,6 +884,21 @@ function Install-Plugin([string]$platform, [string]$serverDir) {
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
   Copy-Item $jar -Destination $dir -Force
   Log "  installed $(Split-Path -Leaf $jar) -> $dir"
+
+  # Fabric refuses to load any mod that declares "depends: fabric-api" without
+  # the API jar in mods/ (fabric.mod.json here does). The runtime download in
+  # Invoke-FetchFabricRuntime fetches it, but nothing used to copy it into the
+  # server, so the leg could never actually load the mod. The E2E jar does not
+  # bundle it either (verified: 0 net/fabricmc entries in the jar).
+  if ($platform -eq 'fabric') {
+    $api = Join-Path $DistDir $FabricRuntime.ApiFile
+    if (Test-Path -LiteralPath $api) {
+      Copy-Item $api -Destination $dir -Force
+      Log "  installed fabric-api $(Split-Path -Leaf $api) -> $dir"
+    } else {
+      Log "  WARN: fabric-api jar missing at $api; the Fabric server will refuse to load novachat"
+    }
+  }
   return $true
 }
 
@@ -942,7 +957,15 @@ $($clientBlocks -join "`r`n")
 
 features:
   filter-enabled: false
-  message-log-enabled: false
+  # ON for the relay identity checks: MessagePipeline persists each delivered
+  # message with the clientId stamped from the CARRYING connection
+  # (NovaLinkCore's ChatMessagePacket handler -> packet.setClientId), and
+  # GET /api/messages returns it. That is the only per-message attribution the
+  # backend exposes (it logs none at INFO), and it is what
+  # Assert-RelayAttributionAndDelivery reads to prove which server's link
+  # carried a chat line. database.type = memory, so the records live only for
+  # this run.
+  message-log-enabled: true
   cross-server-chat-enabled: true
   private-messages-enabled: true
   message-log-retention-days: 1
@@ -1072,6 +1095,21 @@ function Start-PlatformServer {
       (Join-Path $RepoRoot ".e2e-artifacts/dist/nukkit-cache"),
       (Join-Path $RepoRoot ".e2e/nukkit")
     )
+    # Any earlier round's server root is also a valid source. The dist cache
+    # above only ever holds discovery-cache.json (it is populated by hand), so
+    # openid-cache.json was missing and every Nukkit boot raced a network
+    # lookup that times out -- run 20261020-173744 died this way with
+    # "Unable to fetch OpenID configuration", 480 s of ready-timeout, and a
+    # round that reported no assertions at all. Prefer the NEWEST run.
+    $earlierRuns = @()
+    if (Test-Path -LiteralPath $JointRoot) {
+      $earlierRuns = @(Get-ChildItem -LiteralPath $JointRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^\d{8}-\d{6}$' -and $_.Name -ne $script:RunId } |
+        Sort-Object Name -Descending)
+    }
+    foreach ($run in $earlierRuns) {
+      $cacheSources += (Join-Path (Join-Path $run.FullName "round-1") $platform)
+    }
     foreach ($cacheFile in @('discovery-cache.json', 'openid-cache.json')) {
       $dest = Join-Path $serverDir $cacheFile
       if (Test-Path -LiteralPath $dest) { continue }
@@ -1400,16 +1438,40 @@ port = $ProxyPort
 # debug = true in lite is deliberate: the local authority's chat, join and DM
 # decisions are only logged through platform.logDebug, and this harness proves
 # that path is actually reached rather than inferring it from "the proxy booted".
+#
+# -Identities (relay only) fills [backend.identities]: downstream server name ->
+# backend username. Keys MUST be the velocity.toml [servers] keys (the leg
+# names), which is also what the sub-server puts in its plugin-messaging
+# envelope; the proxy compares them case-insensitively. When the table is
+# present the harness deliberately leaves backend.username EMPTY so the legacy
+# single-link fallback cannot exist: a run that accidentally exercised the old
+# model would then fail loudly instead of quietly passing on the shared link.
 function Write-ProxyPluginConfig([string]$path, [string]$clientId, [string]$clientPassword,
-                                 [string]$mode = "relay") {
+                                 [string]$mode = "relay", [hashtable]$identities = $null) {
+  $identityLines = @()
+  if ($identities) {
+    foreach ($server in $identities.Keys) {
+      $identityLines += "$server = `"$($identities[$server])`""
+    }
+  }
+  $identitySection = if ($identityLines.Count -gt 0) {
+    "`r`n[backend.identities]`r`n" + ($identityLines -join "`r`n")
+  } else { "" }
+  # Empty username when every downstream server has its own identity: a
+  # non-empty one would open an extra fallback link and make "exactly N
+  # authenticated clients" indistinguishable from the legacy one-connection
+  # model. ProxyConfig rejects an identity equal to backend.username, so the
+  # two are mutually exclusive by design.
+  $relayUsername = if ($identityLines.Count -gt 0) { "" } else { $clientId }
   $relaySection = @"
 
 [backend]
 host = "127.0.0.1"
 port = $BackendPort
-username = "$clientId"
+username = "$relayUsername"
 password = "$clientPassword"
 reconnect-delay = 3
+$identitySection
 "@
   $liteSection = @"
 
@@ -1632,6 +1694,355 @@ function Assert-LogAbsent([string]$assertionId, [string]$token, [string]$logPath
   }
 }
 
+# --- relay per-server identity assertions (proxy commit 95c9a85) -------------
+#
+# The relay round used to prove only that "the proxy accepts plugin messages and
+# the backend delivers them". It could not distinguish the OLD single-connection
+# model from the new per-server model, because both produce the same chat lines.
+# The helpers below assert the difference.
+#
+# Evidence chain, all from this run's own logs (never the sender's claim):
+#
+#   1. The proxy's own "Relay backend links: N connection(s) (<servers>)" line
+#      names the dedicated links it created. That is the PROXY's claim about
+#      configuration, so it is necessary but not sufficient.
+#   2. The backend's INFO "Client authenticated: <id> from <addr>" line is the
+#      authoritative record: one per accepted connection, naming the identity
+#      the connection authenticated as. Under the old model there is exactly one
+#      from the proxy; under the new model there is one per downstream server.
+#   3. Per-server attribution: the backend stamps ChatMessagePacket.clientId
+#      from the connection that carried it and forwards that same packet down.
+#      The proxy's debug line "Received chat message from backend: <packet>"
+#      prints the packet's toString, which includes clientId='...'. That line is
+#      therefore direct evidence of which link the backend attributed the
+#      message to.
+#
+# Kind assignment:
+#   'relay-identity' / 'relay-attribution' assertions GATE, and are emitted only
+#   in relay mode. 'diagnostic' ones report and never gate.
+function Get-BackendAuthIdentities([string]$logPath) {
+  $text = Read-LogText $logPath
+  $ids = @()
+  $lines = @()
+  if ($text) {
+    foreach ($line in ($text -split "`n")) {
+      # "HH:mm:ss.SSS [thread] INFO  c.n.l.NovaLinkCore - Client authenticated: <id> from <addr>"
+      $m = [regex]::Match($line, 'Client authenticated:\s*(\S+)\s+from\s+(\S+)')
+      if ($m.Success) {
+        $ids += $m.Groups[1].Value
+        $lines += $line.Trim()
+      }
+    }
+  }
+  return [PSCustomObject]@{ Identities = $ids; Lines = $lines }
+}
+
+# Prove the backend saw one distinct authenticated identity per downstream
+# server, and that the set is exactly the identities the harness configured.
+#
+# Fails when: an expected identity is missing, the count is short (the old
+# single-connection model authenticates ONCE, as one shared id), or a different
+# identity from the proxy appeared (the fallback link fired).
+function Assert-RelayDistinctIdentities([string]$assertionId, [string]$backendLogPath,
+                                        [string[]]$expectedIdentities,
+                                        [string[]]$proxyOwnedIdentities) {
+  $auth = Get-BackendAuthIdentities $backendLogPath
+  $unique = @($auth.Identities | Sort-Object -Unique)
+  $missing = @($expectedIdentities | Where-Object { $unique -notcontains $_ })
+  $unexpectedProxy = @($proxyOwnedIdentities | Where-Object { $unique -contains $_ })
+  $pass = ($missing.Count -eq 0) -and ($unexpectedProxy.Count -eq 0) -and
+          ($unique.Count -ge $expectedIdentities.Count)
+
+  # Evidence: the specific "Client authenticated" lines for the expected ids.
+  $evidenceLines = @()
+  foreach ($line in $auth.Lines) {
+    foreach ($id in $expectedIdentities) {
+      if ($line -match "Client authenticated:\s*$([regex]::Escape($id))\s") { $evidenceLines += $line }
+    }
+  }
+  $evidence = if ($pass) {
+    ($evidenceLines -join ' | ')
+  } else {
+    $parts = @()
+    if ($missing.Count -gt 0) { $parts += "missing identity(ies): $($missing -join ', ')" }
+    if ($unexpectedProxy.Count -gt 0) { $parts += "proxy fallback identity(ies) also authenticated: $($unexpectedProxy -join ', ')" }
+    $parts += "authenticated this run: $(if ($unique.Count -gt 0) { $unique -join ', ' } else { '<none>' })"
+    ($parts -join '; ')
+  }
+  return [PSCustomObject]@{
+    id = $assertionId
+    token = ($expectedIdentities -join ',')
+    pass = $pass
+    evidence = $evidence
+    kind = 'relay-identity'
+  }
+}
+
+# Records whether this topology can distinguish per-server links from the old
+# single shared connection. It CANNOT when the proxy fronts fewer than two
+# downstream servers: then "one dedicated connection" and "one shared
+# connection" are both a single link, and the only difference is which identity
+# it authenticated as (which relay-links-created already checks).
+#
+# Kind: 'diagnostic'. It never gates, because a thin topology is not a product
+# failure -- but it is reported on every relay run so a green result on a
+# one-downstream topology is never mistaken for proof of the per-server model.
+function Assert-RelayIdentitiesCoverage([string]$assertionId, [string[]]$servers) {
+  $count = @($servers).Count
+  $sufficient = ($count -ge 2)
+  $evidence = if ($sufficient) {
+    "$count proxy-fronted downstream servers ($($servers -join ', ')): distinct per-server identities are observable"
+  } else {
+    "only $count proxy-fronted downstream server(s) ($($servers -join ', ')): " +
+    "the old single-connection model and the new per-server model both produce one proxy link here, " +
+    "so this run cannot prove the per-server fan-out. Add a second Java leg behind the proxy " +
+    "(e.g. -Platforms velocity,bukkit,fabric,nukkit) to make it falsifiable."
+  }
+  return [PSCustomObject]@{
+    id = $assertionId
+    token = ($servers -join ',')
+    pass = $sufficient
+    evidence = $evidence
+    kind = 'diagnostic'
+  }
+}
+
+# Prove the proxy actually opened a dedicated link per downstream server, rather
+# than one shared link with a populated identities table that never took effect.
+# The shell logs: "Relay backend links: N connection(s) (bukkit, fabric)".
+function Assert-RelayLinksCreated([string]$assertionId, [string]$proxyLogPath,
+                                  [string[]]$expectedServers) {
+  $text = Read-LogText $proxyLogPath
+  $line = ''
+  if ($text) {
+    $line = ($text -split "`n" | Where-Object { $_ -match 'Relay backend links:' } | Select-Object -First 1)
+  }
+  $line = if ($line) { $line.Trim() } else { '' }
+  $pass = $false
+  $detail = 'no "Relay backend links:" line in the proxy log'
+  if ($line) {
+    # Expected count is one per downstream server; the fallback link does not
+    # exist in this harness (backend.username is empty), so N == servers.
+    $m = [regex]::Match($line, 'Relay backend links:\s*(\d+)\s+connection\(s\)')
+    if ($m.Success) {
+      $count = [int]$m.Groups[1].Value
+      $missingServers = @($expectedServers | Where-Object { $line -notmatch [regex]::Escape($_) })
+      $mentionsShared = $line -match 'shared backend\.username link'
+      $pass = ($count -eq $expectedServers.Count) -and ($missingServers.Count -eq 0) -and (-not $mentionsShared)
+      $detail = if ($pass) { '' } else {
+        "expected $($expectedServers.Count) dedicated connection(s) for $($expectedServers -join ', '); " +
+        "line reports $count" + $(if ($mentionsShared) { ' and the shared fallback' } else { '' }) +
+        $(if ($missingServers.Count -gt 0) { "; not named: $($missingServers -join ', ')" } else { '' })
+      }
+    } else {
+      $detail = "could not parse a connection count from: $line"
+    }
+  }
+  return [PSCustomObject]@{
+    id = $assertionId
+    token = ($expectedServers -join ',')
+    pass = $pass
+    evidence = if ($pass) { $line } else { $detail }
+    kind = 'relay-identity'
+  }
+}
+
+# Prove per-server delivery attribution: the backend received this run's chat
+# token on server X's authenticated link, i.e. the receiving connection was
+# X's identity and not a shared one.
+#
+# Evidence: the backend stamps ChatMessagePacket.clientId from the carrying
+# connection and the proxy logs the decoded packet, whose toString includes
+# clientId='...'. This helper looks for the token and the identity on the SAME
+# log line, so an unrelated line about the identity cannot satisfy it.
+#
+# Kind: 'diagnostic' unless the caller knows the debug line was emitted. The
+# relay rounds turn proxy debug OFF (keep-alive flood -- see Write-ProxyPluginConfig),
+# which suppresses that line entirely. Report it as a diagnostic rather than
+# inventing a pass; the gating attribution evidence in THIS harness is the
+# backend-side identity set above plus the per-server dedicated-link count.
+function Assert-RelayAttribution([string]$assertionId, [string]$token, [string]$identity,
+                                 [string]$proxyLogPath, [bool]$gating = $false) {
+  $text = Read-LogText $proxyLogPath
+  $hit = ''
+  if ($text) {
+    foreach ($line in ($text -split "`n")) {
+      if ($line.Contains($token) -and $line.Contains("clientId='$identity'")) { $hit = $line.Trim(); break }
+    }
+  }
+  $pass = [bool]$hit
+  $evidence = if ($pass) { $hit } else {
+    "no proxy log line carries both the token and clientId='$identity' " +
+    "(proxy debug is off in relay, so the decoded-packet line is not emitted; " +
+    "see Assert-RelayAttribution's doc comment)"
+  }
+  return [PSCustomObject]@{
+    id = $assertionId
+    token = "$token@$identity"
+    pass = $pass
+    evidence = $evidence
+    kind = if ($gating) { 'relay-attribution' } else { 'diagnostic' }
+  }
+}
+
+# Prove a message originating on server A is not delivered twice to a player on
+# server B. Under the old single shared connection every downstream broadcast
+# was unscoped, so a line could reach a sub-server through more than one path.
+#
+# Evidence: the RECEIVER bot's own recording, counted per RENDER EVENT rather
+# than per recording kind. The two transports report differently:
+#   java    -- mineflayer fires `messagestr` once per rendered line, plus a
+#              `chat` copy of the same wire message for player chat.
+#   bedrock -- bedrock-protocol fires `text:raw` / `text:translation` per
+#              rendered line and never fires `messagestr` at all.
+# Counting only `messagestr` therefore reports 0 hits on a Bedrock receiver,
+# which passes vacuously (observed in run 20261020-165248: the receiver DID get
+# the line, as `text:raw`, and the check reported "0 messagestr line(s)").
+#
+# So: count distinct RENDER kinds that carry the token, and require at least
+# one (the line must have arrived) and at most one per kind. A duplicated
+# delivery shows up as a second entry of the SAME kind. Deduplicating by
+# (kind, text) is deliberate -- a chat line that arrives via `messagestr` and
+# also as a `chat` copy is one wire message reported twice by the library, not
+# two deliveries.
+function Assert-NoDuplicateDelivery([string]$assertionId, [string]$token, $receiverResult) {
+  $hits = @()
+  if ($receiverResult -and $receiverResult.received) {
+    $hits = @($receiverResult.received | Where-Object {
+      $_.kind -ne 'spawn' -and $_.kind -ne 'end' -and $_.kind -ne 'close' -and
+      (($_.text -and $_.text.Contains($token)) -or ($_.raw -and $_.raw.Contains($token)))
+    })
+  }
+  # One entry per (kind, text): the same line reported through two library
+  # callbacks is a single arrival.
+  $perKind = @{}
+  foreach ($h in $hits) {
+    $key = "$($h.kind)|$($h.text)"
+    if (-not $perKind.ContainsKey($key)) { $perKind[$key] = @() }
+    $perKind[$key] += $h
+  }
+  $duplicates = @()
+  foreach ($key in $perKind.Keys) {
+    if ($perKind[$key].Count -gt 1) { $duplicates += "$key x$($perKind[$key].Count)" }
+  }
+  $arrived = ($perKind.Count -gt 0)
+  $pass = $arrived -and ($duplicates.Count -eq 0)
+  $evidence = if (-not $receiverResult) {
+    'receiver wrote no results.json'
+  } elseif (-not $arrived) {
+    "receiver recorded no line carrying the token (kinds seen: " +
+    "$((@($receiverResult.received | ForEach-Object { $_.kind } | Sort-Object -Unique)) -join ', '))"
+  } else {
+    "receiver recorded $($perKind.Count) distinct render line(s) carrying the token" +
+    $(if ($duplicates.Count -gt 0) { "; duplicated: $($duplicates -join '; ')" } else { '; no duplicate render' })
+  }
+  return [PSCustomObject]@{
+    id = $assertionId
+    token = $token
+    pass = $pass
+    evidence = $evidence
+    kind = 'dedup'
+  }
+}
+
+# --- backend REST helpers (per-message attribution) --------------------------
+#
+# The backend logs NO per-message client id at INFO: MessagePipeline's fan-out
+# decisions are debug-only and the chat handler stamps clientId silently
+# (NovaLinkCore: packet.setClientId(connection.getClientId())). The only
+# per-message attribution it exposes is the persisted message record, written
+# when features.message-log-enabled is true, and readable through
+# GET /api/messages (clientId is included for roles >= ADMIN).
+#
+# This is the honest, non-invented evidence for "the packet the backend
+# received carried A's identity": the record's clientId is the id of the
+# CONNECTION the message arrived on, which is exactly what the per-server link
+# model changes.
+function Connect-BackendRest([string]$username, [string]$password) {
+  $body = @{ username = $username; password = $password } | ConvertTo-Json -Compress
+  try {
+    $resp = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$BackendWsPort/api/auth/login" `
+      -ContentType "application/json" -Body $body -TimeoutSec 20
+    return $resp.token
+  } catch {
+    Log "  WARN: backend panel login failed for '$username': $($_.Exception.Message)"
+    return $null
+  }
+}
+
+# Returns the persisted message records whose content contains $token, as
+# PSCustomObjects with .clientId / .senderName / .content. Empty on any
+# failure (the caller reports that as a failure, never as a pass).
+function Get-BackendMessagesForToken([string]$token, [string]$jwt) {
+  if (-not $jwt) { return @() }
+  $uri = "http://127.0.0.1:$BackendWsPort/api/messages?q=$([uri]::EscapeDataString($token))&size=50"
+  # MessageLogService persists asynchronously on its own executor, so the row
+  # may land a moment after the bot recorded the line. Poll briefly; a missing
+  # row after that is a real failure (the caller reports it, never a pass).
+  for ($attempt = 0; $attempt -lt 10; $attempt++) {
+    try {
+      $resp = Invoke-RestMethod -Method Get -Uri $uri -Headers @{ Authorization = "Bearer $jwt" } -TimeoutSec 20
+      $items = @($resp.items | Where-Object { $_.content -and $_.content.Contains($token) })
+      if ($items.Count -gt 0) { return $items }
+    } catch {
+      Log "  WARN: GET /api/messages failed: $($_.Exception.Message)"
+      return @()
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  return @()
+}
+
+# Prove one cross-server delivery AND its per-server attribution in a single
+# assertion: the RECEIVER recorded the token, and the message record the
+# backend persisted for that same token names the expected server identity.
+#
+# Both halves matter. Delivery alone passes under the old single-connection
+# model (which is exactly the run this replaces). Attribution alone could in
+# principle be read off a message that never reached anyone. Together they
+# assert "B saw A's line, and the backend received it on A's identity".
+#
+# Fails when the token is not persisted (attribution unobservable, which must
+# not look like success), when the recorded clientId is anything else -- in
+# particular the old model's single shared proxy identity -- or when the
+# receiver never recorded the line.
+function Assert-RelayAttributionAndDelivery([string]$assertionId, [string]$token,
+                                            [string]$expectedClientId, [string]$jwt,
+                                            $receiverResult) {
+  $match = @(Get-BackendMessagesForToken $token $jwt)
+  $ids = @($match | ForEach-Object { $_.clientId } | Sort-Object -Unique)
+  $attributed = ($match.Count -gt 0) -and ($ids.Count -eq 1) -and ($ids[0] -eq $expectedClientId)
+
+  $delivered = $false
+  if ($receiverResult -and $receiverResult.received) {
+    foreach ($entry in $receiverResult.received) {
+      if (($entry.text -and $entry.text.Contains($token)) -or
+          ($entry.raw -and $entry.raw.Contains($token))) { $delivered = $true; break }
+    }
+  }
+
+  $pass = $attributed -and $delivered
+  $evidence = if ($pass) {
+    "receiver saw the token; backend record clientId='$($ids[0])' content='$($match[0].content)'"
+  } else {
+    $parts = @()
+    if ($match.Count -eq 0) {
+      $parts += "no persisted message record carries the token (message log disabled, or the line never reached the backend)"
+    } elseif (-not $attributed) {
+      $parts += "backend record clientId(s)='$($ids -join ', ')', expected '$expectedClientId'"
+    }
+    if (-not $delivered) { $parts += 'the receiver never recorded the token' }
+    ($parts -join '; ')
+  }
+  return [PSCustomObject]@{
+    id = $assertionId
+    token = "$token@$expectedClientId"
+    pass = $pass
+    evidence = $evidence
+    kind = 'relay-attribution'
+  }
+}
+
 function Assert-BotExpectations([string]$role, $result) {
   $out = @()
   if (-not $result) { return $out }
@@ -1684,7 +2095,10 @@ $FabricRuntime = @{
   LauncherSha256 = 'B855772F5A5D591262260E8ED3C218419366D74C3ACFC38409F4A376F167051B'
   LauncherFile = 'fabric-server-launch-1.21.11-0.19.3.jar'
   ApiUrl = 'https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/0.141.6%2B1.21.11/fabric-api-0.141.6%2B1.21.11.jar'
-  ApiSha256 = 'BDFF7FD7E220085CFAD2FF9B1F40DD0E6534AE0B96CF378F97A374BC54CB9ED0F'
+  # The previous value was 65 hex characters (one 'D' too many) and could never
+  # match any file -- SHA-256 is 32 bytes / 64 hex chars. Re-downloaded the
+  # pinned URL on 2026-10-20 and hashed it: bdff7fd7...d0f (2,426,039 bytes).
+  ApiSha256 = 'BDFF7FD7E220085CFAD2FF9B1F40DDE6534AE0B96CF378F97A374BC54CB9ED0F'
   ApiFile = 'fabric-api-0.141.6+1.21.11.jar'
   McVersion = '1.21.11'
 }
@@ -2337,13 +2751,56 @@ function Invoke-Round($round, [string]$roundDir) {
     $clientSecrets[$leg] = @{ Username = $id; Password = $pw }
     $backendClients += [PSCustomObject]@{ Username = $id; Password = $pw; DisplayName = "Joint $leg" }
   }
+
+  # Relay per-server identities (proxy commit 95c9a85).
+  #
+  # The proxy opens ONE backend connection per downstream server when
+  # backend.identities is populated, and each connection authenticates as that
+  # server's own username. The harness therefore has to:
+  #   1. name every downstream server (the velocity.toml [servers] key, which is
+  #      also the id the sub-server puts in its plugin-messaging envelope), and
+  #   2. register the matching username in novalink.yml `clients:` with the
+  #      shared backend.password -- the backend rejects an unknown client.
+  #
+  # The identity is NOT the leg's own direct-link username ($clientSecrets[$leg]):
+  # the sub-server plugin still opens its own backend connection in this
+  # topology, and the backend keeps one connection per client id, so reusing the
+  # id would make the two links supersede each other.
+  #
+  # backend.username is left EMPTY in the generated proxy config when every
+  # downstream is mapped, which disables the legacy fallback link. That is what
+  # makes "the backend saw exactly these identities" a real assertion: under the
+  # old single-connection model the proxy would authenticate as one shared id.
+  $relayDownstreams = @()
   if ($round.Proxy) {
-    # The proxy is its own client: it carries the messages it forwards, so it
-    # must authenticate separately from the Java server behind it.
-    $proxyId = 'E2E_JointProxy'
-    $proxyPw = "joint-e2e-proxy-$($script:RunId)"
-    $clientSecrets[$round.Proxy] = @{ Username = $proxyId; Password = $proxyPw }
-    $backendClients += [PSCustomObject]@{ Username = $proxyId; Password = $proxyPw; DisplayName = "Joint $($round.Proxy) proxy" }
+    if ($round.Java) { $relayDownstreams += $round.Java }
+    if ($round.Mod) { $relayDownstreams += $round.Mod }
+  }
+  $relayIdentities = @{}
+  $relaySharedPassword = "joint-e2e-relay-$($script:RunId)"
+  foreach ($server in $relayDownstreams) {
+    $relayIdentities[$server] = "E2E_Relay_$server"
+    $backendClients += [PSCustomObject]@{
+      Username = $relayIdentities[$server]; Password = $relaySharedPassword
+      DisplayName = "Joint relay link for $server"
+    }
+  }
+  if ($relayDownstreams.Count -gt 0) {
+    Log "  relay identities: $(@($relayDownstreams | ForEach-Object { "$_=$($relayIdentities[$_])" }) -join ', ') (shared password, no fallback link)"
+  }
+
+  if ($round.Proxy) {
+    if ($relayIdentities.Count -gt 0) {
+      # The proxy itself is no longer a backend client: its links authenticate
+      # as the downstream identities above.
+      $clientSecrets[$round.Proxy] = @{ Username = ''; Password = $relaySharedPassword }
+    } else {
+      # No downstream behind the proxy: keep the historical single client.
+      $proxyId = 'E2E_JointProxy'
+      $proxyPw = "joint-e2e-proxy-$($script:RunId)"
+      $clientSecrets[$round.Proxy] = @{ Username = $proxyId; Password = $proxyPw }
+      $backendClients += [PSCustomObject]@{ Username = $proxyId; Password = $proxyPw; DisplayName = "Joint $($round.Proxy) proxy" }
+    }
   }
 
   # Generated secrets. The super-admin UUID is the offline-mode UUID of the bot
@@ -2371,6 +2828,16 @@ function Invoke-Round($round, [string]$roundDir) {
       if (-not $bk) {
         $result.status = 'FAIL'; $result.notes = 'backend did not become ready'
         return $result
+      }
+
+      # Panel token for the attribution checks (GET /api/messages needs ADMIN+;
+      # the super-admin entry in the generated config is also a panel account
+      # -- NovaLinkCore registers every super-admin for web-panel login).
+      $script:RelayPanelJwt = Connect-BackendRest 'E2E_SuperAdmin' $superAdminPassword
+      if ($script:RelayPanelJwt) {
+        Log "  backend panel login ok (attribution evidence via GET /api/messages)"
+      } else {
+        Log "  WARN: backend panel login failed; per-message attribution will be reported as unverified"
       }
     }
 
@@ -2428,7 +2895,7 @@ function Invoke-Round($round, [string]$roundDir) {
         New-Item -ItemType Directory -Force -Path $plugCfgDir | Out-Null
         Write-ProxyPluginConfig -path (Join-Path $plugCfgDir "config.toml") `
           -clientId $clientSecrets[$round.Proxy].Username -clientPassword $clientSecrets[$round.Proxy].Password `
-          -mode $ProxyMode
+          -mode $ProxyMode -identities $(if ($ProxyMode -eq 'relay') { $relayIdentities } else { $null })
       }
       $jarPath = Join-Path $DistDir $script:DefJarName[$round.Proxy]
       $java = Join-Path $jdkPath "bin/java.exe"
@@ -2613,12 +3080,63 @@ function Invoke-Round($round, [string]$roundDir) {
         (Join-Path (Join-Path $roundDir $round.Proxy) "proxy.stdout.log")
     }
 
+    # ---- relay: per-server backend identities (commit 95c9a85) ----
+    # Gating, but only meaningful with at least two downstream servers behind
+    # the proxy: with one, "one dedicated link" and "the old shared link" are
+    # the same number of connections, so the topology assertion says so
+    # explicitly instead of reporting a vacuous pass.
+    if ($ProxyMode -eq 'relay') {
+      $assertions += Assert-RelayIdentitiesCoverage "round$($round.Index)/relay-identities-topology" `
+        $relayDownstreams
+      if ($relayDownstreams.Count -gt 0) {
+        $backendLog = Join-Path $roundDir "backend/stdout.log"
+        $proxyLog = Join-Path (Join-Path $roundDir $round.Proxy) "proxy.stdout.log"
+        $expectedIds = @($relayDownstreams | ForEach-Object { $relayIdentities[$_] })
+        # The fallback identity would be the harness's own proxy client id; it
+        # must NOT authenticate in this run.
+        $proxyOwnedIds = @('E2E_JointProxy')
+        $assertions += Assert-RelayLinksCreated "round$($round.Index)/relay-links-created" `
+          $proxyLog $relayDownstreams
+        $assertions += Assert-RelayDistinctIdentities "round$($round.Index)/relay-distinct-backend-identities" `
+          $backendLog $expectedIds $proxyOwnedIds
+        # Per-server attribution, from the backend's own persistence: the
+        # message record the backend wrote for this run's token names the
+        # clientId of the CONNECTION that carried it. That is the exact
+        # property commit 95c9a85 changes.
+        #
+        # The chat bot connects through the PROXY (see $javaTargetPort above),
+        # and the proxy has no fallback link here, so the line the backend
+        # received must have ridden the Java leg's dedicated link.
+        $chatSourceServer = if ($round.Java) { $round.Java } elseif ($round.Mod) { $round.Mod } else { $null }
+        if ($chatSourceServer) {
+          $assertions += Assert-RelayAttributionAndDelivery "round$($round.Index)/relay-chat-attribution-and-delivery" `
+            $chatToken $relayIdentities[$chatSourceServer] $script:RelayPanelJwt $bedRes
+          # Proxy-log corroboration (diagnostic: relay debug is off in relay,
+          # so the decoded-packet line that prints clientId is not emitted).
+          $assertions += Assert-RelayAttribution "round$($round.Index)/relay-chat-attribution-proxy-log" `
+            $chatToken $relayIdentities[$chatSourceServer] $proxyLog
+        }
+        # No cross-server bleed: each receiver must see its line exactly once.
+        # Both directions are checked -- a duplicate is most likely to appear
+        # on the reply path (a sub-server broadcasting what the backend already
+        # fanned out on the same link), which the forward direction misses.
+        $assertions += Assert-NoDuplicateDelivery "round$($round.Index)/relay-no-duplicate-delivery-java-to-bedrock" `
+          $chatToken $bedRes
+        $assertions += Assert-NoDuplicateDelivery "round$($round.Index)/relay-no-duplicate-delivery-bedrock-to-java" `
+          $replyToken $javaRes
+      }
+    }
+
     if (-not $javaRes) { $result.notes = 'java bot wrote no results.json' }
     if (-not $bedRes) {
       $result.notes = (($result.notes, 'bedrock bot wrote no results.json') | Where-Object { $_ }) -join '; '
     }
 
-    $failed = @($assertions | Where-Object { -not $_.pass })
+    # `diagnostic` observations are recorded, never gated -- same rule as the
+    # lite round. Without the kind filter an intentionally-failed diagnostic
+    # (e.g. relay-identities-topology on a one-downstream topology) would fail
+    # the round while the summary printed it as INFO.
+    $failed = @($assertions | Where-Object { -not $_.pass -and $_.kind -ne 'diagnostic' })
     if ($failed.Count -gt 0) {
       $result.status = 'FAIL'
       $result.notes = (($result.notes, "failed: $((($failed | ForEach-Object { $_.id }) -join ', '))") |
@@ -2944,6 +3462,14 @@ $fetchTargets = @()
 foreach ($r in $roundList) {
   foreach ($pf in @($r.Proxy, $r.Java, $r.Mod, $r.Bedrock)) {
     if (-not $pf) { continue }
+    # Fabric has no versions.lock.ps1 entry: its launcher jar and fabric-api are
+    # runtime pieces pinned in $FabricRuntime and fetched by
+    # Invoke-FetchFabricRuntime below. Its LockName exists for the artifact
+    # resolver's bookkeeping only, so feeding it to fetch-server.ps1 aborted the
+    # whole run with "No version lock entry for server 'fabric'" before the
+    # Fabric leg could ever start (observed: run 20261020-170812 died at
+    # provisioning with exit 2).
+    if ($pf -eq 'fabric') { continue }
     $lockName = $PlatformDefs[$pf].LockName
     if ($lockName -and ($fetchTargets -notcontains $lockName)) { $fetchTargets += $lockName }
   }
