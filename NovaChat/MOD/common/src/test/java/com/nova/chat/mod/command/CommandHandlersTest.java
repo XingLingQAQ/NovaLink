@@ -282,8 +282,31 @@ class CommandHandlersTest {
     @DisplayName("HelpCommand")
     class Help {
 
+        /** The moderation lines help may render, keyed like the i18n bundle. */
+        private final java.util.List<String> moderationKeys = java.util.List.of(
+                "chat.command.help.line_mute",
+                "chat.command.help.line_kick",
+                "chat.command.help.line_ban",
+                "chat.command.help.line_unban",
+                "chat.command.help.line_announce",
+                "chat.command.help.line_title");
+
+        /**
+         * Renders a help key exactly as {@link CommandContext#sendMessage} does —
+         * i18n lookup then {@code &}→{@code §}. Comparing against the raw bundle
+         * text would never match, since every line carries color codes.
+         */
+        private String rendered(String key) {
+            return com.nova.chat.client.format.LegacyColorCodes.ampersandToSection(
+                    com.nova.chat.client.i18n.I18n.tr(PLAYER, key));
+        }
+
+        private java.util.List<String> moderationLines() {
+            return moderationKeys.stream().map(this::rendered).toList();
+        }
+
         @Test
-        @DisplayName("non-admin help lists 12 lines and excludes the reload line")
+        @DisplayName("non-admin help lists 12 lines: title + the 11 ungated lines")
         void nonAdminHelp() {
             recordMessages();
             CommandContext ctx = context(false);
@@ -292,17 +315,84 @@ class CommandHandlersTest {
 
             // title + 11 lines (help/join/leave/list/who/toggle/ignore/unignore/pm/reply/msg)
             assertThat(sentMessages).hasSize(12);
+            // the ungated lines are still there, in catalog order
+            assertThat(sentMessages).containsSubsequence(
+                    rendered("chat.command.help.title"),
+                    rendered("chat.command.help.line_help"),
+                    rendered("chat.command.help.line_join"));
         }
 
         @Test
-        @DisplayName("admin help includes the reload line (13 lines total)")
-        void adminHelpIncludesReload() {
+        @DisplayName("non-admin help withholds every moderation line and reload")
+        void nonAdminHelpHidesModeration() {
+            recordMessages();
+            CommandContext ctx = context(false);
+
+            new HelpCommand().execute(new String[]{}, ctx);
+
+            assertThat(sentMessages).doesNotContainAnyElementsOf(moderationLines());
+            assertThat(sentMessages).doesNotContain(rendered("chat.command.help.line_reload"));
+            // the hidden auth command must never be revealed, admin or not
+            assertThat(sentMessages).noneMatch(m -> m.contains("/nc auth"));
+        }
+
+        @Test
+        @DisplayName("admin help lists 19 lines: title + 11 ungated + 6 moderation + reload")
+        void adminHelpIncludesModerationAndReload() {
             recordMessages();
             CommandContext ctx = context(true);
 
             new HelpCommand().execute(new String[]{}, ctx);
 
-            assertThat(sentMessages).hasSize(13);
+            assertThat(sentMessages).hasSize(19);
+            assertThat(sentMessages)
+                    .as("admin help must list every moderation command")
+                    .containsAll(moderationLines())
+                    .contains(rendered("chat.command.help.line_reload"));
+        }
+
+        @Test
+        @DisplayName("admin help still never reveals the hidden auth command")
+        void adminHelpHidesAuth() {
+            recordMessages();
+            CommandContext ctx = context(true);
+
+            new HelpCommand().execute(new String[]{}, ctx);
+
+            assertThat(sentMessages).noneMatch(m -> m.contains("/nc auth"));
+        }
+
+        @Test
+        @DisplayName("every rendered line resolves to real copy, never a raw i18n key")
+        void helpLinesAreTranslated() {
+            recordMessages();
+            CommandContext ctx = context(true);
+
+            new HelpCommand().execute(new String[]{}, ctx);
+
+            assertThat(sentMessages).noneMatch(m -> m.startsWith("chat.command.help."));
+        }
+
+        @Test
+        @DisplayName("the moderation help keys exist in BOTH locales, not just the fallback")
+        void moderationKeysPresentInBothLocales() throws Exception {
+            for (String resource : java.util.List.of(
+                    "lang/messages_en_US.properties", "lang/messages_zh_CN.properties")) {
+                java.util.Properties props = new java.util.Properties();
+                try (java.io.InputStream in = getClass().getClassLoader()
+                        .getResourceAsStream(resource)) {
+                    assertThat(in).as("bundle %s on the test classpath", resource).isNotNull();
+                    props.load(new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8));
+                }
+                for (String key : moderationKeys) {
+                    // A missing zh_CN key would fall back to en_US here but still
+                    // render a raw key for a zh_CN user, so check each file directly.
+                    assertThat(props.getProperty(key))
+                            .as("%s in %s", key, resource)
+                            .isNotNull()
+                            .contains("/nc ");
+                }
+            }
         }
     }
 

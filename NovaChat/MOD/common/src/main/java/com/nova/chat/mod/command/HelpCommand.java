@@ -8,6 +8,13 @@ import java.util.UUID;
 
 /**
  * Help command — displays available commands in the player's locale.
+ *
+ * <p>Lines come from {@link ModCommandCatalog}, the same list that drives
+ * handler registration, so a command cannot be registered and silently left out
+ * of help (the gap that hid the moderation commands). Admin-gated entries
+ * render only for a sender {@link CommandContext#isAdmin()} accepts — the same
+ * coarse gate the brigadier literals use. Hidden commands (no help key) are
+ * skipped by the catalog and never revealed here.
  */
 public class HelpCommand implements CommandHandler {
 
@@ -15,19 +22,11 @@ public class HelpCommand implements CommandHandler {
     public boolean execute(String[] args, CommandContext context) {
         UUID playerId = context.getPlayerId();
         context.sendMessage(I18n.tr(playerId, "chat.command.help.title"));
-        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_help"));
-        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_join"));
-        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_leave"));
-        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_list"));
-        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_who"));
-        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_toggle"));
-        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_ignore"));
-        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_unignore"));
-        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_pm"));
-        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_reply"));
-        context.sendMessage(I18n.tr(playerId, "chat.command.help.line_msg"));
-        if (context.isAdmin()) {
-            context.sendMessage(I18n.tr(playerId, "chat.command.help.line_reload"));
+        for (ModCommandCatalog.HelpLine line : ModCommandCatalog.helpLines()) {
+            if (line.adminOnly() && !context.isAdmin()) {
+                continue;
+            }
+            context.sendMessage(I18n.tr(playerId, line.i18nKey()));
         }
         return true;
     }

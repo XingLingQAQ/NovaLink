@@ -4,24 +4,7 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.nova.chat.common.NovaConstants;
-import com.nova.chat.mod.command.AnnounceCommand;
-import com.nova.chat.mod.command.AuthCommand;
-import com.nova.chat.mod.command.BanCommand;
-import com.nova.chat.mod.command.HelpCommand;
-import com.nova.chat.mod.command.IgnoreCommand;
-import com.nova.chat.mod.command.JoinCommand;
-import com.nova.chat.mod.command.KickCommand;
-import com.nova.chat.mod.command.LeaveCommand;
-import com.nova.chat.mod.command.ListCommand;
-import com.nova.chat.mod.command.MsgCommand;
-import com.nova.chat.mod.command.MuteCommand;
-import com.nova.chat.mod.command.ReloadCommand;
-import com.nova.chat.mod.command.ReplyCommand;
-import com.nova.chat.mod.command.TitleCommand;
-import com.nova.chat.mod.command.ToggleCommand;
-import com.nova.chat.mod.command.UnbanCommand;
-import com.nova.chat.mod.command.UnignoreCommand;
-import com.nova.chat.mod.command.WhoCommand;
+import com.nova.chat.mod.command.ModCommandCatalog;
 import com.nova.chat.mod.platform.CommandHandler;
 import com.nova.chat.mod.platform.CommandManager;
 import com.nova.chat.mod.platform.ConsoleCapableCommand;
@@ -136,35 +119,26 @@ public abstract class AbstractBrigadierCommandRegistrar<S> implements BrigadierH
 
     /**
      * Stashes the shared manager / services and registers the shared command
-     * handlers on the {@link CommandManager}: the 11 baseline commands
+     * handlers on the {@link CommandManager} from
+     * {@link ModCommandCatalog#ENTRIES} — the 11 baseline commands
      * (help/join/leave/list/who/toggle/msg/r/ignore/unignore/reload), the six
      * moderation commands ({@link #MODERATION_COMMAND_NAMES}) and the hidden
      * super-admin {@code auth} ({@link #HIDDEN_COMMAND_NAMES}). Each loader's
      * {@code registerCommands(manager, services)} calls this.
+     *
+     * <p>The catalog is also what {@code /nc help} renders, so registration and
+     * help cannot drift apart.
      */
     public final void registerSharedStateAndHandlers(CommandManager manager, ModServices svc) {
         commandManager = manager;
         services = svc;
-        manager.registerCommand("help", new HelpCommand());
-        manager.registerCommand("join", new JoinCommand());
-        manager.registerCommand("leave", new LeaveCommand());
-        manager.registerCommand("list", new ListCommand());
-        manager.registerCommand("who", new WhoCommand());
-        manager.registerCommand("toggle", new ToggleCommand());
-        manager.registerCommand("msg", new MsgCommand());
-        manager.registerCommand("r", new ReplyCommand());
-        manager.registerCommand("ignore", new IgnoreCommand());
-        manager.registerCommand("unignore", new UnignoreCommand());
-        manager.registerCommand("reload", new ReloadCommand());
-
-        // Moderation (admin-gated, console-capable) + the hidden super-admin auth.
-        manager.registerCommand("mute", new MuteCommand());
-        manager.registerCommand("kick", new KickCommand());
-        manager.registerCommand("ban", new BanCommand());
-        manager.registerCommand("unban", new UnbanCommand());
-        manager.registerCommand("announce", new AnnounceCommand());
-        manager.registerCommand("title", new TitleCommand());
-        manager.registerCommand("auth", new AuthCommand());
+        // One catalog drives both registration and /nc help, so a command
+        // cannot end up runnable but unlisted (or vice versa).
+        for (ModCommandCatalog.Entry entry : ModCommandCatalog.ENTRIES) {
+            if (entry.isRegistered()) {
+                manager.registerCommand(entry.name(), entry.factory().get());
+            }
+        }
     }
 
     // ------------------------------------------------------------------
