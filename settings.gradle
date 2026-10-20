@@ -16,6 +16,15 @@ include 'NovaChat:client-core'
 // network/websocket/JWT, no :NovaChat:common). Package names are preserved.
 include 'StarLink:storage'
 include 'StarLink:core'
+// Embedded backend host for Paper/Purpur (Bukkit) servers. Lives in
+// StarLink/plugin/bukkit on disk, but -- exactly like :NovaChat:Proxy:proxy-common
+// -- its Gradle project name must differ from the leaf name it shares with
+// another subproject: :NovaChat:Plugin:bukkit is already the project "bukkit",
+// and Gradle disambiguates project dependencies by leaf name, so a second
+// project called "bukkit" would make project(':NovaChat:Plugin:bukkit') resolve
+// onto this module. "novalink-bukkit" stays unique across the whole build.
+include 'StarLink:plugin:novalink-bukkit'
+project(':StarLink:plugin:novalink-bukkit').projectDir = file('StarLink/plugin/bukkit')
 include 'NovaChat:Plugin:bukkit'
 include 'NovaChat:Proxy:velocity'
 include 'NovaChat:Proxy:bungee'

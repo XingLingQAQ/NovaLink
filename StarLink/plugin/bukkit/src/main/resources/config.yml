@@ -1,0 +1,29 @@
+# NovaLink Bukkit plugin settings.
+#
+# The backend's own configuration lives in plugins/NovaLink/novalink.yml and is
+# written from the core's template on first start. This file only controls how
+# the plugin treats that backend configuration.
+network:
+  # What to do when plugins/NovaLink/novalink.yml does not exist yet.
+  #
+  # false (default): the plugin copies the backend template and changes two
+  #   values --
+  #     server.bind-address becomes 127.0.0.1, so the TCP listener and the
+  #       WebSocket/REST (panel) listener are reachable only from this machine
+  #       until an operator opts in. A Minecraft server is usually exposed to
+  #       the internet; a backend that opens two ports on every interface the
+  #       moment you install it is a security bug, not a convenience.
+  #     server.insecure-allow-plaintext becomes true, because the backend
+  #       otherwise refuses to start without TLS, and a loopback-only listener
+  #       has no network observer to hide the handshake from.
+  #
+  # true: the plugin writes the backend template unchanged, which means
+  #   server.bind-address: 0.0.0.0 and both ports are reachable from anywhere
+  #   the host firewall allows. Choose this only when the backend is meant to
+  #   be public. The plaintext gate is then left closed: the plugin will not
+  #   start the backend until you configure server.tls (or acknowledge the
+  #   risk yourself in novalink.yml).
+  #
+  # This setting is only read when novalink.yml is absent. An existing file is
+  # never modified -- edit server.bind-address in novalink.yml instead.
+  bind-public-by-default: false

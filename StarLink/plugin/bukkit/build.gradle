@@ -1,0 +1,162 @@
+plugins {
+    id 'java'
+    id 'com.gradleup.shadow' version '9.6.1'
+}
+
+// Same language level as :StarLink:core. The Bukkit API compile target
+// (spigot-api 26.2, maven.compiler.release=17) also targets Java 17, so a
+// plugin jar built here loads unchanged on 1.21+/26.x Paper and Purpur.
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+dependencies {
+    // The embeddable backend facade (NovaLinkCore) + everything it links
+    // against. `implementation` keeps it off the compile classpath of any
+    // future consumer; the shadow jar is what ships.
+    implementation project(':StarLink:core')
+
+    // Minecraft server API. compileOnly: the server supplies these classes at
+    // runtime, and bundling them would duplicate org.bukkit.* in the plugin
+    // classloader.
+    compileOnly "org.spigotmc:spigot-api:${spigotVersion}"
+
+    // Testing: compileOnly deps are invisible to tests, so the API is repeated
+    // on the test classpath (same pattern as :NovaChat:Plugin:bukkit).
+    testImplementation "org.spigotmc:spigot-api:${spigotVersion}"
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
+    testImplementation "org.assertj:assertj-core:${assertjVersion}"
+}
+
+tasks.named('test') {
+    useJUnitPlatform {
+        includeEngines 'junit-jupiter', 'jqwik'
+    }
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
+}
+
+// Substitute ${version} in plugin.yml; without this the descriptor ships the
+// literal token and Bukkit reports the plugin version as "${version}".
+processResources {
+    filesMatching('plugin.yml') {
+        expand(
+            'version': project.version
+        )
+    }
+}
+
+// Fat jar -- this IS the plugin artifact; the thin `jar` is dropped below.
+//
+// Everything in the include() whitelist is shaded and must be checked against
+// the runtime a Paper/Purpur 1.21.11 server actually provides (measured from
+// the server's own META-INF/libraries.list), not against assumptions:
+//
+//   io.netty            server 4.2.7.Final vs core 4.1.100.Final -> RELOCATE
+//   com.google.gson     server 2.13.2 vs core 2.10.1             -> RELOCATE
+//   com.google.common   server 33.5.0-jre vs core 32.1.3-jre     -> RELOCATE
+//                       (guava's PACKAGE is com.google.common, not the groupId
+//                       com.google.guava -- relocating the groupId matches
+//                       nothing and silently does nothing)
+//   com.google.protobuf server 4.29.0 vs MySQL driver's 3.21.9   -> RELOCATE
+//   org.yaml.snakeyaml  server 2.2 == core 2.2                   -> leave (exact match)
+//   org.slf4j           server 2.0.17 + log4j-slf4j2-impl        -> EXCLUDE
+//   org.sqlite / org.xerial / com.mysql / org.postgresql / redis.clients /
+//   org.apache.commons.pool2 / org.json / HikariCP / jjwt / jackson
+//                       not provided by the server             -> bundle as-is
+//
+// Plugin classloaders in Paper are parent-first for classes the server owns,
+// so any package the server also bundles but at a different version must be
+// relocated or the plugin silently binds against the server's copy. Netty is
+// the sharpest case (4.1 -> 4.2 removed/moved codecs).
+shadowJar {
+    archiveClassifier.set('')
+    archiveBaseName.set('novalink-bukkit')
+
+    relocate 'io.netty', 'com.nova.link.bukkit.libs.netty'
+    relocate 'com.google.gson', 'com.nova.link.bukkit.libs.gson'
+    relocate 'com.google.common', 'com.nova.link.bukkit.libs.guava'
+    // protobuf arrives transitively with mysql-connector-j; the server ships a
+    // newer major version, so keep ours private for the same reason as Netty.
+    relocate 'com.google.protobuf', 'com.nova.link.bukkit.libs.protobuf'
+
+    // The server supplies the SLF4J binding (log4j-slf4j2-impl) -- bundling a
+    // second binding either fails the binding lookup or silently redirects all
+    // logging away from the server log. The binding, its config and JLine (the
+    // standalone console's readline; it collides with the server's own terminal
+    // handling and is unreachable from an embedded core) must not ship.
+    exclude 'ch/qos/logback/**'
+    exclude 'logback.xml'
+    exclude 'org/jline/**'
+    exclude 'org/slf4j/impl/**'
+
+    // Signature files from signed dependency jars are invalid after shading and
+    // make the JVM reject the jar ("Invalid signature file digest").
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+
+    // Duplicate descriptors. Paper's PluginRemapper (1.20.5+) re-runs a
+    // jar remapper over every plugin and REFUSES jars with repeated entries:
+    //   IllegalStateException: Duplicate entries detected: META-INF/LICENSE, ...
+    // The plugin then fails to load before onEnable ever runs. INCLUDE keeps
+    // those duplicates, so they must be dropped explicitly. verified on
+    // Purpur 1.21.11-2568: without this the jar is rejected at
+    // "PluginRemapper ... Failed to remap plugin jar".
+    exclude 'META-INF/LICENSE'
+    exclude 'META-INF/LICENSE.txt'
+    exclude 'META-INF/LICENSE.md'
+    exclude 'META-INF/NOTICE'
+    exclude 'META-INF/NOTICE.txt'
+    exclude 'META-INF/NOTICE.md'
+    exclude 'META-INF/DEPENDENCIES'
+    exclude 'META-INF/io.netty.versions.properties'
+    exclude 'META-INF/maven/**'
+    exclude 'META-INF/INDEX.LIST'
+    exclude 'META-INF/*.kotlin_module'
+
+    // JDBC drivers register through META-INF/services/java.sql.Driver; the
+    // default EXCLUDE duplicates strategy drops every duplicate descriptor
+    // BEFORE the merge transformer sees it, leaving only one driver in the jar.
+    // StarLink:core hit exactly that bug. INCLUDE + mergeServiceFiles() keeps
+    // all three (sqlite, mysql, postgresql).
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    mergeServiceFiles()
+
+    // Whitelist rather than "everything on the runtime classpath": the plugin
+    // must not sweep up the core's logback/jline or any future dependency that
+    // is not meant for a server JVM.
+    dependencies {
+        include(project(':StarLink:core'))
+        include(project(':StarLink:storage'))
+        include(project(':NovaChat:common'))
+        include(dependency('io.netty:.*'))
+        include(dependency('com.google.code.gson:gson'))
+        include(dependency('com.google.guava:guava'))
+        include(dependency('com.google.guava:failureaccess'))
+        include(dependency('com.google.protobuf:protobuf-java'))
+        include(dependency('org.yaml:snakeyaml'))
+        include(dependency('org.slf4j:slf4j-api'))
+        include(dependency('com.zaxxer:HikariCP'))
+        include(dependency('com.mysql:mysql-connector-j'))
+        include(dependency('org.postgresql:postgresql'))
+        include(dependency('org.xerial:sqlite-jdbc'))
+        include(dependency('redis.clients:jedis'))
+        include(dependency('org.apache.commons:commons-pool2'))
+        include(dependency('org.json:json'))
+        include(dependency('io.jsonwebtoken:jjwt-api'))
+        include(dependency('io.jsonwebtoken:jjwt-impl'))
+        include(dependency('io.jsonwebtoken:jjwt-jackson'))
+        include(dependency('com.fasterxml.jackson.core:jackson-databind'))
+        include(dependency('com.fasterxml.jackson.core:jackson-core'))
+        include(dependency('com.fasterxml.jackson.core:jackson-annotations'))
+    }
+}
+
+build.dependsOn shadowJar
+
+// shadowJar writes to the same path as the plain jar (classifier ''), so
+// running both corrupts the ZIP. The fat jar is the artifact.
+jar.enabled = false

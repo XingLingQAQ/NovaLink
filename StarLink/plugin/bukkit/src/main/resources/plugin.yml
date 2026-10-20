@@ -1,0 +1,26 @@
+name: NovaLink
+version: ${version}
+main: com.nova.link.bukkit.NovaLinkBukkitPlugin
+api-version: "1.21"
+description: Runs the NovaLink backend (channels, moderation, panel API) inside this server process.
+authors: [Nova Team]
+website: https://github.com/nova/novalink
+# 1.13+ only: the plugin uses nothing older. 1.21 is the floor of the API line
+# this module compiles against (spigot-api 26.2 also serves 26.x servers).
+load: POSTWORLD
+
+commands:
+  novalink:
+    description: Run a NovaLink backend console command
+    usage: |
+      /<command> <command> [args...]
+      Examples: /<command> status, /<command> players, /<command> channels
+      Backend commands: help, status, players, clients, channels, channel,
+      mute, unmute, mutes, ban, unban, bans, kick, announce, title, reload,
+      spies, spy, create, delete
+    permission: novalink.admin
+
+permissions:
+  novalink.admin:
+    description: Run NovaLink backend console commands and manage the backend
+    default: op
