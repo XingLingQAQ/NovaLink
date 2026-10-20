@@ -48,6 +48,13 @@ debug: false
 - `/novachat toggle` - Toggle chat mode
 - `/novachat reload` - Reload configuration (admin)
 - `/novachat debug` - Toggle debug mode (admin)
+- `/novachat mute <player> <duration> [channel]` - Mute a player (admin)
+- `/novachat kick <player> [channel]` - Kick a player from a channel (admin)
+- `/novachat ban <player> [duration] [channel]` - Ban a player; omit the channel for a network-wide ban (admin)
+- `/novachat unban <player|UUID> [channel]` - Lift a ban (admin)
+- `/novachat announce <channel> <message>` - Broadcast an announcement (requires `/novachat auth`)
+- `/novachat title <channel> <title> [subtitle]` - Send a title to a channel (requires `/novachat auth`)
+- `/novachat auth <password>` - Establish a backend super-admin session (players only)
 
 ## Development
 

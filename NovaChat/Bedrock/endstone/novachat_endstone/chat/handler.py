@@ -465,6 +465,20 @@ class ChatHandler:
         if request_id:
             self._pending_actions[request_id] = player_uuid
 
+    def register_pending_channel_action(
+        self, request_id: str, player_uuid: str
+    ) -> None:
+        """Register a pending ChannelAction request for response correlation.
+
+        Same map and contract as :meth:`register_pending_admin_action`; the
+        split exists only so moderation call sites read clearly. The
+        originating UUID may be the console sentinel, in which case the
+        outcome is logged instead of delivered (see
+        :meth:`_send_to_player_by_uuid`).
+        """
+        if request_id:
+            self._pending_actions[request_id] = player_uuid
+
     def _handle_title_message(self, packet: TitleMessagePacket) -> None:
         """
         Handle incoming title messages from the backend.
@@ -726,8 +740,20 @@ class ChatHandler:
         except Exception as e:
             self._logger.error(f"Error handling private message: {e}")
 
+    #: Console/RCON has no player UUID; actions it originates are correlated
+    #: against this sentinel so their outcome is logged instead of delivered.
+    CONSOLE_SENTINEL_UUID = "00000000-0000-0000-0000-000000000000"
+
     def _send_to_player_by_uuid(self, player_uuid: str, message: str) -> None:
-        """Send a message to a player by UUID (best-effort)."""
+        """Send a message to a player by UUID (best-effort).
+
+        Console-originated requests correlate against the sentinel, which no
+        online player matches; their outcome goes to the server log so the
+        operator sees it instead of the response being dropped.
+        """
+        if player_uuid == self.CONSOLE_SENTINEL_UUID:
+            self._logger.info(f"[NovaChat console] {message}")
+            return
         player = self._find_player_by_uuid(player_uuid)
         if player:
             # VERIFY-004: native send_message -> main thread.

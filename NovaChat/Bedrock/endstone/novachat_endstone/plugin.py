@@ -143,8 +143,16 @@ class NovaChatPlugin:
             "description": "Allows kicking players from channels",
             "default": "op",
         },
+        "novachat.ban": {
+            "description": "Allows banning and unbanning players",
+            "default": "op",
+        },
         "novachat.announce": {
             "description": "Allows sending announcements",
+            "default": "op",
+        },
+        "novachat.title": {
+            "description": "Allows sending titles to channels",
             "default": "op",
         },
         "novachat.reload": {

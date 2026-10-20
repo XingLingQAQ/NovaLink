@@ -28,7 +28,9 @@ authors = ["NovaChat Team"]
 "novachat.channel.create" = { description = "Allows creating private channels", default = "op" }
 "novachat.mute" = { description = "Allows muting players", default = "op" }
 "novachat.kick" = { description = "Allows kicking players from channels", default = "op" }
+"novachat.ban" = { description = "Allows banning and unbanning players", default = "op" }
 "novachat.announce" = { description = "Allows sending announcements", default = "op" }
+"novachat.title" = { description = "Allows sending titles to channels", default = "op" }
 "novachat.reload" = { description = "Allows reloading configuration", default = "op" }
 
 [plugin.commands]
