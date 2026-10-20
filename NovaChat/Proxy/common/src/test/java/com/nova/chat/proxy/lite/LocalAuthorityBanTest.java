@@ -216,6 +216,54 @@ class LocalAuthorityBanTest {
                 .isTrue();
     }
     @Test
+    @DisplayName("a ban that outlived the process can still be lifted by name")
+    void offlineNameUnbanSurvivesRestart() {
+        Path database = tempDir.resolve("unban-after-restart.db");
+
+        try (LiteChannelStore store = sqliteStore(database)) {
+            store.open();
+            LocalAuthority first = authority(store);
+            joinAll(first);
+            assertThat(ban(first, moderator, bob, GLOBAL).isSuccess()).isTrue();
+            assertThat(store.flush(30_000L)).isTrue();
+        }
+
+        // Fresh authority: the name->id mapping recorded at ban time is gone,
+        // so it has to be re-read from storage or the operator can no longer
+        // lift the ban by the only thing they have, the player's name.
+        //
+        // The player must also be off the roster. A name lookup tries online
+        // players first, so leaving Bob online would let this pass without the
+        // persistence path being exercised at all.
+        platform.remove(bob);
+        //
+        // Note the double flush below is not redundant: onPlayerConnect queues
+        // the ban reload, and that reload chains a second async read for the
+        // name. The second flush waits for that chained task.
+        try (LiteChannelStore reopened = sqliteStore(database)) {
+            reopened.open();
+            LocalAuthority second = authority(reopened);
+            second.onPlayerConnect(bob.id);
+            assertThat(reopened.flush(30_000L)).isTrue();
+
+            ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.UNBAN, GLOBAL);
+            packet.addExtra("operatorId", moderator.id.toString());
+            packet.addExtra("targetName", bob.name);
+
+            // Wait for the ban restore to land before asserting. The restarted
+            // authority loads bans and the name mapping asynchronously; the
+            // flush is the barrier that guarantees both completed.
+            assertThat(reopened.flush(30_000L)).isTrue();
+            ChannelActionResponsePacket response =
+                    (ChannelActionResponsePacket) send(second, packet).get(0);
+
+            assertThat(response.isSuccess())
+                    .as("a name must still resolve after a restart, when the "
+                            + "in-memory mapping from the ban call is long gone")
+                    .isTrue();
+        }
+    }
+    @Test
     @DisplayName("an offline player can be unbanned by name alone")
     void offlinePlayerCanBeUnbannedByName() {
         joinAll(GLOBAL);

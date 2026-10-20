@@ -921,7 +921,19 @@ public final class LocalAuthority {
         if (playerId == null || !store.isPersistent() || !bansRestoreRequested.add(playerId)) {
             return;
         }
-        store.loadBans(playerId, rows -> platform.execute(() -> applyRestoredBans(playerId, rows)));
+        store.loadBans(playerId, rows -> platform.execute(() -> {
+            applyRestoredBans(playerId, rows);
+            // The name-to-id mapping is what makes an offline unban by name
+            // work, and it is normally recorded at ban time. After a restart
+            // that memory is empty, so the stored name is read back here;
+            // without it the operator's most natural input (a name) stops
+            // working for exactly the bans that outlived the process.
+            store.loadPlayer(playerId, snapshot -> {
+                if (snapshot != null) {
+                    platform.execute(() -> rememberBannedName(playerId, snapshot.playerName()));
+                }
+            });
+        }));
     }
 
     /**

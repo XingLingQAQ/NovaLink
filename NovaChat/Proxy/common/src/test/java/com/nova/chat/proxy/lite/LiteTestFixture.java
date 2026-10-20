@@ -96,6 +96,19 @@ final class LiteTestFixture {
             return player;
         }
 
+        /**
+         * Drops a player from the online roster.
+         *
+         * <p>Needed by tests of offline-only paths: a name lookup resolves
+         * against this roster first, so as long as the player is present the
+         * fallback being tested is never reached.
+         *
+         * @param player the player to remove
+         */
+        void remove(FakePlayer player) {
+            players.remove(player.id);
+        }
+
         @Override
         public Collection<? extends ProxyPlayer> getOnlinePlayers() {
             return List.copyOf(players.values());
