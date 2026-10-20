@@ -7,11 +7,15 @@ import com.nova.chat.client.network.CoreNetworkClient;
 import com.nova.chat.client.network.SchedulerBridge;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PlatformType;
+import com.nova.chat.common.protocol.packets.AdminActionPacket;
 import com.nova.chat.folia.NovaChatFolia;
 import com.nova.chat.folia.config.NovaChatConfig;
 import com.nova.chat.folia.scheduler.FoliaSchedulerAdapter;
 
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.logging.Level;
@@ -40,6 +44,20 @@ import java.util.logging.Level;
 public class AsyncNetworkClient extends AbstractPlatformNetworkClient {
 
     private final FoliaSchedulerAdapter scheduler;
+
+    /**
+     * Correlates an in-flight {@link AdminActionPacket} with the sender it
+     * belongs to, so the asynchronous {@code AdminActionResponsePacket} can be
+     * rendered back to that sender (player, or the console sentinel).
+     *
+     * <p>Admin actions are outside the shared {@link
+     * com.nova.chat.client.network.ChannelResponseTracker}, which only tracks
+     * {@code ChannelActionPacket}s, so the correlation lives here — the Folia
+     * counterpart of Bukkit's {@code NetworkClient#pendingAdminRequests}.
+     * Concurrent because a packet is stamped from whichever region/async thread
+     * ran the command while the response is consumed on the handler hop.
+     */
+    private final ConcurrentMap<UUID, UUID> pendingAdminRequests = new ConcurrentHashMap<>();
 
     /**
      * Creates a new AsyncNetworkClient.
@@ -96,6 +114,50 @@ public class AsyncNetworkClient extends AbstractPlatformNetworkClient {
             }
         });
         return result;
+    }
+
+    /**
+     * Sends a packet to the backend. For {@link AdminActionPacket}s this records
+     * the {@code requestId -> senderId} correlation before the wire send, so the
+     * asynchronous {@code AdminActionResponsePacket} can be routed back to the
+     * originating sender. Everything else delegates straight to the core, which
+     * owns channel-action correlation.
+     *
+     * @param packet the packet to send
+     */
+    @Override
+    public void sendPacket(Packet packet) {
+        if (packet instanceof AdminActionPacket adminActionPacket
+                && adminActionPacket.getPlayerId() != null
+                && adminActionPacket.getRequestId() != null) {
+            pendingAdminRequests.put(adminActionPacket.getRequestId(),
+                    adminActionPacket.getPlayerId());
+        }
+        super.sendPacket(packet);
+    }
+
+    /**
+     * Removes and returns the sender id recorded for an admin-action request id.
+     *
+     * <p>Removal (not just lookup) is deliberate: a response is rendered exactly
+     * once, and an unsolicited response therefore reads as "no pending request".
+     *
+     * @param requestId the response's request id
+     * @return the originating sender id, or {@code null} when nothing is pending
+     */
+    public UUID consumePendingAdminRequest(UUID requestId) {
+        if (requestId == null) {
+            return null;
+        }
+        return pendingAdminRequests.remove(requestId);
+    }
+
+    /**
+     * @return the number of in-flight admin actions awaiting a response; for
+     *         diagnostics and tests
+     */
+    public int pendingAdminRequestCount() {
+        return pendingAdminRequests.size();
     }
 
     /**

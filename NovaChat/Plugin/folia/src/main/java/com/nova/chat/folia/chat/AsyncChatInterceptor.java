@@ -126,6 +126,10 @@ public class AsyncChatInterceptor implements Listener {
                 new FoliaChannelResponseAdapter());
         plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
         plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
+        plugin.getNetworkClient().registerHandler(
+                com.nova.chat.common.protocol.packets.AdminActionResponsePacket.class,
+                new com.nova.chat.folia.network.AdminActionResponseHandler(
+                        plugin, scheduler, plugin.getNetworkClient()));
         plugin.getNetworkClient().registerHandler(MentionPacket.class, this::handleMention);
         plugin.getNetworkClient().registerHandler(TitlePacket.class, this::handleTitle);
         plugin.getNetworkClient().registerHandler(ItemDisplayPacket.class, this::handleItemDisplay);

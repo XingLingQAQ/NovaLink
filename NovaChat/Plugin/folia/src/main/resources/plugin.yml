@@ -39,6 +39,7 @@ commands:
       /<command> title <channel> <title> [subtitle] - Send title to channel
       /<command> reload - Reload configuration
       /<command> debug [on|off] - Toggle debug mode
+      /<command> auth <password> - Authenticate as super admin (hidden)
     aliases: [nc]
 
 # ==========================================

