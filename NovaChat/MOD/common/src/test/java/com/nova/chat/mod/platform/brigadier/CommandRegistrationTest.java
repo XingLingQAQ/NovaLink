@@ -168,6 +168,48 @@ class CommandRegistrationTest {
     }
 
     @Test
+    @DisplayName("every catalog command is both registered and present in the brigadier tree")
+    void catalogMatchesRegistrationAndTree() {
+        CommandNode<String> novachat = literalTree();
+
+        for (com.nova.chat.mod.command.ModCommandCatalog.Entry entry
+                : com.nova.chat.mod.command.ModCommandCatalog.ENTRIES) {
+            if (!entry.isRegistered()) {
+                continue; // help-only line (the /nc <channel> <message> shorthand)
+            }
+            assertThat(manager.hasCommand(entry.name()))
+                    .as("catalog command '%s' must be registered", entry.name()).isTrue();
+            // The other half of the same trap: a catalog entry that help
+            // advertises but that no literal exposes would be unrunnable.
+            assertThat(novachat.getChild(entry.name()))
+                    .as("catalog command '%s' must appear in the brigadier tree", entry.name())
+                    .isNotNull();
+        }
+    }
+
+    @Test
+    @DisplayName("every command help lists is runnable, and every hidden one is registered")
+    void helpLinesMatchRunnableCommands() {
+        CommandNode<String> novachat = literalTree();
+        java.util.Set<String> helpKeys = new java.util.HashSet<>();
+
+        for (com.nova.chat.mod.command.ModCommandCatalog.HelpLine line
+                : com.nova.chat.mod.command.ModCommandCatalog.helpLines()) {
+            assertThat(helpKeys.add(line.i18nKey()))
+                    .as("help key '%s' must appear at most once", line.i18nKey()).isTrue();
+        }
+        for (com.nova.chat.mod.command.ModCommandCatalog.Entry entry
+                : com.nova.chat.mod.command.ModCommandCatalog.ENTRIES) {
+            if (entry.isHidden()) {
+                assertThat(entry.isRegistered())
+                        .as("hidden entry '%s' must still be registered to be runnable", entry.name())
+                        .isTrue();
+                assertThat(novachat.getChild(entry.name())).isNotNull();
+            }
+        }
+    }
+
+    @Test
     @DisplayName("every moderation sub-command appears in the brigadier tree")
     void moderationInBrigadierTree() {
         CommandNode<String> novachat = literalTree();
