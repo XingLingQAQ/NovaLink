@@ -64,6 +64,48 @@ struct AnnounceParams {
     std::string content;
 };
 
+// Moderation parameters. All four take a target name first; the trailing
+// optionals mirror the bukkit signatures:
+//   /nc mute  <player> <duration> [channel]
+//   /nc kick  <player> [channel]
+//   /nc ban   <player> [duration] [channel]
+//   /nc unban <player|uuid> [channel]
+// LeviLamina's overload builder has no variadic/greedy tail, so each command
+// gets a fixed optional tail and the rest is left to the builder's validation.
+struct MuteParams {
+    std::string targetName;
+    std::string duration;
+    std::string channelId;
+};
+
+struct KickParams {
+    std::string targetName;
+    std::string channelId;
+};
+
+struct BanParams {
+    std::string targetName;
+    std::string duration;
+    std::string channelId;
+};
+
+struct UnbanParams {
+    std::string targetName;
+    std::string channelId;
+};
+
+// FEATURE-002 parity: /nc title <channel> <title> [subtitle]. Sends the same
+// AdminActionPacket(STATUS) transport as announce with type=TITLE; the backend
+// handleStatus -> handleTitle builds the TitlePacket. Requires a super-admin
+// session (the backend hasSuperAdminSession gate in handleStatus), which a
+// player obtains with /nc auth. Console cannot authenticate (auth is
+// player-only), so a console title is refused by the backend with NC-403.
+struct TitleParams {
+    std::string channelId;
+    std::string title;
+    std::string subtitle;
+};
+
 CommandHandler::CommandHandler(NovaChatPlugin& plugin)
     : mPlugin(plugin) {}
 
@@ -233,6 +275,136 @@ void CommandHandler::registerCommands() {
             output.success();
         });
 
+    // ==================== Moderation subcommands ====================
+    //
+    // Every moderation action is admin-only. The gate is applied at execute
+    // time against origin.getPermissionsLevel() for the same reason /nc reload
+    // does it there: LeviLamina's Overload builder exposes no .permission()
+    // chain, and /nc itself is registered at Any so the basic subcommands stay
+    // usable by everyone.
+    //
+    // The ChannelAction id and extras are built by the pure builders in
+    // ModerationCommands.cpp, which re-check the level so the wire contract is
+    // testable without the BDS toolchain. These lambdas only gather the sender
+    // identity and the raw argument tokens.
+    ncCommand.overload<MuteParams>()
+        .text("mute")
+        .required("targetName")
+        .required("duration")
+        .optional("channelId")
+        .execute([this](CommandOrigin const& origin, CommandOutput& output, MuteParams const& params) {
+            const int level = static_cast<int>(origin.getPermissionsLevel());
+            if (level < moderation::MODERATION_MIN_PERMISSION_LEVEL) {
+                auto& i18n = i18n::I18n::getInstance();
+                output.error(i18n.get("chat.command.no_permission_code", origin.getLocaleCode()));
+                return;
+            }
+            std::string const name = origin.getName();
+            std::string uuid;
+            bool isConsole = true;
+            if (auto* entity = origin.getEntity(); entity && entity->isPlayer()) {
+                uuid = static_cast<Player*>(entity)->getUuid().asString();
+                isConsole = false;
+            }
+            handleMute(name, uuid, isConsole, level,
+                       {params.targetName, params.duration, params.channelId});
+            output.success();
+        });
+
+    ncCommand.overload<KickParams>()
+        .text("kick")
+        .required("targetName")
+        .optional("channelId")
+        .execute([this](CommandOrigin const& origin, CommandOutput& output, KickParams const& params) {
+            const int level = static_cast<int>(origin.getPermissionsLevel());
+            if (level < moderation::MODERATION_MIN_PERMISSION_LEVEL) {
+                auto& i18n = i18n::I18n::getInstance();
+                output.error(i18n.get("chat.command.no_permission_code", origin.getLocaleCode()));
+                return;
+            }
+            std::string const name = origin.getName();
+            std::string uuid;
+            bool isConsole = true;
+            if (auto* entity = origin.getEntity(); entity && entity->isPlayer()) {
+                uuid = static_cast<Player*>(entity)->getUuid().asString();
+                isConsole = false;
+            }
+            handleKick(name, uuid, isConsole, level, {params.targetName, params.channelId});
+            output.success();
+        });
+
+    ncCommand.overload<BanParams>()
+        .text("ban")
+        .required("targetName")
+        .optional("duration")
+        .optional("channelId")
+        .execute([this](CommandOrigin const& origin, CommandOutput& output, BanParams const& params) {
+            const int level = static_cast<int>(origin.getPermissionsLevel());
+            if (level < moderation::MODERATION_MIN_PERMISSION_LEVEL) {
+                auto& i18n = i18n::I18n::getInstance();
+                output.error(i18n.get("chat.command.no_permission_code", origin.getLocaleCode()));
+                return;
+            }
+            std::string const name = origin.getName();
+            std::string uuid;
+            bool isConsole = true;
+            if (auto* entity = origin.getEntity(); entity && entity->isPlayer()) {
+                uuid = static_cast<Player*>(entity)->getUuid().asString();
+                isConsole = false;
+            }
+            handleBan(name, uuid, isConsole, level,
+                      {params.targetName, params.duration, params.channelId});
+            output.success();
+        });
+
+    ncCommand.overload<UnbanParams>()
+        .text("unban")
+        .required("targetName")
+        .optional("channelId")
+        .execute([this](CommandOrigin const& origin, CommandOutput& output, UnbanParams const& params) {
+            const int level = static_cast<int>(origin.getPermissionsLevel());
+            if (level < moderation::MODERATION_MIN_PERMISSION_LEVEL) {
+                auto& i18n = i18n::I18n::getInstance();
+                output.error(i18n.get("chat.command.no_permission_code", origin.getLocaleCode()));
+                return;
+            }
+            std::string const name = origin.getName();
+            std::string uuid;
+            bool isConsole = true;
+            if (auto* entity = origin.getEntity(); entity && entity->isPlayer()) {
+                uuid = static_cast<Player*>(entity)->getUuid().asString();
+                isConsole = false;
+            }
+            handleUnban(name, uuid, isConsole, level, {params.targetName, params.channelId});
+            output.success();
+        });
+
+    // /nc title <channel> <title> [subtitle] — player + console/RCON transport,
+    // but the backend STATUS gate requires a super-admin session and only a
+    // player can obtain one (/nc auth is player-only). Console therefore gets
+    // NC-403 back rather than a working title; that is the backend's decision,
+    // not a silent no-op on our side.
+    ncCommand.overload<TitleParams>()
+        .text("title")
+        .required("channelId")
+        .required("title")
+        .optional("subtitle")
+        .execute([this](CommandOrigin const& origin, CommandOutput& output, TitleParams const& params) {
+            std::string playerName;
+            std::string playerUuid;
+            if (auto* entity = origin.getEntity(); entity && entity->isPlayer()) {
+                auto* p = static_cast<Player*>(entity);
+                playerName = p->getName();
+                playerUuid = p->getUuid().asString();
+            } else {
+                playerName = "Console";
+                playerUuid = "00000000-0000-0000-0000-000000000000";
+            }
+            handleTitle(playerName, playerUuid,
+                        {params.channelId, params.title, params.subtitle});
+            output.success();
+        });
+
     mCommandsRegistered = true;
     logger.info("Commands registered successfully.");
 }
@@ -279,6 +451,15 @@ void CommandHandler::handleHelp(const std::string& playerName, const std::string
     if (isAdmin) {
         sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_auth", locale)));
         sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_announce", locale)));
+        // Moderation is admin-gated too, so its usage lines stay hidden from
+        // ordinary players.
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_mute", locale)));
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_kick", locale)));
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_ban", locale)));
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_unban", locale)));
+        // /nc title shares announce's backend gate (super-admin session), so it
+        // is advertised with the same audience.
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(i18n.get("chat.command.help.line_title", locale)));
     }
     // Mirror the Java/Python platforms: only reveal the reload line to admins.
     if (isAdmin) {
@@ -623,6 +804,238 @@ void CommandHandler::handleAnnounce(const std::string& playerName, const std::st
     // authoritative and the broadcast is only complete once routeMessage fires.
     sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
         i18n.get("chat.announce.progress", locale, {channelId})));
+}
+
+// ==================== Moderation ====================
+
+void CommandHandler::dispatchModeration(moderation::ModerationRequest request,
+                                        const std::string& senderName,
+                                        const std::string& senderUuid,
+                                        const std::string& progressKey,
+                                        const std::vector<std::string>& progressArgs) {
+    auto& i18n = i18n::I18n::getInstance();
+    std::string locale = "zh_CN";
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        if (!senderUuid.empty()) {
+            locale = interceptor->getPlayerLocale(senderUuid);
+        }
+    }
+    std::string prefix = mPlugin.getConfig()->getPrefix();
+
+    if (!request.ok()) {
+        // Rejection carries the i18n key and (for duration errors) the offending
+        // token in {0}. Every moderation usage/validation key takes at most one
+        // argument, so a single-element substitution covers all of them.
+        std::vector<std::string> args;
+        if (!request.errorArg.empty()) {
+            args.push_back(request.errorArg);
+        }
+        sendMessage(senderName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get(request.errorKey, locale, args)));
+        return;
+    }
+
+    auto* networkClient = mPlugin.getNetworkClient();
+    if (!networkClient || !networkClient->isConnected()) {
+        sendMessage(senderName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.network.not_connected", locale)));
+        return;
+    }
+
+    networkClient->sendPacket(std::move(request.packet));
+
+    // Progress only. The backend's moderation permission check and validation
+    // are authoritative; the outcome arrives as a ChannelActionResponse, which
+    // ChatInterceptor already routes (kick/mute notifications to the target).
+    sendMessage(senderName, ChatInterceptor::convertColorCodes(prefix +
+        i18n.get(progressKey, locale, progressArgs)));
+}
+
+void CommandHandler::handleMute(const std::string& senderName, const std::string& senderUuid,
+                                bool isConsole, int permissionLevel,
+                                const std::vector<std::string>& args) {
+    // args: { targetName, duration, channelId }
+    std::string targetName = args.size() > 0 ? args[0] : "";
+    std::string duration   = args.size() > 1 ? args[1] : "";
+    std::string channelId  = args.size() > 2 ? args[2] : "";
+
+    // Mute is channel-scoped. A player who omits the channel gets their active
+    // one (the same convenience /nc kick has); console has no active channel,
+    // so an omitted channel there stays empty and the builder rejects it with
+    // the "specify a channel" line.
+    if (channelId.empty() && !isConsole) {
+        if (auto* interceptor = mPlugin.getChatInterceptor()) {
+            channelId = interceptor->getPlayerState(senderUuid).currentChannel;
+        }
+    }
+
+    auto* interceptor = mPlugin.getChatInterceptor();
+    std::string targetId;
+    if (interceptor) {
+        targetId = interceptor->getPlayerUuidByName(targetName);
+    }
+
+    auto const sender = isConsole ? moderation::ModerationSender::consoleSender()
+                                  : moderation::ModerationSender::player(senderName, senderUuid);
+    auto request = moderation::buildMuteRequest(permissionLevel, sender, targetName, targetId,
+                                                duration, channelId);
+
+    // The progress line quotes the resolved duration, matching the bukkit line.
+    long const seconds = moderation::parseDurationSeconds(duration);
+    std::string const prettyDuration = seconds > 0 ? std::to_string(seconds) + "s" : duration;
+
+    dispatchModeration(std::move(request), senderName, senderUuid,
+                       "chat.mute.progress", {targetName, channelId, prettyDuration});
+}
+
+void CommandHandler::handleKick(const std::string& senderName, const std::string& senderUuid,
+                                bool isConsole, int permissionLevel,
+                                const std::vector<std::string>& args) {
+    // args: { targetName, channelId }
+    std::string targetName = args.size() > 0 ? args[0] : "";
+    std::string channelId  = args.size() > 1 ? args[1] : "";
+
+    if (channelId.empty() && !isConsole) {
+        if (auto* interceptor = mPlugin.getChatInterceptor()) {
+            channelId = interceptor->getPlayerState(senderUuid).currentChannel;
+        }
+    }
+
+    auto* interceptor = mPlugin.getChatInterceptor();
+    std::string targetId;
+    if (interceptor) {
+        targetId = interceptor->getPlayerUuidByName(targetName);
+    }
+
+    auto const sender = isConsole ? moderation::ModerationSender::consoleSender()
+                                  : moderation::ModerationSender::player(senderName, senderUuid);
+    auto request = moderation::buildKickRequest(permissionLevel, sender, targetName, targetId,
+                                                channelId);
+
+    dispatchModeration(std::move(request), senderName, senderUuid,
+                       "chat.kick.progress", {targetName, channelId});
+}
+
+void CommandHandler::handleBan(const std::string& senderName, const std::string& senderUuid,
+                               bool isConsole, int permissionLevel,
+                               const std::vector<std::string>& args) {
+    // args: { targetName, duration, channelId }
+    std::string targetName = args.size() > 0 ? args[0] : "";
+    std::string duration   = args.size() > 1 ? args[1] : "";
+    std::string channelId  = args.size() > 2 ? args[2] : "";
+
+    // /nc ban's second argument may be either a duration or a channel, since
+    // both are optional. Mirror bukkit BanCommand: if the token parses as a
+    // duration it is one, otherwise it is the channel. A leading channel
+    // argument is therefore honoured, and an empty channel stays empty -- the
+    // network-wide form -- rather than being filled from the sender's active
+    // channel.
+    moderation::normalizeBanArgs(duration, channelId);
+
+    auto* interceptor = mPlugin.getChatInterceptor();
+    std::string targetId;
+    if (interceptor) {
+        targetId = interceptor->getPlayerUuidByName(targetName);
+    }
+
+    auto const sender = isConsole ? moderation::ModerationSender::consoleSender()
+                                  : moderation::ModerationSender::player(senderName, senderUuid);
+    auto request = moderation::buildBanRequest(permissionLevel, sender, targetName, targetId,
+                                               duration, channelId);
+
+    std::string scope = channelId.empty() ? "all channels" : channelId;
+    dispatchModeration(std::move(request), senderName, senderUuid,
+                       "chat.ban.progress", {targetName, scope});
+}
+
+void CommandHandler::handleUnban(const std::string& senderName, const std::string& senderUuid,
+                                 bool isConsole, int permissionLevel,
+                                 const std::vector<std::string>& args) {
+    // args: { targetName-or-uuid, channelId }
+    std::string targetArg = args.size() > 0 ? args[0] : "";
+    std::string channelId = args.size() > 1 ? args[1] : "";
+
+    auto* interceptor = mPlugin.getChatInterceptor();
+    std::string locale = "zh_CN";
+    if (interceptor && !senderUuid.empty()) {
+        locale = interceptor->getPlayerLocale(senderUuid);
+    }
+    std::string prefix = mPlugin.getConfig()->getPrefix();
+
+    // The ban target is usually offline -- that is the point of a ban -- so a
+    // name that resolves to nobody is expected, not an error. Say so instead of
+    // failing silently; the name is still forwarded for the backend to resolve
+    // across all connected servers.
+    if (interceptor && !targetArg.empty() && !moderation::looksLikeUuid(targetArg)
+        && interceptor->getPlayerUuidByName(targetArg).empty()) {
+        sendMessage(senderName, ChatInterceptor::convertColorCodes(prefix +
+            i18n::I18n::getInstance().get("chat.unban.offline_hint", locale, {targetArg})));
+    }
+
+    auto const sender = isConsole ? moderation::ModerationSender::consoleSender()
+                                  : moderation::ModerationSender::player(senderName, senderUuid);
+    auto request = moderation::buildUnbanRequest(permissionLevel, sender, targetArg, channelId);
+
+    std::string scope = channelId.empty() ? "all channels" : channelId;
+    dispatchModeration(std::move(request), senderName, senderUuid,
+                       "chat.unban.progress", {targetArg, scope});
+}
+
+void CommandHandler::handleTitle(const std::string& playerName, const std::string& playerUuid,
+                                 const std::vector<std::string>& args) {
+    auto& i18n = i18n::I18n::getInstance();
+    std::string locale = "zh_CN";
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        locale = interceptor->getPlayerLocale(playerUuid);
+    }
+    std::string prefix = mPlugin.getConfig()->getPrefix();
+
+    if (args.size() < 2 || args[0].empty() || args[1].empty()) {
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.title.usage", locale)));
+        return;
+    }
+
+
+    std::string channelId = args[0];
+    std::string title = args[1];
+    std::string subtitle = args.size() > 2 ? args[2] : "";
+
+    auto* networkClient = mPlugin.getNetworkClient();
+    if (!networkClient || !networkClient->isConnected()) {
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.network.not_connected", locale)));
+        return;
+    }
+
+    // Same transport as /nc announce: STATUS + a type extra. Console uses the
+    // all-zeros sentinel so the backend can recognise the origin.
+    bool const isConsole = (playerUuid == "00000000-0000-0000-0000-000000000000");
+
+    auto packet = std::make_unique<AdminActionPacket>();
+    packet->setAction(AdminAction::STATUS);
+    packet->setPlayerId(isConsole ? protocol::UUID{} : parsePlayerUuid(playerUuid));
+    packet->setTarget(channelId);
+    packet->addExtra("type", "TITLE");
+    packet->addExtra("operatorName", playerName);
+    packet->addExtra("title", title);
+    packet->addExtra("subtitle", subtitle);
+    if (isConsole) {
+        packet->addExtra("console", "true");
+    }
+
+    std::string reqId = packet->getRequestId().toString();
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        interceptor->registerPendingAdminAction(reqId, playerUuid);
+    }
+
+    networkClient->sendPacket(std::move(packet));
+
+    // Progress only: the backend hasSuperAdminSession gate decides. Without a
+    // prior /nc auth the response is NC-403 and handleAdminActionResponse
+    // surfaces it.
+    sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+        i18n.get("chat.title.progress", locale, {channelId})));
 }
 
 } // namespace novachat

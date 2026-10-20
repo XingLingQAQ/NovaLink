@@ -811,6 +811,12 @@ void ChatInterceptor::setPlayerLocale(const std::string& playerUuid, const std::
     mPlayerStates[playerUuid].locale = locale;
 }
 
+std::string ChatInterceptor::getPlayerUuidByName(const std::string& playerName) const {
+    std::lock_guard<std::mutex> lock(mNameMapMutex);
+    auto it = mNameToUuid.find(playerName);
+    return it != mNameToUuid.end() ? it->second : std::string{};
+}
+
 std::vector<std::string> ChatInterceptor::getKnownChannels() const {
     std::lock_guard<std::mutex> lock(mKnownChannelsMutex);
     return {mKnownChannels.begin(), mKnownChannels.end()};

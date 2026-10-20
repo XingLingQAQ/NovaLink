@@ -5,6 +5,8 @@
 #include <functional>
 #include <unordered_map>
 
+#include "ModerationCommands.h"
+
 namespace novachat {
 
 class NovaChatPlugin;
@@ -14,7 +16,8 @@ class NovaChatPlugin;
  * Registers and handles /nc commands.
  *
  * Subcommands (parity with the Java server-side platforms):
- *   help, join, leave, list, who, toggle, reload, auth (hidden), announce
+ *   help, join, leave, list, who, toggle, reload, auth (hidden), announce,
+ *   mute, kick, ban, unban (admin)
  */
 class CommandHandler {
 public:
@@ -68,6 +71,51 @@ private:
     // AnnounceCommand.
     void handleAnnounce(const std::string& playerName, const std::string& playerUuid,
                         const std::vector<std::string>& args);
+
+    // ==================== Moderation (mute / kick / ban / unban) ====================
+    // All four are admin-gated at the overload entry point (the same
+    // GameDirectors gate /nc reload uses — LeviLamina exposes no per-overload
+    // permission chain) and the builders in ModerationCommands re-check it so
+    // the pure layer can be tested without the SDK.
+    //
+    // Packet shape is ChannelActionPacket with the extras the backend reads:
+    // operatorId / console / operatorName / targetId / targetName / duration.
+    // Console sends the all-zeros sentinel UUID plus console=true; it bypasses
+    // the backend's moderation permission check entirely.
+    void handleMute(const std::string& senderName, const std::string& senderUuid,
+                    bool isConsole, int permissionLevel, const std::vector<std::string>& args);
+    void handleKick(const std::string& senderName, const std::string& senderUuid,
+                    bool isConsole, int permissionLevel, const std::vector<std::string>& args);
+    void handleBan(const std::string& senderName, const std::string& senderUuid,
+                   bool isConsole, int permissionLevel, const std::vector<std::string>& args);
+    void handleUnban(const std::string& senderName, const std::string& senderUuid,
+                     bool isConsole, int permissionLevel, const std::vector<std::string>& args);
+
+    // FEATURE-002 parity with bukkit TitleCommand: AdminActionPacket(STATUS)
+    // with type=TITLE. The backend gates STATUS on hasSuperAdminSession, so
+    // this only succeeds after the sender has run /nc auth. Console cannot
+    // auth (player-only), so console titles are always refused with NC-403.
+    void handleTitle(const std::string& playerName, const std::string& playerUuid,
+                     const std::vector<std::string>& args);
+
+    /**
+     * Sends one already-built moderation request and reports the outcome.
+     *
+     * Shared by all four moderation handlers: validates connectivity, sends
+     * the packet and prints the progress line (never a success line — the
+     * backend's own permission/validation result is authoritative and arrives
+     * later as a ChannelActionResponse).
+     *
+     * @param request    the builder result (rejection or packet)
+     * @param senderName who to report to (player name, or "Console")
+     * @param senderUuid sender UUID for locale lookup ("" for console)
+     * @param progressKey i18n key for the progress line
+     * @param progressArgs arguments for the progress line
+     */
+    void dispatchModeration(moderation::ModerationRequest request,
+                            const std::string& senderName, const std::string& senderUuid,
+                            const std::string& progressKey,
+                            const std::vector<std::string>& progressArgs);
 
     // Send a localized message to a player by name.
     void sendLocalized(const std::string& playerName, const std::string& playerUuid,

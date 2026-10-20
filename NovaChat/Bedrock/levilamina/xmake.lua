@@ -34,7 +34,32 @@ option("sdk")
     set_description("Enable the LeviLamina SDK dependency (requires VS + github).")
 option_end()
 
-if get_config("sdk") ~= "n" then
+-- NOTE: `xmake f --sdk=n` stores the option as the BOOLEAN false, not the
+-- string "n" (xmake converts y/n option values). Comparing against "n" alone
+-- therefore never matched and the SDK branch was always taken, so
+-- `xmake f --sdk=n` still cloned the levimc repo and pulled levilamina. Accept
+-- both spellings here and reuse the predicate for the target guards below.
+local sdk_disabled = (get_config("sdk") == "n") or (get_config("sdk") == false)
+
+-- Option to skip the OpenSSL package entirely.
+--
+-- OpenSSL is only needed by the TLS transport tests and the BDS plugin target;
+-- the pure protocol/i18n/golden tests link neither. A host without a
+-- Windows-native Perl cannot build the OpenSSL package from source (its
+-- Configure script rejects a cygwin Perl), so those runs need a way to
+-- configure and build the pure tests anyway. Defaults to on, so every existing
+-- invocation behaves exactly as before.
+-- Usage:  xmake f --sdk=n --openssl=n  &&  xmake build novachat-levilamina-tests
+option("openssl")
+    set_default("y")
+    set_showmenu(true)
+    set_description("Enable the OpenSSL package (TLS transport + TLS tests).")
+option_end()
+
+-- Same y/n -> boolean coercion as the sdk option above.
+local openssl_disabled = (get_config("openssl") == "n") or (get_config("openssl") == false)
+
+if not sdk_disabled then
     -- LeviLamina SDK + official build rules (only pulled when --sdk=n is NOT
     -- passed). set_policy("network.skip_fetch", true) would block the package
     -- pull, so we rely on the option guard above to avoid the repo clone
@@ -64,12 +89,9 @@ if get_config("sdk") ~= "n" then
     -- the SSL state machine lands in doConnect(). The self-contained
     -- HmacSha256/Sha256 utilities do NOT depend on OpenSSL (they have their
     -- own bundled implementations); this dependency is transport-only.
-    add_requires("openssl")
-else
-    -- When --sdk=n is passed (standalone test builds), we still need OpenSSL
-    -- for the TLS transport + the TLS integration tests. Declared here so the
-    -- test targets can add_packages("openssl") and get the headers + link.
-    add_requires("openssl")
+    if not openssl_disabled then
+        add_requires("openssl")
+    end
 end
 
 -- Target: novachat-levilamina (the BDS plugin shared library)
@@ -79,7 +101,7 @@ target("novachat-levilamina")
     -- handles the LeviLamina DLL link semantics; modpacker packs manifest.json
     -- into the output (replaces the manual after_build os.cp below -- kept as a
     -- fallback in case modpacker is absent in a future levibuildscript version).
-    if get_config("sdk") ~= "n" then
+    if not sdk_disabled then
         add_rules("@levibuildscript/linkrule")
         add_rules("@levibuildscript/modpacker")
     end
@@ -90,14 +112,16 @@ target("novachat-levilamina")
     set_symbols("debug")
 
     -- LeviLamina dependency (only when the SDK is enabled).
-    if get_config("sdk") ~= "n" then
+    if not sdk_disabled then
         add_packages("levilamina")
         -- AUTH-002 TLS: expose the OpenSSL headers + link the OpenSSL runtime
         -- to the plugin target. Only added under the SDK guard (the test
         -- targets do not use the TLS transport and must stay free of the BDS
         -- toolchain). Used by the forthcoming SSL state machine in
         -- NetworkClient; harmless until then (an unused package import).
-        add_packages("openssl")
+        if not openssl_disabled then
+            add_packages("openssl")
+        end
     end
 
     -- Source files
@@ -218,6 +242,10 @@ target("novachat-levilamina-golden-tests")
     end
 target_end()
 
+-- Both targets below link the OpenSSL package. They are declared inside a
+-- function so --openssl=n simply skips them without touching the target
+-- bodies (a host without Windows-native Perl cannot build the package).
+local function defineOpensslTestTargets()
 -- Test target: AUTH-002 TLS transport integration tests (no LeviLamina SDK
 -- needed). Starts a mock TLS server using OpenSSL (SSL_CTX + SSL_accept) and
 -- verifies the NetworkClient TLS state machine: handshake success with a
@@ -324,6 +352,12 @@ target("novachat-levilamina-send-tests")
     end)
 target_end()
 
+end
+
+if not openssl_disabled then
+    defineOpensslTestTargets()
+end
+
 -- Test target: VERIFY-005 LeviLamina packet-decode fuzz tests (no LeviLamina
 -- SDK needed). Fuzzes the pure decode boundaries (VarInt::tryPeek/decode,
 -- PacketBuffer::readString, Packet::read) for the four audit scenarios:
@@ -392,4 +426,39 @@ target("novachat-levilamina-i18n-parity-tests")
         local targetdir = target:targetdir()
         os.cp("src/i18n/lang", targetdir .. "/lang")
     end)
+target_end()
+
+-- Test target: moderation command packet-contract tests (no LeviLamina SDK
+-- needed). Pins what /nc mute / kick / ban / unban put on the wire: the
+-- ChannelAction id, the operator/target/duration extras the backend reads,
+-- the console sentinel UUID + console=true pair, the permission rejection and
+-- the argument validation.
+--
+-- The builders under src/command/ModerationCommands.cpp depend only on the
+-- protocol layer, so the exact code the plugin runs is compiled here without
+-- ll::/mc:: headers. CommandHandler.cpp itself stays untested in this target:
+-- it is the thin adapter over these builders and needs the BDS toolchain.
+--
+-- Build & run:
+--   xmake f --sdk=n --openssl=n -m debug
+--   xmake build novachat-levilamina-moderation-tests
+--   xmake run novachat-levilamina-moderation-tests
+target("novachat-levilamina-moderation-tests")
+    set_kind("binary")
+    set_languages("c++20")
+    set_symbols("debug")
+    add_cxflags("/utf-8")
+    add_includedirs("src")
+
+    add_files("tests/test_moderation_commands.cpp")
+    add_files("src/command/ModerationCommands.cpp")
+    add_files("src/protocol/PacketBuffer.cpp")
+
+    set_targetdir("$(buildir)/bin")
+    set_filename("novachat-levilamina-moderation-tests.exe")
+
+    if is_plat("windows") then
+        add_defines("NOMINMAX", "UNICODE", "_UNICODE", "WIN32", "_WIN32", "_WINDOWS")
+        add_syslinks("ws2_32", "advapi32")
+    end
 target_end()

@@ -196,6 +196,16 @@ public:
     void setPlayerLocale(const std::string& playerUuid, const std::string& locale);
 
     /**
+     * Resolve a player name to its UUID from the join-time name map.
+     *
+     * Used by the moderation commands to fill the targetId extra when the
+     * target is on this server. Returns an empty string for an unknown name:
+     * the target may be on another sub-server, in which case only targetName
+     * is sent and the backend resolves it across its connected clients.
+     */
+    std::string getPlayerUuidByName(const std::string& playerName) const;
+
+    /**
      * Get the set of known channels (populated from ConfigSync).
      */
     std::vector<std::string> getKnownChannels() const;
