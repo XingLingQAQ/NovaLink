@@ -1629,81 +1629,6 @@ function Assert-Absent([string]$assertionId, [string]$token, $receiverResult) {
   }
 }
 
-# --- moderation effect assertions -------------------------------------------
-#
-# Moderation commands are the one family where "the command returned success" is
-# worth nothing: the whole product claim is that STATE CHANGED (a mute silences,
-# a kick removes membership, a ban refuses the rejoin). These helpers assert the
-# state change from the RECEIVER's own recording, never from the operator's
-# acknowledgement.
-#
-# The negative ones are the important half. A mute is enforced by SILENTLY
-# dropping the sender's line (MessagePipeline drop reason SENDER_MUTED, or the
-# lite authority's `Lite mute rejected` path), and the sender is told nothing.
-# So "the line did not arrive" is the only evidence the mute took effect -- and
-# an assertion that only ever looks for a missing line passes vacuously when the
-# sender never spoke at all. Every negative assertion below is therefore paired
-# with a POSITIVE control taken in the same run (a line from the same sender in
-# a channel where they are not muted, or from before the mute landed). A green
-# negative without its control is a vacuous pass, not evidence.
-
-function Assert-NothingDelivered([string]$assertionId, [string]$token, [object[]]$receiverResults) {
-  # "Nobody saw it" -- checked across every observer, not just the one the plan
-  # named first. A backend that dropped the line for observer A but delivered it
-  # to observer B is still a broken mute.
-  $hits = @()
-  foreach ($r in $receiverResults) {
-    if (-not $r) { continue }
-    if (-not $r.received) { continue }
-    foreach ($entry in $r.received) {
-      if (($entry.text -and $entry.text.Contains($token)) -or
-          ($entry.raw -and $entry.raw.Contains($token))) {
-        $hits += "$($r.role): $($entry.text)"
-        break
-      }
-    }
-  }
-  return [PSCustomObject]@{
-    id = $assertionId
-    token = $token
-    pass = ($hits.Count -eq 0)
-    evidence = if ($hits.Count -gt 0) { $hits -join ' | ' } else { "0 of $($receiverResults.Count) observer recording(s) carry the token" }
-    kind = 'absence'
-  }
-}
-
-# Prove a moderation action ran at all, from the authority's own log. Without
-# this an "absence" assertion is unfalsifiable: a mute that was never applied and
-# a mute that worked both produce "the line did not arrive". The authority logs
-# one line per accepted action, and it names the TARGET UUID, which is the only
-# thing a chat-only assertion cannot see.
-function Assert-AuthorityApplied([string]$assertionId, [string]$logPath, [string]$pattern,
-                                 [string]$what) {
-  $text = Read-LogText $logPath
-  $pass = [bool]($text -and ($text -match $pattern))
-  $evidence = ''
-  if ($pass) {
-    $line = ($text -split "`n" | Where-Object { $_ -match $pattern } | Select-Object -First 1)
-    $evidence = if ($line) { $line.Trim() } else { '' }
-  } else {
-    $evidence = "authority never logged '$what' in $(Split-Path -Leaf $logPath): $pattern"
-  }
-  return [PSCustomObject]@{
-    id = $assertionId
-    token = $what
-    pass = $pass
-    evidence = $evidence
-    kind = 'authority-log'
-  }
-}
-
-# Prove a moderation action was REFUSED. The refusal text is rendered to the
-# operator by the authority (`ErrorCode.FORBIDDEN` -> NC-403), so it is a chat
-# line in the operator's own recording -- a receiver-side artifact, not a claim.
-function Assert-Refused([string]$assertionId, [string]$code, $operatorResult) {
-  return Assert-Delivered $assertionId $code $operatorResult
-}
-
 # Prove a proxy leg actually loaded the plugin. Without this the round can go
 # green while the proxy ran bare: the downstream servers talk to the backend on
 # their own, so every cross-server assertion passes without the proxy doing
@@ -2926,14 +2851,6 @@ function Invoke-LiteRound($round, [string]$roundDir) {
 #
 # Each token carries the run id, so a stale recording from an earlier run can
 # never satisfy an assertion.
-
-function Get-BotRecordTime($result) {
-  # The last-moment a negative assertion can be judged from. Every bot stamps
-  # each recording with an ISO timestamp; the mute is issued before the target
-  # speaks, so "after the last recorded activity of the operator" is a
-  # conservative lower bound that cannot exclude a line that should be absent.
-  return (Get-Date).ToUniversalTime()
-}
 
 # Runs the moderation-effect group against an already-running lite topology.
 #
