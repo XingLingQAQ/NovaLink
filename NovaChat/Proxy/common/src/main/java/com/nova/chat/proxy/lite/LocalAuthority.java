@@ -183,6 +183,20 @@ public final class LocalAuthority {
     private final Set<UUID> bansRestoreRequested = ConcurrentHashMap.newKeySet();
 
     /**
+     * Banned player id → the name it was banned under.
+     *
+     * <p>Unban is the one moderation action whose target is reliably offline:
+     * a ban exists to keep someone out while they are away. {@link
+     * #resolveTargetId} can only map a name to an online player, so without
+     * this table {@code /nc unban <name>} would fail in exactly the situation
+     * it is meant for. The {@code bans} schema has no name column and adding
+     * one would break the migration checksum, so the mapping is captured when
+     * the ban is issued and left empty for bans restored from disk (those can
+     * still be lifted by UUID).
+     */
+    private final ConcurrentMap<UUID, String> bannedNames = new ConcurrentHashMap<>();
+
+    /**
      * @param platform the platform adapter (player lookup, rendering dispatch)
      * @param chatCore the shared chat core (state store, formatter, downstream
      *                 handlers; also owns reply-target tracking through its
@@ -627,7 +641,10 @@ public final class LocalAuthority {
 
         ConcurrentMap<String, MuteInfo> table = mutes.get(targetId);
         boolean removed = table != null && table.remove(channelId) != null;
-        if (removed && store.isPersistent()) {
+        // Unconditional, for the same reason as the ban path: a mute row can be
+        // stored without a live in-memory entry, and a "successful" unmute that
+        // leaves the row behind is worse than an honest failure.
+        if (store.isPersistent()) {
             store.deleteMute(targetId, channelId);
         }
         platform.logDebug("Lite authority unmuted " + targetId + " in " + channelId
@@ -737,6 +754,8 @@ public final class LocalAuthority {
         String scope = global ? null : channelId;
         BanInfo ban = new BanInfo(scope, expireTime, reason, operatorId);
         banTable(targetId).put(banKey(scope), ban);
+        rememberBannedName(targetId, firstNonBlank(packet.getExtra("targetName"),
+                packet.getExtra("target_name")));
 
         List<String> evicted = new ArrayList<>();
         if (global) {
@@ -799,8 +818,16 @@ public final class LocalAuthority {
         String scope = global ? null : channelId;
         ConcurrentMap<String, BanInfo> table = bans.get(targetId);
         boolean removed = table != null && table.remove(banKey(scope)) != null;
-        if (removed && store.isPersistent()) {
+        // Delete the row unconditionally. Between an unban and that player's
+        // next load, no in-memory row exists for them even though one is stored;
+        // keying the delete off "removed something here" made the command report
+        // success while the ban survived the restart untouched.
+        if (store.isPersistent()) {
             store.deleteBan(targetId, scope);
+        }
+        if (table == null || table.isEmpty()) {
+            bans.remove(targetId);
+            bannedNames.remove(targetId);
         }
         platform.logDebug("Lite authority unbanned " + targetId + " in "
                 + describeBanScope(scope) + " (was banned=" + removed + ")");
@@ -955,13 +982,51 @@ public final class LocalAuthority {
             id = parseUuid(packet.getExtra("target_id"));
         }
         if (id == null) {
-            ProxyPlayer byName = findOnlineByName(packet.getExtra("targetName"));
-            if (byName == null) {
-                byName = findOnlineByName(packet.getExtra("target_name"));
-            }
-            id = byName != null ? byName.getUniqueId() : null;
+            String name = firstNonBlank(packet.getExtra("targetName"),
+                    packet.getExtra("target_name"));
+            ProxyPlayer byName = findOnlineByName(name);
+            id = byName != null ? byName.getUniqueId() : findBannedByName(name);
         }
         return id;
+    }
+
+    /**
+     * Remembers the name a player was banned under so a later offline unban can
+     * resolve it. Blank names and non-positive ids are ignored: without a name
+     * there is nothing to look up, and the UUID remains the fallback.
+     *
+     * @param playerId the banned player
+     * @param name     the name sent with the ban request, may be null
+     */
+    private void rememberBannedName(UUID playerId, String name) {
+        if (playerId != null && name != null && !name.isBlank()) {
+            bannedNames.put(playerId, name);
+        }
+    }
+
+    /**
+     * Maps a name back to a banned player for an offline unban.
+     *
+     * <p>Only players who are <em>currently</em> banned are considered, so a
+     * stale entry can never resurrect a lifted ban, and the lookup is
+     * case-insensitive to match player-name semantics elsewhere.
+     *
+     * @param name the target name, may be null
+     * @return the banned player's id, or null when no active ban matches
+     */
+    private UUID findBannedByName(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        for (Map.Entry<UUID, String> entry : bannedNames.entrySet()) {
+            if (name.equalsIgnoreCase(entry.getValue())) {
+                ConcurrentMap<String, BanInfo> table = bans.get(entry.getKey());
+                if (table != null && !table.isEmpty()) {
+                    return entry.getKey();
+                }
+            }
+        }
+        return null;
     }
 
     /**

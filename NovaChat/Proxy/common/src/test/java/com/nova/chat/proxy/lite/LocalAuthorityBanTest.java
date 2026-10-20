@@ -193,6 +193,103 @@ class LocalAuthorityBanTest {
                     .isFalse();
         }
     }
+    @Test
+    @DisplayName("an offline player can be unbanned by UUID")
+    void offlinePlayerCanBeUnbanned() {
+        joinAll(GLOBAL);
+        ban(moderator, bob, GLOBAL);
+
+        // Simulate the player leaving: the live tables drop but the ban row is
+        // persisted, which is the state an operator faces when they unban.
+        authority.onPlayerDisconnect(bob.id);
+
+        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.UNBAN, GLOBAL);
+        packet.addExtra("operatorId", moderator.id.toString());
+        packet.addExtra("targetId", bob.id.toString());
+        packet.addExtra("targetName", bob.name);
+
+        ChannelActionResponsePacket response =
+                (ChannelActionResponsePacket) send(packet).get(0);
+
+        assertThat(response.isSuccess())
+                .as("an unban must not depend on the target being online")
+                .isTrue();
+    }
+    @Test
+    @DisplayName("an offline player can be unbanned by name alone")
+    void offlinePlayerCanBeUnbannedByName() {
+        joinAll(GLOBAL);
+        ban(moderator, bob, GLOBAL);
+
+        // A ban evicts the target, so by the time an operator unbans them they
+        // are offline and only the name from the records is available.
+        authority.onPlayerDisconnect(bob.id);
+
+        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.UNBAN, GLOBAL);
+        packet.addExtra("operatorId", moderator.id.toString());
+        packet.addExtra("targetName", bob.name);
+
+        ChannelActionResponsePacket response =
+                (ChannelActionResponsePacket) send(packet).get(0);
+
+        assertThat(response.isSuccess())
+                .as("a name must resolve through the ban records, not only online players")
+                .isTrue();
+    }
+    @Test
+    @DisplayName("a name that matches no active ban is refused")
+    void unknownNameIsRefused() {
+        joinAll(GLOBAL);
+
+        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.UNBAN, GLOBAL);
+        packet.addExtra("operatorId", moderator.id.toString());
+        packet.addExtra("targetName", "Nobody");
+
+        ChannelActionResponsePacket response =
+                (ChannelActionResponsePacket) send(packet).get(0);
+
+        assertThat(response.isSuccess()).isFalse();
+    }
+    @Test
+    @DisplayName("an unban before the player reloads still clears the stored row")
+    void unbanClearsStoredRowWithoutALiveEntry() {
+        Path database = tempDir.resolve("unban-offline.db");
+
+        try (LiteChannelStore store = sqliteStore(database)) {
+            store.open();
+            LocalAuthority first = authority(store);
+            joinAll(first);
+            assertThat(ban(first, moderator, bob, GLOBAL).isSuccess()).isTrue();
+            // Reload the authority over the same database: the ban is now only
+            // on disk, so an unban must clear the row itself rather than rely on
+            // an in-memory entry it never loaded.
+            assertThat(store.flush(30_000L)).isTrue();
+        }
+
+        try (LiteChannelStore reopened = sqliteStore(database)) {
+            reopened.open();
+            LocalAuthority second = authority(reopened);
+            ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.UNBAN, GLOBAL);
+            packet.addExtra("operatorId", moderator.id.toString());
+            packet.addExtra("targetId", bob.id.toString());
+            packet.addExtra("targetName", bob.name);
+            assertThat(((ChannelActionResponsePacket) send(second, packet).get(0)).isSuccess())
+                    .isTrue();
+            assertThat(reopened.flush(30_000L)).isTrue();
+        }
+
+        try (LiteChannelStore third = sqliteStore(database)) {
+            third.open();
+            LocalAuthority restarted = authority(third);
+            restarted.onPlayerConnect(bob.id);
+            assertThat(third.flush(30_000L)).isTrue();
+
+            ChannelActionPacket join = action(bob, ChannelAction.JOIN, GLOBAL);
+            assertThat(((ChannelActionResponsePacket) send(restarted, join).get(0)).isSuccess())
+                    .as("the ban row must be gone, so the rejoin succeeds")
+                    .isTrue();
+        }
+    }
     // ---------------------------------------------------------------- refusals
 
     @Test

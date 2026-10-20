@@ -58,6 +58,7 @@ permissions:
       novachat.kick: true
       novachat.announce: true
       novachat.title: true
+      novachat.ban: true
       novachat.reload: true
       novachat.debug: true
       novachat.channel.*: true
@@ -85,6 +86,10 @@ permissions:
 
   novachat.title:
     description: Send title messages to channels
+    default: op
+
+  novachat.ban:
+    description: Ban and unban players from channels or network-wide
     default: op
 
   novachat.reload:
