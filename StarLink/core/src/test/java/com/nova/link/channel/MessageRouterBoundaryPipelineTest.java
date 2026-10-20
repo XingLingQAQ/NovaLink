@@ -61,6 +61,55 @@ class MessageRouterBoundaryPipelineTest {
                 .scope(ChannelScope.SERVER)
                 .clientId("Survival")
                 .build());
+
+        // Sender is a member of every channel it may speak on through the
+        // untrusted path; a kick/ban/leave is what removes that membership.
+        for (String channelId : new String[]{"global", "staff", "local"}) {
+            channelManager.addMember(channelId, senderId);
+        }
+    }
+
+    /**
+     * A message whose sender never joined the channel is dropped before fan-out
+     * (the general case behind "a kicked player can still talk").
+     */
+    @Test
+    @DisplayName("routeMessage drops a message from a non-member")
+    void routeMessageDropsNonMember() {
+        ClientConnection owner = mockConn("Survival");
+        when(networkHandler.findByClientId("Survival")).thenReturn(owner);
+
+        UUID stranger = UUID.randomUUID();
+        ChatMessagePacket msg = new ChatMessagePacket(
+                stranger, "Eve", "Survival", "local", "not my channel");
+
+        assertThat(router.routeMessage(msg)).isEmpty();
+        verify(owner, never()).sendPacket(any());
+    }
+
+    /**
+     * A kicked player keeps their connection but loses membership: the next
+     * message must not reach the channel. Mirrors handleKick's two state
+     * changes (removeMember + leaveChannel).
+     */
+    @Test
+    @DisplayName("a kicked sender's next message is not delivered")
+    void kickedSenderIsSilenced() {
+        ClientConnection owner = mockConn("Survival");
+        when(networkHandler.findByClientId("Survival")).thenReturn(owner);
+        when(networkHandler.getConnections()).thenReturn(Set.of(owner));
+
+        ChatMessagePacket before = new ChatMessagePacket(
+                senderId, "Steve", "Survival", "local", "before the kick");
+        assertThat(router.routeMessage(before)).containsExactly("Survival");
+
+        channelManager.removeMember("local", senderId);
+
+        ChatMessagePacket after = new ChatMessagePacket(
+                senderId, "Steve", "Survival", "local", "after the kick");
+        assertThat(router.routeMessage(after)).isEmpty();
+
+        verify(owner, times(1)).sendPacket(any());
     }
 
     private ClientConnection mockConn(String clientId) {

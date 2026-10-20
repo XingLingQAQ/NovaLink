@@ -224,6 +224,16 @@ public class ChannelActionHandler {
         }
     }
 
+    /**
+     * Handles {@link ChannelAction#JOIN}.
+     *
+     * <p>Refusal order: malformed request → unknown channel → cross-client
+     * boundary → world filter → active ban → capacity/password. The ban check
+     * answers {@link NovaConstants#ERROR_FORBIDDEN} (NC-403), the same code a
+     * kick's permission denial and a cross-client JOIN use, and the same code
+     * the lite authority returns when it refuses a banned rejoin — no new wire
+     * code is introduced for this.
+     */
     private ChannelActionResponsePacket handleJoin(ClientConnection connection, ChannelActionPacket packet) {
         UUID playerId = getUuid(packet.getExtra("playerId"), packet.getExtra("player_id"));
         if (playerId == null) {
@@ -258,6 +268,20 @@ public class ChannelActionHandler {
         // Enforce world restrictions if provided by client
         if (channel.hasWorldFilter() && !channel.isWorldAllowed(world)) {
             return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, NovaConstants.ERROR_WORLD_RESTRICTED, "Channel is restricted to specific worlds");
+        }
+
+        // A ban is stronger than a mute: it keeps the player out, it does not
+        // merely silence them (see BanInfo). BanManager.isBanned consults the
+        // channel entry and falls back to the global one, so a global ban
+        // refuses every channel, and it evicts an expired entry on read, so an
+        // expired ban never blocks here. Runs before the PRIVATE branch, which
+        // would otherwise re-admit a banned player who knows the password.
+        // Skipped when no BanManager is wired (partial wiring, tests), matching
+        // every other nullable-manager check in this class.
+        if (banManager != null && banManager.isBanned(playerId, channelId)) {
+            logger.debug("Join refused: player {} is banned from channel {}", playerId, channelId);
+            return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId,
+                    NovaConstants.ERROR_FORBIDDEN, "You are banned from this channel");
         }
 
         boolean joined;
@@ -462,6 +486,28 @@ public class ChannelActionHandler {
         String inviteCode = packet.getChannelId();
         if (inviteCode == null || inviteCode.isBlank()) {
             return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, "", NovaConstants.ERROR_BAD_REQUEST, "Invite code is required");
+        }
+
+        // An accepted invitation is another way into a channel's membership, so
+        // an active ban has to refuse it too — otherwise a banned player just
+        // needs any outstanding invite code to walk back in. Validated before
+        // acceptInvitation so a refusal never consumes one use of the invite.
+        if (banManager != null) {
+            try {
+                InvitationResult invitation = invitationManager.validateInvitation(inviteCode);
+                String invitedChannel = invitation.isSuccess() && invitation.getInvitation() != null
+                        ? invitation.getInvitation().getChannelId() : null;
+                if (invitedChannel != null && banManager.isBanned(playerId, invitedChannel)) {
+                    logger.debug("Invite refused: player {} is banned from channel {}",
+                            playerId, invitedChannel);
+                    return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, inviteCode,
+                            NovaConstants.ERROR_FORBIDDEN, "You are banned from this channel");
+                }
+            } catch (DatabaseException e) {
+                // Let acceptInvitation report the same failure with its own
+                // message rather than duplicating the error here.
+                logger.debug("Ban pre-check for invitation {} failed: {}", inviteCode, e.getMessage());
+            }
         }
 
         InvitationResult result;

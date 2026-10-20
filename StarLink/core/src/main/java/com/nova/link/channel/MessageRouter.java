@@ -103,7 +103,8 @@ public class MessageRouter {
 
     /**
      * Routes a chat message through the full pipeline (TCP / untrusted ingress).
-     * Always enforces SERVER/PRIVATE sender-client boundary.
+     * Always enforces the SERVER/PRIVATE sender-client boundary and the
+     * sender's channel membership.
      *
      * @param message the chat message packet to route
      * @return the set of client IDs that received the message
@@ -120,7 +121,9 @@ public class MessageRouter {
 
     /**
      * Routes a message to a specific already-resolved channel (trusted/internal path).
-     * Boundary is not re-checked; mute/filter/fan-out still run once via the pipeline.
+     * Neither the boundary nor the sender's membership is re-checked — the
+     * caller is the console or a panel operator, which is never a member;
+     * mute/filter/fan-out still run once via the pipeline.
      * Also forwards the message to any super admins monitoring this channel.
      *
      * @param channel the target channel

@@ -31,6 +31,8 @@ public final class MessagePipelineResult {
         SENDER_MUTED,
         /** The sender is banned from the target channel (or globally). */
         SENDER_BANNED,
+        /** The sender is not a member of the target channel (kicked, left, or never joined). */
+        SENDER_NOT_IN_CHANNEL,
         /** Cross-client routing policy denied delivery to the target client. */
         CROSS_CLIENT_DENIED,
         /** No online recipients matched the channel membership. */

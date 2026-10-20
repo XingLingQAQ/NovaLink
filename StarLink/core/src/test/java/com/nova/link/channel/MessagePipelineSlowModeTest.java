@@ -77,6 +77,13 @@ class MessagePipelineSlowModeTest {
                 .displayName("Fast")
                 .scope(ChannelScope.GLOBAL)
                 .build());
+
+        // Untrusted ingress only accepts a member's message, so every sender the
+        // tests exercise must be a member first — the precondition a real client
+        // establishes with a JOIN. Console is exempt (it is never a member).
+        channelManager.addMember("slow", senderId);
+        channelManager.addMember("fast", senderId);
+        channelManager.addMember("slow", superAdminId);
     }
 
     private ChatMessagePacket msg(UUID sender, String channelId) {
@@ -124,6 +131,7 @@ class MessagePipelineSlowModeTest {
                 .scope(ChannelScope.GLOBAL)
                 .slowModeSeconds(5)
                 .build());
+        channelManager.addMember("slow2", senderId);
 
         assertThat(pipeline.process(msg(senderId, "slow")).isDelivered()).isTrue();
         // Same sender, different channel: its own window.
@@ -137,6 +145,7 @@ class MessagePipelineSlowModeTest {
     @DisplayName("players are tracked independently")
     void perPlayerIsolation() {
         UUID other = UUID.randomUUID();
+        channelManager.addMember("slow", other);
         assertThat(pipeline.process(msg(senderId, "slow")).isDelivered()).isTrue();
         assertThat(pipeline.process(msg(other, "slow")).isDelivered()).isTrue();
     }
@@ -168,6 +177,7 @@ class MessagePipelineSlowModeTest {
                 .slowModeSeconds(5)
                 .build());
         permissionManager.grantChannelAdmin("owned", senderId);
+        channelManager.addMember("owned", senderId);
         when(networkHandler.findByClientId("Survival")).thenReturn(conn);
 
         assertThat(pipeline.process(msg(senderId, "owned")).isDelivered()).isTrue();

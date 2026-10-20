@@ -60,6 +60,9 @@ class MessageRouterMuteFilterTest {
                 .displayName("Global")
                 .scope(ChannelScope.GLOBAL)
                 .build());
+        // Membership is a precondition of the untrusted send path; mute is what
+        // the tests here vary, so the sender is a member from the start.
+        channelManager.addMember("global", senderId);
     }
 
     @Test

@@ -30,12 +30,19 @@ import java.util.function.BiPredicate;
  * Explicit chat processing pipeline:
  * <pre>
  *   validate → resolve channel → (optional) cross-client check
- *            → mute → sensitive-word filter
+ *            → mute → ban → membership → slow mode → sensitive-word filter
  *            → scope fan-out → spy → websocket
  * </pre>
  * <p>
  * Extracted from ad-hoc checks so every ingress path (TCP handler, REST, tests)
  * shares the same ordered stages and drop reasons.
+ * <p>
+ * Two sender rules are only meaningful for untrusted ingress (a game client
+ * speaking on its own behalf) and are therefore switched on by the caller:
+ * the SERVER/PRIVATE cross-client boundary and the channel-membership gate.
+ * Trusted callers (REST/console/announcements) speak as a panel operator or the
+ * console, which are never channel members, so applying either rule to them
+ * would silence every administrative message.
  * <p>
  * Thread-safety: boundary enforcement is passed as a method parameter (never a
  * mutable instance flag), so concurrent calls cannot interleave and disable each
@@ -225,8 +232,9 @@ public class MessagePipeline {
 
     /**
      * Trusted path when the channel is already resolved (REST / internal helpers).
-     * Does <em>not</em> re-check the sender-client boundary — callers are responsible
-     * for constructing a trusted packet (e.g. API stamps {@code clientId} from the channel).
+     * Does <em>not</em> re-check the sender-client boundary or the sender's channel
+     * membership — callers speak as the console or a panel operator, neither of
+     * which is ever a channel member (e.g. API stamps {@code clientId} from the channel).
      */
     public MessagePipelineResult processForChannel(Channel channel, ChatMessagePacket message) {
         return processForChannel(channel, message, false);
@@ -237,7 +245,13 @@ public class MessagePipeline {
      *
      * @param enforceSenderClientBoundary when true, SERVER/PRIVATE messages whose
      *                                    sender client does not own the channel are
-     *                                    dropped with {@link MessagePipelineResult.DropReason#CROSS_CLIENT_DENIED}
+     *                                    dropped with {@link MessagePipelineResult.DropReason#CROSS_CLIENT_DENIED},
+     *                                    and any message whose sender is not a member
+     *                                    of the channel is dropped with
+     *                                    {@link MessagePipelineResult.DropReason#SENDER_NOT_IN_CHANNEL}.
+     *                                    Both are sender rules that only make sense for
+     *                                    a game client speaking on its own behalf, so
+     *                                    trusted callers pass false.
      */
     public MessagePipelineResult processForChannel(Channel channel, ChatMessagePacket message,
                                                    boolean enforceSenderClientBoundary) {
@@ -272,7 +286,26 @@ public class MessagePipeline {
                     MessagePipelineResult.DropReason.SENDER_BANNED, message, channel);
         }
 
-        // --- Stage 4c: slow mode (channel admins and console are exempt) ---
+        // --- Stage 4c: membership (untrusted ingress only) ---
+        // Membership is what a kick changes: handleKick/handleBan/LEAVE all
+        // remove the player from Channel#members, so a removed player speaking
+        // here is exactly the "kicked player keeps talking" hole. The recipient
+        // side stays scope-driven (GLOBAL broadcasts to every connection and the
+        // platform filters by active channel); this gate is about the SENDER.
+        //
+        // A null sender id carries no membership claim and the mute/ban stages
+        // above skip it too, so it is skipped here as well. The console sentinel
+        // is exempt for the same reason it bypasses moderation checks.
+        if (enforceSenderClientBoundary && message.getSenderId() != null
+                && !ConsoleSentinel.isConsole(message.getSenderId())
+                && !channel.isMember(message.getSenderId())) {
+            logger.debug("Pipeline drop SENDER_NOT_IN_CHANNEL player={} channel={}",
+                    message.getSenderId(), channel.getId());
+            return MessagePipelineResult.dropped(
+                    MessagePipelineResult.DropReason.SENDER_NOT_IN_CHANNEL, message, channel);
+        }
+
+        // --- Stage 4d: slow mode (channel admins and console are exempt) ---
         int slowModeSeconds = channel.getSlowModeSeconds();
         if (slowModeSeconds > 0 && message.getSenderId() != null
                 && !isSlowModeExempt(message.getSenderId(), channel.getId())) {

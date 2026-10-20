@@ -54,6 +54,9 @@ class MessagePipelineMessageLogTest {
                 .displayName("Global")
                 .scope(ChannelScope.GLOBAL)
                 .build());
+        // Untrusted ingress only accepts a member's message (the sender must have
+        // JOINed first). Every case here sends as this player.
+        channelManager.addMember("global", senderId);
 
         messageLogService = mock(MessageLogService.class);
         pipeline = new MessagePipeline(channelManager, networkHandler);

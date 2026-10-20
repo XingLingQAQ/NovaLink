@@ -99,6 +99,14 @@ class MessagePipelineDetailedTest {
                 .clientId("Survival")
                 .ownerId(senderId)
                 .build());
+
+        // The untrusted path only lets a member speak (a kick/ban/leave removes
+        // membership — that is what those actions change). The fixture therefore
+        // joins the sender to every channel it talks on, which is the
+        // precondition every real client establishes with a JOIN.
+        for (String channelId : new String[]{"global", "staff", "local", "party"}) {
+            channelManager.addMember(channelId, senderId);
+        }
     }
 
     private ChatMessagePacket msg(String channelId, String content) {
