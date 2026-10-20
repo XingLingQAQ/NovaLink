@@ -104,9 +104,15 @@ public class BanCommand extends AbstractSubCommand {
 
         ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.BAN, channelId);
         if (sender instanceof Player) {
-            packet.addExtra("operatorId", ((Player) sender).getUniqueId().toString());
+            String playerId = ((Player) sender).getUniqueId().toString();
+            packet.addExtra("operatorId", playerId);
+            // Correlates the asynchronous response back to this sender; see
+            // ChannelResponseTracker (it keys the pending entry on playerId).
+            packet.addExtra("playerId", playerId);
         } else {
             packet.addExtra("operatorId", NovaConstants.CONSOLE_SENTINEL_UUID);
+            // Sentinel playerId so the outcome is logged rather than dropped.
+            packet.addExtra("playerId", NovaConstants.CONSOLE_SENTINEL_UUID);
             packet.addExtra("console", "true");
         }
         packet.addExtra("operatorName", sender.getName());

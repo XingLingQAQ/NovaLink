@@ -114,6 +114,13 @@ public final class ChannelResponseDispatcher {
                         packet.getExtra("displayName"),
                         packet.getExtra("members"),
                         packet.getExtra("memberCount"));
+            } else if (isModerationAction(packet.getAction())) {
+                // Moderation had no success path at all: /nc mute|kick|ban|unban
+                // printed their optimistic "...ing" line and then went silent
+                // even when the authority accepted the action. The adapter
+                // method is a no-op by default, so a platform that has not opted
+                // in keeps exactly the behaviour it had before.
+                adapter.sendModerationSuccess(playerId, moderationSuccessText(playerId, packet.getAction()));
             }
             return;
         }
@@ -134,6 +141,49 @@ public final class ChannelResponseDispatcher {
             return;
         }
         adapter.sendErrorMessage(playerId, ErrorMessageFormatter.format(code));
+    }
+
+    /**
+     * @param action a channel action, possibly null
+     * @return whether {@code action} is one of the operator-issued moderation
+     *         actions that report their outcome through
+     *         {@link ChannelResponseAdapter#sendModerationSuccess}
+     */
+    private static boolean isModerationAction(ChannelAction action) {
+        return action == ChannelAction.KICK
+                || action == ChannelAction.MUTE
+                || action == ChannelAction.UNMUTE
+                || action == ChannelAction.BAN
+                || action == ChannelAction.UNBAN;
+    }
+
+    /**
+     * Resolves the operator-facing confirmation for a successful moderation
+     * action.
+     *
+     * <p>Copy comes from the shared {@code chat.action.*_processed} keys so the
+     * wording matches the pre-DUP-3 per-platform handlers. BAN / UNBAN have no
+     * key of their own (they never had one), so they get the generic acceptance
+     * line. Colors are the platform's job.
+     *
+     * @param playerId the originating sender (for their locale; may be null)
+     * @param action   the moderation action that succeeded
+     * @return the localized confirmation line
+     */
+    private static String moderationSuccessText(UUID playerId, ChannelAction action) {
+        if (action == null) {
+            return I18n.tr(playerId, "chat.action.success");
+        }
+        switch (action) {
+            case KICK:
+                return I18n.tr(playerId, "chat.action.kick_processed");
+            case MUTE:
+                return I18n.tr(playerId, "chat.action.mute_processed");
+            case UNMUTE:
+                return I18n.tr(playerId, "chat.action.unmute_processed");
+            default:
+                return I18n.tr(playerId, "chat.action.success");
+        }
     }
 
     /**
@@ -269,6 +319,24 @@ public final class ChannelResponseDispatcher {
          */
         void sendWhoResult(UUID playerId, String channelId, String displayName,
                            String membersCsv, String memberCount);
+
+        /**
+         * Renders the operator's confirmation for a successful moderation action
+         * (KICK / MUTE / UNMUTE / BAN / UNBAN). The dispatcher resolves the
+         * localized text; the platform only colourises it, hops to its own
+         * thread, and sends it to {@code playerId}.
+         *
+         * <p>Default is a no-op: an adapter that does not override this keeps
+         * exactly the behaviour it had before the method existed (silence on
+         * those successes). Opt in per platform rather than changing all seven
+         * at once.
+         *
+         * @param playerId the originating sender; non-null (validated by the dispatcher)
+         * @param text     the resolved confirmation line, may contain {@code &} codes
+         */
+        default void sendModerationSuccess(UUID playerId, String text) {
+            // no-op by default
+        }
 
         /**
          * Renders the target-side KICK/MUTE notice (UX-DESIGN §5). The text is

@@ -89,11 +89,17 @@ public class KickCommand extends AbstractSubCommand {
 
         ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.KICK, channelId);
         if (sender instanceof Player) {
-            packet.addExtra("operatorId", ((Player) sender).getUniqueId().toString());
+            String playerId = ((Player) sender).getUniqueId().toString();
+            packet.addExtra("operatorId", playerId);
+            // Correlates the asynchronous response back to this sender;
+            // ChannelResponseTracker keys its pending entry on this extra.
+            packet.addExtra("playerId", playerId);
         } else {
             // Console/RCON: use a well-known console UUID so the backend can
             // grant SUPER_ADMIN permission for console-originated moderation.
+            // playerId mirrors operatorId so the outcome is logged.
             packet.addExtra("operatorId", NovaConstants.CONSOLE_SENTINEL_UUID);
+            packet.addExtra("playerId", NovaConstants.CONSOLE_SENTINEL_UUID);
             packet.addExtra("console", "true");
         }
         packet.addExtra("operatorName", sender.getName());

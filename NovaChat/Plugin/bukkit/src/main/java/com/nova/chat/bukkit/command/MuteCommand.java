@@ -98,11 +98,21 @@ public class MuteCommand extends AbstractSubCommand {
         // Create and send mute packet
         ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.MUTE, channelId);
         if (sender instanceof Player) {
-            packet.addExtra("operatorId", ((Player) sender).getUniqueId().toString());
+            String playerId = ((Player) sender).getUniqueId().toString();
+            packet.addExtra("operatorId", playerId);
+            // The response is asynchronous: ChannelResponseTracker keys the
+            // pending entry on this extra, and the dispatcher drops a response
+            // whose pending playerId is null. Without it the operator never
+            // sees the outcome of the mute.
+            packet.addExtra("playerId", playerId);
         } else {
             // Console/RCON: use a well-known console UUID so the backend can
             // grant SUPER_ADMIN permission for console-originated moderation.
+            // playerId carries the same sentinel, matching the admin-action
+            // convention (AnnounceCommand/TitleCommand) so the response is
+            // logged to the server console instead of being dropped.
             packet.addExtra("operatorId", NovaConstants.CONSOLE_SENTINEL_UUID);
+            packet.addExtra("playerId", NovaConstants.CONSOLE_SENTINEL_UUID);
             packet.addExtra("console", "true");
         }
         packet.addExtra("operatorName", sender.getName());

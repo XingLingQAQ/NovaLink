@@ -74,6 +74,9 @@ class MuteCommandTest extends CommandTestSupport {
         assertThat(packet.getAction()).isEqualTo(ChannelAction.MUTE);
         assertThat(packet.getChannelId()).isEqualTo("global");
         assertThat(packet.getExtra("operatorId")).isEqualTo(OPERATOR_ID.toString());
+        assertThat(packet.getExtra("playerId"))
+                .as("the response dispatcher keys its pending entry on playerId")
+                .isEqualTo(OPERATOR_ID.toString());
         assertThat(packet.getExtra("operatorName")).isEqualTo("Mod");
         assertThat(packet.getExtra("targetId")).isEqualTo(TARGET_ID.toString());
         assertThat(packet.getExtra("targetName")).isEqualTo("Bob");
@@ -133,6 +136,9 @@ class MuteCommandTest extends CommandTestSupport {
 
         ChannelActionPacket packet = (ChannelActionPacket) sentPacket(client);
         assertThat(packet.getExtra("operatorId")).isEqualTo(NovaConstants.CONSOLE_SENTINEL_UUID);
+        assertThat(packet.getExtra("playerId"))
+                .as("console moderation carries the sentinel so the outcome is logged, not dropped")
+                .isEqualTo(NovaConstants.CONSOLE_SENTINEL_UUID);
         assertThat(packet.getExtra("console")).isEqualTo("true");
         assertThat(packet.getExtra("duration")).isEqualTo("30");
     }

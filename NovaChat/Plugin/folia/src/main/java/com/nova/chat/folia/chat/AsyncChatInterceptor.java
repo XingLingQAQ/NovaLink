@@ -14,6 +14,7 @@ import com.nova.chat.folia.NovaChatFolia;
 import com.nova.chat.folia.command.MessageHelper;
 import com.nova.chat.folia.config.NovaChatConfig;
 import com.nova.chat.folia.scheduler.FoliaSchedulerAdapter;
+import com.nova.chat.common.NovaConstants;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
@@ -63,6 +64,12 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class AsyncChatInterceptor implements Listener {
     
+    /**
+     * Console/RCON-sentinel prefix on rendered console lines, matching
+     * {@code AdminActionResponseHandler.CONSOLE_TAG}.
+     */
+    private static final String CONSOLE_TAG = "[NovaChat console] ";
+
     private final NovaChatFolia plugin;
 
     /**
@@ -370,9 +377,31 @@ public class AsyncChatInterceptor implements Listener {
         public void sendErrorMessage(UUID playerId, String text) {
             Player player = plugin.getServer().getPlayer(playerId);
             if (player == null) {
+                // Console/RCON sender: no Player behind the sentinel, so the
+                // refusal goes to the log instead of vanishing (same convention
+                // as AdminActionResponseHandler).
+                if (NovaConstants.CONSOLE_SENTINEL_UUID.equals(String.valueOf(playerId))) {
+                    plugin.getLogger().warning(CONSOLE_TAG + text);
+                }
                 return;
             }
             scheduler.runForPlayer(player, () -> plugin.getMessageHelper().sendError(player, text));
+        }
+
+        @Override
+        public void sendModerationSuccess(UUID playerId, String text) {
+            Player player = plugin.getServer().getPlayer(playerId);
+            if (player == null) {
+                if (NovaConstants.CONSOLE_SENTINEL_UUID.equals(String.valueOf(playerId))) {
+                    plugin.getLogger().info(CONSOLE_TAG + text);
+                }
+                return;
+            }
+            scheduler.runForPlayer(player, () -> {
+                if (player.isOnline()) {
+                    plugin.getMessageHelper().sendSuccess(player, text);
+                }
+            });
         }
 
         @Override

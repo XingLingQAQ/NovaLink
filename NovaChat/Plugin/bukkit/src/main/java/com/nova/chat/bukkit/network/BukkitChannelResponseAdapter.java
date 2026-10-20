@@ -140,6 +140,12 @@ final class BukkitChannelResponseAdapter implements ChannelResponseAdapter {
         plugin().getServer().getScheduler().runTask(plugin(), () -> {
             org.bukkit.entity.Player player = plugin().getServer().getPlayer(playerId);
             if (player == null) {
+                // Console/RCON sender: there is no Player behind the sentinel,
+                // so the outcome goes to the server log instead of vanishing
+                // (same convention as handleAdminActionResponse).
+                if (NetworkClient.CONSOLE_SENTINEL_UUID.equals(playerId)) {
+                    plugin().getLogger().warning("[NovaChat console] " + text);
+                }
                 return;
             }
             plugin().getMessageHelper().sendError(player, text);
@@ -161,6 +167,22 @@ final class BukkitChannelResponseAdapter implements ChannelResponseAdapter {
                     plugin().getMessageHelper().sendMessage(player, MessageHelper.colorize(line));
                 }
             }
+        });
+    }
+
+    @Override
+    public void sendModerationSuccess(UUID playerId, String text) {
+        plugin().getServer().getScheduler().runTask(plugin(), () -> {
+            org.bukkit.entity.Player player = plugin().getServer().getPlayer(playerId);
+            if (player == null) {
+                // Console/RCON sender: log the accepted outcome instead of
+                // dropping it (same convention as handleAdminActionResponse).
+                if (NetworkClient.CONSOLE_SENTINEL_UUID.equals(playerId)) {
+                    plugin().getLogger().info("[NovaChat console] " + text);
+                }
+                return;
+            }
+            plugin().getMessageHelper().sendSuccess(player, text);
         });
     }
 

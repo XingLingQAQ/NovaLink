@@ -97,6 +97,9 @@ class UnbanCommandTest {
         assertThat(packet.getExtra("targetId"))
                 .as("the UUID is what makes an offline unban possible")
                 .isEqualTo(TARGET_ID.toString());
+        assertThat(packet.getExtra("playerId"))
+                .as("the response dispatcher keys its pending entry on playerId")
+                .isEqualTo(OPERATOR_ID.toString());
     }
 
     @Test
@@ -149,6 +152,9 @@ class UnbanCommandTest {
 
         ChannelActionPacket packet = sentPacket();
         assertThat(packet.getExtra("operatorId")).isEqualTo(NovaConstants.CONSOLE_SENTINEL_UUID);
+        assertThat(packet.getExtra("playerId"))
+                .as("console moderation carries the sentinel so the outcome is logged, not dropped")
+                .isEqualTo(NovaConstants.CONSOLE_SENTINEL_UUID);
     }
 
     @Test

@@ -104,6 +104,10 @@ class BanCommandTest {
         assertThat(packet.getAction()).isEqualTo(ChannelAction.BAN);
         assertThat(packet.getChannelId()).isEqualTo("global");
         assertThat(packet.getExtra("operatorId")).isEqualTo(OPERATOR_ID.toString());
+        assertThat(packet.getExtra("playerId"))
+                .as("the response dispatcher keys its pending entry on playerId; "
+                        + "without it the operator never learns the outcome")
+                .isEqualTo(OPERATOR_ID.toString());
         assertThat(packet.getExtra("targetId")).isEqualTo(TARGET_ID.toString());
         assertThat(packet.getExtra("targetName")).isEqualTo("Bob");
         assertThat(packet.getExtra("duration")).isEqualTo("3600");
@@ -166,6 +170,9 @@ class BanCommandTest {
 
         ChannelActionPacket packet = sentPacket();
         assertThat(packet.getExtra("operatorId")).isEqualTo(NovaConstants.CONSOLE_SENTINEL_UUID);
+        assertThat(packet.getExtra("playerId"))
+                .as("console moderation carries the sentinel so the outcome is logged, not dropped")
+                .isEqualTo(NovaConstants.CONSOLE_SENTINEL_UUID);
         assertThat(packet.getExtra("console")).isEqualTo("true");
         assertThat(packet.getExtra("duration")).isEqualTo("86400");
     }
