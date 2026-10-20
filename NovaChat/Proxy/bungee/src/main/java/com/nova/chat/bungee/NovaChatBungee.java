@@ -51,8 +51,19 @@ public class NovaChatBungee extends Plugin {
     /** Plugin configuration */
     private NovaChatConfig config;
     
-    /** Network client for backend connection */
+    /**
+     * Fallback backend link ({@code backend.username}), kept for the historical
+     * accessor. With per-server identities this is only the link that serves
+     * servers without their own entry; null when the operator left
+     * {@code backend.username} empty.
+     */
     private NetworkClient networkClient;
+
+    /**
+     * Relay-mode backend links: one authenticated connection per downstream
+     * server, null in lite mode.
+     */
+    private com.nova.chat.proxy.relay.RelayBackendLinks relayLinks;
 
     /**
      * Lite-mode transport stand-in: an in-process local authority instead of a
@@ -209,7 +220,14 @@ public class NovaChatBungee extends Plugin {
         pluginMessageListener = null;
         proxyChannelHandler = null;
 
-        // Disconnect from backend (relay) or stop the local dispatcher (lite)
+        // Disconnect every backend link (relay) or stop the local dispatcher
+        // (lite). Each link owns a Netty event loop group; none may be left
+        // running, or the proxy process would not exit.
+        com.nova.chat.proxy.relay.RelayBackendLinks links = relayLinks;
+        relayLinks = null;
+        if (links != null) {
+            links.close();
+        }
         if (networkClient != null) {
             networkClient.disconnect();
             networkClient = null;
@@ -348,30 +366,67 @@ public class NovaChatBungee extends Plugin {
         }
 
         knownChannelRegistry = new com.nova.chat.client.channel.KnownChannelRegistry();
-        networkClient = new NetworkClient(this, config);
+        networkClient = null;
+        // The links themselves are built in initializeProxyCores(): they need
+        // the platform adapter (roster + async dispatch), which does not exist
+        // yet at this point.
+        relayLinks = null;
+    }
 
-        // UX-DESIGN §2.1: register a minimal ConfigSync handler that fills the
-        // shared registry so /nc list and join <Tab> have data when the backend
-        // pushes a roster. If the backend never pushes, the registry stays empty
-        // and consumers degrade gracefully (no crash).
-        com.nova.chat.client.channel.ConfigSyncHandlerRegistrar.register(
-                networkClient, knownChannelRegistry,
-                config != null ? config.getClientId() : null);
+    /**
+     * Creates the relay link set: one authenticated backend connection per
+     * downstream server, plus the {@code backend.username} fallback for servers
+     * that have no entry.
+     *
+     * @return the link set, or null outside relay mode
+     */
+    private com.nova.chat.proxy.relay.RelayBackendLinks createRelayLinks() {
+        if (config == null || config.getMode() != ProxyMode.RELAY) {
+            return null;
+        }
+        return new com.nova.chat.proxy.relay.RelayBackendLinks(
+                platform,
+                identity -> new NetworkClient(this, config, identity),
+                config.getUsername(),
+                config.getBackendIdentities());
+    }
 
-        // Connect asynchronously
-        getProxy().getScheduler().runAsync(this, () -> {
-            networkClient.connect(
-                config.getBackendHost(),
-                config.getBackendPort()
-            ).thenAccept(success -> {
-                if (success) {
-                    getLogger().info("Connected to NovaLink backend at " +
-                        config.getBackendHost() + ":" + config.getBackendPort());
-                } else {
-                    getLogger().warning("Failed to connect to NovaLink backend. Will retry...");
-                }
-            });
-        });
+    /**
+     * Starts the relay links and wires them to the shared cores.
+     *
+     * <p>Called from {@link #initializeProxyCores()} once the chat core and the
+     * channel handler exist, and again from {@link #reload()} after the links
+     * were rebuilt.
+     */
+    private void startRelayLinks() {
+        if (relayLinks == null) {
+            return;
+        }
+        com.nova.chat.proxy.channel.ProxyChannelHandler channelHandler = proxyChannelHandler;
+        if (chatCore != null) {
+            relayLinks.bindInbound(chatCore::handleInbound);
+            chatCore.setBackendRouter(relayLinks);
+        }
+        if (channelHandler != null) {
+            relayLinks.bindDownstream(channelHandler::deliverToServer,
+                    channelHandler::broadcastDownstream);
+        }
+        // UX-DESIGN §2.1: each link parses ConfigSync with its own identity, so
+        // a sub-server's per-client channel roster is filtered correctly.
+        relayLinks.onLinkCreated(link -> com.nova.chat.client.channel.ConfigSyncHandlerRegistrar
+                .register(link.getClient(), knownChannelRegistry, link.getIdentity()));
+        java.util.List<com.nova.chat.proxy.relay.RelayBackendLinks.Link> links =
+                relayLinks.start(config.getBackendHost(), config.getBackendPort());
+        for (com.nova.chat.proxy.relay.RelayBackendLinks.Link link : links) {
+            if (link.getServerName() == null && link.getClient() instanceof NetworkClient facade) {
+                // The fallback link is the historical single-client accessor.
+                networkClient = facade;
+            }
+        }
+        getLogger().info("Relay backend links: " + links.size() + " connection(s)"
+                + (relayLinks.hasDedicatedLinks()
+                        ? " (" + String.join(", ", relayLinks.dedicatedServers()) + ")"
+                        : " (shared backend.username link)"));
     }
 
     /**
@@ -492,44 +547,46 @@ public class NovaChatBungee extends Plugin {
                     channelHandler != null ? channelHandler::broadcastProxyChat : null);
         }
 
-        // Relay: the mirror image. Everything the backend pushes back (chat,
-        // titles, mentions, private messages) is rendered by the chat core to
-        // the proxy's own roster only; the backend's fan-out stops at this
-        // proxy's connection, so sub-servers are never reached. Handing each
-        // inbound packet to the channel handler re-delivers it down to every
-        // sub-server that has players.
-        //
-        // Bound only in relay: lite already broadcasts from the authority client
-        // above, and binding both would send every line twice.
+        // Relay: one backend link per downstream server. Each link's inbound
+        // handlers are scoped to that link's server and the same packet is
+        // pushed to exactly that sub-server, so a player's mention, title, DM
+        // or channel chat lands on the server they are on instead of every
+        // server. Lite has no links: its authority client owns delivery above.
         if (localAuthorityClient == null) {
-            com.nova.chat.proxy.channel.ProxyChannelHandler channelHandler = proxyChannelHandler;
-            chatCore.bindDownstreamFanOut(
-                    channelHandler != null ? channelHandler::broadcastDownstream : null);
-        }
-
-        // H6: the ChatListener shell binds inbound handlers in its constructor;
-        // this is the first point where the network client exists.
-        if (chatCore.getNetworkClient() != null) {
+            relayLinks = createRelayLinks();
+            startRelayLinks();
+        } else if (chatCore.getNetworkClient() != null) {
+            // H6: the ChatListener shell binds inbound handlers in its
+            // constructor; this is the first point where the client exists.
+            // Relay links register their own scoped handlers, so this is lite
+            // only.
             chatCore.rebindIncomingHandlers(chatCore.getNetworkClient());
         }
     }
 
     /**
      * Forwards one packet received on the plugin-messaging channel to the
-     * backend (relay mode). The packet is sent unchanged: its {@code clientId}
-     * already identifies the sub-server that produced it, so backend
-     * attribution is preserved.
+     * backend link of the server it arrived from (relay mode).
      *
+     * <p>The source server is the routing key: the backend attributes
+     * everything on a connection to that connection's client id, so the packet
+     * must ride the originating server's own link. Servers without a
+     * {@code backend.identities} entry use the shared {@code backend.username}
+     * link, which is the legacy behaviour.
+     *
+     * @param sourceServer the server the payload actually arrived from
      * @param packet the upstream packet
+     * @return whether an authenticated link accepted it
      */
-    private void relayChannelPacket(com.nova.chat.common.protocol.Packet packet) {
-        AbstractPlatformNetworkClient client = getPlatformNetworkClient();
-        if (client == null || !client.isAuthenticated()) {
+    private boolean relayChannelPacket(String sourceServer,
+                                       com.nova.chat.common.protocol.Packet packet) {
+        com.nova.chat.proxy.relay.RelayBackendLinks links = relayLinks;
+        if (links == null) {
             debug("Dropped plugin-message packet " + packet.getClass().getSimpleName()
-                    + ": backend link is not authenticated");
-            return;
+                    + " from " + sourceServer + ": relay links are not initialized");
+            return false;
         }
-        client.sendPacket(packet);
+        return links.sendUpstream(sourceServer, packet);
     }
 
     /**
@@ -587,8 +644,50 @@ public class NovaChatBungee extends Plugin {
      * the live {@link NetworkClient}. Send is accepted only when authenticated.
      */
     private void initializeChannelCommandService() {
-        channelCommandService = ChannelCommandService.forPlatform(
-                this::getPlatformNetworkClient, PlatformType.BUNGEECORD);
+        // Route by the packet's player: relay sends each server's traffic on
+        // that server's own backend link, so a player's JOIN/LEAVE must use
+        // the link of the server they are on. Lite has no links, so the lite
+        // transport client answers every send.
+        channelCommandService = new ChannelCommandService(
+                packet -> {
+                    AbstractPlatformNetworkClient client = clientForPacket(packet);
+                    if (client == null || !client.isAuthenticated()) {
+                        return false;
+                    }
+                    client.sendPacket(packet);
+                    return true;
+                },
+                PlatformType.BUNGEECORD.name());
+    }
+
+    /**
+     * Resolves the backend link that should carry one proxy-originated channel
+     * action, using the {@code playerId} extra the shared command service
+     * stamps.
+     *
+     * @param packet the channel-action packet
+     * @return the link, or null when none is available
+     */
+    private AbstractPlatformNetworkClient clientForPacket(
+            com.nova.chat.common.protocol.packets.ChannelActionPacket packet) {
+        com.nova.chat.proxy.relay.RelayBackendLinks links = relayLinks;
+        if (links == null) {
+            return getPlatformNetworkClient();
+        }
+        String raw = packet != null ? packet.getExtra("playerId") : null;
+        if (raw != null && !raw.isBlank()) {
+            try {
+                java.util.UUID playerId = java.util.UUID.fromString(raw);
+                com.nova.chat.proxy.platform.ProxyPlayer player =
+                        platform != null ? platform.getPlayer(playerId) : null;
+                if (player != null) {
+                    return links.clientFor(player.getCurrentServer());
+                }
+            } catch (IllegalArgumentException ignored) {
+                // Not a UUID: fall through to the default link.
+            }
+        }
+        return links.clientFor(null);
     }
 
     /**
@@ -637,15 +736,27 @@ public class NovaChatBungee extends Plugin {
         // initializeNetworkClient rebinds nothing: it re-seeds the roster from
         // the reloaded lite.channels and keeps the existing local authority
         // client, whose handler registrations must survive the reload.
+        com.nova.chat.proxy.relay.RelayBackendLinks previousLinks = relayLinks;
+        relayLinks = null;
+        if (previousLinks != null) {
+            // Close every link (each owns a Netty event loop group); the
+            // replacement set is built below with the reloaded identities.
+            previousLinks.close();
+        }
         if (networkClient != null) {
             networkClient.disconnect();
+            networkClient = null;
         }
         initializeNetworkClient();
 
-        // H6: re-bind incoming packet handlers to the new NetworkClient instance.
-        // The old handlers were registered against the discarded client and
-        // would silently drop all inbound packets after this reload.
-        if (chatListener != null) {
+        if (config != null && config.getMode() == ProxyMode.RELAY) {
+            relayLinks = createRelayLinks();
+            startRelayLinks();
+        } else if (chatListener != null) {
+            // Lite: re-bind incoming packet handlers to the new NetworkClient
+            // instance. In relay the links registered their own scoped
+            // handlers, so this must not run (an unscoped registration would
+            // replace them and lose the downstream routing).
             chatListener.rebindIncomingHandlers();
         }
 
@@ -710,7 +821,23 @@ public class NovaChatBungee extends Plugin {
      * @return the transport-facing client, or null before startup
      */
     public AbstractPlatformNetworkClient getPlatformNetworkClient() {
+        com.nova.chat.proxy.relay.RelayBackendLinks links = relayLinks;
+        if (links != null && networkClient == null) {
+            com.nova.chat.proxy.relay.RelayBackendLinks.Link fallback = links.getFallbackLink();
+            if (fallback != null) {
+                return fallback.getClient();
+            }
+        }
         return networkClient != null ? networkClient : localAuthorityClient;
+    }
+
+    /**
+     * Gets the relay link set (relay mode only).
+     *
+     * @return the links, or null in lite mode / before startup
+     */
+    public com.nova.chat.proxy.relay.RelayBackendLinks getRelayLinks() {
+        return relayLinks;
     }
 
     /**

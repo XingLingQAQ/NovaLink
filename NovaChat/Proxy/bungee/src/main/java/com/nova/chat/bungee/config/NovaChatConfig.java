@@ -38,7 +38,11 @@ public class NovaChatConfig implements ProxyConfigView {
      */
     private static final Set<String> DYNAMIC_CONFIG_MAPPINGS = Set.of(
             "chat.channel-prefixes", "format.channels", "world-routing.mappings",
-            "lite.channels");
+            "lite.channels",
+            // User-owned collection, same reasoning as lite.channels: the
+            // template ships it empty and a deleted identity must not be
+            // restored.
+            "backend.identities");
 
     /** Shared immutable value model produced by {@link #parseConfig(Configuration)}. */
     private ProxyConfig model = new ProxyConfig.Builder().build();
@@ -157,6 +161,15 @@ public class NovaChatConfig implements ProxyConfigView {
     @Override
     public int getReconnectDelay() {
         return model.getReconnectDelay();
+    }
+
+    /**
+     * @return the relay per-server backend identities
+     *         ({@code backend.identities}); empty when the proxy uses the
+     *         single {@code backend.username} connection
+     */
+    public Map<String, String> getBackendIdentities() {
+        return model.getBackendIdentities();
     }
 
     @Override

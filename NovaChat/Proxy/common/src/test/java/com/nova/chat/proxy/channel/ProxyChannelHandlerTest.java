@@ -160,9 +160,14 @@ class ProxyChannelHandlerTest {
     void relayModeForwardsToBackend() throws Exception {
         ChatMessagePacket chat = chat("relay me");
         List<Packet> forwarded = new ArrayList<>();
+        List<String> forwardedFrom = new ArrayList<>();
 
         ProxyChannelHandler handler = new ProxyChannelHandler(platform, chatCore,
-                null, forwarded::add);
+                null, (sourceServer, packet) -> {
+                    forwarded.add(packet);
+                    forwardedFrom.add(sourceServer);
+                    return true;
+                });
 
         ProxyChannelHandler.Outcome outcome =
                 handler.handleFromServer(SOURCE, ProxyChannelProtocol.encode(SOURCE, chat));
@@ -173,6 +178,9 @@ class ProxyChannelHandlerTest {
         assertThat(forwarded).hasSize(1);
         assertThat(forwarded.get(0)).isInstanceOf(ChatMessagePacket.class);
         assertThat(((ChatMessagePacket) forwarded.get(0)).getContent()).isEqualTo("relay me");
+        // The source server is the routing key: relay sends each server's
+        // traffic on that server's own backend connection.
+        assertThat(forwardedFrom).containsExactly(SOURCE);
         assertThat(platform.sentMessages).isEmpty();
         assertThat(alice.messages).isEmpty();
     }
@@ -240,7 +248,7 @@ class ProxyChannelHandlerTest {
     void relayModeBroadcastsProxyChatDownstream() throws Exception {
         FakePlayer carol = platform.add("Carol", "survival-02");
         ProxyChannelHandler handler = new ProxyChannelHandler(platform, chatCore,
-                null, packet -> { });
+                null, (server, packet) -> true);
 
         handler.broadcastProxyChat(chat("relay chat"));
 
@@ -286,27 +294,60 @@ class ProxyChannelHandlerTest {
         assertThat(platform.sentMessages).isEmpty();
     }
 
-    // ------------------------------------------------- relay downstream fan-out
+    // ------------------------------------------------- relay downstream routing
 
     /**
-     * Builds the production relay graph: the shell binds the chat core's
-     * down-path to the channel handler's broadcast (no lite authority, a relay
-     * sink that goes nowhere in these tests).
+     * The relay graph as the shells build it: a link set with only the
+     * {@code backend.username} fallback (no per-server identities) whose
+     * inbound path renders through the chat core and delivers through the
+     * channel handler.
+     *
+     * <p>This is the backward-compatible configuration: one connection, so the
+     * backend's single copy must still reach every server that has players.
+     * Per-server copies (one link per server) are covered by
+     * {@code RelayBackendLinksTest}.
      */
-    private ProxyChannelHandler relayHandler() {
-        ProxyChannelHandler handler = new ProxyChannelHandler(platform, chatCore,
-                null, packet -> { });
-        chatCore.bindDownstreamFanOut(handler::broadcastDownstream);
-        return handler;
+    private final class RelayGraph {
+        private final ProxyChannelHandler handler;
+        private final com.nova.chat.proxy.relay.RelayBackendLinks.Link fallback;
+
+        private RelayGraph() {
+            handler = new ProxyChannelHandler(platform, chatCore,
+                    null, (server, packet) -> true);
+            com.nova.chat.proxy.relay.RelayBackendLinks links =
+                    new com.nova.chat.proxy.relay.RelayBackendLinks(
+                            platform,
+                            identity -> new com.nova.chat.proxy.relay.RelayTestFixture
+                                    .FakeLinkClient(identity),
+                            "proxy", java.util.Map.of());
+            links.bindInbound(chatCore::handleInbound);
+            links.bindDownstream(handler::deliverToServer, handler::broadcastDownstream);
+            chatCore.setBackendRouter(links);
+            java.util.List<com.nova.chat.proxy.relay.RelayBackendLinks.Link> created =
+                    links.start("127.0.0.1", 8888);
+            assertThat(created).hasSize(1);
+            fallback = created.get(0);
+        }
+
+        /** Simulates the backend pushing one packet on the fallback connection. */
+        private void push(Packet packet) {
+            com.nova.chat.proxy.relay.RelayBackendLinks links =
+                    (com.nova.chat.proxy.relay.RelayBackendLinks) chatCore.getBackendRouter();
+            links.handleInbound(fallback, packet);
+        }
+    }
+
+    private RelayGraph relayGraph() {
+        return new RelayGraph();
     }
 
     @Test
     @DisplayName("relay: a backend chat line is pushed down to every server with players")
     void relayBackendChatReachesEveryServer() throws Exception {
         FakePlayer carol = platform.add("Carol", "survival-02");
-        relayHandler();
+        RelayGraph graph = relayGraph();
 
-        chatCore.handleIncomingMessage(chat("from the backend"));
+        graph.push(chat("from the backend"));
 
         assertThat(platform.sentMessages)
                 .extracting(sent -> sent.serverName)
@@ -324,9 +365,9 @@ class ProxyChannelHandlerTest {
     @DisplayName("relay: a proxy player sees the line once and is excluded downstream")
     void proxyPlayerDoesNotSeeTheLineTwice() throws Exception {
         FakePlayer carol = platform.add("Carol", "survival-02");
-        relayHandler();
+        RelayGraph graph = relayGraph();
 
-        chatCore.handleIncomingMessage(chat("dedup in relay"));
+        graph.push(chat("dedup in relay"));
 
         // Rendered exactly once by the proxy's own loop...
         assertThat(alice.messages).hasSize(1);
@@ -348,9 +389,9 @@ class ProxyChannelHandlerTest {
     void exclusionSetIsPerServer() throws Exception {
         // Move Bob to a second server; Alice stays proxied on the source.
         FakePlayer bobOnB = platform.add("Bob2", "survival-02");
-        relayHandler();
+        RelayGraph graph = relayGraph();
 
-        chatCore.handleIncomingMessage(chat("two servers, different rosters"));
+        graph.push(chat("two servers, different rosters"));
 
         Set<UUID> excludedOnSource = ProxyChannelProtocol.decode(
                 sentTo(SOURCE).payload).getExcludedRecipients();
@@ -378,10 +419,9 @@ class ProxyChannelHandlerTest {
     @DisplayName("relay: a backend title is pushed down to every server with players")
     void relayBackendTitleReachesEveryServer() throws Exception {
         platform.add("Carol", "survival-02");
-        relayHandler();
+        RelayGraph graph = relayGraph();
 
-        chatCore.handleTitle(new TitlePacket("global", "Hello", "World",
-                UUID.randomUUID()));
+        graph.push(new TitlePacket("global", "Hello", "World", UUID.randomUUID()));
 
         assertThat(platform.sentMessages)
                 .extracting(sent -> sent.serverName)
@@ -395,9 +435,9 @@ class ProxyChannelHandlerTest {
     @DisplayName("relay: a backend mention is pushed down so a direct player is notified")
     void relayBackendMentionReachesEveryServer() throws Exception {
         platform.add("Carol", "survival-02");
-        relayHandler();
+        RelayGraph graph = relayGraph();
 
-        chatCore.handleMention(new MentionPacket(UUID.randomUUID(), "Alice",
+        graph.push(new MentionPacket(UUID.randomUUID(), "Alice",
                 UUID.randomUUID(), "global", "hi @Bob", System.currentTimeMillis()));
 
         assertThat(platform.sentMessages)
@@ -412,11 +452,11 @@ class ProxyChannelHandlerTest {
     @DisplayName("relay: a backend private message is pushed down for a direct target")
     void relayBackendPrivateMessageReachesEveryServer() throws Exception {
         platform.add("Carol", "survival-02");
-        relayHandler();
+        RelayGraph graph = relayGraph();
 
         UUID senderId = UUID.randomUUID();
         UUID targetId = UUID.randomUUID();
-        chatCore.handlePrivateMessage(new PrivateMessagePacket(senderId, "Alice",
+        graph.push(new PrivateMessagePacket(senderId, "Alice",
                 SOURCE, "Dave", targetId, "psst", System.currentTimeMillis()));
 
         // Neither party is on the proxy; the sub-servers are the only way this
@@ -433,10 +473,10 @@ class ProxyChannelHandlerTest {
     @DisplayName("relay: a failing downstream send warns once, then rate-limits")
     void droppedDeliveryWarnsOncePerServer() throws Exception {
         platform.refuseServer = SOURCE;
-        relayHandler();
+        RelayGraph graph = relayGraph();
 
         for (int i = 0; i < 5; i++) {
-            chatCore.handleIncomingMessage(chat("line " + i));
+            graph.push(chat("line " + i));
         }
 
         assertThat(platform.warnings)

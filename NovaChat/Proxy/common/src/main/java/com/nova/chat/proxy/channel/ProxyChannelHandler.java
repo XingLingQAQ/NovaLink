@@ -22,7 +22,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -51,11 +50,12 @@ import java.util.function.Function;
  *       to the proxy and (b) sent down to every sub-server that has players, so
  *       players connected straight to a sub-server (whom the proxy cannot see)
  *       also get the line. In relay the upstream packet is handed to the proxy's
- *       backend link, and the backend's replies come back through the chat core,
- *       which fans them out down this same channel (see
- *       {@code ProxyChatCore#bindDownstreamFanOut}). The backend's own fan-out
- *       only reaches connections that exist on it, and in relay a sub-server has
- *       no backend connection: the proxy is the only bridge.</li>
+ *       backend link <em>for the server it came from</em>, and the backend's
+ *       replies come back on those same per-server links
+ *       ({@link com.nova.chat.proxy.relay.RelayBackendLinks}); the router pushes
+ *       each reply down this channel to the one server whose link carried it.
+ *       A server without a {@code backend.identities} entry uses the shared
+ *       {@code backend.username} link, whose replies are broadcast as before.</li>
  * </ul>
  *
  * <p><b>Chat is network-wide.</b> A chat line must reach every sub-server, not
@@ -63,7 +63,8 @@ import java.util.function.Function;
  * {@link #broadcastProxyChat} covers lines typed by proxy players (the proxy's
  * own fan-out only reaches its own roster); {@code handleLite} covers lines that
  * came up from a sub-server; {@link #broadcastDownstream} covers lines the
- * backend pushed in relay.
+ * backend pushed on the shared fallback link, and {@link #deliverToServer}
+ * covers a line the backend pushed on one server's own link.
  *
  * <p><b>Duplicate suppression.</b> When the proxy sends a fan-out packet back
  * down, the envelope carries the UUIDs of the proxy's own players on that
@@ -90,6 +91,25 @@ public class ProxyChannelHandler {
     private static final long DROPPED_DELIVERY_WARN_INTERVAL_NANOS =
             java.util.concurrent.TimeUnit.SECONDS.toNanos(DROPPED_DELIVERY_WARN_INTERVAL_SECONDS);
 
+    /**
+     * Relay-mode upstream sink: hands one packet to the backend link of the
+     * server it actually arrived from.
+     *
+     * <p>The source server is the routing key, not just a log field: relay
+     * keeps one authenticated backend connection per downstream server, and the
+     * backend attributes everything on that connection to its client id.
+     */
+    @FunctionalInterface
+    public interface RelaySink {
+
+        /**
+         * @param sourceServerName the server the payload arrived from (never null)
+         * @param packet the decoded packet
+         * @return whether an authenticated backend link accepted it
+         */
+        boolean send(String sourceServerName, Packet packet);
+    }
+
     /** Result of one inbound plugin message; exposed for tests and diagnostics. */
     public enum Outcome {
         /** Parsed, identity verified, and routed (lite fan-out or relay send). */
@@ -103,7 +123,9 @@ public class ProxyChannelHandler {
         /** Not a valid channel envelope (magic/version/length/packet body). */
         DROPPED_MALFORMED,
         /** Parsed and verified, but neither a lite authority nor a relay link exists. */
-        DROPPED_NO_ROUTE
+        DROPPED_NO_ROUTE,
+        /** Relay is configured, but no authenticated link could carry the packet. */
+        DROPPED_NO_BACKEND
     }
 
     private final ProxyPlatform platform;
@@ -113,7 +135,7 @@ public class ProxyChannelHandler {
     private final Function<Packet, List<Packet>> localAuthority;
 
     /** Relay-mode backend sink, or null in lite mode. */
-    private final Consumer<Packet> relaySink;
+    private final RelaySink relaySink;
 
     /** serverName → {@link System#nanoTime()} of the last delivery warning. */
     private final Map<String, Long> lastDeliveryWarning = new ConcurrentHashMap<>();
@@ -124,12 +146,13 @@ public class ProxyChannelHandler {
      *                 packets to players connected to the proxy
      * @param localAuthority lite-mode authority ({@code LocalAuthority#handle}),
      *                       or null in relay mode
-     * @param relaySink relay-mode backend send, or null in lite mode
+     * @param relaySink relay-mode backend send keyed by source server, or null
+     *                  in lite mode
      */
     public ProxyChannelHandler(ProxyPlatform platform,
                                ProxyChatCore chatCore,
                                Function<Packet, List<Packet>> localAuthority,
-                               Consumer<Packet> relaySink) {
+                               RelaySink relaySink) {
         this.platform = Objects.requireNonNull(platform, "platform");
         this.chatCore = Objects.requireNonNull(chatCore, "chatCore");
         this.localAuthority = localAuthority;
@@ -245,7 +268,11 @@ public class ProxyChannelHandler {
             return handleLite(sourceServerName, packet);
         }
         if (relaySink != null) {
-            relaySink.accept(packet);
+            if (!relaySink.send(sourceServerName, packet)) {
+                platform.logDebug("No authenticated backend link for "
+                        + packet.getClass().getSimpleName() + " from " + sourceServerName);
+                return Outcome.DROPPED_NO_BACKEND;
+            }
             platform.logDebug("Relayed " + packet.getClass().getSimpleName()
                     + " from " + sourceServerName + " to the backend");
             return Outcome.ACCEPTED;
@@ -365,24 +392,44 @@ public class ProxyChannelHandler {
      * server per {@link #DROPPED_DELIVERY_WARN_INTERVAL_MILLIS}, so an operator
      * sees the broken delivery without the log drowning.
      */
-    private void sendDownstream(String serverName, Packet packet, Set<UUID> excluded) {
+    private boolean sendDownstream(String serverName, Packet packet, Set<UUID> excluded) {
         byte[] payload;
         try {
             payload = ProxyChannelProtocol.encode(proxyIdentity(), packet, excluded);
         } catch (ProxyChannelException e) {
             platform.logWarn("Dropped downstream " + packet.getClass().getSimpleName()
                     + " for " + serverName + ": " + e.getMessage());
-            return;
+            return false;
         }
         boolean sent = platform.sendPluginMessage(
                 serverName, ProxyChannelProtocol.CHANNEL_ID, payload);
         if (!sent) {
             warnDroppedDelivery(serverName, packet);
-            return;
+            return false;
         }
         platform.logDebug("Sent downstream " + packet.getClass().getSimpleName()
                 + " to " + serverName + " (excluding " + excluded.size()
                 + " proxy-rendered player(s))");
+        return true;
+    }
+
+    /**
+     * Delivers one packet to exactly one downstream server.
+     *
+     * <p>Relay uses this for a packet that arrived on that server's own backend
+     * link: with one link per server the backend's fan-out has already picked
+     * the recipient server, so broadcasting the copy would deliver it to every
+     * other server as well (and duplicate every player's line).
+     *
+     * @param serverName the downstream server
+     * @param packet the packet
+     * @return whether a player connection on that server carried it
+     */
+    public boolean deliverToServer(String serverName, Packet packet) {
+        if (serverName == null || serverName.isBlank() || packet == null) {
+            return false;
+        }
+        return sendDownstream(serverName, packet, proxyPlayersOn(serverName));
     }
 
     /**

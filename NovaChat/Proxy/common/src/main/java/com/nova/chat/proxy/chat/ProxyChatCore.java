@@ -32,7 +32,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -106,11 +105,21 @@ public class ProxyChatCore {
     private ChannelResponseDispatcher dispatcher;
 
     /**
-     * Relay down-path: receives every packet the backend pushed to this proxy,
-     * after it has been rendered to the proxy's own players. Null in lite,
-     * where {@code LocalAuthorityClient} owns the downstream broadcast itself.
+     * Relay link router, or null in lite / before the shell installs one.
+     *
+     * <p>When present it resolves the link per player server instead of the
+     * single {@link #clientSupplier}, and it owns inbound handler registration
+     * (the handlers must be scoped to the link's server).
      */
-    private volatile Consumer<Packet> downstreamFanOut;
+    private volatile com.nova.chat.proxy.relay.BackendRouter backendRouter;
+
+    /**
+     * Per-link response dispatchers. Each backend link has its own
+     * {@link ChannelResponseTracker}, so a JOIN sent on server X's link is
+     * correlated against X's tracker only.
+     */
+    private final Map<AbstractPlatformNetworkClient, ChannelResponseDispatcher> linkDispatchers =
+            new ConcurrentHashMap<>();
 
     /**
      * @param platform the platform adapter
@@ -138,7 +147,14 @@ public class ProxyChatCore {
     // -------------------------------------------------------- inbound handlers
 
     /**
-     * Binds the inbound packet handlers to the current network client.
+     * Binds the inbound packet handlers to a single network client, rendering
+     * to every proxy player.
+     *
+     * <p>This is the lite path (and the historical single-link relay path).
+     * When a {@link #setBackendRouter relay router} is installed, handler
+     * registration belongs to the router instead: each link's handlers must be
+     * scoped to that link's server, and a second unscoped registration for the
+     * same packet class would replace them.
      *
      * <p>Public so the platform reload path can re-bind to the freshly created
      * client after a reconnect without reconstructing this core (H6 fix).
@@ -146,7 +162,7 @@ public class ProxyChatCore {
      * @param client the live network client, or null before startup
      */
     public void rebindIncomingHandlers(AbstractPlatformNetworkClient client) {
-        if (client == null) {
+        if (client == null || backendRouter != null) {
             return;
         }
         ChannelResponseTracker tracker = client.getChannelResponseTracker();
@@ -160,20 +176,92 @@ public class ProxyChatCore {
     }
 
     /**
-     * Binds the relay down-path: every packet the backend pushes to the proxy is
-     * handed to {@code sink} after (or independently of) local rendering, so a
-     * shell can re-deliver it to sub-servers over plugin messaging.
+     * Installs the relay link router.
      *
-     * <p>Mirrors {@code LocalAuthorityClient#bindChatBroadcast}: the core stays
-     * free of a compile-time dependency on the channel handler, and only the
-     * shell knows whether a downstream transport exists. Relay binds it; lite
-     * must not, because {@code LocalAuthorityClient} already broadcasts there
-     * and binding both would send every line twice.
+     * <p>From this point every send resolves the link of the player's current
+     * server and stamps that link's identity on the packet, so the backend
+     * attributes a player to the server they are actually on. Passing null
+     * restores the single-client behaviour (lite).
      *
-     * @param sink the downstream fan-out, or null to disable
+     * @param router the router, or null to clear
      */
-    public void bindDownstreamFanOut(Consumer<Packet> sink) {
-        this.downstreamFanOut = sink;
+    public void setBackendRouter(com.nova.chat.proxy.relay.BackendRouter router) {
+        this.backendRouter = router;
+        // Link bindings are per client; a stale map would only grow.
+        this.linkDispatchers.clear();
+    }
+
+    /**
+     * @return the installed relay router, or null when the core uses a single
+     *         client (lite)
+     */
+    public com.nova.chat.proxy.relay.BackendRouter getBackendRouter() {
+        return backendRouter;
+    }
+
+    /**
+     * Handles one packet the relay router received on a backend link.
+     *
+     * <p>Scope-aware: {@code scopeServers} names the downstream servers whose
+     * proxy players may render it ({@code null} = every player, the legacy
+     * single-link behaviour). A proxy player sees the line once because the
+     * backend sends one copy per connection and each copy is scoped to the
+     * connection's server.
+     *
+     * @param client the link the packet arrived on
+     * @param scopeServers the servers to render to, or null for all
+     * @param packet the packet
+     */
+    public void handleInbound(AbstractPlatformNetworkClient client,
+                              Set<String> scopeServers,
+                              Packet packet) {
+        if (packet == null) {
+            return;
+        }
+        if (packet instanceof ChatMessagePacket chat) {
+            handleIncomingMessage(chat, scopeServers);
+        } else if (packet instanceof ChannelActionResponsePacket response) {
+            // Via the shared entry point: private-message rejections are
+            // rendered there, not by the dispatcher.
+            handleChannelActionResponse(response, dispatcherFor(client));
+        } else if (packet instanceof MentionPacket mention) {
+            handleMention(mention, scopeServers);
+        } else if (packet instanceof TitlePacket title) {
+            handleTitle(title, scopeServers);
+        } else if (packet instanceof ItemDisplayPacket itemDisplay) {
+            handleItemDisplay(itemDisplay, scopeServers);
+        } else if (packet instanceof PrivateMessagePacket privateMessage) {
+            handlePrivateMessage(privateMessage, scopeServers);
+        } else {
+            platform.logDebug("Relay has no handler for "
+                    + packet.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Returns the response dispatcher bound to a link's own tracker.
+     *
+     * <p>Each link has its own {@link ChannelResponseTracker}; a JOIN sent on
+     * server X's link is answered on that link and must be correlated against
+     * X's pending entries, not another server's.
+     *
+     * @param client the link, or null for the legacy single-client dispatcher
+     * @return the dispatcher, never null
+     */
+    private ChannelResponseDispatcher dispatcherFor(AbstractPlatformNetworkClient client) {
+        ChannelResponseDispatcher current = this.dispatcher;
+        if (client == null) {
+            return current != null ? current
+                    : new ChannelResponseDispatcher(new ChannelResponseTracker(),
+                            new CoreChannelResponseAdapter());
+        }
+        ChannelResponseDispatcher bound = linkDispatchers.computeIfAbsent(client,
+                link -> new ChannelResponseDispatcher(
+                        link.getChannelResponseTracker(), new CoreChannelResponseAdapter()));
+        // Keep the legacy field pointing at the most recently observed link so
+        // single-client callers still work.
+        this.dispatcher = bound;
+        return bound;
     }
 
     /**
@@ -183,8 +271,18 @@ public class ProxyChatCore {
      * @param packet the inbound chat packet
      */
     public void handleIncomingMessage(ChatMessagePacket packet) {
+        handleIncomingMessage(packet, null);
+    }
+
+    /**
+     * Renders an inbound chat line to the proxy players the packet is scoped to.
+     *
+     * @param packet the inbound chat packet
+     * @param scopeServers the servers whose proxy players may render it; null
+     *                     renders to every proxy player
+     */
+    public void handleIncomingMessage(ChatMessagePacket packet, Set<String> scopeServers) {
         platform.logDebug("Received chat message from backend: " + packet);
-        fanOutDownstream(packet);
 
         String channelId = packet.getChannelId();
         String senderName = packet.getSenderName();
@@ -196,6 +294,9 @@ public class ProxyChatCore {
         String highlighted = MentionNotifier.highlightMentions(content, MENTION_HIGHLIGHT_COLOR);
 
         for (ProxyPlayer player : platform.getOnlinePlayers()) {
+            if (!inScope(player, scopeServers)) {
+                continue;
+            }
             // Skip senders the recipient has ignored (/nc ignore)
             if (ignoreListService != null
                     && ignoreListService.isIgnored(player.getUniqueId(), senderName)) {
@@ -216,12 +317,25 @@ public class ProxyChatCore {
      * @param packet the title packet
      */
     public void handleTitle(TitlePacket packet) {
+        handleTitle(packet, null);
+    }
+
+    /**
+     * Shows an inbound title to the scoped proxy players.
+     *
+     * @param packet the title packet
+     * @param scopeServers the servers whose proxy players may render it; null
+     *                     renders to every proxy player
+     */
+    public void handleTitle(TitlePacket packet, Set<String> scopeServers) {
         String channelId = packet.getChannelId();
         String title = packet.getTitle() != null ? packet.getTitle() : "";
         String subtitle = packet.getSubtitle() != null ? packet.getSubtitle() : "";
-        fanOutDownstream(packet);
 
         for (ProxyPlayer player : platform.getOnlinePlayers()) {
+            if (!inScope(player, scopeServers)) {
+                continue;
+            }
             PlayerChannelState state = states.getState(player.getUniqueId());
             if (state != null && channelId != null && channelId.equals(state.getActiveChannel())) {
                 platform.showTitle(player, title, subtitle,
@@ -243,8 +357,22 @@ public class ProxyChatCore {
      * @param packet the item display packet
      */
     public void handleItemDisplay(ItemDisplayPacket packet) {
+        handleItemDisplay(packet, null);
+    }
+
+    /**
+     * Renders an inbound item display to the scoped proxy players.
+     *
+     * @param packet the item display packet
+     * @param scopeServers the servers whose proxy players may render it; null
+     *                     renders to every proxy player
+     */
+    public void handleItemDisplay(ItemDisplayPacket packet, Set<String> scopeServers) {
         String channelId = packet.getChannelId();
         for (ProxyPlayer player : platform.getOnlinePlayers()) {
+            if (!inScope(player, scopeServers)) {
+                continue;
+            }
             PlayerChannelState state = states.getState(player.getUniqueId());
             if (state == null || channelId == null || !channelId.equals(state.getActiveChannel())) {
                 continue;
@@ -272,14 +400,24 @@ public class ProxyChatCore {
      * @param packet the mention packet
      */
     public void handleMention(MentionPacket packet) {
+        handleMention(packet, null);
+    }
+
+    /**
+     * Notifies a mentioned player if they are within the packet's scope.
+     *
+     * @param packet the mention packet
+     * @param scopeServers the servers whose proxy players may render it; null
+     *                     renders to every proxy player
+     */
+    public void handleMention(MentionPacket packet, Set<String> scopeServers) {
         UUID mentionedId = packet.getMentionedId();
         UUID mentionerId = packet.getMentionerId();
         if (mentionedId == null || mentionerId == null) {
             return;
         }
-        fanOutDownstream(packet);
         ProxyPlayer player = platform.getPlayer(mentionedId);
-        if (player == null) {
+        if (player == null || !inScope(player, scopeServers)) {
             return;
         }
         // Ignored mentioner: no notification (/nc ignore)
@@ -304,44 +442,60 @@ public class ProxyChatCore {
      * @param packet the private message packet
      */
     public void handlePrivateMessage(PrivateMessagePacket packet) {
-        // Relay DM: the target may be connected straight to a sub-server, where
-        // this encapsulation never sees a local player. Hand the completed
-        // packet down before the (possibly empty) local delivery loop.
-        fanOutDownstream(packet);
+        handlePrivateMessage(packet, null);
+    }
+
+    /**
+     * Renders a completed private message to the scoped local participants.
+     *
+     * @param packet the private message packet
+     * @param scopeServers the servers whose proxy players may render it; null
+     *                     renders to every proxy player
+     */
+    public void handlePrivateMessage(PrivateMessagePacket packet, Set<String> scopeServers) {
         if (privateMessageService == null) {
             return;
         }
         var deliveries = privateMessageService.handleIncoming(
-                packet, id -> platform.getPlayer(id) != null, ignoreListService);
+                packet,
+                id -> {
+                    ProxyPlayer candidate = platform.getPlayer(id);
+                    return candidate != null && inScope(candidate, scopeServers);
+                },
+                ignoreListService);
         for (PrivateMessageService.Delivery delivery : deliveries) {
             ProxyPlayer player = platform.getPlayer(delivery.getPlayerId());
-            if (player != null) {
+            if (player != null && inScope(player, scopeServers)) {
                 platform.sendMessage(player, delivery.getLine());
             }
         }
     }
 
     /**
-     * Hands one backend-originated packet to the relay down-path, if bound.
+     * Whether a proxy player may render a packet scoped to {@code scopeServers}.
      *
-     * <p>Called before the local render loop, so a failure in the downstream
-     * transport cannot suppress rendering to proxy-connected players. The
-     * fan-out itself is expected to swallow and log its own errors; this guard
-     * only keeps a faulty sink from breaking the inbound handler.
+     * <p>{@code null} means "no scope", i.e. the legacy single-link behaviour
+     * where the backend pushed once and the proxy rendered to everyone. The
+     * empty set means nobody: the packet belongs to another server's link.
      *
-     * @param packet the packet the backend pushed
+     * @param player the candidate
+     * @param scopeServers the servers in scope, or null for all
+     * @return whether the player is in scope
      */
-    private void fanOutDownstream(Packet packet) {
-        Consumer<Packet> sink = this.downstreamFanOut;
-        if (sink == null || packet == null) {
-            return;
+    private static boolean inScope(ProxyPlayer player, Set<String> scopeServers) {
+        if (scopeServers == null) {
+            return true;
         }
-        try {
-            sink.accept(packet);
-        } catch (RuntimeException e) {
-            platform.logError("Downstream fan-out failed for "
-                    + packet.getClass().getSimpleName(), e);
+        String server = player.getCurrentServer();
+        if (server == null) {
+            return false;
         }
+        for (String candidate : scopeServers) {
+            if (candidate != null && candidate.equalsIgnoreCase(server)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -355,6 +509,22 @@ public class ProxyChatCore {
      * @param packet the response packet
      */
     public void handleChannelActionResponse(ChannelActionResponsePacket packet) {
+        handleChannelActionResponse(packet, dispatcher);
+    }
+
+    /**
+     * Handles a channel action response with an explicit dispatcher.
+     *
+     * <p>Relay links each own a {@link ChannelResponseTracker}, so the response
+     * must be consumed from the tracker of the link it arrived on. The
+     * private-message error branch is part of this method (not the dispatcher),
+     * so a per-link call must go through here to keep DM rejections rendered.
+     *
+     * @param packet the response packet
+     * @param dispatcher the dispatcher bound to the link's tracker, or null
+     */
+    public void handleChannelActionResponse(ChannelActionResponsePacket packet,
+                                            ChannelResponseDispatcher dispatcher) {
         platform.logDebug("Received channel action response: " + packet);
         if (privateMessageService != null
                 && PrivateMessageService.isPrivateMessageError(packet)) {
@@ -401,7 +571,7 @@ public class ProxyChatCore {
             return ChatDecision.passthrough();
         }
 
-        if (!isBackendReady()) {
+        if (!isBackendReadyFor(player)) {
             return ChatDecision.reply(messageFormatter.formatError(
                     I18n.tr(playerId, "chat.network.not_connected_retry")));
         }
@@ -426,17 +596,21 @@ public class ProxyChatCore {
      * @param message the message content
      */
     public void sendToChannel(ProxyPlayer player, String channelId, String message) {
-        AbstractPlatformNetworkClient client = getNetworkClient();
+        AbstractPlatformNetworkClient client = getNetworkClientForPlayer(player.getUniqueId());
         if (client == null || !client.isAuthenticated()) {
             platform.sendMessage(player, messageFormatter.formatError(
                     I18n.tr(player.getUniqueId(), "chat.network.not_connected")));
             return;
         }
 
+        // The client id must be the identity of the link the packet rides:
+        // the backend compares it with the channel owner for SERVER/PRIVATE
+        // channels, and stamps it on the player state for mention/title/DM
+        // routing. Reload-safe: the router resolves the current identity.
         ChatMessagePacket packet = new ChatMessagePacket(
                 player.getUniqueId(),
                 player.getName(),
-                states.getConfig().getClientId(), // Client ID (relay username / lite server-id)
+                getIdentityForPlayer(player.getUniqueId()),
                 channelId,
                 message
         );
@@ -461,6 +635,82 @@ public class ProxyChatCore {
     public boolean isBackendReady() {
         AbstractPlatformNetworkClient client = getNetworkClient();
         return client != null && client.isAuthenticated();
+    }
+
+    /**
+     * @param player the player whose server's link should be checked
+     * @return whether the link carrying that player's server is authenticated
+     */
+    public boolean isBackendReadyFor(ProxyPlayer player) {
+        if (player == null) {
+            return isBackendReady();
+        }
+        AbstractPlatformNetworkClient client = getNetworkClientForPlayer(player.getUniqueId());
+        return client != null && client.isAuthenticated();
+    }
+
+    /**
+     * Resolves the backend link carrying one server's traffic.
+     *
+     * @param serverName the downstream server, or null when unknown
+     * @return the link, or null when the deployment has none for it
+     */
+    public AbstractPlatformNetworkClient getNetworkClientFor(String serverName) {
+        com.nova.chat.proxy.relay.BackendRouter router = this.backendRouter;
+        if (router != null) {
+            return router.clientFor(serverName);
+        }
+        return clientSupplier.get();
+    }
+
+    /**
+     * Resolves the backend link for a player: their live server first, then the
+     * server last recorded on their chat state (a player who is disconnecting
+     * may already be gone from the proxy roster).
+     *
+     * @param playerId the player's UUID
+     * @return the link, or null when none is available
+     */
+    public AbstractPlatformNetworkClient getNetworkClientForPlayer(UUID playerId) {
+        if (playerId == null) {
+            return getNetworkClient();
+        }
+        return getNetworkClientFor(resolveServer(playerId));
+    }
+
+    /**
+     * @param playerId the player
+     * @return the backend identity stamped on that player's packets
+     */
+    public String getIdentityForPlayer(UUID playerId) {
+        return getIdentityFor(resolveServer(playerId));
+    }
+
+    /**
+     * @param serverName the downstream server, or null when unknown
+     * @return the backend identity for that server's link
+     */
+    public String getIdentityFor(String serverName) {
+        com.nova.chat.proxy.relay.BackendRouter router = this.backendRouter;
+        if (router != null) {
+            String identity = router.identityFor(serverName);
+            return identity != null ? identity : "";
+        }
+        String identity = states.getConfig().getClientId();
+        return identity != null ? identity : "";
+    }
+
+    /** @return the player's server: live roster first, recorded state second */
+    private String resolveServer(UUID playerId) {
+        ProxyPlayer player = platform.getPlayer(playerId);
+        if (player != null) {
+            String server = player.getCurrentServer();
+            if (server != null && !server.isBlank()) {
+                return server;
+            }
+        }
+        PlayerChannelState state = states.getState(playerId);
+        return state != null ? state.getCurrentServer() : null;
     }
 
     /**
@@ -554,10 +804,16 @@ public class ProxyChatCore {
      * @param state the player's chat state, or {@code null} if it was never created
      */
     private void notifyBackendDisconnect(UUID playerId, PlayerChannelState state) {
-        if (state == null || !isBackendReady()) {
+        if (state == null) {
             return;
         }
-        AbstractPlatformNetworkClient client = getNetworkClient();
+        // Route by the server the player was last on: with a link per server
+        // the LEAVE must ride that server's connection, otherwise the backend
+        // evicts the cache entry of a player attributed to another client.
+        AbstractPlatformNetworkClient client = getNetworkClientFor(state.getCurrentServer());
+        if (client == null || !client.isAuthenticated()) {
+            return;
+        }
         ProxyPlayer player = platform.getPlayer(playerId);
         String playerName = player != null ? player.getName() : "";
         Set<String> channels = new java.util.LinkedHashSet<>(state.getJoinedChannels());

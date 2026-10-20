@@ -241,6 +241,101 @@ class ProxyConfigTest {
 
     }
 
+    // ------------------------------------------------------- backend identities
+
+    @Test
+    @DisplayName("parses backend.identities as server → backend username")
+    void parsesBackendIdentities() throws Exception {
+        MapSource source = new MapSource().templateDefaults().put("backend.username", "proxy");
+        source.values.put("backend.identities", new LinkedHashMap<>(Map.of(
+                "survival-01", "survival-01",
+                "creative-02", "creative")));
+
+        ProxyConfig config = ProxyConfig.from(source);
+
+        assertThat(config.getBackendIdentities())
+                .containsEntry("survival-01", "survival-01")
+                .containsEntry("creative-02", "creative");
+    }
+
+    @Test
+    @DisplayName("an absent backend.identities map keeps the legacy single connection")
+    void absentIdentitiesIsEmpty() throws Exception {
+        ProxyConfig config = ProxyConfig.from(new MapSource().templateDefaults());
+
+        assertThat(config.getBackendIdentities()).isEmpty();
+        assertThat(config.getClientId()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("rejects a blank identity")
+    void rejectsBlankIdentity() {
+        MapSource source = new MapSource().templateDefaults();
+        source.values.put("backend.identities", new LinkedHashMap<>(Map.of(
+                "survival-01", " ")));
+
+        assertThatThrownBy(() -> ProxyConfig.from(source))
+                .isInstanceOf(ConfigSource.ConfigException.class)
+                .hasMessageContaining("backend.identities.survival-01")
+                .hasMessageContaining("non-blank");
+    }
+
+    @Test
+    @DisplayName("rejects two servers sharing one backend identity")
+    void rejectsDuplicateIdentity() {
+        // The backend keeps one live connection per client id and supersedes
+        // the older one, so a duplicate would silently break one server.
+        MapSource source = new MapSource().templateDefaults();
+        source.values.put("backend.identities", new LinkedHashMap<>(Map.of(
+                "survival-01", "shared",
+                "creative-02", "shared")));
+
+        assertThatThrownBy(() -> ProxyConfig.from(source))
+                .isInstanceOf(ConfigSource.ConfigException.class)
+                .hasMessageContaining("same username")
+                .hasMessageContaining("supersede");
+    }
+
+    @Test
+    @DisplayName("rejects a server listed twice with different casing")
+    void rejectsDuplicateServerIgnoringCase() {
+        MapSource source = new MapSource().templateDefaults();
+        Map<String, Object> identities = new LinkedHashMap<>();
+        identities.put("survival-01", "survival-01");
+        identities.put("Survival-01", "survival-alt");
+        source.values.put("backend.identities", identities);
+
+        assertThatThrownBy(() -> ProxyConfig.from(source))
+                .isInstanceOf(ConfigSource.ConfigException.class)
+                .hasMessageContaining("case-insensitive");
+    }
+
+    @Test
+    @DisplayName("rejects an identity that reuses backend.username")
+    void rejectsIdentityEqualToFallbackUsername() {
+        MapSource source = new MapSource().templateDefaults()
+                .put("backend.username", "proxy");
+        source.values.put("backend.identities", new LinkedHashMap<>(Map.of(
+                "survival-01", "proxy")));
+
+        assertThatThrownBy(() -> ProxyConfig.from(source))
+                .isInstanceOf(ConfigSource.ConfigException.class)
+                .hasMessageContaining("reuses backend.username");
+    }
+
+    @Test
+    @DisplayName("ignores backend.identities in lite mode")
+    void identitiesAreIgnoredInLiteMode() throws Exception {
+        MapSource source = new MapSource().liteDefaults();
+        source.values.put("backend.identities", new LinkedHashMap<>(Map.of(
+                "survival-01", "survival-01")));
+
+        ProxyConfig config = ProxyConfig.from(source);
+
+        assertThat(config.getBackendIdentities()).isEmpty();
+        assertThat(config.getClientId()).isEqualTo("proxy-1");
+    }
+
     @Test
     @DisplayName("maps onto the shared ClientConnectionConfig")
     void mapsOntoClientConnectionConfig() throws Exception {

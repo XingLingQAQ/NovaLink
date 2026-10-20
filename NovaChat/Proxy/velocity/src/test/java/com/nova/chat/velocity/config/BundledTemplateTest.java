@@ -67,4 +67,29 @@ class BundledTemplateTest {
         assertThat(config.getLiteChannels()).isEmpty();
         assertThat(config.getLiteStorage()).isNull();
     }
+
+    @Test
+    @DisplayName("the bundled backend.identities table ships empty")
+    void backendIdentitiesShipEmpty() throws Exception {
+        // An empty table keeps an upgraded config on the single
+        // backend.username link: example identities here would be appended to
+        // every existing install and open backend connections nobody configured.
+        assertThat(template()).contains("[backend.identities]");
+        ProxyConfig config = ProxyConfig.from(new TomlConfigSource(new Toml().read(template())));
+        assertThat(config.getBackendIdentities()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a filled identities table parses through the real TOML dialect")
+    void recordedIdentitiesParse() throws Exception {
+        String withIdentities = template().replace("[backend.identities]",
+                "[backend.identities]\nsurvival-01 = \"survival-01\"\ncreative-02 = \"creative-02\"");
+
+        ProxyConfig config =
+                ProxyConfig.from(new TomlConfigSource(new Toml().read(withIdentities)));
+
+        assertThat(config.getBackendIdentities())
+                .containsEntry("survival-01", "survival-01")
+                .containsEntry("creative-02", "creative-02");
+    }
 }

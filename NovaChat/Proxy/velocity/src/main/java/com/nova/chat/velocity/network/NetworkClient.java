@@ -28,7 +28,26 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * @param config the plugin configuration
      */
     public NetworkClient(NovaChatVelocity plugin, NovaChatConfig config) {
+        this(plugin, config, null);
+    }
+
+    /**
+     * Creates a NetworkClient that authenticates as a specific backend identity.
+     *
+     * <p>Relay opens one link per downstream server, each with that server's
+     * backend username, so the backend attributes the players on that link to
+     * the server they are actually on.
+     *
+     * @param plugin the plugin instance
+     * @param config the plugin configuration
+     * @param identity the backend username, or null to use
+     *                 {@code backend.username}
+     */
+    public NetworkClient(NovaChatVelocity plugin, NovaChatConfig config, String identity) {
         ClientConnectionConfig connectionConfig = config.toClientConnectionConfig();
+        if (identity != null && !identity.isBlank()) {
+            connectionConfig = connectionConfig.toBuilder().username(identity).build();
+        }
         SchedulerBridge scheduler = new VelocitySchedulerBridge(plugin);
         ClientLogger logger = new VelocityClientLogger(plugin);
         String serverVersion = plugin.getServer().getVersion().getVersion();

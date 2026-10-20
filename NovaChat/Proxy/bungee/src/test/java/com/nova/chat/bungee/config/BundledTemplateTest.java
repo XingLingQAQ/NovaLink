@@ -63,4 +63,27 @@ class BundledTemplateTest {
         assertThat(config.getLiteChannels()).isEmpty();
         assertThat(config.getLiteStorage()).isNull();
     }
+
+    @Test
+    @DisplayName("the bundled identities mapping ships empty")
+    void backendIdentitiesShipEmpty() throws Exception {
+        // An empty mapping keeps an upgraded config on the single
+        // backend.username link: example identities here would be appended to
+        // every existing install and open backend connections nobody configured.
+        ProxyConfig config = ProxyConfig.from(new BungeeConfigSource(load(template())));
+        assertThat(config.getBackendIdentities()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a filled identities mapping parses through the real YAML dialect")
+    void recordedIdentitiesParse() throws Exception {
+        String yaml = template().replace("  identities: {}",
+                "  identities:\n    survival-01: \"survival-01\"\n    creative-02: \"creative-02\"");
+
+        ProxyConfig config = ProxyConfig.from(new BungeeConfigSource(load(yaml)));
+
+        assertThat(config.getBackendIdentities())
+                .containsEntry("survival-01", "survival-01")
+                .containsEntry("creative-02", "creative-02");
+    }
 }

@@ -19,6 +19,27 @@ backend:
   password: ""
   reconnect-delay: 5  # 重连延迟（秒）
 
+  # 按子服划分的后端身份（仅 mode: "relay" 生效，可省略）。
+  #
+  # 键 = 子服在代理 config.yml `servers:` 中的名字（plugin-messaging 信封里
+  #      声明的 server id，大小写不敏感）。
+  # 值 = 该子服在后端 novalink.yml `clients:` 里注册的用户名；后端用它区分
+  #      “这个玩家在哪台子服”，从而把提及、称号、私聊和 SERVER/PRIVATE 频道
+  #      投递回正确的子服。
+  #
+  # 每个值必须不同（后端同一 clientId 只保留一条连接，重复会互相顶掉），
+  # 也不能等于 backend.username。密码统一使用上面的 backend.password。
+  #
+  # 不给某个子服配置时，它的流量仍走 backend.username 这一条共享连接（旧行为）：
+  # 只有一个子服的老配置因此无需任何改动。全部子服都配置了身份后，可以把
+  # backend.username 留空，这样不会多开一条没人使用的连接。
+  #
+  # 例如：
+  #   identities:
+  #     survival-01: "survival-01"   # 后端的 clients: 里要有同名条目
+  #     creative-02: "creative-02"
+  identities: {}
+
 # 聊天设置
 chat:
   replace_vanilla: false  # 是否替换原版聊天

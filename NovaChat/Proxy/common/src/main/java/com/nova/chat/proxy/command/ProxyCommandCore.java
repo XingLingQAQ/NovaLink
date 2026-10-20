@@ -396,14 +396,14 @@ public class ProxyCommandCore {
                     WhoCommandService.getUnavailablePrompt()));
             return;
         }
-        AbstractPlatformNetworkClient client = chatCore.getNetworkClient();
+        UUID requesterId = sender.getPlayerId();
+        AbstractPlatformNetworkClient client = chatCore.getNetworkClientForPlayer(requesterId);
         if (client == null || !client.isConnected() || !client.isAuthenticated()) {
             sender.sendMessage(chatCore.getFormatter().formatError(
                     I18n.tr("chat.network.not_connected")));
             return;
         }
 
-        UUID requesterId = sender.getPlayerId();
         ProxyPlayer requester = requesterId != null ? platform.getPlayer(requesterId) : null;
         String channelId = null;
         if (args != null && args.length > 0 && !args[0].isBlank()) {
@@ -515,7 +515,8 @@ public class ProxyCommandCore {
         }
         for (String line : PrivateMessageCommandService.msg(
                 this::sendPrivateMessagePacket,
-                player.getUniqueId(), player.getName(), config().getClientId(), args)) {
+                player.getUniqueId(), player.getName(),
+                chatCore.getIdentityForPlayer(player.getUniqueId()), args)) {
             playerReply(player, chatCore.getFormatter().parseColors(line));
         }
     }
@@ -535,7 +536,8 @@ public class ProxyCommandCore {
         }
         for (String line : PrivateMessageCommandService.reply(
                 privateMessageService, this::sendPrivateMessagePacket,
-                player.getUniqueId(), player.getName(), config().getClientId(), args)) {
+                player.getUniqueId(), player.getName(),
+                chatCore.getIdentityForPlayer(player.getUniqueId()), args)) {
             playerReply(player, chatCore.getFormatter().parseColors(line));
         }
     }
@@ -626,9 +628,15 @@ public class ProxyCommandCore {
         platform.sendMessage(player, legacyText);
     }
 
-    /** Transmits a private-message packet when the backend link is up. */
+    /**
+     * Transmits a private-message packet on the sender's server link when it is
+     * up. Routing by sender matters in relay: the backend resolves the target's
+     * connection from the sender's client boundary, and the DM echo must ride
+     * the same link the sender was attributed to.
+     */
     private boolean sendPrivateMessagePacket(PrivateMessagePacket packet) {
-        AbstractPlatformNetworkClient client = chatCore.getNetworkClient();
+        AbstractPlatformNetworkClient client =
+                chatCore.getNetworkClientForPlayer(packet.getSenderId());
         if (client == null || !client.isConnected()) {
             return false;
         }

@@ -88,7 +88,10 @@ public class ProxyServerSwitchCore {
      */
     public void handleChannelTransition(ProxyPlayer player, PlayerChannelState state,
                                         String newServer) {
-        AbstractPlatformNetworkClient client = chatCore.getNetworkClient();
+        // The re-JOIN must ride the new server's link: the backend stamps
+        // PlayerState#clientId from the connection that carried the JOIN, which
+        // is what attributes the player to the new server afterwards.
+        AbstractPlatformNetworkClient client = chatCore.getNetworkClientFor(newServer);
         if (client == null || !client.isAuthenticated()) {
             return;
         }
@@ -119,7 +122,7 @@ public class ProxyServerSwitchCore {
         String defaultChannel = chatCore.getStates().getConfig().getDefaultChannel();
         state.setActiveChannel(defaultChannel);
 
-        AbstractPlatformNetworkClient client = chatCore.getNetworkClient();
+        AbstractPlatformNetworkClient client = chatCore.getNetworkClientFor(server);
         if (client != null && client.isAuthenticated()) {
             ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.JOIN, defaultChannel);
             packet.addExtra("player_uuid", player.getUniqueId().toString());

@@ -6,9 +6,11 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Immutable configuration model shared by every NovaChat proxy plugin.
@@ -28,6 +30,10 @@ import java.util.Objects;
  *   <li>{@code backend.username} / {@code backend.password} — required strings
  *       in relay (may be empty)</li>
  *   <li>{@code backend.reconnect-delay} — required in relay, positive</li>
+ *   <li>{@code backend.identities} — optional in relay: downstream server name
+ *       → backend client username, one connection per entry. Keys and values
+ *       non-blank, values unique (two links sharing an identity supersede each
+ *       other on the backend) and not equal to {@code backend.username}</li>
  *   <li>{@code chat.replace_vanilla} — required boolean</li>
  *   <li>{@code chat.default_channel} / {@code chat.locale} — required, non-blank</li>
  *   <li>{@code chat.channel-prefixes} — string map, empty disables prefix routing</li>
@@ -60,6 +66,8 @@ public final class ProxyConfig implements ProxyConfigView {
     private final String username;
     private final String password;
     private final int reconnectDelay;
+    /** Downstream server name → backend client username (relay only). */
+    private final Map<String, String> backendIdentities;
     private final boolean replaceVanilla;
     private final String defaultChannel;
     private final String locale;
@@ -90,6 +98,8 @@ public final class ProxyConfig implements ProxyConfigView {
         this.username = builder.username;
         this.password = builder.password;
         this.reconnectDelay = builder.reconnectDelay;
+        this.backendIdentities =
+                Collections.unmodifiableMap(new LinkedHashMap<>(builder.backendIdentities));
         this.replaceVanilla = builder.replaceVanilla;
         this.defaultChannel = builder.defaultChannel;
         this.locale = builder.locale;
@@ -128,6 +138,7 @@ public final class ProxyConfig implements ProxyConfigView {
             builder.password = source.requiredString("backend.password");
             builder.reconnectDelay = positive(
                     source.requiredInt("backend.reconnect-delay"), "backend.reconnect-delay");
+            parseBackendIdentities(source, builder);
         }
 
         builder.replaceVanilla = source.requiredBoolean("chat.replace_vanilla");
@@ -189,7 +200,7 @@ public final class ProxyConfig implements ProxyConfigView {
     private static void parseLite(ConfigSource source, Builder builder)
             throws ConfigSource.ConfigException {
         builder.serverId = nonBlank(
-                source.requiredString("lite.server-id"), "lite.server-id");
+                source.requiredString("lite.server-id"), "lite.server-id");
 
         // Optional: an absent lite.filter section means "off", so an existing
         // config keeps behaving exactly as it did before this feature existed.
@@ -354,6 +365,69 @@ public final class ProxyConfig implements ProxyConfigView {
         return value;
     }
 
+    /**
+     * Parses the optional {@code backend.identities} table.
+     *
+     * <p>Absent means "legacy single connection": every downstream server's
+     * traffic rides the {@code backend.username} link, which is exactly the
+     * behaviour an existing config has today. That is what keeps an install
+     * with one downstream server working with no config change.
+     *
+     * <p>Uniqueness is enforced here rather than at connect time because the
+     * backend keeps one active connection per client id and silently supersedes
+     * the older one: two entries sharing an identity would make two servers
+     * fight over one backend connection state. The same applies to an identity
+     * equal to {@code backend.username}: the fallback link used by any server
+     * that is not listed would collide with the listed one.
+     *
+     * @param source the dialect accessor
+     * @param builder the builder receiving the parsed values
+     * @throws ConfigSource.ConfigException when an entry is invalid
+     */
+    private static void parseBackendIdentities(ConfigSource source, Builder builder)
+            throws ConfigSource.ConfigException {
+        Map<String, Object> table = source.optionalTable("backend.identities");
+        if (table == null) {
+            return;
+        }
+        Set<String> normalisedServers = new LinkedHashSet<>();
+        Set<String> identities = new LinkedHashSet<>();
+        for (Map.Entry<String, Object> entry : table.entrySet()) {
+            String server = stripQuotes(entry.getKey());
+            String path = "backend.identities." + server;
+            if (server.isBlank()) {
+                throw new ConfigSource.ConfigException(
+                        "Configuration value backend.identities contains a blank server name");
+            }
+            if (!(entry.getValue() instanceof String identity) || identity.isBlank()) {
+                throw new ConfigSource.ConfigException(
+                        "Configuration value " + path + " must be a non-blank username");
+            }
+            // Server names reach the proxy case-insensitively (the plugin-message
+            // envelope is verified that way), so two keys differing only by case
+            // would be one route with an ambiguous identity.
+            if (!normalisedServers.add(server.toLowerCase(java.util.Locale.ROOT))) {
+                throw new ConfigSource.ConfigException(
+                        "Configuration value backend.identities declares server '"
+                                + server + "' twice (server names are case-insensitive)");
+            }
+            if (!identities.add(identity)) {
+                throw new ConfigSource.ConfigException(
+                        "Configuration value backend.identities maps two servers to the same"
+                                + " username '" + identity + "'; the backend keeps one"
+                                + " connection per identity, so the second link would"
+                                + " supersede the first");
+            }
+            if (!builder.username.isBlank() && builder.username.equals(identity)) {
+                throw new ConfigSource.ConfigException(
+                        "Configuration value " + path + " reuses backend.username '"
+                                + identity + "'; pick a distinct identity or leave"
+                                + " backend.username empty when every server has its own entry");
+            }
+            builder.backendIdentities.put(server, identity);
+        }
+    }
+
     private static int port(int value, String path) throws ConfigSource.ConfigException {
         if (value < 1 || value > 65535) {
             throw new ConfigSource.ConfigException(
@@ -390,6 +464,15 @@ public final class ProxyConfig implements ProxyConfigView {
 
     public int getReconnectDelay() {
         return reconnectDelay;
+    }
+
+    /**
+     * @return the relay per-server identities ({@code backend.identities}):
+     *         downstream server name → backend client username; empty when the
+     *         operator uses the single {@code backend.username} connection
+     */
+    public Map<String, String> getBackendIdentities() {
+        return backendIdentities;
     }
 
     public boolean isReplaceVanilla() {
@@ -577,6 +660,7 @@ public final class ProxyConfig implements ProxyConfigView {
         private String username = "";
         private String password = "";
         private int reconnectDelay = ClientConnectionConfig.DEFAULT_INITIAL_RECONNECT_DELAY_SECONDS;
+        private final Map<String, String> backendIdentities = new LinkedHashMap<>();
         private boolean replaceVanilla;
         private String defaultChannel = "local";
         private String locale = "zh_CN";
@@ -652,6 +736,16 @@ public final class ProxyConfig implements ProxyConfigView {
 
         public Builder reconnectDelay(int value) {
             this.reconnectDelay = value;
+            return this;
+        }
+
+        /**
+         * @param server downstream server name
+         * @param identity backend client username that server authenticates as
+         * @return this builder
+         */
+        public Builder backendIdentity(String server, String identity) {
+            this.backendIdentities.put(server, identity);
             return this;
         }
 
