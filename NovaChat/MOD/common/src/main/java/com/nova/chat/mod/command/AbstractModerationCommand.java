@@ -134,8 +134,14 @@ public abstract class AbstractModerationCommand implements CommandHandler {
         if (isConsole(context)) {
             packet.addExtra("operatorId", NovaConstants.CONSOLE_SENTINEL_UUID);
             packet.addExtra("console", "true");
+            // `playerId` is the key ChannelResponseTracker correlates on, not
+            // `operatorId`. Without it the response finds no pending entry and
+            // is dropped, so the operator never learns whether the action was
+            // applied - neither success nor failure.
+            packet.addExtra("playerId", NovaConstants.CONSOLE_SENTINEL_UUID);
         } else {
             packet.addExtra("operatorId", context.getPlayerId().toString());
+            packet.addExtra("playerId", context.getPlayerId().toString());
         }
         packet.addExtra("operatorName", context.getPlayerName());
     }

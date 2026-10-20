@@ -216,9 +216,14 @@ public abstract class AbstractSubCommand implements SubCommand {
      */
     protected void addOperatorExtras(ChannelActionPacket packet, CommandSender sender) {
         if (sender instanceof Player) {
-            packet.addExtra("operatorId", ((Player) sender).getUniqueId().toString());
+            String operatorUuid = ((Player) sender).getUniqueId().toString();
+            packet.addExtra("operatorId", operatorUuid);
+            // ChannelResponseTracker correlates on "playerId", not "operatorId";
+            // without it the response is dropped and the operator sees nothing.
+            packet.addExtra("playerId", operatorUuid);
         } else {
             packet.addExtra("operatorId", NovaConstants.CONSOLE_SENTINEL_UUID);
+            packet.addExtra("playerId", NovaConstants.CONSOLE_SENTINEL_UUID);
             packet.addExtra("console", "true");
         }
         packet.addExtra("operatorName", sender.getName());
