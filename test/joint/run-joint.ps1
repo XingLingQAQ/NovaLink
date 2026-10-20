@@ -2526,6 +2526,15 @@ function Invoke-LiteRound($round, [string]$roundDir) {
       @{ id = 'expect-dm'; action = 'expect'; token = $dmToken; timeoutMs = 60000 },
       @{ id = 'mention-settle'; action = 'wait'; ms = 1500 },
       @{ id = 'alice-no-self-mention-title'; action = 'expectEventAbsent'; kind = 'title'; match = 'E2ELiteAlice'; withinMs = 3000 },
+      # MODERATION REACHABILITY PROBE (see Invoke-ModerationScenarios).
+      # A proxy-connected player runs the moderation command the topology would
+      # need to support. Alice is the TARGET here on purpose: if the command
+      # ever starts working, the proof is that her own next line disappears, and
+      # this probe must not pre-empt that. What comes back is recorded verbatim
+      # and judged as a diagnostic -- the point is to make the current behaviour
+      # visible in every run, not to lock a defect in.
+      @{ id = 'probe-mute'; action = 'cmd'; text = '/nc mute E2ELiteBob 1h global' },
+      @{ id = 'probe-settle'; action = 'wait'; ms = 2500 },
       @{ id = 'quit'; action = 'quit' }
     )
     $bobSteps = @(
@@ -2820,6 +2829,13 @@ function Invoke-LiteRound($round, [string]$roundDir) {
       }
     }
 
+    # ---- moderation EFFECT scenarios (separate gating group) ----
+    # Kept apart from the chat assertions above so a failure names the feature
+    # that broke. See Invoke-ModerationScenarios for why lite cannot execute
+    # them today; the reason is reported, never swallowed.
+    $assertions += Invoke-ModerationScenarios -RoundIndex $round.Index -ProxyLog $proxyLog `
+      -AliceRes $aliceRes -BobRes $bobRes -RunId "$tokenPrefix-lite"
+
     # `diagnostic` observations are recorded, never gated.
     $failed = @($assertions | Where-Object { -not $_.pass -and $_.kind -ne 'diagnostic' })
     if ($failed.Count -gt 0) {
@@ -2948,10 +2964,72 @@ function Invoke-ModerationScenarios {
   )
 
   $prefix = "round$RoundIndex/mod"
-  $reason = $script:ModerationUnavailableReason
   $out = @()
+
+  # ---- 0. Reachability: could a moderation command execute at all? ----
+  # This is the assertion that makes the rest honest. Without it every scenario
+  # below would report "not executed" for a reason a reader has to take on
+  # faith. Here the run's OWN evidence answers it: alice ran `/nc mute` as a
+  # proxy-connected player, and whatever came back is in her recording.
+  #
+  # The probe is deliberately a real command with a real target and duration.
+  # Two outcomes are possible, and both are informative:
+  #   * a mute acknowledgement / refusal        -> moderation IS reachable on
+  #     this topology; the scenarios below should be promoted to gating;
+  #   * NC-404 "Not found"                      -> the proxy treated "mute" as
+  #     a CHANNEL NAME (ProxyCommandCore's default branch forwards an unknown
+  #     subcommand as a channel message), so no moderation path exists.
+  #
+  # Kind 'diagnostic': this records a product-shape fact, it does not gate. The
+  # scenarios it explains are separately reported as not-executed.
+  #
+  # Match the response by shape, not by a bare substring: the word "mute" also
+  # appears in the /nc help listing and in unrelated chat, and counting those
+  # would report a reachable surface that does not exist.
+  $probeHit = $null
+  if ($AliceRes -and $AliceRes.received) {
+    foreach ($entry in $AliceRes.received) {
+      $t = if ($entry.text) { [string]$entry.text } else { [string]$entry.raw }
+      if (-not $t) { continue }
+      if ($t.Contains('NC-404') -or $t.Contains('NC-403') -or $t.Contains('NC-436') -or
+          $t.Contains('Muting') -or $t.Contains('muted by') -or $t.Contains('Player muted')) {
+        $probeHit = $entry; break
+      }
+    }
+  }
+  $reachable = $false
+  $probeText = if ($probeHit) { [string]$probeHit.text } else { '' }
+  $probeEvidence = if (-not $AliceRes) {
+    'alice recorded nothing, so the probe cannot be judged'
+  } elseif (-not $probeHit) {
+    'alice recorded no response to /nc mute at all (no acknowledgement and no error)'
+  } else {
+    "alice's response to /nc mute E2ELiteBob: $probeText"
+  }
+  if ($probeHit) {
+    # A response only counts as "reachable" when it is NOT the unknown-channel
+    # fallthrough. NC-404 is the proxy saying it read "mute" as a channel name.
+    $reachable = -not $probeText.Contains('NC-404')
+  }
+  $out += [PSCustomObject]@{
+    id = "$prefix/moderation-command-reachable"
+    token = 'probe-mute'
+    pass = $reachable
+    evidence = $probeEvidence
+    kind = 'diagnostic'
+  }
+
+  $reason = if ($reachable) {
+    'the probe shows a moderation surface, but this group has not been promoted to gating yet'
+  } else {
+    'no moderation execution path on this topology: /nc from a proxy-connected player has no mute/kick/ban subcommand (ProxyCommandCore treats the word as a channel name), and a downstream player''s /nc stops at checkConnection() because lite starts no backend'
+  }
+
+  # ---- 1..7: the effect scenarios ----
+  # Each is reported with the assertion it WOULD make, so the gap is precise
+  # and reviewable rather than a bare "skipped".
   $scenarios = @(
-    @{ Id = 'mute-takes-effect';       What = 'muted target''s line never reaches any observer, while a pre-mute control line from the same sender did' }
+    @{ Id = 'mute-takes-effect';       What = 'muted target''s line never reaches any observer; a pre-mute control line from the same sender did' }
     @{ Id = 'mute-is-channel-scoped';  What = 'the same target speaks in an unmuted channel and the line DOES arrive' }
     @{ Id = 'kick-takes-effect';       What = 'kicked target''s next line never reaches any observer' }
     @{ Id = 'kick-is-not-a-ban';       What = 'the kicked target can rejoin the channel and is heard again' }
