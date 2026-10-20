@@ -131,12 +131,50 @@ public final class VelocityProxyPlatform implements ProxyPlatform {
             return;
         }
         try {
-            Key key = Key.key("minecraft", soundId.toLowerCase(Locale.ROOT)
-                    .replace("minecraft:", ""));
+            Key key = Key.key("minecraft", toResourcePath(soundId));
             handle.playSound(Sound.sound(key, Sound.Source.PLAYER, volume, pitch));
         } catch (Exception e) {
             plugin.debug("Failed to play mention sound: " + e.getMessage());
         }
+    }
+
+    /**
+     * Converts a sound identifier into a valid resource-path.
+     *
+     * <p>{@link com.nova.chat.common.chat.MentionNotifier#DEFAULT_SOUND} is
+     * spelled the way Bukkit spells its {@code Sound} enum members
+     * ({@code ENTITY_EXPERIENCE_ORB_PICKUP}), which is not a registry id: the
+     * vanilla resource path is {@code entity.experience_orb.pickup}. Lowercasing
+     * the enum name produces {@code entity_experience_orb_pickup}, which no
+     * client resolves, so the sound was simply silent. The mapping has to be
+     * explicit because underscores and dots are not interchangeable - there is
+     * no rule that recovers the dots from the enum spelling.
+     *
+     * <p>An input that is already a resource path (contains a dot) is passed
+     * through, so a configured custom sound keeps working.
+     *
+     * @param soundId a Bukkit-style enum name or an already-valid resource path
+     * @return a resource path suitable for {@link Key#key(String, String)}
+     */
+    private String toResourcePath(String soundId) {
+        String stripped = soundId.toLowerCase(Locale.ROOT).replace("minecraft:", "");
+        if (stripped.indexOf('.') >= 0) {
+            return stripped;
+        }
+        String mapped = switch (stripped) {
+            case "entity_experience_orb_pickup" -> "entity.experience_orb.pickup";
+            case "entity_player_levelup" -> "entity.player.levelup";
+            case "block_note_block_pling" -> "block.note_block.pling";
+            case "ui_toast_challenge_complete" -> "ui.toast.challenge_complete";
+            default -> null;
+        };
+        if (mapped != null) {
+            return mapped;
+        }
+        // Unmapped enum-style id: fall back to the configured default rather
+        // than sending a path the client will ignore in silence.
+        plugin.debug("Unknown sound id '" + soundId + "', using the mention default");
+        return "entity.experience_orb.pickup";
     }
 
     @Override
