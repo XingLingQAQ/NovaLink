@@ -277,10 +277,13 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
         // 1. The player cache. PlayerStateManager's cache holds online players
         //    only: a logout LEAVE evicts the entry (ChannelActionHandler
         //    handleLeave), so a vanished cache entry means the player is gone.
-        //    This is the authoritative signal behind a proxy, where every
-        //    downstream server shares ONE TCP connection: the clientId lookup
-        //    below always resolves to that live connection, so it can never
-        //    distinguish a logged-out player from an online one. Re-checking the
+        //    This is the authoritative signal behind a proxy. A relay proxy
+        //    holds one backend connection per downstream server, so the
+        //    connection leg below proves the *server* is reachable but says
+        //    nothing about the individual player on it - the cache is what
+        //    distinguishes a logged-out player from an online one. (Before
+        //    per-server links there was a single shared connection, which is
+        //    why this leg was the only one that could work.) Re-checking the
         //    cache by id (rather than trusting the name scan above) also closes
         //    the race where the player logs out between resolution and delivery.
         //
