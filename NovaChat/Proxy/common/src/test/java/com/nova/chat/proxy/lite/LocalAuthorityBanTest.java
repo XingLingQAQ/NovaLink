@@ -290,6 +290,36 @@ class LocalAuthorityBanTest {
                     .isTrue();
         }
     }
+    @Test
+    @DisplayName("a ban on an offline player still clears their stored membership")
+    void banEvictsTheStoredMembershipToo() {
+        Path database = tempDir.resolve("ban-offline-evict.db");
+
+        try (LiteChannelStore store = sqliteStore(database)) {
+            store.open();
+            LocalAuthority first = authority(store);
+            joinAll(first);
+            assertThat(store.flush(30_000L)).isTrue();
+            // Drop the live state the way a disconnect does, leaving only the
+            // stored membership, then ban: the row must still be evicted.
+            first.onPlayerDisconnect(bob.id);
+            assertThat(ban(first, moderator, bob, GLOBAL).isSuccess()).isTrue();
+            assertThat(store.flush(30_000L)).isTrue();
+        }
+
+        try (LiteChannelStore reopened = sqliteStore(database)) {
+            reopened.open();
+            LocalAuthority second = authority(reopened);
+            second.onPlayerConnect(bob.id);
+            assertThat(reopened.flush(30_000L)).isTrue();
+
+            ChannelActionPacket join = action(bob, ChannelAction.JOIN, LOCAL);
+            assertThat(((ChannelActionResponsePacket) send(second, join).get(0)).isSuccess())
+                    .as("the ban covers every channel and the row was evicted, so a")
+                    .as("channel the player never joined live must be gone too")
+                    .isTrue();
+        }
+    }
     // ---------------------------------------------------------------- refusals
 
     @Test

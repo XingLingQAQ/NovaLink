@@ -697,6 +697,12 @@ public final class LocalAuthority {
         if (state != null) {
             state.leaveChannel(channelId);
             persist(targetId, state);
+        } else if (store.isPersistent()) {
+            // No live state means the target is offline or was never loaded.
+            // Writing a fresh snapshot here would erase their other channels,
+            // so the stored row is edited in place instead. Without this a
+            // kicked player reappears in the channel after a restart.
+            store.removeChannel(targetId, channelId);
         }
         platform.logDebug("Lite authority kicked " + targetId + " from " + channelId
                 + " by " + operatorId);
@@ -773,6 +779,13 @@ public final class LocalAuthority {
                 state.leaveChannel(evictedChannel);
             }
             persist(targetId, state);
+        } else if (store.isPersistent()) {
+            // Offline target: the live membership table only knows channels this
+            // process has seen, so the stored row is edited per channel instead
+            // of being overwritten from a snapshot that does not exist.
+            for (String evictedChannel : evicted) {
+                store.removeChannel(targetId, evictedChannel);
+            }
         }
 
         if (store.isPersistent()) {

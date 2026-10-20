@@ -775,7 +775,53 @@ public final class LiteChannelStore implements AutoCloseable {
         }
     }
 
-    /** Runs on the I/O thread: read one player's membership row. */
+    /**
+     * Queues removal of one channel from a player's persisted membership.
+     *
+     * <p>Needed because a kick can target a player the authority has no live
+     * state for (they are offline, or never loaded since startup). Writing a
+     * fresh snapshot in that case would erase every other channel they belong
+     * to, so this reads the stored row, drops one channel and writes it back —
+     * all on the I/O thread, where the read/write pair cannot interleave with
+     * another write for the same player.
+     *
+     * @param playerId the kicked player (null is ignored)
+     * @param channelId the channel to drop (null is ignored)
+     */
+    public void removeChannel(UUID playerId, String channelId) {
+        if (!persistent || playerId == null || channelId == null || closing.get()) {
+            return;
+        }
+        submit(() -> dropChannel(playerId, channelId));
+    }
+
+    /** Runs on the I/O thread: read the stored snapshot, drop one channel, save it. */
+    private void dropChannel(UUID playerId, String channelId) {
+        ensureBackend();
+        PlayerStateManager current = manager;
+        if (current == null) {
+            return;
+        }
+        try {
+            Optional<PlayerState> loaded = current.loadState(playerId);
+            if (loaded.isEmpty()) {
+                return;
+            }
+            PlayerState state = loaded.get();
+            if (!state.getJoinedChannels().contains(channelId)) {
+                return;
+            }
+            state.removeJoinedChannel(channelId);
+            if (channelId.equals(state.getActiveChannel())) {
+                state.setActiveChannel(null);
+            }
+            current.saveState(state);
+            debug.accept("Lite storage removed channel " + channelId
+                    + " from " + playerId);
+        } catch (RuntimeException e) {
+            reportWriteFailure(e);
+        }
+    }
     private void readPlayer(UUID playerId, Consumer<PlayerSnapshot> sink) {
         ensureBackend();
         PlayerStateManager current = manager;

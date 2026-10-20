@@ -58,7 +58,6 @@ public class NovaChatCommand implements CommandExecutor, TabCompleter {
         subCommands.put("kick", new KickCommand(plugin));
         subCommands.put("ban", new BanCommand(plugin));
         subCommands.put("unban", new UnbanCommand(plugin));
-        subCommands.put("unban", new UnbanCommand(plugin));
         subCommands.put("announce", new AnnounceCommand(plugin));
         subCommands.put("title", new TitleCommand(plugin));
         subCommands.put("reload", new ReloadCommand(plugin));
