@@ -43,6 +43,28 @@ final class TestLogger implements \Logger {
 }
 
 /**
+ * Minimal World double: only the name, which /nc accept reports.
+ *
+ * Skips the real constructor — it builds generators, providers and async
+ * pools that the composer test install does not provide.
+ */
+final class FakeWorld extends \pocketmine\world\World {
+    private string $fakeWorldName;
+
+    public function __construct(string $name = "world") {
+        $this->fakeWorldName = $name;
+    }
+
+    public function getName(): string {
+        return $this->fakeWorldName;
+    }
+
+    public function getFolderName(): string {
+        return $this->fakeWorldName;
+    }
+}
+
+/**
  * Minimal Player double for command-level tests.
  *
  * PocketMine's Player cannot be stubbed with createStub(): its destructor runs
@@ -81,6 +103,10 @@ final class FakePlayer extends Player {
 
     public function getUniqueId(): UuidInterface {
         return Uuid::fromString($this->fakeUuid);
+    }
+
+    public function getWorld(): \pocketmine\world\World {
+        return new FakeWorld("world");
     }
 
     public function hasPermission(Permission|string $name): bool {
@@ -625,24 +651,246 @@ final class ModerationCommandTest extends TestCase {
     }
 
     // ==================================================================
-    // Existing behaviour must not regress
+    // mute — the extras the backend's handleMute actually reads
+    //
+    // A regression here is silent: the backend answers NC-400 "Target player
+    // ID is required" / "Channel ID is required" and the operator sees only a
+    // generic failure, so these pin the exact keys.
     // ==================================================================
 
-    public function testExistingMuteStillSendsMinutesVerbatim(): void {
-        // /nc mute is deliberately left untouched: its argument is MINUTES and
-        // is passed through unchanged (unlike /nc ban, which converts to
-        // seconds like the Java shell).
+    public function testMuteFromPlayerSendsFullExtrasInSeconds(): void {
+        $server = new FakeServer();
+        $server->players["bob"] = new FakePlayer("Bob", "11111111-1111-1111-1111-111111111111");
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client, $server, $this->staleChannelHandler());
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        $command->execute($player, "nc", ["mute", "Bob", "10m"]);
+
+        self::assertCount(1, $client->channelActions);
+        $action = $client->channelActions[0];
+        self::assertSame(ChannelActionPacket::ACTION_MUTE, $action["action"]);
+        self::assertSame(7, $action["action"], "the wire id must stay MUTE=7");
+        self::assertSame("staff", $action["channelId"], "handleMute rejects a blank channel");
+        self::assertSame("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", $action["extra"]["operatorId"]);
+        self::assertSame("Alice", $action["extra"]["operatorName"]);
+        self::assertSame("Bob", $action["extra"]["targetName"]);
+        self::assertSame(
+            "11111111-1111-1111-1111-111111111111",
+            $action["extra"]["targetId"]
+        );
+        self::assertSame("600", $action["extra"]["duration"], "10m must reach the wire as 600 SECONDS");
+        self::assertArrayNotHasKey("console", $action["extra"]);
+    }
+
+    public function testMuteNeverSendsTheLegacyTargetKey(): void {
+        // `target` is not among the keys ChannelActionHandler.resolveTargetId
+        // reads (targetId/target_id/targetUuid/target_uuid/targetName), so a
+        // packet carrying only `target` resolves to null and dies at NC-400.
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client, null, $this->staleChannelHandler());
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        $command->execute($player, "nc", ["mute", "Bob", "1h"]);
+
+        self::assertArrayNotHasKey("target", $client->channelActions[0]["extra"]);
+        self::assertArrayHasKey("targetName", $client->channelActions[0]["extra"]);
+        self::assertArrayHasKey("operatorId", $client->channelActions[0]["extra"]);
+    }
+
+    /**
+     * The duration-unit decision, pinned. A unit suffix is parsed with that
+     * unit; a BARE number keeps meaning minutes (the historical UI unit) and
+     * is converted, because the backend reads extra["duration"] as seconds.
+     */
+    public function testMuteDurationUnits(): void {
+        $cases = [
+            "30s" => "30",
+            "10m" => "600",
+            "1h" => "3600",
+            "1d" => "86400",
+            "1w" => "604800",
+            "5" => "300",   // bare number = 5 minutes
+            "90" => "5400", // bare number = 90 minutes
+        ];
+
+        foreach ($cases as $typed => $expected) {
+            $client = new RecordingNetworkClient();
+            $command = $this->makeCommand($client, null, $this->staleChannelHandler());
+            $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+            $command->execute($player, "nc", ["mute", "Bob", (string) $typed]);
+
+            self::assertSame(
+                $expected,
+                $client->channelActions[0]["extra"]["duration"],
+                "mute duration '" . $typed . "' must go on the wire in seconds"
+            );
+        }
+    }
+
+    public function testMuteDefaultsToTenMinutesAsSeconds(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client, null, $this->staleChannelHandler());
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        $command->execute($player, "nc", ["mute", "Bob"]);
+
+        self::assertSame("600", $client->channelActions[0]["extra"]["duration"]);
+    }
+
+    public function testMuteFromConsoleUsesSentinelAndConsoleTag(): void {
         $client = new RecordingNetworkClient();
         $command = $this->makeCommand($client);
 
-        $command->execute($this->consoleSender(), "nc", ["mute", "Bob", "5"]);
+        $command->execute($this->consoleSender(), "nc", ["mute", "Bob", "10m", "staff"]);
 
         $action = $client->channelActions[0];
-        self::assertSame(ChannelActionPacket::ACTION_MUTE, $action["action"]);
-        self::assertSame("5", $action["extra"]["duration"]);
+        self::assertSame("staff", $action["channelId"]);
+        self::assertSame(self::CONSOLE_SENTINEL, $action["extra"]["operatorId"]);
+        self::assertSame("true", $action["extra"]["console"]);
+        self::assertSame("CONSOLE", $action["extra"]["operatorName"]);
+        self::assertSame("600", $action["extra"]["duration"]);
     }
 
-    public function testExistingKickStillInfersSenderChannel(): void {
+    public function testMuteFromConsoleWithoutChannelSendsNothing(): void {
+        // Console has no active channel to infer, and handleMute rejects a
+        // blank one — so refuse locally instead of inviting an NC-400.
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client);
+        $sender = $this->consoleSender([], $messages);
+
+        $command->execute($sender, "nc", ["mute", "Bob", "10m"]);
+
+        self::assertSame([], $client->channelActions);
+        self::assertStringContainsString("channel", implode("\n", $messages));
+    }
+
+    public function testMuteExplicitChannelArgumentWinsOverActiveChannel(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client, null, $this->staleChannelHandler());
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        $command->execute($player, "nc", ["mute", "Bob", "10m", "global"]);
+
+        self::assertSame("global", $client->channelActions[0]["channelId"]);
+    }
+
+    public function testMuteRejectsInvalidDurationAndSendsNothing(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client, null, $this->staleChannelHandler());
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        foreach (["0", "abc", "10x", "-5", ""] as $bad) {
+            $command->execute($player, "nc", ["mute", "Bob", $bad]);
+        }
+
+        self::assertSame([], $client->channelActions);
+    }
+
+    public function testMutePermissionDeniedSendsNothing(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client, null, $this->staleChannelHandler());
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", ["novachat.admin.mute"]);
+
+        $command->execute($player, "nc", ["mute", "Bob", "10m"]);
+
+        self::assertSame([], $client->channelActions);
+    }
+
+    // ==================================================================
+    // kick — same key contract, no duration
+    // ==================================================================
+
+    public function testKickFromPlayerSendsFullExtras(): void {
+        $server = new FakeServer();
+        $server->players["bob"] = new FakePlayer("Bob", "11111111-1111-1111-1111-111111111111");
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client, $server, $this->staleChannelHandler());
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        $command->execute($player, "nc", ["kick", "Bob"]);
+
+        self::assertCount(1, $client->channelActions);
+        $action = $client->channelActions[0];
+        self::assertSame(ChannelActionPacket::ACTION_KICK, $action["action"]);
+        self::assertSame(6, $action["action"], "the wire id must stay KICK=6");
+        self::assertSame("staff", $action["channelId"], "a kick is per-channel");
+        self::assertSame("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", $action["extra"]["operatorId"]);
+        self::assertSame("Alice", $action["extra"]["operatorName"]);
+        self::assertSame("Bob", $action["extra"]["targetName"]);
+        self::assertSame(
+            "11111111-1111-1111-1111-111111111111",
+            $action["extra"]["targetId"]
+        );
+        self::assertArrayNotHasKey("target", $action["extra"]);
+        self::assertArrayNotHasKey("console", $action["extra"]);
+        self::assertArrayNotHasKey("duration", $action["extra"]);
+    }
+
+    public function testKickFromConsoleUsesSentinelAndConsoleTag(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client);
+
+        $command->execute($this->consoleSender(), "nc", ["kick", "Bob", "staff"]);
+
+        $extra = $client->channelActions[0]["extra"];
+        self::assertSame("staff", $client->channelActions[0]["channelId"]);
+        self::assertSame(self::CONSOLE_SENTINEL, $extra["operatorId"]);
+        self::assertSame("true", $extra["console"]);
+        self::assertSame("CONSOLE", $extra["operatorName"]);
+    }
+
+    public function testKickFromConsoleWithoutChannelSendsNothing(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client);
+        $sender = $this->consoleSender([], $messages);
+
+        $command->execute($sender, "nc", ["kick", "Bob"]);
+
+        self::assertSame([], $client->channelActions);
+        self::assertStringContainsString("channel", implode("\n", $messages));
+    }
+
+    public function testKickOfflineTargetOmitsTargetIdButSendsName(): void {
+        // The backend resolves names across every connected sub-server, so an
+        // offline target is not fatal here.
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client, null, $this->staleChannelHandler());
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        $command->execute($player, "nc", ["kick", "OfflineGuy"]);
+
+        $extra = $client->channelActions[0]["extra"];
+        self::assertArrayNotHasKey("targetId", $extra);
+        self::assertSame("OfflineGuy", $extra["targetName"]);
+    }
+
+    public function testKickExplicitChannelArgumentWins(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client, null, $this->staleChannelHandler());
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        $command->execute($player, "nc", ["kick", "Bob", "global"]);
+
+        self::assertSame("global", $client->channelActions[0]["channelId"]);
+    }
+
+    public function testKickPermissionDeniedSendsNothing(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client, null, $this->staleChannelHandler());
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", ["novachat.admin.kick"]);
+
+        $command->execute($player, "nc", ["kick", "Bob"]);
+
+        self::assertSame([], $client->channelActions);
+    }
+
+    // ==================================================================
+    // kick — inferred channel still works (pre-existing behaviour)
+    // ==================================================================
+
+    public function testKickStillInfersSenderChannel(): void {
         $client = new RecordingNetworkClient();
         $command = $this->makeCommand($client, null, $this->staleChannelHandler());
         $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
@@ -652,5 +900,123 @@ final class ModerationCommandTest extends TestCase {
         $action = $client->channelActions[0];
         self::assertSame(ChannelActionPacket::ACTION_KICK, $action["action"]);
         self::assertSame("staff", $action["channelId"]);
+    }
+
+    // ==================================================================
+    // announce — audited, already matches the backend's AdminActionHandler
+    // ==================================================================
+
+    public function testAnnounceSendsStatusTransportWithContentExtras(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client);
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        $command->execute($player, "nc", ["announce", "global", "Server", "restart", "in", "5m"]);
+
+        self::assertCount(1, $client->adminActions);
+        $packet = $client->adminActions[0]["packet"];
+        self::assertSame(AdminActionPacket::ACTION_STATUS, $packet->action);
+        self::assertSame("global", $packet->target, "handleAnnounce reads the channel from target");
+        self::assertSame("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", $packet->playerId);
+        self::assertSame("ANNOUNCE", $packet->extra["type"]);
+        self::assertSame("Alice", $packet->extra["operatorName"]);
+        self::assertSame("Server restart in 5m", $packet->extra["content"]);
+        self::assertArrayNotHasKey("console", $packet->extra);
+    }
+
+    public function testAnnounceFromConsoleUsesSentinelAndConsoleTag(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client);
+
+        $command->execute($this->consoleSender(), "nc", ["announce", "global", "Hello"]);
+
+        $packet = $client->adminActions[0]["packet"];
+        self::assertSame(self::CONSOLE_SENTINEL, $packet->playerId);
+        self::assertSame("true", $packet->extra["console"]);
+        self::assertSame(self::CONSOLE_SENTINEL, $client->adminActions[0]["playerUuid"]);
+    }
+
+    public function testAnnounceRequiresChannelAndContent(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client);
+        $sender = $this->consoleSender([], $messages);
+
+        $command->execute($sender, "nc", ["announce", "global"]);
+
+        self::assertSame([], $client->adminActions);
+        self::assertStringContainsString("/nc announce", implode("\n", $messages));
+    }
+
+    // ==================================================================
+    // invite / accept — audited alongside kick/mute; both had the same bug
+    // ==================================================================
+
+    public function testInviteSendsPlayerIdNotAnUnknownInviterKey(): void {
+        // handleInvite identifies the inviter from playerId / player_uuid and
+        // never reads an "inviter" extra — with only "inviter"+"target" the
+        // request died at "Inviter ID is required".
+        $server = new FakeServer();
+        $server->players["bob"] = new FakePlayer("Bob", "11111111-1111-1111-1111-111111111111");
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client, $server, $this->staleChannelHandler());
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        $command->execute($player, "nc", ["invite", "Bob"]);
+
+        $action = $client->channelActions[0];
+        self::assertSame(ChannelActionPacket::ACTION_INVITE, $action["action"]);
+        self::assertSame("staff", $action["channelId"]);
+        self::assertSame("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", $action["extra"]["playerId"]);
+        self::assertSame("Alice", $action["extra"]["playerName"]);
+        self::assertSame("Bob", $action["extra"]["targetName"]);
+        self::assertSame("11111111-1111-1111-1111-111111111111", $action["extra"]["targetId"]);
+        self::assertArrayNotHasKey("inviter", $action["extra"]);
+        self::assertArrayNotHasKey("target", $action["extra"]);
+    }
+
+
+    public function testInviteFromConsoleIsRejected(): void {
+        // /nc invite is player-only (matching the Java shell): only a player
+        // has an active channel and a channel-admin identity to invite with.
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client);
+        $sender = $this->consoleSender([], $messages);
+
+        $command->execute($sender, "nc", ["invite", "Bob", "staff"]);
+
+        self::assertSame([], $client->channelActions);
+        self::assertStringContainsString("only be used by players", implode("\n", $messages));
+    }
+
+    public function testAcceptSendsCodeAsChannelIdAndPlayerId(): void {
+        // handleAccept reads the invite code from the packet's channelId and
+        // the player from playerId — the old "player"+"code" extras were
+        // ignored, so every accept failed at "Player ID is required".
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client);
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        $command->execute($player, "nc", ["accept", "abc123"]);
+
+        $action = $client->channelActions[0];
+        self::assertSame(ChannelActionPacket::ACTION_ACCEPT, $action["action"]);
+        self::assertSame("ABC123", $action["channelId"], "the invite code rides in channelId, uppercased");
+        self::assertSame("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", $action["extra"]["playerId"]);
+        self::assertSame("Alice", $action["extra"]["playerName"]);
+        self::assertSame("world", $action["extra"]["world"]);
+        self::assertArrayNotHasKey("code", $action["extra"]);
+        self::assertArrayNotHasKey("player", $action["extra"]);
+    }
+
+    public function testAcceptRejectsMalformedCodeLocally(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client);
+        $player = new FakePlayer("Alice", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        foreach (["abc", "abcdefg", "ab-123"] as $bad) {
+            $command->execute($player, "nc", ["accept", $bad]);
+        }
+
+        self::assertSame([], $client->channelActions);
     }
 }

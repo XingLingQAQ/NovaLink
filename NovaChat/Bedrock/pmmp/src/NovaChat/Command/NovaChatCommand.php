@@ -166,11 +166,11 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
             $sender->sendMessage(TextFormat::GRAY . "/nc accept <code>" . TextFormat::WHITE . " - Accept channel invitation");
         }
         if ($sender->hasPermission("novachat.admin.mute")) {
-            $sender->sendMessage(TextFormat::GRAY . "/nc mute <player> [duration]" . TextFormat::WHITE . " - Mute a player");
+            $sender->sendMessage(TextFormat::GRAY . "/nc mute <player> [30s|10m|1h|1d] [channel]" . TextFormat::WHITE . " - Mute a player");
             $sender->sendMessage(TextFormat::GRAY . "/nc unmute <player> [channel]" . TextFormat::WHITE . " - Lift a mute");
         }
         if ($sender->hasPermission("novachat.admin.kick")) {
-            $sender->sendMessage(TextFormat::GRAY . "/nc kick <player>" . TextFormat::WHITE . " - Kick player from channel");
+            $sender->sendMessage(TextFormat::GRAY . "/nc kick <player> [channel]" . TextFormat::WHITE . " - Kick player from channel");
         }
         if ($sender->hasPermission("novachat.ban")) {
             $sender->sendMessage(TextFormat::GRAY . "/nc ban <player> [duration] [channel]" . TextFormat::WHITE . " - Ban (all channels when omitted)");
@@ -511,44 +511,64 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
         }
         
         if (count($args) === 0) {
-            $sender->sendMessage(TextFormat::RED . "Usage: /nc invite <player>");
+            $sender->sendMessage(TextFormat::RED . "Usage: /nc invite <player> [channel]");
             return true;
         }
-        
-        $targetName = $args[0];
-        $chatHandler = $this->plugin->getChatHandler();
-        $currentChannel = $chatHandler !== null
-            ? $chatHandler->getPlayerChannel($sender)
-            : $this->plugin->getConfigManager()->getDefaultChannel();
-        
+
+        $targetName = (string) $args[0];
+
         $networkClient = $this->plugin->getNetworkClient();
-        if ($networkClient !== null && $networkClient->isAuthenticated()) {
-            // Send invite action to backend
-            $extra = [
-                "inviter" => $sender->getName(),
-                "target" => $targetName,
-            ];
-            $networkClient->sendChannelAction(
-                ChannelActionPacket::ACTION_INVITE,
-                $currentChannel,
-                "",
-                $extra
-            );
-            
-            $prefix = $this->plugin->getConfigManager()->getPrefix();
-            $sender->sendMessage($prefix . TextFormat::GREEN . "Invitation sent to: " . TextFormat::YELLOW . $targetName);
-        } else {
+        if ($networkClient === null || !$networkClient->isAuthenticated()) {
             $sender->sendMessage(TextFormat::RED . "Not connected to backend server.");
+            return true;
         }
-        
+
+        $channelId = (string) ($args[1] ?? "");
+        if ($channelId === "") {
+            $channelId = $this->resolveSenderChannel($sender);
+        }
+        if ($channelId === "") {
+            $sender->sendMessage(TextFormat::RED . "Please specify a channel: /nc invite <player> <channel>");
+            return true;
+        }
+
+        // ChannelActionHandler.handleInvite identifies the inviter from
+        // playerId / player_uuid — an "inviter" extra is never read — and only
+        // channel admins may create an invite.
+        $extra = [
+            "playerId" => $sender instanceof Player ? $sender->getUniqueId()->toString() : "",
+            "playerName" => $sender->getName(),
+        ];
+        $target = $this->findOnlinePlayer($targetName);
+        if ($target !== null) {
+            $extra["targetId"] = $target->getUniqueId()->toString();
+        }
+        $extra["targetName"] = $targetName;
+
+        $networkClient->sendChannelAction(
+            ChannelActionPacket::ACTION_INVITE,
+            $channelId,
+            "",
+            $extra
+        );
+
+        $prefix = $this->plugin->getConfigManager()->getPrefix();
+        $sender->sendMessage($prefix . TextFormat::GREEN . "Invitation sent to: " . TextFormat::YELLOW . $targetName);
+
         return true;
     }
-    
+
     /**
      * Handles the accept subcommand.
-     * 
+     *
+     * ChannelActionHandler.handleAccept reads the invite code from the packet's
+     * CHANNEL ID (not an extra) and the accepting player from playerId /
+     * player_uuid; a "player"/"code" extra pair is never read, so the old
+     * shape was rejected with "Player ID is required". Mirrors the Java
+     * AcceptCommand: uppercase the code and reject a malformed one locally.
+     *
      * @param CommandSender $sender Command sender
-     * @param array $args Arguments
+     * @param array $args Arguments (args[0] = invitation code)
      * @return bool True
      */
     private function handleAccept(CommandSender $sender, array $args): bool {
@@ -556,42 +576,61 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
             $sender->sendMessage(TextFormat::RED . "This command can only be used by players.");
             return true;
         }
-        
+
         if (count($args) === 0) {
             $sender->sendMessage(TextFormat::RED . "Usage: /nc accept <invitation_code>");
             return true;
         }
-        
-        $invitationCode = $args[0];
-        
-        $networkClient = $this->plugin->getNetworkClient();
-        if ($networkClient !== null && $networkClient->isAuthenticated()) {
-            // Send accept action to backend
-            $extra = [
-                "player" => $sender->getName(),
-                "code" => $invitationCode,
-            ];
-            $networkClient->sendChannelAction(
-                ChannelActionPacket::ACTION_ACCEPT,
-                "",
-                "",
-                $extra
-            );
-            
-            $prefix = $this->plugin->getConfigManager()->getPrefix();
-            $sender->sendMessage($prefix . TextFormat::GREEN . "Processing invitation...");
-        } else {
-            $sender->sendMessage(TextFormat::RED . "Not connected to backend server.");
+
+        $invitationCode = strtoupper((string) $args[0]);
+        if (preg_match('/^[A-Z0-9]{6}$/', $invitationCode) !== 1) {
+            $sender->sendMessage(TextFormat::RED . "Invalid invitation code: " . $invitationCode .
+                " (expected 6 letters or digits)");
+            return true;
         }
-        
+
+        $networkClient = $this->plugin->getNetworkClient();
+        if ($networkClient === null || !$networkClient->isAuthenticated()) {
+            $sender->sendMessage(TextFormat::RED . "Not connected to backend server.");
+            return true;
+        }
+
+        $extra = [
+            "playerId" => $sender->getUniqueId()->toString(),
+            "playerName" => $sender->getName(),
+            "world" => $sender->getWorld()->getFolderName(),
+        ];
+
+        $networkClient->sendChannelAction(
+            ChannelActionPacket::ACTION_ACCEPT,
+            $invitationCode,
+            "",
+            $extra
+        );
+
+        $prefix = $this->plugin->getConfigManager()->getPrefix();
+        $sender->sendMessage($prefix . TextFormat::GREEN . "Processing invitation...");
+
         return true;
     }
-    
+
     /**
      * Handles the mute subcommand.
-     * 
+     *
+     * Sends ChannelAction MUTE with the extras ChannelActionHandler.handleMute
+     * reads: operatorId / console / operatorName / targetId / targetName /
+     * duration. The duration is ALWAYS sent in SECONDS (parseDurationMs on the
+     * backend multiplies extra["duration"] by 1000); see parseMuteDuration for
+     * why a bare number still means minutes here.
+     *
+     * A mute needs a channel — handleMute rejects a blank one — so it is taken
+     * from the third argument, or from the sender's active channel. When
+     * neither resolves nothing is sent and the operator is asked to name one,
+     * exactly like the Java MuteCommand.
+     *
      * @param CommandSender $sender Command sender
-     * @param array $args Arguments
+     * @param array $args Arguments (args[0] = target, args[1] = duration,
+     *                          args[2] = channel)
      * @return bool True
      */
     private function handleMute(CommandSender $sender, array $args): bool {
@@ -599,40 +638,62 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
             $sender->sendMessage(TextFormat::RED . "You don't have permission to mute players.");
             return true;
         }
-        
+
         if (count($args) === 0) {
-            $sender->sendMessage(TextFormat::RED . "Usage: /nc mute <player> [duration_minutes]");
+            $sender->sendMessage(TextFormat::RED .
+                "Usage: /nc mute <player> [duration] [channel]  (30s / 10m / 1h / 1d, or minutes)");
             return true;
         }
-        
-        $targetName = $args[0];
-        $duration = isset($args[1]) ? (int) $args[1] : 10; // Default 10 minutes
-        
+
+        $targetName = (string) $args[0];
+
         $networkClient = $this->plugin->getNetworkClient();
-        if ($networkClient !== null && $networkClient->isAuthenticated()) {
-            // Send mute action to backend
-            $extra = [
-                "target" => $targetName,
-                "duration" => (string)$duration,
-                "operatorName" => $sender->getName(),
-            ];
-            $networkClient->sendChannelAction(
-                ChannelActionPacket::ACTION_MUTE,
-                "",
-                "",
-                $extra
-            );
-            
-            $prefix = $this->plugin->getConfigManager()->getPrefix();
-            $sender->sendMessage($prefix . TextFormat::GREEN . "Muted " . TextFormat::YELLOW . $targetName . 
-                TextFormat::GREEN . " for " . TextFormat::YELLOW . $duration . TextFormat::GREEN . " minutes.");
-        } else {
+        if ($networkClient === null || !$networkClient->isAuthenticated()) {
             $sender->sendMessage(TextFormat::RED . "Not connected to backend server.");
+            return true;
         }
-        
+
+        $channelId = (string) ($args[2] ?? "");
+        if ($channelId === "") {
+            $channelId = $this->resolveSenderChannel($sender);
+        }
+        if ($channelId === "") {
+            $sender->sendMessage(TextFormat::RED .
+                "Please specify a channel: /nc mute <player> <duration> <channel>");
+            return true;
+        }
+
+        $durationArgument = isset($args[1]) ? (string) $args[1] : "10";
+        $durationSeconds = self::parseMuteDuration($durationArgument);
+        if ($durationSeconds <= 0) {
+            $sender->sendMessage(TextFormat::RED . "Invalid duration: " . $durationArgument .
+                " (use 30s, 10m, 1h, 1d, or a number of minutes)");
+            return true;
+        }
+
+        $extra = $this->buildOperatorExtras($sender);
+        $target = $this->findOnlinePlayer($targetName);
+        if ($target !== null) {
+            $extra["targetId"] = $target->getUniqueId()->toString();
+        }
+        $extra["targetName"] = $targetName;
+        $extra["duration"] = (string) $durationSeconds;
+
+        $networkClient->sendChannelAction(
+            ChannelActionPacket::ACTION_MUTE,
+            $channelId,
+            "",
+            $extra
+        );
+
+        $prefix = $this->plugin->getConfigManager()->getPrefix();
+        $sender->sendMessage($prefix . TextFormat::GREEN . "Muted " . TextFormat::YELLOW . $targetName .
+            TextFormat::GREEN . " in " . TextFormat::YELLOW . $channelId . TextFormat::GREEN . " for " .
+            TextFormat::YELLOW . self::formatDuration($durationSeconds) . TextFormat::GREEN . ".");
+
         return true;
     }
-    
+
     /**
      * Handles the unmute subcommand.
      *
@@ -660,12 +721,9 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
         }
 
         $targetName = (string) $args[0];
-        $channelId = isset($args[1]) ? (string) $args[1] : "";
-        if ($channelId === "" && $sender instanceof Player) {
-            $chatHandler = $this->plugin->getChatHandler();
-            if ($chatHandler !== null) {
-                $channelId = $chatHandler->getPlayerChannel($sender);
-            }
+        $channelId = (string) ($args[1] ?? "");
+        if ($channelId === "") {
+            $channelId = $this->resolveSenderChannel($sender);
         }
         if ($channelId === "") {
             $sender->sendMessage(TextFormat::RED . "Please specify a channel: /nc unmute <player> <channel>");
@@ -701,9 +759,15 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
 
     /**
      * Handles the kick subcommand.
-     * 
+     *
+     * Sends ChannelAction KICK with the extras ChannelActionHandler.handleKick
+     * reads: operatorId / console / operatorName / targetId / targetName. A
+     * kick is inherently per-channel, so an omitted channel falls back to the
+     * sender's active channel; if that still resolves to nothing the operator
+     * must name one (handleKick rejects a blank channel).
+     *
      * @param CommandSender $sender Command sender
-     * @param array $args Arguments
+     * @param array $args Arguments (args[0] = target, args[1] = channel)
      * @return bool True
      */
     private function handleKick(CommandSender $sender, array $args): bool {
@@ -711,44 +775,51 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
             $sender->sendMessage(TextFormat::RED . "You don't have permission to kick players.");
             return true;
         }
-        
+
         if (count($args) === 0) {
-            $sender->sendMessage(TextFormat::RED . "Usage: /nc kick <player>");
+            $sender->sendMessage(TextFormat::RED . "Usage: /nc kick <player> [channel]");
             return true;
         }
-        
-        $targetName = $args[0];
-        $chatHandler = $this->plugin->getChatHandler();
-        $currentChannel = "";
-        
-        if ($sender instanceof Player && $chatHandler !== null) {
-            $currentChannel = $chatHandler->getPlayerChannel($sender);
-        }
-        
+
+        $targetName = (string) $args[0];
+
         $networkClient = $this->plugin->getNetworkClient();
-        if ($networkClient !== null && $networkClient->isAuthenticated()) {
-            // Send kick action to backend
-            $extra = [
-                "target" => $targetName,
-                "operatorName" => $sender->getName(),
-            ];
-            $networkClient->sendChannelAction(
-                ChannelActionPacket::ACTION_KICK,
-                $currentChannel,
-                "",
-                $extra
-            );
-            
-            $prefix = $this->plugin->getConfigManager()->getPrefix();
-            $sender->sendMessage($prefix . TextFormat::GREEN . "Kicked " . TextFormat::YELLOW . $targetName . 
-                TextFormat::GREEN . " from channel.");
-        } else {
+        if ($networkClient === null || !$networkClient->isAuthenticated()) {
             $sender->sendMessage(TextFormat::RED . "Not connected to backend server.");
+            return true;
         }
-        
+
+        $channelId = (string) ($args[1] ?? "");
+        if ($channelId === "") {
+            $channelId = $this->resolveSenderChannel($sender);
+        }
+        if ($channelId === "") {
+            $sender->sendMessage(TextFormat::RED .
+                "Please specify a channel: /nc kick <player> <channel>");
+            return true;
+        }
+
+        $extra = $this->buildOperatorExtras($sender);
+        $target = $this->findOnlinePlayer($targetName);
+        if ($target !== null) {
+            $extra["targetId"] = $target->getUniqueId()->toString();
+        }
+        $extra["targetName"] = $targetName;
+
+        $networkClient->sendChannelAction(
+            ChannelActionPacket::ACTION_KICK,
+            $channelId,
+            "",
+            $extra
+        );
+
+        $prefix = $this->plugin->getConfigManager()->getPrefix();
+        $sender->sendMessage($prefix . TextFormat::GREEN . "Kicking " . TextFormat::YELLOW . $targetName .
+            TextFormat::GREEN . " from " . TextFormat::YELLOW . $channelId . TextFormat::GREEN . "...");
+
         return true;
     }
-    
+
     /**
      * Handles the ban subcommand.
      *
@@ -969,6 +1040,79 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
     }
 
     /**
+     * Resolves the channel a per-channel moderation action applies to.
+     *
+     * Only a player has an active channel; console/RCON has none, so this
+     * returns "" and the caller must refuse the command rather than send a
+     * blank channelId the backend rejects with NC-400.
+     *
+     * @param CommandSender $sender The command sender
+     * @return string the active channel id, or "" when there is none
+     */
+    private function resolveSenderChannel(CommandSender $sender): string {
+        if (!$sender instanceof Player) {
+            return "";
+        }
+        $chatHandler = $this->plugin->getChatHandler();
+        return $chatHandler !== null ? (string) $chatHandler->getPlayerChannel($sender) : "";
+    }
+
+    /**
+     * Parses the /nc mute duration argument to SECONDS.
+     *
+     * A unit suffix (30s / 10m / 1h / 1d / 1w) is read with that unit, exactly
+     * like the Java shells. A BARE number keeps meaning MINUTES — that is what
+     * this command has always documented and what existing operators type —
+     * and is converted to seconds before it goes on the wire, because
+     * ChannelActionHandler.parseDurationMs reads extra["duration"] as seconds.
+     * Sending the raw number is the bug this replaced: "5" reached the backend
+     * as a five-second mute instead of the five minutes the operator asked for.
+     *
+     * @param string $duration the duration argument
+     * @return int seconds, or -1 when the value is not a valid duration
+     */
+    private static function parseMuteDuration(string $duration): int {
+        if ($duration === "") {
+            return -1;
+        }
+        if (preg_match('/^(\d+)([smhdw]?)$/i', $duration, $matches) !== 1) {
+            return -1;
+        }
+        $value = (int) $matches[1];
+        if ($value <= 0) {
+            return -1;
+        }
+        switch (strtolower($matches[2])) {
+            case "s":
+                return $value;
+            case "m":
+                return $value * 60;
+            case "h":
+                return $value * 3600;
+            case "d":
+                return $value * 86400;
+            case "w":
+                return $value * 604800;
+            default:
+                // No suffix: minutes, the command's historical UI unit.
+                return $value * 60;
+        }
+    }
+
+    /**
+     * @param int $seconds a duration in seconds
+     * @return string a compact human-readable form ("5m", "1h", "90s")
+     */
+    private static function formatDuration(int $seconds): string {
+        foreach (["w" => 604800, "d" => 86400, "h" => 3600, "m" => 60] as $unit => $size) {
+            if ($seconds % $size === 0 && $seconds >= $size) {
+                return ($seconds / $size) . $unit;
+            }
+        }
+        return $seconds . "s";
+    }
+
+    /**
      * @param string $value a command argument
      * @return bool whether it looks like a duration rather than a channel id
      */
@@ -981,8 +1125,9 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
      * Parses a duration ("90", "30s", "10m", "2h", "1d", "1w") to seconds.
      *
      * Mirrors the Java AbstractSubCommand.parseDuration contract: a bare
-     * number is seconds, not minutes. This deliberately differs from
-     * /nc mute, whose second argument is MINUTES and which is left untouched.
+     * number is seconds, not minutes. /nc mute keeps its own historical
+     * minutes-for-bare-numbers rule in parseMuteDuration; ban/unban use this
+     * one.
      *
      * @param string $duration the duration string
      * @return int seconds, or -1 when the value is not a valid duration
