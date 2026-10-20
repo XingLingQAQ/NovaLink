@@ -603,7 +603,7 @@ function Start-PlainProcess {
 # Inlined (rather than calling test/bin/rcon.ps1) so the joint harness has no
 # cross-directory script dependency and can be read top-to-bottom.
 function Send-Rcon {
-  param([int]$Port, [string]$Password, [string]$Command, [int]$TimeoutMs = 5000)
+  param([int]$Port, [string]$Password, [string]$Command, [int]$TimeoutMs = 30000)
   $client = $null
   try {
     $client = New-Object System.Net.Sockets.TcpClient
@@ -613,10 +613,10 @@ function Send-Rcon {
     $enc = [System.Text.Encoding]::UTF8
 
     $writePacket = {
-      param($id, $type, $payload)
+      param([int]$id, [int]$type, [string]$payload)
       $body = New-Object System.IO.MemoryStream
-      $idBytes = [BitConverter]::GetBytes([int]$id); $body.Write($idBytes, 0, 4)
-      $typeBytes = [BitConverter]::GetBytes([int]$type); $body.Write($typeBytes, 0, 4)
+      $idBytes = [BitConverter]::GetBytes($id); $body.Write($idBytes, 0, 4)
+      $typeBytes = [BitConverter]::GetBytes($type); $body.Write($typeBytes, 0, 4)
       $pbytes = $enc.GetBytes($payload); $body.Write($pbytes, 0, $pbytes.Length)
       $body.WriteByte(0); $body.WriteByte(0)
       $payloadBytes = $body.ToArray()
@@ -625,24 +625,140 @@ function Send-Rcon {
       $stream.Write($payloadBytes, 0, $payloadBytes.Length)
       $stream.Flush()
     }
+    # Returns @{ Id; Type; Body } or $null at a clean end-of-stream.
     $readPacket = {
       $reader = New-Object System.IO.BinaryReader $stream
-      $len = $reader.ReadUInt32()
-      $buf = $reader.ReadBytes($len)
-      if ($len -le 10) { return "" }
-      return $enc.GetString($buf, 8, $len - 10).TrimEnd([char]0)
+      try { $len = $reader.ReadUInt32() } catch { return $null }
+      if ($len -lt 10) { return $null }
+      $buf = $reader.ReadBytes([int]$len)
+      if ($buf.Length -lt 10) { return $null }
+      return @{
+        Id = [BitConverter]::ToInt32($buf, 0)
+        Type = [BitConverter]::ToInt32($buf, 4)
+        Body = $enc.GetString($buf, 8, $buf.Length - 10).TrimEnd([char]0)
+      }
     }
 
-    & $writePacket 3 3 $Password
-    $null = & $readPacket
-    & $writePacket 10 2 $Command
-    return (& $readPacket)
+    # Authentication. Read the AUTH_RESPONSE for OUR id; a rejected password
+    # answers with id -1 and some servers emit a dummy SERVERDATA_RESPONSE_VALUE
+    # first, so matching on the id (rather than "the first packet") is what
+    # keeps the command in the authenticated state.
+    & $writePacket 1 3 $Password
+    $authed = $false
+    for ($i = 0; $i -lt 4; $i++) {
+      $p = & $readPacket
+      if ($null -eq $p) { break }
+      if ($p.Type -eq 2 -and $p.Id -eq 1 -and $p.Body -eq '') { $authed = $true; break }
+      if ($p.Type -eq 2 -and $p.Id -eq -1) { break }
+    }
+    if (-not $authed) {
+      Log "    RCON auth failed ($Port)"
+      return $null
+    }
+
+    & $writePacket 7 2 $Command
+
+    # Collect every response packet for this command until the server stops
+    # answering. Two things depend on this loop:
+    #   * Purpur/Paper execute RCON input on the MAIN thread. Dropping the
+    #     socket straight after the write made the queued command lose its
+    #     output -- and, on a busy server, the command itself was never
+    #     dispatched at all (run 20261021-024605: `nc kick` and `nc mute` were
+    #     never executed while `nc ban`/`nc unban` were). Staying connected
+    #     until the server has actually answered is what makes the drive real.
+    #   * The terminator is a packet with an EMPTY body; without it a multi-line
+    #     response would be truncated.
+    $sb = New-Object System.Text.StringBuilder
+    # Purpur runs RCON input on the MAIN thread, and this box's server
+    # treads water for 10-30 s at a time under world-gen load. A short
+    # deadline closed the socket before the command was dispatched, which
+    # silently LOST `nc kick` and `nc mute` in runs 20261021-022040 and
+    # 20261021-030741 (empty response, no apply line). Waiting for the
+    # server's own answer is the only proof the command ran.
+    $deadline = (Get-Date).AddSeconds([Math]::Max(10, [int]($TimeoutMs / 1000)))
+    while ((Get-Date) -lt $deadline) {
+      $p = & $readPacket
+      if ($null -eq $p) { break }
+      if ($p.Id -ne 7) { continue }
+      if ($p.Body -eq '') {
+        if ($sb.Length -gt 0) { break }
+        continue
+      }
+      $null = $sb.Append($p.Body).Append("`n")
+    }
+    # Small grace period before closing: the command's effects are queued on
+    # the main thread and the server must get a chance to run them.
+    Start-Sleep -Milliseconds 700
+    return $sb.ToString().Trim()
   } catch {
     Log "    RCON failed ($Port): $($_.Exception.Message)"
     return $null
   } finally {
     if ($client) { try { $client.Close() } catch { } }
   }
+}
+
+# --- harness <-> bot rendezvous ----------------------------------------------
+# The relay moderation phase is driven by the HARNESS (see Invoke-ModerationDrive),
+# while the bots that must speak/observe are separate processes running a plan.
+# The bot plan language already has a rendezvous primitive (handoffSet /
+# handoffGet, see test/joint/bots/joint-bot.js); these two helpers give the
+# harness the other end of it, so ordering is a real handshake rather than a
+# pile of sleeps:
+#   * the harness writes <runId>-harness-<key>.json  -> bots' handoffGet sees it
+#   * the harness polls for <runId>-*-<key>.json     -> bots' handoffSet wrote it
+# The filename shape matches awaitHandoff()'s scan prefix/suffix exactly.
+function Set-Handoff([string]$dir, [string]$runId, [string]$key, [string]$value) {
+  $payload = [ordered]@{
+    key = $key; value = $value; role = 'harness'; runId = $runId
+    t = (Get-Date).ToUniversalTime().ToString('o')
+  }
+  $path = Join-Path $dir "$runId-harness-$key.json"
+  [System.IO.File]::WriteAllText($path, ($payload | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))
+}
+
+function Wait-Handoff([string]$dir, [string]$runId, [string]$key, [int]$timeoutSec) {
+  $deadline = (Get-Date).AddSeconds($timeoutSec)
+  while ((Get-Date) -lt $deadline) {
+    $hit = Get-ChildItem -LiteralPath $dir -Filter "$runId-*-$key.json" -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+    if ($hit) {
+      try {
+        $payload = [System.IO.File]::ReadAllText($hit.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ($payload -and $payload.value -ne $null) { return [string]$payload.value }
+      } catch {
+        # A bot may be mid-write; the next poll retries.
+      }
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  return $null
+}
+
+# Offline-mode UUID of a username: exactly Java's
+# UUID.nameUUIDFromBytes("OfflinePlayer:<name>") (MD5, version 3, IETF variant).
+# Both the Bukkit server and Velocity use this for offline players, which is why
+# the harness can predict a bot's UUID before it ever connects.
+function Get-OfflineUuid([string]$name) {
+  $md5 = [System.Security.Cryptography.MD5]::Create()
+  try {
+    $bytes = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes("OfflinePlayer:$name"))
+  } finally {
+    $md5.Dispose()
+  }
+  $bytes[6] = [byte](($bytes[6] -band 0x0F) -bor 0x30)
+  $bytes[8] = [byte](($bytes[8] -band 0x3F) -bor 0x80)
+  # Format the hex DIRECTLY. [System.Guid]::new(byte[]) reads the first three
+  # fields little-endian, so a UUID it prints is byte-swapped relative to
+  # Java's UUID.toString(): for E2EJointMod it yields
+  # b441f0e4-541c-ab37-... where the wire UUID is e4f041b4-1c54-37ab-...
+  # (observed in run 20261021-024605, where ops.json therefore named a UUID
+  # that never connected). The super-admin entry written by this harness had
+  # the same defect, so the "real super-admin path" it claimed to configure
+  # could never have matched a live player either.
+  $hex = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+  return ('{0}-{1}-{2}-{3}-{4}' -f $hex.Substring(0, 8), $hex.Substring(8, 4),
+          $hex.Substring(12, 4), $hex.Substring(16, 4), $hex.Substring(20, 12))
 }
 
 # --- topology planning -------------------------------------------------------
@@ -1251,6 +1367,25 @@ allow-nether=false
 "@
       [System.IO.File]::WriteAllText((Join-Path $serverDir "server.properties"), $props,
         (New-Object System.Text.UTF8Encoding $false))
+      # Operators. The relay moderation scenarios need a DIRECT-connect player
+      # that passes the plugin's own command-permission gate (`novachat.mute`
+      # et al. default to `op`) but is NOT a backend super-admin -- that is what
+      # makes the NC-403 assertion a real authority decision instead of a local
+      # command refusal. Bukkit's op list is by UUID; in offline mode that is the
+      # offline UUID of the name, which Get-OfflineUuid predicts exactly.
+      # Written before boot because Bukkit reads ops.json once at startup.
+      $opName = 'E2EJointMod'
+      # [ ... ] is written by hand: a one-element PowerShell array unrolls
+      # through the pipeline when it is piped to ConvertTo-Json, producing an
+      # OBJECT, and Bukkit rejects that (JsonSyntaxException: Expected a
+      # JsonArray) and replaces the file with an empty list -- silently making
+      # every player a non-op.
+      $opEntry = [ordered]@{
+        uuid = (Get-OfflineUuid $opName); name = $opName; level = 4; bypassesPlayerLimit = $false
+      }
+      $opsJson = "[" + ($opEntry | ConvertTo-Json -Depth 4) + "]"
+      [System.IO.File]::WriteAllText((Join-Path $serverDir "ops.json"),
+        $opsJson, (New-Object System.Text.UTF8Encoding $false))
     }
     { $_ -in @('nukkit', 'pnx') } {
       $cfgDir = Join-Path $serverDir "plugins/NovaChat"
@@ -2803,11 +2938,11 @@ function Invoke-LiteRound($round, [string]$roundDir) {
 # have worked). This group asserts STATE CHANGED, and a failure here names the
 # feature that broke instead of hiding among the chat assertions.
 #
-# The lite topology is the only one that can run these today, and the reason is
-# structural rather than a harness gap -- see $script:ModerationUnavailableReason
-# in the round below. The shape it needs is already there: alice and bob are
-# proxy-connected (they are the only players the lite authority can see), and a
-# third player could observe from anywhere.
+# Lite cannot run these (see Invoke-ModerationScenarios) but RELAY can, and
+# Invoke-RelayModeration below does: a sub-server plugin in relay has its own
+# authenticated backend link, so a command issued there reaches the authority.
+# The player-vs-console authority split is documented there, with the code
+# references that decide which sender is possible.
 #
 # WHAT EACH SCENARIO ASSERTS, and from whose recording:
 #
@@ -2962,6 +3097,409 @@ function Invoke-ModerationScenarios {
       evidence = "NOT EXECUTED: $reason"
       kind = 'diagnostic'
     }
+  }
+  return $out
+}
+
+# --- relay moderation EFFECT scenarios ---------------------------------------
+#
+# These are the SAME scenarios as the lite group above, run on the one topology
+# where a moderation command can reach the authority: relay.
+#
+# WHO CAN ISSUE A MODERATION COMMAND, read from the code rather than assumed:
+#
+#   * A proxy-connected player cannot. ProxyCommandCore.SUBCOMMANDS is
+#     help/join/leave/list/who/toggle/ignore/unignore/msg/r/reload; an unknown
+#     subcommand falls through to handleChannelMessage, so `/nc mute X 1h` is
+#     read as a message to a channel named "mute" and answers NC-404.
+#   * A player connected straight to a sub-server CAN send the packet (its
+#     plugin holds its own authenticated backend link in relay), but the
+#     backend's authority check decides the outcome:
+#       ChannelActionHandler.requireModerationPermission (line ~901):
+#         SUPER_ADMIN   -> allowed
+#         CLIENT_ADMIN  -> allowed within its client's channels
+#         CHANNEL_ADMIN -> only channels it manages
+#         PLAYER        -> NC-403 "Insufficient permissions"
+#     and PermissionManager.getPermissionLevel only returns SUPER_ADMIN for an
+#     ACTIVE session, CLIENT_ADMIN from clientAdmins, CHANNEL_ADMIN from a
+#     per-channel grant.
+#     - SUPER_ADMIN needs AdminActionHandler.handleAuth -> PermissionManager
+#       .authenticateSuperAdmin, i.e. `/nc auth <password>`. The bukkit/folia
+#       AuthCommand gates on `novachat.auth`, whose plugin.yml default is
+#       `false` -- and Bukkit's PermissionDefault.FALSE is false even for ops.
+#       With no permissions plugin in this harness (and none in the shipped
+#       server configs) that node can never be granted.
+#     - CLIENT_ADMIN is unreachable: PermissionManager.registerClientAdmin has
+#       no production call site (grep: only its own definition and tests).
+#     - CHANNEL_ADMIN is granted only by ChannelActionHandler.handleCreate and
+#       NovaLinkCore.bootstrapPrivateChannelAdmins, both for PRIVATE channels,
+#       and the CHANNEL_ADMIN branch also refuses a GLOBAL channel.
+#     So a PLAYER can never moderate `global`. The one sender that IS authorized
+#     is the console: ConsoleSentinel.isConsole(operatorId) returns null from
+#     requireModerationPermission before any permission lookup, and
+#     AbstractModerationManager.resolveOperatorLevel mirrors the bypass.
+#     The moderation commands are `isPlayerOnly() == false` and carry an
+#     explicit console branch (MuteCommand/KickCommand/BanCommand/UnbanCommand
+#     set CONSOLE_SENTINEL_UUID + console=true), so the sub-server console is a
+#     supported operator path -- the harness drives it over the server's own
+#     RCON, which is the same command path a server admin uses.
+#   * Therefore: the privileged scenarios are driven by the bukkit server
+#     console over RCON, and the only BOT-sent moderation command is the
+#     permission-denied attempt from E2EJointMod (an op, so the plugin's own
+#     `novachat.mute` gate passes, but not a super-admin, so the BACKEND
+#     refuses with NC-403).
+#
+# WHAT EACH SCENARIO ASSERTS (evidence is the RECEIVER's recording):
+#   mute-takes-effect     control line delivered -> console mute -> target's
+#                         line must appear in NO observer's recording.
+#   kick-takes-effect     console kick -> target's next line must appear in no
+#                         observer's recording.
+#   kick-is-not-a-ban     the kicked target rejoins and is heard again.
+#   ban-blocks-rejoin     after the ban the target's `/nc join global` must be
+#                         refused (NC-403 rendered to the target, after the
+#                         marker line it speaks immediately before the join).
+#   ban-silences          the banned target's line appears in no observer's
+#                         recording (the ban half that MessagePipeline DOES
+#                         implement: Stream 4b SENDER_BANNED).
+#   unban-restores        after the unban the target is heard again.
+#   permission-denied     E2EJointMod's mute is refused (NC-403 in its own
+#                         recording) AND the target's line still arrives.
+#   mute-is-channel-scoped NOT EXECUTED (diagnostic): see the reason below.
+#
+# The authority-side half of each privileged action is gated separately on the
+# backend's own log line (`MuteManager`/`BanManager` log every apply at INFO),
+# because a negative assertion passes vacuously if the command never landed.
+
+function Invoke-ModerationDrive {
+  param(
+    [int]$RoundIndex,
+    [int]$RconPort,
+    [string]$RconPassword,
+    [string]$HandoffDir,
+    [string]$RunId,
+    [string]$TargetName,
+    [string]$BackendLog
+  )
+  $prefix = "round$RoundIndex/mod"
+  $out = @()
+  # Each privileged action is verified against the AUTHORITY's own log line,
+  # and retried when the server never ran it. Purpur dispatches RCON input on
+  # the main thread, so on a stalled tick loop the command can be accepted by
+  # the socket and never executed -- that is what silently lost `nc kick` in
+  # run 20261021-030741 (empty RCON answer, no apply line, and a "kicked line
+  # still arrived" verdict that was really "the kick never happened").
+  $rcon = {
+    param([string]$command, [string]$applyPattern, [int]$attempts = 2)
+    $lastResponse = $null
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+      $lastResponse = Send-Rcon -Port $RconPort -Password $RconPassword -Command $command
+      Log "    rcon> $command  =>  $($lastResponse -replace '\s+$','')"
+      $applied = $false
+      $deadline = (Get-Date).AddSeconds(15)
+      while ((Get-Date) -lt $deadline) {
+        $text = Read-LogText $BackendLog
+        if ($text -and ($text -match $applyPattern)) { $applied = $true; break }
+        Start-Sleep -Milliseconds 500
+      }
+      if ($applied) { return $lastResponse }
+      Log "    rcon> not applied at the authority (attempt $attempt/$attempts): $command"
+    }
+    return $lastResponse
+  }
+
+  # 1. Both observers and the target must be up before anything is issued.
+  $targetUp = Wait-Handoff $HandoffDir $RunId 'targetup' 180
+  $observerUp = Wait-Handoff $HandoffDir $RunId 'observerup' 180
+  $peerUp = Wait-Handoff $HandoffDir $RunId 'peerup' 180
+  $out += [PSCustomObject]@{
+    id = "$prefix/rendezvous"; token = 'target+observers up'
+    pass = [bool]($targetUp -and $observerUp -and $peerUp); kind = 'moderation-setup'
+    evidence = "targetup=$([bool]$targetUp) observerup=$([bool]$observerUp) peerup=$([bool]$peerUp)"
+  }
+  if (-not ($targetUp -and $observerUp)) { return $out }
+
+  # ORDER, and why it is this order:
+  #   control -> kick -> rejoin -> ban(+join refusal) -> unban -> denied -> mute.
+  # The mute is LAST on purpose. A mute persists for the whole round, so a kick
+  # or ban token spoken afterwards would be suppressed by the MUTE and the
+  # kick/ban assertion would pass for the wrong reason.
+  #
+  # PHASING. Every step waits for the TARGET's own acknowledgement (a handoff
+  # the bot publishes after it has spoken) before the next command is issued.
+  # Run 20261021-022040 proved why fixed sleeps are not enough: a step that
+  # timed out (the ban-rejoin check, 20 s) let two phases collapse, the target
+  # spoke the unban and denied lines 4 ms apart, and the observer's next
+  # expectation was armed after its line had already gone by. Acknowledged
+  # handoffs make the sequence independent of how long any step takes.
+  #
+  # `release` waits for the observer to acknowledge, then pauses briefly so the
+  # observer has armed its NEXT expectation before the target can speak again.
+  $release = {
+    param([string]$ack, [int]$timeoutSec = 180)
+    $seen = Wait-Handoff $HandoffDir $RunId $ack $timeoutSec
+    if ($seen) { Start-Sleep -Milliseconds 1500 }
+    return $seen
+  }
+
+  # 2. CONTROL, before any state changes: proves the channel carries the
+  #    target's lines at all, so "the line never arrived" cannot be a dead pipe.
+  Set-Handoff $HandoffDir $RunId 'gocontrol' 'go'
+  $controlSeen = Wait-Handoff $HandoffDir $RunId 'controlseen' 120
+  $out += [PSCustomObject]@{
+    id = "$prefix/control-delivered"; token = 'pre-kick control'
+    pass = [bool]$controlSeen; kind = 'moderation-setup'
+    evidence = if ($controlSeen) { "observer acknowledged the control line: $controlSeen" }
+               else { 'observer never acknowledged the pre-kick control line' }
+  }
+  $null = & $release 'ackcontrol'
+
+  # 3. KICK (console -> bukkit plugin -> backend authority).
+  $kickResponse = & $rcon "nc kick $TargetName global" 'Forwarded KICK response to target' 2
+  Start-Sleep -Seconds 3
+  Set-Handoff $HandoffDir $RunId 'kicked' 'go'
+  $null = & $release 'ackkicked'
+  # The kick-is-not-a-ban check (the target rejoins and is heard) MUST complete
+  # before the ban is issued: a ban suppresses the very line it depends on, and
+  # run 20261021-031630 showed the resulting cascade (rejoin dropped, the
+  # observer's expectation chain stalled, three unrelated verdicts lost).
+  $rejoinSeen = Wait-Handoff $HandoffDir $RunId 'ackrejoin' 180
+  $out += [PSCustomObject]@{
+    id = "$prefix/kick-rejoin-completed"; token = 'rejoin acknowledged'
+    pass = [bool]$rejoinSeen; kind = 'moderation-setup'
+    evidence = if ($rejoinSeen) { 'the target rejoined and spoke after the kick, before the ban' }
+               else { 'the target never acknowledged the post-kick rejoin' }
+  }
+  Start-Sleep -Seconds 2
+
+  # 4. BAN. The join-refusal check runs inside the target's own plan.
+  $banResponse = & $rcon "nc ban $TargetName 1h global" 'banned in channel global by' 2
+  Start-Sleep -Seconds 3
+  Set-Handoff $HandoffDir $RunId 'banned' 'go'
+  $null = & $release 'ackbanned'
+  Start-Sleep -Seconds 2
+
+  # 5. UNBAN.
+  $unbanResponse = & $rcon "nc unban $TargetName global" 'unbanned in channel global by' 2
+  Start-Sleep -Seconds 3
+  Set-Handoff $HandoffDir $RunId 'unbanned' 'go'
+  $null = & $release 'ackunban'
+  Start-Sleep -Seconds 2
+
+  # 6. Permission-denied: hand this phase to E2EJointMod, a bot. It is an op
+  #    (ops.json) so the plugin's `novachat.mute` gate passes, and it is not a
+  #    backend super-admin, so the refusal can only come from the authority.
+  Set-Handoff $HandoffDir $RunId 'denied' 'go'
+  $deniedSent = Wait-Handoff $HandoffDir $RunId 'deniedsent' 120
+  $out += [PSCustomObject]@{
+    id = "$prefix/permission-denied-attempted"; token = 'non-operator mute sent'
+    pass = [bool]$deniedSent; kind = 'moderation-setup'
+    evidence = if ($deniedSent) { 'E2EJointMod sent /nc mute through its own backend link' }
+               else { 'E2EJointMod never reached the mute attempt (its handoff was not published)' }
+  }
+  Set-Handoff $HandoffDir $RunId 'deniedgo' 'go'
+  $null = & $release 'ackdenied'
+  Start-Sleep -Seconds 2
+
+  # 7. MUTE, last, with its own pre-mute control: a ban and an unban have
+  #    happened since the first control, so an old line would not prove the
+  #    channel still works at this point.
+  Set-Handoff $HandoffDir $RunId 'gocontrol2' 'go'
+  $control2Seen = Wait-Handoff $HandoffDir $RunId 'controlseen2' 120
+  $out += [PSCustomObject]@{
+    id = "$prefix/premute-control-delivered"; token = 'pre-mute control'
+    pass = [bool]$control2Seen; kind = 'moderation-setup'
+    evidence = if ($control2Seen) { "observer acknowledged the pre-mute control line: $control2Seen" }
+               else { 'observer never acknowledged the pre-mute control line' }
+  }
+  $null = & $release 'ackcontrol2'
+  $muteResponse = & $rcon "nc mute $TargetName 1h global" 'muted in channel global by' 2
+  Start-Sleep -Seconds 3
+  Set-Handoff $HandoffDir $RunId 'muted' 'go'
+  $null = & $release 'ackmuted'
+  Start-Sleep -Seconds 4
+
+  Set-Handoff $HandoffDir $RunId 'done' 'go'
+  Start-Sleep -Seconds 2
+
+  $out += [PSCustomObject]@{
+    id = "$prefix/rcon-responses"; token = 'console command responses'
+    pass = $true; kind = 'diagnostic'
+    evidence = ("mute='$($muteResponse -replace '\s+$','')' kick='$($kickResponse -replace '\s+$','')' " +
+                "ban='$($banResponse -replace '\s+$','')' unban='$($unbanResponse -replace '\s+$','')'")
+  }
+  return $out
+}
+
+# Turns the drive result plus the bots' own recordings into scenario verdicts.
+function Assert-ModerationScenarios {
+  param(
+    [int]$RoundIndex,
+    [string]$BackendLog,
+    [string]$TargetUuid,
+    $DriveAssertions,
+    $TargetRes,
+    $ObserverRes,
+    $PeerRes
+  )
+  $prefix = "round$RoundIndex/mod"
+  $out = @($DriveAssertions)
+
+  # A bot verdict, reported under the scenario id and with the recording it came
+  # from. A missing verdict is a failure, never a silent pass: an assertion whose
+  # recorder never produced a verdict proves nothing.
+  $verdict = {
+    param($res, [string]$role, [string]$botId, [string]$assertionId, [string]$token)
+    $hit = $null
+    if ($res) {
+      # expectAbsent verdicts live in `absentChecks`, every other bot verdict in
+      # `assertions` (see joint-bot.js writeResults). Searching only one of the
+      # two reports "recorded no verdict" for a verdict that exists.
+      foreach ($bucket in @($res.assertions, $res.absentChecks)) {
+        if (-not $bucket) { continue }
+        foreach ($a in $bucket) { if ([string]$a.id -eq $botId) { $hit = $a; break } }
+        if ($hit) { break }
+      }
+    }
+    return [PSCustomObject]@{
+      id = "$prefix/$assertionId"
+      token = $token
+      pass = [bool]($hit -and $hit.pass)
+      evidence = if ($hit) { "[$role] " + [string]$hit.evidence } else { "$role recorded no '$botId' verdict" }
+      kind = 'moderation-effect'
+    }
+  }
+  $observers = @(
+    @{ Role = 'bedrock-observer'; Res = $ObserverRes },
+    @{ Role = 'bukkit-observer';  Res = $PeerRes }
+  )
+
+  # mute: GATING negative in BOTH observers' recordings.
+  foreach ($pair in $observers) {
+    $out += & $verdict $pair.Res $pair.Role 'mod-absent-muted' "mute-takes-effect-$($pair.Role)" 'muted line absent'
+  }
+  # Authority-side half (gating): the mute was APPLIED, not merely sent. Without
+  # this, "no observer saw the line" is also true when the command never landed.
+  $backendText = Read-LogText $BackendLog
+  $muteLine = if ($backendText -and ($backendText -match '(?m)^.*muted in channel global by.*$')) { $Matches[0].Trim() } else { '' }
+  $out += [PSCustomObject]@{
+    id = "$prefix/mute-applied-at-authority"; token = $TargetUuid
+    pass = [bool]$muteLine; kind = 'moderation-authority'
+    evidence = if ($muteLine) { $muteLine } else { 'backend log has no MuteManager apply line for channel global' }
+  }
+
+  # kick: GATING negative in BOTH observers' recordings.
+  foreach ($pair in $observers) {
+    $out += & $verdict $pair.Res $pair.Role 'mod-absent-kicked' "kick-takes-effect-$($pair.Role)" 'kicked line absent'
+  }
+  # Kick has NO authority-side trace to gate on: ChannelActionHandler.handleKick
+  # removes the membership (channelManager.removeMember) and logs nothing at
+  # INFO, and no platform renders the response to a console-originated action.
+  # Recorded as a diagnostic so the absence of corroboration is visible instead
+  # of being mistaken for corroboration.
+  $out += [PSCustomObject]@{
+    id = "$prefix/kick-authority-trace"; token = 'kick apply line'
+    pass = $false; kind = 'diagnostic'
+    evidence = 'no INFO trace exists for a kick: handleKick only calls channelManager.removeMember and playerStateManager.leaveChannel (debug on failure), and MuteManager/BanManager are the only moderation managers that log an apply'
+  }
+  # kick-is-not-a-ban: the rejoin line must be heard.
+  $out += & $verdict $ObserverRes 'bedrock-observer' 'mod-expect-rejoin' 'kick-is-not-a-ban' 'rejoin line delivered'
+  # Did the kick actually remove the membership? /nc who is answered from the
+  # backend's member set and rendered to the requesting player, so its body
+  # line is the authority's own membership answer. GATING: without this the
+  # "kicked line still arrived" failure cannot be attributed to the kick.
+  $whoBody = ''
+  if ($TargetRes -and $TargetRes.received) {
+    $entries = @($TargetRes.received)
+    for ($i = 0; $i -lt $entries.Count; $i++) {
+      $t = [string]$entries[$i].text
+      if ($t -notmatch 'online members') { continue }
+      for ($j = $i + 1; $j -lt [Math]::Min($i + 4, $entries.Count); $j++) {
+        if ([string]$entries[$j].kind -eq 'messagestr') { $whoBody = [string]$entries[$j].text; break }
+      }
+    }
+  }
+  $out += [PSCustomObject]@{
+    id = "$prefix/kick-removed-membership"; token = 'who after kick'
+    pass = [bool]($whoBody -and -not $whoBody.Contains('E2EJointJava')); kind = 'moderation-authority'
+    evidence = if (-not $whoBody) { 'the target recorded no /nc who member list after the kick' }
+               else { "/nc who after the kick: $whoBody" }
+  }
+
+  # ban / unban. The authority lines are read FIRST: the refusal assertion
+  # cites them when it fails, so the failure states the ban really was in force.
+  $banLine = if ($backendText -and ($backendText -match '(?m)^.*banned in channel global by.*$')) { $Matches[0].Trim() } else { '' }
+  $unbanLine = if ($backendText -and ($backendText -match '(?m)^.*unbanned in channel global by.*$')) { $Matches[0].Trim() } else { '' }
+  $banRefusal = & $verdict $TargetRes 'target' 'mod-ban-join-refused' 'ban-blocks-rejoin' 'join refused with NC-403'
+  if (-not $banRefusal.pass -and $banRefusal.evidence -match '^\[target\]\s*$') {
+    $banRefusal.evidence = ('[target] no NC-403 was rendered; the /nc join succeeded while the ban was active ' +
+      $(if ($banLine) { "(authority: $banLine)" } else { '' }))
+  }
+  $out += $banRefusal
+  $out += & $verdict $ObserverRes 'bedrock-observer' 'mod-absent-banned' 'ban-silences-bedrock-observer' 'banned line absent'
+  $out += & $verdict $ObserverRes 'bedrock-observer' 'mod-expect-unban' 'unban-restores' 'line delivered after unban'
+  $out += [PSCustomObject]@{
+    id = "$prefix/ban-unban-applied-at-authority"; token = $TargetUuid
+    pass = [bool]($banLine -and $unbanLine); kind = 'moderation-authority'
+    evidence = if ($banLine -and $unbanLine) { "$banLine | $unbanLine" }
+               else { "ban-line=[$banLine] unban-line=[$unbanLine]" }
+  }
+
+  # permission-denied.
+  # ── half 1 (GATING, effect): the refused mute must not have applied, so the
+  #    target's next line still reaches BOTH observers. "Refused but applied"
+  #    is the worst outcome and the only half a player can observe.
+  $out += & $verdict $ObserverRes 'bedrock-observer' 'mod-expect-denied' 'permission-denied-target-heard' 'target line still delivered'
+  $out += & $verdict $PeerRes 'bukkit-observer' 'mod-denied-target-heard' 'permission-denied-target-heard-peer' 'target line still delivered'
+  # ── half 2 (GATING, authority): no mute record for that operator exists in
+  #    the backend's own log. MuteManager logs every APPLIED mute at INFO, so
+  #    its absence is the authority's own statement that nothing was applied.
+  $peerUuid = Get-OfflineUuid 'E2EJointMod'
+  $peerMuteLine = if ($backendText -and ($backendText -match ('(?m)^.*muted in channel global by ' + [regex]::Escape($peerUuid) + '.*$'))) { $Matches[0].Trim() } else { '' }
+  $out += [PSCustomObject]@{
+    id = "$prefix/permission-denied-not-applied-at-authority"; token = $peerUuid
+    pass = (-not $peerMuteLine); kind = 'moderation-authority'
+    evidence = if ($peerMuteLine) { "the backend APPLIED it: $peerMuteLine" }
+               else { 'no MuteManager apply line names the non-operator; the authority did not apply the mute' }
+  }
+  # ── half 3 (DIAGNOSTIC): whether the refusal is rendered to the issuing
+  #    player, and WHICH layer refused. Two different NC-403 texts exist:
+  #      "You do not have permission to run this command (NC-403)"
+  #          = chat.command.no_permission_code, the PLUGIN's own gate, i.e. the
+  #            packet never left the server and the case proves nothing about
+  #            the authority;
+  #      "[NC-403] Permission denied"
+  #          = ErrorMessageFormatter, i.e. the BACKEND's
+  #            ChannelActionHandler.requireModerationPermission.
+  #    Expected today: NEITHER reaches the player. MuteCommand adds
+  #    operatorId/targetId/operatorName/duration but never `playerId`, and
+  #    ChannelResponseTracker.track keys its pending entry on `extra[playerId]`,
+  #    so ChannelResponseDispatcher.handle returns at
+  #    `pending == null || pending.getPlayerId() == null` before rendering. A
+  #    player who runs a moderation command therefore cannot tell an accepted
+  #    command from a refused one -- recorded here rather than asserted away.
+  $localRefusal = @()
+  $backendRefusal = @()
+  if ($PeerRes -and $PeerRes.received) {
+    foreach ($entry in $PeerRes.received) {
+      $t = [string]$entry.text
+      if ($t -notmatch 'NC-403') { continue }
+      if ($t -match 'You do not have permission to run this command') { $localRefusal += $t }
+      elseif ($t -match '\[NC-403\]') { $backendRefusal += $t }
+    }
+  }
+  $out += [PSCustomObject]@{
+    id = "$prefix/permission-denied-refusal-visible"; token = 'NC-403 to the non-operator'
+    pass = ($backendRefusal.Count -gt 0); kind = 'diagnostic'
+    evidence = if ($backendRefusal.Count -gt 0) { "the authority's refusal reached the player: $($backendRefusal[0])" }
+               elseif ($localRefusal.Count -gt 0) { "only the PLUGIN's own gate refused (packet never sent): $($localRefusal[0])" }
+               else { 'NO refusal line reached the issuing player. The authority refused (no apply line above) but the response is never rendered: MuteCommand sets no playerId extra, which ChannelResponseTracker.track keys on, so ChannelResponseDispatcher.handle returns before any adapter callback.' }
+  }
+
+  # mute-is-channel-scoped: see the reason in the scenario table above.
+  $out += [PSCustomObject]@{
+    id = "$prefix/mute-is-channel-scoped"; token = 'second-channel control'
+    pass = $false; kind = 'diagnostic'
+    evidence = ('NOT EXECUTED: Write-BackendConfig declares one channel (global), and the mute is observed by rendering, which needs an observer whose ACTIVE channel is the second one -- joining it would take that observer out of global for the rest of the group. The pre-mute control line already proves "the sender can speak and only the mute suppressed it", which is the distinction this scenario exists for.')
   }
   return $out
 }
@@ -3284,24 +3822,154 @@ function Invoke-Round($round, [string]$roundDir) {
     # but both names stay underscore-free here so one naming rule covers both.
     $javaBotUser = 'E2EJointJava'
     $bedBotUser = 'E2EJointBedrock'
+    $modBotUser = 'E2EJointMod'
     $chatToken = "$tokenPrefix-java-to-bedrock"
     $replyToken = "$tokenPrefix-bedrock-to-java"
+
+    # ---- relay moderation phase ----
+    # Runs only where it can: a proxy in relay mode (the proxy's /nc has no
+    # moderation subcommand) AND a Java leg behind it (the console that issues
+    # the commands lives on that server, and its plugin has a backend link).
+    # Without those the group is reported as diagnostic with the reason.
+    $moderationOn = ($ProxyMode -eq 'relay' -and $round.Proxy -and $round.Java)
+    # With moderation on, the bots also wait through a handshaked multi-phase
+    # drive (four console commands, each retried if the server's main thread
+    # stalls), so their own budget is raised rather than letting the plan time
+    # out mid-phase and lose the later verdicts.
+    $botBudgetSec = if ($moderationOn) { 600 } else { $BotTimeoutSec }
+    $modToken = @{}
+    if ($moderationOn) {
+      foreach ($k in @('control','control2','muted','kicked','rejoin','banned','unban','denied')) {
+        $modToken[$k] = "$tokenPrefix-mod-$k"
+      }
+    }
 
     $javaSteps = @(
       @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
       @{ id = 'settle'; action = 'wait'; ms = 4000 },
       @{ id = 'send-cross'; action = 'chat'; text = "joint-java-to-bedrock $chatToken" },
-      @{ id = 'expect-reply'; action = 'expect'; token = $replyToken; timeoutMs = 45000 },
-      @{ id = 'quit'; action = 'quit' }
+      @{ id = 'expect-reply'; action = 'expect'; token = $replyToken; timeoutMs = 45000 }
     )
+    if ($moderationOn) {
+      # Target side. Each phase is released by the harness and ACKNOWLEDGED by
+      # this bot afterwards, so the next command cannot be issued while this
+      # bot is still somewhere else in its plan.
+      #
+      # The acknowledgement is published from `handoffSet` with a pattern that
+      # matches an INBOUND line already in the recording: handoffSet only
+      # publishes a key when its pattern matched, and a suppressed line (the
+      # whole point of the mute/ban phases) never comes back to the sender, so
+      # it can never be the pattern.
+      $javaSteps += @(
+        @{ id = 'mod-target-up-mark'; action = 'handoffSet'; key = 'targetup'; pattern = 'joint-bedrock-to-java' },
+        @{ id = 'mod-wait-control'; action = 'handoffGet'; key = 'gocontrol'; timeoutMs = 200000 },
+        @{ id = 'mod-control'; action = 'chat'; text = "mod control $($modToken['control'])" },
+        @{ id = 'mod-control-ack'; action = 'handoffSet'; key = 'ackcontrol'; pattern = 'joint-bedrock-to-java' },
+        @{ id = 'mod-wait-kicked'; action = 'handoffGet'; key = 'kicked'; timeoutMs = 200000 },
+        @{ id = 'mod-kicked'; action = 'chat'; text = "mod kicked $($modToken['kicked'])" },
+        @{ id = 'mod-kicked-ack'; action = 'handoffSet'; key = 'ackkicked'; pattern = 'joint-bedrock-to-java' },
+        # Corroboration that the kick reached the authority: /nc who is answered
+        # from the backend's own member set, so the reply shows whether this
+        # player is still a member after the kick. Without it "the kicked line
+        # still arrived" could also mean "the kick never happened".
+        @{ id = 'mod-who-after-kick'; action = 'cmd'; text = '/nc who global' },
+        @{ id = 'mod-who-after-kick-settle'; action = 'wait'; ms = 4000 },
+        @{ id = 'mod-kick-rejoin'; action = 'cmd'; text = '/nc join global' },
+        @{ id = 'mod-kick-rejoin-settle'; action = 'wait'; ms = 3000 },
+        @{ id = 'mod-rejoin'; action = 'chat'; text = "mod rejoin $($modToken['rejoin'])" },
+        @{ id = 'mod-rejoin-ack'; action = 'handoffSet'; key = 'ackrejoin'; pattern = 'joint-bedrock-to-java' },
+        @{ id = 'mod-wait-banned'; action = 'handoffGet'; key = 'banned'; timeoutMs = 200000 },
+        @{ id = 'mod-banned'; action = 'chat'; text = "mod banned $($modToken['banned'])" },
+        # ban-blocks-rejoin. `expect` only records a token once the step arms
+        # it, so an NC-403 from any earlier step can never satisfy this one.
+        # The refusal, if the product produces one, is rendered to THIS bot:
+        # the join runs through the proxy's ChannelCommandService, which does
+        # set the `playerId` extra the response dispatcher keys on.
+        @{ id = 'mod-ban-join'; action = 'cmd'; text = '/nc join global' },
+        @{ id = 'mod-ban-join-refused'; action = 'expect'; token = 'NC-403'; timeoutMs = 15000 },
+        @{ id = 'mod-banned-ack'; action = 'handoffSet'; key = 'ackbanned'; pattern = 'joint-bedrock-to-java' },
+        @{ id = 'mod-wait-unbanned'; action = 'handoffGet'; key = 'unbanned'; timeoutMs = 200000 },
+        @{ id = 'mod-unban'; action = 'chat'; text = "mod unban $($modToken['unban'])" },
+        @{ id = 'mod-unban-ack'; action = 'handoffSet'; key = 'ackunban'; pattern = 'joint-bedrock-to-java' },
+        @{ id = 'mod-wait-denied'; action = 'handoffGet'; key = 'deniedgo'; timeoutMs = 200000 },
+        @{ id = 'mod-denied'; action = 'chat'; text = "mod denied $($modToken['denied'])" },
+        @{ id = 'mod-denied-ack'; action = 'handoffSet'; key = 'ackdenied'; pattern = 'joint-bedrock-to-java' },
+        @{ id = 'mod-wait-control2'; action = 'handoffGet'; key = 'gocontrol2'; timeoutMs = 200000 },
+        @{ id = 'mod-control2'; action = 'chat'; text = "mod control2 $($modToken['control2'])" },
+        @{ id = 'mod-control2-ack'; action = 'handoffSet'; key = 'ackcontrol2'; pattern = 'joint-bedrock-to-java' },
+        @{ id = 'mod-wait-muted'; action = 'handoffGet'; key = 'muted'; timeoutMs = 200000 },
+        @{ id = 'mod-muted'; action = 'chat'; text = "mod muted $($modToken['muted'])" },
+        @{ id = 'mod-muted-ack'; action = 'handoffSet'; key = 'ackmuted'; pattern = 'joint-bedrock-to-java' },
+        @{ id = 'mod-wait-done'; action = 'handoffGet'; key = 'done'; timeoutMs = 200000 }
+      )
+    }
+    $javaSteps += @{ id = 'quit'; action = 'quit' }
+
     $bedSteps = @(
       @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
       @{ id = 'settle'; action = 'wait'; ms = 4000 },
       @{ id = 'expect-java'; action = 'expect'; token = $chatToken; timeoutMs = 45000 },
       @{ id = 'send-reply'; action = 'chat'; text = "joint-bedrock-to-java $replyToken" },
-      @{ id = 'settle2'; action = 'wait'; ms = 3000 },
-      @{ id = 'quit'; action = 'quit' }
+      @{ id = 'settle2'; action = 'wait'; ms = 3000 }
     )
+    if ($moderationOn) {
+      # Observer side. NEGATIVE tokens are armed FIRST (expectAbsent is
+      # non-blocking; its verdict is computed at exit), so every line the
+      # harness later suppresses has been declared before the phase that
+      # suppresses it. A token that was never declared is never recorded.
+      #
+      # The positive expectations are then armed in arrival order. Each one is
+      # followed by its own control-seen handoff, which is what releases the
+      # harness to the next phase -- so the ordering does not depend on sleeps.
+      $bedSteps += @(
+        @{ id = 'mod-observer-up-mark'; action = 'handoffSet'; key = 'observerup'; pattern = 'joint-java-to-bedrock' },
+        @{ id = 'mod-absent-kicked'; action = 'expectAbsent'; token = $modToken['kicked'] },
+        @{ id = 'mod-absent-banned'; action = 'expectAbsent'; token = $modToken['banned'] },
+        @{ id = 'mod-absent-muted'; action = 'expectAbsent'; token = $modToken['muted'] },
+        @{ id = 'mod-expect-control'; action = 'expect'; token = $modToken['control']; timeoutMs = 200000 },
+        @{ id = 'mod-control-seen'; action = 'handoffSet'; key = 'controlseen'; pattern = 'mod control' },
+        @{ id = 'mod-expect-rejoin'; action = 'expect'; token = $modToken['rejoin']; timeoutMs = 200000 },
+        @{ id = 'mod-expect-unban'; action = 'expect'; token = $modToken['unban']; timeoutMs = 200000 },
+        @{ id = 'mod-expect-denied'; action = 'expect'; token = $modToken['denied']; timeoutMs = 200000 },
+        @{ id = 'mod-expect-control2'; action = 'expect'; token = $modToken['control2']; timeoutMs = 200000 },
+        @{ id = 'mod-control2-seen'; action = 'handoffSet'; key = 'controlseen2'; pattern = 'mod control2' },
+        @{ id = 'mod-wait-done'; action = 'handoffGet'; key = 'done'; timeoutMs = 200000 }
+      )
+    }
+    $bedSteps += @{ id = 'quit'; action = 'quit' }
+
+    # Non-operator. An op (Start-PlatformServer writes it into ops.json) so the
+    # plugin's own `novachat.mute` gate passes, but NOT a backend super-admin --
+    # so the refusal comes from ChannelActionHandler.requireModerationPermission,
+    # not from the command layer. Direct to the Java leg: the proxy has no
+    # moderation subcommand at all.
+    $modSteps = @()
+    if ($moderationOn) {
+      $modSteps = @(
+        @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
+        @{ id = 'settle'; action = 'wait'; ms = 3000 },
+        # Publish "peer up" from ANY line already received: the key is what the
+        # harness waits on, and handoffSet's pattern only has to prove the bot is
+        # alive and past its join. `spawned` is the join line's own marker.
+        @{ id = 'mod-peer-up-mark'; action = 'handoffSet'; key = 'peerup'; pattern = 'spawned' },
+        # Second RECEIVER on a different link (this player is on the bukkit
+        # server itself, not on the proxy), so the mute/kick/ban negatives are
+        # observed twice, from two processes. Armed before the phases run.
+        @{ id = 'mod-absent-kicked'; action = 'expectAbsent'; token = $modToken['kicked'] },
+        @{ id = 'mod-absent-banned'; action = 'expectAbsent'; token = $modToken['banned'] },
+        @{ id = 'mod-absent-muted'; action = 'expectAbsent'; token = $modToken['muted'] },
+        @{ id = 'mod-wait-denied'; action = 'handoffGet'; key = 'denied'; timeoutMs = 200000 },
+        # The ONLY bot-sent moderation command in this harness. It must reach
+        # the authority and come back refused -- see Assert-ModerationScenarios
+        # for why a player cannot be authorized and what the refusal proves.
+        @{ id = 'mod-denied-attempt'; action = 'cmd'; text = "/nc mute $javaBotUser 1h global" },
+        @{ id = 'mod-denied-sent'; action = 'handoffSet'; key = 'deniedsent'; pattern = 'Joined channel' },
+        # GATING effect half: the refused mute must not have applied, so the
+        # target's next line still reaches this observer.
+        @{ id = 'mod-denied-target-heard'; action = 'expect'; token = $modToken['denied']; timeoutMs = 200000 },
+        @{ id = 'mod-wait-done'; action = 'handoffGet'; key = 'done'; timeoutMs = 200000 }
+      )
+    }
 
     # Plans are written WITHOUT a BOM: Node's fs.readFileSync(path,'utf8') keeps
     # a leading U+FEFF and JSON.parse rejects it, so a Set-Content -Encoding utf8
@@ -3311,28 +3979,80 @@ function Invoke-Round($round, [string]$roundDir) {
     $bedPlanPath = Join-Path $botWork "plan-bedrock.json"
     $javaPlanJson = New-CrossServerPlan -role 'java' -kind $javaKind -username $javaBotUser -port $javaTargetPort `
       -mcVersion $javaMc -resultsFile (Join-Path $botWork "java.results.json") -handoffDir $handoffDir `
-      -timeoutMs ($BotTimeoutSec * 1000) -runId "$($script:RunId)-r$($round.Index)" -steps $javaSteps
+      -timeoutMs ($botBudgetSec * 1000) -runId "$($script:RunId)-r$($round.Index)" -steps $javaSteps
     $bedPlanJson = New-CrossServerPlan -role 'bedrock' -kind 'bedrock' -username $bedBotUser -port $ports.Bedrock `
       -mcVersion $bedrockMc -resultsFile (Join-Path $botWork "bedrock.results.json") -handoffDir $handoffDir `
-      -timeoutMs ($BotTimeoutSec * 1000) -runId "$($script:RunId)-r$($round.Index)" -steps $bedSteps
+      -timeoutMs ($botBudgetSec * 1000) -runId "$($script:RunId)-r$($round.Index)" -steps $bedSteps
     [System.IO.File]::WriteAllText($javaPlanPath, $javaPlanJson, $utf8NoBom)
     [System.IO.File]::WriteAllText($bedPlanPath, $bedPlanJson, $utf8NoBom)
+
+    # The moderation peer plan is written only when the group runs; an empty
+    # steps list would still start a bot and spend a login for nothing.
+    $modPlanPath = Join-Path $botWork "plan-mod.json"
+    if ($moderationOn) {
+      $modPlanJson = New-CrossServerPlan -role 'mod' -kind 'java' -username $modBotUser -port $ports.Java `
+        -mcVersion $javaMc -resultsFile (Join-Path $botWork "mod.results.json") -handoffDir $handoffDir `
+        -timeoutMs ($botBudgetSec * 1000) -runId "$($script:RunId)-r$($round.Index)" -steps $modSteps
+      [System.IO.File]::WriteAllText($modPlanPath, $modPlanJson, $utf8NoBom)
+    }
 
     $bots += [PSCustomObject]@{ Role = 'java'; Process = (Start-Bot 'java' $javaPlanPath $botWork `
       (Join-Path $botWork "java.stdout.log") (Join-Path $botWork "java.stderr.log")) }
     $bots += [PSCustomObject]@{ Role = 'bedrock'; Process = (Start-Bot 'bedrock' $bedPlanPath $botWork `
       (Join-Path $botWork "bedrock.stdout.log") (Join-Path $botWork "bedrock.stderr.log")) }
+    if ($moderationOn) {
+      $bots += [PSCustomObject]@{ Role = 'mod'; Process = (Start-Bot 'mod' $modPlanPath $botWork `
+        (Join-Path $botWork "mod.stdout.log") (Join-Path $botWork "mod.stderr.log")) }
+    }
 
-    Wait-Bots $bots $BotTimeoutSec
+    # ---- moderation drive (relay only) ----
+    # The harness holds the console operator end while the bots run, so this
+    # sits between "bots started" and "bots waited for". Everything it asserts
+    # that needs a recording is finished after Wait-Bots (Assert-ModerationScenarios).
+    $moderationDrive = @()
+    if ($moderationOn) {
+      $moderationDrive = Invoke-ModerationDrive -RoundIndex $round.Index `
+        -RconPort $ports.JavaRcon -RconPassword 'joint-e2e-rcon' `
+        -HandoffDir $handoffDir -RunId "$($script:RunId)-r$($round.Index)" `
+        -TargetName $javaBotUser -BackendLog (Join-Path $roundDir "backend/stdout.log")
+    }
+
+    Wait-Bots $bots $botBudgetSec
 
     # ---- cross-process assertions ----
     $javaRes = Read-BotResult (Join-Path $botWork "java.results.json")
     $bedRes = Read-BotResult (Join-Path $botWork "bedrock.results.json")
+    $modRes = if ($moderationOn) { Read-BotResult (Join-Path $botWork "mod.results.json") } else { $null }
 
     $assertions += Assert-Delivered "round$($round.Index)/java-to-bedrock" $chatToken $bedRes
     $assertions += Assert-Delivered "round$($round.Index)/bedrock-to-java" $replyToken $javaRes
     $assertions += Assert-BotExpectations 'java' $javaRes
     $assertions += Assert-BotExpectations 'bedrock' $bedRes
+    if ($moderationOn) { $assertions += Assert-BotExpectations 'mod' $modRes }
+
+    # ---- relay moderation scenarios ----
+    # Gating when the group ran; diagnostic with a precise reason when the
+    # topology cannot host it. Never silently skipped.
+    if ($moderationOn) {
+      $assertions += Assert-ModerationScenarios -RoundIndex $round.Index `
+        -BackendLog (Join-Path $roundDir "backend/stdout.log") `
+        -TargetUuid (Get-OfflineUuid $javaBotUser) `
+        -DriveAssertions $moderationDrive `
+        -TargetRes $javaRes -ObserverRes $bedRes -PeerRes $modRes
+    } else {
+      $why = if ($ProxyMode -ne 'relay') {
+        'the moderation commands need an authenticated backend link, which only relay provides (lite starts no backend)'
+      } elseif (-not $round.Proxy) {
+        'no proxy leg in this round, so there is no ProxyCommandCore / relay link pair to test'
+      } else {
+        'no Java leg behind the proxy: the console operator endpoint (and the direct-connect observer peer) lives on that server, and this harness cannot drive a Bedrock engine console'
+      }
+      $assertions += [PSCustomObject]@{
+        id = "round$($round.Index)/mod/moderation-group"; token = 'relay moderation'
+        pass = $false; kind = 'diagnostic'
+        evidence = "NOT EXECUTED: $why"
+      }
+    }
     if ($round.Proxy) {
       $assertions += Assert-ProxyPluginLoaded "round$($round.Index)/proxy-plugin-loaded" $round.Proxy `
         (Join-Path (Join-Path $roundDir $round.Proxy) "proxy.stdout.log")
@@ -3767,12 +4487,7 @@ if (-not (Install-BotDeps)) { exit 2 }
 # announce/title scenarios exercise the REAL super-admin path instead of
 # reproducing the old "NC-403 by design" result.
 $superAdminName = 'E2EJointJava'
-$offlineSeed = [System.Text.Encoding]::UTF8.GetBytes("OfflinePlayer:$superAdminName")
-$md5 = [System.Security.Cryptography.MD5]::Create()
-$hash = $md5.ComputeHash($offlineSeed)
-$hash[6] = [byte](($hash[6] -band 0x0F) -bor 0x30)
-$hash[8] = [byte](($hash[8] -band 0x3F) -bor 0x80)
-$script:SuperAdminUuid = ([System.Guid]::new($hash)).ToString()
+$script:SuperAdminUuid = Get-OfflineUuid $superAdminName
 Log "Super-admin identity: $superAdminName / $($script:SuperAdminUuid)"
 
 $roundResults = @()
