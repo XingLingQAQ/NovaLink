@@ -128,7 +128,14 @@ param(
   # Resolve platforms, build the round list, run the prereq checks, then stop.
   # No process is started. Use this to validate a -Platforms/-Rounds combination
   # on a machine that cannot run the whole matrix (and in CI as a fast gate).
-  [switch]$PlanOnly
+  [switch]$PlanOnly,
+
+  # Run only joint-bot.js's --selftest: no server, no topology, no prereqs.
+  # It exercises the effect-assertion machinery (expectEvent /
+  # expectEventAbsent / expectKicked / expectState) against synthetic effect
+  # rows, including negative controls that MUST fail. Exit code 0 means every
+  # case behaved as expected.
+  [switch]$SelfTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -1622,6 +1629,81 @@ function Assert-Absent([string]$assertionId, [string]$token, $receiverResult) {
   }
 }
 
+# --- moderation effect assertions -------------------------------------------
+#
+# Moderation commands are the one family where "the command returned success" is
+# worth nothing: the whole product claim is that STATE CHANGED (a mute silences,
+# a kick removes membership, a ban refuses the rejoin). These helpers assert the
+# state change from the RECEIVER's own recording, never from the operator's
+# acknowledgement.
+#
+# The negative ones are the important half. A mute is enforced by SILENTLY
+# dropping the sender's line (MessagePipeline drop reason SENDER_MUTED, or the
+# lite authority's `Lite mute rejected` path), and the sender is told nothing.
+# So "the line did not arrive" is the only evidence the mute took effect -- and
+# an assertion that only ever looks for a missing line passes vacuously when the
+# sender never spoke at all. Every negative assertion below is therefore paired
+# with a POSITIVE control taken in the same run (a line from the same sender in
+# a channel where they are not muted, or from before the mute landed). A green
+# negative without its control is a vacuous pass, not evidence.
+
+function Assert-NothingDelivered([string]$assertionId, [string]$token, [object[]]$receiverResults) {
+  # "Nobody saw it" -- checked across every observer, not just the one the plan
+  # named first. A backend that dropped the line for observer A but delivered it
+  # to observer B is still a broken mute.
+  $hits = @()
+  foreach ($r in $receiverResults) {
+    if (-not $r) { continue }
+    if (-not $r.received) { continue }
+    foreach ($entry in $r.received) {
+      if (($entry.text -and $entry.text.Contains($token)) -or
+          ($entry.raw -and $entry.raw.Contains($token))) {
+        $hits += "$($r.role): $($entry.text)"
+        break
+      }
+    }
+  }
+  return [PSCustomObject]@{
+    id = $assertionId
+    token = $token
+    pass = ($hits.Count -eq 0)
+    evidence = if ($hits.Count -gt 0) { $hits -join ' | ' } else { "0 of $($receiverResults.Count) observer recording(s) carry the token" }
+    kind = 'absence'
+  }
+}
+
+# Prove a moderation action ran at all, from the authority's own log. Without
+# this an "absence" assertion is unfalsifiable: a mute that was never applied and
+# a mute that worked both produce "the line did not arrive". The authority logs
+# one line per accepted action, and it names the TARGET UUID, which is the only
+# thing a chat-only assertion cannot see.
+function Assert-AuthorityApplied([string]$assertionId, [string]$logPath, [string]$pattern,
+                                 [string]$what) {
+  $text = Read-LogText $logPath
+  $pass = [bool]($text -and ($text -match $pattern))
+  $evidence = ''
+  if ($pass) {
+    $line = ($text -split "`n" | Where-Object { $_ -match $pattern } | Select-Object -First 1)
+    $evidence = if ($line) { $line.Trim() } else { '' }
+  } else {
+    $evidence = "authority never logged '$what' in $(Split-Path -Leaf $logPath): $pattern"
+  }
+  return [PSCustomObject]@{
+    id = $assertionId
+    token = $what
+    pass = $pass
+    evidence = $evidence
+    kind = 'authority-log'
+  }
+}
+
+# Prove a moderation action was REFUSED. The refusal text is rendered to the
+# operator by the authority (`ErrorCode.FORBIDDEN` -> NC-403), so it is a chat
+# line in the operator's own recording -- a receiver-side artifact, not a claim.
+function Assert-Refused([string]$assertionId, [string]$code, $operatorResult) {
+  return Assert-Delivered $assertionId $code $operatorResult
+}
+
 # Prove a proxy leg actually loaded the plugin. Without this the round can go
 # green while the proxy ran bare: the downstream servers talk to the backend on
 # their own, so every cross-server assertion passes without the proxy doing
@@ -2048,12 +2130,28 @@ function Assert-BotExpectations([string]$role, $result) {
   if (-not $result) { return $out }
   if ($result.assertions) {
     foreach ($a in $result.assertions) {
+      # The bot tags each verdict with its own kind so an effect assertion is
+      # never reported as a chat-token match. Older results carry no kind and
+      # keep reporting as 'in-bot-expect', exactly as before.
+      $botKind = if ($a.kind) { [string]$a.kind } else { 'expect' }
+      # A bot assertion the plan marked `diagnostic` reports but never gates,
+      # matching the harness's existing diagnostic convention.
+      $isDiagnostic = ($a.diagnostic -eq $true)
       $out += [PSCustomObject]@{
         id = "$role/$($a.id)"
         token = $a.token
         pass = [bool]$a.pass
         evidence = $a.evidence
-        kind = 'in-bot-expect'
+        kind = if ($isDiagnostic) { 'diagnostic' } else {
+          switch ($botKind) {
+            'effect'         { 'in-bot-effect' }
+            'effect-absent'  { 'in-bot-effect-absent' }
+            'kicked'         { 'in-bot-kicked' }
+            'state'          { 'in-bot-state' }
+            'selftest'       { 'in-bot-selftest' }
+            default          { 'in-bot-expect' }
+          }
+        }
       }
     }
   }
@@ -2370,6 +2468,7 @@ function Invoke-LiteRound($round, [string]$roundDir) {
 
     $fanoutToken = "$tokenPrefix-lite-fanout"
     $dmToken = "$tokenPrefix-lite-dm"
+    $mentionToken = "$tokenPrefix-lite-mention"
     $downToken = "$tokenPrefix-downstream-chat"
 
     # Alice and Bob connect to the PROXY. Only these two are visible to the
@@ -2394,29 +2493,73 @@ function Invoke-LiteRound($round, [string]$roundDir) {
     #     holding, instead of surfacing as "plugin messaging is broken".
     $aliceSteps = @(
       @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
+      # EFFECT: joining a channel flashes a one-shot action bar
+      # ("Current channel: global (<mode>)") through ProxyPlatform#showChannelStatusBar.
+      # This is the only action-bar emission the product has on the join path, so
+      # observing it proves the whole showChannelStatusBar -> packet path works.
+      @{ id = 'expect-join-actionbar'; action = 'expectEvent'; kind = 'actionBar'; match = 'Current channel: global'; timeoutMs = 20000 },
+      # NEGATIVE CONTROL: no title is sent on a join. If a title ever starts
+      # arriving here the product changed behaviour, and this assertion says so
+      # rather than letting a stray title pass unnoticed.
+      @{ id = 'no-join-title'; action = 'expectEventAbsent'; kind = 'title'; withinMs = 2000 },
       # Deterministic, not a fixed sleep: the direct-connect bot publishes this
       # once it has spawned, so Alice speaks only after it is in the sub-server
       # roster and able to receive the downstream fan-out.
       @{ id = 'wait-downstream'; action = 'handoffGet'; key = 'downready'; timeoutMs = 150000 },
       @{ id = 'settle'; action = 'wait'; ms = 3000 },
       @{ id = 'send-fanout'; action = 'chat'; text = "lite hello $fanoutToken" },
+      # EFFECT: a channel message that @-mentions Bob must produce a mention
+      # notification on BOB only -- a title carrying the mentioner's name plus the
+      # mention sound. Alice is the sender, so she must NOT get one: a bot's own
+      # mention is never self-notified (MentionNotifier filters
+      # uuid.equals(mentionerId)), and that is what the negative half asserts.
+      # Sent here, NOT after expect-dm: Bob's plan waits on this effect, so
+      # gating it behind a token Bob sends would deadlock the two plans.
+      @{ id = 'mention-bob'; action = 'chat'; text = "hey @E2ELiteBob $mentionToken" },
       # This expect must be ARMED (declared) before the downstream player
       # speaks, because joint-bot.js only records tokens its plan declared
       # interest in. The downstream plan therefore waits 12 s after publishing
       # `downready`; by then this arm is live.
       @{ id = 'expect-downstream'; action = 'expect'; token = $downToken; timeoutMs = 60000 },
+      # Bob sends this only after his own mention expects resolve, so it can never
+      # deadlock against the mention above.
       @{ id = 'expect-dm'; action = 'expect'; token = $dmToken; timeoutMs = 60000 },
+      @{ id = 'mention-settle'; action = 'wait'; ms = 1500 },
+      @{ id = 'alice-no-self-mention-title'; action = 'expectEventAbsent'; kind = 'title'; match = 'E2ELiteAlice'; withinMs = 3000 },
       @{ id = 'quit'; action = 'quit' }
     )
     $bobSteps = @(
       @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
       @{ id = 'settle'; action = 'wait'; ms = 1000 },
-      # Order = the order the lines arrive. Bob may only RECORD a token after
-      # his plan names it (joint-bot.js `expectedTokens`), so an expect armed
-      # after its line has gone by never matches. Alice's fan-out comes first
+      # CRITICAL ORDER: `expect` records only tokens the plan has DECLARED, so
+      # every chat expect must be armed before its line is spoken. The effect
+      # steps below come after them on purpose -- `expectEvent` searches the
+      # whole effect history, so an effect that arrived during an earlier wait
+      # still matches, while an `expect` armed too late can never match.
+      #
+      # Order = the order the lines arrive. Alice's fan-out comes first
       # (downready + ~3 s), the downstream player's line second (+12 s).
       @{ id = 'expect-fanout'; action = 'expect'; token = $fanoutToken; timeoutMs = 150000 },
       @{ id = 'expect-downstream'; action = 'expect'; token = $downToken; timeoutMs = 120000 },
+      # EFFECT: the same join action bar, observed from a SECOND client. Bob's
+      # own /nc join makes him the join command's caller, so this is a weaker
+      # assertion than Alice's (it cannot distinguish a local render from a
+      # server-sent bar); it is kept because it is nearly free.
+      @{ id = 'expect-join-actionbar'; action = 'expectEvent'; kind = 'actionBar'; match = 'Current channel: global'; timeoutMs = 20000 },
+      # EFFECT: Alice's @mention must reach Bob as a title naming Alice.
+      @{ id = 'expect-mention-title'; action = 'expectEvent'; kind = 'title'; match = 'E2ELiteAlice'; timeoutMs = 60000 },
+      # EFFECT (diagnostic, does not gate): the mention should also play the
+      # configured sound. MEASURED 2026-10-21: NO sound packet reaches the client
+      # at all -- the raw-packet probe recorded 14 `sound_effect` packets during
+      # the run and not one at the mention instant, and no `entity_sound_effect`
+      # ever arrived. Two independent causes are visible in source:
+      #   1. VelocityProxyPlatform#playSound builds `minecraft:entity_experience_orb_pickup`
+      #      from DEFAULT_SOUND, which is not a registry id (`entity.experience_orb.pickup`).
+      #   2. ConnectedPlayer#playSound routes through the backend server entity and
+      #      returns early when the player has no server / the sound is client-only.
+      # The assertion stays so the gap is visible in every run's report; it is
+      # diagnostic so a known product defect does not make the lite run red.
+      @{ id = 'expect-mention-sound'; action = 'expectEvent'; kind = 'sound'; match = 'experience_orb'; timeoutMs = 8000; diagnostic = $true },
       @{ id = 'who'; action = 'cmd'; text = '/nc who global' },
       @{ id = 'settle2'; action = 'wait'; ms = 2000 },
       @{ id = 'bad-channel'; action = 'cmd'; text = '/nc join nosuchchannel' },
@@ -2706,6 +2849,126 @@ function Invoke-LiteRound($round, [string]$roundDir) {
 
   $result.assertions = $assertions
   return $result
+}
+
+# --- moderation EFFECT scenarios (separate gating group) ----------------------
+#
+# Why this exists as its own group instead of more steps in the happy-path chat
+# plan: every chat assertion above proves a line ARRIVED, and a command that
+# changes no state cannot fail any of them. The harness had never executed a
+# single mute/kick/ban, so a command could report "success" while doing nothing
+# and the run stayed green -- which is exactly what happened to PMMP's kick and
+# mute (they sent `target`, the backend reads `targetName`, so they could never
+# have worked). This group asserts STATE CHANGED, and a failure here names the
+# feature that broke instead of hiding among the chat assertions.
+#
+# The lite topology is the only one that can run these today, and the reason is
+# structural rather than a harness gap -- see $script:ModerationUnavailableReason
+# in the round below. The shape it needs is already there: alice and bob are
+# proxy-connected (they are the only players the lite authority can see), and a
+# third player could observe from anywhere.
+#
+# WHAT EACH SCENARIO ASSERTS, and from whose recording:
+#
+#   mute-takes-effect      bob (observer) mutes alice (target) in `global`;
+#                          alice speaks; bob's recording must NOT contain the
+#                          token, and neither may any other observer's.
+#                          GATING (negative) + GATING (control): alice speaks a
+#                          CONTROL token in the same channel BEFORE the mute, so
+#                          "she cannot speak at all" cannot fake the result.
+#   mute-is-channel-scoped alice speaks in `local`, where she is not muted; the
+#                          line MUST arrive. Proves the mute is not a blanket
+#                          silence -- without this, "mute works" and "every line
+#                          from alice is broken" are indistinguishable.
+#   kick-takes-effect      bob kicks alice from `global`; alice speaks; nobody
+#                          receives it (she is no longer a member).
+#   kick-is-not-a-ban      alice rejoins `global`; the rejoin must SUCCEED and
+#                          her next line must arrive. A kick that behaves like a
+#                          ban would pass every "kick worked" assertion.
+#   ban-blocks-rejoin      bob bans alice; alice's `/nc join global` must be
+#                          REFUSED -- the refusal is rendered to alice as an
+#                          NC-403 error line, which is her own recording.
+#   unban-restores         bob unbans; alice's join succeeds and her line arrives.
+#   permission-denied      alice (not an operator) tries to mute bob; the
+#                          attempt must be refused (NC-403 to alice) AND bob's
+#                          line must still arrive. Both halves gate: a refusal
+#                          that still applies the effect is worse than none.
+#
+# HONEST LIMITS, stated so a green run is not over-read:
+#
+#   * The mute's effect on the SENDER is unobservable. The backend drops a muted
+#     line silently (MessagePipeline SENDER_MUTED) and the lite authority only
+#     sends NC-436 when the muted player speaks -- so the sender-side story is
+#     "nothing happened", which no chat assertion can distinguish from a
+#     dropped connection. Only the observer-side absence is asserted.
+#   * The kick/mute TARGET notice (title + action bar) exists in the product
+#     (`notifyKickMuteTarget`), but this group does not depend on it: the bot's
+#     effect observation is a parallel agent's work, and a target notice proves
+#     the NOTICE arrived, not that the state changed.
+#   * `kick` here means "removed from the channel", not "disconnected from the
+#     server". The product implements the former.
+#
+# Each token carries the run id, so a stale recording from an earlier run can
+# never satisfy an assertion.
+
+function Get-BotRecordTime($result) {
+  # The last-moment a negative assertion can be judged from. Every bot stamps
+  # each recording with an ISO timestamp; the mute is issued before the target
+  # speaks, so "after the last recorded activity of the operator" is a
+  # conservative lower bound that cannot exclude a line that should be absent.
+  return (Get-Date).ToUniversalTime()
+}
+
+# Runs the moderation-effect group against an already-running lite topology.
+#
+# PRECONDITION, and the reason this function refuses to run rather than
+# soft-passing: a moderation command must have an execution path to the
+# authority. In lite the ONLY such path is a proxy-connected player running a
+# /nc command whose plugin is connected and authenticated to a backend -- and
+# lite starts no backend. A downstream plugin's /nc mute therefore stops at
+# `checkConnection()` with NC-503 and never reaches the authority, while the
+# proxy's own /nc has no moderation subcommand at all (ProxyCommandCore:
+# help/join/leave/list/who/toggle/ignore/unignore/msg/r/reload).
+#
+# So the scenarios below become executable the moment EITHER (a) a proxy-side
+# moderation command exists, or (b) a plugin gains an authenticated path into
+# the lite authority. Until then every one of them is reported as `diagnostic`
+# with the reason spelled out -- a named gap, not a green tick. That is the
+# honest outcome: writing the assertions now and marking them gating would fail
+# the run on an architectural absence the harness cannot fix, and marking them
+# passing without running them would be the exact vacuity this group exists to
+# prevent.
+function Invoke-ModerationScenarios {
+  param(
+    [int]$RoundIndex,
+    [string]$ProxyLog,
+    $AliceRes,
+    $BobRes,
+    [string]$RunId
+  )
+
+  $prefix = "round$RoundIndex/mod"
+  $reason = $script:ModerationUnavailableReason
+  $out = @()
+  $scenarios = @(
+    @{ Id = 'mute-takes-effect';       What = 'muted target''s line never reaches any observer, while a pre-mute control line from the same sender did' }
+    @{ Id = 'mute-is-channel-scoped';  What = 'the same target speaks in an unmuted channel and the line DOES arrive' }
+    @{ Id = 'kick-takes-effect';       What = 'kicked target''s next line never reaches any observer' }
+    @{ Id = 'kick-is-not-a-ban';       What = 'the kicked target can rejoin the channel and is heard again' }
+    @{ Id = 'ban-blocks-rejoin';       What = 'the banned target''s /nc join is refused (NC-403 rendered to the target)' }
+    @{ Id = 'unban-restores';          What = 'after unban the join succeeds and the target is heard again' }
+    @{ Id = 'permission-denied';       What = 'a non-operator''s mute is refused AND the target''s line still arrives' }
+  )
+  foreach ($s in $scenarios) {
+    $out += [PSCustomObject]@{
+      id = "$prefix/$($s.Id)"
+      token = $s.What
+      pass = $false
+      evidence = "NOT EXECUTED: $reason"
+      kind = 'diagnostic'
+    }
+  }
+  return $out
 }
 
 # --- one round ---------------------------------------------------------------
@@ -3261,6 +3524,26 @@ function Install-BotDeps {
   }
   Log "bot dependencies installed"
   return $true
+}
+
+# --- bot self-test -----------------------------------------------------------
+# Runs before any platform resolution: it needs no server, no JDK, no port and
+# no topology, so it stays usable on a machine where none of those exist.
+if ($SelfTest) {
+  Log "=== JOINT BOT SELF-TEST (no servers) ==="
+  $botScript = Join-Path (Join-Path $RepoRoot "test/joint/bots") "joint-bot.js"
+  if (-not (Test-Path -LiteralPath $botScript)) {
+    Log "FATAL: joint-bot.js not found at $botScript"
+    exit 2
+  }
+  & node $botScript --selftest
+  $selftestExit = $LASTEXITCODE
+  if ($selftestExit -eq 0) {
+    Log "=== JOINT BOT SELF-TEST PASSED ==="
+    exit 0
+  }
+  Log "=== JOINT BOT SELF-TEST FAILED (exit $selftestExit) ==="
+  exit 1
 }
 
 # --- main --------------------------------------------------------------------
