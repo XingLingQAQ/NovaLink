@@ -84,6 +84,149 @@ class ChannelResponseDispatcherTest {
         assertThat(adapter.whoChannelId).isEqualTo("trade");
     }
 
+    // ==================== CREATE / INVITE / ACCEPT success routing ====================
+
+    @Test
+    @DisplayName("successful CREATE routes the backend-generated id and password to the creator")
+    void successfulCreateRoutesIdAndPassword() {
+        UUID playerId = UUID.randomUUID();
+        ChannelResponseTracker tracker = new ChannelResponseTracker();
+        ChannelActionPacket request = trackedRequest(tracker, playerId, "myroom", ChannelAction.CREATE);
+        RecordingAdapter adapter = new RecordingAdapter();
+        ChannelResponseDispatcher dispatcher = new ChannelResponseDispatcher(tracker, adapter);
+
+        dispatcher.handle(createResponseFor(request, "NC-1A2B", "hunter2", true, "myroom"));
+
+        assertThat(adapter.createPlayerId).isEqualTo(playerId);
+        assertThat(adapter.createChannelId).isEqualTo("NC-1A2B");
+        assertThat(adapter.createPassword).isEqualTo("hunter2");
+        assertThat(adapter.createGenerated).isTrue();
+        assertThat(adapter.createDisplayName).isEqualTo("myroom");
+        assertThat(adapter.activeChannelId)
+                .as("the backend makes the new channel the creator's active channel")
+                .isEqualTo("NC-1A2B");
+        assertThat(tracker.size()).isZero();
+    }
+
+    @Test
+    @DisplayName("CREATE does not fall back to the tracked id: the pending value is the requested name")
+    void createDoesNotFallBackToTrackedName() {
+        UUID playerId = UUID.randomUUID();
+        ChannelResponseTracker tracker = new ChannelResponseTracker();
+        ChannelActionPacket request = trackedRequest(tracker, playerId, "myroom", ChannelAction.CREATE);
+        RecordingAdapter adapter = new RecordingAdapter();
+        ChannelResponseDispatcher dispatcher = new ChannelResponseDispatcher(tracker, adapter);
+
+        dispatcher.handle(createResponseFor(request, "", "", false, "myroom"));
+
+        assertThat(adapter.createChannelId).isEmpty();
+        assertThat(adapter.activeChannelId)
+                .as("a name must never be promoted to an active channel id")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("successful INVITE routes the backend-generated code and a relative expiry")
+    void successfulInviteRoutesCode() {
+        UUID playerId = UUID.randomUUID();
+        ChannelResponseTracker tracker = new ChannelResponseTracker();
+        ChannelActionPacket request = trackedRequest(tracker, playerId, "NC-1A2B", ChannelAction.INVITE);
+        RecordingAdapter adapter = new RecordingAdapter();
+        ChannelResponseDispatcher dispatcher = new ChannelResponseDispatcher(tracker, adapter);
+
+        String expiry = String.valueOf(System.currentTimeMillis() + 24L * 60 * 60 * 1000);
+        dispatcher.handle(inviteResponseFor(request, "NC-1A2B", "a1b2c3", expiry));
+
+        assertThat(adapter.invitePlayerId).isEqualTo(playerId);
+        assertThat(adapter.inviteChannelId).isEqualTo("NC-1A2B");
+        assertThat(adapter.inviteCode).isEqualTo("a1b2c3");
+        assertThat(adapter.inviteExpiresIn)
+                .as("an absolute epoch-millis extra becomes a relative phrase")
+                .isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("INVITE with no usable expiry passes a blank phrase (the adapter then omits the line)")
+    void inviteWithoutExpiryPassesBlankPhrase() {
+        UUID playerId = UUID.randomUUID();
+        ChannelResponseTracker tracker = new ChannelResponseTracker();
+        ChannelActionPacket request = trackedRequest(tracker, playerId, "NC-1A2B", ChannelAction.INVITE);
+        RecordingAdapter adapter = new RecordingAdapter();
+        ChannelResponseDispatcher dispatcher = new ChannelResponseDispatcher(tracker, adapter);
+
+        dispatcher.handle(inviteResponseFor(request, "NC-1A2B", "a1b2c3", null));
+
+        assertThat(adapter.inviteCode).isEqualTo("a1b2c3");
+        assertThat(adapter.inviteExpiresIn).isEmpty();
+    }
+
+    @Test
+    @DisplayName("successful ACCEPT routes the accepted channel and sets it active")
+    void successfulAcceptRoutesChannel() {
+        UUID playerId = UUID.randomUUID();
+        ChannelResponseTracker tracker = new ChannelResponseTracker();
+        // The ACCEPT request's channelId is the invite CODE, not a channel id.
+        ChannelActionPacket request = trackedRequest(tracker, playerId, "A1B2C3", ChannelAction.ACCEPT);
+        RecordingAdapter adapter = new RecordingAdapter();
+        ChannelResponseDispatcher dispatcher = new ChannelResponseDispatcher(tracker, adapter);
+
+        dispatcher.handle(acceptResponseFor(request, "NC-1A2B"));
+
+        assertThat(adapter.acceptPlayerId).isEqualTo(playerId);
+        assertThat(adapter.acceptChannelId).isEqualTo("NC-1A2B");
+        assertThat(adapter.activeChannelId)
+                .as("the invite code must never be promoted to an active channel id")
+                .isEqualTo("NC-1A2B");
+        assertThat(tracker.size()).isZero();
+    }
+
+    @Test
+    @DisplayName("a refused CREATE renders only the error, with no success line and no active-channel change")
+    void refusedCreateRendersErrorOnly() {
+        UUID playerId = UUID.randomUUID();
+        ChannelResponseTracker tracker = new ChannelResponseTracker();
+        ChannelActionPacket request = trackedRequest(tracker, playerId, "myroom", ChannelAction.CREATE);
+        RecordingAdapter adapter = new RecordingAdapter();
+        ChannelResponseDispatcher dispatcher = new ChannelResponseDispatcher(tracker, adapter);
+
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(
+                false, ChannelAction.CREATE, "myroom", "NC-400", "Channel name already taken");
+        response.setRequestId(request.getRequestId());
+        dispatcher.handle(response);
+
+        assertThat(adapter.errorPlayerId).isEqualTo(playerId);
+        assertThat(adapter.errorText).contains("NC-400");
+        assertThat(adapter.createChannelId).isNull();
+        assertThat(adapter.activeChannelId).isNull();
+    }
+
+    @Test
+    @DisplayName("a refused INVITE (expired code) and a refused ACCEPT both use the generic error path")
+    void refusedInviteAndAcceptUseGenericErrorPath() {
+        UUID playerId = UUID.randomUUID();
+        ChannelResponseTracker tracker = new ChannelResponseTracker();
+        RecordingAdapter adapter = new RecordingAdapter();
+        ChannelResponseDispatcher dispatcher = new ChannelResponseDispatcher(tracker, adapter);
+
+        ChannelActionPacket invite = trackedRequest(tracker, playerId, "NC-1A2B", ChannelAction.INVITE);
+        ChannelActionResponsePacket expired = new ChannelActionResponsePacket(
+                false, ChannelAction.INVITE, "NC-1A2B", "NC-410", "Invitation has expired");
+        expired.setRequestId(invite.getRequestId());
+        dispatcher.handle(expired);
+
+        ChannelActionPacket accept = trackedRequest(tracker, playerId, "A1B2C3", ChannelAction.ACCEPT);
+        ChannelActionResponsePacket banned = new ChannelActionResponsePacket(
+                false, ChannelAction.ACCEPT, "A1B2C3", "NC-403", "You are banned from this channel");
+        banned.setRequestId(accept.getRequestId());
+        dispatcher.handle(banned);
+
+        assertThat(adapter.errorTexts).hasSize(2);
+        assertThat(adapter.errorTexts.get(0)).contains("NC-410");
+        assertThat(adapter.errorTexts.get(1)).contains("NC-403");
+        assertThat(adapter.inviteCode).isNull();
+        assertThat(adapter.acceptChannelId).isNull();
+    }
+
     // ==================== target-side moderation notices (BAN/UNBAN) ====================
 
     /**
@@ -201,10 +344,57 @@ class ChannelResponseDispatcherTest {
     private static ChannelActionPacket trackedRequest(ChannelResponseTracker tracker,
                                                        UUID playerId,
                                                        String channelId) {
-        ChannelActionPacket request = new ChannelActionPacket(ChannelAction.LEAVE, channelId);
+        return trackedRequest(tracker, playerId, channelId, ChannelAction.LEAVE);
+    }
+
+    private static ChannelActionPacket trackedRequest(ChannelResponseTracker tracker,
+                                                       UUID playerId,
+                                                       String channelId,
+                                                       ChannelAction action) {
+        ChannelActionPacket request = new ChannelActionPacket(action, channelId);
         request.addExtra("playerId", playerId.toString());
         tracker.track(request);
         return request;
+    }
+
+    /** A successful CREATE response shaped like the backend's. */
+    private static ChannelActionResponsePacket createResponseFor(ChannelActionPacket request,
+                                                                 String channelId,
+                                                                 String password,
+                                                                 boolean generated,
+                                                                 String displayName) {
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(
+                true, ChannelAction.CREATE, channelId, "", "Private channel created");
+        response.setRequestId(request.getRequestId());
+        response.addExtra("password", password);
+        response.addExtra("passwordGenerated", String.valueOf(generated));
+        response.addExtra("displayName", displayName);
+        return response;
+    }
+
+    /** A successful INVITE response shaped like the backend's. */
+    private static ChannelActionResponsePacket inviteResponseFor(ChannelActionPacket request,
+                                                                 String channelId,
+                                                                 String code,
+                                                                 String expireTimeMillis) {
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(
+                true, ChannelAction.INVITE, channelId, "", "Invitation created");
+        response.setRequestId(request.getRequestId());
+        response.addExtra("code", code);
+        if (expireTimeMillis != null) {
+            response.addExtra("expireTime", expireTimeMillis);
+        }
+        return response;
+    }
+
+    /** A successful ACCEPT response shaped like the backend's. */
+    private static ChannelActionResponsePacket acceptResponseFor(ChannelActionPacket request,
+                                                                 String channelId) {
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(
+                true, ChannelAction.ACCEPT, channelId, "", "Invitation accepted");
+        response.setRequestId(request.getRequestId());
+        response.addExtra("code", "A1B2C3");
+        return response;
     }
 
     private static ChannelActionPacket trackedWhoRequest(ChannelResponseTracker tracker,
@@ -246,10 +436,26 @@ class ChannelResponseDispatcherTest {
         private String whoDisplayName;
         private String whoMembers;
         private String whoCount;
+        private UUID createPlayerId;
+        private String createChannelId;
+        private String createPassword;
+        private boolean createGenerated;
+        private String createDisplayName;
+        private UUID invitePlayerId;
+        private String inviteChannelId;
+        private String inviteCode;
+        private String inviteExpiresIn;
+        private UUID acceptPlayerId;
+        private String acceptChannelId;
+        private String activeChannelId;
+        private UUID errorPlayerId;
+        private String errorText;
+        private final java.util.List<String> errorTexts = new java.util.ArrayList<>();
         ChannelResponseDispatcher.KickMuteNotice notice;
 
         @Override
         public void setActiveChannel(UUID playerId, String channelId) {
+            this.activeChannelId = channelId;
         }
 
         @Override
@@ -277,6 +483,33 @@ class ChannelResponseDispatcherTest {
 
         @Override
         public void sendErrorMessage(UUID playerId, String text) {
+            this.errorPlayerId = playerId;
+            this.errorText = text;
+            this.errorTexts.add(text);
+        }
+
+        @Override
+        public void sendCreateResult(UUID playerId, String channelId, String password,
+                                     boolean generated, String displayName) {
+            this.createPlayerId = playerId;
+            this.createChannelId = channelId;
+            this.createPassword = password;
+            this.createGenerated = generated;
+            this.createDisplayName = displayName;
+        }
+
+        @Override
+        public void sendInviteResult(UUID playerId, String channelId, String code, String expiresIn) {
+            this.invitePlayerId = playerId;
+            this.inviteChannelId = channelId;
+            this.inviteCode = code;
+            this.inviteExpiresIn = expiresIn;
+        }
+
+        @Override
+        public void sendAcceptResult(UUID playerId, String channelId) {
+            this.acceptPlayerId = playerId;
+            this.acceptChannelId = channelId;
         }
 
         @Override
