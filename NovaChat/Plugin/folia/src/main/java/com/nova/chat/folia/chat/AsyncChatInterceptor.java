@@ -317,10 +317,11 @@ public class AsyncChatInterceptor implements Listener {
             }
             scheduler.runForPlayer(player, () -> {
                 PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
-                String current = state.getActiveChannel();
-                if (current != null && current.equals(attemptedChannel)) {
-                    state.setActiveChannel(previousChannel);
-                }
+                // Drops the optimistic membership too: a refused JOIN must not
+                // leave the channel marked joined for /nc list. rollbackJoin
+                // itself leaves a manual switch made while the JOIN was in
+                // flight alone (BUG-H2).
+                state.rollbackJoin(attemptedChannel, previousChannel);
             });
         }
 

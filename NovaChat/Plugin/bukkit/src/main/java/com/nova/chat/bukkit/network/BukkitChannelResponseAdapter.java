@@ -71,12 +71,13 @@ final class BukkitChannelResponseAdapter implements ChannelResponseAdapter {
                 return;
             }
             PlayerChannelState state = plugin().getChatInterceptor().getState(player.getUniqueId());
-            String current = state != null ? state.getActiveChannel() : null;
-            // Only roll back if the optimistic switch is still in place — the player
-            // may have switched channels manually in the meantime (BUG-H2).
-            if (current != null && current.equals(attemptedChannel)) {
-                plugin().getChatInterceptor().setPlayerChannel(player, previousChannel);
+            if (state == null) {
+                return;
             }
+            // Drops the optimistic membership too: a refused JOIN must not leave
+            // the channel marked joined for /nc list. rollbackJoin itself leaves
+            // a manual switch made while the JOIN was in flight alone (BUG-H2).
+            state.rollbackJoin(attemptedChannel, previousChannel);
         });
     }
 

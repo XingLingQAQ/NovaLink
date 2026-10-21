@@ -420,6 +420,14 @@ public class ProxyChatCore {
         if (player == null || !inScope(player, scopeServers)) {
             return;
         }
+        // Only the players whose active channel is the message channel ever saw
+        // the line (see handleIncomingMessage), so a ping to a player focused
+        // elsewhere raises a notice for a line they never received. Mirrors the
+        // backend's MentionResolver#isInChannel, including its fail-open case.
+        PlayerChannelState state = states.getState(mentionedId);
+        if (state != null && !isInChannel(state, packet.getChannelId())) {
+            return;
+        }
         // Ignored mentioner: no notification (/nc ignore)
         if (ignoreListService != null
                 && ignoreListService.isIgnored(mentionedId, packet.getMentionerName())) {
@@ -469,6 +477,29 @@ public class ProxyChatCore {
                 platform.sendMessage(player, delivery.getLine());
             }
         }
+    }
+
+    /**
+     * Whether the player's recorded active channel is {@code channelId}, i.e.
+     * whether they were served the line for that channel.
+     *
+     * <p>Mirrors {@code MentionResolver#isInChannel} on the backend, which is the
+     * authority that decided who to ping: a null/blank active channel is
+     * <b>in</b> channel (fail open). A proxy player whose state was never
+     * created — a direct-connect player the proxy knows only from packets, or a
+     * state dropped on a reconnect race — must keep receiving mentions rather
+     * than silently losing them.
+     *
+     * @param state the mentioned player's state, never null
+     * @param channelId the mention's channel; null/blank matches anything
+     * @return {@code false} only when the player is known to be focused elsewhere
+     */
+    private static boolean isInChannel(PlayerChannelState state, String channelId) {
+        if (channelId == null || channelId.isBlank()) {
+            return true;
+        }
+        String active = state.getActiveChannel();
+        return active == null || active.isBlank() || active.equals(channelId);
     }
 
     /**
@@ -1002,12 +1033,11 @@ public class ProxyChatCore {
                 if (state == null) {
                     return;
                 }
-                // Only roll back if the optimistic channel is still in place; if the
-                // player has since switched channels manually, leave their choice alone.
-                String current = state.getActiveChannel();
-                if (current != null && current.equals(attemptedChannel)) {
-                    state.setActiveChannel(previousChannel);
-                }
+                // Drops the optimistic membership too: a refused JOIN must not
+                // leave the channel marked joined for /nc list. rollbackJoin
+                // itself refuses to override a manual switch made while the
+                // JOIN was in flight.
+                state.rollbackJoin(attemptedChannel, previousChannel);
             });
         }
 

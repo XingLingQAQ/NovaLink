@@ -349,9 +349,16 @@ class LocalAuthorityClientTest {
             assertThat(chatCore.getState(alice.id).getActiveChannel()).isEqualTo(VIP);
 
             awaitMessage(alice, "NC-431");
-            assertThat(chatCore.getState(alice.id).getActiveChannel())
+            PlayerChannelState state = chatCore.getState(alice.id);
+            assertThat(state.getActiveChannel())
                     .as("the rejected join must roll back to the previous channel")
                     .isEqualTo(LOCAL);
+            assertThat(state.isJoined(VIP))
+                    .as("the refused channel must not stay joined (/nc list shows a check)")
+                    .isFalse();
+            assertThat(state.getJoinedChannels())
+                    .as("a refused join leaves the joined set unchanged")
+                    .containsExactly(LOCAL);
         }
     }
 
