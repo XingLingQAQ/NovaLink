@@ -625,6 +625,12 @@ public class ChatInterceptor implements ChatHandler {
         }
 
         @Override
+        public boolean supportsTargetNotice(ChannelAction action) {
+            return action == ChannelAction.KICK || action == ChannelAction.MUTE
+                    || action == ChannelAction.BAN || action == ChannelAction.UNBAN;
+        }
+
+        @Override
         public void notifyKickMuteTarget(ChannelResponseDispatcher.KickMuteNotice notice) {
             UUID targetId = notice.getTargetId();
             if (!platform.isPlayerOnline(targetId)) {
@@ -632,13 +638,26 @@ public class ChatInterceptor implements ChatHandler {
             }
             String channelId = notice.getChannelId();
             String operator = notice.getOperator();
+            String durationText = notice.getDurationText();
             if (notice.getAction() == ChannelAction.KICK) {
                 displayMessage(targetId,
                         messageFormatter.formatError(targetId,
                                 I18n.tr(targetId, "chat.notice.kick_subtitle", operator, channelId)));
                 return;
             }
-            String durationText = notice.getDurationText();
+            if (notice.getAction() == ChannelAction.BAN) {
+                displayMessage(targetId,
+                        messageFormatter.formatError(targetId,
+                                I18n.tr(targetId, "chat.notice.ban_subtitle",
+                                        operator, channelId, durationText)));
+                return;
+            }
+            if (notice.getAction() == ChannelAction.UNBAN) {
+                displayMessage(targetId,
+                        messageFormatter.formatError(targetId,
+                                I18n.tr(targetId, "chat.notice.unban_subtitle", operator, channelId)));
+                return;
+            }
             displayMessage(targetId,
                     messageFormatter.formatError(targetId,
                             I18n.tr(targetId, "chat.notice.mute_subtitle", channelId, durationText)));

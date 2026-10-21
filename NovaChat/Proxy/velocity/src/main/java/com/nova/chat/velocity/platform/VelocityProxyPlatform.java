@@ -255,6 +255,22 @@ public final class VelocityProxyPlatform implements ProxyPlatform {
                             targetId, "chat.notice.kick_actionbar", operator, channelId)));
             return;
         }
+        if (action == ChannelAction.BAN) {
+            showTargetNotice(target, times, targetId, "chat.notice.ban_title",
+                    com.nova.chat.client.i18n.I18n.tr(
+                            targetId, "chat.notice.ban_subtitle", operator, channelId, durationText),
+                    com.nova.chat.client.i18n.I18n.tr(
+                            targetId, "chat.notice.ban_actionbar", operator, channelId, durationText));
+            return;
+        }
+        if (action == ChannelAction.UNBAN) {
+            showTargetNotice(target, times, targetId, "chat.notice.unban_title",
+                    com.nova.chat.client.i18n.I18n.tr(
+                            targetId, "chat.notice.unban_subtitle", operator, channelId),
+                    com.nova.chat.client.i18n.I18n.tr(
+                            targetId, "chat.notice.unban_actionbar", operator, channelId));
+            return;
+        }
         Component title = renderer.render(
                 com.nova.chat.client.i18n.I18n.tr(targetId, "chat.notice.mute_title"));
         Component subtitle = renderer.render(
@@ -264,6 +280,26 @@ public final class VelocityProxyPlatform implements ProxyPlatform {
         target.sendActionBar(renderer.render(
                 com.nova.chat.client.i18n.I18n.tr(
                         targetId, "chat.notice.mute_actionbar", durationText, channelId)));
+    }
+
+    /**
+     * Renders the BAN/UNBAN shape: a title plus the action bar repeating the
+     * same event. Placeholder order copies the Bukkit/Folia arms.
+     *
+     * @param target        the Velocity player
+     * @param times         the shared title timings
+     * @param targetId      their UUID (locale lookup)
+     * @param titleKey      i18n key for the title line
+     * @param subtitle      already-resolved subtitle text
+     * @param actionBarText already-resolved action-bar text
+     */
+    private void showTargetNotice(Player target, Title.Times times, UUID targetId, String titleKey,
+                                  String subtitle, String actionBarText) {
+        target.showTitle(Title.title(
+                renderer.render(com.nova.chat.client.i18n.I18n.tr(targetId, titleKey)),
+                renderer.render(subtitle),
+                times));
+        target.sendActionBar(renderer.render(actionBarText));
     }
 
     // -------------------------------------------------------------- permissions

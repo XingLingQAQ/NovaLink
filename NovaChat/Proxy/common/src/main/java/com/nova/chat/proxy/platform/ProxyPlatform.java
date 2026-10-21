@@ -169,10 +169,11 @@ public interface ProxyPlatform {
      * {@code sendMessage(ChatMessageType.ACTION_BAR, ...)}.
      *
      * @param player the affected player
-     * @param action {@link ChannelAction#KICK} or {@link ChannelAction#MUTE}
+     * @param action {@link ChannelAction#KICK}, {@link ChannelAction#MUTE},
+     *               {@link ChannelAction#BAN} or {@link ChannelAction#UNBAN}
      * @param channelId the channel the action was applied in (may be empty)
      * @param operator the operator name (pre-resolved with fallback)
-     * @param durationText the formatted duration (mute only, may be empty)
+     * @param durationText the formatted duration (mute/ban; may be empty)
      */
     void notifyKickMute(ProxyPlayer player, ChannelAction action, String channelId,
                         String operator, String durationText);

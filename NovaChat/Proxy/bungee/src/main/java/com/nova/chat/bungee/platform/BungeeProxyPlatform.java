@@ -187,6 +187,20 @@ public final class BungeeProxyPlatform implements ProxyPlatform {
                     I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId));
             return;
         }
+        if (action == ChannelAction.BAN) {
+            showNotice(target, targetId, "chat.notice.ban_title",
+                    I18n.tr(targetId, "chat.notice.ban_subtitle",
+                            operator, channelId, durationText),
+                    I18n.tr(targetId, "chat.notice.ban_actionbar",
+                            operator, channelId, durationText));
+            return;
+        }
+        if (action == ChannelAction.UNBAN) {
+            showNotice(target, targetId, "chat.notice.unban_title",
+                    I18n.tr(targetId, "chat.notice.unban_subtitle", operator, channelId),
+                    I18n.tr(targetId, "chat.notice.unban_actionbar", operator, channelId));
+            return;
+        }
         showNotice(target, targetId, "chat.notice.mute_title",
                 I18n.tr(targetId, "chat.notice.mute_subtitle", channelId, durationText),
                 I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId));

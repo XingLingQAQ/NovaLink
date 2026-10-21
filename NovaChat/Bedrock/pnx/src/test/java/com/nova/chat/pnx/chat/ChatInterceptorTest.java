@@ -317,6 +317,78 @@ class ChatInterceptorTest {
         }
 
         @Test
+        @DisplayName("BAN renders the ban copy (operator, channel, duration), not the mute copy")
+        void banRendersBanCopy() {
+            ChannelResponseDispatcher.KickMuteNotice notice =
+                    new ChannelResponseDispatcher.KickMuteNotice(
+                            TARGET_ID, ChannelAction.BAN, "trade", "Admin", "1小时");
+
+            Map<UUID, Player> online = new HashMap<>();
+            online.put(TARGET_ID, adapterTarget);
+            when(adapterServer.getOnlinePlayers()).thenReturn(online);
+
+            adapter.notifyKickMuteTarget(notice);
+
+            ArgumentCaptor<Runnable> task = ArgumentCaptor.forClass(Runnable.class);
+            verify(adapterScheduler).scheduleTask(eq(adapterPlugin), task.capture());
+            task.getValue().run();
+
+            ArgumentCaptor<String> title = ArgumentCaptor.forClass(String.class);
+            ArgumentCaptor<String> subtitle = ArgumentCaptor.forClass(String.class);
+            verify(adapterTarget).sendTitle(title.capture(), subtitle.capture(),
+                    eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN),
+                    eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY),
+                    eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT));
+            ArgumentCaptor<String> actionbar = ArgumentCaptor.forClass(String.class);
+            verify(adapterTarget).sendActionBar(actionbar.capture());
+
+            assertThat(title.getValue()).contains("封禁").doesNotContain("禁言");
+            assertThat(subtitle.getValue()).contains("Admin", "trade", "1小时");
+            assertThat(actionbar.getValue()).contains("Admin", "trade", "1小时");
+        }
+
+        @Test
+        @DisplayName("UNBAN renders the unban copy (operator + channel)")
+        void unbanRendersUnbanCopy() {
+            ChannelResponseDispatcher.KickMuteNotice notice =
+                    new ChannelResponseDispatcher.KickMuteNotice(
+                            TARGET_ID, ChannelAction.UNBAN, "trade", "Admin", "一段时间");
+
+            Map<UUID, Player> online = new HashMap<>();
+            online.put(TARGET_ID, adapterTarget);
+            when(adapterServer.getOnlinePlayers()).thenReturn(online);
+
+            adapter.notifyKickMuteTarget(notice);
+
+            ArgumentCaptor<Runnable> task = ArgumentCaptor.forClass(Runnable.class);
+            verify(adapterScheduler).scheduleTask(eq(adapterPlugin), task.capture());
+            task.getValue().run();
+
+            ArgumentCaptor<String> title = ArgumentCaptor.forClass(String.class);
+            ArgumentCaptor<String> subtitle = ArgumentCaptor.forClass(String.class);
+            verify(adapterTarget).sendTitle(title.capture(), subtitle.capture(),
+                    eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_IN),
+                    eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_STAY),
+                    eq(com.nova.chat.common.chat.MentionNotifier.DEFAULT_FADE_OUT));
+            ArgumentCaptor<String> actionbar = ArgumentCaptor.forClass(String.class);
+            verify(adapterTarget).sendActionBar(actionbar.capture());
+
+            assertThat(title.getValue()).contains("解封");
+            assertThat(subtitle.getValue()).contains("Admin", "trade");
+            assertThat(actionbar.getValue()).contains("Admin", "trade");
+        }
+
+        @Test
+        @DisplayName("the adapter declares exactly KICK, MUTE, BAN and UNBAN")
+        void declaresAllFourArms() {
+            assertThat(adapter.supportsTargetNotice(ChannelAction.KICK)).isTrue();
+            assertThat(adapter.supportsTargetNotice(ChannelAction.MUTE)).isTrue();
+            assertThat(adapter.supportsTargetNotice(ChannelAction.BAN)).isTrue();
+            assertThat(adapter.supportsTargetNotice(ChannelAction.UNBAN)).isTrue();
+            assertThat(adapter.supportsTargetNotice(ChannelAction.JOIN)).isFalse();
+        }
+
+        @Test
         @DisplayName("target offline: scheduler hops but no title/actionbar is sent")
         void targetOfflineSkipsRender() {
             ChannelResponseDispatcher.KickMuteNotice notice =

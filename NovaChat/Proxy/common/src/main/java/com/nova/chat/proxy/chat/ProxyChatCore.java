@@ -1132,6 +1132,14 @@ public class ProxyChatCore {
         }
 
         @Override
+        public boolean supportsTargetNotice(ChannelAction action) {
+            // Both proxy backends (velocity + bungee) render the KICK/MUTE/BAN/
+            // UNBAN arms in ProxyPlatform#notifyKickMute.
+            return action == ChannelAction.KICK || action == ChannelAction.MUTE
+                    || action == ChannelAction.BAN || action == ChannelAction.UNBAN;
+        }
+
+        @Override
         public void notifyKickMuteTarget(ChannelResponseDispatcher.KickMuteNotice notice) {
             platform.execute(() -> {
                 ProxyPlayer target = platform.getPlayer(notice.getTargetId());

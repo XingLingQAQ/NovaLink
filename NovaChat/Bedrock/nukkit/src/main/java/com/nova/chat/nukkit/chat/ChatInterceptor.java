@@ -347,6 +347,12 @@ public class ChatInterceptor implements Listener {
         }
 
         @Override
+        public boolean supportsTargetNotice(ChannelAction action) {
+            return action == ChannelAction.KICK || action == ChannelAction.MUTE
+                    || action == ChannelAction.BAN || action == ChannelAction.UNBAN;
+        }
+
+        @Override
         public void notifyKickMuteTarget(ChannelResponseDispatcher.KickMuteNotice notice) {
             final String operator = notice.getOperator();
             final String durationText = notice.getDurationText();
@@ -368,6 +374,20 @@ public class ChatInterceptor implements Listener {
                             I18n.tr(targetId, "chat.notice.kick_actionbar", operator, channelId)));
                     return;
                 }
+                if (notice.getAction() == ChannelAction.BAN) {
+                    showTargetNotice(target, targetId, "chat.notice.ban_title",
+                            I18n.tr(targetId, "chat.notice.ban_subtitle",
+                                    operator, channelId, durationText),
+                            I18n.tr(targetId, "chat.notice.ban_actionbar",
+                                    operator, channelId, durationText));
+                    return;
+                }
+                if (notice.getAction() == ChannelAction.UNBAN) {
+                    showTargetNotice(target, targetId, "chat.notice.unban_title",
+                            I18n.tr(targetId, "chat.notice.unban_subtitle", operator, channelId),
+                            I18n.tr(targetId, "chat.notice.unban_actionbar", operator, channelId));
+                    return;
+                }
                 // MUTE
                 String title = messageFormatter.translateColorCodes(
                         I18n.tr(targetId, "chat.notice.mute_title"));
@@ -378,6 +398,25 @@ public class ChatInterceptor implements Listener {
                 target.sendActionBar(messageFormatter.translateColorCodes(
                         I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId)));
             });
+        }
+
+        /**
+         * Renders the BAN/UNBAN shape: a title plus the action bar repeating the
+         * same event. Placeholder order copies the Bukkit/Folia arms.
+         *
+         * @param target        the local player
+         * @param targetId      their UUID (locale lookup)
+         * @param titleKey      i18n key for the title line
+         * @param subtitle      already-resolved subtitle text (&amp;-coded)
+         * @param actionBarText already-resolved action-bar text (&amp;-coded)
+         */
+        private void showTargetNotice(Player target, UUID targetId, String titleKey,
+                                      String subtitle, String actionBarText) {
+            target.sendTitle(messageFormatter.translateColorCodes(I18n.tr(targetId, titleKey)),
+                    messageFormatter.translateColorCodes(subtitle),
+                    MentionNotifier.DEFAULT_FADE_IN, MentionNotifier.DEFAULT_STAY,
+                    MentionNotifier.DEFAULT_FADE_OUT);
+            target.sendActionBar(messageFormatter.translateColorCodes(actionBarText));
         }
     }
 
