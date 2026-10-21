@@ -84,6 +84,120 @@ class ChannelResponseDispatcherTest {
         assertThat(adapter.whoChannelId).isEqualTo("trade");
     }
 
+    // ==================== target-side moderation notices (BAN/UNBAN) ====================
+
+    /**
+     * An adapter that never grew a BAN/UNBAN arm keeps its old surface: the
+     * dispatcher must not deliver a notice it cannot render, otherwise the
+     * "// MUTE" fall-through would announce a ban as a mute.
+     */
+    @Test
+    @DisplayName("BAN notice is dropped for an adapter that only declares KICK/MUTE")
+    void banNoticeDroppedWhenAdapterDoesNotSupportIt() {
+        RecordingAdapter adapter = new RecordingAdapter();
+        ChannelResponseDispatcher dispatcher =
+                new ChannelResponseDispatcher(new ChannelResponseTracker(), adapter);
+
+        dispatcher.handle(moderationResponse(ChannelAction.BAN, "global", "Bob"));
+
+        assertThat(adapter.notice).isNull();
+    }
+
+    @Test
+    @DisplayName("UNBAN notice is dropped for an adapter that only declares KICK/MUTE")
+    void unbanNoticeDroppedWhenAdapterDoesNotSupportIt() {
+        RecordingAdapter adapter = new RecordingAdapter();
+        ChannelResponseDispatcher dispatcher =
+                new ChannelResponseDispatcher(new ChannelResponseTracker(), adapter);
+
+        dispatcher.handle(moderationResponse(ChannelAction.UNBAN, "global", "Bob"));
+
+        assertThat(adapter.notice).isNull();
+    }
+
+    @Test
+    @DisplayName("BAN notice reaches an adapter that declares it, carrying operator + duration")
+    void banNoticeReachesSupportingAdapter() {
+        WideAdapter adapter = new WideAdapter();
+        ChannelResponseDispatcher dispatcher =
+                new ChannelResponseDispatcher(new ChannelResponseTracker(), adapter);
+
+        dispatcher.handle(moderationResponse(ChannelAction.BAN, "staff", "Bob"));
+
+        assertThat(adapter.notice).isNotNull();
+        assertThat(adapter.notice.getAction()).isEqualTo(ChannelAction.BAN);
+        assertThat(adapter.notice.getChannelId()).isEqualTo("staff");
+        assertThat(adapter.notice.getOperator()).isEqualTo("Mod");
+    }
+
+    @Test
+    @DisplayName("UNBAN notice reaches an adapter that declares it")
+    void unbanNoticeReachesSupportingAdapter() {
+        WideAdapter adapter = new WideAdapter();
+        ChannelResponseDispatcher dispatcher =
+                new ChannelResponseDispatcher(new ChannelResponseTracker(), adapter);
+
+        dispatcher.handle(moderationResponse(ChannelAction.UNBAN, "staff", "Bob"));
+
+        assertThat(adapter.notice).isNotNull();
+        assertThat(adapter.notice.getAction()).isEqualTo(ChannelAction.UNBAN);
+        assertThat(adapter.notice.getChannelId()).isEqualTo("staff");
+    }
+
+    @Test
+    @DisplayName("a global ban (blank channelId) names a scope instead of rendering an empty name")
+    void globalBanSubstitutesChannelLabel() {
+        WideAdapter adapter = new WideAdapter();
+        ChannelResponseDispatcher dispatcher =
+                new ChannelResponseDispatcher(new ChannelResponseTracker(), adapter);
+
+        dispatcher.handle(moderationResponse(ChannelAction.BAN, "", "Bob"));
+
+        assertThat(adapter.notice).isNotNull();
+        assertThat(adapter.notice.getChannelId())
+                .as("a blank channelId would read as 'banned from  by Mod'")
+                .isNotBlank();
+    }
+
+    @Test
+    @DisplayName("a KICK notice is still delivered to the legacy adapter")
+    void kickNoticeStillDeliveredToLegacyAdapter() {
+        RecordingAdapter adapter = new RecordingAdapter();
+        ChannelResponseDispatcher dispatcher =
+                new ChannelResponseDispatcher(new ChannelResponseTracker(), adapter);
+
+        dispatcher.handle(moderationResponse(ChannelAction.KICK, "staff", "Bob"));
+
+        assertThat(adapter.notice).isNotNull();
+        assertThat(adapter.notice.getAction()).isEqualTo(ChannelAction.KICK);
+    }
+
+    @Test
+    @DisplayName("a failed BAN response pushes no notice")
+    void failedBanPushesNoNotice() {
+        WideAdapter adapter = new WideAdapter();
+        ChannelResponseDispatcher dispatcher =
+                new ChannelResponseDispatcher(new ChannelResponseTracker(), adapter);
+
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(
+                false, ChannelAction.BAN, "staff", "NC-403", "Permission denied");
+        dispatcher.handle(response);
+
+        assertThat(adapter.notice).isNull();
+    }
+
+    /** An uncorrelated successful moderation response carrying a targetId. */
+    private static ChannelActionResponsePacket moderationResponse(ChannelAction action,
+                                                                  String channelId,
+                                                                  String targetName) {
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(
+                true, action, channelId, "", "ok");
+        response.addExtra("targetId", UUID.randomUUID().toString());
+        response.addExtra("operatorName", "Mod");
+        response.addExtra("duration", "600");
+        return response;
+    }
+
     private static ChannelActionPacket trackedRequest(ChannelResponseTracker tracker,
                                                        UUID playerId,
                                                        String channelId) {
@@ -123,7 +237,7 @@ class ChannelResponseDispatcherTest {
         return response;
     }
 
-    private static final class RecordingAdapter implements ChannelResponseDispatcher.ChannelResponseAdapter {
+    private static class RecordingAdapter implements ChannelResponseDispatcher.ChannelResponseAdapter {
         private UUID leavePlayerId;
         private String leftChannel;
         private UUID leaveStatusBarPlayerId;
@@ -132,6 +246,7 @@ class ChannelResponseDispatcherTest {
         private String whoDisplayName;
         private String whoMembers;
         private String whoCount;
+        ChannelResponseDispatcher.KickMuteNotice notice;
 
         @Override
         public void setActiveChannel(UUID playerId, String channelId) {
@@ -166,6 +281,7 @@ class ChannelResponseDispatcherTest {
 
         @Override
         public void notifyKickMuteTarget(ChannelResponseDispatcher.KickMuteNotice notice) {
+            this.notice = notice;
         }
 
         @Override
@@ -176,6 +292,15 @@ class ChannelResponseDispatcherTest {
             this.whoDisplayName = displayName;
             this.whoMembers = membersCsv;
             this.whoCount = memberCount;
+        }
+    }
+
+    /** An adapter that has ported the BAN/UNBAN arms and declares them. */
+    private static final class WideAdapter extends RecordingAdapter {
+        @Override
+        public boolean supportsTargetNotice(ChannelAction action) {
+            return action == ChannelAction.KICK || action == ChannelAction.MUTE
+                    || action == ChannelAction.BAN || action == ChannelAction.UNBAN;
         }
     }
 }

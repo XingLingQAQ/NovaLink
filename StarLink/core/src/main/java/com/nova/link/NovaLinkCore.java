@@ -1722,16 +1722,19 @@ public final class NovaLinkCore implements AutoCloseable {
             response.setRequestId(packet.getRequestId());
             connection.sendPacket(response);
 
-            // Cross-server KICK/MUTE target notification (UX-DESIGN §5): the
+            // Cross-server moderation target notification (UX-DESIGN §5): the
             // response above goes to the OPERATOR's connection. The TARGET player
             // may be on a different connected server, so forward a copy to the
-            // target's connection so its plugin can render the kick/mute notice.
-            // The client-side ChannelResponseDispatcher renders the notice when it
-            // receives a successful KICK/MUTE response carrying a targetId extra.
+            // target's connection so its plugin can render the notice. The
+            // client-side ChannelResponseDispatcher renders it when it receives a
+            // successful response carrying a targetId extra, gated per adapter on
+            // supportsTargetNotice (so a platform without a BAN/UNBAN arm stays
+            // silent rather than rendering the wrong copy).
             if (response.isSuccess()
                     && (response.getAction() == ChannelAction.KICK
                         || response.getAction() == ChannelAction.MUTE
-                        || response.getAction() == ChannelAction.BAN)) {
+                        || response.getAction() == ChannelAction.BAN
+                        || response.getAction() == ChannelAction.UNBAN)) {
                 forwardKickMuteToTarget(response, networkHandler, playerStateManager);
             }
         });
@@ -1812,12 +1815,12 @@ public final class NovaLinkCore implements AutoCloseable {
     }
 
     /**
-     * Forwards a successful KICK/MUTE response to the TARGET player's connection
-     * so the target's platform plugin can render the kick/mute notice
-     * (UX-DESIGN §5). The operator already received the response directly; this
-     * ensures a cross-server target (on a different connected game server) is
-     * notified. No-op when the target is not connected or the response carries
-     * no targetId extra.
+     * Forwards a successful KICK/MUTE/BAN/UNBAN response to the TARGET player's
+     * connection so the target's platform plugin can render the moderation
+     * notice (UX-DESIGN §5). The operator already received the response
+     * directly; this ensures a cross-server target (on a different connected
+     * game server) is notified. No-op when the target is not connected or the
+     * response carries no targetId extra.
      *
      * <p>Delegates to {@link TargetModerationNotice} — the same push the
      * console/REST moderation paths use, so both originate one packet shape.

@@ -56,13 +56,17 @@ public final class ChannelResponseDispatcher {
     public void handle(ChannelActionResponsePacket packet) {
         ChannelResponseTracker.PendingChannelAction pending = tracker.consume(packet.getRequestId());
 
-        // UX-DESIGN §5: KICK/MUTE target-side notification. On success the
-        // affected player is notified regardless of whether we have a local
-        // pending context (backend pushes cross-server kicks/mutes carry no
-        // local pending). notifyKickMuteTarget resolves the BUG-H1 fallbacks
+        // UX-DESIGN §5: KICK/MUTE/BAN/UNBAN target-side notification. On success
+        // the affected player is notified regardless of whether we have a local
+        // pending context (backend pushes cross-server moderation carry no local
+        // pending). notifyKickMuteTarget resolves the BUG-H1 fallbacks
         // internally.
-        if (packet.isSuccess() && (packet.getAction() == ChannelAction.KICK
-                || packet.getAction() == ChannelAction.MUTE)) {
+        //
+        // The capability gate is per-adapter, not global: an adapter that has
+        // not grown a BAN/UNBAN render arm would otherwise fall through to its
+        // "// MUTE" branch and render a wrong (muted) notice for a ban. Adapters
+        // opt in as they are ported, exactly like sendModerationSuccess.
+        if (packet.isSuccess() && adapter.supportsTargetNotice(packet.getAction())) {
             KickMuteNotice notice = resolveKickMuteNotice(packet, pending);
             if (notice != null) {
                 adapter.notifyKickMuteTarget(notice);
@@ -187,10 +191,13 @@ public final class ChannelResponseDispatcher {
     }
 
     /**
-     * Resolves the target-side KICK/MUTE notice text from the pending context
+     * Resolves the target-side moderation notice text from the pending context
      * (BUG-H1: prefer values captured at send time; fall back to the response
      * extras, which the backend does not write either, so the "管理员"/"一段时间"
      * fallbacks intentionally apply for backend pushes with no local pending).
+     *
+     * <p>Covers KICK / MUTE / BAN / UNBAN. A global ban carries a blank
+     * channelId on the wire; the adapters substitute a "(global)" label.
      *
      * @return the notice, or {@code null} if the response carries no usable
      *         {@code targetId} extra
@@ -219,6 +226,12 @@ public final class ChannelResponseDispatcher {
             durationSeconds = packet.getExtra("duration");
         }
         String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+        // A global ban encodes "no channel" as a blank channelId. Substituting
+        // the label here keeps every adapter's copy identical. The target's own
+        // locale is used so the label matches the rest of the notice.
+        if (channelId.isEmpty() && packet.getAction() == ChannelAction.BAN) {
+            channelId = I18n.tr(targetId, "notice.channel.global");
+        }
         return new KickMuteNotice(
                 targetId,
                 packet.getAction(),
@@ -339,18 +352,42 @@ public final class ChannelResponseDispatcher {
         }
 
         /**
-         * Renders the target-side KICK/MUTE notice (UX-DESIGN §5). The text is
+         * Renders the target-side moderation notice (UX-DESIGN §5). The text is
          * fully resolved by the dispatcher; the platform only renders it via its
          * own title / action-bar / chat API and thread hop. The target may be
          * offline — implementations must no-op in that case.
+         *
+         * <p>{@code notice.getAction()} is KICK, MUTE, BAN or UNBAN. Only the
+         * actions this adapter declares in
+         * {@link #supportsTargetNotice(ChannelAction)} are delivered, so an
+         * implementation that has not ported a given arm never has to guess.
          */
         void notifyKickMuteTarget(KickMuteNotice notice);
+
+        /**
+         * Declares which moderation actions this platform can render a
+         * target-side notice for. The dispatcher drops a notice whose action is
+         * not declared, so a platform without a BAN arm keeps its pre-existing
+         * silence instead of falling through to the MUTE copy.
+         *
+         * <p>Default is KICK + MUTE: every adapter predating the BAN/UNBAN arms
+         * keeps exactly the behaviour it had. Override and widen once the extra
+         * arms are implemented.
+         *
+         * @param action the action a successful response carries (may be null)
+         * @return whether this adapter renders a notice for {@code action}
+         */
+        default boolean supportsTargetNotice(ChannelAction action) {
+            return action == ChannelAction.KICK || action == ChannelAction.MUTE;
+        }
     }
 
     /**
-     * Fully-resolved target-side notice for a KICK or MUTE. All text uses
-     * {@code &}-style color codes suitable for the legacy-format platforms;
-     * Adventure platforms strip/translate them as needed.
+     * Fully-resolved target-side notice for a KICK, MUTE, BAN or UNBAN.
+     *
+     * <p>Fields the action does not use carry a harmless value: a global ban
+     * has a blank {@code channelId} and an UNBAN has an unknown duration. The
+     * Adapter renders only the fields its arm needs.
      */
     public static final class KickMuteNotice {
         private final UUID targetId;

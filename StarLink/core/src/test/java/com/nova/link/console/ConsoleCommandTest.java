@@ -392,6 +392,62 @@ class ConsoleCommandTest {
         assertThat(sent).isEmpty();
     }
 
+    @Test
+    @DisplayName("ban notifies the target: BAN response carrying targetId reaches its server")
+    void banNotifiesTarget() {
+        List<Packet> sent = captureTargetServerPackets();
+
+        String out = handler.dispatch("ban Steve survival-chat 1h griefing");
+        assertThat(out).contains("Banned");
+
+        ChannelActionResponsePacket notice = onlyNotice(sent);
+        assertThat(notice.getAction()).isEqualTo(ChannelAction.BAN);
+        assertThat(notice.getChannelId()).isEqualTo("survival-chat");
+        assertThat(notice.getExtra("targetId")).isEqualTo(targetId.toString());
+        assertThat(notice.getExtra("operatorName")).isEqualTo(ConsoleSentinel.CONSOLE_NAME);
+        // 1h -> seconds, same convention as the mute arm.
+        assertThat(notice.getExtra("duration")).isEqualTo("3600");
+    }
+
+    @Test
+    @DisplayName("unban notifies the target: UNBAN response carrying targetId reaches its server")
+    void unbanNotifiesTarget() {
+        handler.dispatch("ban Steve survival-chat 1h griefing");
+        List<Packet> sent = captureTargetServerPackets();
+
+        String out = handler.dispatch("unban Steve survival-chat");
+        assertThat(out).contains("Unbanned");
+
+        ChannelActionResponsePacket notice = onlyNotice(sent);
+        assertThat(notice.getAction()).isEqualTo(ChannelAction.UNBAN);
+        assertThat(notice.getExtra("targetId")).isEqualTo(targetId.toString());
+    }
+
+    @Test
+    @DisplayName("a global ban notifies the target with a blank channel (scope resolved client-side)")
+    void globalBanNotifiesTarget() {
+        List<Packet> sent = captureTargetServerPackets();
+
+        String out = handler.dispatch("ban Steve * 1h griefing");
+        assertThat(out).contains("Banned");
+
+        ChannelActionResponsePacket notice = onlyNotice(sent);
+        assertThat(notice.getAction()).isEqualTo(ChannelAction.BAN);
+        assertThat(notice.getChannelId()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("ban of a player with no server connection still succeeds and sends nothing")
+    void banOfflineTargetDoesNotFail() {
+        PlayerState offline = playerStateManager.getOrCreateState(UUID.randomUUID(), "Alex");
+        offline.setClientId(null);
+        List<Packet> sent = captureTargetServerPackets();
+
+        String out = handler.dispatch("ban Alex staff 1h x");
+        assertThat(out).contains("Banned");
+        assertThat(sent).isEmpty();
+    }
+
     // ====================== mutes ======================
 
     @Test

@@ -187,6 +187,12 @@ final class BukkitChannelResponseAdapter implements ChannelResponseAdapter {
     }
 
     @Override
+    public boolean supportsTargetNotice(ChannelAction action) {
+        return action == ChannelAction.KICK || action == ChannelAction.MUTE
+                || action == ChannelAction.BAN || action == ChannelAction.UNBAN;
+    }
+
+    @Override
     public void notifyKickMuteTarget(KickMuteNotice notice) {
         final String operator = notice.getOperator();
         final String durationText = notice.getDurationText();
@@ -213,6 +219,22 @@ final class BukkitChannelResponseAdapter implements ChannelResponseAdapter {
                 return;
             }
 
+            if (notice.getAction() == ChannelAction.BAN) {
+                showNotice(target, targetId,
+                        "chat.notice.ban_title",
+                        I18n.tr(targetId, "chat.notice.ban_subtitle", operator, channelId, durationText),
+                        I18n.tr(targetId, "chat.notice.ban_actionbar", operator, channelId, durationText));
+                return;
+            }
+
+            if (notice.getAction() == ChannelAction.UNBAN) {
+                showNotice(target, targetId,
+                        "chat.notice.unban_title",
+                        I18n.tr(targetId, "chat.notice.unban_subtitle", operator, channelId),
+                        I18n.tr(targetId, "chat.notice.unban_actionbar", operator, channelId));
+                return;
+            }
+
             // MUTE
             String title = MessageHelper.colorize(
                     I18n.tr(targetId, "chat.notice.mute_title"));
@@ -226,5 +248,26 @@ final class BukkitChannelResponseAdapter implements ChannelResponseAdapter {
                     new TextComponent(MessageHelper.colorize(
                             I18n.tr(targetId, "chat.notice.mute_actionbar", durationText, channelId))));
         });
+    }
+
+    /**
+     * Renders one notice shape shared by the BAN/UNBAN arms: a title plus the
+     * action bar repeating the same event.
+     *
+     * @param target        the local player
+     * @param targetId      their UUID (locale lookup)
+     * @param titleKey      i18n key for the title line
+     * @param subtitle      already-resolved subtitle text
+     * @param actionBarText already-resolved action-bar text
+     */
+    private static void showNotice(org.bukkit.entity.Player target, UUID targetId, String titleKey,
+                                   String subtitle, String actionBarText) {
+        target.sendTitle(MessageHelper.colorize(I18n.tr(targetId, titleKey)),
+                MessageHelper.colorize(subtitle),
+                MentionNotifier.DEFAULT_FADE_IN,
+                MentionNotifier.DEFAULT_STAY,
+                MentionNotifier.DEFAULT_FADE_OUT);
+        target.spigot().sendMessage(ChatMessageType.ACTION_BAR,
+                new TextComponent(MessageHelper.colorize(actionBarText)));
     }
 }

@@ -426,6 +426,12 @@ public class AsyncChatInterceptor implements Listener {
         }
 
         @Override
+        public boolean supportsTargetNotice(ChannelAction action) {
+            return action == ChannelAction.KICK || action == ChannelAction.MUTE
+                    || action == ChannelAction.BAN || action == ChannelAction.UNBAN;
+        }
+
+        @Override
         public void notifyKickMuteTarget(ChannelResponseDispatcher.KickMuteNotice notice) {
             final String operator = notice.getOperator();
             final String durationText = notice.getDurationText();
@@ -450,6 +456,22 @@ public class AsyncChatInterceptor implements Listener {
                                         I18n.tr(notice.getTargetId(), "chat.notice.kick_actionbar", operator, channelId))));
                         return;
                     }
+                    if (notice.getAction() == ChannelAction.BAN) {
+                        showTargetNotice(target, notice.getTargetId(),
+                                "chat.notice.ban_title",
+                                I18n.tr(notice.getTargetId(), "chat.notice.ban_subtitle",
+                                        operator, channelId, durationText),
+                                I18n.tr(notice.getTargetId(), "chat.notice.ban_actionbar",
+                                        operator, channelId, durationText));
+                        return;
+                    }
+                    if (notice.getAction() == ChannelAction.UNBAN) {
+                        showTargetNotice(target, notice.getTargetId(),
+                                "chat.notice.unban_title",
+                                I18n.tr(notice.getTargetId(), "chat.notice.unban_subtitle", operator, channelId),
+                                I18n.tr(notice.getTargetId(), "chat.notice.unban_actionbar", operator, channelId));
+                        return;
+                    }
                     // MUTE
                     String title = MessageHelper.colorize(I18n.tr(notice.getTargetId(), "chat.notice.mute_title"));
                     String subtitle = MessageHelper.colorize(
@@ -464,6 +486,28 @@ public class AsyncChatInterceptor implements Listener {
                 }
             });
         }
+    }
+
+    /**
+     * Renders one BAN/UNBAN notice shape: a title plus the action bar repeating
+     * the same event. Must be called on the target's region thread (the caller
+     * already hopped there).
+     *
+     * @param target        the local player
+     * @param targetId      their UUID (locale lookup)
+     * @param titleKey      i18n key for the title line
+     * @param subtitle      already-resolved subtitle text
+     * @param actionBarText already-resolved action-bar text
+     */
+    private static void showTargetNotice(Player target, UUID targetId, String titleKey,
+                                         String subtitle, String actionBarText) {
+        target.sendTitle(MessageHelper.colorize(I18n.tr(targetId, titleKey)),
+                MessageHelper.colorize(subtitle),
+                MentionNotifier.DEFAULT_FADE_IN,
+                MentionNotifier.DEFAULT_STAY,
+                MentionNotifier.DEFAULT_FADE_OUT);
+        target.spigot().sendMessage(ChatMessageType.ACTION_BAR,
+                new TextComponent(MessageHelper.colorize(actionBarText)));
     }
 
     /**

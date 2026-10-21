@@ -1,5 +1,6 @@
 package com.nova.link.api;
 import com.nova.chat.common.NovaConstants;
+import com.nova.chat.common.protocol.ChannelAction;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -49,6 +50,7 @@ import com.nova.link.moderation.ModerationException;
 import com.nova.link.moderation.ModerationManager;
 import com.nova.link.moderation.ReporterSource;
 import com.nova.link.moderation.ResolutionAction;
+import com.nova.link.moderation.TargetModerationNotice;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.mute.MuteResult;
 import com.nova.link.network.ClientConnection;
@@ -761,6 +763,22 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8));
         panelOperatorNames.put(uuid, username);
         return uuid;
+    }
+
+    /**
+     * Converts a {@code durationMs} body field to the seconds string the
+     * target-side notice carries (the client's DurationFormatter expects
+     * seconds). A non-positive duration means "permanent": there is no client
+     * phrase for it, so the extra is omitted — mirroring
+     * {@code ConsoleCommandHandler.muteDurationSeconds}.
+     *
+     * @param durationMs duration in milliseconds, 0/negative for permanent
+     * @return the seconds value, or null to omit the extra
+     */
+    private static String muteDurationSeconds(long durationMs) {
+        return durationMs > 0
+                ? String.valueOf(java.util.concurrent.TimeUnit.MILLISECONDS.toSeconds(durationMs))
+                : null;
     }
 
     /**
@@ -2211,6 +2229,15 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
 
+        // Tell the muted player's client (UX-DESIGN §5). Panel moderation
+        // produces no client response of its own — the operator is the panel,
+        // not a game connection — so the notice is pushed directly to the
+        // target's server, the same helper the console path uses.
+        TargetModerationNotice.pushToTarget(networkHandler, playerStateManager,
+                ChannelAction.MUTE, channelId != null ? channelId : "",
+                targetUuid.toString(), operatorUsername,
+                muteDurationSeconds(durationMs));
+
         // PANEL-006: audit the successful mute. No before/after payload hash
         // (the resource is a player, not a JSON document we serialize here);
         // the reason is recorded in the reason field.
@@ -2429,6 +2456,14 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
 
+        // Tell the banned player's client (UX-DESIGN §5), same helper as the
+        // console/REST mute paths. A null channelId is a global ban; the notice
+        // resolver substitutes its own "(all channels)" label for the blank id.
+        TargetModerationNotice.pushToTarget(networkHandler, playerStateManager,
+                ChannelAction.BAN, channelId != null ? channelId : "",
+                targetUuid.toString(), operatorUsername,
+                muteDurationSeconds(durationMs));
+
         // PANEL-006: audit the successful ban.
         recordAudit(ctx, claims, "player.ban", "player:" + targetUuid,
                 null, null, reason, "success");
@@ -2491,6 +2526,11 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             response.addProperty("channelId", channelId);
         }
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+
+        // Tell the unbanned player's client (UX-DESIGN §5).
+        TargetModerationNotice.pushToTarget(networkHandler, playerStateManager,
+                ChannelAction.UNBAN, channelId != null ? channelId : "",
+                targetUuid.toString(), operatorUsername, null);
     }
 
     /**
@@ -2611,6 +2651,11 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         } catch (Exception e) {
             logger.debug("Failed to update player state after kick for {}: {}", targetUuid, e.getMessage());
         }
+
+        // Tell the kicked player's client (UX-DESIGN §5), after the state change
+        // so the notice always reflects a kick that actually happened.
+        TargetModerationNotice.pushToTarget(networkHandler, playerStateManager,
+                ChannelAction.KICK, channelId, targetUuid.toString(), operatorUsername, null);
 
         if (notificationStore != null) {
             try {

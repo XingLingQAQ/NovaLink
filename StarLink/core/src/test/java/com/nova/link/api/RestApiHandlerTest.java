@@ -409,6 +409,123 @@ class RestApiHandlerTest {
         assertThat(channelManager.getChannel("staff").getSlowModeSeconds()).isEqualTo(7);
     }
 
+    // ====================== panel moderation -> target notice ======================
+
+    /**
+     * Makes the seeded target reachable as an online player: the notice push
+     * resolves player -> clientId -> connection and requires all three.
+     */
+    private java.util.List<com.nova.chat.common.protocol.Packet> captureTargetNoticePackets() {
+        when(capturedClient.isAuthenticated()).thenReturn(true);
+        when(capturedClient.isActive()).thenReturn(true);
+        final java.util.List<com.nova.chat.common.protocol.Packet> sent = new java.util.ArrayList<>();
+        when(capturedClient.sendPacket(any())).thenAnswer(inv -> {
+            sent.add(inv.getArgument(0));
+            return CompletableFuture.completedFuture(null);
+        });
+        return sent;
+    }
+
+    private static com.nova.chat.common.protocol.packets.ChannelActionResponsePacket onlyNotice(
+            java.util.List<com.nova.chat.common.protocol.Packet> sent) {
+        assertThat(sent).hasSize(1);
+        assertThat(sent.get(0))
+                .isInstanceOf(com.nova.chat.common.protocol.packets.ChannelActionResponsePacket.class);
+        com.nova.chat.common.protocol.packets.ChannelActionResponsePacket packet =
+                (com.nova.chat.common.protocol.packets.ChannelActionResponsePacket) sent.get(0);
+        assertThat(packet.isSuccess()).isTrue();
+        return packet;
+    }
+
+    @Test
+    @DisplayName("POST mute pushes a MUTE notice to the target's server")
+    void mutePushesNoticeToTarget() {
+        java.util.List<com.nova.chat.common.protocol.Packet> sent = captureTargetNoticePackets();
+
+        Response resp = dispatch(HttpMethod.POST, "/api/players/" + targetId + "/mute",
+                "{\"channelId\":\"survival-chat\",\"durationMs\":600000,\"reason\":\"spam\"}");
+
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        com.nova.chat.common.protocol.packets.ChannelActionResponsePacket notice = onlyNotice(sent);
+        assertThat(notice.getAction()).isEqualTo(com.nova.chat.common.protocol.ChannelAction.MUTE);
+        assertThat(notice.getChannelId()).isEqualTo("survival-chat");
+        assertThat(notice.getExtra("targetId")).isEqualTo(targetId.toString());
+        // The panel account is the attributed operator, not the console sentinel.
+        assertThat(notice.getExtra("operatorName")).isEqualTo("admin");
+        // 600000ms -> the client's DurationFormatter expects seconds.
+        assertThat(notice.getExtra("duration")).isEqualTo("600");
+    }
+
+    @Test
+    @DisplayName("POST kick pushes a KICK notice to the target's server")
+    void kickPushesNoticeToTarget() {
+        java.util.List<com.nova.chat.common.protocol.Packet> sent = captureTargetNoticePackets();
+
+        Response resp = dispatch(HttpMethod.POST, "/api/players/" + targetId + "/kick",
+                "{\"channelId\":\"survival-chat\"}");
+
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        com.nova.chat.common.protocol.packets.ChannelActionResponsePacket notice = onlyNotice(sent);
+        assertThat(notice.getAction()).isEqualTo(com.nova.chat.common.protocol.ChannelAction.KICK);
+        assertThat(notice.getExtra("targetId")).isEqualTo(targetId.toString());
+        assertThat(notice.getExtra("operatorName")).isEqualTo("admin");
+    }
+
+    @Test
+    @DisplayName("POST ban pushes a BAN notice to the target's server")
+    void banPushesNoticeToTarget() {
+        java.util.List<com.nova.chat.common.protocol.Packet> sent = captureTargetNoticePackets();
+
+        Response resp = dispatch(HttpMethod.POST, "/api/players/" + targetId + "/ban",
+                "{\"channelId\":\"survival-chat\",\"durationMs\":3600000,\"reason\":\"grief\"}");
+
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        com.nova.chat.common.protocol.packets.ChannelActionResponsePacket notice = onlyNotice(sent);
+        assertThat(notice.getAction()).isEqualTo(com.nova.chat.common.protocol.ChannelAction.BAN);
+        assertThat(notice.getExtra("targetId")).isEqualTo(targetId.toString());
+        assertThat(notice.getExtra("duration")).isEqualTo("3600");
+    }
+
+    @Test
+    @DisplayName("POST unban pushes an UNBAN notice to the target's server")
+    void unbanPushesNoticeToTarget() {
+        banManager.banPlayer(new UUID(0, 0), targetId, "survival-chat", 60000, "grief", null);
+        java.util.List<com.nova.chat.common.protocol.Packet> sent = captureTargetNoticePackets();
+
+        Response resp = dispatch(HttpMethod.POST, "/api/players/" + targetId + "/unban",
+                "{\"channelId\":\"survival-chat\"}");
+
+        assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
+        com.nova.chat.common.protocol.packets.ChannelActionResponsePacket notice = onlyNotice(sent);
+        assertThat(notice.getAction()).isEqualTo(com.nova.chat.common.protocol.ChannelAction.UNBAN);
+        assertThat(notice.getExtra("targetId")).isEqualTo(targetId.toString());
+    }
+
+    /**
+     * The best-effort contract: an offline target (cached state, no owning
+     * server) must not turn a successful moderation into a failed request.
+     */
+    @Test
+    @DisplayName("moderating a player with no owning server still succeeds and sends nothing")
+    void moderationOfOfflineTargetDoesNotFail() {
+        PlayerState offline = playerStateManager.getOrCreateState(UUID.randomUUID(), "Alex");
+        offline.setClientId(null);
+        java.util.List<com.nova.chat.common.protocol.Packet> sent = captureTargetNoticePackets();
+
+        Response mute = dispatch(HttpMethod.POST, "/api/players/" + offline.getPlayerId() + "/mute",
+                "{\"channelId\":\"staff\",\"durationMs\":60000}");
+        assertThat(mute.status).isEqualTo(HttpResponseStatus.OK);
+        assertThat(mute.asJson().get("success").getAsBoolean()).isTrue();
+        assertThat(muteManager.isMuted(offline.getPlayerId(), "staff")).isTrue();
+
+        Response ban = dispatch(HttpMethod.POST, "/api/players/" + offline.getPlayerId() + "/ban",
+                "{\"channelId\":\"staff\",\"durationMs\":60000}");
+        assertThat(ban.status).isEqualTo(HttpResponseStatus.OK);
+        assertThat(ban.asJson().get("success").getAsBoolean()).isTrue();
+
+        assertThat(sent).isEmpty();
+    }
+
     // ====================== mute / unmute / getMutes ======================
 
     @Test

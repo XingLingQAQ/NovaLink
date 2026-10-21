@@ -444,6 +444,12 @@ public class ConsoleCommandHandler {
         BanResult result = ctx.getBanManager().banPlayer(
                 ConsoleSentinel.CONSOLE_SENTINEL, target, channelId, durationMs, reason, null);
         if (result.isSuccess()) {
+            // Tell the banned player's client (UX-DESIGN §5). Same mechanism as
+            // the mute/kick arms: a successful response carrying targetId,
+            // pushed to the server that owns the target.
+            TargetModerationNotice.pushToTarget(ctx.getNetworkHandler(), ctx.getPlayerStateManager(),
+                    ChannelAction.BAN, channelId != null ? channelId : "",
+                    target.toString(), ConsoleSentinel.CONSOLE_NAME, muteDurationSeconds(durationMs));
             return nl(I18n.tr("console.ban.success", args[0], target,
                     channelId != null ? channelId : "(global)",
                     DurationUtils.describeDuration(durationMs), reason));
@@ -472,6 +478,10 @@ public class ConsoleCommandHandler {
         BanResult result = ctx.getBanManager().unbanPlayer(
                 ConsoleSentinel.CONSOLE_SENTINEL, target, channelId, null);
         if (result.isSuccess()) {
+            // Tell the unbanned player's client (UX-DESIGN §5).
+            TargetModerationNotice.pushToTarget(ctx.getNetworkHandler(), ctx.getPlayerStateManager(),
+                    ChannelAction.UNBAN, channelId != null ? channelId : "",
+                    target.toString(), ConsoleSentinel.CONSOLE_NAME, null);
             return nl(I18n.tr("console.unban.success", args[0], target,
                     channelId != null ? channelId : "(global)"));
         }
