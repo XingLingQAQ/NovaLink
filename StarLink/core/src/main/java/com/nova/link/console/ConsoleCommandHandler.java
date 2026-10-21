@@ -1,5 +1,6 @@
 package com.nova.link.console;
 
+import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.link.announcement.AnnouncementManager;
 import com.nova.link.announcement.AnnouncementResult;
@@ -19,6 +20,7 @@ import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
 import com.nova.link.i18n.I18n;
 import com.nova.link.moderation.DurationUtils;
+import com.nova.link.moderation.TargetModerationNotice;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.mute.MuteResult;
 import com.nova.link.network.ClientConnection;
@@ -332,6 +334,14 @@ public class ConsoleCommandHandler {
         MuteResult result = ctx.getMuteManager().mutePlayer(
                 ConsoleSentinel.CONSOLE_SENTINEL, target, channel, durationMs, reason, null);
         if (result.isSuccess()) {
+            // Tell the muted player's client (UX-DESIGN §5). Console moderation
+            // produces no ChannelActionResponsePacket of its own — there is no
+            // operator connection to answer — so the notice is pushed directly
+            // to the target's server, which is what the in-game /nc mute path
+            // reaches via NovaLinkCore's response forwarding.
+            TargetModerationNotice.pushToTarget(ctx.getNetworkHandler(), ctx.getPlayerStateManager(),
+                    ChannelAction.MUTE, channel, target.toString(),
+                    ConsoleSentinel.CONSOLE_NAME, muteDurationSeconds(durationMs));
             return nl(I18n.tr("console.mute.success", args[0], target, channel,
                     DurationUtils.describeDuration(durationMs), reason));
         }
@@ -542,6 +552,12 @@ public class ConsoleCommandHandler {
         } catch (Exception e) {
             // non-fatal, matches handler
         }
+        // Tell the kicked player's client, same mechanism as the in-game path
+        // (a KICK response carrying targetId). Pushed after the state change so
+        // the notice always reflects a kick that actually happened.
+        TargetModerationNotice.pushToTarget(ctx.getNetworkHandler(), ctx.getPlayerStateManager(),
+                ChannelAction.KICK, channel, target.toString(),
+                ConsoleSentinel.CONSOLE_NAME, null);
         // Surface the kick to the web panel notification feed.
         if (ctx.getNotificationStore() != null) {
             try {
@@ -868,6 +884,17 @@ public class ConsoleCommandHandler {
             case 'd': return TimeUnit.DAYS.toMillis(value);
             default: throw new IllegalArgumentException("unknown unit '" + unit + "' (use s/m/h/d)");
         }
+    }
+
+    /**
+     * Renders a mute duration as the seconds string the target-side notice
+     * consumes ({@code extra.duration}). A permanent mute (0 ms) returns
+     * {@code null}: the client has no "permanent" notice phrase, so the notice
+     * falls back to its generic duration text — the same phrase an omitted
+     * duration produces.
+     */
+    private static String muteDurationSeconds(long durationMs) {
+        return durationMs > 0 ? String.valueOf(TimeUnit.MILLISECONDS.toSeconds(durationMs)) : null;
     }
 
     private static String joinFrom(String[] args, int from) {

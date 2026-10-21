@@ -43,6 +43,7 @@ import com.nova.link.network.RateLimiter;
 import com.nova.link.network.InsecureModeGate;
 import com.nova.link.audit.AuditStore;
 import com.nova.link.moderation.ModerationManager;
+import com.nova.link.moderation.TargetModerationNotice;
 import com.nova.link.notification.NotificationStore;
 import com.nova.link.spy.SpyManager;
 import com.nova.link.websocket.JwtSecretResolver;
@@ -1815,53 +1816,19 @@ public final class NovaLinkCore implements AutoCloseable {
      * so the target's platform plugin can render the kick/mute notice
      * (UX-DESIGN §5). The operator already received the response directly; this
      * ensures a cross-server target (on a different connected game server) is
-     * notified. No-op when the target is on the same server as the operator, not
-     * connected, or when no targetId is available.
+     * notified. No-op when the target is not connected or the response carries
+     * no targetId extra.
+     *
+     * <p>Delegates to {@link TargetModerationNotice} — the same push the
+     * console/REST moderation paths use, so both originate one packet shape.
      */
     private static void forwardKickMuteToTarget(ChannelActionResponsePacket response,
                                                 ServerNetworkHandler networkHandler,
                                                 PlayerStateManager playerStateManager) {
-        String targetIdRaw = response.getExtra("targetId");
-        if (targetIdRaw == null || targetIdRaw.isEmpty()) {
-            return;
-        }
-        UUID targetId;
-        try {
-            targetId = UUID.fromString(targetIdRaw);
-        } catch (IllegalArgumentException e) {
-            return;
-        }
-        PlayerState targetState = playerStateManager.getPlayerState(targetId);
-        if (targetState == null) {
-            return;
-        }
-        String targetClientId = targetState.getClientId();
-        if (targetClientId == null || targetClientId.isEmpty()) {
-            return;
-        }
-        ClientConnection targetConnection = networkHandler.findByClientId(targetClientId);
-        if (targetConnection == null || !targetConnection.isActive() || !targetConnection.isAuthenticated()) {
-            return;
-        }
-        // Forward a copy so the target plugin's ChannelResponseDispatcher renders
-        // the notice. The dispatcher only needs the targetId extra + action +
-        // channelId to render the notice (it no-ops when the pending context is
-        // absent, which is the cross-server-push case).
-        ChannelActionResponsePacket forward = new ChannelActionResponsePacket(
-                response.isSuccess(), response.getAction(), response.getChannelId(),
-                response.getErrorCode(), response.getMessage());
-        forward.addExtra("targetId", targetIdRaw);
         String operatorName = response.getExtra("operatorName");
-        if (operatorName != null && !operatorName.isEmpty()) {
-            forward.addExtra("operatorName", operatorName);
-        }
-        String duration = response.getExtra("duration");
-        if (duration != null && !duration.isEmpty()) {
-            forward.addExtra("duration", duration);
-        }
-        targetConnection.sendPacket(forward);
-        logger.debug("Forwarded {} response to target {} on client {}",
-                response.getAction(), targetId, targetClientId);
+        TargetModerationNotice.pushToTarget(networkHandler, playerStateManager,
+                response.getAction(), response.getChannelId(),
+                response.getExtra("targetId"), operatorName, response.getExtra("duration"));
     }
 
     private static ChannelScope parseScope(String raw, ChannelScope fallback) {

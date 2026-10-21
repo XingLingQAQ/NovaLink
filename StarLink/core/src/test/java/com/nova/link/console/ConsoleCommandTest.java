@@ -1,6 +1,8 @@
 package com.nova.link.console;
 
+import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
+import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.link.announcement.AnnouncementManager;
@@ -257,6 +259,137 @@ class ConsoleCommandTest {
     void muteBadDuration() {
         String out = handler.dispatch("mute Steve staff 10x x");
         assertThat(out).contains("Invalid duration");
+    }
+
+    // ============ console moderation -> target in-game notice ============
+
+    /**
+     * Captures every packet written to the seeded target's server connection.
+     * The console holds no player connection, so the notice has to be addressed
+     * to the SERVER that owns the target — the same connection the in-game
+     * cross-server forwarding uses.
+     */
+    private List<Packet> captureTargetServerPackets() {
+        final List<Packet> sent = new ArrayList<>();
+        when(capturedClient.sendPacket(any(Packet.class))).thenAnswer(inv -> {
+            sent.add(inv.getArgument(0));
+            return CompletableFuture.completedFuture(null);
+        });
+        return sent;
+    }
+
+    private static ChannelActionResponsePacket onlyNotice(List<Packet> sent) {
+        assertThat(sent).hasSize(1);
+        assertThat(sent.get(0)).isInstanceOf(ChannelActionResponsePacket.class);
+        ChannelActionResponsePacket packet = (ChannelActionResponsePacket) sent.get(0);
+        assertThat(packet.isSuccess()).isTrue();
+        return packet;
+    }
+
+    @Test
+    @DisplayName("mute notifies the target: success response carrying targetId reaches its server")
+    void muteNotifiesTarget() {
+        List<Packet> sent = captureTargetServerPackets();
+
+        String out = handler.dispatch("mute Steve survival-chat 10m spamming");
+        assertThat(out).contains("Muted");
+        // The state change still happens.
+        assertThat(muteManager.isMuted(targetId, "survival-chat")).isTrue();
+
+        ChannelActionResponsePacket notice = onlyNotice(sent);
+        assertThat(notice.getAction()).isEqualTo(ChannelAction.MUTE);
+        assertThat(notice.getChannelId()).isEqualTo("survival-chat");
+        assertThat(notice.getExtra("targetId")).isEqualTo(targetId.toString());
+        assertThat(notice.getExtra("operatorName")).isEqualTo(ConsoleSentinel.CONSOLE_NAME);
+        // 10m -> the client's DurationFormatter expects seconds.
+        assertThat(notice.getExtra("duration")).isEqualTo("600");
+    }
+
+    @Test
+    @DisplayName("mute notice is addressed to the target's server, not every connected server")
+    void muteNoticeAddressedToTargetServerOnly() {
+        ClientConnection lobby = mock(ClientConnection.class);
+        when(lobby.isAuthenticated()).thenReturn(true);
+        when(lobby.isActive()).thenReturn(true);
+        when(lobby.getClientId()).thenReturn("Lobby");
+        when(lobby.sendPacket(any(Packet.class))).thenReturn(CompletableFuture.completedFuture(null));
+        when(networkHandler.findByClientId("Lobby")).thenReturn(lobby);
+        List<Packet> sent = captureTargetServerPackets();
+
+        handler.dispatch("mute Steve survival-chat 10m x");
+
+        assertThat(onlyNotice(sent).getExtra("targetId")).isEqualTo(targetId.toString());
+        org.mockito.Mockito.verify(lobby, org.mockito.Mockito.never()).sendPacket(any(Packet.class));
+        // Not fanned out network-wide either: only the target's own server
+        // receives the notice.
+        org.mockito.Mockito.verify(networkHandler, org.mockito.Mockito.never())
+                .broadcastAuthenticated(any(Packet.class));
+    }
+
+    @Test
+    @DisplayName("mute notice omits duration for a permanent mute (no client phrase for it)")
+    void muteNoticeOmitsPermDuration() {
+        List<Packet> sent = captureTargetServerPackets();
+
+        handler.dispatch("mute Steve survival-chat perm forever");
+
+        ChannelActionResponsePacket notice = onlyNotice(sent);
+        assertThat(notice.getExtra("targetId")).isEqualTo(targetId.toString());
+        assertThat(notice.getExtra("duration")).isNull();
+    }
+
+    @Test
+    @DisplayName("kick notifies the target: KICK response carrying targetId reaches its server")
+    void kickNotifiesTarget() {
+        List<Packet> sent = captureTargetServerPackets();
+
+        String out = handler.dispatch("kick Steve survival-chat");
+        assertThat(out).contains("Kicked");
+        // The state change still happens.
+        assertThat(channelManager.getChannelMembers("survival-chat")).doesNotContain(targetId);
+        assertThat(playerStateManager.getPlayerState(targetId).getActiveChannel()).isNull();
+
+        ChannelActionResponsePacket notice = onlyNotice(sent);
+        assertThat(notice.getAction()).isEqualTo(ChannelAction.KICK);
+        assertThat(notice.getChannelId()).isEqualTo("survival-chat");
+        assertThat(notice.getExtra("targetId")).isEqualTo(targetId.toString());
+        assertThat(notice.getExtra("operatorName")).isEqualTo(ConsoleSentinel.CONSOLE_NAME);
+    }
+
+    @Test
+    @DisplayName("mute of a player with no server connection still succeeds and sends nothing")
+    void muteOfflineTargetDoesNotFail() {
+        // Cached state (so the name resolves) but no owning game server.
+        PlayerState offline = playerStateManager.getOrCreateState(UUID.randomUUID(), "Alex");
+        offline.setClientId(null);
+        List<Packet> sent = captureTargetServerPackets();
+
+        String out = handler.dispatch("mute Alex staff 10m x");
+        assertThat(out).contains("Muted");
+        assertThat(muteManager.isMuted(offline.getPlayerId(), "staff")).isTrue();
+        assertThat(sent).isEmpty();
+    }
+
+    @Test
+    @DisplayName("mute of an unknown player is rejected before any notice is attempted")
+    void muteUnresolvedTargetSendsNothing() {
+        List<Packet> sent = captureTargetServerPackets();
+
+        String out = handler.dispatch("mute Nobody staff 10m x");
+        assertThat(out).contains("Could not resolve target player");
+        assertThat(sent).isEmpty();
+    }
+
+    @Test
+    @DisplayName("mute whose target server has disconnected still succeeds and sends nothing")
+    void muteWithDroppedServerConnectionDoesNotFail() {
+        when(capturedClient.isActive()).thenReturn(false);
+        List<Packet> sent = captureTargetServerPackets();
+
+        String out = handler.dispatch("mute Steve survival-chat 10m x");
+        assertThat(out).contains("Muted");
+        assertThat(muteManager.isMuted(targetId, "survival-chat")).isTrue();
+        assertThat(sent).isEmpty();
     }
 
     // ====================== mutes ======================
