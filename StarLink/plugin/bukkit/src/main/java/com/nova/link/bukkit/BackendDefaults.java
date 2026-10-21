@@ -18,10 +18,10 @@ import java.util.regex.Pattern;
  * firewall, but a plugin that silently opens two ports on every interface of a
  * public Minecraft server is a security bug. This class copies the core's own
  * template (never a duplicated copy kept in this module, so it cannot drift)
- * and rewrites exactly one value: {@code server.bind-address}.
+ * and rewrites {@code server.bind-address}.
  *
- * <p>It also sets {@code server.insecure-allow-plaintext: true}, for the same
- * two reasons. First, the core's AUTH-002 gate fails closed, so a fresh install
+ * <p>It also sets {@code server.insecure-allow-plaintext: true}, for two
+ * reasons. First, the core's AUTH-002 gate fails closed, so a fresh install
  * would otherwise refuse to start at all -- measured in a real Purpur server:
  * "NovaLink backend failed to start: ... would start in plaintext". Second, the
  * gate is about NETWORK exposure; on a loopback-only listener there is no

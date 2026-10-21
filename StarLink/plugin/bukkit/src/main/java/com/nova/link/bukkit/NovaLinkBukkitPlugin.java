@@ -90,6 +90,14 @@ public final class NovaLinkBukkitPlugin extends JavaPlugin {
         }
 
         backendStarted.set(true);
+        // disablePlugin(this) run by another plugin while we were starting
+        // invokes onDisable re-entrantly on THIS thread; onDisable then takes a
+        // different lock and swallows the core we are still holding. If we
+        // reach here with disabled already set, the backend is no longer wanted.
+        if (disabled.get()) {
+            stopBackend();
+            return;
+        }
         try {
             consoleHandler = new ConsoleCommandHandler(core.getContext());
         } catch (RuntimeException e) {
@@ -109,9 +117,17 @@ public final class NovaLinkBukkitPlugin extends JavaPlugin {
         if (!disabled.compareAndSet(false, true)) {
             return;
         }
-        // onDisable also runs when onEnable failed. stop() is idempotent and
-        // safe after a failed start, but there is nothing to stop in that case
-        // and the failed start already rolled itself back.
+        stopBackend();
+    }
+
+    /**
+     * On the failed-start path {@link #onEnable} already rolled the core back;
+     * {@link NovaLinkCore#stop()} is safe after that but there is nothing left
+     * to stop, so the flag keeps this from claiming a stop that never happened.
+     * Idempotent: {@link #disabled} gates the callers, and the flags are
+     * exchanged atomically.
+     */
+    private void stopBackend() {
         NovaLinkCore core = coreRef.getAndSet(null);
         consoleHandler = null;
         if (core == null || !backendStarted.getAndSet(false)) {
@@ -160,7 +176,8 @@ public final class NovaLinkBukkitPlugin extends JavaPlugin {
                             + " server.tls before exposing it.");
             case SEEDED_UNMODIFIED ->
                     getLogger().warning("Created " + configFile
-                            + " from the backend template without rewriting bind-address;"
+                            + " from the backend template without applying the plugin's"
+                            + " loopback defaults (the template layout changed);"
                             + " check the listener addresses logged below");
             case ALREADY_PRESENT -> getLogger().info("Using existing configuration: " + configFile);
         }
