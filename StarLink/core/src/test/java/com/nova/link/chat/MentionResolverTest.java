@@ -284,4 +284,60 @@ class MentionResolverTest {
 
         verify(creativeConn, times(1)).sendPacket(any(MentionPacket.class));
     }
+
+    // ==================== channel scoping for @name ====================
+
+    @Test
+    @DisplayName("@name does not ping a player whose active channel differs")
+    void nameMentionSkipsPlayerInAnotherChannel() {
+        // The platform renders the line only to players whose active channel is
+        // the message channel, so Alex (focused on "trade") never saw it.
+        alexState.setActiveChannel("trade");
+        steveState.setActiveChannel("global");
+        ChatMessagePacket msg = fromSteve("hey @Alex come here");
+
+        resolver.emitMentions(msg, globalChannel(), Set.of("Survival", "Creative"));
+
+        verify(creativeConn, never()).sendPacket(any(MentionPacket.class));
+    }
+
+    @Test
+    @DisplayName("@name pings a player whose active channel matches")
+    void nameMentionDeliversWhenPlayerInChannel() {
+        steveState.setActiveChannel("global");
+        alexState.setActiveChannel("global");
+        ChatMessagePacket msg = fromSteve("hey @Alex come here");
+
+        resolver.emitMentions(msg, globalChannel(), Set.of("Survival", "Creative"));
+
+        verify(creativeConn, times(1)).sendPacket(any(MentionPacket.class));
+    }
+
+    @Test
+    @DisplayName("@name still pings a player with no recorded active channel (fail-open)")
+    void nameMentionFailOpenOnUnknownActiveChannel() {
+        // A direct-connect player never sends an explicit JOIN, so the backend
+        // has no active channel for them. Dropping the ping would be a silence
+        // bug; the scope filter must not fire.
+        steveState.setActiveChannel("global");
+        alexState.setActiveChannel(null);
+        ChatMessagePacket msg = fromSteve("hey @Alex come here");
+
+        resolver.emitMentions(msg, globalChannel(), Set.of("Survival", "Creative"));
+
+        verify(creativeConn, times(1)).sendPacket(any(MentionPacket.class));
+    }
+
+    @Test
+    @DisplayName("@all keeps expanding to every fan-out recipient regardless of active channel")
+    void allMentionIgnoresActiveChannel() {
+        // @all's recipients come from the fan-out set, which is authoritative.
+        alexState.setActiveChannel("trade");
+        steveState.setActiveChannel("global");
+        ChatMessagePacket msg = fromSteve("attention @all");
+
+        resolver.emitMentions(msg, globalChannel(), Set.of("Survival", "Creative"));
+
+        verify(creativeConn, times(1)).sendPacket(any(MentionPacket.class));
+    }
 }

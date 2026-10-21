@@ -209,6 +209,103 @@ class PlayerChannelStateTest {
     }
 
     @Nested
+    @DisplayName("refused-join rollback")
+    class RollbackJoin {
+
+        @Test
+        @DisplayName("drops the optimistically joined channel and restores the previous active")
+        void removesAttemptedAndRestoresPrevious() {
+            PlayerChannelState state = new PlayerChannelState(PLAYER, "global", ChatMode.HYBRID);
+
+            // What ChannelCommandService.join does before the backend answers.
+            state.setActiveChannel("nosuchchannel");
+            assertThat(state.isJoined("nosuchchannel")).isTrue();
+
+            assertThat(state.rollbackJoin("nosuchchannel", "global")).isTrue();
+
+            assertThat(state.isJoined("nosuchchannel")).isFalse();
+            assertThat(state.getJoinedChannels()).containsExactly("global");
+            assertThat(state.getActiveChannel()).isEqualTo("global");
+        }
+
+        @Test
+        @DisplayName("restored previous channel comes back as active, not as a new membership")
+        void previousChannelIsNotRejoined() {
+            PlayerChannelState state = new PlayerChannelState(PLAYER, "global", ChatMode.HYBRID);
+            // The player had left the default channel before attempting the join.
+            state.leaveChannel("global");
+            state.setActiveChannel("failme");
+
+            assertThat(state.rollbackJoin("failme", "global")).isTrue();
+
+            assertThat(state.getJoinedChannels()).doesNotContain("global");
+            assertThat(state.getActiveChannel()).isNotEqualTo("global");
+        }
+
+        @Test
+        @DisplayName("removes the attempted membership even after a manual channel switch")
+        void removesMembershipAfterManualSwitch() {
+            PlayerChannelState state = new PlayerChannelState(PLAYER, "global", ChatMode.HYBRID);
+            state.setActiveChannel("nosuchchannel");
+            // Player switched manually while the JOIN was still in flight.
+            state.setActiveChannel("local");
+
+            assertThat(state.rollbackJoin("nosuchchannel", "global")).isTrue();
+
+            assertThat(state.isJoined("nosuchchannel"))
+                    .as("the backend refused entry").isFalse();
+            assertThat(state.getActiveChannel())
+                    .as("a manual switch is not overridden").isEqualTo("local");
+            assertThat(state.isJoined("local")).isTrue();
+        }
+
+        @Test
+        @DisplayName("blank previous channel falls back to a remaining joined channel")
+        void blankPreviousFallsBack() {
+            PlayerChannelState state = new PlayerChannelState(PLAYER, "global", ChatMode.HYBRID);
+            state.setActiveChannel("failme");
+
+            state.rollbackJoin("failme", null);
+
+            assertThat(state.getActiveChannel()).isEqualTo("global");
+            assertThat(state.getJoinedChannels()).containsExactly("global");
+        }
+
+        @Test
+        @DisplayName("rolling back the only channel clears the active channel")
+        void clearsActiveWhenNothingRemains() {
+            PlayerChannelState state = new PlayerChannelState(PLAYER, "failme", ChatMode.HYBRID);
+
+            state.rollbackJoin("failme", null);
+
+            assertThat(state.getJoinedChannels()).isEmpty();
+            assertThat(state.getActiveChannel()).isNull();
+        }
+
+        @Test
+        @DisplayName("returns false when the attempted channel was never joined")
+        void notJoinedReturnsFalse() {
+            PlayerChannelState state = new PlayerChannelState(PLAYER, "global", ChatMode.HYBRID);
+
+            assertThat(state.rollbackJoin("never", "global")).isFalse();
+            assertThat(state.getActiveChannel()).isEqualTo("global");
+        }
+
+        @Test
+        @DisplayName("a blank attempted channel is a no-op, not an exception")
+        void blankAttemptedChannelIsNoOp() {
+            // This runs on the network response thread: throwing there would
+            // surface as an unhandled packet-handler failure.
+            PlayerChannelState state = new PlayerChannelState(PLAYER, "global", ChatMode.HYBRID);
+
+            assertThat(state.rollbackJoin(" ", "global")).isFalse();
+            assertThat(state.rollbackJoin(null, "global")).isFalse();
+            assertThat(state.getJoinedChannels()).containsExactly("global");
+            assertThat(state.getActiveChannel()).isEqualTo("global");
+        }
+    }
+
+    @Nested
     @DisplayName("chat mode")
     class Mode {
 

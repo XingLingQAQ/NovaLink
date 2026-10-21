@@ -98,6 +98,52 @@ public final class PlayerChannelState {
     }
 
     /**
+     * Reverts the optimistic effect of a JOIN the backend refused.
+     *
+     * <p>{@link #setActiveChannel(String)} adds the target to the joined set, so
+     * a refused JOIN would otherwise leave the attempted channel marked as
+     * joined forever: the response handler only restores the <em>active</em>
+     * channel, and {@code /nc list} then renders the refused channel with a
+     * joined marker. This method undoes both halves — it drops the attempted
+     * channel from the joined set and, when that channel is still active,
+     * restores {@code previousChannel} without manufacturing membership for it.
+     *
+     * <p>The membership is removed even when the player has since switched to
+     * another channel manually: the backend refused entry, so a local claim of
+     * membership is unfounded either way. The active channel is only touched
+     * while it still points at the attempted channel, so a manual switch is
+     * never overridden.
+     *
+     * <p>When {@code previousChannel} is blank or no longer joined (the player
+     * left it while the JOIN was in flight), the active channel falls back the
+     * same way {@link #leaveChannel(String)} does.
+     *
+     * @param attemptedChannel the channel the optimistic JOIN targeted; null or
+     *                         blank is a no-op (this runs on a response callback,
+     *                         where throwing would surface on the network thread)
+     * @param previousChannel  the active channel captured before the optimistic
+     *                         switch, or null/blank when there was none
+     * @return {@code true} if the attempted channel was removed from the joined set
+     */
+    public boolean rollbackJoin(String attemptedChannel, String previousChannel) {
+        if (attemptedChannel == null || attemptedChannel.isBlank()) {
+            return false;
+        }
+        boolean removed = joinedChannels.remove(attemptedChannel);
+        if (attemptedChannel.equals(activeChannel)) {
+            if (previousChannel != null && !previousChannel.isBlank()
+                    && joinedChannels.contains(previousChannel)) {
+                activeChannel = previousChannel;
+            } else {
+                activeChannel = joinedChannels.isEmpty()
+                        ? null
+                        : joinedChannels.iterator().next();
+            }
+        }
+        return removed;
+    }
+
+    /**
      * Unmodifiable view of channels this player has joined.
      * Iteration order is insertion order.
      */

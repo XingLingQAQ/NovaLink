@@ -261,10 +261,9 @@ public class ChatInterceptor implements Listener {
                 if (state == null) {
                     return;
                 }
-                String current = state.getActiveChannel();
-                if (current != null && current.equals(attemptedChannel)) {
-                    state.setActiveChannel(previousChannel);
-                }
+                // Drops the optimistic membership too: a refused JOIN must not
+                // leave the channel marked joined for /nc list.
+                state.rollbackJoin(attemptedChannel, previousChannel);
             });
         }
 

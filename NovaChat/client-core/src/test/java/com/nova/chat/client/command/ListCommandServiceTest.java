@@ -1,6 +1,8 @@
 package com.nova.chat.client.command;
 
 import com.nova.chat.client.channel.KnownChannelRegistry;
+import com.nova.chat.client.state.ChatMode;
+import com.nova.chat.client.state.PlayerChannelState;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -8,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -131,6 +134,29 @@ class ListCommandServiceTest {
             for (String line : lines) {
                 assertThat(line).matches(".*[✓○].*");
             }
+        }
+
+        @Test
+        @DisplayName("a refused join does not show up as joined after rollback")
+        void refusedJoinNotListedAsJoined() {
+            PlayerChannelState state =
+                    new PlayerChannelState(UUID.randomUUID(), "global", ChatMode.HYBRID);
+            // Optimistic JOIN, exactly as ChannelCommandService.join does it.
+            state.setActiveChannel("nosuchchannel");
+            // The backend answers NC-404 and the rollback path runs.
+            state.rollbackJoin("nosuchchannel", "global");
+
+            KnownChannelRegistry registry = new KnownChannelRegistry();
+            registry.addAll(Set.of("global", "local"));
+
+            List<String> lines = ListCommandService.formatChannelList(
+                    registry, state.getJoinedChannels());
+
+            assertThat(lines).hasSize(2);
+            assertThat(lines).noneMatch(line -> line.contains("nosuchchannel"));
+            String globalLine = lines.stream()
+                    .filter(line -> line.contains("global")).findFirst().orElseThrow();
+            assertThat(globalLine).contains("✓");
         }
     }
 }

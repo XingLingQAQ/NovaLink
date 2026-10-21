@@ -131,6 +131,13 @@ public class MentionResolver {
      * {@link MentionNotifier#createAllMentionPackets} to every player whose
      * client received the fan-out (derived from {@code recipientClientIds}).
      *
+     * <p>An @name mention only resolves to a player whose recorded active
+     * channel is the message's channel (see {@link #isInChannel}). Every
+     * platform renders an inbound fan-out line only to players whose active
+     * channel equals the message channel, so an unrestricted name lookup pinged
+     * players who never saw the line. @all keeps its existing expansion from the
+     * fan-out set and is deliberately not filtered this way.
+     *
      * <p>This method returns the full resolved packet list and applies NO
      * social-relation filtering (that happens in {@link #emitMentions}); tests
      * asserting on the resolved list are unaffected by 提案 08 filtering.
@@ -165,11 +172,16 @@ public class MentionResolver {
                 ? message.getChannelId() : channel.getId();
         String mentionerName = message.getSenderName();
 
-        // @name mentions: resolve names -> UUIDs via cached player states.
+        // @name mentions: resolve names -> UUIDs via cached player states, but
+        // only for players whose active channel is this channel. Every platform
+        // renders an inbound fan-out line solely to players whose active channel
+        // equals the message channel, so pinging anyone else raises a sound/title
+        // for a line they never see. @all below is deliberately NOT filtered
+        // this way: its recipients come from the fan-out set.
         List<MentionPacket> packets = new ArrayList<>(
                 notifier.createMentionPackets(
                         mentionerId, mentionerName, channelId, content,
-                        this::resolvePlayerUUID));
+                        name -> resolvePlayerUUID(name, channelId)));
 
         // @all: expand to every player who received the message on this
         // backend instance.
@@ -328,21 +340,54 @@ public class MentionResolver {
 
     /**
      * PlayerResolver backed by {@link PlayerStateManager}: matches the given
-     * name case-insensitively against all cached player states and returns
-     * the matching player's UUID, or {@code null} if not found.
+     * name case-insensitively against the cached player states and returns the
+     * matching player's UUID, or {@code null} if not found.
      * {@link MentionNotifier} already filters nulls.
+     *
+     * <p>Only players whose recorded active channel is {@code channelId} match,
+     * because that is who the platform actually rendered the line to. The test
+     * is fail-open: a player with no recorded active channel still matches, so
+     * a client that never sent an explicit JOIN (a direct-connect server player,
+     * whose presence the backend learns from chat alone) keeps receiving
+     * mentions instead of silently losing them.
+     *
+     * @param playerName the mentioned name
+     * @param channelId  the channel the message was delivered to
+     * @return the matching player's UUID, or {@code null}
      */
-    private UUID resolvePlayerUUID(String playerName) {
+    private UUID resolvePlayerUUID(String playerName, String channelId) {
         if (playerName == null || playerName.isEmpty()) {
             return null;
         }
         for (PlayerState state : playerStateManager.getAllPlayerStates()) {
             String name = state.getPlayerName();
-            if (name != null && name.equalsIgnoreCase(playerName)) {
+            if (name != null && name.equalsIgnoreCase(playerName)
+                    && isInChannel(state, channelId)) {
                 return state.getPlayerId();
             }
         }
         return null;
+    }
+
+    /**
+     * Whether {@code state} should be pinged for a message on {@code channelId}.
+     *
+     * <p>Clients render an inbound line only when the message channel equals the
+     * player's active channel, so a player focused elsewhere did not see the
+     * line. A player with no recorded active channel is treated as in-channel:
+     * the backend cannot tell, and dropping the notification would be a silence
+     * bug for direct-connect players who never send an explicit JOIN.
+     *
+     * @param state     cached player state
+     * @param channelId channel the message was delivered to; blank matches anything
+     * @return {@code false} only when the player is known to be focused elsewhere
+     */
+    private boolean isInChannel(PlayerState state, String channelId) {
+        if (channelId == null || channelId.isBlank()) {
+            return true;
+        }
+        String active = state.getActiveChannel();
+        return active == null || active.isBlank() || active.equals(channelId);
     }
 
     /**

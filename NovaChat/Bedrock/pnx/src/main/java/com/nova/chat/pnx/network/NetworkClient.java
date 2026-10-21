@@ -439,10 +439,9 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                     return;
                 }
                 PlayerChannelState pnxState = plugin.getChatInterceptor().getOrCreateState(player);
-                String current = pnxState.getActiveChannel();
-                if (current != null && current.equals(attemptedChannel)) {
-                    pnxState.setActiveChannel(previousChannel);
-                }
+                // Drops the optimistic membership too: a refused JOIN must not
+                // leave the channel marked joined for /nc list.
+                pnxState.rollbackJoin(attemptedChannel, previousChannel);
             });
         }
 
