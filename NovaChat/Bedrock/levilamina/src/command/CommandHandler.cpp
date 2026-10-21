@@ -842,11 +842,25 @@ void CommandHandler::dispatchModeration(moderation::ModerationRequest request,
         return;
     }
 
+    // Correlate the request BEFORE it goes on the wire, otherwise a fast
+    // backend response could arrive before the map is populated and be dropped
+    // as uncorrelated. The response echoes only this request UUID, so it is the
+    // sole way to attribute an outcome to the operator who issued the action.
+    // A console sender has no player UUID; the sentinel makes
+    // ChatInterceptor::reportOperatorOutcome log the result instead.
+    if (auto* interceptor = mPlugin.getChatInterceptor()) {
+        std::string const origin = senderUuid.empty()
+            ? std::string("00000000-0000-0000-0000-000000000000")
+            : senderUuid;
+        interceptor->registerPendingChannelAction(request.packet->getRequestId().toString(), origin);
+    }
+
     networkClient->sendPacket(std::move(request.packet));
 
-    // Progress only. The backend's moderation permission check and validation
-    // are authoritative; the outcome arrives as a ChannelActionResponse, which
-    // ChatInterceptor already routes (kick/mute notifications to the target).
+    // Progress line only. The backend's moderation permission check and
+    // validation are authoritative; the per-action outcome arrives later as a
+    // ChannelActionResponse and is rendered by ChatInterceptor from the
+    // correlation registered above.
     sendMessage(senderName, ChatInterceptor::convertColorCodes(prefix +
         i18n.get(progressKey, locale, progressArgs)));
 }

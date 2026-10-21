@@ -462,3 +462,49 @@ target("novachat-levilamina-moderation-tests")
         add_syslinks("ws2_32", "advapi32")
     end
 target_end()
+
+-- Test target: moderation-response correlation tests (no LeviLamina SDK
+-- needed). Pins the operator-facing outcome of a ChannelActionResponse:
+-- a correlated success renders the per-action confirmation, a correlated
+-- failure renders the localized error, an uncorrelated response renders
+-- nothing, and a failure with a blank error code stays silent.
+--
+-- The logic lives in src/command/ModerationOutcome.cpp, which depends only on
+-- the protocol layer (same seam as the ModerationCommands builders), so the
+-- exact code ChatInterceptor runs is exercised here without ll::/mc:: headers.
+--
+-- Build & run:
+--   xmake f --sdk=n --openssl=n -m debug
+--   xmake build novachat-levilamina-moderation-response-tests
+--   xmake run novachat-levilamina-moderation-response-tests
+target("novachat-levilamina-moderation-response-tests")
+    set_kind("binary")
+    set_languages("c++20")
+    set_symbols("debug")
+    add_cxflags("/utf-8")
+    add_includedirs("src")
+
+    add_files("tests/test_moderation_response.cpp")
+    add_files("src/command/ModerationOutcome.cpp")
+    -- The send-side half of the test builds a real packet through the same
+    -- builder the plugin uses, so the request id it registers is the one the
+    -- response will echo.
+    add_files("src/command/ModerationCommands.cpp")
+    add_files("src/protocol/PacketBuffer.cpp")
+    add_files("src/i18n/I18n.cpp")
+
+    set_targetdir("$(buildir)/bin")
+    set_filename("novachat-levilamina-moderation-response-tests.exe")
+
+    if is_plat("windows") then
+        add_defines("NOMINMAX", "UNICODE", "_UNICODE", "WIN32", "_WIN32", "_WINDOWS")
+        add_syslinks("ws2_32", "advapi32")
+    end
+
+    -- Copy the lang/ directory next to the test binary so the I18n loader
+    -- finds the bundles (same rationale as the moderation-tests target).
+    after_build(function (target)
+        local targetdir = target:targetdir()
+        os.cp("src/i18n/lang", targetdir .. "/lang")
+    end)
+target_end()

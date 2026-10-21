@@ -1016,11 +1016,17 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
             $operatorId = $sender->getUniqueId()->toString();
             return [
                 "operatorId" => $operatorId,
+                // The response is asynchronous. NetworkClient keys its pending
+                // map on this extra so the ChannelActionResponse can be
+                // attributed to the operator; without it the outcome has no
+                // addressee and the operator never sees success or failure.
+                "playerId" => $operatorId,
                 "operatorName" => $sender->getName(),
             ];
         }
         return [
             "operatorId" => self::CONSOLE_SENTINEL_UUID,
+            "playerId" => self::CONSOLE_SENTINEL_UUID,
             "operatorName" => $sender->getName(),
             "console" => "true",
         ];

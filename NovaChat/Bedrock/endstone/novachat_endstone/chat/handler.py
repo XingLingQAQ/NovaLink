@@ -525,12 +525,45 @@ class ChatHandler:
         except Exception as e:
             self._logger.error(f"Failed to send title to {player.name}: {e}")
 
+    #: Moderation actions whose outcome the issuing operator must see. Mirrors
+    #: the Java ChannelResponseDispatcher.isModerationAction set.
+    MODERATION_ACTIONS = frozenset({
+        ChannelAction.KICK,
+        ChannelAction.MUTE,
+        ChannelAction.UNMUTE,
+        ChannelAction.BAN,
+        ChannelAction.UNBAN,
+    })
+
+    def _moderation_success_text(self, action: int, locale: str) -> str:
+        """Operator-facing confirmation for an accepted moderation action.
+
+        Copy comes from the shared ``chat.action.*_processed`` keys so the
+        wording matches the Java ChannelResponseDispatcher. BAN / UNBAN have no
+        key of their own (they never had one), so they get the generic
+        acceptance line.
+        """
+        key = {
+            ChannelAction.KICK: "chat.action.kick_processed",
+            ChannelAction.MUTE: "chat.action.mute_processed",
+            ChannelAction.UNMUTE: "chat.action.unmute_processed",
+        }.get(action, "chat.action.success")
+        return self._i18n.get(key, locale)
+
     def _handle_channel_action_response(self, packet: ChannelActionResponsePacket) -> None:
         """
         Route a ChannelActionResponse to the requesting player.
 
-        JOIN/LEAVE/WHO async responses are routed by request_id -> player.
-        On failure, the error code is translated via i18n.
+        Every async response is routed by request_id -> player (the frame-level
+        request id is written by ``NetworkClient.send_packet`` and stamped back
+        onto the decoded response by ``NetworkClient._read_packet``).
+
+        JOIN/LEAVE/WHO and the moderation set share that correlation but
+        differ in what the operator is shown on success: a moderation action
+        gets its own per-action confirmation, because the command only printed
+        an optimistic "...ing" line and the operator would otherwise never
+        learn whether the mute/kick/ban/unban was applied. On failure the error
+        code is translated via i18n for every action.
         """
         try:
             request_id = str(getattr(packet, "request_id", ""))
@@ -543,8 +576,11 @@ class ChatHandler:
 
             locale = self._player_locales.get(player_uuid, "zh_CN")
             if packet.success:
-                # Optimistic state update already happened on send; just ack.
-                msg = self._i18n.get("chat.action.success", locale)
+                if packet.action in self.MODERATION_ACTIONS:
+                    msg = self._moderation_success_text(packet.action, locale)
+                else:
+                    # Optimistic state update already happened on send; just ack.
+                    msg = self._i18n.get("chat.action.success", locale)
             else:
                 msg = self._i18n.error_message(packet.error_code, locale)
 

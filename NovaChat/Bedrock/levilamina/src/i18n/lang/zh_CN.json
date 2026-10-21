@@ -83,6 +83,9 @@
     "chat.action.success": "操作成功",
     "chat.action.failed": "操作失败",
     "chat.action.leave_simple": "已离开频道 &e{0}",
+    "chat.action.kick_processed": "踢出请求已处理",
+    "chat.action.mute_processed": "禁言请求已处理",
+    "chat.action.unmute_processed": "解除禁言请求已处理",
 
     "chat.list.empty": "暂无已知频道，请等待服务器下发频道列表",
 

@@ -36,6 +36,41 @@ class NetworkClient {
     
     /** Keep-alive interval in seconds */
     private const KEEPALIVE_INTERVAL = 15;
+
+    /** Console/RCON has no player UUID; its outcomes are logged, not sent. */
+    private const CONSOLE_SENTINEL_UUID = "00000000-0000-0000-0000-000000000000";
+
+    /**
+     * Operator-facing confirmation key per moderation action.
+     *
+     * Mirrors the shared Java ChannelResponseDispatcher.moderationSuccessText:
+     * BAN/UNBAN have no key of their own (they never had one) and fall through
+     * to the generic acceptance line.
+     *
+     * @var array<int, string>
+     */
+    private const MODERATION_SUCCESS_KEYS = [
+        ChannelActionPacket::ACTION_KICK => "chat.action.kick_processed",
+        ChannelActionPacket::ACTION_MUTE => "chat.action.mute_processed",
+        ChannelActionPacket::ACTION_UNMUTE => "chat.action.unmute_processed",
+    ];
+
+    /**
+     * The operator-issued moderation actions whose outcome must be reported.
+     *
+     * Mirrors the Java ChannelResponseDispatcher.isModerationAction set.
+     * BAN/UNBAN appear here but not in MODERATION_SUCCESS_KEYS: they are
+     * tracked and reported, they just use the generic success line.
+     *
+     * @var array<int, true>
+     */
+    private const MODERATION_ACTIONS = [
+        ChannelActionPacket::ACTION_KICK => true,
+        ChannelActionPacket::ACTION_MUTE => true,
+        ChannelActionPacket::ACTION_UNMUTE => true,
+        ChannelActionPacket::ACTION_BAN => true,
+        ChannelActionPacket::ACTION_UNBAN => true,
+    ];
     
     /** Keep-alive interval in ticks (20 ticks = 1 second) */
     private const KEEPALIVE_INTERVAL_TICKS = 300; // 15 seconds * 20 ticks
@@ -120,7 +155,26 @@ class NetworkClient {
      * @var array<string, string> requestId => player UUID
      */
     private array $pendingAdminRequests = [];
-    
+
+    /**
+     * Pending ChannelAction request correlation map.
+     *
+     * Maps requestId (UUID string on the ChannelActionPacket) to the
+     * originating player UUID string (or the console sentinel). Populated in
+     * sendChannelAction() before the packet goes on the wire, popped in
+     * handleChannelActionResponse(). Without it the response cannot be
+     * attributed to an operator: the backend echoes only the requestId, so a
+     * mute/kick/ban/unban result would have no addressee and the operator
+     * would see the progress line and then nothing.
+     *
+     * Mirrors the Java ChannelResponseTracker (requestId -> playerId). This is
+     * the requestId-keyed equivalent of $pendingAdminRequests, not a
+     * replacement: JOIN/LEAVE/WHO register here too.
+     *
+     * @var array<string, string> requestId => player UUID
+     */
+    private array $pendingChannelActions = [];
+
     /**
      * Creates a new network client.
      * 
@@ -738,6 +792,66 @@ class NetworkClient {
         if ($chatHandler !== null) {
             $chatHandler->handleChannelActionResponse($packet);
         }
+        $this->routeChannelActionOutcome($packet);
+    }
+
+    /**
+     * Reports a ChannelAction outcome to the operator who issued it.
+     *
+     * $chatHandler->handleChannelActionResponse only notifies the TARGET of a
+     * kick/mute; the issuing operator got no result at all, so /nc mute, kick,
+     * ban and unban printed an optimistic "...ing" line and then went silent —
+     * even when the backend applied the action.
+     *
+     * Correlation is by requestId (the backend echoes the request id onto the
+     * response), NOT by a playerId extra, so the pending entry is what makes
+     * this routable. Console allocates no player and is logged instead,
+     * matching handleAdminActionResponse.
+     *
+     * @param \NovaChat\Protocol\ChannelActionResponsePacket $packet The response
+     */
+    private function routeChannelActionOutcome(\NovaChat\Protocol\ChannelActionResponsePacket $packet): void {
+        $requestId = $packet->getRequestId();
+        $playerUuid = $this->pendingChannelActions[$requestId] ?? null;
+        if ($playerUuid === null) {
+            // Not one of ours (backend push, or a response that already
+            // expired): nothing to render for an operator.
+            return;
+        }
+        unset($this->pendingChannelActions[$requestId]);
+
+        $locale = "zh_CN";
+        $chatHandler = $this->plugin->getChatHandler();
+        if ($chatHandler !== null) {
+            $locale = $chatHandler->getPlayerLocale($playerUuid);
+        }
+        $i18n = new \NovaChat\I18n\I18n();
+        $prefix = $this->plugin->getConfigManager()->getPrefix();
+
+        if ($packet->success) {
+            $key = self::MODERATION_SUCCESS_KEYS[$packet->action] ?? "chat.action.success";
+            $message = $prefix . $i18n->get($key, $locale);
+        } else {
+            // A coded failure is actionable; an empty code means the transport
+            // already reported the problem, so stay quiet (Java parity).
+            if ($packet->errorCode === "") {
+                return;
+            }
+            $message = $prefix . $i18n->errorMessage($packet->errorCode, $locale);
+        }
+
+        if ($playerUuid === self::CONSOLE_SENTINEL_UUID) {
+            $this->plugin->getLogger()->info("[NovaChat console] " . $message);
+            return;
+        }
+
+        foreach ($this->plugin->getServer()->getOnlinePlayers() as $player) {
+            if ($player->getUniqueId()->toString() === $playerUuid) {
+                $player->sendMessage($message);
+                return;
+            }
+        }
+        $this->plugin->debug("ChannelActionResponse operator not online: " . $playerUuid);
     }
 
     /**
@@ -1121,6 +1235,21 @@ class NetworkClient {
         $packet->channelId = $channelId;
         $packet->password = $password;
         $packet->extra = $extra;
+
+        // Correlate BEFORE the packet goes on the wire, otherwise a fast
+        // backend response could arrive before the map is populated and be
+        // dropped as "no pending request" (same ordering as sendAdminAction).
+        // The origin is carried in the playerId extra, mirroring the Java
+        // ChannelResponseTracker.track() which reads exactly that key.
+        //
+        // Only the moderation actions are tracked: they are the ones that
+        // printed a progress line and then went silent. JOIN/LEAVE/WHO have
+        // their own rendering and must not grow a second line here.
+        $playerId = $extra["playerId"] ?? "";
+        $requestId = $packet->getRequestId();
+        if ($requestId !== "" && $playerId !== "" && isset(self::MODERATION_ACTIONS[$action])) {
+            $this->pendingChannelActions[$requestId] = $playerId;
+        }
 
         $this->sendPacket($packet);
     }

@@ -229,6 +229,39 @@ public:
     void registerPendingAdminAction(const std::string& requestId, const std::string& playerUuid);
 
     /**
+     * Track an outgoing channel action so the asynchronous
+     * ChannelActionResponse can be attributed to the operator who issued it.
+     * The response carries only the frame-level request UUID, so without this
+     * map a /nc mute|kick|ban|unban outcome has no addressee and the operator
+     * sees the progress line and then nothing.
+     *
+     * Mirrors the Java ChannelResponseTracker: request UUID -> originating
+     * player UUID (or the all-zeros console sentinel, whose outcome is logged
+     * instead of delivered).
+     *
+     * @param requestId the packet's request UUID
+     * @param playerUuid the issuing player's UUID, or the console sentinel
+     */
+    void registerPendingChannelAction(const std::string& requestId, const std::string& playerUuid);
+
+    /**
+     * Report a moderation ChannelActionResponse outcome to the operator who
+     * issued it.
+     *
+     * The async response carries only the frame-level request UUID, so the
+     * pending map populated by registerPendingChannelAction is what makes the
+     * outcome deliverable at all — without it /nc mute|kick|ban|unban printed
+     * an optimistic "...ing" line and then nothing. Console-originated actions
+     * are logged instead of delivered.
+     *
+     * Non-moderation actions (JOIN/LEAVE/WHO) are ignored here so their
+     * existing rendering is untouched.
+     *
+     * @param packet the decoded response
+     */
+    void reportOperatorOutcome(const protocol::ChannelActionResponsePacket& packet);
+
+    /**
      * Send a WHO channel action for a player.
      */
     void whoChannel(const std::string& playerUuid, const std::string& channelId);
@@ -341,6 +374,15 @@ private:
     // handleAdminActionResponse to route the async outcome back to the sender.
     std::unordered_map<std::string, std::string> mPendingAdminActions;
     mutable std::mutex mPendingAdminActionsMutex;
+
+    // Pending MODERATION channel-action tracking: request UUID -> player UUID
+    // (or the console sentinel). Separate from mPendingActions (which maps a
+    // WHO request to its channel) because the value here is an origin, not a
+    // channel. Populated by registerPendingChannelAction at send time and
+    // consumed by reportOperatorOutcome — the same request-UUID correlation
+    // the Java ChannelResponseTracker performs.
+    std::unordered_map<std::string, std::string> mPendingChannelActions;
+    mutable std::mutex mPendingChannelActionsMutex;
 };
 
 } // namespace novachat

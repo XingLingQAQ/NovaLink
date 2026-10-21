@@ -82,6 +82,9 @@
     "chat.action.success": "Action succeeded",
     "chat.action.failed": "Action failed",
     "chat.action.leave_simple": "Left channel &e{0}",
+    "chat.action.kick_processed": "Kick request processed",
+    "chat.action.mute_processed": "Mute request processed",
+    "chat.action.unmute_processed": "Unmute request processed",
 
     "chat.list.empty": "No known channels yet, please wait for the server to push the channel list",
 

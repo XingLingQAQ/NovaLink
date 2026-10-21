@@ -69,6 +69,9 @@
   "chat.action.failed": "操作失败",
   "chat.action.leave_simple": "已离开频道 &e{0}",
   "chat.action.already_default": "你已经在默认频道中",
+  "chat.action.kick_processed": "踢出请求已处理",
+  "chat.action.mute_processed": "禁言请求已处理",
+  "chat.action.unmute_processed": "解除禁言请求已处理",
 
   "chat.auth.progress": "正在认证...",
   "chat.auth.success": "超级管理员认证成功",

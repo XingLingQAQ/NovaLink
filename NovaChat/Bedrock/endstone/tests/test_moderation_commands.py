@@ -782,3 +782,159 @@ def test_tab_complete_offers_player_names_for_target_slot():
     sender = FakeSender("Admin", player_uuid=uuid.uuid4())
 
     assert cmd.on_tab_complete(sender, None, "nc", ["kick", "Bo"]) == ["Bob"]
+
+
+# ---------------------------------------------------------------------------
+# Operator-facing outcome of the async ChannelActionResponse.
+#
+# The command prints an optimistic "...ing" line and returns; the per-action
+# result arrives later on 0x05 and is correlated by request_id. Before the fix
+# every success rendered the same generic "operation succeeded" (and the
+# per-action keys did not exist), so the operator could not tell a mute from a
+# kick from a ban. These pin the per-action line and the failure line.
+# ---------------------------------------------------------------------------
+
+from novachat_endstone.chat.handler import ChatHandler
+from novachat_endstone.protocol.packet import ChannelActionResponsePacket
+
+
+def build_handler(player_uuid=None, locale="zh_CN"):
+    """A ChatHandler with just the state the response path touches."""
+    handler = ChatHandler.__new__(ChatHandler)
+    handler._logger = logging.getLogger("test.moderation.outcome")
+    handler._player_channels = {}
+    handler._chat_enabled = {}
+    handler._player_locales = {player_uuid: locale} if player_uuid else {}
+    handler._known_channels = []
+    handler._pending_actions = {}
+    from novachat_endstone.i18n import I18n
+
+    handler._i18n = I18n()
+    return handler
+
+
+class RecordingPlugin:
+    def __init__(self):
+        self.server = FakeServer()
+
+
+def make_response(action, success, error_code="", request_id=None):
+    response = ChannelActionResponsePacket(
+        success=success,
+        action=action,
+        channel_id="global",
+        error_code=error_code,
+        message="",
+        extra={},
+    )
+    # Frame-level request_id is stamped onto the packet by _read_packet.
+    response.request_id = request_id or uuid.uuid4()
+    return response
+
+
+def deliver(handler, player_uuid, response, sent):
+    """Route a response through the real handler, capturing delivery."""
+    handler._plugin = RecordingPlugin()
+    handler._pending_actions[str(response.request_id)] = player_uuid
+    handler._send_to_player_by_uuid = lambda uuid_str, msg: sent.append(msg)
+    handler._handle_channel_action_response(response)
+
+
+@pytest.mark.parametrize(
+    "action,key",
+    [
+        (ChannelAction.KICK, "chat.action.kick_processed"),
+        (ChannelAction.MUTE, "chat.action.mute_processed"),
+        (ChannelAction.UNMUTE, "chat.action.unmute_processed"),
+        # BAN / UNBAN have no key of their own; Java parity uses the generic ack.
+        (ChannelAction.BAN, "chat.action.success"),
+        (ChannelAction.UNBAN, "chat.action.success"),
+    ],
+)
+def test_moderation_success_reaches_the_operator(action, key):
+    """A successful moderation response produces a per-action line for the
+    operator who issued it (not just the target-side notice)."""
+    player_uuid = str(uuid.uuid4())
+    handler = build_handler(player_uuid)
+    sent: list = []
+
+    deliver(handler, player_uuid, make_response(action, True), sent)
+
+    assert sent, f"operator must be told the {action} succeeded"
+    expected = handler._i18n.get(key, "zh_CN")
+    assert expected in sent[0]
+    # Not the raw key: the key must resolve in the shipped bundle.
+    assert key not in sent[0]
+
+
+def test_moderation_success_is_distinct_per_action():
+    """The mute and kick confirmations differ, so the operator can tell which
+    action the backend accepted."""
+    kick_sent: list = []
+    mute_sent: list = []
+    for action, sink in ((ChannelAction.KICK, kick_sent), (ChannelAction.MUTE, mute_sent)):
+        player_uuid = str(uuid.uuid4())
+        handler = build_handler(player_uuid)
+        deliver(handler, player_uuid, make_response(action, True), sink)
+
+    assert kick_sent[0] != mute_sent[0]
+
+
+def test_moderation_failure_reaches_the_operator():
+    """A rejected moderation action reports the coded error, in the operator's
+    locale, instead of leaving them with only the progress line."""
+    player_uuid = str(uuid.uuid4())
+    handler = build_handler(player_uuid)
+    sent: list = []
+
+    deliver(handler, player_uuid, make_response(ChannelAction.BAN, False, "NC-403"), sent)
+
+    assert sent, "operator must be told the ban was rejected"
+    assert "NC-403" not in sent[0], "the code must be translated, not echoed raw"
+    assert handler._i18n.get("error.NC-403.message", "zh_CN") in sent[0]
+
+
+def test_moderation_failure_uses_the_operator_locale():
+    player_uuid = str(uuid.uuid4())
+    handler = build_handler(player_uuid, locale="en_US")
+    sent: list = []
+
+    deliver(handler, player_uuid, make_response(ChannelAction.MUTE, False, "NC-403"), sent)
+
+    assert handler._i18n.get("error.NC-403.message", "en_US") in sent[0]
+
+
+def test_unmatched_response_is_dropped():
+    """A response with no pending request_id (backend push, or a duplicate) has
+    no operator to report to and must not raise or guess a recipient."""
+    player_uuid = str(uuid.uuid4())
+    handler = build_handler(player_uuid)
+    sent: list = []
+
+    handler._plugin = RecordingPlugin()
+    handler._send_to_player_by_uuid = lambda uuid_str, msg: sent.append(msg)
+    # Note: no pending entry registered for this request id.
+    handler._handle_channel_action_response(make_response(ChannelAction.KICK, True))
+
+    assert sent == []
+
+
+def test_progress_line_is_not_the_outcome():
+    """The command itself only prints progress; the outcome comes later. Pin
+    that a mute command sends exactly the progress line, so the success line
+    asserted above can only have come from the response path."""
+    from novachat_endstone.i18n import I18n
+
+    cmd, plugin = build()
+    sender = FakeSender("Admin", player_uuid=uuid.uuid4())
+
+    run_command(cmd, sender, ["mute", "Bob", "10m", "global"])
+
+    # Exactly one line at send time: the progress line.
+    assert len(sender.messages) == 1
+    # It is the progress template...
+    progress_template = I18n().get("chat.mute.progress", "zh_CN", "Bob", "global", "")
+    leading = progress_template.split("&eBob")[0]
+    assert leading and sender.messages[0].startswith(leading)
+    # ...and not the success confirmation the response path renders.
+    assert sender.messages[0] != I18n().get("chat.action.mute_processed", "zh_CN")

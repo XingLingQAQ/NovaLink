@@ -5,6 +5,7 @@
 #include "../protocol/Packet.h"
 #include "../protocol/PacketBuffer.h"
 #include "../i18n/I18n.h"
+#include "../command/ModerationOutcome.h"
 
 #include <ll/api/io/Logger.h>
 #include <ll/api/event/EventBus.h>
@@ -164,7 +165,8 @@ void ChatInterceptor::registerPacketHandlers() {
     );
 
     // Handle channel action responses — route kick/mute to the target player,
-    // surface join/leave results, and track the channel in known channels.
+    // report the outcome to the issuing operator, and track the channel in
+    // known channels.
     networkClient->registerHandler(PacketIds::CHANNEL_ACTION_RESPONSE,
         [this](std::unique_ptr<Packet> packet) {
             auto* response = static_cast<ChannelActionResponsePacket*>(packet.get());
@@ -199,6 +201,8 @@ void ChatInterceptor::registerPacketHandlers() {
                 log.warn("Channel action failed: {} ({})",
                     response->getMessage(), response->getErrorCode());
             }
+
+            reportOperatorOutcome(*response);
         }
     );
 
@@ -1083,6 +1087,54 @@ void ChatInterceptor::registerPendingAdminAction(const std::string& requestId, c
     }
     std::lock_guard<std::mutex> lock(mPendingAdminActionsMutex);
     mPendingAdminActions.emplace(requestId, playerUuid);
+}
+
+void ChatInterceptor::registerPendingChannelAction(const std::string& requestId,
+                                                   const std::string& playerUuid) {
+    if (requestId.empty() || playerUuid.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mPendingChannelActionsMutex);
+    mPendingChannelActions.emplace(requestId, playerUuid);
+}
+
+void ChatInterceptor::reportOperatorOutcome(const protocol::ChannelActionResponsePacket& packet) {
+    if (!moderation::isModerationAction(packet.getAction())) {
+        // JOIN/LEAVE/WHO keep their existing rendering (or lack of it); this
+        // path exists only for the moderation commands that went silent.
+        return;
+    }
+
+    std::string origin;
+    {
+        std::string reqId = packet.getRequestId().toString();
+        std::lock_guard<std::mutex> lock(mPendingChannelActionsMutex);
+        auto it = mPendingChannelActions.find(reqId);
+        if (it == mPendingChannelActions.end()) {
+            return;
+        }
+        origin = it->second;
+        mPendingChannelActions.erase(it);
+    }
+
+    auto& i18n = i18n::I18n::getInstance();
+    std::string locale = getPlayerLocale(origin);
+    std::string successText = i18n.get(moderation::moderationSuccessKey(packet.getAction()), locale);
+    std::string errorText = i18n.errorMessage(packet.getErrorCode(), locale);
+
+    auto const outcome = moderation::resolveModerationOutcome(packet, origin, successText, errorText);
+    if (!outcome.shouldRender()) {
+        return;
+    }
+
+    // Console/RCON has no player to message; route to the logger, matching the
+    // handleAdminActionResponse console convention.
+    static const std::string consoleSentinelStr = protocol::UUID{}.toString();
+    if (outcome.originUuid == consoleSentinelStr) {
+        mPlugin.getSelf().getLogger().info("Moderation: {}", stripColorCodes(outcome.text));
+        return;
+    }
+    displayMessageByUuid(outcome.originUuid, convertColorCodes(outcome.text));
 }
 
 void ChatInterceptor::handleAdminActionResponse(const protocol::AdminActionResponsePacket& packet) {
