@@ -1109,11 +1109,45 @@ filter:
 function Start-Backend([string]$configPath, [string]$workDir, [string]$stdoutPath, [string]$stderrPath) {
   $java = Join-Path $Jdk21 "bin/java.exe"
   if (-not (Test-Path -LiteralPath $java)) { $java = Join-Path $Jdk21 "bin/java" }
-  $cp = (Read-LogText $ClassPathFile).Trim()
-  if ([string]::IsNullOrWhiteSpace($cp)) {
+  $cpRaw = (Read-LogText $ClassPathFile).Trim()
+  if ([string]::IsNullOrWhiteSpace($cpRaw)) {
     Log "  ERROR: backend classpath file is empty: $ClassPathFile"
     return $null
   }
+  # Snapshot the classpath into the run directory and start from the COPY.
+  #
+  # The entries point at build output (StarLink/core/build/libs/...), so any
+  # concurrent ./gradlew recompiles and REPLACES them mid-run. That is not
+  # theoretical: a relay run on 2026-10-21 produced zero chatlog lines because
+  # another agent rebuilt core while it was in flight, and the run collapsed to
+  # 9/33 with an unreadable cause. A frozen copy makes a run reproducible and
+  # makes "the fix is not in the binary" impossible to hit silently.
+  $cpDir = Join-Path $workDir "backend-classpath"
+  New-Item -ItemType Directory -Force -Path $cpDir | Out-Null
+  $cpParts = @()
+  $copied = 0
+  foreach ($entry in ($cpRaw -split ';')) {
+    $trimmed = $entry.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+    if (-not (Test-Path -LiteralPath $trimmed)) {
+      Log "  ERROR: backend classpath entry is missing: $trimmed"
+      return $null
+    }
+    # Name each copy after its source to keep duplicate basenames apart.
+    $dest = Join-Path $cpDir ([System.IO.Path]::GetFileName($trimmed))
+    $suffix = 1
+    while (Test-Path -LiteralPath $dest) {
+      $dest = Join-Path $cpDir ("{0}.{1}{2}" -f `
+        [System.IO.Path]::GetFileNameWithoutExtension($trimmed), $suffix, `
+        [System.IO.Path]::GetExtension($trimmed))
+      $suffix++
+    }
+    Copy-Item -LiteralPath $trimmed -Destination $dest -Force
+    $cpParts += $dest
+    $copied++
+  }
+  $cp = ($cpParts -join ';')
+  Log "  backend classpath snapshotted: $copied entr(ies) -> $cpDir"
   $proc = Start-JvmProcess -JavaExe $java `
     -Arguments @("-Xmx512m", "-cp", $cp, "com.nova.link.NovaLinkMain", $configPath) `
     -WorkingDirectory $workDir -StdoutPath $stdoutPath -StderrPath $stderrPath
