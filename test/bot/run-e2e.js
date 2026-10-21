@@ -87,12 +87,18 @@ async function runSequence() {
   await sleep(2500);
   sendCmd('/nc join global');
   await sleep(3000);
-  sendCmd('/nc toggle');
-  await sleep(2500);
+  // ONE toggle reaches REPLACE; the second toggle this used to send returned
+  // the player to HYBRID, where ChatInterceptor.onPlayerChat bails out
+  // ("allowing vanilla chat") and the phrase below was never forwarded. The
+  // line was therefore only ever echoed back by vanilla and could not exercise
+  // the round-trip. Toggle back to HYBRID after it so the hybrid section that
+  // follows still runs in the mode it names.
   sendCmd('/nc toggle');
   await sleep(2500);
   sendCmd('hello from e2e bot (replace mode)');
   await sleep(3000);
+  sendCmd('/nc toggle');
+  await sleep(2500);
   sendCmd('/nc list');
   await sleep(2500);
   sendCmd('/nc who');

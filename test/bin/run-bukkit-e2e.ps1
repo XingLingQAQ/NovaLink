@@ -87,6 +87,7 @@ function Show-FailureLogs([string]$reason) {
 # only speak 26.1.2) and the mismatch surfaced as an opaque
 # "unsupported protocol version" three steps later.
 . (Join-Path (Split-Path -Parent $binDir) 'versions.lock.ps1')
+. (Join-Path $binDir 'e2e-assertions.ps1')
 $purpurLock = Get-LockedServer -Name 'purpur'
 if (-not $purpurLock) { Log "ERROR: no 'purpur' entry in test/versions.lock.ps1"; exit 2 }
 $purpurFile = $purpurLock.File
@@ -433,19 +434,64 @@ if (Test-Path $resultsFile) {
     # and 7+, matching the producer.
     $resultsJson = [System.IO.File]::ReadAllText($resultsFile, [System.Text.Encoding]::UTF8)
     $results = $resultsJson | ConvertFrom-Json
-    $msgs = $results.received | ForEach-Object { $_.text }
-    # L1 assertions: join succeeded (channel joined message), list shows global,
-    # and at least one chat message was captured (round-trip).
-    #
+    # Get-BotReceivedRows drops the bot's own outgoing lines. run-e2e.js records
+    # every sendCmd() into the SAME received[] list with kind='sent', so the old
+    # $msgs contained "/nc join global" and "hello from e2e bot" -- the exact
+    # strings the join/chat assertions looked for. Both matched the bot's own
+    # input, so neither could fail on any plugin state (see e2e-assertions.ps1).
+    $rows = Get-BotReceivedRows $results
+    $msgs = Get-BotReceivedTexts $rows
     # -match on a collection returns the MATCHING ELEMENTS, not a boolean, so the
     # old code logged "join=System.Object[]" and only worked by accident (a
     # non-empty array is truthy). Cast to bool: the log then says what failed.
-    $joinOk   = [bool]($msgs -match '已加入频道|Joined channel|joined.*global')
+    #
+    # joinOk: the backend-accepted confirmation. Bukkit prints "Joining channel"
+    # optimistically from JoinCommand, so that line proves nothing; "Joined
+    # channel" is only sent by ChannelResponseDispatcher.sendJoinSuccess, i.e.
+    # after a successful ChannelActionResponse from the backend.
+    $joinOk   = [bool]($msgs -match '已加入频道|Joined channel')
     $listOk   = [bool]($msgs -match 'global')
-    $chatOk   = ($msgs | Where-Object { $_ -match 'hello from e2e bot' }).Count -ge 1
-    $noFatal  = -not [bool]($msgs -match 'FATAL|Could not|Exception.*NovaLink')
-    Log ("  join={0} list={1} chat={2} noFatal={3}" -f $joinOk, $listOk, $chatOk, $noFatal)
-    $pass = $joinOk -and $listOk -and $chatOk -and $noFatal
+    # chatOk: the round-trip -- the phrase must come back inside NovaChat's
+    # channel-format envelope, "[<channel>] <player>: <text>".
+    #
+    # Two weaker versions were vacuous here. (a) The plain 'chat' kind is
+    # vanilla's own re-broadcast of the sender's line, so it appears on a
+    # server with no plugin. (b) Matching the phrase on ANY messagestr row is
+    # also insufficient on this platform: mineflayer emits messagestr for
+    # vanilla chat too (verified in .e2e-artifacts/joint payloads, which carry
+    # both "E2EJointJava joined the game" and the formatted "[Global] ..."
+    # line as messagestr). The envelope is what vanilla never prints.
+    #
+    # The channel id is matched loosely (any bracket) because this harness
+    # rewrites config.yml with only backend/chat/debug, so the plugin falls
+    # back to its bundled format.default -- "&7[{channel_color}{channel_name}]
+    # {player}&f: {message}" -- which renders as "[global] E2E_Bot_Alpha: ..."
+    # rather than the template's "[全服] ..." global override.
+    #
+    # The bot now sends this phrase in REPLACE mode (one toggle, where it used
+    # to send two -- see run-e2e.js). That matters here: in HYBRID
+    # ChatInterceptor.onPlayerChat returns early ("allowing vanilla chat") and
+    # forwards nothing, so the old toggle->toggle sequence meant the phrase was
+    # only ever vanilla's echo.
+    $chatOk   = (@(Select-BotRowsByPlainText $rows '\[[^\]]+\]\s*E2E_Bot_Alpha\s*:\s*.*hello from e2e bot')).Count -ge 1
+    # pluginOk: a line only NovaChat can emit (its "[NovaChat]" prefix / help
+    # header) reached the bot. Without this, a server that ran the bot against
+    # no plugin at all would still satisfy join/list/chat through vanilla chat.
+    $pluginOk = Test-PluginEvidence $rows
+    # backendOk: the /nc who progress prompt, which bukkit only prints after
+    # AbstractSubCommand::checkConnection sees isConnected AND isAuthenticated.
+    # It is the one line here that a plugin loaded without a working backend
+    # cannot produce (that path prints "Not connected to the chat server").
+    $backendOk = Test-BackendEvidence $rows
+    # Fatal check reads the SERVER's log, not the bot's chat transcript: plugin
+    # exceptions are written to the console. The old $msgs scan looked at the
+    # wrong file entirely and was a constant true.
+    $fatal = Test-ServerLogFatal @($purpStdout, $purpStderr)
+    $noFatal = ($null -eq $fatal)
+    Log ("  join={0} list={1} chat={2} plugin={3} backend={4} noFatal={5}" -f `
+        $joinOk, $listOk, $chatOk, $pluginOk, $backendOk, $noFatal)
+    if (-not $noFatal) { Log ("  FATAL in server log: {0}:{1}: {2}" -f $fatal.Path, $fatal.LineNumber, $fatal.Line.Trim()) }
+    $pass = $joinOk -and $listOk -and $chatOk -and $pluginOk -and $backendOk -and $noFatal
 } else {
     Log "ERROR: results.json not written: $resultsFile"
 }

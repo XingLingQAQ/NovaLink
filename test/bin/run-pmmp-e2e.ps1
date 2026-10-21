@@ -48,6 +48,7 @@ $binDir   = Join-Path $RepoRoot "test/bin"
 $botDir   = Join-Path $RepoRoot "test/bot"
 $confDir  = Join-Path $RepoRoot "test/conf"
 $pmmpSrc  = Join-Path $RepoRoot "NovaChat/Bedrock/pmmp"
+. (Join-Path $binDir 'e2e-assertions.ps1')
 
 function Log([string]$msg) {
     Write-Host ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss.fff"), $msg)
@@ -588,14 +589,72 @@ if ($botProc.ExitCode -ne 0) {
 Log "step 7: asserting L1 results"
 $pass = $false
 if (Test-Path $resultsFile) {
-    $results = Get-Content $resultsFile -Raw | ConvertFrom-Json
-    $msgs = $results.received | ForEach-Object { $_.text }
-    $joinOk   = $msgs -match 'joined|已加入|join'
-    $listOk   = $msgs -match 'global|list'
-    $chatOk   = ($msgs | Where-Object { $_ -match 'hello from e2e bot' }).Count -ge 1
-    $noFatal  = -not ($msgs -match 'FATAL|Exception.*NovaLink')
-    Log ("  join={0} list={1} chat={2} noFatal={3}" -f $joinOk, $listOk, $chatOk, $noFatal)
-    $pass = $joinOk -and $chatOk -and $noFatal
+    # ReadAllText + UTF8, not Get-Content -Raw: on Windows PowerShell 5.1 the
+    # latter decodes with the ANSI code page, and the bot writes UTF-8. The
+    # channel-format envelope carries non-ASCII text ("[全服] ..."), which
+    # makes ConvertFrom-Json throw outright -- verified against a recorded
+    # bedrock payload, where the ANSI read fails and the UTF-8 read parses.
+    $resultsJson = [System.IO.File]::ReadAllText($resultsFile, [System.Text.Encoding]::UTF8)
+    $results = $resultsJson | ConvertFrom-Json
+    # Get-BotReceivedRows drops the bot's own outgoing lines. sendCommand() in
+    # run-e2e-bedrock.js records every command into the SAME received[] list
+    # with kind='sent', so the old $msgs contained "/nc join global" (matched
+    # the `join` regex), "/nc list" (matched the `list` regex) and
+    # "hello from e2e bot" (matched the chat regex). All three were satisfied
+    # by the bot's own input and could not fail on any plugin state.
+    #
+    # listOk: PMMP prints a "NovaChat Channels:" header under its prefix. This
+    # replaces the old `global|list` regex, which matched the bot's own
+    # "/nc list" row.
+    #
+    # chatOk caveat: this harness writes chat.replace_vanilla: false, which
+    # PMMP's onPlayerChat reads as HYBRID and therefore does NOT forward -- the
+    # bot's own chat line never reaches the backend at all. PMMP can therefore
+    # never produce the 'text:raw' row chatOk requires, so chatOk is expected
+    # to be FALSE here and the failure is a property of the harness config, not
+    # of the plugin. It is left in as a gate on purpose: this harness is
+    # already red on backendOk (see below) and turning chatOk green would need
+    # provisioning PMMP with a reachable backend, which is the real fix.
+    # backendOk below is the flag that does prove the link.
+    $rows = Get-BotReceivedRows $results
+    $msgs = Get-BotReceivedTexts $rows
+    # joinOk: NovaChatCommand::handleJoin prints "Joined channel: <id>" as a
+    # literal, but unconditionally once a chat handler exists -- it is not a
+    # backend proof. The old `join` regex additionally matched the vanilla
+    # "E2E_Bot_X joined the game" banner.
+    $joinOk   = [bool]($msgs -match 'Joined channel')
+    $listOk   = [bool]($msgs -match 'NovaChat Channels')
+    # chatOk: the phrase must come back inside NovaChat's channel-format
+    # envelope ("[<channel>] <player>: <text>"), as a plugin-emitted raw text
+    # row. The envelope is the load-bearing part: vanilla's own re-broadcast of
+    # the sender's line also reaches the bot, so matching the phrase alone
+    # still passed on a bare server. Colour codes are stripped first because
+    # bedrock-protocol records them ("<sect>c[全服] ...").
+    #
+    # PMMP forwards player chat ONLY in REPLACE mode: onPlayerChat returns
+    # early for the configured default --
+    # "HYBRID mode: let vanilla chat handle the message. Forwarding here would
+    #  produce duplicates (vanilla + backend)".
+    # The harness keeps chat.replace_vanilla: false, so the mode that enables
+    # forwarding must come from the bot's /nc toggle. run-e2e-bedrock.js now
+    # sends the phrase after ONE toggle (REPLACE); it used to send two, which
+    # landed back in HYBRID and made this row impossible to produce.
+    $chatOk   = (@(Select-BotRowsByPlainText $rows '\[[^\]]+\]\s*E2E_Bot_PMMP\s*:\s*.*hello from e2e bot' |
+        Where-Object { $_.kind -eq 'text:raw' })).Count -ge 1
+    # pluginOk: a line only NovaChat can emit reached the bot.
+    $pluginOk = Test-PluginEvidence $rows
+    # backendOk: handleWho prints "Fetching online members for <id>..." only
+    # after NetworkClient::isAuthenticated() passes; the alternative branch is
+    # "Channel member query is unavailable (requires backend support)".
+    $backendOk = Test-BackendEvidence $rows
+    # Fatal check reads the SERVER's log. Plugin errors go to PocketMine's
+    # console log, never to the bot's chat transcript, so the old $msgs scan
+    # looked in the wrong place and was a constant true.
+    $fatal = Test-ServerLogFatal @($pmmpStdout, $pmmpStderr)
+    $noFatal = ($null -eq $fatal)
+    Log ("  join={0} list={1} chat={2} plugin={3} backend={4} noFatal={5}" -f $joinOk, $listOk, $chatOk, $pluginOk, $backendOk, $noFatal)
+    if (-not $noFatal) { Log ("  FATAL in server log: {0}:{1}: {2}" -f $fatal.Path, $fatal.LineNumber, $fatal.Line.Trim()) }
+    $pass = $joinOk -and $listOk -and $chatOk -and $pluginOk -and $backendOk -and $noFatal
 } else {
     Log "ERROR: results.json not written: $resultsFile"
 }

@@ -53,6 +53,7 @@ $binDir   = Join-Path $RepoRoot "test/bin"
 $botDir   = Join-Path $RepoRoot "test/bot"
 $confDir  = Join-Path $RepoRoot "test/conf"
 $levilaminaSrc = Join-Path $RepoRoot "NovaChat/Bedrock/levilamina"
+. (Join-Path $binDir 'e2e-assertions.ps1')
 
 function Log([string]$msg) {
     Write-Host ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss.fff"), $msg)
@@ -453,13 +454,52 @@ if ($botProc.ExitCode -ne 0) {
 Log "step 7: asserting L1 results"
 $pass = $false
 if (Test-Path $resultsFile) {
-    $results = Get-Content $resultsFile -Raw | ConvertFrom-Json
-    $msgs = $results.received | ForEach-Object { $_.text }
-    $joinOk   = $msgs -match 'joined|已加入|join'
-    $chatOk   = ($msgs | Where-Object { $_ -match 'hello from e2e bot' }).Count -ge 1
-    $noFatal  = -not ($msgs -match 'FATAL|Exception.*NovaLink')
-    Log ("  join={0} chat={1} noFatal={2}" -f $joinOk, $chatOk, $noFatal)
-    $pass = $joinOk -and $chatOk -and $noFatal
+    # ReadAllText + UTF8, not Get-Content -Raw: on Windows PowerShell 5.1 the
+    # latter decodes with the ANSI code page, and the bot writes UTF-8. The
+    # channel-format envelope carries non-ASCII text ("[全服] ..."), which
+    # makes ConvertFrom-Json throw outright -- verified against a recorded
+    # bedrock payload, where the ANSI read fails and the UTF-8 read parses.
+    $resultsJson = [System.IO.File]::ReadAllText($resultsFile, [System.Text.Encoding]::UTF8)
+    $results = $resultsJson | ConvertFrom-Json
+    # Get-BotReceivedRows drops the bot's own outgoing lines. sendCommand() in
+    # run-e2e-bedrock.js records every command into the SAME received[] list
+    # with kind='sent', so the old $msgs contained "/nc join global" (matched
+    # the `join` regex) and "hello from e2e bot" (matched the chat regex).
+    # Both assertions were satisfied by the bot's own input and could not fail
+    # on any plugin state (see e2e-assertions.ps1).
+    $rows = Get-BotReceivedRows $results
+    $msgs = Get-BotReceivedTexts $rows
+    # joinOk: CommandHandler::handleJoin prints "已加入频道 / Joined channel"
+    # from the plugin, but it does so on the packet-send path regardless of a
+    # backend reply, so it is not a backend proof. The bare `join` regex it
+    # replaces also matched the vanilla "E2E_Bot_X joined the game" banner.
+    $joinOk   = [bool]($msgs -match 'Joined channel|joined channel|已加入频道')
+    # chatOk: the phrase must come back inside NovaChat's channel-format
+    # envelope ("[<channel>] <player>: <text>"), as a plugin-emitted raw text
+    # row. The envelope is the load-bearing part: vanilla's own re-broadcast of
+    # the sender's line also reaches the bot as a text row, so matching the
+    # phrase alone still passed on a bare server. Colour codes are stripped
+    # first because bedrock-protocol records them ("<sect>c[全服] ...").
+    #
+    # Caveat: no recorded LeviLamina payload was inspected for this change the
+    # way endstone's was (.e2e-artifacts/joint/20261021-111749). LeviLamina uses
+    # the same format templates and the same bot, so the envelope shape is
+    # inferred from that evidence rather than observed on this platform.
+    $chatOk   = (@(Select-BotRowsByPlainText $rows '\[[^\]]+\]\s*E2E_Bot_LeviLamina\s*:\s*.*hello from e2e bot' |
+        Where-Object { $_.kind -eq 'text:raw' })).Count -ge 1
+    # pluginOk: a line only NovaChat can emit reached the bot.
+    $pluginOk = Test-PluginEvidence $rows
+    # backendOk: the /nc who prompt, which handleWho prints only after
+    # NetworkClient::isConnected() passes (chat.who.unavailable otherwise).
+    $backendOk = Test-BackendEvidence $rows
+    # Fatal check reads the SERVER's log. Plugin errors are logged to the BDS
+    # console, never to the bot's chat transcript, so the old $msgs scan looked
+    # in the wrong place and was a constant true.
+    $fatal = Test-ServerLogFatal @($bdsStdout, $bdsStderr)
+    $noFatal = ($null -eq $fatal)
+    Log ("  join={0} chat={1} plugin={2} backend={3} noFatal={4}" -f $joinOk, $chatOk, $pluginOk, $backendOk, $noFatal)
+    if (-not $noFatal) { Log ("  FATAL in server log: {0}:{1}: {2}" -f $fatal.Path, $fatal.LineNumber, $fatal.Line.Trim()) }
+    $pass = $joinOk -and $chatOk -and $pluginOk -and $backendOk -and $noFatal
 } else {
     Log "ERROR: results.json not written: $resultsFile"
 }

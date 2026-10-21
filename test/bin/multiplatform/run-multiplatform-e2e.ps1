@@ -82,6 +82,7 @@ if (-not $DistDir)     { $DistDir     = Join-Path $RepoRoot ".e2e-artifacts/dist
 if (-not $SummaryFile) { $SummaryFile = Join-Path $RepoRoot ".e2e-artifacts/runs/e2e-summary.json" }
 $ConfDir = Join-Path $RepoRoot "test/conf"
 $ClassPathFile = Join-Path $RepoRoot ".e2e-artifacts/novalink-core.classpath.txt"
+. (Join-Path (Split-Path -Parent $BinDir) 'e2e-assertions.ps1')
 
 # --- resolve the three JDKs --------------------------------------------------
 # Order of preference, per JDK:
@@ -685,22 +686,72 @@ function Invoke-Platform([string]$pf) {
     if (Test-Path $resultsFile) {
       $results = Get-Content $resultsFile -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
       if ($results) {
-        # L1 pass = bot received a help/join/leave response (basic connectivity)
-        $l1Evidence = $false
+        # Get-BotReceivedRows drops the bot's own outgoing traffic: both bot
+        # scripts record every command they send into the SAME received[] list
+        # with kind='sent'. The previous loop below walked results.received
+        # unfiltered, so the bot's own "/nc help" and "/nc join global" rows
+        # satisfied the L1 regex through their own text.
+        $rows = Get-BotReceivedRows $results
+
+        # L1: a line only NovaChat can emit reached the bot. The regex this
+        # replaces was '(?i)(NovaChat|nc help|join|leave|<mojibake>)' with no
+        # anchor at all -- the bare `join` matched vanilla's
+        # "E2E_Bot_Alpha joined the game", which a server with NO plugin
+        # installed prints anyway, and the trailing mojibake made the pattern
+        # depend on the ANSI decoding of this file rather than on the payload.
+        # Anchoring to the "NovaChat" brand token (every platform's message
+        # prefix / help header -- see Test-PluginEvidence) means the line can
+        # only come from the plugin.
+        $l1Evidence = Test-PluginEvidence $rows
+
+        # Chat round-trip: the phrase must come back as a system message
+        # ('messagestr'), never as the plain 'chat' kind. The bot's own sent
+        # rows are already gone (Get-BotReceivedRows).
+        #
+        # Vanilla re-broadcasts a player's own chat line to the sender: a bot
+        # that types "hello from e2e bot" into an empty server receives
+        # "<E2E_Bot_Alpha> hello from e2e bot" back with no plugin involved.
+        # The original loop accepted exactly that row, so the round-trip flag
+        # was true on a bare server too. Verified against the recorded payload
+        # in .e2e-artifacts/joint/20261021-113425: a NovaChat-routed line lands
+        # as 'messagestr' in the configured channel format
+        # ("[Global] <name>: <text>"), while the vanilla echo is the only row of
+        # kind 'chat'. Requiring the non-'chat' kind is what separates the two.
         $chatEvidence = $false
-        foreach ($r in $results.received) {
-          if ($r.kind -eq "messagestr" -and $r.raw -match "(?i)(NovaChat|nc help|join|leave|妫版垿浜?") { $l1Evidence = $true }
-          if ($r.kind -eq "messagestr" -and $r.raw -match [regex]::Escape($def.ChatPhrase)) { $chatEvidence = $true }
-          if ($r.kind -eq "chat" -and $r.raw -match [regex]::Escape($def.ChatPhrase)) { $chatEvidence = $true }
+        foreach ($r in $rows) {
+          if ($r.kind -eq "messagestr" -and
+              $r.raw -match [regex]::Escape($def.ChatPhrase)) { $chatEvidence = $true }
         }
+
         $result.l1Pass = $l1Evidence
         $result.chatRoundTrip = $chatEvidence
         if ($l1Evidence -and $chatEvidence) {
           $result.status = "PASS"
         } elseif ($l1Evidence) {
-          $result.status = "PARTIAL"; $result.notes = "L1 ok but chat round-trip phrase not echoed"
+          # PARTIAL deliberately does NOT gate -- decision, not an oversight:
+          #
+          # 1. This orchestrator never provisions the PLUGIN side of the
+          #    handshake. start-backend.ps1 writes novalink.yml with a random
+          #    {{CLIENT_PASSWORD}} on the default port 27905, and neither it
+          #    nor start-server.ps1 writes plugins/NovaChat/config.yml (JSON
+          #    for LeviLamina, HOCON for Sponge). The plugin therefore keeps
+          #    its bundled template -- username "Survival_Server", port 8888 --
+          #    and can NEVER authenticate against this backend. The chat
+          #    round-trip is unreachable here by construction, on every
+          #    platform, regardless of plugin health.
+          # 2. Under that condition PARTIAL is exactly what a healthy plugin
+          #    produces: it did load and answered /nc help, but has no backend
+          #    to route through. Gating on PARTIAL would paint every platform
+          #    red for a harness gap, which is the same class of dishonest
+          #    signal as the vacuous PASS this change removes.
+          #
+          # Consequence, stated plainly: PASS here means "plugin loaded and
+          # answered a command", NOT "chat round-trip verified". The
+          # self-contained run-<platform>-e2e.ps1 scripts are the ones that
+          # provision credentials and gate on the backend link.
+          $result.status = "PARTIAL"; $result.notes = "plugin answered a command, but chat round-trip not echoed (plugin-side backend credentials are not provisioned by this orchestrator)"
         } else {
-          $result.status = "FAIL"; $result.notes = "no L1 evidence in results.json"
+          $result.status = "FAIL"; $result.notes = "no plugin-produced line in results.json (only vanilla traffic)"
         }
       } else {
         $result.status = "FAIL"; $result.notes = "results.json could not be parsed"
