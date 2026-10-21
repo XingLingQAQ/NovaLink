@@ -1322,8 +1322,13 @@ online-mode=false
 motd=NovaChat-Joint-$platform
 level-name=world
 level-type=minecraft\:flat
-gamemode=survival
-difficulty=easy
+# Peaceful + creative: the bots stand still for minutes waiting on
+# handoffs, and on easy/survival a slime kills them mid-scenario. A
+# death resets the player connection state, which then shows up as
+# SENDER_NOT_IN_CHANNEL on the next chat line and reads like a
+# moderation bug.
+gamemode=creative
+difficulty=peaceful
 spawn-protection=0
 view-distance=4
 simulation-distance=4
@@ -1351,8 +1356,13 @@ max-players=5
 motd=NovaChat-Joint-$platform
 level-name=world
 level-type=minecraft\:flat
-gamemode=survival
-difficulty=easy
+# Peaceful + creative: the bots stand still for minutes waiting on
+# handoffs, and on easy/survival a slime kills them mid-scenario. A
+# death resets the player connection state, which then shows up as
+# SENDER_NOT_IN_CHANNEL on the next chat line and reads like a
+# moderation bug.
+gamemode=creative
+difficulty=peaceful
 pvp=false
 spawn-protection=0
 view-distance=4
@@ -3889,8 +3899,23 @@ function Invoke-Round($round, [string]$roundDir) {
         @{ id = 'mod-ban-join-refused'; action = 'expect'; token = 'NC-403'; timeoutMs = 15000 },
         @{ id = 'mod-banned-ack'; action = 'handoffSet'; key = 'ackbanned'; pattern = 'joint-bedrock-to-java' },
         @{ id = 'mod-wait-unbanned'; action = 'handoffGet'; key = 'unbanned'; timeoutMs = 200000 },
+        # Order matters: the ban evicted this player and the join above was
+        # refused, so the target is NOT a member right now. Speaking before
+        # rejoining is dropped as SENDER_NOT_IN_CHANNEL - measured: the unban
+        # line was discarded while the authority had already logged the unban,
+        # because the rejoin had not happened yet. Rejoin first, then speak.
+        @{ id = 'mod-unban-rejoin'; action = 'cmd'; text = '/nc join global' },
+        # The join is asynchronous: the authority records membership when it
+        # processes the JOIN, and a line sent before that lands is dropped as
+        # SENDER_NOT_IN_CHANNEL. 3 s was not enough on a loaded run (measured:
+        # the rejoin line was dropped 0 ms after /nc join was issued). Wait for
+        # the join to actually complete instead of guessing.
+        @{ id = 'mod-unban-rejoin-settle'; action = 'expect'; token = 'Joined channel'; timeoutMs = 20000 },
         @{ id = 'mod-unban'; action = 'chat'; text = "mod unban $($modToken['unban'])" },
-        @{ id = 'mod-unban-ack'; action = 'handoffSet'; key = 'ackunban'; pattern = 'joint-bedrock-to-java' },
+        # The ack rides the join's own success line (the settle above already
+        # waited for it): after a ban the player is out of the channel, so
+        # nothing he says reaches anyone until the rejoin completes.
+        @{ id = 'mod-unban-ack'; action = 'handoffSet'; key = 'ackunban'; pattern = 'Joined channel' },
         @{ id = 'mod-wait-denied'; action = 'handoffGet'; key = 'deniedgo'; timeoutMs = 200000 },
         @{ id = 'mod-denied'; action = 'chat'; text = "mod denied $($modToken['denied'])" },
         @{ id = 'mod-denied-ack'; action = 'handoffSet'; key = 'ackdenied'; pattern = 'joint-bedrock-to-java' },
