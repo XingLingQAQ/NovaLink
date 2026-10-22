@@ -343,8 +343,9 @@ jobs:
       #       already dead. It has to run as a workflow step, after the run.
       #
       #   (b) AGGRAVATING CAUSE -- the archiver read files that were still
-      #       being appended to. A live server writing its log while yazl
-      #       streams it is a read/write race on Windows.
+      #       being appended to. upload-artifact@v4 zips with the `archiver`
+      #       package, and a live server writing its log while that stream
+      #       reads it is a read/write race on Windows.
       #
       #   Plus size: the folia run dir held 196 files / ~160 MB streamed, and
       #   108 of those files were *.jar (cache/mojang_26.1.2.jar alone is
@@ -403,6 +404,24 @@ jobs:
             $cursor = $next
           }
 
+          # The executable-name allowlist has to cover EVERY server family the
+          # harness launches, not just java. These are the real launch targets:
+          #   java / javaw    -- bukkit, folia, nukkit, pnx, sponge, velocity,
+          #                      bungee, and the NovaLink backend for the
+          #                      bedrock platforms (all via start-server.ps1)
+          #   node            -- the mineflayer / bedrock-protocol bots
+          #   bedrock_server  -- endstone's BDS host and LeviLamina's BDS
+          #   LeviLamina*     -- the LeviLamina launcher exe, preferred over BDS
+          #                      when present (run-levilamina-e2e.ps1 line ~371)
+          #   endstone        -- the venv console script at
+          #                      runs/endstone/endstone-venv/Scripts/endstone.exe
+          #   python          -- endstone's fallback launcher (-m endstone) and
+          #                      the venv interpreter itself
+          #   php             -- pmmp's bundled runtime at
+          #                      dist/php-runtime/bin/php/php.exe
+          # Every one of those paths sits under the workspace, so the
+          # workspace condition below still gates them all.
+          #
           # Two match shapes are needed, because the two families of process are
           # launched differently:
           #
@@ -417,10 +436,14 @@ jobs:
           #     A path-only filter silently misses the bots, which are exactly
           #     the processes holding bot-results.json open. Match their script
           #     name instead, under the node executable name.
-          $botScript = '(^|[\\/"''])(run-e2e(-bedrock)?\.js)($|[\\/"''])'
+          # The delimiter class must include whitespace: the harness launches
+          # the bot as `Start-Process -FilePath "node" -ArgumentList @("run-e2e.js")`,
+          # so the recorded command line is literally "node.exe" run-e2e.js --
+          # space-separated, no path, no quote around the script name.
+          $botScript = '(^|[\s\\/"''])(run-e2e(-bedrock)?\.js)($|[\s\\/"''])'
 
           $targets = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-            $nameOk = $_.Name -match '^(java|javaw|node|bedrock_server)(\.exe)?$'
+            $nameOk = $_.Name -match '^(java|javaw|node|bedrock_server|levilamina[^\\/]*|endstone|python|pythonw|php)(\.exe)?$'
             $nameOk -and
             -not $protected.Contains([int]$_.ProcessId) -and
             (
@@ -467,6 +490,12 @@ jobs:
           #   *.mca/*.mcr         -- world region binaries (memory-mapped while
           #                          the server runs; the classic EBUSY source)
           #   *.dat/*.nbt/*.zip   -- world/leveldb/archive binaries
+          #   NNNNNN.log          -- LevelDB write-ahead journals. These DO end
+          #                          in .log, so a pure extension whitelist picks
+          #                          them up, but they are binary, memory-mapped
+          #                          by a live server and empty of diagnostics.
+          #                          Only *.log under world/ and players/ dirs is
+          #                          affected; server logs keep their name.
           #   dist/               -- multi-hundred-MB server-binary cache
           #   *.exe/*.dll/*.so    -- server/plugin native payloads
           # Kept: *.log, *.txt (includes skip-reason.txt and eula.txt),
@@ -482,6 +511,7 @@ jobs:
               ($full -notmatch '[\\/]logs-only[\\/]') -and
               ($full -notmatch '[\\/]libraries[\\/]') -and
               ($binaryExt -notcontains $_.Extension.ToLowerInvariant()) -and
+              -not ($_.Name -match '^\d+\.log$') -and
               (
                 ($_.Extension -ieq '.log') -or
                 ($_.Extension -ieq '.txt') -or
@@ -535,14 +565,11 @@ jobs:
             return 'locked'
           }
 
-          $copied = 0
           $locked = 0
           foreach ($f in $candidates) {
             $relative = $f.FullName.Substring($srcRoot.Length).TrimStart('\', '/')
             $destination = Join-Path $dstRoot $relative
-            if ((Copy-Shared -Source $f.FullName -Destination $destination) -eq 'copied') {
-              $copied++
-            } else {
+            if ((Copy-Shared -Source $f.FullName -Destination $destination) -ne 'copied') {
               $locked++
             }
           }
@@ -560,6 +587,12 @@ jobs:
           if ($copiedFiles.Count -eq 0) {
             Write-Host '[collect] WARNING: no diagnostic files were copied; the artifact will be empty.'
           }
+
+          # Never fail this step. It runs on a job that already failed, and a
+          # red collection step would replace the real error in the annotation.
+          # A stray non-zero exit from a .NET call would otherwise leak out
+          # through pwsh's $LASTEXITCODE.
+          exit 0
 
       # ---------------------------------------------------------------------
       # On failure (or cancellation), upload the clean directory built above:
