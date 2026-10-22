@@ -22,7 +22,9 @@
 #   velocity -> velocity  (JDK 25, no EULA -- 4.x classes are class-file 69.0)
 #   bungee   -> waterfall (JDK 21, no EULA, backgrounded; original
 #                          .e2e/bin/start-waterfall.ps1 ran in foreground)
-#   sponge   -> spongevanilla (JDK 21, no EULA -- bootstrap is class-file 65.0)
+#   sponge   -> spongevanilla (JDK 21, EULA required -- SpongeVanilla derives
+#                          from the vanilla server, which refuses to boot without
+#                          an accepted eula.txt just like Purpur/Folia)
 #   nukkit   -> nukkit    (JDK 21, no EULA)
 #   pnx      -> nukkit    (JDK 21, no EULA; PNX runs on the Cloudburst Nukkit
 #                          server jar -- see .e2e/bin/start-pnx.ps1 caveat)
@@ -65,7 +67,7 @@ $PlatformMap = @{
     folia    = @{ LockName='folia';    SubDir='folia';   Eula=$true;  ReadyPattern='Done \(' }
     velocity = @{ LockName='velocity'; SubDir='velocity'; Eula=$false; ReadyPattern='Listening|Booting|Started|Done' }
     bungee   = @{ LockName='waterfall'; SubDir='bungee'; Eula=$false; ReadyPattern='Listening' }
-    sponge   = @{ LockName='sponge';    SubDir='sponge';  Eula=$false; ReadyPattern='Sponge.*started|Done \(' }
+    sponge   = @{ LockName='sponge';    SubDir='sponge';  Eula=$true;  ReadyPattern='Sponge.*started|Done \(' }
     nukkit   = @{ LockName='nukkit';   SubDir='nukkit';  Eula=$false; ReadyPattern='Done|server.*started|Nukkit.*started|Loading.*complete|Listening' }
     pnx      = @{ LockName='nukkit';   SubDir='pnx';     Eula=$false; ReadyPattern='Done|server.*started|Nukkit.*started|Loading.*complete|Listening' }
 }
