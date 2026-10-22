@@ -324,9 +324,249 @@ jobs:
           }
 
       # ---------------------------------------------------------------------
-      # On failure (or cancellation), upload the E2E artifacts for post-mortem:
+      # Build a clean, small directory to upload.
+      #
+      # WHY THIS STEP EXISTS (run 39572033485, job "E2E folia"):
+      #   The upload step died with
+      #     Error: EBUSY: resource busy or locked, read
+      #   while zipping `.e2e-artifacts/runs/`. Two things were true at once:
+      #
+      #   (a) ENABLING CAUSE -- server JVMs were still alive. Folia hit the
+      #       Gradle 30-minute task timeout, which killed the orchestrator's
+      #       process TREE. The orchestrator's own teardown never ran (its log
+      #       has zero "teardown"/"TRAP" lines, unlike sponge's), so the JVM
+      #       kept its handles on the server's stdout/stderr logs and on the
+      #       memory-mapped world region files. The runner only killed those
+      #       orphans at 09:20:23 -- two seconds AFTER the upload failed at
+      #       09:20:21. Collection therefore cannot live in the orchestrator:
+      #       in exactly the failure mode we care about, the orchestrator is
+      #       already dead. It has to run as a workflow step, after the run.
+      #
+      #   (b) AGGRAVATING CAUSE -- the archiver read files that were still
+      #       being appended to. A live server writing its log while yazl
+      #       streams it is a read/write race on Windows.
+      #
+      #   Plus size: the folia run dir held 196 files / ~160 MB streamed, and
+      #   108 of those files were *.jar (cache/mojang_26.1.2.jar alone is
+      #   60 MB, plus the whole libraries/ tree). None of it is diagnostic
+      #   value, and all of it is what made the zip slow enough to lose the
+      #   race. pnx timed out too, but its run dir was 17 files of pure logs,
+      #   so its upload succeeded -- same bug, smaller blast radius.
+      #
+      # So: kill the stragglers first (removes both (a) and the race in (b)),
+      # then copy ONLY the diagnostic whitelist into a separate directory with
+      # FileShare.ReadWrite (survives a writer that is still appending), then
+      # upload only that directory. Locked files are retried and, if they stay
+      # locked, skipped -- never fatal: this step runs on an already-failing
+      # job and must not replace the real error with its own.
+      # ---------------------------------------------------------------------
+      - name: Collect E2E logs (kill stragglers, copy whitelist)
+        if: failure() || cancelled()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $ws = if ($env:GITHUB_WORKSPACE) { $env:GITHUB_WORKSPACE } else { (Get-Location).Path }
+          $ws = (Resolve-Path -LiteralPath $ws).Path.TrimEnd('\', '/')
+          $wsLower = $ws.ToLowerInvariant()
+          $srcRoot = Join-Path $ws '.e2e-artifacts'
+          $dstRoot = Join-Path $srcRoot 'logs-only'
+
+          Write-Host "=== [collect] workspace: $ws ==="
+          if (-not (Test-Path -LiteralPath $srcRoot)) {
+            Write-Host '[collect] .e2e-artifacts does not exist; nothing to collect'
+            exit 0
+          }
+
+          # --- 1. kill residual server processes INSIDE the workspace ---------
+          # The java/node executables live in the hosted tool cache and in
+          # Program Files, NOT under the workspace, so filtering on
+          # ExecutablePath alone would match nothing. Match a known server
+          # executable name AND require either its executable path or its
+          # command line to mention the workspace root -- every E2E server,
+          # backend and bot is launched with a jar/script/classpath under it.
+          # This is what keeps the step from killing the runner's own helpers
+          # or any unrelated java/node on the host.
+          #
+          # The ancestors of THIS process are protected explicitly: a broad
+          # name+path match must never take down the runner worker that is
+          # about to upload the result.
+          $protected = New-Object 'System.Collections.Generic.HashSet[int]'
+          [void]$protected.Add($PID)
+          $cursor = $PID
+          for ($depth = 0; $depth -lt 12; $depth++) {
+            $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$cursor" -ErrorAction SilentlyContinue
+            if (-not $parent) { break }
+            $next = [int]$parent.ParentProcessId
+            if ($next -le 0) { break }
+            [void]$protected.Add($next)
+            $cursor = $next
+          }
+
+          # Two match shapes are needed, because the two families of process are
+          # launched differently:
+          #
+          #   java servers/backends -- start-server.ps1 / start-backend.ps1 pass
+          #     an ABSOLUTE jar/classpath/config path, so CommandLine contains
+          #     the workspace root. Path or command line both work here.
+          #
+          #   node bots -- run-multiplatform-e2e.ps1 launches `node run-e2e.js`
+          #     with the workspace as the working directory only. Win32_Process
+          #     exposes no WorkingDirectory, so neither ExecutablePath (node
+          #     lives in the tool cache) nor CommandLine mentions the workspace.
+          #     A path-only filter silently misses the bots, which are exactly
+          #     the processes holding bot-results.json open. Match their script
+          #     name instead, under the node executable name.
+          $botScript = '(^|[\\/"''])(run-e2e(-bedrock)?\.js)($|[\\/"''])'
+
+          $targets = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $nameOk = $_.Name -match '^(java|javaw|node|bedrock_server)(\.exe)?$'
+            $nameOk -and
+            -not $protected.Contains([int]$_.ProcessId) -and
+            (
+              ($_.ExecutablePath -and $_.ExecutablePath.ToLowerInvariant().StartsWith($wsLower)) -or
+              ($_.CommandLine    -and $_.CommandLine.ToLowerInvariant().Contains($wsLower)) -or
+              (
+                $_.Name -match '^node(\.exe)?$' -and
+                $_.CommandLine -and
+                $_.CommandLine -match $botScript
+              )
+            )
+          })
+
+          Write-Host ("[collect] residual server process(es) inside the workspace: {0}" -f $targets.Count)
+          foreach ($t in $targets) {
+            Write-Host ("[collect]   stopping pid {0} ({1})" -f $t.ProcessId, $t.Name)
+            try {
+              Stop-Process -Id ([int]$t.ProcessId) -Force -ErrorAction Stop
+            } catch {
+              Write-Host ("[collect]   could not stop pid {0}: {1}" -f $t.ProcessId, $_.Exception.Message)
+            }
+          }
+
+          # Wait for the killed processes to actually go away, so their file
+          # handles are released before we copy. Bounded: a process stuck in a
+          # native shutdown must not hang the job.
+          if ($targets.Count -gt 0) {
+            $deadline = (Get-Date).AddSeconds(20)
+            do {
+              Start-Sleep -Milliseconds 500
+              $still = @($targets | Where-Object {
+                Get-Process -Id ([int]$_.ProcessId) -ErrorAction SilentlyContinue
+              })
+            } while ($still.Count -gt 0 -and (Get-Date) -lt $deadline)
+            Write-Host ("[collect] handle-release wait finished; still alive: {0}" -f $still.Count)
+            # A short settle period for the OS to drop the last handle after
+            # the process object is gone (memory-mapped regions linger briefly).
+            Start-Sleep -Seconds 2
+          }
+
+          # --- 2. copy the diagnostic whitelist -------------------------------
+          # Excluded on purpose:
+          #   *.jar + libraries/  -- ~1.6 GB of dependency jars, zero value
+          #   *.mca/*.mcr         -- world region binaries (memory-mapped while
+          #                          the server runs; the classic EBUSY source)
+          #   *.dat/*.nbt/*.zip   -- world/leveldb/archive binaries
+          #   dist/               -- multi-hundred-MB server-binary cache
+          #   *.exe/*.dll/*.so    -- server/plugin native payloads
+          # Kept: *.log, *.txt (includes skip-reason.txt and eula.txt),
+          # bot-results.json and the run summary JSON.
+          $binaryExt = @('.jar', '.mca', '.mcr', '.dat', '.nbt', '.zip', '.phar',
+                         '.exe', '.dll', '.so', '.dylib', '.class', '.pdb')
+          $keepNames = @('bot-results.json', 'e2e-orchestrator-summary.json', 'e2e-summary.json')
+
+          $candidates = @(Get-ChildItem -LiteralPath $srcRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
+            Where-Object {
+              $full = $_.FullName
+              ($full -notmatch '[\\/]dist[\\/]') -and
+              ($full -notmatch '[\\/]logs-only[\\/]') -and
+              ($full -notmatch '[\\/]libraries[\\/]') -and
+              ($binaryExt -notcontains $_.Extension.ToLowerInvariant()) -and
+              (
+                ($_.Extension -ieq '.log') -or
+                ($_.Extension -ieq '.txt') -or
+                ($keepNames -contains $_.Name) -or
+                ($_.Name -like '*summary*.json')
+              )
+            })
+
+          Write-Host ("[collect] whitelisted candidate file(s): {0}" -f $candidates.Count)
+
+          # Start from a clean slate so a retried/cancelled job cannot mix a
+          # previous attempt's copies into this artifact.
+          if (Test-Path -LiteralPath $dstRoot) {
+            Remove-Item -LiteralPath $dstRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          New-Item -ItemType Directory -Force -Path $dstRoot | Out-Null
+
+          # Copy one file through an explicit handle opened with
+          # FileShare.ReadWrite. This is the "shared read" fallback: a server
+          # still appending to its own log keeps FILE_SHARE_READ|WRITE, so this
+          # open succeeds where a plain File.Copy (which asks for exclusive
+          # access) would fail with EBUSY. On a genuine sharing violation we
+          # retry a few times and then skip the file without failing the step.
+          function Copy-Shared {
+            param([string]$Source, [string]$Destination)
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              $inStream = $null
+              $outStream = $null
+              try {
+                $dir = Split-Path -Parent $Destination
+                if (-not (Test-Path -LiteralPath $dir)) {
+                  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+                }
+                $inStream = [System.IO.File]::Open(
+                  $Source,
+                  [System.IO.FileMode]::Open,
+                  [System.IO.FileAccess]::Read,
+                  [System.IO.FileShare]::ReadWrite)
+                $outStream = [System.IO.File]::Create($Destination)
+                $inStream.CopyTo($outStream)
+                return 'copied'
+              } catch {
+                $lastError = $_.Exception.Message
+                Start-Sleep -Milliseconds (400 * $attempt)
+              } finally {
+                if ($outStream) { $outStream.Dispose() }
+                if ($inStream)  { $inStream.Dispose() }
+              }
+            }
+            Write-Host ("[collect]   LOCKED, skipped (shared read failed): {0} :: {1}" -f $Source, $lastError)
+            return 'locked'
+          }
+
+          $copied = 0
+          $locked = 0
+          foreach ($f in $candidates) {
+            $relative = $f.FullName.Substring($srcRoot.Length).TrimStart('\', '/')
+            $destination = Join-Path $dstRoot $relative
+            if ((Copy-Shared -Source $f.FullName -Destination $destination) -eq 'copied') {
+              $copied++
+            } else {
+              $locked++
+            }
+          }
+
+          # --- 3. report count + total size ----------------------------------
+          $copiedFiles = @(Get-ChildItem -LiteralPath $dstRoot -Recurse -File -Force -ErrorAction SilentlyContinue)
+          $totalBytes = ($copiedFiles | Measure-Object -Property Length -Sum).Sum
+          if (-not $totalBytes) { $totalBytes = 0 }
+          Write-Host ('[collect] copied {0} file(s), {1:N2} MB total ({2} locked/skipped), into {3}' -f `
+            $copiedFiles.Count, ($totalBytes / 1MB), $locked, $dstRoot)
+          if ($locked -gt 0) {
+            Write-Host ('[collect] WARNING: {0} file(s) stayed locked after the process kill; they are missing from the artifact.' -f $locked)
+          }
+          # Top-level sanity check for the artifact step that follows.
+          if ($copiedFiles.Count -eq 0) {
+            Write-Host '[collect] WARNING: no diagnostic files were copied; the artifact will be empty.'
+          }
+
+      # ---------------------------------------------------------------------
+      # On failure (or cancellation), upload the clean directory built above:
       # per-platform server/backend/bot logs, plugin-build logs, bot results and
-      # the run summary.
+      # the run summary -- and nothing else. The upload no longer walks the run
+      # directories, so it cannot trip over a live server's *.jar or a
+      # memory-mapped world region file.
       #
       # include-hidden-files: true is REQUIRED, not cosmetic. The whole tree
       # lives under `.e2e-artifacts`, a dot-prefixed (hidden) directory, and
@@ -342,10 +582,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-${{ matrix.platform }}-${{ github.run_id }}
-          path: |
-            .e2e-artifacts/runs/
-            .e2e-artifacts/*.log
-            **/bot-results.json
+          path: .e2e-artifacts/logs-only/
           include-hidden-files: true
           # warn (not ignore): if a job dies before writing anything, an
           # annotation saying so is the diagnostic, not noise.
