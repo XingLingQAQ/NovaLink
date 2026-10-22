@@ -25,8 +25,20 @@ dependencies {
     compileOnly "org.projectlombok:lombok:${lombokVersion}"
     annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
     implementation "com.google.code.gson:gson:${gsonVersion}"
-    implementation 'org.spongepowered:configurate-hocon:4.2.0'
-    implementation 'org.spongepowered:configurate-yaml:4.2.0'
+    // Configurate MUST stay host-provided. Sponge injects
+    // ConfigurationLoader<CommentedConfigurationNode> (@DefaultConfig) into the
+    // plugin constructor; if we shade+relocate configurate the plugin's
+    // ConfigurationLoader type is a DIFFERENT class from the one Sponge's Guice
+    // module binds, and injection fails at plugin construction with
+    // "No implementation for ConfigurationLoader<...> annotated with
+    // @DefaultConfig(sharedRoot=false) was bound". The SpongeVanilla server
+    // already ships configurate-core/-hocon/-yaml/-gson 4.2.0 in libraries/, so
+    // compileOnly is both correct and sufficient (same version as the server).
+    // Shading it also made the plugin's automatic module export
+    // org.spongepowered.configurate.* / io.netty.util.internal, colliding with
+    // the server's own modules at module-layer resolution.
+    compileOnly 'org.spongepowered:configurate-hocon:4.2.0'
+    compileOnly 'org.spongepowered:configurate-yaml:4.2.0'
 
     // Logging
     implementation "org.slf4j:slf4j-api:${slf4jVersion}"
@@ -61,10 +73,13 @@ shadowJar {
     archiveClassifier.set('')
     archiveBaseName.set('NovaChat-Sponge')
     
-    // Relocate dependencies to avoid conflicts
+    // Relocate dependencies to avoid conflicts.
+    // NOTE: configurate is deliberately NOT relocated and NOT shaded — it is
+    // host-provided (see the compileOnly comment in the dependencies block).
+    // Relocating it rewrote the types Sponge's Guice binds, so injection of
+    // @DefaultConfig ConfigurationLoader<CommentedConfigurationNode> failed.
     relocate 'io.netty', 'com.nova.chat.sponge.libs.netty'
     relocate 'com.google.gson', 'com.nova.chat.sponge.libs.gson'
-    relocate 'org.spongepowered.configurate', 'com.nova.chat.sponge.libs.configurate'
     relocate 'com.typesafe.config', 'com.nova.chat.sponge.libs.typesafeconfig'
     relocate 'org.yaml.snakeyaml', 'com.nova.chat.sponge.libs.snakeyaml'
     relocate 'io.leangen.geantyref', 'com.nova.chat.sponge.libs.geantyref'
@@ -73,18 +88,35 @@ shadowJar {
     exclude 'META-INF/*.SF'
     exclude 'META-INF/*.DSA'
     exclude 'META-INF/*.RSA'
-    
+
+    // The shaded dependencies ship JPMS descriptors. Shipping them (or the
+    // Multi-Release copies under META-INF/versions) makes the plugin jar look
+    // like a modular jar whose exports collide with the server's own modules.
+    exclude 'module-info.class'
+    exclude 'META-INF/versions/*/module-info.class'
+
+    // Relocation rewrites class files but NOT these ServiceLoader descriptors,
+    // so they keep naming the pre-relocation providers. A descriptor that names
+    // a class which is not in the jar makes the JVM reject the module outright:
+    //   "Provider class org.spongepowered.configurate.hocon.HoconConfigurationFormat
+    //    not in JAR file"  ->  "Module format not recognized"
+    // which surfaced as
+    //   "ResolutionException: Modules novachat and io.netty.common export package
+    //    io.netty.util.internal to module org.spongepowered.configurate.gson"
+    // Both providers are irrelevant here: configurate is now host-provided, and
+    // the plugin never uses Netty's BlockHound integration.
+    exclude 'META-INF/services/org.spongepowered.configurate.loader.ConfigurationFormat'
+    exclude 'META-INF/services/reactor.blockhound.integration.BlockHoundIntegration'
+
     dependencies {
         // Include common
         include(project(':NovaChat:common'))
         include(project(':NovaChat:client-core'))
-        // Include runtime dependencies
+        // Include runtime dependencies. configurate-* is intentionally absent:
+        // it is host-provided and must not be shaded (see dependencies block).
         include(dependency('io.netty:.*'))
         include(dependency('com.google.code.gson:gson'))
-        include(dependency('org.spongepowered:configurate-.*'))
-        include(dependency('com.typesafe:config'))
         include(dependency('org.yaml:snakeyaml'))
-        include(dependency('io.leangen.geantyref:geantyref'))
     }
 }
 
