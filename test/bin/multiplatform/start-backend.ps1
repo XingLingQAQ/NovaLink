@@ -92,14 +92,22 @@ $stderr = Join-Path $novaDir "stderr.log"
 $pidFile = Join-Path $novaDir "backend.pid"
 Remove-Item $stdout, $stderr -ErrorAction SilentlyContinue
 
-# NOTE: Start-Process is retained deliberately. It throws on hosts whose
-# environment holds two variables differing only by case ('NO_PROXY' vs
-# 'no_proxy', a common side effect of proxy configuration), but CI runners do
-# not have that shape and this script must not be restructured to suit one dev
-# box. The obvious replacements are worse here: routing through cmd.exe would
-# make the recorded PID the wrapper rather than the JVM, so Teardown-All's
-# Stop-Process would kill the wrapper and leave java holding the ports.
-$proc = Start-Process -FilePath $java -ArgumentList @("-cp", $cp, "com.nova.link.NovaLinkMain", $novaYml) `
+# --daemon: the backend's default mode runs the JLine console loop on the main
+# thread. Here the JVM is started with redirected stdout/stderr and a stdin
+# handle inherited from this PowerShell process; the console reads EOF from
+# that handle immediately, prints "EOF received, shutting down...", and exits
+# about a second after "started successfully" -- long before the Minecraft
+# server and bot can connect. That is the failure this flag removes: in daemon
+# mode NovaLinkMain never touches stdin and instead blocks on a latch that only
+# the JVM shutdown hook releases, so the backend stays alive until this script's
+# caller stops it (Stop-Process -> SIGTERM/terminate -> shutdown hook).
+#
+# Start-Process is retained deliberately: its FILE redirection keeps the JVM
+# writing directly to stdout.log/stderr.log (a pipe would keep the read end
+# blocked on a long-lived child), and -PassThru gives the real JVM pid rather
+# than a cmd.exe/powershell wrapper pid -- Teardown-All's Stop-Process must hit
+# java itself or the wrapper dies and java keeps holding 27905/34573.
+$proc = Start-Process -FilePath $java -ArgumentList @("-cp", $cp, "com.nova.link.NovaLinkMain", $novaYml, "--daemon") `
     -WorkingDirectory $novaDir -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
 $proc.Id | Set-Content -Encoding ascii $pidFile
 Log "backend started (pid=$($proc.Id), port=$NovaPort, ws=$NovaWsPort)"

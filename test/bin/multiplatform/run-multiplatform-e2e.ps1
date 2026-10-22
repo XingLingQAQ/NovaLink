@@ -83,6 +83,21 @@ if (-not $SummaryFile) { $SummaryFile = Join-Path $RepoRoot ".e2e-artifacts/runs
 $ConfDir = Join-Path $RepoRoot "test/conf"
 $ClassPathFile = Join-Path $RepoRoot ".e2e-artifacts/novalink-core.classpath.txt"
 . (Join-Path (Split-Path -Parent $BinDir) 'e2e-assertions.ps1')
+# versions.lock.ps1 supplies Get-LockedServer, which the bot-version selection
+# below calls to pick E2E_MC_VERSION. That file is dot-sourced here rather than
+# left to the caller: run-e2e-orchestrator.ps1 invokes this script as a separate
+# `powershell.exe -File` process (see its dispatch section), so nothing it
+# dot-sourced would cross the process boundary anyway. Without this line every
+# Java platform aborted at "starting bot" with "Get-LockedServer is not
+# recognized" and the failure surfaced only as a bare "UNKNOWN" diagnostic.
+$lockScript = Join-Path $RepoRoot "test/versions.lock.ps1"
+if (-not (Test-Path -LiteralPath $lockScript)) {
+  # Log is defined further down; this runs during initialisation, so use the
+  # plain host writer to avoid "Log is not recognized" masking the real error.
+  Write-Host "ERROR: versions.lock.ps1 not found: $lockScript"
+  exit 2
+}
+. $lockScript
 
 # --- resolve the three JDKs --------------------------------------------------
 # Order of preference, per JDK:
@@ -172,10 +187,17 @@ function Stop-TrackedPid([int]$procId, [string]$label) {
 function Teardown-All {
   Log "--- teardown: stopping $($global:Pids.Count) tracked process(es) ---"
   # stop in reverse order (bots/servers first, backends last)
-  for ($i = $global:Pids.Count - 1; $i -ge 0; $i--) {
-    $pid = $global:Pids[$i]
-    $label = $global:PidLabels[$pid]
-    Stop-TrackedPid $pid $label
+  #
+  # The loop variable must NOT be named $pid: $pid is PowerShell's automatic
+  # read-only "current process id" variable, so `$pid = ...` throws
+  # SessionStateUnauthorizedAccessException on the FIRST iteration. That aborted
+  # this loop before Stop-TrackedPid ran even once, which is why every run
+  # reported "stopping 0 tracked process(es)" and left its backend JVM and
+  # server alive after the orchestrator exited. Verified on this host:
+  #   try { $pid = 1 } catch { -> SessionStateUnauthorizedAccessException }
+  foreach ($trackedId in @($global:Pids)) {
+    $label = $global:PidLabels[$trackedId]
+    Stop-TrackedPid $trackedId $label
   }
   $global:Pids.Clear()
   $global:PidLabels.Clear()
@@ -201,6 +223,26 @@ function Invoke-StartScript([string]$scriptPath, [string]$label, [string[]]$extr
   # pipe redirection the write end stays open in the JVM, so reading to EOF
   # would block forever and this function would hang instead of returning a PID.
   # Files close cleanly because the JVM writes to the file directly.
+  #
+  # DO NOT use -Wait here. -Wait does not wait for the child: it waits for the
+  # child AND every process the child left behind, i.e. it blocks until the
+  # grandchild's stdout/stderr handles close. The grandchild here is the backend
+  # JVM that start-backend.ps1 launches with --daemon -- it lives until teardown,
+  # so -Wait made this function sit silent for the whole run while the backend
+  # was already up (the "29 minutes of silence" symptom on folia). Measured on
+  # this host with a launcher that spawns a 20s grandchild and exits:
+  # -Wait returned after 22.1s, -PassThru + WaitForExit() after 0.8s. The PID
+  # must be parsed as soon as the launcher exits, so use WaitForExit().
+  #
+  # ExitCode is NULL with this form on Windows PowerShell 5.1 (measured here:
+  # a launcher exiting 0 and one exiting 7 BOTH read back as $null). PowerShell
+  # only populates ExitCode when -Wait keeps the child handle open. `$null -ne 0`
+  # is TRUE in PowerShell, so the old `if ($proc.ExitCode -ne 0)` treated every
+  # SUCCESSFUL launch as a failure -- the orchestrator reported "backend start
+  # failed" for a backend that was up and listening on 27905, and because the
+  # PID was never returned the JVM was never tracked and never torn down. Only
+  # an OBSERVED non-zero code is a failure; $null means "unknown", and the PID=
+  # marker decides success instead.
   $outFile = [System.IO.Path]::GetTempFileName()
   $errFile = [System.IO.Path]::GetTempFileName()
   try {
@@ -208,10 +250,15 @@ function Invoke-StartScript([string]$scriptPath, [string]$label, [string[]]$extr
     $proc = Start-Process -FilePath "powershell.exe" `
       -ArgumentList $argList `
       -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
-      -PassThru -NoNewWindow -Wait
+      -PassThru -NoNewWindow
+    # Wait for the launcher script only. The backend JVM it spawned is tracked
+    # by its own PID (printed as BACKEND_PID= by start-backend.ps1) and is torn
+    # down by Stop-TrackedPid, not by this function.
+    $proc.WaitForExit()
+    $exitCode = $proc.ExitCode
     $out = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
-    if ($proc.ExitCode -ne 0) {
-      Log "  $label start script exit=$($proc.ExitCode)"
+    if ($null -ne $exitCode -and $exitCode -ne 0) {
+      Log "  $label start script exit=$exitCode"
       if ($out) { $out -split "`n" | Select-Object -First 5 | ForEach-Object { Log "    OUT: $_" } }
       $err = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
       if ($err) { $err -split "`n" | Select-Object -First 5 | ForEach-Object { Log "    ERR: $_" } }
@@ -222,22 +269,68 @@ function Invoke-StartScript([string]$scriptPath, [string]$label, [string[]]$extr
     if ($pidMatch.Success) {
       return [int]$pidMatch.Groups[1].Value
     }
-    Log "  WARN: no PID= line in $label output: $($out.Trim())"
+    # No PID marker: this is the only reliable failure signal when ExitCode is
+    # unavailable (see the note above), so surface both streams -- a start
+    # script that dies on a missing jar prints its reason to stderr, and a bare
+    # "no PID= line" message sends the reader looking in the wrong place.
+    Log "  WARN: no PID= line in $label output (exitCode=$(if ($null -eq $exitCode) { 'unknown' } else { $exitCode }))"
+    if ($out) { $out -split "`n" | Select-Object -First 8 | ForEach-Object { Log "    OUT: $_" } }
+    $err = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
+    if ($err) { $err -split "`n" | Select-Object -First 8 | ForEach-Object { Log "    ERR: $_" } }
     return -1
   } finally {
     Remove-Item $outFile, $errFile -ErrorAction SilentlyContinue
   }
 }
 
-function Wait-LogMarker([string]$file, [string]$pattern, [int]$timeoutSec, [string]$label) {
-  if (-not (Test-Path $file)) { Log "  ERROR: log file missing for $label ($file)"; return $false }
+# start-server.ps1 does NOT always put the server's working dir under the
+# platform name: it switches on -Platform and uses the PlatformMap's SubDir.
+# bukkit runs Purpur (a Paper fork), so its SubDir is "paper" -- the log lands in
+# <runsDir>/paper/, never in <runsDir>/bukkit/. Reading <runsDir>/<pf> for
+# bukkit therefore polls a file that is never created; Wait-LogMarker used to
+# return false immediately, and the platform then failed after the whole
+# ServerReadySec timeout with "no *.log files" diagnostics, while the server's
+# real output sat unread in runs/bukkit/paper/. Every other platform's SubDir
+# equals its name today (folia/folia, nukkit/nukkit, ...), which is why the
+# mismatch was invisible outside bukkit. Keep this in sync with PlatformMap in
+# start-server.ps1; the candidates below also accept the plain <runsDir>/<pf>
+# layout so a future divergence degrades into "found at the other path" rather
+# than a 480s false timeout.
+$PlatformServerSubDir = @{ bukkit = 'paper' }
+
+function Get-ServerLogCandidates([string]$runsDir, [string]$platform) {
+  $subDir = if ($PlatformServerSubDir.ContainsKey($platform)) { $PlatformServerSubDir[$platform] } else { $platform }
+  # Order matters only when both exist; the first is start-server.ps1's rule.
+  return @(
+    (Join-Path (Join-Path $runsDir $subDir)   "$platform.stdout.log"),
+    (Join-Path (Join-Path $runsDir $platform) "$platform.stdout.log"),
+    (Join-Path $runsDir "$platform.stdout.log")
+  )
+}
+
+function Wait-LogMarker([string[]]$files, [string]$pattern, [int]$timeoutSec, [string]$label) {
+  # Servers create their log a moment after the launcher returns, so "missing"
+  # is only fatal after a grace period -- but it must stay fatal (not degrade
+  # into the full ServerReadySec timeout), because a wrong path is a harness bug,
+  # not a slow server. 20s is well inside every platform's boot time.
+  $graceDeadline = (Get-Date).AddSeconds([Math]::Min(20, [Math]::Max(5, $timeoutSec / 4)))
   $deadline = (Get-Date).AddSeconds($timeoutSec)
+  $missingReported = $false
   while ((Get-Date) -lt $deadline) {
-    $content = Get-Content $file -Raw -ErrorAction SilentlyContinue
-    if ($content -and ($content -match $pattern)) { return $true }
+    foreach ($file in $files) {
+      if (-not (Test-Path -LiteralPath $file)) { continue }
+      $content = Get-Content -LiteralPath $file -Raw -ErrorAction SilentlyContinue
+      if ($content -and ($content -match $pattern)) { return $true }
+    }
+    $anyExists = @($files | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0
+    if (-not $anyExists -and -not $missingReported -and (Get-Date) -gt $graceDeadline) {
+      Log "  ERROR: log file missing for $label; tried: $($files -join ', ')"
+      $missingReported = $true
+      return $false
+    }
     Start-Sleep -Seconds 3
   }
-  Log "  TIMEOUT waiting for $label (pattern: $pattern)"
+  Log "  TIMEOUT waiting for $label (pattern: $pattern; files: $($files -join ', '))"
   return $false
 }
 
@@ -498,11 +591,19 @@ function Invoke-Platform([string]$pf) {
 
   # per-platform run workspace; everything lands under .e2e-artifacts/runs/<pf>/
   $runsDir   = Join-Path $RepoRoot ".e2e-artifacts/runs/$pf"
-  $serverDir = Join-Path $runsDir $pf
+  # Server working dir / log dir. start-server.ps1 picks <runsDir>/<SubDir> from
+  # its PlatformMap (bukkit -> "paper"), so the reader must use the same rule --
+  # see Get-ServerLogCandidates. Creating only the resolved dir here keeps the
+  # plugin install target consistent with where the server will look.
+  $serverSubDir = if ($PlatformServerSubDir.ContainsKey($pf)) { $PlatformServerSubDir[$pf] } else { $pf }
+  $serverDir = Join-Path $runsDir $serverSubDir
   $novaDir   = Join-Path $runsDir "novalink"
   $botDir    = $BotDir  # shared bot dir (run-e2e.js + run-e2e-bedrock.js + package.json)
   $resultsFile = Join-Path $runsDir "bot-results.json"
-  $stdout    = Join-Path $serverDir "$pf.stdout.log"
+  # Candidate log paths in preference order; the first that exists wins. bukkit
+  # resolves to runs/<pf>/paper/bukkit.stdout.log (start-server.ps1 names the
+  # file "<Platform>.stdout.log", i.e. the platform NAME, not the SubDir).
+  $serverLogCandidates = Get-ServerLogCandidates $runsDir $pf
 
   New-Item -ItemType Directory -Force -Path $runsDir, $serverDir, $novaDir | Out-Null
 
@@ -607,7 +708,7 @@ function Invoke-Platform([string]$pf) {
 
     # 3. wait for server ready
     Log "  waiting for server ready (up to ${ServerReadySec}s)..."
-    $ready = Wait-LogMarker $stdout $def.ReadyPattern $ServerReadySec "$pf-server"
+    $ready = Wait-LogMarker $serverLogCandidates $def.ReadyPattern $ServerReadySec "$pf-server"
     if (-not $ready) {
       $result.status = "FAIL"; $result.notes = "server did not signal ready within ${ServerReadySec}s"
       return $result
@@ -684,7 +785,23 @@ function Invoke-Platform([string]$pf) {
 
     # 5. read results.json
     if (Test-Path $resultsFile) {
-      $results = Get-Content $resultsFile -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+      # -Encoding UTF8 is REQUIRED. The bot writes results.json as UTF-8 and the
+      # plugin echoes non-ASCII text (Chinese "[NC-500] server internal error"
+      # strings) into it. Windows PowerShell 5.1's Get-Content defaults to the
+      # ANSI/GBK code page, so a -Raw read without -Encoding UTF8 decodes those
+      # bytes wrongly and ConvertFrom-Json throws ArgumentException. That
+      # exception unwinds out of this try block, past every status assignment,
+      # so the platform reports "UNKNOWN:" with empty notes even though the bot
+      # ran, wrote a valid file, and the server reached "Done (...)". Do not
+      # drop this encoding, and keep the catch: an unparseable file must produce
+      # a FAIL with a real message, not an UNKNOWN with no message.
+      try {
+        $results = Get-Content $resultsFile -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+      } catch {
+        $results = $null
+        $result.notes = "results.json unreadable/unparseable: $($_.Exception.Message)"
+        Log "  WARN: $($result.notes)"
+      }
       if ($results) {
         # Get-BotReceivedRows drops the bot's own outgoing traffic: both bot
         # scripts record every command they send into the SAME received[] list
@@ -754,7 +871,11 @@ function Invoke-Platform([string]$pf) {
           $result.status = "FAIL"; $result.notes = "no plugin-produced line in results.json (only vanilla traffic)"
         }
       } else {
-        $result.status = "FAIL"; $result.notes = "results.json could not be parsed"
+        $result.status = "FAIL"
+        # Preserve the specific parse error from the catch above when there is
+        # one; only fall back to the generic message if $results came back
+        # empty without throwing (e.g. a zero-byte file).
+        if (-not $result.notes) { $result.notes = "results.json could not be parsed" }
       }
     } else {
       $result.status = "FAIL"; $result.notes = "results.json not written: $resultsFile"
