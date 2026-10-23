@@ -558,11 +558,22 @@ public class ChatListener {
      * In REPLACE mode, cancels the event and forwards to the channel.
      * In HYBRID mode, allows vanilla chat to proceed normally.
      *
-     * @param event the chat event
+     * <p>Listens to {@link PlayerChatEvent.Submit}, not the {@link PlayerChatEvent}
+     * base type: SpongeAPI 17 split the hierarchy so that only
+     * {@code PlayerChatEvent.Submit} extends {@link org.spongepowered.api.event.Cancellable}.
+     * The base interface no longer has {@code setCancelled(boolean)} — compiling
+     * the listener against API 8 and running it on API 17 produced exactly that
+     * drift (NoSuchMethodError on the disconnect listener, same class).
+     * {@code Submit} is the event fired when a player actually sends a line, so
+     * cancelling it suppresses vanilla broadcast, which is what REPLACE mode
+     * wants. {@code PlayerChatEvent.Decorate} is the chat-preview path and is
+     * deliberately not handled.
+     *
+     * @param event the chat submit event
      * @param player the player who sent the message
      */
     @Listener(order = Order.LAST)
-    public void onPlayerChat(PlayerChatEvent event, @First ServerPlayer player) {
+    public void onPlayerChat(PlayerChatEvent.Submit event, @First ServerPlayer player) {
         UUID playerId = player.uniqueId();
         
         // Get or create player state
@@ -634,12 +645,24 @@ public class ChatListener {
     }
 
     /**
-     * Handles player disconnect events to clean up chat state.
+     * Handles player leave events to clean up chat state.
      *
-     * @param event the disconnect event
+     * <p>Listens to {@link ServerSideConnectionEvent.Leave}, not
+     * {@code ServerSideConnectionEvent.Disconnect}: SpongeAPI 17 removed
+     * {@code Disconnect.player()} — that event now only exposes an
+     * {@code Optional<GameProfile>} because a disconnect can happen before a
+     * player entity ever exists (handshake/auth failures). {@code Leave} still
+     * exposes the {@link ServerPlayer} and fires for every player who was
+     * actually in the game, which is the only case where this per-player state
+     * exists to be cleaned up.
+     *
+     * <p>Compiling against API 8 and running on API 17 threw
+     * {@code NoSuchMethodError: Disconnect.player()} here on every disconnect.
+     *
+     * @param event the leave event
      */
     @Listener
-    public void onPlayerDisconnect(ServerSideConnectionEvent.Disconnect event) {
+    public void onPlayerLeave(ServerSideConnectionEvent.Leave event) {
         ServerPlayer player = event.player();
         playerStates.remove(player.uniqueId());
         welcomedPlayers.remove(player.uniqueId());
@@ -728,9 +751,12 @@ public class ChatListener {
      * main-hand item via the Sponge API. Empty hand → air payload, matching the
      * Bedrock renderers' "Empty" placeholder behavior.
      *
-     * <p>Sponge API 8 exposes the held item through {@link ServerPlayer}'s
+     * <p>The held item comes from {@link ServerPlayer}'s
      * {@link org.spongepowered.api.item.inventory.Equipable#equipped} with
-     * {@link EquipmentTypes#MAIN_HAND}. The item id is resolved through the
+     * {@link EquipmentTypes#MAINHAND}. API 17 renamed the main-hand constant
+     * from {@code MAIN_HAND} to {@code MAINHAND} (and {@code OFF_HAND} to
+     * {@code OFFHAND}, matching vanilla's registry keys); the old spelling does
+     * not exist in the runtime API. The item id is resolved through the
      * ITEM_TYPE registry ({@link ItemType#key} via
      * {@link RegistryTypes#ITEM_TYPE}), formatted as {@code namespace:value}
      * to match the Bedrock/Java clients' {@code minecraft:stone} form. The
@@ -740,7 +766,7 @@ public class ChatListener {
      * receive side).
      */
     private String buildMainHandItemJson(ServerPlayer player) {
-        ItemStack hand = player.equipped(EquipmentTypes.MAIN_HAND).orElse(ItemStack.empty());
+        ItemStack hand = player.equipped(EquipmentTypes.MAINHAND).orElse(ItemStack.empty());
         if (hand.isEmpty()) {
             return ItemDisplayTokens.emptyHandJson();
         }

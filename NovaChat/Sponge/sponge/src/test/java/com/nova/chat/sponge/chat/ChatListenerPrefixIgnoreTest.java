@@ -97,8 +97,11 @@ class ChatListenerPrefixIgnoreTest {
     private Value.Mutable<Component> displayName;
     @Mock
     private MessageFormatter messageFormatter;
+    // PlayerChatEvent.Submit, not the base PlayerChatEvent: SpongeAPI 17 moved
+    // Cancellable (setCancelled) down onto Submit, and that is the event type
+    // ChatListener#onPlayerChat handles now.
     @Mock
-    private PlayerChatEvent event;
+    private PlayerChatEvent.Submit event;
 
     private KnownChannelRegistry registry;
     private IgnoreListService ignoreListService;

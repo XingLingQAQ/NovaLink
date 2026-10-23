@@ -39,16 +39,23 @@ import java.util.function.Supplier;
  * <p>For console / sender-agnostic calls (no player id), the configured
  * default locale is used directly.
  *
- * <p>Bundles are loaded from {@code lang/<lang>_<country>.properties} on the
- * classpath via a UTF-8 {@link ResourceBundle.Control} (see
- * {@link Utf8Control}). The dotted base name {@code "lang.messages"} resolves to
- * the classpath path {@code lang/messages_<locale>.properties} (Java treats
- * {@code .} as {@code /} in bundle names), so all translation files live under
- * one {@code lang/} package — adding a new language is just dropping one file.
- * Java 9+ already loads {@code PropertyResourceBundle} from an
- * {@code InputStreamReader} as UTF-8, but the explicit control guarantees
- * correct behavior regardless of the default charset and keeps the bundle
- * cache under our control.
+ * <p>Bundles are loaded from {@code lang/messages_<locale>.properties} on the
+ * classpath. The resource name is resolved by hand and decoded as UTF-8 into a
+ * {@link PropertyResourceBundle} — deliberately NOT through a custom
+ * {@link ResourceBundle.Control}, which Java rejects outright when the code
+ * lives in a <em>named module</em>
+ * ({@code UnsupportedOperationException: ResourceBundle.Control not supported
+ * in named modules}). Sponge loads every plugin as a named module, so the
+ * Control-based loader made the plugin's first i18n lookup throw during
+ * command registration and the entire {@code /nc} command tree was never
+ * registered. See {@link #loadClasspathBundle} for the full account. All
+ * translation files live under one {@code lang/} package — adding a new
+ * language is just dropping one file.
+ *
+ * <p>There is intentionally NO implicit {@link Locale#getDefault()} fallback:
+ * the fallback chain (requested locale → zh_CN → key echo) is owned here, so
+ * the same lookup cannot return different text on a zh developer box and an en
+ * CI runner.
  *
  * <h2>Adding a new language</h2>
  * <ul>
@@ -84,12 +91,16 @@ import java.util.function.Supplier;
 public final class I18n {
 
     /**
-     * Base name of the .properties bundles on the classpath. The dotted form
-     * {@code "lang.messages"} makes {@link ResourceBundle#getBundle} resolve to
-     * classpath path {@code lang/messages_<locale>.properties} (the {@code .}
-     * is treated as a path separator).
+     * Classpath prefix of the bundled .properties files:
+     * {@value} + {@code <locale>} + {@code .properties}.
+     *
+     * <p>This is a resource PATH, not a {@code ResourceBundle} base name. The
+     * loader reads it directly (see {@link #loadClasspathBundle}), so it must
+     * use {@code /} separators — the dotted {@code "lang.messages"} form only
+     * made sense to {@code ResourceBundle.getBundle}, which this class can no
+     * longer call with a {@code Control}.
      */
-    static final String BASE_NAME = "lang.messages";
+    static final String BUNDLE_RESOURCE_PREFIX = "lang/messages_";
 
     private static final Logger LOG = new Logger();
 
@@ -333,13 +344,42 @@ public final class I18n {
     }
 
     private static ResourceBundle loadBundle(Locale locale) {
-        // 1. Classpath bundle (lang/messages_<locale>.properties via Utf8Control).
-        ResourceBundle classpathBundle = null;
-        try {
-            classpathBundle = ResourceBundle.getBundle(BASE_NAME, locale, new Utf8Control());
-        } catch (MissingResourceException e) {
-            // No classpath bundle for this locale — external-only may still work.
-        }
+        // 1. Classpath bundle (lang/messages_<locale>.properties).
+        //
+        // Deliberately NOT ResourceBundle.getBundle(baseName, locale, Control):
+        // a custom ResourceBundle.Control is ILLEGAL when the code lives in a
+        // NAMED module. java.util.ResourceBundle.checkNamedModule() throws
+        //   UnsupportedOperationException: ResourceBundle.Control not supported
+        //   in named modules
+        // before it ever reaches Control.newBundle(). Sponge loads every plugin
+        // as a named module on the module layer (the plugin jar gets an
+        // automatic module name, "novachat" here), so the very first i18n
+        // lookup from the Sponge plugin blew up:
+        //
+        //   Could not pass RegisterCommandEventImpl to novachat
+        //   java.lang.UnsupportedOperationException:
+        //     ResourceBundle.Control not supported in named modules
+        //       at java.util.ResourceBundle.checkNamedModule
+        //       at com.nova.chat.client.i18n.I18n.loadBundle(I18n.java:339)
+        //       at ...NovaChatCommand.buildHelpCommand(NovaChatCommand.java:103)
+        //       at ...NovaChatSponge.onRegisterCommands(NovaChatSponge.java:209)
+        //
+        // buildHelpCommand() calls I18n.tr(...) for its short description, so
+        // the throw unwound out of buildCommand() and the WHOLE command tree
+        // was never registered. That is why every /nc <sub> came back as a
+        // Brigadier "Unknown or incomplete command" with the <--[HERE] marker
+        // right after "nc": only the ROOT literal survived, and its children
+        // were missing. It had nothing to do with the backend being unreachable
+        // — the parse errors reproduced with a fully authenticated link.
+        //
+        // Reading the .properties resource directly keeps the exact behaviour
+        // the old control provided (UTF-8 decoding, no implicit host-locale
+        // fallback, no class-based bundles) without tripping the named-module
+        // check. ResourceBundle.getBundle(String, Locale) — the no-Control
+        // overload — cannot be used either: it would reintroduce the
+        // host-dependent Locale.getDefault() fallback the old control existed
+        // to suppress, and it assumes ISO-8859-1 for .properties.
+        ResourceBundle classpathBundle = loadClasspathBundle(locale);
 
         // 2. External override file: <externalLangDir>/lang/<locale>.properties.
         ResourceBundle externalBundle = loadExternalBundle(locale);
@@ -362,6 +402,63 @@ public final class I18n {
             return bundleFor(FALLBACK_LOCALE);
         }
         return new EmptyBundle();
+    }
+
+    /**
+     * Loads {@code lang/messages_<locale>.properties} from the classpath as a
+     * UTF-8 {@link PropertyResourceBundle}, or {@code null} when the resource
+     * is absent.
+     *
+     * <p>Resolves the resource by hand instead of going through
+     * {@link ResourceBundle#getBundle(String, Locale, ResourceBundle.Control)}
+     * because a custom {@code Control} is rejected outright inside a named
+     * module — see the comment in {@link #loadBundle}. Only the exact-locale
+     * file is tried: the caller owns the fallback chain (requested locale →
+     * zh_CN → key echo), and there is deliberately NO implicit
+     * {@link Locale#getDefault()} fallback (the old control disabled it by
+     * overriding {@code getFallbackLocale}). A host-locale fallback would make
+     * the same lookup return different text on a zh developer box and an en CI
+     * runner.
+     *
+     * <p>Two class loaders are tried: this class's own (the plugin jar, which
+     * is where the bundled {@code lang/} resources live) and then the
+     * thread-context loader. Under Sponge those are different loaders — the
+     * plugin module vs. the launcher — so trying only one would silently miss
+     * the bundled files.
+     *
+     * @param locale the locale to load
+     * @return the bundle, or {@code null} when no classpath file exists for it
+     */
+    private static ResourceBundle loadClasspathBundle(Locale locale) {
+        String resourceName = BUNDLE_RESOURCE_PREFIX + locale.toString() + ".properties";
+        ClassLoader[] loaders = {
+                I18n.class.getClassLoader(),
+                Thread.currentThread().getContextClassLoader()
+        };
+        for (ClassLoader loader : loaders) {
+            if (loader == null) {
+                continue;
+            }
+            InputStream stream;
+            try {
+                stream = loader.getResourceAsStream(resourceName);
+            } catch (RuntimeException e) {
+                // A misbehaving module layer must not abort command registration.
+                LOG.warn("Failed to resolve " + resourceName + ": " + e.getMessage());
+                continue;
+            }
+            if (stream == null) {
+                continue;
+            }
+            try (InputStream in = stream;
+                 Reader reader = new InputStreamReader(in, StandardCharsets.UTF_8)) {
+                return new PropertyResourceBundle(reader);
+            } catch (IOException e) {
+                LOG.warn("Failed to load " + resourceName + ": " + e.getMessage());
+                return null;
+            }
+        }
+        return null;
     }
 
     /**
