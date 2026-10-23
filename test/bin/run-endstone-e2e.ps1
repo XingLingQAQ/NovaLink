@@ -51,10 +51,31 @@ $binDir   = Join-Path $RepoRoot "test/bin"
 $botDir   = Join-Path $RepoRoot "test/bot"
 $confDir  = Join-Path $RepoRoot "test/conf"
 $endstoneSrc = Join-Path $RepoRoot "NovaChat/Bedrock/endstone"
+# The bot's protocol version has to agree with the BDS build that fetch-server.ps1
+# downloads, so it is read from versions.lock.ps1 rather than repeated as a
+# literal here. The literal used to be "1.26.30"; the pinned BDS is 1.26.52,
+# which speaks protocol 2193 and kicks a 1.26.30 client (protocol 1001) as
+# disconnectionScreen.outdatedClient. See the resolution below the dot-source.
+. (Join-Path (Split-Path -Parent $binDir) 'versions.lock.ps1')
 . (Join-Path $binDir 'e2e-assertions.ps1')
 
 function Log([string]$msg) {
     Write-Host ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss.fff"), $msg)
+}
+
+# The version string handed to bedrock-protocol. It comes from the bds lock
+# entry's BotMcVersion, NOT from its MC field: 1.26.52 is a hotfix that did not
+# bump the wire protocol, and minecraft-data 3.117.0 has no "1.26.52" entry at
+# all, so passing MC would throw "Unsupported version" inside the bot. BotMcVersion
+# is "1.26.51", the newest string the table knows, and it resolves to protocol
+# 2193 -- the number BDS 1.26.52 advertises and accepts. The fallback only fires
+# against a lock revision older than the BotMcVersion field.
+$bdsLock = Get-LockedServer -Name 'bds'
+$botMcVersion = if ($bdsLock -and $bdsLock.BotMcVersion) {
+    $bdsLock.BotMcVersion
+} else {
+    Log "WARN: no BotMcVersion on the 'bds' lock entry; falling back to 1.26.51"
+    '1.26.51'
 }
 
 # --- failure diagnostics -----------------------------------------------------
@@ -214,24 +235,25 @@ Log "  endstone launcher: $endstoneExe"
 Log "step 3: fetching Bedrock Dedicated Server (BDS)"
 # Pass -Auto to match the orchestrator's declared ServerScripts for endstone
 # (run-e2e-orchestrator.ps1 endstone.PlatformDef). With -Auto, fetch-server.ps1
-# calls Resolve-BdsLatest; when minecraft.net pocketbedlinks is unreachable it
-# returns @{ Skip = $true } and fetch-server exits 0 WITHOUT downloading (see
-# fetch-server.ps1 :233-241). Without -Auto the code falls through to the pinned
-# placeholder URL (versions.lock.ps1 bds entry), which 404s after 3 retries ->
-# fetch-server exits non-zero -> this script exit 2's, turning a
-# known-unreachable-BDS env into a red (FAIL) nightly instead of a green SKIP.
+# queries the Minecraft services links API for the current BDS zip (see its
+# Resolve-BdsLatest) and downloads + SHA-256-verifies it. Only a genuine API
+# failure returns @{ Skip = $true } and exits 0 WITHOUT downloading; the pinned
+# bds URL in versions.lock.ps1 is a real artifact, not a placeholder, so even a
+# non-Auto run downloads that instead. Any other fetch-server failure exits
+# non-zero and this script turns it into exit 2 (a real prereq error) -- not a
+# SKIP, because a failed download is a bug, not an unavailable environment.
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $binDir "fetch-server.ps1") -Name "bds" -Auto -DistDir $DistDir
 if ($LASTEXITCODE -ne 0) { Log "ERROR: fetch-server failed for bds"; exit 2 }
 # The BDS zip lands in $DistDir (freshly downloaded by fetch-server, a locally-
 # cached zip per versions.lock.ps1 bds notes, or a cache hit from a prior run).
 # Unpack it into the run directory. When fetch-server exits 0 but no BDS zip is
-# present, that is the documented SKIP signal from Resolve-BdsLatest.
-# Record the machine-readable reason and exit 3 (SKIPPED) -- NOT 0. Exiting 0
-# here made CI report "endstone PASS" for a platform that never started a
-# server or ran the bot (run 39056124289).
+# present, Resolve-BdsLatest reported a genuine skip and logged its reason on a
+# [fetch] line above; record that as the machine-readable reason and exit 3.
+# Exiting 0 here made CI report "endstone PASS" for a platform that never
+# started a server or ran the bot (run 39056124289).
 $bdsZip = Get-ChildItem (Join-Path $DistDir "bedrock-server*.zip") -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $bdsZip) {
-    Log "SKIP: BDS server binary unavailable - endstone E2E not run (fetch-server exited 0 with no download; minecraft.net pocketbedlinks unreachable from this env)"
+    Log "SKIP: BDS server binary unavailable - endstone E2E not run (fetch-server exited 0 without downloading; see the [fetch] line above for the reason, e.g. the Minecraft services links API was unreachable)"
     Set-Content -Path (Join-Path $RunsDir "skip-reason.txt") -Value "BDS unavailable"
     exit 3
 }
@@ -240,14 +262,32 @@ New-Item -ItemType Directory -Path $serverDir -Force | Out-Null
 Expand-Archive -Path $bdsZip.FullName -DestinationPath $serverDir -Force
 Log "  BDS unpacked: $serverDir"
 
-# Bedrock server.properties. xbox-auth=off + online-mode=false for offline E2E.
+# Bedrock server.properties. This file is written WHOLESALE, replacing the one
+# in the BDS zip, so every key the run depends on must appear here.
+#
+# transport=nethernet is what the pristine zip ships and what the 1.26.52 how-to
+# documents as the default. Omitting the key is NOT fatal on 1.26.52 -- the
+# server falls back to RakNet and an offline bot still logs in (verified) -- but
+# it prints a "TRANSPORT TYPE ERROR ... NetherNet is the only supported transport
+# type" banner, and NetherNet is the direction Mojang is moving. Keep the key so
+# the run exercises the documented path and stays correct if a later BDS drops
+# the RakNet fallback.
+#
+# online-mode=false is REQUIRED, and it is not the same thing as xbox-auth=off:
+# the offline bot (bedrock-protocol offline:true) is kicked with
+# reason=not_authenticated under the zip's default online-mode=true -- verified
+# against 1.26.52 in both states. xbox-auth is not a documented property in
+# 1.26.52 at all; it is kept only because PocketMine (run-pmmp-e2e.ps1) reads it
+# and this block should stay usable on older BDS builds.
 $serverProps = Join-Path $serverDir "server.properties"
 @"
 server-name=NovaChat-Endstone-E2E
 server-port=$McPort
 server-ip=127.0.0.1
+transport=nethernet
 view-distance=4
 white-list=off
+online-mode=false
 max-players=5
 gamemode=1
 force-gamemode=on
@@ -420,7 +460,7 @@ $env:SERVER_HOST = "127.0.0.1"
 $env:SERVER_PORT = "$McPort"
 $env:BOT_NAME = "E2E_Bot_Endstone"
 $env:PLATFORM = "endstone"
-$env:MC_VERSION = "1.26.30"
+$env:MC_VERSION = $botMcVersion
 $env:BACKEND_CHAT_PHRASE = "hello from e2e bot"
 $env:RESULTS_FILE = $resultsFile
 $env:TIMEOUT_MS = "$($BotTimeoutSec * 1000)"
