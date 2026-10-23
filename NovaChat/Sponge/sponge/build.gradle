@@ -4,8 +4,16 @@ plugins {
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_17
-    targetCompatibility = JavaVersion.VERSION_17
+    // 21, not 17: SpongeAPI 17.0.0 declares org.gradle.jvm.version=21 in its
+    // module metadata, so Gradle refuses to put it on a Java-17 compile
+    // classpath ("Dependency resolution is looking for a library compatible
+    // with JVM runtime version 17, but 'org.spongepowered:spongeapi:17.0.0' is
+    // only compatible with JVM runtime version 21 or newer"). The runtime is
+    // SpongeVanilla 1.21.10-17.0.0 on JDK 21 (test/versions.lock.ps1), so 21 is
+    // also the level this plugin actually executes on -- compiling to 21 cannot
+    // produce class files the server's JVM would reject.
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
 }
 
 repositories {
@@ -43,9 +51,29 @@ dependencies {
     // Logging
     implementation "org.slf4j:slf4j-api:${slf4jVersion}"
 
-    // Sponge API 8.x (Minecraft 1.16.5 - 1.20.x) / API 12+ for newer
-    // Keep API 8.2.0 as the broadest compile target; runtime supports newer Sponge servers
-    compileOnly 'org.spongepowered:spongeapi:8.2.0'
+    // Sponge API 17.0.0 — MUST match the runtime server.
+    //
+    // This used to be 8.2.0 "as the broadest compile target", on the assumption
+    // that compiling against an older API still runs on a newer server. Sponge
+    // does NOT keep binary compatibility across major API levels, and the E2E
+    // run against SpongeVanilla 1.21.10-17.0.0 (API 17) proved it:
+    //
+    //   java.lang.NoSuchMethodError:
+    //     'org.spongepowered.api.entity.living.player.server.ServerPlayer
+    //      org.spongepowered.api.event.network.ServerSideConnectionEvent$Disconnect.player()'
+    //     at ChatListener.onPlayerDisconnect(ChatListener.java:643)
+    //
+    // API 17 removed ServerSideConnectionEvent.Disconnect.player() (only Join
+    // and Leave expose a ServerPlayer now; Disconnect exposes just an
+    // Optional<GameProfile>). The plugin therefore threw on every player
+    // disconnect and Sponge logged "Could not pass ... to novachat".
+    //
+    // 17.0.0 is the API level SpongeVanilla 1.21.10-17.0.0 ships (see
+    // test/versions.lock.ps1), so this compile target is now the runtime API.
+    // Declaring a compile target NEWER than the runtime would be just as wrong
+    // in the other direction: the plugin would link against methods the server
+    // does not have. Keep these two in lockstep.
+    compileOnly 'org.spongepowered:spongeapi:17.0.0'
 
     // Testing
     testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
@@ -56,7 +84,7 @@ dependencies {
     // Platform API on the test classpath so Mockito can mock org.spongepowered.*
     // types (compileOnly keeps it out of the shaded artifact; tests need it
     // resolvable). Mirrors the nukkit module's testImplementation approach.
-    testImplementation 'org.spongepowered:spongeapi:8.2.0'
+    testImplementation 'org.spongepowered:spongeapi:17.0.0'
 }
 
 tasks.named('test') {
