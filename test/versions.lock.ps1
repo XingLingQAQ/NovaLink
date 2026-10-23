@@ -43,6 +43,13 @@
 #     (The earlier "pocketbedlinks is blocked" finding was a false negative: a
 #     stale HTTPS_PROXY=http://127.0.0.1:7890 in the shell, honoured by curl
 #     but ignored by .NET/Node, made the download host look unreachable.)
+#   - github.com release ASSETS ... 302 -> reaches the CDN and downloads work
+#     (verified 2026-10-24 by fetching the LeviLamina/PreLoader/PeEditor/
+#     bedrock-runtime-data zips and hashing them). What does NOT work:
+#     api.github.com is 403, and the /releases HTML page intermittently dies in
+#     curl's schannel handshake ("server closed abruptly"). Both are avoidable:
+#     releases.atom lists tags (200) and /releases/latest 302s to the newest tag,
+#     which is how the LeviLamina pins below were resolved.
 # ============================================================================
 $LockedServers = @(
     # =========================================================================
@@ -220,10 +227,26 @@ $LockedServers = @(
     # Bedrock platforms
     # =========================================================================
 
-    # BDS (Bedrock Dedicated Server) for endstone + levilamina. One BDS download
-    # serves both: endstone patches BDS (python plugin host), levilamina injects
-    # a preloader dll into BDS (C++ mod loader). BDS is a ZIP, not a jar --
-    # fetch-server.ps1 extracts it to dist/bds-<MC>/ after download.
+    # BDS (Bedrock Dedicated Server) for ENDSTONE. LeviLamina needs a DIFFERENT
+    # BDS (see the bds-levilamina entry below) -- the two platforms cannot share
+    # one download. BDS is a ZIP, not a jar -- fetch-server.ps1 extracts it to
+    # dist/bds-<MC>/ after download.
+    #
+    # WHY THE SPLIT (verified 2026-10-24, this is not a guess):
+    #   * endstone 0.11.13/0.11.14 export __minecraft_version__ = '26.52'
+    #     (verified by importing each wheel: endstone.__minecraft_version__).
+    #     endstone.cli.base.Bootstrap._update() then compares that against
+    #     <serverDir>/version.txt and REFUSES a NEWER server outright:
+    #       "A newer version of Bedrock Dedicated Server (v..) is found ...
+    #        Please update your Endstone server."
+    #     So a 1.26.51 BDS tree under an 0.11.13+ endstone is not a soft
+    #     mismatch, it aborts. 0.11.12 reports '26.51' instead.
+    #   * LeviLamina's newest release (v26.51.7, /releases/latest resolves to it)
+    #     declares "github.com/LiteLDev/bds": "1.26.51" as a hard lip dependency
+    #     in tooth.json, and its preloader patches a matching BDS image.
+    #   There is no v26.52.* LeviLamina tag at all (releases.atom tops out at
+    #   v26.51.7; the v26.52.0 tag page is 404). Keeping one shared entry would
+    #   mean picking a BDS that one of the two platforms cannot load.
     #
     # Auto-detect: the links API (see the reachability notes) is queried at
     # runtime for the serverBedrockWindows URL; the version is parsed out of the
@@ -261,6 +284,126 @@ $LockedServers = @(
         BotMcVersion = '1.26.51'
         Kind    = 'zip'   # fetch-server.ps1 extracts Kind=zip to dist/bds-<MC>/.
         Auto    = $true
+    }
+
+    # BDS for LEVILAMINA. Same idea as the bds entry above, pinned one BDS
+    # release BEHIND it on purpose: LeviLamina v26.51.7 hard-depends on
+    # github.com/LiteLDev/bds 1.26.51 (tooth.json) and patches that exact image,
+    # and no v26.52.* LeviLamina tag exists. The endstone entry documents the
+    # other half of the conflict (endstone 0.11.13+ refuses anything newer than
+    # its own 1.26.52). A separate NAME rather than a second 'bds' entry keeps
+    # fetch-server.ps1's one-entry-per-Name lookup working and puts each
+    # platform's tree in its own dist/bds-levilamina-<MC>/ dir, so the two
+    # never overwrite each other in the shared dist cache.
+    #
+    # No -Auto resolver: the links API only ever serves Mojang's CURRENT BDS
+    # (now 1.26.52), which is precisely the build LeviLamina cannot use. An
+    # auto-detect here would silently re-introduce the mismatch, so Auto is
+    # $false and the pin is the contract.
+    #
+    # 1.26.51.1 is the Windows build named by EndstoneMC/bedrock-server-data
+    # v2/release/1.26.51/metadata.json. SHA-256 downloaded and reproduced here
+    # (85,766,110 bytes), matching that metadata.
+    @{
+        Name    = 'bds-levilamina'
+        MC      = '1.26.51'
+        Build   = '1'
+        Engine  = 'bds'
+        Url     = 'https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-1.26.51.1.zip'
+        Sha256  = 'A1C1EBEFDE3036223234179F7C1EAB4B445B4727F0482A0554818C9BCAF8E4A5'
+        Eula    = $true   # Mojang EULA required for BDS.
+        Jdk     = 0       # BDS is native (no JDK); bedrock_server.exe runs directly.
+        File    = 'bedrock-server-1.26.51.1.zip'
+        # bedrock-protocol string. minecraft-data's bedrock protocolVersions
+        # table has exactly one 1.26.5x row -- {"version": 2193,
+        # "minecraftVersion": "1.26.51"} -- and no 1.26.52 row at all (checked
+        # against master 2026-10-24). This is therefore both the newest string
+        # the table knows AND the version this BDS actually reports, so no
+        # downgrade trick is needed here (unlike the endstone entry, which must
+        # ask for 1.26.51 to reach a 1.26.52 server).
+        BotMcVersion = '1.26.51'
+        Kind    = 'zip'   # fetch-server.ps1 extracts Kind=zip to dist/<name>-<MC>/.
+        Auto    = $false
+    }
+
+    # LeviLamina: the C++ mod loader injected into the bds-levilamina tree.
+    # A lip package (LeviLamina/manifest.json, type "preload-native"), NOT a
+    # standalone server -- it is only useful together with bds-levilamina.
+    #
+    # The install is NOT just this zip. LeviLamina's tooth.json names four
+    # further lip packages, and the preloader only loads if BDS's own PE image
+    # is patched first; the pins below cover the pieces run-levilamina-e2e.ps1
+    # has to place by hand:
+    #   levilamina       -> plugins/LeviLamina/            (this entry)
+    #   levilamina-preloader -> PreLoader.dll in the BDS root   (v1.16.5)
+    #   levilamina-peeditor  -> PeEditor.exe, patched BDS exe   (v3.9.0)
+    #   levilamina-runtime   -> bedrock_runtime_data            (server.11)
+    # crashlogger/levilamina-loc are optional (CrashLogger only reports crashes;
+    # loc only ships language packs) and are deliberately NOT pinned.
+    #
+    # All four URLs are the exact asset paths their own tooth.json declares, and
+    # every SHA-256 below was computed from a real download on 2026-10-24.
+    @{
+        Name    = 'levilamina'
+        MC      = '26.51.7'
+        Build   = '26.51.7'
+        Engine  = 'levilamina'
+        Url     = 'https://github.com/LiteLDev/LeviLamina/releases/download/v26.51.7/levilamina-v26.51.7-server-release-windows-x64.zip'
+        Sha256  = '6710F108A2A246A680317769390F4AC3598701C6196228FD6373C06D826F58CE'
+        Eula    = $false
+        Jdk     = 0
+        File    = 'levilamina-v26.51.7-server-release-windows-x64.zip'
+        # The BDS release this loader is built for; run-levilamina-e2e.ps1
+        # asserts it matches the bds-levilamina pin so a future bump of one
+        # without the other fails loudly instead of producing a broken server.
+        RequiresBds = '1.26.51'
+        Kind    = 'zip'
+        Auto    = $false
+    }
+
+    @{
+        Name    = 'levilamina-preloader'
+        MC      = '1.16.5'
+        Build   = '1.16.5'
+        Engine  = 'levilamina'
+        Url     = 'https://github.com/LiteLDev/PreLoader/releases/download/v1.16.5/preloader-v1.16.5-windows-x64.zip'
+        Sha256  = '698667831E8336CF9D9ACCBFB25A84FB6755FAEA0D2EE9BB48F74D5A9F645967'
+        Eula    = $false
+        Jdk     = 0
+        File    = 'preloader-v1.16.5-windows-x64.zip'
+        Kind    = 'zip'   # -> dist/levilamina-preloader-1.16.5/bin/PreLoader.dll
+        Auto    = $false
+    }
+
+    @{
+        Name    = 'levilamina-peeditor'
+        MC      = '3.9.0'
+        Build   = '3.9.0'
+        Engine  = 'levilamina'
+        Url     = 'https://github.com/LiteLDev/PeEditor/releases/download/v3.9.0/peeditor-windows-x64.zip'
+        Sha256  = 'EFD519EA62EF835DC83F4943AB9E1EBD6019E5ABC5FEC9063349D150EFA6D5B0'
+        Eula    = $false
+        Jdk     = 0
+        File    = 'peeditor-windows-x64.zip'
+        Kind    = 'zip'   # -> dist/levilamina-peeditor-3.9.0/PeEditor.exe
+        Auto    = $false
+    }
+
+    @{
+        Name    = 'levilamina-runtime'
+        MC      = '26.51.1-server.11'
+        Build   = '26.51.1-server.11'
+        Engine  = 'levilamina'
+        Url     = 'https://github.com/LiteLDev/bedrock-runtime-data/releases/download/v26.51.1-server.11/bedrock-runtime-data-v26.51.1-server.11-windows-x64.zip'
+        Sha256  = '97802EAC8DBEB2C355F695E1C773F8DB7DC57AE2FEE26493D9E34E3843127795'
+        Eula    = $false
+        Jdk     = 0
+        File    = 'bedrock-runtime-data-v26.51.1-server.11-windows-x64.zip'
+        # LeviLamina reads bedrock_runtime_data from the BDS root; the -server
+        # variant is the one its server variant depends on (the -client one is
+        # for the GDK client and has different symbols).
+        Kind    = 'zip'   # -> dist/levilamina-runtime-26.51.1-server.11/bedrock_runtime_data
+        Auto    = $false
     }
 
     # PocketMine-MP: 5.44.3 (Bedrock 1.26.30). PHP phar, not a jar.

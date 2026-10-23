@@ -287,7 +287,22 @@ if ($LASTEXITCODE -ne 0) { Log "ERROR: fetch-server failed for bds"; exit 2 }
 # [fetch] line above; record that as the machine-readable reason and exit 3.
 # Exiting 0 here made CI report "endstone PASS" for a platform that never
 # started a server or ran the bot (run 39056124289).
-$bdsZip = Get-ChildItem (Join-Path $DistDir "bedrock-server*.zip") -ErrorAction SilentlyContinue | Select-Object -First 1
+# Select the zip by NAME. The levilamina platform pins its own BDS (1.26.51, see
+# the bds-levilamina lock entry) and drops a SECOND bedrock-server zip into the
+# same shared dist dir, so a bare bedrock-server*.zip glob could hand endstone
+# the 1.26.51 tree -- which is the one version it refuses. Prefer this
+# platform's pinned file; in -Auto mode the links API may have resolved a newer
+# build under a different name, so fall back to any bedrock-server zip that is
+# not the levilamina one rather than skipping a good download.
+$leviBdsFile = (Get-LockedServer -Name 'bds-levilamina').File
+$pinnedBds = if ($bdsLock) { Get-Item (Join-Path $DistDir $bdsLock.File) -ErrorAction SilentlyContinue } else { $null }
+$bdsZip = if ($pinnedBds) {
+    $pinnedBds
+} else {
+    Get-ChildItem (Join-Path $DistDir "bedrock-server*.zip") -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne $leviBdsFile } |
+        Select-Object -First 1
+}
 if (-not $bdsZip) {
     Log "SKIP: BDS server binary unavailable - endstone E2E not run (fetch-server exited 0 without downloading; see the [fetch] line above for the reason, e.g. the Minecraft services links API was unreachable)"
     Set-Content -Path (Join-Path $RunsDir "skip-reason.txt") -Value "BDS unavailable"
