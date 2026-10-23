@@ -68,8 +68,13 @@ $PlatformMap = @{
     velocity = @{ LockName='velocity'; SubDir='velocity'; Eula=$false; ReadyPattern='Listening|Booting|Started|Done' }
     bungee   = @{ LockName='waterfall'; SubDir='bungee'; Eula=$false; ReadyPattern='Listening' }
     sponge   = @{ LockName='sponge';    SubDir='sponge';  Eula=$true;  ReadyPattern='Sponge.*started|Done \(' }
-    nukkit   = @{ LockName='nukkit';   SubDir='nukkit';  Eula=$false; ReadyPattern='Done|server.*started|Nukkit.*started|Loading.*complete|Listening' }
-    pnx      = @{ LockName='nukkit';   SubDir='pnx';     Eula=$false; ReadyPattern='Done|server.*started|Nukkit.*started|Loading.*complete|Listening' }
+    # Nukkit/PNX: the ONLY real ready line is lang.ini's startFinished,
+    # "Done (<secs>s)! For help, ...". A bare "Done" is not an option: the
+    # first-boot language menu prints "idn => Indonesia", and "Indonesia"
+    # contains "done", so a loose pattern matches a server that never booted.
+    # The "s" + ")" suffix keeps "Done (" from matching anything in the menu.
+    nukkit   = @{ LockName='nukkit';   SubDir='nukkit';  Eula=$false; ReadyPattern='Done \([0-9.]+s\)!' }
+    pnx      = @{ LockName='nukkit';   SubDir='pnx';     Eula=$false; ReadyPattern='Done \([0-9.]+s\)!' }
 }
 
 if (-not $PlatformMap.ContainsKey($Platform)) {
@@ -155,6 +160,29 @@ $rconBlock
 allow-nether=off
 allow-the-end=off
 "@ | Set-Content -Path $propsFile -NoNewline
+
+    # nukkit.yml -- Nukkit's REAL config file (server.properties is only the
+    # Minecraft-style subset; settings.language lives here). On first boot,
+    # when nukkit.yml is absent, Nukkit prints "Welcome! Please choose a
+    # language first!" plus the language menu and blocks on
+    # NukkitConsole.readLine() waiting for a language code. Under Start-Process
+    # in CI stdin is not a TTY (it is the null device), so that read never
+    # returns: the server hangs before it opens UDP 19132 and the bot's RakNet
+    # ping times out. Seeding nukkit.yml skips the prompt entirely -- the
+    # file's existence is the branch condition (Server.<init> checks
+    # File.exists() and only prompts when it is false), and settings.language
+    # then selects the language without reading stdin. Verified 2026-10-23 on
+    # nukkit 1.0-20260809.225630-1242: without this file the boot log is 1046
+    # bytes of language menu and no port; with it the server reaches
+    # "Done (39.693s)!" and binds 127.0.0.1:19132.
+    # Keep the key set minimal: Nukkit falls back to its compiled-in defaults
+    # for anything absent (level-settings.default-format defaults to leveldb).
+    $nukkitYmlFile = Join-Path $serverDir "nukkit.yml"
+    @"
+settings:
+  language: "eng"
+  force-language: false
+"@ | Set-Content -Path $nukkitYmlFile -NoNewline
 } else {
     # Java edition (Purpur/Folia/Velocity/Waterfall/Sponge) server.properties.
     $rconBlock = if ($RconPort -gt 0) {

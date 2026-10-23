@@ -340,7 +340,10 @@ $PlatformDefs = @{
   }
   nukkit = @{
     LockName = 'nukkit'; Kind = 'bedrock'; SubDir = 'nukkit'
-    Jdk = 'Jdk21'; ReadyPattern = '(?i)(Done|server.*started|Nukkit.*started|Loading.*complete|Listening)'
+    # Anchored to lang.ini's startFinished line: a bare "Done" also matches
+    # "idn => Indonesia" in the first-boot language menu (see the same fix in
+    # test/bin/multiplatform/run-multiplatform-e2e.ps1).
+    Jdk = 'Jdk21'; ReadyPattern = '(?i)Done \([0-9.]+s\)!'
     # build produces a THIN jar (no shared layers): loading it in a real server
     # dies with NoClassDefFoundError com/nova/chat/client/network/AbstractPlatformNetworkClient.
     # The E2E fat-jar task bundles :NovaChat:common + :NovaChat:client-core +
@@ -362,7 +365,7 @@ $PlatformDefs = @{
   }
   pnx = @{
     LockName = 'nukkit'; Kind = 'bedrock'; SubDir = 'pnx'
-    Jdk = 'Jdk21'; ReadyPattern = '(?i)(Done|server.*started|Nukkit.*started|Loading.*complete|Listening)'
+    Jdk = 'Jdk21'; ReadyPattern = '(?i)Done \([0-9.]+s\)!'
     GradleTask = ':NovaChat:Bedrock:pnx:build'; BuildJdk = 'Jdk21'
     JarGlob = 'NovaChat/Bedrock/pnx/build/libs/NovaChat-PNX-*.jar'
 
