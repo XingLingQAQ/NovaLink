@@ -30,24 +30,34 @@
 #       GradleTask + JarGlob + BuildJdk + PluginsSubdir.
 #   - Server-binary downloads (Purpur, PaperMC, Cloudburst maven, Sponge
 #     maven, pmmp, minecraft.net BDS) are flaky and may be blocked from some
-#     runner environments. Platforms whose download fails exit non-zero
-#     (FAIL/red): bukkit, folia, nukkit, pnx, sponge, pmmp. continue-on-error
-#     below keeps download-flaky platforms from reddening the whole nightly.
-#   - SKIPPED is NOT PASS. A platform that did not run its L1 flow signals
-#     SKIPPED with exit code 3 (endstone/levilamina: BDS binary unavailable;
-#     velocity/bungee: proxy-only by design). run-e2e-orchestrator.ps1 maps 3
-#     to status=SKIPPED in e2e-orchestrator-summary.json and prints
-#     "endstone     SKIPPED (BDS unavailable)". It never prints PASS for a
-#     platform that executed zero assertions.
+#     runner environments. A blocked download is NOT tolerated as green: the
+#     platform exits non-zero and the job reds. A nightly that hides a download
+#     block hides the product failures that share the same job.
+#   - SKIPPED is NOT PASS, and the two kinds of skip are not the same thing.
+#     The per-platform scripts distinguish them by exit code:
+#       exit 4 = SKIPPED-BY-DESIGN  -- the platform structurally cannot run its
+#                L1 flow (velocity/bungee are proxy-only; the downstream purpur
+#                they front is not started by this harness). Not a failure, and
+#                strict mode must not red it.
+#       exit 3 = SKIPPED            -- environment/infrastructure blocked (the
+#                BDS zip could not be fetched). A real problem: strict mode
+#                turns it into a failure.
+#     run-e2e-orchestrator.ps1 maps both to their own status in
+#     e2e-orchestrator-summary.json and prints the reason next to each. It never
+#     prints PASS for a platform that executed zero assertions.
 #   - This workflow opts into strict mode (-Pe2eRequireAllPlatforms=true):
-#     a SKIPPED platform fails the job. A BDS download-block therefore reds
-#     the endstone/levilamina jobs instead of silently reporting green, which
-#     is the point -- a green check must mean tests ran. Supply a cached BDS
-#     zip (the dist cache) or reachable minecraft.net to get a real result.
-#   - continue-on-error below still tolerates failure for platforms whose
-#     nightly signal is environment-dependent (downloads, proxy-only scope).
-#     The job is still marked failed, so the SKIP is visible; it does not
-#     block the overall workflow conclusion.
+#     an environment-blocked SKIPPED fails the job, a by-design SKIPPED does
+#     not. A BDS download-block therefore reds endstone/levilamina instead of
+#     silently reporting green, which is the point -- a green check must mean
+#     tests ran. Supply a cached BDS zip (the dist cache) or reachable
+#     minecraft.net to get a real result.
+#   - TOLERANCE POLICY (continue-on-error below): only velocity and bungee may
+#     fail without changing the workflow conclusion, because they are the only
+#     two platforms that never run the L1 chat flow. Everything else -- bukkit,
+#     folia, nukkit, pnx, sponge, endstone, levilamina, pmmp -- reds the run.
+#     The previous expression was inverted and tolerated nukkit/pnx/sponge/folia
+#     while hard-gating the four healthy platforms, which is how run 39873580052
+#     ended with 8 failing jobs and a flattened signal.
 #
 # Runner: windows-2022 (E2E scripts are PowerShell + Windows process-tree
 # management; levilamina needs VS 2022 / MSVC v143 which windows-2022 ships).
@@ -84,22 +94,40 @@ jobs:
       matrix:
         # The full declared platform set. ALL 10 platforms are IMPLEMENTED in the
         # committed harness (see coverage notes above). continue-on-error below
-        # is applied to download-flaky + SKIP-by-design platforms so the nightly
-        # is not intermittently reddened by external download availability.
+        # tolerates ONLY the two proxy-only platforms; every platform that runs
+        # the L1 flow reds the workflow when it fails.
         platform: [bukkit, folia, velocity, bungee, nukkit, pnx, sponge, endstone, levilamina, pmmp]
-    # continue-on-error allowlist = platforms whose nightly signal is unreliable:
-    #   - folia/nukkit/pnx/sponge: FAIL (red) when a pinned/Auto download is
-    #     blocked, which would flaky-red the nightly.
-    #   - velocity/bungee: proxy-only, SKIPPED by design before any bot round-trip
-    #     (a real regression cannot red them regardless of the gate).
-    #   - endstone/levilamina: strict mode makes a BDS download-block a FAILURE
-    #     (exit 3 SKIPPED -> orchestrator exit 1), which is intentional: they are
-    #     NOT on this allowlist, so the job is marked failed and the skip is
-    #     visible in the checks UI and the summary line, never as a green PASS.
-    #     The hard-gate platforms are bukkit/endstone/levilamina/pmmp.
-    # Note: continue-on-error does not hide a pass/fail mislabel; the step log and
-    # the Gradle "[realE2E] --- Platform Outcomes ---" block report SKIPPED itself.
-    continue-on-error: ${{ !contains(fromJson('["bukkit","endstone","levilamina","pmmp"]'), matrix.platform) }}
+    # TOLERANCE POLICY -- exactly two platforms may fail without changing the
+    # workflow conclusion, and the other eight must red it.
+    #
+    # CANNOT red (continue-on-error: true) -- velocity, bungee:
+    #   Proxy-only. run-multiplatform-e2e.ps1 skips them from its $PlatformDefs
+    #   Note before any bot round-trip, so they never execute the L1 chat flow
+    #   and a red there can never mean a NovaLink chat regression. Their only
+    #   meaningful failure mode is the proxy plugin build, which the nightly is
+    #   not the right signal for. They report exit 4 (SKIPPED-BY-DESIGN).
+    #
+    # MUST red (continue-on-error: false) -- bukkit, folia, nukkit, pnx, sponge,
+    # endstone, levilamina, pmmp:
+    #   All eight execute the L1 flow, so all eight carry real product signal.
+    #   folia/nukkit/pnx/sponge used to be tolerated as "download-flaky", but in
+    #   run 39873580052 they were failing on product bugs, not downloads, so the
+    #   tolerance was hiding exactly the failures it was supposed to protect.
+    #   A blocked download is not a green result either: it has to be visible.
+    #   endstone/levilamina additionally red when the BDS zip cannot be fetched
+    #   (exit 3 SKIPPED + strict mode). That is intentional and stays: a green
+    #   check must mean both that the tests ran AND that they passed.
+    #
+    # Strict mode stays ON (-Pe2eRequireAllPlatforms=true, the Run E2E step).
+    # It is what turns an environment-blocked SKIPPED (exit 3) into a failure,
+    # while a by-design SKIPPED (exit 4) passes -- the two are kept distinct by
+    # exit code, see the exit-code contract in run-e2e-orchestrator.ps1.
+    #
+    # This list was INVERTED before: it read
+    #   !contains(fromJson('["bukkit","endstone","levilamina","pmmp"]'), ...)
+    # which tolerated nukkit/pnx/sponge/folia -- the platforms with real product
+    # failures -- and hard-gated the four that were already healthy.
+    continue-on-error: ${{ contains(fromJson('["velocity","bungee"]'), matrix.platform) }}
 
     env:
       # UTF-8 hardening (mirrors nova-ci.yml -- the E2E scripts emit Chinese +
@@ -498,11 +526,34 @@ jobs:
           #                          affected; server logs keep their name.
           #   dist/               -- multi-hundred-MB server-binary cache
           #   *.exe/*.dll/*.so    -- server/plugin native payloads
+          #   python venv trees   -- see the venv note below.
           # Kept: *.log, *.txt (includes skip-reason.txt and eula.txt),
           # bot-results.json and the run summary JSON.
+          #
+          # The python venv exclusion is what keeps this artifact readable.
+          # endstone creates `runs/endstone/endstone-venv/` INSIDE the tree we
+          # walk, so pip's package metadata got swept up by the *.txt rule.
+          # Measured on artifact e2e-endstone-39873580052: 55 files total and
+          # 52 of them were site-packages LICENSE.txt / top_level.txt /
+          # entry_points.txt. The ~3 real diagnostics were buried in pip noise.
+          # Match the venv by its structural markers rather than by the one
+          # `endstone-venv` name, so a differently-named venv (or a --user /
+          # dist/ python tree) is covered too: site-packages, the Windows venv
+          # Lib\ + Scripts\ pair, and any *.dist-info directory.
           $binaryExt = @('.jar', '.mca', '.mcr', '.dat', '.nbt', '.zip', '.phar',
                          '.exe', '.dll', '.so', '.dylib', '.class', '.pdb')
           $keepNames = @('bot-results.json', 'e2e-orchestrator-summary.json', 'e2e-summary.json')
+
+          # Path fragments that identify a python virtualenv / installed package
+          # tree. `EndsWith`-style matching is deliberately not used: these must
+          # hit at ANY depth, because the venv sits under runs/endstone/.
+          #   site-packages / dist-packages -- the installed-package trees
+          #   endstone-venv                 -- endstone's venv root
+          #   *.dist-info                   -- per-package metadata dirs
+          #   Lib / Scripts                 -- the two Windows venv subtrees
+          #                                    (the interpreter and the console
+          #                                    scripts; neither holds a log)
+          $venvPath = '[\\/](site-packages|dist-packages|endstone-venv|Lib|Scripts)[\\/]|[\\/][^\\/]+\.dist-info[\\/]'
 
           $candidates = @(Get-ChildItem -LiteralPath $srcRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
             Where-Object {
@@ -510,6 +561,7 @@ jobs:
               ($full -notmatch '[\\/]dist[\\/]') -and
               ($full -notmatch '[\\/]logs-only[\\/]') -and
               ($full -notmatch '[\\/]libraries[\\/]') -and
+              ($full -notmatch $venvPath) -and
               ($binaryExt -notcontains $_.Extension.ToLowerInvariant()) -and
               -not ($_.Name -match '^\d+\.log$') -and
               (

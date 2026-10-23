@@ -29,21 +29,42 @@
 # wiring the per-platform plugin build + install is tracked as a follow-up).
 #
 # Exit codes:
-#   0 = every requested platform PASSED (or was SKIPPED in non-strict mode)
-#   1 = a platform FAILED, or was SKIPPED while -RequireAllPlatforms is set
+#   0 = every requested platform PASSED (a by-design SKIPPED does not block)
+#   1 = a platform FAILED, or was SKIPPED (environment-blocked) while
+#       -RequireAllPlatforms is set
 #   2 = orchestrator/prereq failure before any platform result
-# Child platform scripts signal SKIPPED with exit 3; this script consumes that
-# code and never reports SKIPPED as PASS. The per-platform statuses are written
-# to .e2e-artifacts/runs/e2e-orchestrator-summary.json.
+#
+# CHILD exit codes consumed here -- two distinct classes of SKIP, never merged:
+#   0 = PASS
+#   1 = FAIL
+#   2 = prereq error
+#   3 = SKIPPED              -- the platform could not run for an ENVIRONMENT /
+#                              infrastructure reason (e.g. the BDS zip is
+#                              unavailable). This is a problem to fix, so strict
+#                              mode (-RequireAllPlatforms) counts it as a failure.
+#   4 = SKIPPED-BY-DESIGN    -- the platform structurally cannot run its L1 flow
+#                              (velocity/bungee: proxy-only, the downstream
+#                              purpur they front is not started by this harness).
+#                              Permanent by design, so strict mode must NOT fail
+#                              it, and the summary says so explicitly.
+#
+# run-multiplatform-e2e.ps1 emits 4 for the by-design skip and 3 when nothing
+# ran for environmental reasons. This script accepts BOTH codes because a
+# producer that has not been migrated yet still emits only 3; treating an
+# unknown code as FAIL is the honest default in that case (see the function).
+# A SKIPPED of either class is never reported as PASS: the per-platform statuses
+# are written to .e2e-artifacts/runs/e2e-orchestrator-summary.json.
 # ============================================================================
 [CmdletBinding()]
 param(
     [string]$Platforms = "bukkit,pmmp",
-    # Strict CI mode: a SKIPPED platform counts as a failure. This is OFF by
-    # default because SKIPPED is a normal local outcome (a BDS-blocked dev box,
-    # or velocity/bungee which are proxy-only by design) and defaulting to fatal
-    # would make every offline/local full run red. CI opts in explicitly, so a
-    # platform that ran ZERO assertions can never look green there.
+    # Strict CI mode: an environment-blocked SKIPPED platform (exit 3) counts as
+    # a failure. A SKIPPED-BY-DESIGN platform (exit 4 -- velocity/bungee are
+    # proxy-only) never does: it is a permanent structural limit, not a defect.
+    # This is OFF by default because even exit 3 is a normal local outcome (a
+    # BDS-blocked dev box) and defaulting to fatal would make every offline/local
+    # full run red. CI opts in explicitly, so a platform that ran ZERO assertions
+    # for an infrastructure reason can never look green there.
     [switch]$RequireAllPlatforms,
     # Resolved in the body below, NOT as a parameter default: under
     # [CmdletBinding()] PowerShell binds parameters as an advanced function, and
@@ -319,25 +340,40 @@ foreach ($p in $RequestedPlatforms) {
 $results = @()
 
 # Exit code contract shared with the per-platform scripts: 0 PASS, 1 FAIL,
-# 2 prereq error, 3 SKIPPED (no test ran). SKIPPED is its own terminal state --
-# it is never collapsed into PASS, because a platform that executed zero
-# assertions proves nothing about NovaLink's health.
+# 2 prereq error, 3 SKIPPED (environment-blocked, no test ran), 4
+# SKIPPED-BY-DESIGN (structurally cannot run, no test ran).
+#
+# 3 and 4 are separate terminal states on purpose. Both mean "zero assertions
+# executed", so neither is ever collapsed into PASS -- but only 3 is a problem:
+# 3 is an infrastructure block someone must fix (BDS download, missing runtime),
+# while 4 is a permanent design limit (proxy-only platforms). Merging them made
+# strict mode red the proxy jobs every night for a condition no commit can fix.
 function Convert-ExitCodeToStatus([int]$exitCode) {
     switch ($exitCode) {
         0 { return 'PASS' }
         3 { return 'SKIPPED' }
+        4 { return 'SKIPPED-BY-DESIGN' }
         default { return 'FAIL' }
     }
 }
 
 # A SKIPPED leaf script records why in <runsDir>/skip-reason.txt so the summary
-# can say "SKIPPED (BDS unavailable)" instead of a bare SKIPPED.
+# can say "SKIPPED (BDS unavailable)" instead of a bare SKIPPED. Both skip
+# classes use the same file: the reason is what tells the reader which one it is
+# when the exit code alone is not enough.
 function Read-SkipReason([string]$platform) {
     $reasonFile = Join-Path $RepoRoot ".e2e-artifacts/runs/$platform/skip-reason.txt"
     if (Test-Path -LiteralPath $reasonFile -PathType Leaf) {
         return (Get-Content -LiteralPath $reasonFile -Raw -ErrorAction SilentlyContinue).Trim()
     }
     return ""
+}
+
+# True for both skip classes (3 and 4). Use this for "did any assertion run?"
+# checks; use an explicit -eq against one status when the classes differ in
+# consequence (only 'SKIPPED' is a strict-mode failure).
+function Test-SkipStatus([string]$status) {
+    return ($status -eq 'SKIPPED' -or $status -eq 'SKIPPED-BY-DESIGN')
 }
 
 # --- dispatch the self-contained platforms (one script per platform) ---------
@@ -378,7 +414,7 @@ foreach ($p in $SelfPlatforms) {
         -RepoRoot $RepoRoot -BotTimeoutSec $BotWaitSec
     $selfExit = $LASTEXITCODE
     $selfStatus = Convert-ExitCodeToStatus $selfExit
-    $selfReason = if ($selfStatus -eq 'SKIPPED') { Read-SkipReason $p } else { '' }
+    $selfReason = if (Test-SkipStatus $selfStatus) { Read-SkipReason $p } else { '' }
     $results += [pscustomobject]@{ platform = $p; exitCode = $selfExit; status = $selfStatus; skippedReason = $selfReason }
 }
 
@@ -431,10 +467,23 @@ if ($MultiPlatforms.Count -gt 0) {
         foreach ($p in $MultiPlatforms) {
             $row = $mpRows | Where-Object { $_.platform -eq $p } | Select-Object -First 1
             if ($row) {
+                # The batch writes its own status strings. Accept BOTH skip
+                # classes here: 'SKIPPED-BY-DESIGN' for the proxy-only entries
+                # (velocity/bungee, from a $PlatformDefs Note) and 'SKIPPED' for
+                # an environment block. A batch that has not been migrated yet
+                # still writes the bare 'SKIPPED' for both -- that is why this
+                # switch keeps a SKIPPED arm instead of rejecting it.
                 $mpStatus = $row.status
-                $mpReason = if ($mpStatus -eq 'SKIPPED') { $row.notes } else { '' }
+                $mpReason = if (Test-SkipStatus $mpStatus) { $row.notes } else { '' }
                 # PARTIAL maps to 0 like the batch does: only FAIL reds the run.
-                $mpRowExit = switch ($mpStatus) { 'FAIL' { 1 } 'SKIPPED' { 3 } default { 0 } }
+                # The exit code is re-derived from the status so the strict-mode
+                # computation below sees the same code the status implies.
+                $mpRowExit = switch ($mpStatus) {
+                    'FAIL'              { 1 }
+                    'SKIPPED'           { 3 }
+                    'SKIPPED-BY-DESIGN' { 4 }
+                    default             { 0 }
+                }
                 $results += [pscustomobject]@{ platform = $p; exitCode = $mpRowExit; status = $mpStatus; skippedReason = $mpReason }
             } else {
                 # No per-platform row: fall back to the batch exit code.
@@ -446,10 +495,11 @@ if ($MultiPlatforms.Count -gt 0) {
 }
 
 Log "=== E2E summary ==="
-# Print the honest terminal state. A SKIPPED platform executed zero assertions,
-# so it is never rendered as PASS -- the reason is printed next to it.
+# Print the honest terminal state. A skipped platform of EITHER class executed
+# zero assertions, so it is never rendered as PASS -- the reason is printed next
+# to it, and the status string itself says which kind of skip it was.
 $results | ForEach-Object {
-    if ($_.status -eq 'SKIPPED' -and $_.skippedReason) {
+    if ((Test-SkipStatus $_.status) -and $_.skippedReason) {
         Log ("  {0,-12} {1} ({2})" -f $_.platform, $_.status, $_.skippedReason)
     } else {
         Log ("  {0,-12} {1}" -f $_.platform, $_.status)
@@ -460,26 +510,38 @@ $results | ForEach-Object {
 # so `$null -gt 0` is False and the orchestrator would exit 0 (a silently green
 # E2E run) for the single-failure case. Wrapping in @() guarantees an array.
 $failures = @($results | Where-Object { $_.status -eq 'FAIL' -or $_.status -eq 'UNKNOWN' -or $_.status -eq 'MISSING-HARNESS' })
-$skipped  = @($results | Where-Object { $_.status -eq 'SKIPPED' })
-Log ("=== {0} platform(s) requested, {1} passed, {2} skipped, {3} failed ===" -f `
-    $results.Count, ($results.Count - $skipped.Count - $failures.Count), $skipped.Count, $failures.Count)
+# The two skip classes are counted separately. Only $skipped (environment) can
+# fail the run under strict mode; $skippedByDesign is reported but never fatal.
+$skipped         = @($results | Where-Object { $_.status -eq 'SKIPPED' })
+$skippedByDesign = @($results | Where-Object { $_.status -eq 'SKIPPED-BY-DESIGN' })
+Log ("=== {0} platform(s) requested, {1} passed, {2} skipped, {3} skipped-by-design, {4} failed ===" -f `
+    $results.Count, ($results.Count - $skipped.Count - $skippedByDesign.Count - $failures.Count), `
+    $skipped.Count, $skippedByDesign.Count, $failures.Count)
+if ($skippedByDesign.Count -gt 0) {
+    Log "SKIPPED-BY-DESIGN (structural limit, not a failure): $(($skippedByDesign | ForEach-Object { $_.platform }) -join ', ')"
+}
 if ($RequireAllPlatforms -and $skipped.Count -gt 0) {
-    Log "STRICT MODE (-RequireAllPlatforms): SKIPPED platform(s) count as failures: $(($skipped | ForEach-Object { $_.platform }) -join ', ')"
+    Log "STRICT MODE (-RequireAllPlatforms): environment-blocked SKIPPED platform(s) count as failures: $(($skipped | ForEach-Object { $_.platform }) -join ', ')"
 }
 
 # Machine-readable summary. 'status' is the explicit terminal state
-# (PASS/FAIL/SKIPPED/...); 'skipped' makes the SKIP outcome unambiguous for
-# consumers that only look at booleans, and 'skippedReason' explains why.
+# (PASS/FAIL/SKIPPED/SKIPPED-BY-DESIGN/...); 'skipped' makes the SKIP outcome
+# unambiguous for consumers that only look at booleans, and 'skippedReason'
+# explains why. 'skippedByDesign' separates a permanent structural limit from an
+# environment block so a consumer can tell them apart without parsing 'status'.
+# Both flags are true for their respective class only -- a SKIPPED row has
+# skipped=true / skippedByDesign=false, and vice versa.
 $summaryFile = Join-Path $RepoRoot ".e2e-artifacts/runs/e2e-orchestrator-summary.json"
 $summaryDir = Split-Path -Parent $summaryFile
 if (-not (Test-Path $summaryDir)) { New-Item -ItemType Directory -Force -Path $summaryDir | Out-Null }
 $summaryRows = $results | ForEach-Object {
     [pscustomobject]@{
-        platform      = $_.platform
-        status        = $_.status
-        exitCode      = $_.exitCode
-        skipped       = ($_.status -eq 'SKIPPED')
-        skippedReason = $_.skippedReason
+        platform        = $_.platform
+        status          = $_.status
+        exitCode        = $_.exitCode
+        skipped         = ($_.status -eq 'SKIPPED')
+        skippedByDesign = ($_.status -eq 'SKIPPED-BY-DESIGN')
+        skippedReason   = $_.skippedReason
     }
 }
 # Write UTF-8 WITHOUT a BOM: Windows PowerShell 5.1's -Encoding utf8 emits one,
@@ -488,5 +550,9 @@ $summaryJson = $summaryRows | ConvertTo-Json -Depth 5
 [System.IO.File]::WriteAllText($summaryFile, $summaryJson, (New-Object System.Text.UTF8Encoding($false)))
 Log "Summary written to: $summaryFile"
 
+# Strict mode fails ONLY the environment-blocked class. A SKIPPED-BY-DESIGN
+# platform is a permanent structural limit (velocity/bungee are proxy-only), so
+# counting it here would red the nightly forever for a condition no commit can
+# fix -- the exact noise that made the old signal unreadable.
 $strictFailure = $RequireAllPlatforms -and $skipped.Count -gt 0
 if ($failures.Count -gt 0 -or $strictFailure) { exit 1 } else { exit 0 }

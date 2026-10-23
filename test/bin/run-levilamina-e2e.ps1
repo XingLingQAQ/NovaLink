@@ -153,10 +153,46 @@ if (-not (Test-Path $classpathFile)) {
     Log "ERROR: classpath file not written: $classpathFile"
     exit 2
 }
-$fatJar = Get-ChildItem (Join-Path $RepoRoot "StarLink/core/build/libs/*-all.jar") -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $fatJar) {
-    $fatJar = Get-ChildItem (Join-Path $RepoRoot "StarLink/core/build/libs/*-fat.jar") -ErrorAction SilentlyContinue | Select-Object -First 1
+# A fat jar is only usable when it is NOT STALE. Measured on this host
+# (2026-10-23): core-1.0.0-SNAPSHOT-all.jar was dated 2026-10-17 18:51 while 42
+# .java files under StarLink/core/src were newer. That jar is a pre-refactor
+# build (NovaLinkMain.class 67,124 bytes, zero "daemon" strings, no NovaLinkCore
+# class), so launching from it passes --daemon to a jar that ignores the flag and
+# the backend dies on stdin EOF -- making a good fix look broken. CI never sees
+# this (the workflow runs only `:StarLink:core:jar`, never shadowJar, so no
+# *-all.jar exists there and CI always takes the gradle branch); it is a
+# local-only trap, and that is exactly why local and CI must not diverge.
+# Compare LastWriteTimeUtc against the newest source file and refuse an older
+# jar; "no source files found" cannot prove freshness, so it refuses too.
+function Get-FreshFatJar([string]$RepoRoot) {
+    # Same selection order as before (shadow output first, then a plain -fat
+    # jar), but the chosen jar is then VALIDATED as a whole. Deliberately not a
+    # per-glob "reject then try the next glob" loop: that would quietly swap a
+    # stale shadow jar for some other stale artifact instead of falling through
+    # to the classpath, which is the branch that is always correct.
+    $jar = Get-ChildItem (Join-Path $RepoRoot "StarLink/core/build/libs/*-all.jar") -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $jar) {
+        $jar = Get-ChildItem (Join-Path $RepoRoot "StarLink/core/build/libs/*-fat.jar") -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    }
+    if (-not $jar) { return $null }
+
+    $srcDir = Join-Path $RepoRoot "StarLink/core/src"
+    $newestSource = Get-ChildItem -LiteralPath $srcDir -Recurse -File -Filter *.java -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    if (-not $newestSource) {
+        Log "  rejecting fat jar $($jar.Name): no .java under $srcDir, so freshness cannot be proven -- using classpath"
+        return $null
+    }
+    if ($jar.LastWriteTimeUtc -lt $newestSource.LastWriteTimeUtc) {
+        Log ("  rejecting stale fat jar {0} (jar {1:yyyy-MM-dd HH:mm} UTC, newest source {2:yyyy-MM-dd HH:mm} UTC) -- using classpath" -f `
+            $jar.Name, $jar.LastWriteTimeUtc, $newestSource.LastWriteTimeUtc)
+        return $null
+    }
+    return $jar
 }
+$fatJar = Get-FreshFatJar $RepoRoot
 if ($fatJar) { Log "  using fat jar: $($fatJar.FullName)" } else { Log "  using classpath: $classpathFile" }
 
 # ---------------------------------------------------------------------------
