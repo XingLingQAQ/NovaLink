@@ -87,7 +87,13 @@ class NetworkClient {
     /** @var ConfigManager Configuration manager */
     private ConfigManager $config;
     
-    /** @var resource|null Socket resource */
+    /**
+     * Active handle. Plaintext path: a Socket object on PHP >= 8.0 (a
+     * "Socket" resource on PHP 7). TLS path: a streams-API stream resource.
+     * isStreamSocket() is the discriminator; see its docblock.
+     *
+     * @var \Socket|resource|null
+     */
     private $socket = null;
     
     /** @var bool Connection status */
@@ -247,15 +253,24 @@ class NetworkClient {
     }
 
     /**
-     * Whether the active socket is a streams-API resource (TLS path) rather
-     * than an ext-socket Socket resource (plaintext path). The two resource
-     * types are NOT interchangeable: socket_read/socket_write/socket_close
-     * raise TypeError on a stream resource, and fread/fwrite/fclose raise
-     * TypeError on an ext-socket Socket. Every I/O call site dispatches on
-     * this flag so the plaintext path keeps its original ext-socket calls
-     * verbatim and the TLS path uses the streams API.
+     * Whether the active socket is a streams-API handle (TLS path) rather
+     * than an ext-socket handle (plaintext path). Every I/O call site
+     * dispatches on this flag so the plaintext path keeps its original
+     * socket_* calls and the TLS path uses the streams API -- the two are
+     * NOT interchangeable: socket_read/socket_write/socket_close raise
+     * TypeError on a stream, and fread/fwrite/fclose raise TypeError on an
+     * ext-socket handle.
+     *
+     * The plaintext handle is a Socket OBJECT on PHP >= 8.0 (socket_create()
+     * stopped returning a resource in 8.0) and a "Socket" resource on PHP 7.
+     * A Socket object never satisfies is_resource(), so it falls through to
+     * the ext-socket branch; the instanceof check makes that explicit rather
+     * than an accident of is_resource().
      */
     private function isStreamSocket(): bool {
+        if ($this->socket instanceof \Socket) {
+            return false;
+        }
         return is_resource($this->socket) && get_resource_type($this->socket) === "stream";
     }
 
@@ -411,7 +426,7 @@ class NetworkClient {
      * Called when async connection completes.
      * 
      * @param bool $success Whether connection was successful
-     * @param resource|null $socket Socket resource if successful
+     * @param \Socket|resource|null $socket Socket handle if successful
      * @param string $error Error message if failed
      * @param string $host Server host
      * @param int $port Server port
@@ -495,11 +510,11 @@ class NetworkClient {
             return;
         }
 
-        // AUTH-002 TLS: the streams-API path uses fread/feof on a stream
-        // resource; the ext-socket plaintext path uses socket_read/socket_last_error.
-        // The two resource types are not interchangeable, so dispatch on the
-        // resource type. (isStreamSocket() returns false for the plaintext
-        // ext-socket Socket resource, which is a "Socket" type, not "stream".)
+        // AUTH-002 TLS: the streams-API path uses fread/feof on a stream;
+        // the ext-socket plaintext path uses socket_read/socket_last_error.
+        // The two handle types are not interchangeable, so dispatch on it.
+        // (isStreamSocket() returns false for the plaintext handle, which is
+        // a Socket object on PHP >= 8.0 and a "Socket" resource on PHP 7.)
         if ($this->isStreamSocket()) {
             $this->processIncomingDataStream();
             return;
@@ -1168,28 +1183,23 @@ class NetworkClient {
         $data = $packet->serialize();
 
         // AUTH-002 TLS: dispatch to the streams-API blocking send on a stream
-        // resource (socket_set_block/socket_write would raise TypeError).
+        // (socket_set_block/socket_write would raise TypeError).
         if ($this->isStreamSocket()) {
             return $this->sendStreamSync($data);
         }
 
-        $length = strlen($data);
-        $sent = 0;
-
-        // Temporarily set to blocking for sync send
-        socket_set_block($this->socket);
-
-        while ($sent < $length) {
-            $result = @socket_write($this->socket, substr($data, $sent), $length - $sent);
-            if ($result === false) {
-                $this->plugin->debug("Failed to send packet: " . socket_strerror(socket_last_error($this->socket)));
-                socket_set_nonblock($this->socket);
-                return false;
-            }
-            $sent += $result;
+        // Same guard + blocking write loop as AsyncSendTask; see SocketGuard.
+        if (!SocketGuard::isUsable($this->socket)) {
+            $this->plugin->debug("Failed to send packet: Socket is not valid");
+            return false;
         }
 
-        socket_set_nonblock($this->socket);
+        $error = SocketGuard::writeAll($this->socket, $data);
+        if ($error !== null) {
+            $this->plugin->debug("Failed to send packet: $error");
+            return false;
+        }
+
         return true;
     }
     
@@ -1373,9 +1383,9 @@ class NetworkClient {
     }
     
     /**
-     * Gets the socket resource.
-     * 
-     * @return resource|null The socket resource
+     * Gets the socket handle.
+     *
+     * @return \Socket|resource|null The socket handle
      */
     public function getSocket() {
         return $this->socket;
