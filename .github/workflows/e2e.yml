@@ -170,11 +170,24 @@ jobs:
       # (npm warns EBADENGINE on 18). The install itself succeeds on 18, so the
       # mismatch only shows up at runtime: the bot exits in a few hundred ms and
       # writes no results.json, which the harness reports as an L1 failure.
-      # bedrock-protocol is pinned to 3.59.0, not 3.60.x: 3.60.0+ declares
-      # node >= 24 AND pulls prismarine-xbox-services from a git ref that is
-      # not published to npm, which npm's git allow-list blocks by default
-      # (npm 11 still needs --allow-git=all). 3.59.0 supports Bedrock 1.26.45
-      # and installs from the registry alone.
+      #
+      # bedrock-protocol is now 3.60.1 (was 3.59.0). The bump is REQUIRED, not
+      # optional: BDS 1.26.52 only accepts NetherNet transport, and NetherNet
+      # arrived in 3.60.0. 3.59.0 speaks RakNet only and cannot talk to it.
+      #
+      # Two consequences of that bump were measured against this exact lock, so
+      # the next person does not have to rediscover them:
+      #   * bedrock-protocol 3.60.1 declares engines.node ">=24". Node 22 (what
+      #     this job installs) satisfies `npm ci` anyway -- engine-strict is off
+      #     by default and npx npm@10 ci exits 0 with only an EBADENGINE warning
+      #     -- and the module loads and resolves Versions['1.26.51'] = 2193
+      #     under a real node v22.20.0. So Node 22 is still correct here.
+      #   * the lock now contains prismarine-xbox-services pinned to a git ref.
+      #     npm resolves the "github:" spec through codeload over https, not
+      #     ssh, so a cold install with an EMPTY cache succeeds (verified with
+      #     npx npm@10 ci --cache <empty dir>) -- no SSH key needed on the
+      #     runner. npm 11+ refuses it with EALLOWSCRIPTS/EALLOWGIT, so do NOT
+      #     bump the runner's npm past 10 without revisiting this step.
       - name: Set up Node 22 (mineflayer + bedrock-protocol bots)
         uses: actions/setup-node@v4
         with:

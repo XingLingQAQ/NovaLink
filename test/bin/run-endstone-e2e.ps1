@@ -486,7 +486,13 @@ if (Test-Path $bdsStdout) {
 # 6. Run the bedrock bot.
 # ---------------------------------------------------------------------------
 Log "step 6: installing + running the bedrock-protocol bot"
-if (-not (Test-Path (Join-Path $botDir "node_modules/bedrock-protocol"))) {
+# Test-BotDepsCurrent (e2e-assertions.ps1), not a Test-Path on one package dir.
+# The old existence-only guard was satisfied by ANY installed copy: a tree left
+# over from an earlier checkout (bedrock-protocol 3.58.1 against a package.json
+# asking for 3.60.1) skipped the install and then failed at runtime, because
+# 3.58.x has no NetherNet transport and cannot reach a 1.26.52 BDS. A stale tree
+# must therefore trigger `npm ci`, not suppress it.
+if (-not (Test-BotDepsCurrent $botDir)) {
     Push-Location $botDir
     try { npm ci --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { Log "ERROR: npm ci failed"; Teardown-All; Show-FailureLogs "npm ci failed"; exit 2 } }
     finally { Pop-Location }

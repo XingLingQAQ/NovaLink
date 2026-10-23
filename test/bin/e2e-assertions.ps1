@@ -136,3 +136,41 @@ function Test-ServerLogFatal {
     }
     return $null
 }
+
+# Whether the bot's npm dependencies are present AND match the lock file.
+#
+# The existence-only guard (`Test-Path node_modules/bedrock-protocol`) that the
+# platform runners used to carry is not enough: it is satisfied by ANY installed
+# copy, including one left behind by an earlier checkout. That is not a
+# hypothetical -- measured on this host, test/bot/node_modules held
+# bedrock-protocol 3.58.1 / minecraft-data 3.113.1 while package.json declares
+# 3.60.1 / 3.117.0. A 3.58.x install has no NetherNet transport at all, so the
+# Bedrock bots cannot reach a 1.26.52 BDS, and because the guard never ran
+# `npm ci` the runner silently used the stale tree. The same shape would hide a
+# downgrade after any future bump.
+#
+# `npm ls --depth=0` reports the INSTALLED versions and exits non-zero when they
+# disagree with package.json/lock, so it is the cheapest honest check. It exits
+# 0 both when everything matches and (with a warning) when a peer is merely
+# optional, which is the behaviour the runners want.
+#
+# A missing node_modules, a missing npm, or a non-zero `npm ls` all mean "run
+# npm ci". Erring toward reinstalling is deliberate: a needless `npm ci` costs
+# seconds, a stale tree costs a red platform that looks like a product bug.
+function Test-BotDepsCurrent {
+    param([string]$BotDir)
+    if (-not (Test-Path -LiteralPath $BotDir)) { return $false }
+    if (-not (Test-Path -LiteralPath (Join-Path $BotDir 'node_modules'))) { return $false }
+    if (-not (Test-Path -LiteralPath (Join-Path $BotDir 'package.json'))) { return $false }
+    $npm = Get-Command npm -ErrorAction SilentlyContinue
+    if (-not $npm) { return $false }
+    Push-Location $BotDir
+    try {
+        & $npm.Source ls --depth=0 --silent 2>&1 | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    } finally {
+        Pop-Location
+    }
+}
