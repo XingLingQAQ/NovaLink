@@ -312,11 +312,23 @@ $tpl | Set-Content -Path $novaYml -NoNewline
 $novaStdout = Join-Path $novaDir "stdout.log"
 $novaStderr = Join-Path $novaDir "stderr.log"
 $novaPidFile = Join-Path $novaDir "backend.pid"
+# --daemon is REQUIRED here. Start-Process gives the JVM a redirected stdin
+# handle inherited from this PowerShell process; NovaLinkMain's default mode
+# runs the JLine console loop on the main thread, which reads EOF from that
+# handle immediately, prints "EOF received, shutting down..." and exits about a
+# second after "started successfully" -- long before BDS and the bot can
+# connect. The plugin then only ever logs "Failed to connect ... Connection
+# timeout" and never authenticates, so backendOk can never go true. In daemon
+# mode NovaLinkMain never touches stdin and blocks on a latch released by the
+# JVM shutdown hook, so the process stays up until Teardown-All stops it
+# (Stop-Process -> terminate -> shutdown hook releases the latch). Flags are
+# order-independent in NovaLinkMain::hasFlag, so the positional yml path and
+# --daemon can sit in either order.
 if ($fatJar) {
-    $novaArgs = @("-Xmx512m", "-jar", $fatJar.FullName, $novaYml)
+    $novaArgs = @("-Xmx512m", "-jar", $fatJar.FullName, $novaYml, "--daemon")
 } else {
     $cp = (Get-Content $classpathFile -Raw).Trim()
-    $novaArgs = @("-Xmx512m", "-cp", $cp, "com.nova.link.NovaLinkMain", $novaYml)
+    $novaArgs = @("-Xmx512m", "-cp", $cp, "com.nova.link.NovaLinkMain", $novaYml, "--daemon")
 }
 $novaProc = Start-Process -FilePath $java -ArgumentList $novaArgs `
     -WorkingDirectory $novaDir -RedirectStandardOutput $novaStdout -RedirectStandardError $novaStderr -PassThru -NoNewWindow
