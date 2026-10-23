@@ -25,6 +25,13 @@
 # Cross-platform: Invoke-WebRequest with -TimeoutSec 300 and 3 retry attempts.
 # Works on the Windows CI runner. Set $env:HTTP_PROXY / HTTPS_PROXY if a proxy
 # is needed (e.g. http://127.0.0.1:7890).
+#
+# NOTE on interrupted transfers: a truncated body can still look like a
+# completed request (the BDS zip is ~86 MB and one run here left a 13.8 MB
+# .tmp that Invoke-WebRequest had reported as success). A hash mismatch on a
+# pinned or content-addressed artifact is therefore retried from a fresh .tmp
+# a bounded number of times before failing, so a dropped transfer does not
+# look like a poisoned binary.
 # ============================================================================
 [CmdletBinding()]
 param(
@@ -204,15 +211,63 @@ function Resolve-PocketMineLatest {
 }
 
 function Resolve-BdsLatest {
-    # BDS download URL is served by minecraft.net's pocketbedlinks JSON, fetched
-    # at runtime by the download page JS. That endpoint is BLOCKED from this env
-    # (TLS dropped even with a browser UA). Document the pattern + signal the
-    # caller to skip the live download (returns a sentinel with Skip=$true).
-    Write-Warning "[fetch] BDS auto-detect: the minecraft.net pocketbedlinks endpoint is unreachable from this environment."
-    Write-Warning "[fetch] BDS URL pattern (documented): https://www.minecraft.net/bedrockdedicatedserverbinaries/win/bedrock-server-<MC>.<patch>.zip"
-    Write-Warning "[fetch] BDS detection approach: fetch https://www.minecraft.net/en-us/download/server/bedrock, extract the pocketbedlinks JSON URL from the page's data-mc-config-strings attribute, call that JSON for the serverBedrockWindows download URL."
-    Write-Warning "[fetch] BDS -Auto cannot proceed here. Supply a locally-cached BDS zip via the levilamina/endstone E2E agent's own script, or run from a network with access to minecraft.net pocketbedlinks."
-    return @{ Skip = $true }
+    # Mojang serves the current BDS binaries from the Minecraft services links
+    # API (the same JSON the minecraft.net download page consumes):
+    #   result.links[] -> { downloadType, downloadUrl }
+    # serverBedrockWindows is the Windows BDS zip.
+    #
+    # The download host changed shape: the old
+    #   minecraft.net/bedrockdedicatedserverbinaries/win/<file>
+    # form 404s for every variant; links now point at
+    #   minecraft.net/bedrockdedicatedserver/bin-win/<file>
+    $apiUrl = 'https://net-secondary.web.minecraft-services.net/api/v1.0/download/links'
+    try {
+        $r = Invoke-WebRequest -Uri $apiUrl -UseBasicParsing -TimeoutSec 60
+    } catch {
+        Write-Warning "[fetch] BDS auto-detect failed: the Minecraft services links API ($apiUrl) is unreachable from this environment: $($_.Exception.Message)"
+        return @{ Skip = $true; SkipReason = 'Minecraft services links API unreachable' }
+    }
+
+    $json = $r.Content | ConvertFrom-Json
+    $link = @($json.result.links) | Where-Object { $_.downloadType -eq 'serverBedrockWindows' } | Select-Object -First 1
+    if (-not $link -or -not $link.downloadUrl) {
+        Write-Warning "[fetch] BDS auto-detect failed: the links API answered but carried no serverBedrockWindows entry."
+        return @{ Skip = $true; SkipReason = 'links API returned no serverBedrockWindows entry' }
+    }
+
+    $url = $link.downloadUrl
+    $file = Split-Path -Leaf $url
+    $m = [regex]::Match($file, '^bedrock-server-(?<ver>[0-9][0-9.]*)\.zip$')
+    if (-not $m.Success) { throw "Unrecognised BDS file name '$file' from the links API." }
+    # "1.26.52.3" -> MC 1.26.52 + Build 3; a three-part "1.26.40" -> MC 1.26.40.
+    $parts = $m.Groups['ver'].Value.Split('.')
+    if ($parts.Count -ge 4) {
+        $mc = $parts[0..2] -join '.'
+        $build = $parts[3..($parts.Count - 1)] -join '.'
+    } else {
+        $mc = $m.Groups['ver'].Value
+        $build = ''
+    }
+
+    # Cross-check the artifact against Endstone's per-version BDS metadata. Only
+    # adopt the hash when the metadata names this EXACT URL, so it stays keyed to
+    # the artifact we are about to fetch rather than to a version string that
+    # Mojang could re-publish. No metadata (or a mismatch of URLs) is not an
+    # error -- the caller then just logs the hash it computes after download.
+    $expected = $null
+    try {
+        $metaUrl = "https://raw.githubusercontent.com/EndstoneMC/bedrock-server-data/v2/release/$mc/metadata.json"
+        $meta = (Invoke-WebRequest -Uri $metaUrl -UseBasicParsing -TimeoutSec 30).Content | ConvertFrom-Json
+        $win = $meta.binary.windows
+        if ($win -and $win.url -eq $url -and $win.sha256) {
+            $expected = $win.sha256.ToUpper()
+            Write-Host "[fetch] BDS: using the published SHA-256 for $mc from Endstone bedrock-server-data."
+        }
+    } catch {
+        Write-Host "[fetch] BDS: no published hash for $mc ($($_.Exception.Message)); the computed SHA-256 will be logged instead."
+    }
+
+    return @{ Url = $url; File = $file; ExpectedSha256 = $expected; Build = $build; MC = $mc }
 }
 
 function Resolve-Latest([hashtable]$entry) {
@@ -245,18 +300,24 @@ if ($Auto) {
     }
 }
 
+# The version the extracted dist/<name>-<version>/ dir is keyed on. Auto mode
+# can resolve a version the lock has not caught up with yet, so prefer the
+# resolved one and fall back to the pin.
+$effectiveMc = $entry.MC
+
 if ($resolved) {
-    # BDS auto-detect signals unreachable by returning a Skip sentinel; the
-    # pinned URL is a documented pattern (not a real downloadable URL from
-    # this env), so exit cleanly with a documented status instead of
-    # hard-failing the run.
+    # Auto-detect can return a Skip sentinel when the platform API is genuinely
+    # unreachable. Callers treat exit 0 + no artifact as a documented skip, so
+    # report the real reason and leave the decision to them.
     if ($resolved.Skip) {
-        Write-Host "[fetch] $($entry.Name): documented URL pattern only; no download performed (see warnings above). Exit 0 (known-unreachable from this env; not a script failure)."
+        $why = if ($resolved.SkipReason) { $resolved.SkipReason } else { 'auto-detect unavailable' }
+        Write-Host "[fetch] $($entry.Name): no download performed ($why). Exit 0 (not a script failure)."
         exit 0
     }
     $url = $resolved.Url
     $file = $resolved.File
     $expected = $resolved.ExpectedSha256  # may be $null (no API-supplied hash)
+    if ($resolved.MC) { $effectiveMc = $resolved.MC }
     $autoMode = $true
 } else {
     # Pinned mode (or Auto-detect fell back to the pin).
@@ -277,8 +338,19 @@ $sidecar = "$dest.sha256"
 # older lock entries without Kind still trigger extraction.
 $extractDir = $null
 if ($entry.Kind -eq 'zip' -or $entry.Extract) {
-    $versionTag = $entry.MC
+    $versionTag = $effectiveMc
     $extractDir = Join-Path $DistDir "$($entry.Name)-$versionTag"
+}
+
+# Expand a Kind=zip archive to dist/<name>-<version>/ (the BDS run dir).
+function Expand-ServerZip([string]$zipPath, [string]$targetDir) {
+    if (Test-Path $targetDir) {
+        Write-Host "[fetch] extracted dir already exists: $targetDir (reusing)"
+        return
+    }
+    Write-Host "[fetch] extracting $zipPath -> $targetDir"
+    Expand-Archive -Path $zipPath -DestinationPath $targetDir -Force
+    Write-Host "[fetch] extracted: $targetDir"
 }
 
 # 1. Reuse if the cached file still verifies (pinned hash) or the sidecar
@@ -289,10 +361,9 @@ if (Test-Path $dest) {
         if (Test-Sha256 -file $dest -expectedHash $expected) {
             Write-Host "[fetch] cache hit: $dest (SHA-256 verified)"
             if (-not (Test-Path $sidecar)) { $expected | Set-Content -Path $sidecar -NoNewline }
-            # BDS: also ensure the extracted dir exists.
-            if ($extractDir -and (Test-Path $extractDir)) {
-                Write-Host "[fetch] cache hit (extracted): $extractDir"
-            }
+            # A cached zip whose extracted dir was cleaned out still needs the
+            # extraction -- returning here would leave the caller with no BDS tree.
+            if ($extractDir) { Expand-ServerZip $dest $extractDir }
             return
         }
     } else {
@@ -302,9 +373,7 @@ if (Test-Path $dest) {
         $cachedHash = Get-FileSha256 $dest
         if ($sidecarHash -and $cachedHash -and ($sidecarHash -eq $cachedHash)) {
             Write-Host "[fetch] cache hit: $dest (SHA-256 $cachedHash matches sidecar; auto-mode, no pin to compare)"
-            if ($extractDir -and (Test-Path $extractDir)) {
-                Write-Host "[fetch] cache hit (extracted): $extractDir"
-            }
+            if ($extractDir) { Expand-ServerZip $dest $extractDir }
             return
         }
     }
@@ -329,17 +398,30 @@ Get-ChildItem -Path $DistDir -Filter "$($entry.File).*download.tmp" -ErrorAction
         Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
     } catch { }
 }
-Invoke-DownloadWithRetry -url $url -destTmp $tmp
+# A transfer that is cut short can still report success to Invoke-WebRequest,
+# so the hash check is the only thing that catches it. Retry the whole download
+# from a fresh .tmp when a verified artifact comes back wrong -- a dropped
+# transfer must not look like a tampered binary.
+$maxVerifyAttempts = 3
+$actual = $null
+for ($attempt = 1; $attempt -le $maxVerifyAttempts; $attempt++) {
+    Invoke-DownloadWithRetry -url $url -destTmp $tmp
 
-# 3. Verify / log hash.
-$actual = Get-FileSha256 $tmp
-if ($expected) {
-    # Pinned or content-addressed (PaperMC fill-data): enforce the hash.
-    if ($actual -ne $expected.ToUpper()) {
-        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-        Write-Error "SHA-256 mismatch for ${file}: expected $expected, got $actual. Refusing to run unverified binary."
+    # 3. Verify / log hash.
+    $actual = Get-FileSha256 $tmp
+    if (-not $expected) { break }
+    if ($actual -eq $expected.ToUpper()) { break }
+
+    $gotSize = (Get-Item $tmp).Length
+    Write-Warning "[fetch] SHA-256 mismatch for ${file} (attempt $attempt/$maxVerifyAttempts): expected $expected, got $actual, size $gotSize. Re-downloading from scratch."
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    if ($attempt -eq $maxVerifyAttempts) {
+        Write-Error "SHA-256 mismatch for ${file} after $maxVerifyAttempts attempts: expected $expected, got $actual. Refusing to run unverified binary."
         exit 1
     }
+}
+
+if ($expected) {
     Write-Host "[fetch] SHA-256 verified: $actual"
 } else {
     # Auto mode without an API-supplied hash: log the computed hash for
@@ -355,12 +437,4 @@ Write-Host "[fetch] verified + saved: $dest"
 
 # 5. BDS extract (zip -> dist/bds-<version>/). Cached separately so BDS doesn't
 #    re-extract each run.
-if ($extractDir) {
-    if (Test-Path $extractDir) {
-        Write-Host "[fetch] extracted dir already exists: $extractDir (reusing)"
-    } else {
-        Write-Host "[fetch] extracting $dest -> $extractDir"
-        Expand-Archive -Path $dest -DestinationPath $extractDir -Force
-        Write-Host "[fetch] extracted: $extractDir"
-    }
-}
+if ($extractDir) { Expand-ServerZip $dest $extractDir }
