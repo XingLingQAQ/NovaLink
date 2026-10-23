@@ -549,6 +549,51 @@ $PlatformDefs = @{
     JarGlob     = "NovaChat/Bedrock/nukkit/build/libs/novachat-nukkit-*.jar"
     BuildJdk    = "Jdk21"
     PluginsSubdir = "nukkit/plugins"
+    # Without this file the plugin copies its bundled template (port 8888,
+    # username "Nukkit_Server", password "your-password-here") and can never
+    # authenticate against the backend on 27905. It then answers every
+    # backend-backed command with "not connected", the chat round-trip never
+    # echoes, and the platform can only ever reach PARTIAL -- which is exit 0,
+    # i.e. a green job for a plugin that never talked to anything. Verified
+    # 2026-10-23: a run with the bundled defaults logged
+    # "Failed to connect to NovaLink: Connection refused ... /127.0.0.1:8888"
+    # while the harness backend was up on 27905.
+    # Nukkit (cn.nukkit.utils.Config) reads YAML from <server>/plugins/NovaChat/.
+    # Every key below is REQUIRED: NovaChatConfig's requireString/requireSection
+    # throw on a missing key and the plugin refuses to start.
+    PluginConfig = @{
+      RelativePath = "plugins/NovaChat/config.yml"
+      Body = @'
+config-version: 1
+
+backend:
+  host: "{{HOST}}"
+  port: {{PORT}}
+  username: "{{USERNAME}}"
+  password: "{{PASSWORD}}"
+  reconnect-delay: 5
+
+chat:
+  replace_vanilla: false
+  default_channel: "global"
+  locale: "en_US"
+  channel-prefixes: {}
+
+format:
+  prefix: "§8[§bNovaChat§8]§r "
+  error: "§c错误: {message}"
+  success: "§a成功: {message}"
+  channels:
+    global: "§c[全服] §7{player}§f: {message}"
+    local: "§e[本地] §7{player}§f: {message}"
+    resource: "§a[资源] §7{player}§f: {message}"
+    pvp: "§c[PVP] §7{player}§f: {message}"
+    private_default: "§d[私聊] §7{player}§f: {message}"
+  default: "§7[{channel_color}{channel_name}] {player}§f: {message}"
+
+debug: false
+'@
+    }
   }
   folia = @{
     LockName = 'folia';    BotScript = 'run-e2e.js';     BotKind = 'java'
@@ -579,6 +624,51 @@ $PlatformDefs = @{
     JarGlob     = "NovaChat/Bedrock/pnx/build/libs/NovaChat-PNX-*.jar"
     BuildJdk    = "Jdk21"
     PluginsSubdir = "pnx/plugins"
+    # Same bundled-defaults problem as nukkit above (PNX's template ships
+    # username "PNX_Server", port 8888). PNX's NovaChatConfig additionally
+    # requires world-routing.enabled + world-routing.mappings, which nukkit's
+    # does not -- requireBoolean/requireSection throw without them and the
+    # plugin refuses to start (see NovaChatPNX#DYNAMIC_CONFIG_MAPPINGS).
+    PluginConfig = @{
+      RelativePath = "plugins/NovaChat/config.yml"
+      Body = @'
+config-version: 1
+
+backend:
+  host: "{{HOST}}"
+  port: {{PORT}}
+  username: "{{USERNAME}}"
+  password: "{{PASSWORD}}"
+  reconnect-delay: 5
+
+chat:
+  replace_vanilla: false
+  default_channel: "global"
+  locale: "en_US"
+  channel-prefixes: {}
+
+format:
+  prefix: "§8[§bNovaChat§8]§r "
+  error: "§c错误: {message}"
+  success: "§a成功: {message}"
+  channels:
+    global: "§c[全服] §7{player}§f: {message}"
+    local: "§e[本地] §7{player}§f: {message}"
+    resource: "§a[资源] §7{player}§f: {message}"
+    pvp: "§c[PVP] §7{player}§f: {message}"
+    private_default: "§d[私聊] §7{player}§f: {message}"
+  default: "§7[{channel_color}{channel_name}] {player}§f: {message}"
+
+world-routing:
+  enabled: true
+  mappings:
+    world: "local"
+    world_nether: "nether"
+    world_the_end: "end"
+
+debug: false
+'@
+    }
   }
   sponge = @{
     LockName = 'sponge';   BotScript = 'run-e2e.js';     BotKind = 'java'
@@ -1052,9 +1142,9 @@ function Invoke-Platform([string]$pf) {
         # only come from the plugin.
         $l1Evidence = Test-PluginEvidence $rows
 
-        # Chat round-trip: the phrase must come back as a system message
-        # ('messagestr'), never as the plain 'chat' kind. The bot's own sent
-        # rows are already gone (Get-BotReceivedRows).
+        # Chat round-trip: the phrase must come back as a SYSTEM message, never
+        # as the plain 'chat' kind. The bot's own sent rows are already gone
+        # (Get-BotReceivedRows).
         #
         # Vanilla re-broadcasts a player's own chat line to the sender: a bot
         # that types "hello from e2e bot" into an empty server receives
@@ -1065,9 +1155,30 @@ function Invoke-Platform([string]$pf) {
         # as 'messagestr' in the configured channel format
         # ("[Global] <name>: <text>"), while the vanilla echo is the only row of
         # kind 'chat'. Requiring the non-'chat' kind is what separates the two.
+        #
+        # The system-message kind is PER BOT, and hardcoding the Java one made
+        # the Bedrock platforms unfalsifiably red:
+        #   run-e2e.js (mineflayer)        -> 'messagestr'
+        #   run-e2e-bedrock.js (bedrock-protocol) -> 'text:<type>'
+        # The Bedrock bot never calls record('messagestr', ...) at all -- its
+        # only inbound kinds are text:raw / text:translation / text:chat /
+        # spawn / kicked / error / close. So an EXACT 'messagestr' test could
+        # never match on nukkit or pnx even when the round-trip demonstrably
+        # worked. Verified 2026-10-23 with a provisioned plugin config and a
+        # live backend: results.json held
+        #   {"kind":"text:raw","text":"§c[全服] §7E2E_Bot_Bedrock§f: hello from e2e bot"}
+        # and the harness still reported chatRoundTrip=False -> PARTIAL.
+        #
+        # Accept 'messagestr' (Java) plus the Bedrock system kinds only -- raw
+        # and translated/announcement lines are what a plugin-formatted channel
+        # message arrives as. 'text:chat' is deliberately ABSENT: that is the
+        # Bedrock vanilla echo (TextPacket type 'chat'), i.e. the vacuous pass
+        # this check exists to prevent, so accepting every text:* kind would
+        # undo the very separation it was written for.
+        $systemKinds = @('messagestr', 'text:raw', 'text:translation', 'text:system', 'text:announcement')
         $chatEvidence = $false
         foreach ($r in $rows) {
-          if ($r.kind -eq "messagestr" -and
+          if (($r.kind -in $systemKinds) -and
               $r.raw -match [regex]::Escape($def.ChatPhrase)) { $chatEvidence = $true }
         }
 
@@ -1079,25 +1190,25 @@ function Invoke-Platform([string]$pf) {
           # PARTIAL deliberately does NOT gate -- decision, not an oversight.
           #
           # The plugin side of the handshake IS now provisioned for the
-          # platforms that declare a PluginConfig (sponge today) via
+          # platforms that declare a PluginConfig (sponge, nukkit, pnx) via
           # Write-PluginBackendConfig, which writes the plugin's own config
           # BEFORE first start with backend.port = 27905 and the SAME
-          # username/password that go into novalink.yml. Sponge therefore
-          # authenticates and CAN complete the chat round-trip; a PARTIAL there
+          # username/password that go into novalink.yml. Those platforms
+          # authenticate and CAN complete the chat round-trip; a PARTIAL there
           # is a real signal, not a harness artifact.
           #
-          # Platforms with no PluginConfig entry (velocity/bungee/nukkit/pnx/
-          # folia) still keep their bundled template -- username
-          # "Survival_Server", port 8888 -- and cannot authenticate. For those,
-          # PARTIAL remains exactly what a healthy plugin produces: it loaded
-          # and answered /nc help, but has no backend to route through. Gating
-          # on PARTIAL would paint them red for a harness gap, which is the same
-          # class of dishonest signal as the vacuous PASS this gate replaced.
+          # Platforms with no PluginConfig entry (velocity/bungee/folia) still
+          # keep their bundled template -- username "Survival_Server", port
+          # 8888 -- and cannot authenticate. For those, PARTIAL remains exactly
+          # what a healthy plugin produces: it loaded and answered /nc help,
+          # but has no backend to route through. Gating on PARTIAL would paint
+          # them red for a harness gap, which is the same class of dishonest
+          # signal as the vacuous PASS this gate replaced.
           #
           # Consequence, stated plainly: for a platform WITHOUT PluginConfig,
           # PASS here would mean "plugin loaded and answered a command", not
-          # "chat round-trip verified". For sponge, PASS means the round-trip
-          # really happened.
+          # "chat round-trip verified". For sponge/nukkit/pnx, PASS means the
+          # round-trip really happened.
           $result.status = "PARTIAL"; $result.notes = "plugin answered a command, but chat round-trip not echoed (no PluginConfig for this platform, so the plugin keeps its bundled backend defaults)"
         } else {
           $result.status = "FAIL"; $result.notes = "no plugin-produced line in results.json (only vanilla traffic)"
