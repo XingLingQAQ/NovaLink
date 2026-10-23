@@ -414,10 +414,13 @@ $PlatformDefs = @{
   bukkit = @{
     LockName = 'purpur';    BotScript = 'run-e2e.js';    BotKind = 'java'
     ReadyPattern = "(?i)Done \("; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
+    # TCP port the server binds AND the bot dials (see the McPort note on nukkit).
+    McPort = 25565
   }
   bungee = @{
     LockName = 'waterfall'; BotScript = 'run-e2e.js';    BotKind = 'java'
     ReadyPattern = "(?i)Listening"; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
+    McPort = 25565
     Note = "bungee waterfall needs an extra downstream purpur; this orchestrator runs the waterfall proxy only (see start-server.ps1 -Platform bungee)"
     # BungeeCord proxy plugin (thin jar, no shadow). Installed into the proxy
     # server's plugins/ dir (not a downstream purpur). bungee.yml is at the jar
@@ -436,6 +439,7 @@ $PlatformDefs = @{
     # least Java 25"); the 4.1.0 jar's classes are class-file 69.0, so 21 dies
     # with UnsupportedClassVersionError (verified 2026-10-18).
     ReadyPattern = "(?i)(Listening|Booting|Started|Done)"; Jdk = "Jdk25"; ChatPhrase = "hello from e2e bot"
+    McPort = 25565
     Note = "velocity needs an extra downstream purpur; this orchestrator runs the velocity proxy only (see start-server.ps1 -Platform velocity)"
     # Velocity proxy plugin (thin jar, no shadow). Velocity API requires JDK 25
     # (toolchain.languageVersion=25 + sourceCompatibility=VERSION_25 in build.gradle).
@@ -452,10 +456,25 @@ $PlatformDefs = @{
     # first-boot language menu, which made a hung server look ready and sent
     # the bot at a dead UDP port (E2E run 39873580052, nukkit + pnx).
     ReadyPattern = "(?i)Done \([0-9.]+s\)!"; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
-    # Nukkit Bedrock plugin (thin jar, no shadow). nukkit.yml is at the jar root
-    # so the Nukkit server loads it. Installed into the Nukkit server's plugins/ dir.
-    GradleTask  = ":NovaChat:Bedrock:nukkit:build"
-    JarGlob     = "NovaChat/Bedrock/nukkit/build/libs/nukkit-*.jar"
+    # UDP port the server binds AND the bot dials. Bedrock is UDP 19132 (Java
+    # platforms use TCP 25565). This must be one value read by both sides:
+    # the -McPort passed to start-server.ps1 and the bot's SERVER_PORT used to
+    # be wired separately (start-server defaulted to 25565 while the bot was
+    # hardcoded to 19132), so the server bound UDP 25565 and the bot dialed UDP
+    # 19132 -- a RakNet timeout on every run, independent of the language prompt.
+    McPort = 19132
+    # The module's own `build` writes a THIN jar: :NovaChat:common and
+    # :NovaChat:client-core are `implementation`, so they are on the compile
+    # classpath but NOT inside the artifact. A real Nukkit server loading it
+    # dies during Server.<init> with
+    #   NoClassDefFoundError: com/nova/chat/client/network/AbstractPlatformNetworkClient
+    # and never reaches the ready line, so the platform FAILs on a ready
+    # timeout with the plugin error buried in the log. Build the self-contained
+    # jar through the same init script run-joint.ps1 uses.
+    GradleTask  = ":NovaChat:Bedrock:nukkit:nukkitE2eJar"
+    InitScript  = "plugin-e2e-fatjar.init.gradle"
+    InitProps   = @{ e2ePluginProject = ":NovaChat:Bedrock:nukkit"; e2ePluginTask = "nukkitE2eJar"; e2ePluginBaseName = "novachat-nukkit" }
+    JarGlob     = "NovaChat/Bedrock/nukkit/build/libs/novachat-nukkit-*.jar"
     BuildJdk    = "Jdk21"
     PluginsSubdir = "nukkit/plugins"
   }
@@ -466,6 +485,7 @@ $PlatformDefs = @{
     # "Minecraft 26.1 and newer requires running the server with Java 25 or
     # above" (verified 2026-10-18); on 25 it reaches "Done (".
     ReadyPattern = "(?i)Done \("; Jdk = "Jdk25"; ChatPhrase = "hello from e2e bot"
+    McPort = 25565
     # Gradle task + jar glob for the per-platform plugin build step.
     # Folia API 26.x declares org.gradle.jvm.version=25, so the plugin must be
     # compiled with JDK 25 (build.gradle sourceCompatibility=VERSION_25; no
@@ -479,6 +499,8 @@ $PlatformDefs = @{
     LockName = 'nukkit';   BotScript = 'run-e2e-bedrock.js'; BotKind = 'bedrock'
     # Same jar, same startFinished ready line as nukkit (see above).
     ReadyPattern = "(?i)Done \([0-9.]+s\)!"; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
+    # Same UDP port as nukkit (see above); one value shared by server and bot.
+    McPort = 19132
     # PowerNukkitX Bedrock plugin (fat jar via shadow; archiveBaseName=NovaChat-PNX).
     # plugin.yml is at the jar root. Installed into the PNX server's plugins/ dir.
     GradleTask  = ":NovaChat:Bedrock:pnx:build"
@@ -492,6 +514,7 @@ $PlatformDefs = @{
     # class-file 65.0, so 17 dies at launch with UnsupportedClassVersionError;
     # on 21 it reaches "Done (" (verified 2026-10-18).
     ReadyPattern = "(?i)(Done|Sponge.*ready|Loading.*complete|Listening)"; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
+    McPort = 25565
     # Sponge plugin (fat jar via shadow; archiveBaseName=NovaChat-Sponge).
     # META-INF/sponge_plugins.json is at the jar root. Installed into the
     # SpongeVanilla server's mods/ dir (Sponge plugins load from mods/).
@@ -561,11 +584,18 @@ function Test-Prereqs([string[]]$platforms) {
     $issues += "classpath file missing: $ClassPathFile"
     $issues += "  Run: .\gradlew :StarLink:core:jar :StarLink:core:writeRuntimeClasspath --init-script $(Join-Path $RepoRoot 'test/bin/write-classpath.init.gradle')"
   }
-  # per-platform: bot script + results dir
+  # per-platform: bot script + results dir + port
   foreach ($pf in $platforms) {
     if (-not $PlatformDefs.ContainsKey($pf)) {
       $issues += "unknown platform '$pf' (valid: $($PlatformDefs.Keys -join ', '))"
       continue
+    }
+    # Every platform must declare the port its server binds AND its bot dials.
+    # A missing value would silently fall back to start-server.ps1's 25565
+    # default for a Bedrock server, which binds UDP 19132 -- the exact drift
+    # this field exists to prevent.
+    if (-not $PlatformDefs[$pf].McPort) {
+      $issues += "platform '$pf' has no McPort in PlatformDefs"
     }
   }
   return $issues
@@ -681,7 +711,27 @@ function Invoke-Platform([string]$pf) {
         # run-e2e-orchestrator.ps1).
         $savedEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        & $gradleW $def.GradleTask "-x" "test" "--console=plain" 1>$buildLog 2>$buildErr
+        # InitScript/InitProps let a platform build a SELF-CONTAINED jar from a
+        # module whose own `build` only emits a thin one (nukkit). Same shape as
+        # run-joint.ps1 so the two harnesses cannot drift on the jar contents.
+        $gradleArgList = @($def.GradleTask, "-x", "test", "--console=plain")
+        if ($def.InitScript) {
+          # Init scripts live in test/bin (the PARENT of $BinDir, which is
+          # test/bin/multiplatform here but test/bin in run-joint.ps1).
+          $initDir = Split-Path -Parent $BinDir
+          $initPath = Join-Path $initDir $def.InitScript
+          if (-not (Test-Path $initPath)) {
+            $result.status = "FAIL"; $result.notes = "init script not found: $initPath"
+            return $result
+          }
+          $gradleArgList += @("--init-script", $initPath)
+        }
+        if ($def.InitProps) {
+          foreach ($key in $def.InitProps.Keys) {
+            $gradleArgList += ("-P{0}={1}" -f $key, $def.InitProps[$key])
+          }
+        }
+        & $gradleW @gradleArgList 1>$buildLog 2>$buildErr
         $gradleExit = $LASTEXITCODE
         $ErrorActionPreference = $savedEap
         Pop-Location
@@ -722,9 +772,12 @@ function Invoke-Platform([string]$pf) {
     Start-Sleep -Seconds 5
 
     # 2. start server (shared start-server.ps1 primitive)
-    Log "  starting $pf server..."
+    # -McPort MUST be passed: start-server.ps1 defaults to 25565, but Bedrock
+    # platforms listen on UDP 19132. The port comes from $def.McPort, the same
+    # value the bot dials below, so server and bot can never disagree.
+    Log "  starting $pf server on port $($def.McPort)..."
     $sPid = Invoke-StartScript (Join-Path $BinDir "start-server.ps1") "$pf-server" `
-      @("-Platform",$pf, "-RepoRoot",$RepoRoot, "-RunsDir",$runsDir, "-DistDir",$DistDir, "-JdkHome",$jdkPath)
+      @("-Platform",$pf, "-RepoRoot",$RepoRoot, "-RunsDir",$runsDir, "-DistDir",$DistDir, "-JdkHome",$jdkPath, "-McPort","$($def.McPort)")
     if ($sPid -le 0) {
       $result.status = "FAIL"; $result.notes = "server start failed"
       return $result
@@ -769,10 +822,13 @@ function Invoke-Platform([string]$pf) {
     # Java platforms (mineflayer run-e2e.js) read E2E_* env vars; Bedrock platforms
     # (bedrock-protocol run-e2e-bedrock.js) read SERVER_*/BOT_NAME/etc. BotKind
     # selects the matching env-var set so the bot connects to the right server
-    # (Java port 25565 vs Bedrock UDP 19132) and uses the right protocol version.
+    # and uses the right protocol version. The port is NOT hardcoded here: it is
+    # $def.McPort, the same value passed to start-server.ps1 as -McPort. Two
+    # literals in two places is exactly how the server ended up binding UDP
+    # 25565 while the bot dialed UDP 19132.
     if ($def.BotKind -eq 'bedrock') {
-      $env:E2E_MC_PORT = "19132"
-      $env:SERVER_PORT = "19132"
+      $env:E2E_MC_PORT = "$($def.McPort)"
+      $env:SERVER_PORT = "$($def.McPort)"
       $env:BOT_NAME = "E2E_Bot_Bedrock"
       $env:PLATFORM = $pf
       # Ask for the protocol version the lock declares, same as the Java branch
@@ -785,7 +841,7 @@ function Invoke-Platform([string]$pf) {
       $env:RESULTS_FILE = $resultsFile
       $env:TIMEOUT_MS = "$($BotWaitSec * 1000)"
     } else {
-      $env:E2E_MC_PORT = "25565"
+      $env:E2E_MC_PORT = "$($def.McPort)"
       $env:E2E_BOT_USERNAME = "E2E_Bot_Alpha"
       $env:E2E_RESULTS_FILE = $resultsFile
       $env:E2E_TIMEOUT_MS = "$($BotWaitSec * 1000)"
