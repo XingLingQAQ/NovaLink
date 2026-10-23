@@ -9,8 +9,13 @@
  * player-specific locale is registered (e.g. console senders).
  *
  * <p>Bundles: {@code messages_zh_CN.properties} (default / hard fallback)
- * and {@code messages_en_US.properties}, loaded as UTF-8 via
- * {@link com.nova.chat.client.i18n.Utf8Control}. Color codes
+ * and {@code messages_en_US.properties}, read from the classpath as UTF-8
+ * {@link java.util.PropertyResourceBundle}s by
+ * {@link com.nova.chat.client.i18n.I18n}. They are deliberately NOT loaded
+ * through a custom {@link java.util.ResourceBundle.Control}, which Java
+ * rejects inside a named module — Sponge's plugin loader makes every plugin
+ * one, and the Control-based loader silently broke command registration
+ * there. Color codes
  * ({@code &e}, {@code §c}, …) stay inside the property values; i18n swaps
  * only natural-language text. {@link java.text.MessageFormat} {@code {0}}
  * placeholders carry dynamic values.

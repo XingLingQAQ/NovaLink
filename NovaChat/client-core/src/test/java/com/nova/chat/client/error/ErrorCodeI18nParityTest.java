@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * go through {@code I18n.tr(...)} which falls back from en_US → zh_CN → raw key
  * echo. A key missing <em>only</em> in en_US therefore passes the existing test
  * (silent fallback to zh_CN). This diff test loads each properties file
- * <b>directly</b> via the classpath (mirroring {@code Utf8Control}) so a
+ * <b>directly</b> via the classpath (mirroring {@code I18n#loadClasspathBundle}) so a
  * per-locale gap is detected independently — no fallback masking.
  *
  * <p>Purely additive: new file, new class name. No production source modified.
@@ -50,7 +50,7 @@ class ErrorCodeI18nParityTest {
 
     /**
      * Loads a properties bundle directly from the classpath as UTF-8, mirroring
-     * {@code Utf8Control.newBundle}. Returns null if the resource is missing so
+     * {@code I18n#loadClasspathBundle}. Returns null if the resource is missing so
      * the caller can report a precise failure.
      */
     private static ResourceBundle loadBundleDirectly(String classpathResource) throws IOException {
