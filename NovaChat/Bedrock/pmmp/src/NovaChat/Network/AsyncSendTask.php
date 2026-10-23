@@ -22,8 +22,8 @@ class AsyncSendTask extends AsyncTask {
     
     /**
      * Creates a new async send task.
-     * 
-     * @param resource $socket Socket resource (stored for reference)
+     *
+     * @param \Socket|resource $socket Socket handle (PHP 8 object or legacy resource)
      * @param string $data Data to send
      * @param callable $callback Callback function(bool $success, string $error)
      */
@@ -45,38 +45,26 @@ class AsyncSendTask extends AsyncTask {
      * Called on the main thread - performs actual send.
      */
     public function onCompletion(): void {
-        /** @var resource $socket */
+        /** @var \Socket|resource|null $socket */
         $socket = $this->fetchLocal("socket");
         /** @var callable $callback */
         $callback = $this->fetchLocal("callback");
         $result = $this->getResult();
-        
-        if ($socket === null || !is_resource($socket)) {
+
+        // PHP 8 returns a Socket object, not a resource (see SocketGuard).
+        // The old is_resource() guard here rejected every live socket, so the
+        // handshake frame was never written.
+        if (!SocketGuard::isUsable($socket)) {
             $callback(false, "Socket is not valid");
             return;
         }
-        
-        $data = $result["data"];
-        $length = strlen($data);
-        $sent = 0;
-        
-        // Set to blocking temporarily for reliable send
-        socket_set_block($socket);
-        
-        while ($sent < $length) {
-            $written = @socket_write($socket, substr($data, $sent), $length - $sent);
-            
-            if ($written === false) {
-                $error = socket_strerror(socket_last_error($socket));
-                socket_set_nonblock($socket);
-                $callback(false, $error);
-                return;
-            }
-            
-            $sent += $written;
+
+        $error = SocketGuard::writeAll($socket, $result["data"]);
+        if ($error !== null) {
+            $callback(false, $error);
+            return;
         }
-        
-        socket_set_nonblock($socket);
+
         $callback(true, "");
     }
 }
