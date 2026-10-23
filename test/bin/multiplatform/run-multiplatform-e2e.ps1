@@ -24,15 +24,24 @@
 # command first or Test-Prereqs will report the classpath file as missing.
 #
 # Exit codes:
-#   0 = all REQUESTED platforms passed (some may have been SKIPPED)
-#   1 = one or more requested platforms failed or were missing prereqs, OR a
-#       platform was SKIPPED while -RequireAllPlatforms is set
+#   0 = all REQUESTED platforms passed (some may have been SKIPPED-BY-DESIGN)
+#   1 = one or more requested platforms failed or were missing prereqs, OR an
+#       ENVIRONMENT-blocked platform was SKIPPED while -RequireAllPlatforms is set
 #   2 = orchestrator itself failed (bad args, harness missing)
-#   3 = every requested platform was SKIPPED (no test ran anywhere)
+#   3 = no test ran and at least one skip was ENVIRONMENT-blocked (e.g. BDS
+#       unavailable) -- a condition that may clear on its own, so strict mode
+#       treats it as a failure
+#   4 = no test ran and every skip was BY DESIGN -- a structural limit that will
+#       not clear by retrying, so strict mode does NOT fail it
 #
-# A platform is SKIPPED when it did not execute its L1 flow (velocity/bungee are
-# proxy-only by design). SKIPPED is a distinct terminal state, never PASS: the
-# summary JSON records status="SKIPPED" + skipped=true + a human-readable note.
+# Two skip classes, deliberately distinct. A platform is SKIPPED-BY-DESIGN when
+# it can never execute its L1 flow on this orchestrator (velocity/bungee are
+# proxy-only and need a downstream server this script does not run); it records
+# status="SKIPPED-BY-DESIGN" + skippedByDesign=true. A platform is SKIPPED when
+# the environment blocked it; it records status="SKIPPED" + skipped=true. Both
+# are distinct terminal states, never PASS. The consumer's contract is in
+# run-e2e-orchestrator.ps1's Convert-ExitCodeToStatus: 3 -> 'SKIPPED',
+# 4 -> 'SKIPPED-BY-DESIGN'; keep the two in step.
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File run-multiplatform-e2e.ps1 `
@@ -486,6 +495,12 @@ $PlatformDefs = @{
   bukkit = @{
     LockName = 'purpur';    BotScript = 'run-e2e.js';    BotKind = 'java'
     ReadyPattern = "(?i)Done \("; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
+    # Username the bot script logs in with. Declared here (not re-typed at each
+    # use site) because BOTH the bot env below and the chat-round-trip gate
+    # need it: a gate keyed on a name the bot did not log in as can never
+    # match, and two literals in two places is how the server/bot port drifted
+    # before (see the McPort note on nukkit).
+    BotName = "E2E_Bot_Alpha"
     # TCP port the server binds AND the bot dials (see the McPort note on nukkit).
     McPort = 25565
   }
@@ -493,6 +508,7 @@ $PlatformDefs = @{
     LockName = 'waterfall'; BotScript = 'run-e2e.js';    BotKind = 'java'
     ReadyPattern = "(?i)Listening"; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
     McPort = 25565
+    BotName = "E2E_Bot_Alpha"
     Note = "bungee waterfall needs an extra downstream purpur; this orchestrator runs the waterfall proxy only (see start-server.ps1 -Platform bungee)"
     # BungeeCord proxy plugin (thin jar, no shadow). Installed into the proxy
     # server's plugins/ dir (not a downstream purpur). bungee.yml is at the jar
@@ -512,6 +528,7 @@ $PlatformDefs = @{
     # with UnsupportedClassVersionError (verified 2026-10-18).
     ReadyPattern = "(?i)(Listening|Booting|Started|Done)"; Jdk = "Jdk25"; ChatPhrase = "hello from e2e bot"
     McPort = 25565
+    BotName = "E2E_Bot_Alpha"
     Note = "velocity needs an extra downstream purpur; this orchestrator runs the velocity proxy only (see start-server.ps1 -Platform velocity)"
     # Velocity proxy plugin (thin jar, no shadow). Velocity API requires JDK 25
     # (toolchain.languageVersion=25 + sourceCompatibility=VERSION_25 in build.gradle).
@@ -549,6 +566,58 @@ $PlatformDefs = @{
     JarGlob     = "NovaChat/Bedrock/nukkit/build/libs/novachat-nukkit-*.jar"
     BuildJdk    = "Jdk21"
     PluginsSubdir = "nukkit/plugins"
+    BotName     = "E2E_Bot_Bedrock"
+    # Nukkit reads config.yml from new File(getDataFolder(), "config.yml")
+    # (NovaChatNukkit.java:241) and getDataFolder() is plugins/<the `name:` in
+    # this module's src/main/resources/nukkit.yml>, which is "NovaChat" -- the
+    # descriptor is nukkit.yml, not plugin.yml, but the rule is the same.
+    # Without this file the YamlConfigUpdater copies the bundled template
+    # verbatim (port 8888, username "Nukkit_Server"), the plugin never
+    # authenticates, and the platform can only ever report PARTIAL -- the same
+    # dishonest signal the sponge job produced in run 39873580052.
+    #
+    # EVERY key NovaChatConfig reads through requireString/requireSection must
+    # be present here, because those helpers THROW on a missing key and
+    # NovaChatNukkit#loadConfiguration turns that into a refused start:
+    #   requireNonBlankString backend.host/.username, chat.default_channel/.locale
+    #   requireString        backend.password, format.prefix/.error/.success/.default
+    #   requireSection       chat.channel-prefixes, format.channels
+    #   requirePort/requirePositiveInt/requireBoolean backend.port/.reconnect-delay,
+    #                        chat.replace_vanilla, debug
+    # A missing section is NOT harmless: YamlConfigUpdater only fills in missing
+    # keys when the file is parsed as a valid mapping, so relying on the merge
+    # to add format.* would work only by accident and would break silently if
+    # that updater ever tightened. Spell them out.
+    #
+    # The values mirror the bundled template so the rendered envelope stays
+    # "[全服] <player>: <text>" for the global channel, which the chat gate
+    # below requires (see the chatEvidence note). default_channel is "local"
+    # like the template, but the bot /nc join global first.
+    PluginConfig = @{
+      RelativePath = "plugins/NovaChat/config.yml"
+      Body = @'
+backend:
+  host: "{{HOST}}"
+  port: {{PORT}}
+  username: "{{USERNAME}}"
+  password: "{{PASSWORD}}"
+  reconnect-delay: 5
+chat:
+  replace_vanilla: false
+  default_channel: "local"
+  locale: "en_US"
+  channel-prefixes: {}
+format:
+  prefix: "§8[§bNovaChat§8]§r "
+  error: "§cError: {message}"
+  success: "§aOK: {message}"
+  channels:
+    global: "§c[全服] §7{player}§f: {message}"
+    local: "§e[本地] §7{player}§f: {message}"
+  default: "§7[{channel_color}{channel_name}] {player}§f: {message}"
+debug: true
+'@
+    }
   }
   folia = @{
     LockName = 'folia';    BotScript = 'run-e2e.js';     BotKind = 'java'
@@ -566,6 +635,7 @@ $PlatformDefs = @{
     JarGlob     = "NovaChat/Plugin/folia/build/libs/NovaChat-Folia-*.jar"
     BuildJdk    = "Jdk25"
     PluginsSubdir = "folia/plugins"
+    BotName     = "E2E_Bot_Alpha"
   }
   pnx = @{
     LockName = 'nukkit';   BotScript = 'run-e2e-bedrock.js'; BotKind = 'bedrock'
@@ -579,6 +649,45 @@ $PlatformDefs = @{
     JarGlob     = "NovaChat/Bedrock/pnx/build/libs/NovaChat-PNX-*.jar"
     BuildJdk    = "Jdk21"
     PluginsSubdir = "pnx/plugins"
+    BotName     = "E2E_Bot_Bedrock"
+    # Same shape as nukkit above: NovaChatPNX#loadConfiguration reads
+    # getDataFolder().toPath().resolve("config.yml")
+    # (NovaChatPNX.java:258) and plugin.yml declares `name: NovaChat`, so the
+    # data folder is plugins/NovaChat.
+    #
+    # PNX's NovaChatConfig requires MORE than nukkit's: it also reads
+    # world-routing.enabled and world-routing.mappings through
+    # requireBoolean/requireSection, so a body without that block throws at
+    # construction and the plugin refuses to enable. Both are supplied below.
+    PluginConfig = @{
+      RelativePath = "plugins/NovaChat/config.yml"
+      Body = @'
+backend:
+  host: "{{HOST}}"
+  port: {{PORT}}
+  username: "{{USERNAME}}"
+  password: "{{PASSWORD}}"
+  reconnect-delay: 5
+chat:
+  replace_vanilla: false
+  default_channel: "local"
+  locale: "en_US"
+  channel-prefixes: {}
+format:
+  prefix: "§8[§bNovaChat§8]§r "
+  error: "§cError: {message}"
+  success: "§aOK: {message}"
+  channels:
+    global: "§c[全服] §7{player}§f: {message}"
+    local: "§e[本地] §7{player}§f: {message}"
+  default: "§7[{channel_color}{channel_name}] {player}§f: {message}"
+world-routing:
+  enabled: false
+  mappings:
+    world: "local"
+debug: true
+'@
+    }
   }
   sponge = @{
     LockName = 'sponge';   BotScript = 'run-e2e.js';     BotKind = 'java'
@@ -598,6 +707,7 @@ $PlatformDefs = @{
     # either.
     BuildJdk    = "Jdk21"
     PluginsSubdir = "sponge/mods"
+    BotName     = "E2E_Bot_Alpha"
     # Sponge resolves @ConfigDir(sharedRoot=false) to <server>/config/novachat/
     # (plugin id "novachat"), and NovaChatSponge#loadConfiguration reads
     # novachat.conf from it. Without this file the plugin copies its bundled
@@ -697,6 +807,13 @@ function Test-Prereqs([string[]]$platforms) {
     if (-not $PlatformDefs[$pf].McPort) {
       $issues += "platform '$pf' has no McPort in PlatformDefs"
     }
+    # BotName is not cosmetic: the chat-round-trip gate builds its regex from
+    # it. Empty, the pattern degenerates to "[] : <phrase>" -- an envelope no
+    # real line has, so the gate would report NO-MATCH forever and PASS could
+    # never be reached. Fail the prereq instead, where the fix is obvious.
+    if (-not $PlatformDefs[$pf].BotName) {
+      $issues += "platform '$pf' has no BotName in PlatformDefs (needed by the chat round-trip gate)"
+    }
   }
   return $issues
 }
@@ -708,11 +825,39 @@ function Invoke-Platform([string]$pf) {
   $result = [PSCustomObject]@{
     platform = $pf
     status = "UNKNOWN"
+    # Declared up front, NOT added later. Windows PowerShell 5.1 throws
+    # "The property 'skippedByDesign' cannot be found on this object" when a
+    # property is assigned to a [PSCustomObject] that does not already have it;
+    # with $ErrorActionPreference = "Stop" that aborts Invoke-Platform, so the
+    # Note-driven skip below would surface as UNKNOWN instead of a skip.
+    # Verified on this host (5.1.26100).
+    skippedByDesign = $false
     l1Pass = $false
     chatRoundTrip = $false
     chatPhrase = $def.ChatPhrase
     notes = ""
     pids = @()
+  }
+
+  # Platforms with a Note are skipped BY DESIGN: the Note states a structural
+  # limit of this orchestrator (a proxy needs a downstream server it does not
+  # run), not a transient environment problem. The two classes carry different
+  # exit codes -- 4 here, 3 for an environment block -- because only the latter
+  # is worth failing strict mode over: retrying a proxy-only platform will
+  # never make it run. See the exit-code block in the header.
+  #
+  # This check MUST stay above the JDK resolution below. A platform that
+  # structurally cannot run here must never FAIL because a JDK it will never
+  # use is missing: velocity wants JDK 25, and on a host without 25 the old
+  # ordering reported "FAIL: runtime JDK Jdk25 could not be resolved" instead
+  # of a skip (observed here 2026-10-23) -- which reds a run over a platform
+  # that was never going to be driven.
+  if ($def.Note) {
+    Log "  SKIP-BY-DESIGN: $($def.Note)"
+    $result.status = "SKIPPED-BY-DESIGN"
+    $result.skippedByDesign = $true
+    $result.notes = $def.Note
+    return $result
   }
 
   # set JDK env for this platform's scripts. Resolve through a switch rather
@@ -736,14 +881,6 @@ function Invoke-Platform([string]$pf) {
   # Print the resolved runtime JDK: a wrong one now costs a 480s ready-timeout
   # with no hint as to why, which is exactly how the folia JDK21 bug hid.
   Log "  runtime JDK: $jdkVar ($jdkPath)"
-
-  # platforms with a Note are intentionally skipped by this orchestrator
-  if ($def.Note) {
-    Log "  SKIP: $($def.Note)"
-    $result.status = "SKIPPED"
-    $result.notes = $def.Note
-    return $result
-  }
 
   # per-platform run workspace; everything lands under .e2e-artifacts/runs/<pf>/
   $runsDir   = Join-Path $RepoRoot ".e2e-artifacts/runs/$pf"
@@ -965,7 +1102,10 @@ function Invoke-Platform([string]$pf) {
     if ($def.BotKind -eq 'bedrock') {
       $env:E2E_MC_PORT = "$($def.McPort)"
       $env:SERVER_PORT = "$($def.McPort)"
-      $env:BOT_NAME = "E2E_Bot_Bedrock"
+      # Same literal the chat gate below keys on ($def.BotName); kept in one
+      # place so the name the bot logs in with cannot drift from the name the
+      # gate looks for.
+      $env:BOT_NAME = $def.BotName
       $env:PLATFORM = $pf
       # Ask for the protocol version the lock declares, same as the Java branch
       # below. The hardcoded "1.26.30" was one revision behind the pinned Nukkit
@@ -978,7 +1118,7 @@ function Invoke-Platform([string]$pf) {
       $env:TIMEOUT_MS = "$($BotWaitSec * 1000)"
     } else {
       $env:E2E_MC_PORT = "$($def.McPort)"
-      $env:E2E_BOT_USERNAME = "E2E_Bot_Alpha"
+      $env:E2E_BOT_USERNAME = $def.BotName
       $env:E2E_RESULTS_FILE = $resultsFile
       $env:E2E_TIMEOUT_MS = "$($BotWaitSec * 1000)"
       $env:E2E_PLATFORM = $pf
@@ -1052,24 +1192,44 @@ function Invoke-Platform([string]$pf) {
         # only come from the plugin.
         $l1Evidence = Test-PluginEvidence $rows
 
-        # Chat round-trip: the phrase must come back as a system message
-        # ('messagestr'), never as the plain 'chat' kind. The bot's own sent
-        # rows are already gone (Get-BotReceivedRows).
+        # Chat round-trip: the phrase must come back inside NovaChat's channel
+        # FORMAT, not just arrive on a row that happens to say the phrase.
         #
-        # Vanilla re-broadcasts a player's own chat line to the sender: a bot
-        # that types "hello from e2e bot" into an empty server receives
-        # "<E2E_Bot_Alpha> hello from e2e bot" back with no plugin involved.
-        # The original loop accepted exactly that row, so the round-trip flag
-        # was true on a bare server too. Verified against the recorded payload
-        # in .e2e-artifacts/joint/20261021-113425: a NovaChat-routed line lands
-        # as 'messagestr' in the configured channel format
-        # ("[Global] <name>: <text>"), while the vanilla echo is the only row of
-        # kind 'chat'. Requiring the non-'chat' kind is what separates the two.
-        $chatEvidence = $false
-        foreach ($r in $rows) {
-          if ($r.kind -eq "messagestr" -and
-              $r.raw -match [regex]::Escape($def.ChatPhrase)) { $chatEvidence = $true }
-        }
+        # The rule is now: some received row's plain text matches
+        #   [<anything>] <bot name>: <-- the phrase -->
+        # i.e. the "[<channel>] <player>: <text>" envelope the plugin's
+        # format.channels / format.default produce. This is the same predicate
+        # run-bukkit/run-pmmp/run-endstone/run-levilamina use.
+        #
+        # Why the previous rule was WRONG, not merely weak: it accepted any row
+        # with kind -eq 'messagestr' whose raw contained the phrase, on the
+        # theory that "vanilla's echo is the only row of kind 'chat'". That
+        # premise is false on Sponge. CI run 39873580052 recorded:
+        #   sent        | hello from e2e bot (replace mode)
+        #   messagestr  | <E2E_Bot_Alpha> hello from e2e bot (replace mode)
+        #   chat        | <E2E_Bot_Alpha> hello from e2e bot (replace mode)
+        # The vanilla re-broadcast arrived as 'messagestr' too, so the gate
+        # passed on a platform where l1Pass was false and no plugin-shaped line
+        # ever reached the bot: chatRoundTrip=true was a false positive.
+        #
+        # The envelope is what vanilla never prints. Both flavours of colour
+        # code are stripped first (Get-BotReceivedPlainTexts): bedrock-protocol
+        # keeps "§c[全服] §7Name§f: text" in the row while mineflayer hands back
+        # already-rendered "[全服] Name: text", so a raw-text match would
+        # silently fail on every Bedrock platform.
+        #
+        # No row-kind filter beyond "not the bot's own sent traffic" (already
+        # dropped by Get-BotReceivedRows): the kind is not what distinguishes a
+        # plugin line -- the envelope is. Java platforms use 'messagestr',
+        # Bedrock uses 'text:raw', and requiring one of those would make the
+        # gate platform-specific for no gain.
+        #
+        # The bot name is $def.BotName (E2E_Bot_Alpha on Java, E2E_Bot_Bedrock
+        # on Bedrock) -- the same value handed to the bot's env below, so the
+        # gate and the bot cannot disagree.
+        $chatPattern = '\[[^\]]+\]\s*' + [regex]::Escape($def.BotName) +
+                       '\s*:\s*.*' + [regex]::Escape($def.ChatPhrase)
+        $chatEvidence = (@(Select-BotRowsByPlainText $rows $chatPattern)).Count -ge 1
 
         $result.l1Pass = $l1Evidence
         $result.chatRoundTrip = $chatEvidence
@@ -1078,27 +1238,25 @@ function Invoke-Platform([string]$pf) {
         } elseif ($l1Evidence) {
           # PARTIAL deliberately does NOT gate -- decision, not an oversight.
           #
-          # The plugin side of the handshake IS now provisioned for the
-          # platforms that declare a PluginConfig (sponge today) via
-          # Write-PluginBackendConfig, which writes the plugin's own config
-          # BEFORE first start with backend.port = 27905 and the SAME
-          # username/password that go into novalink.yml. Sponge therefore
-          # authenticates and CAN complete the chat round-trip; a PARTIAL there
+          # The plugin side of the handshake IS provisioned, via
+          # Write-PluginBackendConfig, for every platform that declares a
+          # PluginConfig: nukkit, pnx and sponge. It writes the plugin's own
+          # config BEFORE first start with backend.port = 27905 and the SAME
+          # username/password that go into novalink.yml, so those three can
+          # authenticate and CAN complete the chat round-trip. A PARTIAL there
           # is a real signal, not a harness artifact.
           #
-          # Platforms with no PluginConfig entry (velocity/bungee/nukkit/pnx/
-          # folia) still keep their bundled template -- username
-          # "Survival_Server", port 8888 -- and cannot authenticate. For those,
-          # PARTIAL remains exactly what a healthy plugin produces: it loaded
-          # and answered /nc help, but has no backend to route through. Gating
-          # on PARTIAL would paint them red for a harness gap, which is the same
-          # class of dishonest signal as the vacuous PASS this gate replaced.
+          # Platforms with no PluginConfig entry are velocity and bungee only
+          # (both proxy-only and SKIPPED by this orchestrator anyway -- see
+          # their Note), plus bukkit, which is not driven through this path.
           #
-          # Consequence, stated plainly: for a platform WITHOUT PluginConfig,
-          # PASS here would mean "plugin loaded and answered a command", not
-          # "chat round-trip verified". For sponge, PASS means the round-trip
-          # really happened.
-          $result.status = "PARTIAL"; $result.notes = "plugin answered a command, but chat round-trip not echoed (no PluginConfig for this platform, so the plugin keeps its bundled backend defaults)"
+          # Consequence, stated plainly: PASS now means the round-trip really
+          # happened on every platform this orchestrator actually runs. The
+          # previously-named nukkit/pnx/folia are no longer in the
+          # "cannot authenticate" category: nukkit and pnx declare PluginConfig,
+          # and folia is not gated here at all (no plugin-format guarantee is
+          # claimed for it -- it keeps its bundled template).
+          $result.status = "PARTIAL"; $result.notes = "plugin answered a command, but no NovaChat-formatted chat line reached the bot (chat round-trip not verified)"
         } else {
           $result.status = "FAIL"; $result.notes = "no plugin-produced line in results.json (only vanilla traffic)"
         }
@@ -1159,8 +1317,14 @@ foreach ($pf in $RequestedPlatforms) {
   $pfResult = Invoke-Platform $pf
   $allResults += $pfResult
   if ($pfResult.status -eq "FAIL") { $overallPass = $false }
-  if ($pfResult.status -eq "SKIPPED") {
-    Log "=== [$pf] RESULT: SKIPPED (no assertions ran) ==="
+  # A skip of either class ran no assertions, so it must not print an L1/chat
+  # verdict. The two classes are named distinctly and the by-design one carries
+  # its structural reason, so a reader can tell "cannot run here" from "the
+  # environment blocked us this time" without parsing the exit code.
+  if ($pfResult.status -eq "SKIPPED-BY-DESIGN") {
+    Log "=== [$pf] RESULT: SKIPPED-BY-DESIGN (no assertions ran; by design, not a failure): $($pfResult.notes) ==="
+  } elseif ($pfResult.status -eq "SKIPPED") {
+    Log "=== [$pf] RESULT: SKIPPED (no assertions ran; environment blocked this run) ==="
   } else {
     Log "=== [$pf] RESULT: $($pfResult.status) (L1=$($pfResult.l1Pass), chat=$($pfResult.chatRoundTrip)) ==="
   }
@@ -1177,14 +1341,20 @@ $summaryTable = @()
 foreach ($r in $allResults) {
   # A SKIPPED platform ran no assertions; printing "L1: FAIL" for it would be
   # just as dishonest as printing PASS. Show a neutral placeholder instead.
-  $l1 = if ($r.status -eq "SKIPPED") { "N/A" } elseif ($r.l1Pass) { "PASS" } else { "FAIL" }
-  $chat = if ($r.status -eq "SKIPPED") { "N/A" } elseif ($r.chatRoundTrip) { "MATCH" } else { "NO-MATCH" }
+  $isSkip = ($r.status -eq "SKIPPED" -or $r.status -eq "SKIPPED-BY-DESIGN")
+  $l1 = if ($isSkip) { "N/A" } elseif ($r.l1Pass) { "PASS" } else { "FAIL" }
+  $chat = if ($isSkip) { "N/A" } elseif ($r.chatRoundTrip) { "MATCH" } else { "NO-MATCH" }
   Log ("  {0,-10} | L1: {1,-4} | chat: {2,-9} | {3}" -f $r.platform, $l1, $chat, $r.status)
   if ($r.notes) { Log "             | notes: $($r.notes)" }
+  # 'skipped' stays true for BOTH classes so consumers that only look at the
+  # boolean keep working; 'skippedByDesign' is the discriminator the
+  # orchestrator's per-row mapping reads (see Convert-ExitCodeToStatus). Exactly
+  # one of the two flags is true for a skip row.
   $summaryTable += [PSCustomObject]@{
     platform = $r.platform
     status = $r.status
-    skipped = ($r.status -eq "SKIPPED")
+    skipped = $isSkip
+    skippedByDesign = ($r.status -eq "SKIPPED-BY-DESIGN")
     l1Pass = $r.l1Pass
     chatRoundTrip = $r.chatRoundTrip
     chatPhrase = $r.chatPhrase
@@ -1201,24 +1371,42 @@ $summaryJson = $summaryTable | ConvertTo-Json -Depth 5
 [System.IO.File]::WriteAllText($SummaryFile, $summaryJson, (New-Object System.Text.UTF8Encoding($false)))
 Log "Summary written to: $SummaryFile"
 
-$skippedResults = @($allResults | Where-Object { $_.status -eq "SKIPPED" })
-$skippedSummary = ($skippedResults | ForEach-Object { $_.platform }) -join ", "
+# The two skip classes are counted apart. Only an ENVIRONMENT block ('SKIPPED')
+# is a strict-mode failure: a by-design skip (a proxy-only platform this
+# harness structurally cannot drive) will never clear by retrying, so failing
+# the night's run over it would be noise, not a signal.
+$skippedResults   = @($allResults | Where-Object { $_.status -eq "SKIPPED" })
+$byDesignResults  = @($allResults | Where-Object { $_.status -eq "SKIPPED-BY-DESIGN" })
+$skippedSummary   = ($skippedResults  | ForEach-Object { $_.platform }) -join ", "
+$byDesignSummary  = ($byDesignResults | ForEach-Object { $_.platform }) -join ", "
 if (-not $overallPass) {
   $failed = ($allResults | Where-Object { $_.status -eq "FAIL" } | ForEach-Object { $_.platform }) -join ", "
   Log "=== E2E FAILED for: $failed ==="
-  if ($skippedResults.Count -gt 0) { Log "=== also SKIPPED (no test ran): $skippedSummary ===" }
+  if ($skippedResults.Count  -gt 0) { Log "=== also SKIPPED (environment blocked, no test ran): $skippedSummary ===" }
+  if ($byDesignResults.Count -gt 0) { Log "=== also SKIPPED-BY-DESIGN (no assertions; by design): $byDesignSummary ===" }
   exit 1
 }
-if ($skippedResults.Count -gt 0 -and $skippedResults.Count -eq $allResults.Count -and $allResults.Count -gt 0) {
-  Log "=== NO PLATFORM ACTUALLY RAN (all SKIPPED): $skippedSummary ==="
-  exit 3
+if (($skippedResults.Count + $byDesignResults.Count) -eq $allResults.Count -and $allResults.Count -gt 0) {
+  # Nothing ran anywhere. The exit code says WHICH kind of nothing: 3 when the
+  # environment blocked us (may clear on a retry, strict mode fails it), 4 when
+  # every skip was structural (strict mode does not fail it -- see the header).
+  if ($skippedResults.Count -gt 0) {
+    Log "=== NO PLATFORM ACTUALLY RAN (all SKIPPED; environment blocked): $skippedSummary ==="
+    if ($byDesignResults.Count -gt 0) { Log "=== additionally SKIPPED-BY-DESIGN: $byDesignSummary ===" }
+    exit 3
+  }
+  Log "=== NO PLATFORM ACTUALLY RAN, ALL BY DESIGN (not a failure): $byDesignSummary ==="
+  exit 4
 }
 if ($skippedResults.Count -gt 0) {
   if ($RequireAllPlatforms) {
-    Log "=== STRICT MODE: SKIPPED platform(s) count as failures: $skippedSummary ==="
+    Log "=== STRICT MODE: environment-blocked SKIPPED platform(s) count as failures: $skippedSummary ==="
     exit 1
   }
-  Log "=== ALL REQUESTED NON-SKIPPED PLATFORMS PASSED; SKIPPED (no test ran): $skippedSummary ==="
+  Log "=== ALL REQUESTED NON-SKIPPED PLATFORMS PASSED; SKIPPED (environment blocked, no test ran): $skippedSummary ==="
+} elseif ($byDesignResults.Count -gt 0) {
+  # Strict mode does NOT fail a by-design skip: it is reported, not fatal.
+  Log "=== ALL RUNNABLE PLATFORMS PASSED; SKIPPED-BY-DESIGN (no assertions; by design): $byDesignSummary ==="
 } else {
   Log "=== ALL REQUESTED PLATFORMS PASSED ==="
 }
