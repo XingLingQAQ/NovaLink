@@ -289,11 +289,54 @@ $env:PHP_INI_SCAN_DIR = ''
 #    lets this E2E skip gradle entirely (the gradle classpath export hits the
 #    known multi-project configure hang under loom without --configure-on-demand).
 #    The pmmp plugin is pure PHP source -- no Java build step.
+#
+#    A fat jar is only usable when it is NOT STALE. Measured on this host
+#    (2026-10-23): core-1.0.0-SNAPSHOT-all.jar was dated 2026-10-17 18:51 while
+#    42 .java files under StarLink/core/src were newer. That jar's
+#    NovaLinkMain.class is 67,124 bytes with zero "daemon" strings and no
+#    NovaLinkCore class at all -- a pre-refactor build. Launching from it passes
+#    --daemon to a jar that ignores the flag, so the backend dies on stdin EOF
+#    and the run looks like the daemon fix had failed when the fix was fine.
+#
+#    CI never sees this: the workflow only runs `:StarLink:core:jar`, never
+#    shadowJar, so no *-all.jar exists on a runner and CI always takes the
+#    gradle branch. Only a local dev box (where shadowJar has been run before)
+#    hits it -- which is exactly why local and CI took different code paths.
+#
+#    So: compare the jar's LastWriteTimeUtc against the newest source file, and
+#    refuse a jar that is older. "No source files found" cannot prove freshness,
+#    so it also refuses. A refused jar falls through to gradle (the slow but
+#    always-correct path); a fresh jar keeps the fast path.
 # ---------------------------------------------------------------------------
-$fatJar = Get-ChildItem (Join-Path $RepoRoot "StarLink/core/build/libs/*-all.jar") -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $fatJar) {
-    $fatJar = Get-ChildItem (Join-Path $RepoRoot "StarLink/core/build/libs/*-fat.jar") -ErrorAction SilentlyContinue | Select-Object -First 1
+function Get-FreshFatJar([string]$RepoRoot) {
+    # Same selection order as before (shadow output first, then a plain -fat
+    # jar), but the chosen jar is then VALIDATED as a whole. Deliberately not a
+    # per-glob "reject then try the next glob" loop: that would quietly swap a
+    # stale shadow jar for some other stale artifact instead of falling through
+    # to gradle, which is the branch that is always correct.
+    $jar = Get-ChildItem (Join-Path $RepoRoot "StarLink/core/build/libs/*-all.jar") -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $jar) {
+        $jar = Get-ChildItem (Join-Path $RepoRoot "StarLink/core/build/libs/*-fat.jar") -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    }
+    if (-not $jar) { return $null }
+
+    $srcDir = Join-Path $RepoRoot "StarLink/core/src"
+    $newestSource = Get-ChildItem -LiteralPath $srcDir -Recurse -File -Filter *.java -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    if (-not $newestSource) {
+        Log "  rejecting fat jar $($jar.Name): no .java under $srcDir, so freshness cannot be proven -- using gradle"
+        return $null
+    }
+    if ($jar.LastWriteTimeUtc -lt $newestSource.LastWriteTimeUtc) {
+        Log ("  rejecting stale fat jar {0} (jar {1:yyyy-MM-dd HH:mm} UTC, newest source {2:yyyy-MM-dd HH:mm} UTC) -- using gradle" -f `
+            $jar.Name, $jar.LastWriteTimeUtc, $newestSource.LastWriteTimeUtc)
+        return $null
+    }
+    return $jar
 }
+$fatJar = Get-FreshFatJar $RepoRoot
 $classpathFile = Join-Path $RepoRoot ".e2e-artifacts/novalink-core.classpath.txt"
 if ($fatJar) {
     Log "step 1: using pre-built fat jar: $($fatJar.FullName) (skipping gradle)"
