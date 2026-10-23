@@ -171,6 +171,12 @@ $LockedServers = @(
         Eula    = $false
         Jdk     = 21
         File    = 'nukkit-1.0-20260809.225630-1242.jar'
+        # Protocol version the Bedrock bot asks for. This build serves 1.26.40
+        # (the boot log prints "Starting Minecraft: BE server version v1.26.40"),
+        # and Nukkit answers a 1.26.30 client with disconnectionScreen.outdatedClient
+        # -- unlike BDS/PMMP, it does not negotiate down. Kept separate from MC
+        # (which is the Nukkit snapshot label, not a protocol version).
+        BotMcVersion = '1.26.40'
         Kind    = 'jar'
         Auto    = $true
     }

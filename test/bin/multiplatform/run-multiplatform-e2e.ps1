@@ -308,6 +308,20 @@ function Get-ServerLogCandidates([string]$runsDir, [string]$platform) {
   )
 }
 
+# Nukkit/PNX prompt on stdin for a language code on first boot when nukkit.yml
+# is absent. Under Start-Process stdin is the null device, so the read never
+# returns and the server hangs before opening UDP 19132. That is a harness bug
+# (start-server.ps1 must seed nukkit.yml), not a slow boot: report it as such
+# instead of waiting out ServerReadySec and then blaming the server's speed.
+function Test-NukkitLanguagePrompt([string[]]$files) {
+  foreach ($file in $files) {
+    if (-not (Test-Path -LiteralPath $file)) { continue }
+    $content = Get-Content -LiteralPath $file -Raw -ErrorAction SilentlyContinue
+    if ($content -and ($content -match 'Please choose a language first')) { return $true }
+  }
+  return $false
+}
+
 function Wait-LogMarker([string[]]$files, [string]$pattern, [int]$timeoutSec, [string]$label) {
   # Servers create their log a moment after the launcher returns, so "missing"
   # is only fatal after a grace period -- but it must stay fatal (not degrade
@@ -321,6 +335,13 @@ function Wait-LogMarker([string[]]$files, [string]$pattern, [int]$timeoutSec, [s
       if (-not (Test-Path -LiteralPath $file)) { continue }
       $content = Get-Content -LiteralPath $file -Raw -ErrorAction SilentlyContinue
       if ($content -and ($content -match $pattern)) { return $true }
+    }
+    # A Nukkit/PNX language prompt can never be satisfied without a TTY, so the
+    # server will never reach the ready line. Bail immediately with a specific
+    # note rather than burning the full ServerReadySec budget.
+    if (Test-NukkitLanguagePrompt $files) {
+      Log "  ERROR: $label is blocked on Nukkit's language prompt (stdin is not a TTY)"
+      return $false
     }
     $anyExists = @($files | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0
     if (-not $anyExists -and -not $missingReported -and (Get-Date) -gt $graceDeadline) {
@@ -426,7 +447,11 @@ $PlatformDefs = @{
   }
   nukkit = @{
     LockName = 'nukkit';   BotScript = 'run-e2e-bedrock.js'; BotKind = 'bedrock'
-    ReadyPattern = "(?i)(Done|server.*started|Nukkit.*started|Loading.*complete|Listening)"; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
+    # Anchored to Nukkit's lang.ini startFinished line, "Done (<secs>s)! For
+    # help, ...". A bare "Done" also matches "idn => Indonesia" in the
+    # first-boot language menu, which made a hung server look ready and sent
+    # the bot at a dead UDP port (E2E run 39873580052, nukkit + pnx).
+    ReadyPattern = "(?i)Done \([0-9.]+s\)!"; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
     # Nukkit Bedrock plugin (thin jar, no shadow). nukkit.yml is at the jar root
     # so the Nukkit server loads it. Installed into the Nukkit server's plugins/ dir.
     GradleTask  = ":NovaChat:Bedrock:nukkit:build"
@@ -452,7 +477,8 @@ $PlatformDefs = @{
   }
   pnx = @{
     LockName = 'nukkit';   BotScript = 'run-e2e-bedrock.js'; BotKind = 'bedrock'
-    ReadyPattern = "(?i)(Done|server.*started|Nukkit.*started|Loading.*complete|Listening)"; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
+    # Same jar, same startFinished ready line as nukkit (see above).
+    ReadyPattern = "(?i)Done \([0-9.]+s\)!"; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
     # PowerNukkitX Bedrock plugin (fat jar via shadow; archiveBaseName=NovaChat-PNX).
     # plugin.yml is at the jar root. Installed into the PNX server's plugins/ dir.
     GradleTask  = ":NovaChat:Bedrock:pnx:build"
@@ -710,7 +736,15 @@ function Invoke-Platform([string]$pf) {
     Log "  waiting for server ready (up to ${ServerReadySec}s)..."
     $ready = Wait-LogMarker $serverLogCandidates $def.ReadyPattern $ServerReadySec "$pf-server"
     if (-not $ready) {
-      $result.status = "FAIL"; $result.notes = "server did not signal ready within ${ServerReadySec}s"
+      # Distinguish "hung on the interactive language prompt" from "slow boot":
+      # the former means start-server.ps1 failed to seed nukkit.yml and is a
+      # harness bug, the latter means the server really needed more time.
+      if (Test-NukkitLanguagePrompt $serverLogCandidates) {
+        $result.status = "FAIL"
+        $result.notes = "server blocked on Nukkit's first-boot language prompt (nukkit.yml not seeded; stdin is not a TTY under Start-Process) -- never opened its port"
+      } else {
+        $result.status = "FAIL"; $result.notes = "server did not signal ready within ${ServerReadySec}s"
+      }
       return $result
     }
     Start-Sleep -Seconds 3
@@ -741,7 +775,12 @@ function Invoke-Platform([string]$pf) {
       $env:SERVER_PORT = "19132"
       $env:BOT_NAME = "E2E_Bot_Bedrock"
       $env:PLATFORM = $pf
-      $env:MC_VERSION = "1.26.30"
+      # Ask for the protocol version the lock declares, same as the Java branch
+      # below. The hardcoded "1.26.30" was one revision behind the pinned Nukkit
+      # build, which serves 1.26.40 and kicks a 1.26.30 client with
+      # disconnectionScreen.outdatedClient (Nukkit does not negotiate down).
+      $bedrockLock = Get-LockedServer -Name $def.LockName
+      $env:MC_VERSION = if ($bedrockLock -and $bedrockLock.BotMcVersion) { $bedrockLock.BotMcVersion } else { "1.26.40" }
       $env:BACKEND_CHAT_PHRASE = $def.ChatPhrase
       $env:RESULTS_FILE = $resultsFile
       $env:TIMEOUT_MS = "$($BotWaitSec * 1000)"

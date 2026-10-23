@@ -15,7 +15,9 @@
 //                        assertion (default 'hello from e2e bot')
 //   PLATFORM           - platform label written into results.json (default 'bedrock')
 //   MC_VERSION         - bedrock protocol version string passed to bedrock-protocol
-//                        (default '1.26.30'; BDS/PocketMine 1.20+ all negotiate this)
+//                        (default '1.26.40', the version the pinned Nukkit build
+//                        serves; Nukkit rejects a one-revision-older client with
+//                        disconnectionScreen.outdatedClient instead of negotiating)
 //   RESULTS_FILE       - where to write results.json (default ./results.json)
 //   TIMEOUT_MS         - hard timeout (default 360000 = 6min)
 //
@@ -36,7 +38,7 @@ const PORT = parseInt(process.env.SERVER_PORT || '19132', 10);
 const USERNAME = process.env.BOT_NAME || 'E2E_Bot_Bedrock';
 const CHAT_PHRASE = process.env.BACKEND_CHAT_PHRASE || 'hello from e2e bot';
 const PLATFORM = process.env.PLATFORM || 'bedrock';
-const MC_VERSION = process.env.MC_VERSION || '1.26.30';
+const MC_VERSION = process.env.MC_VERSION || '1.26.40';
 const RESULTS = process.env.RESULTS_FILE || path.join(__dirname, 'results.json');
 const TIMEOUT_MS = parseInt(process.env.TIMEOUT_MS || '360000', 10);
 
@@ -175,11 +177,13 @@ const PMMP_CLIENT_DATA_FIELDS = {
 //   - SkinData: raw RGBA bytes, length in {8192,16384,65536} (we use 16384 = 64x64x4)
 //   - SkinImageWidth/SkinImageHeight matching the data (64x64)
 //   - SkinResourcePatch: JSON with geometry.default (we use geometry.humanoid.custom,
-//     the vanilla legacy humanoid geometry name -- no SkinGeometryData needed)
+//     the vanilla legacy humanoid geometry name)
 //   - SkinId: non-empty (<= INT16_MAX)
 //   - PersonaSkin: false (take the legacy path, not the persona path)
 //   - CapeData: "" (empty; PMMP only validates cape length if non-empty)
-//   - SkinGeometryData: "" (empty; PMMP only JSON-validates it if non-empty)
+// Nukkit additionally requires a non-empty SkinGeometryData (see below), so the
+// geometry is emitted as JSON rather than "". PMMP only JSON-validates it when
+// non-empty, so a valid geometry satisfies both.
 // We generate the 64x64x4 solid-color RGBA buffer in-memory with pure Node
 // Buffer (no new deps). SkinData is raw RGBA pixels, NOT a PNG -- PMMP validates
 // the raw byte length against ACCEPTED_SKIN_SIZES, not image format.
@@ -197,10 +201,31 @@ function makeLegacySkinFields() {
   // PMMP base64-decodes SkinResourcePatch before json_decode and rejects a plain
   // JSON string with "SkinResourcePatch: Malformed base64, cannot be decoded".
   // The minecraft-data defaultSkin encodes these the same way (base64-of-JSON).
-  // Empty strings are valid for CapeData/SkinAnimationData/SkinGeometryData (PMMP
-  // only validates them when non-empty), so they stay "" (empty base64 = no data).
+  // CapeData/SkinAnimationData stay "" (empty base64 = no data); PMMP only
+  // validates those when non-empty.
+  //
+  // SkinGeometryData must NOT be empty: Nukkit's Skin.isValidGeometry() (see
+  // cn.nukkit.utils.Skin) rejects null OR a string shorter than 2 chars before
+  // it ever looks at the JSON, and Skin.isValidSkin() separately rejects an
+  // empty geometryData. An empty value here therefore kicked the bot with
+  // "disconnectionScreen.invalidSkin" before the login completed, which is the
+  // second failure the hung-server timeout used to hide. A minimal custom
+  // humanoid geometry satisfies Nukkit's contract: >=2 chars, valid JSON
+  // (GSON.fromJson succeeds), and <=262144 bytes.
   const resourcePatchJson = JSON.stringify({
     geometry: { default: 'geometry.humanoid.custom' },
+  });
+  const geometryJson = JSON.stringify({
+    format_version: '1.14.0',
+    'minecraft:geometry': [{
+      description: {
+        identifier: 'geometry.humanoid.custom',
+        texture_width: W, texture_height: H,
+        visible_bounds_width: 2, visible_bounds_height: 2.5,
+        visible_bounds_offset: [0, 0.75, 0],
+      },
+      bones: [],
+    }],
   });
   return {
     SkinId: 'bot-skin-e2e',
@@ -208,7 +233,7 @@ function makeLegacySkinFields() {
     SkinImageWidth: W,
     SkinImageHeight: H,
     SkinResourcePatch: Buffer.from(resourcePatchJson, 'utf8').toString('base64'),
-    SkinGeometryData: '',
+    SkinGeometryData: Buffer.from(geometryJson, 'utf8').toString('base64'),
     SkinAnimationData: '',
     CapeData: '',
     CapeImageWidth: 0,
