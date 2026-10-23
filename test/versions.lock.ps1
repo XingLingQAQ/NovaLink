@@ -32,10 +32,17 @@
 #   - update.pmmp.io .............. 200 JSON (base_version + download_url).
 #     download_url -> github.com/pmmp/PocketMine-MP/releases/download/<ver>/
 #     PocketMine-MP.phar (asset CDN reachable; api.github.com itself is 403).
-#   - minecraft.net BDS ........... BLOCKED from this env (pocketbedlinks
-#     endpoints drop the connection even with a browser UA; the download page
-#     is JS-rendered with no static URL). BDS pin is a documented placeholder
-#     URL pattern; -Auto logs the detection approach + skips live download.
+#   - net-secondary.web.minecraft-services.net (BDS) ... 200 JSON. The links
+#     API is the canonical source:
+#       /api/v1.0/download/links -> result.links[] { downloadType, downloadUrl }
+#     downloadType "serverBedrockWindows" is the Windows BDS zip. NOTE the
+#     download host changed shape: the old
+#       minecraft.net/bedrockdedicatedserverbinaries/<os>/<file>
+#     form now 404s for EVERY version; links point at
+#       minecraft.net/bedrockdedicatedserver/bin-<os>/<file>.
+#     (The earlier "pocketbedlinks is blocked" finding was a false negative: a
+#     stale HTTPS_PROXY=http://127.0.0.1:7890 in the shell, honoured by curl
+#     but ignored by .NET/Node, made the download host look unreachable.)
 # ============================================================================
 $LockedServers = @(
     # =========================================================================
@@ -216,36 +223,43 @@ $LockedServers = @(
     # BDS (Bedrock Dedicated Server) for endstone + levilamina. One BDS download
     # serves both: endstone patches BDS (python plugin host), levilamina injects
     # a preloader dll into BDS (C++ mod loader). BDS is a ZIP, not a jar --
-    # fetch-server.ps1 extracts it to dist/bds-<version>/ after download.
-    # Auto-detect: the real BDS URL is served by minecraft.net's pocketbedlinks
-    # JSON, which is fetched at runtime by the download page JS. That endpoint is
-    # BLOCKED from this env (TLS dropped even with a browser UA), so -Auto logs
-    # the detection approach + URL pattern and exits without downloading.
-    # Pinned mode below uses a documented placeholder; the levilamina/endstone
-    # E2E agents supply a locally-cached BDS zip via their own scripts.
+    # fetch-server.ps1 extracts it to dist/bds-<MC>/ after download.
     #
-    # BDS version 1.26.40 is the version paired with endstone 0.11.7+ (verified
-    # 2026-08-12 via endstone.dev changelog + PyPI endstone 0.11.8). The
-    # download URL pattern is documented but NOT directly reachable from this
-    # env (minecraft.net pocketbedlinks drops the connection); the SHA-256 is
-    # left empty because we cannot compute it without a successful download.
-    # A locally-cached BDS 1.26.40 zip must be supplied by the E2E runner.
+    # Auto-detect: the links API (see the reachability notes) is queried at
+    # runtime for the serverBedrockWindows URL; the version is parsed out of the
+    # file name, and the SHA-256 is taken from Endstone's bedrock-server-data
+    # metadata when that names the same URL. The pin below is only the fallback
+    # for a non-Auto run or a failed API call.
+    #
+    # Version: 1.26.52 is what endstone 0.11.13+ hosts. endstone.__minecraft_version__
+    # reads '26.52' (0.11.14 wheel), and the CLI resolves its BDS metadata from
+    # 1.<that version> -- so a 1.26.40 BDS is not merely unsupported, the CLI would
+    # fetch a different artifact than the one we extract. The producer's own
+    # metadata supplies the pinned SHA-256.
     @{
         Name    = 'bds'
-        MC      = '1.26.40'
-        Build   = '1'
+        MC      = '1.26.52'
+        Build   = '3'
         Engine  = 'bds'
-        # Pattern (documented, not directly reachable here):
-        #   https://www.minecraft.net/en-us/download/server/bedrock -> JS fetches
-        #   pocketbedlinks JSON -> returns
-        #   https://www.minecraft.net/bedrockdedicatedserverbinaries/<platform>/
-        #   bedrock-server-<MC>.<patch>.zip  (platform = win | linux)
-        Url     = 'https://www.minecraft.net/bedrockdedicatedserverbinaries/win/bedrock-server-1.26.40.zip'
-        Sha256  = ''  # Auto-computed when a real BDS zip is downloadable.
+        Url     = 'https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-1.26.52.3.zip'
+        # From EndstoneMC/bedrock-server-data v2/release/1.26.52/metadata.json;
+        # independently reproduced by hashing the downloaded zip (85,766,941 bytes).
+        Sha256  = '2C9B98D07D2504786996F2335980E88BD969B4A77514925E75471A1349995825'
         Eula    = $true   # Mojang EULA required for BDS.
         Jdk     = 0       # BDS is native (no JDK); bedrock_server.exe runs directly.
-        File    = 'bedrock-server-1.26.40.zip'
-        Kind    = 'zip'   # fetch-server.ps1 extracts Kind=zip to dist/bds-<version>/.
+        File    = 'bedrock-server-1.26.52.3.zip'
+        # bedrock-protocol must be handed a version STRING its table knows.
+        # 1.26.52 is a hotfix: it did not bump the wire protocol, so it speaks
+        # protocol 2193 -- the number the table maps to 1.26.51 (minecraft-data
+        # 3.117.0 has no 1.26.52 entry at all). Asking for "1.26.52" throws
+        # "Unsupported version"; asking for "1.26.51" negotiates 2193, which the
+        # server advertises and accepts (verified by logging a bot in).
+        # Requires bedrock-protocol 3.60.1: 3.59.0 has no NetherNet transport,
+        # and BDS 1.26.52 refuses RakNet logins ("NetherNet is the only supported
+        # transport type"). 3.60.0 added NetherNet + 1.26.51; 3.60.1 picks the
+        # transport from the server's pong.
+        BotMcVersion = '1.26.51'
+        Kind    = 'zip'   # fetch-server.ps1 extracts Kind=zip to dist/bds-<MC>/.
         Auto    = $true
     }
 
