@@ -19,8 +19,14 @@
 #       embed the SHA-256 in the path -- those ARE verified).
 #
 # Cache: if dist/<File> exists AND the hash matches (pinned) OR the sidecar
-# matches (Auto), reuse without re-downloading. BDS zips are extracted to
-# dist/bds-<version>/ and the extracted dir is cached too.
+# matches (Auto), reuse without re-downloading. Kind=zip entries are extracted
+# to dist/<Name>-<version>/ and the extracted dir is cached too.
+#
+# LeviLamina: four extra pin-only entries (levilamina, levilamina-preloader,
+# levilamina-peeditor, levilamina-runtime) supply the mod loader itself. They
+# are a set -- the loader is a lip package that needs its preloader injected
+# into the BDS image -- and they are pinned against 'bds-levilamina' (1.26.51),
+# NOT against the endstone 'bds' entry (1.26.52). See versions.lock.ps1.
 #
 # Cross-platform: Invoke-WebRequest with -TimeoutSec 300 and 3 retry attempts.
 # Works on the Windows CI runner. Set $env:HTTP_PROXY / HTTPS_PROXY if a proxy
@@ -280,6 +286,13 @@ function Resolve-Latest([hashtable]$entry) {
         'sponge'      { return Resolve-SpongeLatest }
         'pocketmine'  { return Resolve-PocketMineLatest }
         'bds'         { return Resolve-BdsLatest }
+        # The LeviLamina toolchain entries are deliberately pin-only: the BDS
+        # links API only serves Mojang's CURRENT build, which is exactly the one
+        # LeviLamina cannot load (see the bds-levilamina entry in
+        # versions.lock.ps1), and the other three assets are GitHub release zips
+        # with no version feed worth trusting. Falling through to the default
+        # throw makes an accidental -Auto a loud error instead of a silent
+        # re-pin to a mismatched artifact.
         default       { throw "No auto-detect resolver implemented for '$($_)'" }
     }
 }

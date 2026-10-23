@@ -21,14 +21,34 @@
 # log line (handleHandshakeResponse only flips mAuthenticated silently -- see
 # memory), so the E2E gate is the plugin enable marker + chat round-trip.
 #
+# LeviLamina is NOT downloaded by anything else: this script fetches all five
+# pinned artifacts (bds-levilamina + the four levilamina-* entries in
+# versions.lock.ps1) and performs the install lip would do:
+#   plugins/LeviLamina/{LeviLamina.dll,manifest.json}
+#   PreLoader.dll, bedrock_runtime_data   in the BDS root
+#   PeEditor.exe -mb                      patches bedrock_server.exe
+#                                         -> bedrock_server_mod.exe
+# and then launches bedrock_server_mod.exe. Without the patch step BDS boots
+# unpatched, the preloader never loads, and plugins/*.dll is never injected --
+# which is what made pluginOk/chatOk unachievable against a bare BDS zip.
+#
+# BDS is pinned to 1.26.51 for this platform, NOT the endstone 1.26.52: LeviLamina
+# v26.51.7 hard-depends on bds 1.26.51 and no v26.52.* tag exists. See the
+# bds / bds-levilamina entries in versions.lock.ps1 for the full evidence.
+#
 # Exit codes:
 #   0 = L1 pass
 #   1 = L1 fail (assertion mismatch or a process crashed)
 #   2 = prereq error (build/download failed)
 #   3 = SKIPPED (a required binary is unavailable, so NO test ran)
+#   4 = SKIPPED-BY-DESIGN (the platform structurally cannot run here)
 #
 # Exit 3 is deliberately distinct from 0: a platform that ran zero assertions
-# must never be reported as PASS. run-e2e-orchestrator.ps1 maps 3 to SKIPPED.
+# must never be reported as PASS. run-e2e-orchestrator.ps1 maps 3 to SKIPPED
+# (strict mode treats it as a failure) and 4 to SKIPPED-BY-DESIGN (strict mode
+# passes it). The LeviLamina/BDS version split is NOT a by-design skip: it is
+# handled by pinning the right BDS, so a failure to obtain these binaries is a
+# real infrastructure problem and stays exit 3.
 # ============================================================================
 [CmdletBinding()]
 param(
@@ -53,11 +73,11 @@ $binDir   = Join-Path $RepoRoot "test/bin"
 $botDir   = Join-Path $RepoRoot "test/bot"
 $confDir  = Join-Path $RepoRoot "test/conf"
 $levilaminaSrc = Join-Path $RepoRoot "NovaChat/Bedrock/levilamina"
-# The bot's protocol version has to agree with the BDS build that fetch-server.ps1
-# downloads, so it is read from versions.lock.ps1 rather than repeated as a
-# literal here. The literal used to be "1.26.30"; the pinned BDS is 1.26.52,
-# which speaks protocol 2193 and kicks a 1.26.30 client (protocol 1001) as
-# disconnectionScreen.outdatedClient. See the resolution below the dot-source.
+# The bot's protocol version has to agree with the BDS build this script runs,
+# so it is read from versions.lock.ps1 rather than repeated as a literal here.
+# The literal used to be "1.26.30"; a 1.26.x BDS speaks protocol 2193 and kicks
+# a 1.26.30 client (protocol 1001) as disconnectionScreen.outdatedClient. See
+# the resolution below the dot-source.
 . (Join-Path (Split-Path -Parent $binDir) 'versions.lock.ps1')
 . (Join-Path $binDir 'e2e-assertions.ps1')
 
@@ -65,18 +85,22 @@ function Log([string]$msg) {
     Write-Host ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss.fff"), $msg)
 }
 
-# The version string handed to bedrock-protocol. It comes from the bds lock
-# entry's BotMcVersion, NOT from its MC field: 1.26.52 is a hotfix that did not
-# bump the wire protocol, and minecraft-data 3.117.0 has no "1.26.52" entry at
-# all, so passing MC would throw "Unsupported version" inside the bot. BotMcVersion
-# is "1.26.51", the newest string the table knows, and it resolves to protocol
-# 2193 -- the number BDS 1.26.52 advertises and accepts. The fallback only fires
-# against a lock revision older than the BotMcVersion field.
-$bdsLock = Get-LockedServer -Name 'bds'
-$botMcVersion = if ($bdsLock -and $bdsLock.BotMcVersion) {
+# This platform runs its OWN BDS (bds-levilamina), not the shared endstone one,
+# so every BDS-derived value comes from that entry.
+$bdsLock = Get-LockedServer -Name 'bds-levilamina'
+if (-not $bdsLock) {
+    Log "ERROR: no 'bds-levilamina' lock entry in test/versions.lock.ps1"
+    exit 2
+}
+
+# The version string handed to bedrock-protocol. It comes from the lock entry's
+# BotMcVersion, NOT from its MC field: minecraft-data maps 1.26.51 to protocol
+# 2193 and has no entry for the four-part BDS build strings. The fallback only
+# fires against a lock revision older than the BotMcVersion field.
+$botMcVersion = if ($bdsLock.BotMcVersion) {
     $bdsLock.BotMcVersion
 } else {
-    Log "WARN: no BotMcVersion on the 'bds' lock entry; falling back to 1.26.51"
+    Log "WARN: no BotMcVersion on the 'bds-levilamina' lock entry; falling back to 1.26.51"
     '1.26.51'
 }
 
@@ -274,35 +298,118 @@ Log "  manifest: $dllManifest"
 # ---------------------------------------------------------------------------
 # 3. Fetch BDS + install LeviLamina + the NovaChat .dll.
 # ---------------------------------------------------------------------------
-Log "step 3: fetching Bedrock Dedicated Server (BDS)"
-# Pass -Auto to match the orchestrator's declared ServerScripts for levilamina
-# (run-e2e-orchestrator.ps1 levilamina.PlatformDef). With -Auto, fetch-server.ps1
-# queries the Minecraft services links API for the current BDS zip (see its
-# Resolve-BdsLatest) and downloads + SHA-256-verifies it. Only a genuine API
-# failure returns @{ Skip = $true } and exits 0 WITHOUT downloading; the pinned
-# bds URL in versions.lock.ps1 is a real artifact, not a placeholder, so even a
-# non-Auto run downloads that instead. Any other fetch-server failure exits
-# non-zero and this script turns it into exit 2 (a real prereq error) -- not a
-# SKIP, because a failed download is a bug, not an unavailable environment.
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $binDir "fetch-server.ps1") -Name "bds" -Auto -DistDir $DistDir
-if ($LASTEXITCODE -ne 0) { Log "ERROR: fetch-server failed for bds"; exit 2 }
-# The BDS zip lands in $DistDir (freshly downloaded by fetch-server, a locally-
-# cached zip per versions.lock.ps1 bds notes, or a cache hit from a prior run).
-# Unpack it into the run directory. When fetch-server exits 0 but no BDS zip is
-# present, Resolve-BdsLatest reported a genuine skip and logged its reason on a
-# [fetch] line above; record that as the machine-readable reason and exit 3.
-# Exiting 0 here made CI report "levilamina PASS" for a platform that never
-# started a server or ran the bot (run 39056124289).
-$bdsZip = Get-ChildItem (Join-Path $DistDir "bedrock-server*.zip") -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $bdsZip) {
-    Log "SKIP: BDS server binary unavailable - levilamina E2E not run (fetch-server exited 0 without downloading; see the [fetch] line above for the reason, e.g. the Minecraft services links API was unreachable)"
+Log "step 3: fetching Bedrock Dedicated Server (BDS) + LeviLamina"
+# PINNED, no -Auto. The links API only ever serves Mojang's CURRENT BDS, which
+# is now 1.26.52 -- precisely the build LeviLamina v26.51.7 cannot load (its
+# tooth.json hard-depends on bds 1.26.51 and no v26.52.* tag exists). An -Auto
+# fetch here would silently undo the pin and break the platform, so the pinned
+# artifact is the contract.
+#
+# fetch-server.ps1 exits non-zero on a failed download or a hash mismatch, which
+# is a real prereq error (exit 2), not a SKIP: a download that fails is a bug or
+# an outage someone must fix, and the artifact is pinned so it cannot 404 from
+# version drift.
+$fetchScript = Join-Path $binDir "fetch-server.ps1"
+foreach ($fetchName in @('bds-levilamina', 'levilamina', 'levilamina-preloader', 'levilamina-peeditor', 'levilamina-runtime')) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $fetchScript -Name $fetchName -DistDir $DistDir
+    if ($LASTEXITCODE -ne 0) {
+        Log "ERROR: fetch-server failed for $fetchName"
+        Teardown-All
+        exit 2
+    }
+}
+
+# fetch-server lays each Kind=zip entry down as dist/<Name>-<MC>/. Locate them by
+# walking the pinned paths rather than globbing dist/, so a stale artifact from a
+# previous lock revision can never be picked up.
+function Get-FetchedDir([string]$Name) {
+    $e = Get-LockedServer -Name $Name
+    if (-not $e) { return $null }
+    $d = Join-Path $DistDir "$($e.Name)-$($e.MC)"
+    if (Test-Path $d) { return $d }
+    return $null
+}
+
+$bdsDist = Get-FetchedDir 'bds-levilamina'
+if (-not $bdsDist -or -not (Test-Path (Join-Path $bdsDist 'bedrock_server.exe'))) {
+    Log "SKIP: BDS server binary unavailable - levilamina E2E not run (expected an extracted tree with bedrock_server.exe under $bdsDist)"
     Set-Content -Path (Join-Path $RunsDir "skip-reason.txt") -Value "BDS unavailable"
+    Teardown-All
     exit 3
 }
+# Verify the loader actually targets the BDS we fetched. These are two separate
+# pins on purpose (LeviLamina has no release for a newer BDS), and bumping one
+# without the other yields a server that boots but never injects anything -- a
+# confusing FAIL far from the cause. Fail loudly at the join instead.
+$leviLock = Get-LockedServer -Name 'levilamina'
+if ($leviLock -and $leviLock.RequiresBds -and $leviLock.RequiresBds -ne $bdsLock.MC) {
+    Log "ERROR: pin mismatch - levilamina $($leviLock.MC) requires BDS $($leviLock.RequiresBds) but bds-levilamina is pinned to $($bdsLock.MC)"
+    Teardown-All
+    exit 2
+}
+
 $serverDir = Join-Path $RunsDir "bds"
 New-Item -ItemType Directory -Path $serverDir -Force | Out-Null
-Expand-Archive -Path $bdsZip.FullName -DestinationPath $serverDir -Force
-Log "  BDS unpacked: $serverDir"
+Copy-Item (Join-Path $bdsDist '*') -Destination $serverDir -Recurse -Force
+Log "  BDS unpacked from ${bdsDist}: $serverDir"
+
+# --- LeviLamina install (the steps `lip install github.com/LiteLDev/LeviLamina`
+# would run, done explicitly so the runner needs no lip binary) ---------------
+# 1. The loader itself: LeviLamina/{LeviLamina.dll,manifest.json} -> plugins/.
+$leviDist = Get-FetchedDir 'levilamina'
+if (-not $leviDist -or -not (Test-Path (Join-Path $leviDist 'LeviLamina/LeviLamina.dll'))) {
+    Log "ERROR: LeviLamina package missing or not extracted: $leviDist"
+    Teardown-All; exit 2
+}
+$leviPluginDir = Join-Path $serverDir "plugins/LeviLamina"
+New-Item -ItemType Directory -Path $leviPluginDir -Force | Out-Null
+Copy-Item (Join-Path $leviDist 'LeviLamina/*') -Destination $leviPluginDir -Recurse -Force
+Log "  LeviLamina loader installed: $leviPluginDir"
+
+# 2. PreLoader.dll + bedrock_runtime_data go in the BDS ROOT -- the patched exe
+#    resolves both relative to itself, not to plugins/.
+$preDist = Get-FetchedDir 'levilamina-preloader'
+if (-not $preDist -or -not (Test-Path (Join-Path $preDist 'bin/PreLoader.dll'))) {
+    Log "ERROR: PreLoader package missing or not extracted: $preDist"
+    Teardown-All; exit 2
+}
+Copy-Item (Join-Path $preDist 'bin/PreLoader.dll') -Destination (Join-Path $serverDir 'PreLoader.dll') -Force
+Log "  PreLoader.dll installed into the BDS root"
+
+$rtDist = Get-FetchedDir 'levilamina-runtime'
+if (-not $rtDist -or -not (Test-Path (Join-Path $rtDist 'bedrock_runtime_data'))) {
+    Log "ERROR: bedrock-runtime-data missing or not extracted: $rtDist"
+    Teardown-All; exit 2
+}
+Copy-Item (Join-Path $rtDist 'bedrock_runtime_data') -Destination (Join-Path $serverDir 'bedrock_runtime_data') -Force
+Log "  bedrock_runtime_data installed into the BDS root"
+
+# 3. Patch the BDS image. PeEditor's own defaults are -m -b (-mb): write a
+#    patched copy as bedrock_server_mod.exe and keep the original as .bak. This
+#    is the step whose absence left the preloader unloaded. PeEditor exits
+#    non-zero on a failed patch, and a vanished original would mean it moved
+#    rather than copied, so both are checked.
+$peDist = Get-FetchedDir 'levilamina-peeditor'
+if (-not $peDist -or -not (Test-Path (Join-Path $peDist 'PeEditor.exe'))) {
+    Log "ERROR: PeEditor package missing or not extracted: $peDist"
+    Teardown-All; exit 2
+}
+$peExe = Join-Path $serverDir "PeEditor.exe"
+Copy-Item (Join-Path $peDist 'PeEditor.exe') -Destination $peExe -Force
+$patcher = Start-Process -FilePath $peExe -ArgumentList @('-mb') -WorkingDirectory $serverDir `
+    -RedirectStandardOutput (Join-Path $serverDir 'peeditor.stdout.log') `
+    -RedirectStandardError  (Join-Path $serverDir 'peeditor.stderr.log') -PassThru -NoNewWindow -Wait
+if ($patcher.ExitCode -ne 0) {
+    Log "ERROR: PeEditor failed to patch the BDS image (exit $($patcher.ExitCode)); stderr:"
+    Get-Content (Join-Path $serverDir 'peeditor.stderr.log') -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Log "  $_" }
+    Teardown-All; exit 2
+}
+$modExe = Join-Path $serverDir "bedrock_server_mod.exe"
+if (-not (Test-Path $modExe)) {
+    Log "ERROR: PeEditor reported success but $modExe was not produced; the preloader would never load"
+    Teardown-All; exit 2
+}
+Log "  BDS image patched: bedrock_server_mod.exe ($((Get-Item $modExe).Length) bytes)"
 
 # Bedrock server.properties. This file is written WHOLESALE, replacing the one
 # in the BDS zip, so every key the run depends on must appear here.
@@ -348,13 +455,9 @@ auto-save=off
 xbox-auth=off
 "@ | Set-Content -Path $serverProps
 
-# Install LeviLamina + the NovaChat plugin into BDS's plugins/ dir.
-# LeviLamina's mod loader is a preloader .dll that BDS loads via its
-# `windows-specific`/`server.properties`-adjacent bootstrap. The exact install
-# layout (preloader .dll in BDS root, mods in plugins/) is provisioned by
-# `fetch-server.ps1 -Name bds -Auto` when it bundles LeviLamina, OR by a
-# separate LeviLamina release download. This script assumes LeviLamina is
-# already present in the BDS tree; it only installs OUR plugin.
+# Install the NovaChat plugin into BDS's plugins/ dir, next to the LeviLamina
+# loader installed above. A LeviLamina mod is a directory under plugins/ holding
+# a manifest.json + the .dll its "entry" names.
 $pluginsDir = Join-Path $serverDir "plugins"
 New-Item -ItemType Directory -Path $pluginsDir -Force | Out-Null
 $pluginDir = Join-Path $pluginsDir "novachat-levilamina"
@@ -450,16 +553,15 @@ if (-not $ready) { Log "WARN: backend readiness not confirmed in logs, proceedin
 # 5. Start BDS+LeviLamina + wait for "Server started" / plugin enable.
 # ---------------------------------------------------------------------------
 Log "step 5: starting BDS+LeviLamina on port $McPort"
-# BDS on Windows is bedrock_server.exe. LeviLamina's preloader is injected by
-# replacing/launching via its loader. When fetch-server.ps1 bundles LeviLamina,
-# the BDS root contains a LeviLamina launcher (e.g. LeverBlockLoader or a
-# preloader .dll in the root). We launch the BDS executable in the run dir; if
-# a LeviLamina launcher exe is present we prefer it.
-$bdsExe = Get-ChildItem $serverDir -Filter "bedrock_server*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-$leviLauncher = Get-ChildItem $serverDir -Filter "LeviLamina*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-$launchExe = if ($leviLauncher) { $leviLauncher.FullName } elseif ($bdsExe) { $bdsExe.FullName } else { $null }
-if (-not $launchExe) {
-    Log "ERROR: no BDS executable found in $serverDir"
+# Launch bedrock_server_mod.exe -- PeEditor's PATCHED copy, which is the one that
+# loads PreLoader.dll and therefore LeviLamina. Falling back to bedrock_server.exe
+# (the unpatched original) is what silently produced a plain server with no
+# plugins loaded, so a missing patched exe is a hard prereq error here rather
+# than a fallback. There is no "LeviLamina*.exe" launcher in the package: the
+# loader is a dll in plugins/LeviLamina/.
+$launchExe = Join-Path $serverDir "bedrock_server_mod.exe"
+if (-not (Test-Path $launchExe)) {
+    Log "ERROR: patched server executable missing: $launchExe"
     Teardown-All; exit 2
 }
 $bdsStdout = Join-Path $serverDir "bds.stdout.log"
