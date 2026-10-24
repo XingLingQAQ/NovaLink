@@ -150,6 +150,20 @@ target("novachat-levilamina")
     -- if modpacker already packed them -- os.cp just overwrites with the same
     -- files). The lang/ directory ships next to the .dll so the I18n loader
     -- (which scans <module-dir>/lang/*.json) finds translations at runtime.
+    --
+    -- manifest.json MUST NOT declare a "dependencies": [{"name":"LeviLamina"}]
+    -- entry. LeviLamina's own installed manifest (plugins/LeviLamina/
+    -- manifest.json) sets "type": "preload-native", which equals
+    -- pl::pl_mod_manager_name, so ModRegistrar::loadManifest() early-returns
+    -- and LeviLamina is never entered into the manifest map that
+    -- ModLoadPlanner::resolve() searches. A dependency on "LeviLamina" can
+    -- therefore NEVER resolve -> MissingDependency -> the mod is rejected and
+    -- the server logs "novachat-levilamina will not be loaded because
+    -- dependency LeviLamina is missing" + "0 mod(s) loaded" even though the
+    -- loader itself is running. The official LiteLDev/levilamina-mod-template
+    -- manifest likewise declares only name/entry/version/type/platform. The
+    -- plugin still links against LeviLamina at build time via add_packages
+    -- above; only the runtime manifest dependency is dropped.
     after_build(function (target)
         local targetdir = target:targetdir()
         os.cp("manifest.json", targetdir)
