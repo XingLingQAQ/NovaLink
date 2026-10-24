@@ -257,9 +257,13 @@ Log "  endstone venv: $endstoneVenv"
 # `endstone` in the venv's Scripts/ that launches BDS with the plugin host.
 $endstoneExe = Join-Path $endstoneVenv "Scripts/endstone.exe"
 if (-not (Test-Path $endstoneExe)) {
-    # Fallback: invoke the python module.
+    # Fallback: invoke the python module. An array, so each argument is explicit
+    # and Start-Process joins them into `-m endstone`. Not a bug fix -- the old
+    # single string "-m endstone" also reached python as two argv tokens (5.1
+    # passes the string verbatim to the command line and python's CRT splits it);
+    # the array just states the intent without relying on that split.
     $endstoneExe = $venvPy
-    $endstoneModule = "-m endstone"
+    $endstoneModule = @("-m", "endstone")
 } else {
     $endstoneModule = $null
 }
@@ -455,13 +459,22 @@ Log "step 5: starting BDS+Endstone on port $McPort"
 $bdsStdout = Join-Path $serverDir "bds.stdout.log"
 $bdsStderr = Join-Path $serverDir "bds.stderr.log"
 $bdsPidFile = Join-Path $serverDir "bds.pid"
-if ($endstoneModule) {
-    $bdsArgs = @($endstoneModule)
+# Start-Process -ArgumentList REFUSES both an empty collection and an explicit
+# $null on Windows PowerShell 5.1: "Cannot validate argument on parameter
+# 'ArgumentList'. The argument is null or empty". The endstone.exe console-script
+# path takes NO arguments, so passing @() aborted the whole platform at step 5
+# after BDS had already unpacked -- that is why the failed run's artifact had
+# bds/release-notes.txt but no bds.stdout.log (the process never started).
+# The ONLY way to launch argument-less is to omit the parameter outright; unlike
+# most parameters, -ArgumentList $null is not treated as "no arguments" here.
+# Do not "simplify" the branch below back into one call with $null or @().
+$endstoneProc = if ($endstoneModule) {
+    Start-Process -FilePath $endstoneExe -ArgumentList $endstoneModule `
+        -WorkingDirectory $serverDir -RedirectStandardOutput $bdsStdout -RedirectStandardError $bdsStderr -PassThru -NoNewWindow
 } else {
-    $bdsArgs = @()
+    Start-Process -FilePath $endstoneExe `
+        -WorkingDirectory $serverDir -RedirectStandardOutput $bdsStdout -RedirectStandardError $bdsStderr -PassThru -NoNewWindow
 }
-$endstoneProc = Start-Process -FilePath $endstoneExe -ArgumentList $bdsArgs `
-    -WorkingDirectory $serverDir -RedirectStandardOutput $bdsStdout -RedirectStandardError $bdsStderr -PassThru -NoNewWindow
 Track-Pid $endstoneProc.Id
 $endstoneProc.Id | Set-Content $bdsPidFile
 Log "  endstone pid=$($endstoneProc.Id)"
@@ -476,9 +489,14 @@ for ($i = 0; $i -lt ($ServerReadySec / 5); $i++) {
     }
     if (Test-Path $bdsStdout) {
         $logContent = Get-Content $bdsStdout -Raw -ErrorAction SilentlyContinue
-        # BDS prints "Server started." on completion; Endstone logs the plugin
-        # enable line from NovaChatPlugin.on_enable.
-        if ($logContent -match 'Server started\.|Done \(') { $serverReady = $true; break }
+        # Two server families, two startup lines:
+        #   BDS/Bedrock:  "Server started in (1.8s)! For help, type ..."
+        #   Java family:  "Done (12.345s)! For help, type ..."
+        # The BDS line has NO period after "started" -- "Server started." is not
+        # what 1.26.x prints, so the old 'Server started\.|Done \(' alternative
+        # could never match a real BDS log and the loop always burned the full
+        # ServerReadySec and then failed. Match the bare phrase, not "started.".
+        if ($logContent -match 'Server started|Done \(') { $serverReady = $true; break }
     }
 }
 if (-not $serverReady) {
