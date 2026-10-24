@@ -327,7 +327,22 @@ jobs:
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $selected = ($env:E2E_SELECTED -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
           if ($selected.Count -gt 0 -and ($selected -notcontains $env:E2E_PLATFORM)) {
-            Write-Host "skipping $env:E2E_PLATFORM (not in the requested set: $($selected -join ', '))"
+            # A targeted dispatch skips the platforms it did not ask for, and
+            # those jobs still show a GREEN check because exit 0 is the only
+            # honest code here (reding them would punish a legitimate targeted
+            # run). That makes a skipped job indistinguishable from a passing
+            # one in the checks list, and reading a targeted run as a full
+            # verification is a real mistake -- run 40106019993 was dispatched
+            # with platforms=endstone, and its "E2E levilamina success" job ran
+            # zero assertions.
+            #
+            # So make the no-op loud: a warning annotation (yellow in the UI)
+            # plus a step summary that states plainly that nothing ran. Do not
+            # turn this into a failure -- a caller who narrows the matrix is
+            # entitled to skip the rest.
+            $msg = "NO TESTS RAN for $($env:E2E_PLATFORM) -- skipped, not in the requested set ($($selected -join ', ')). A green check here does not mean this platform passed."
+            Write-Host "::warning::$msg"
+            $msg | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             exit 0
           }
           ./gradlew realE2E --console=plain `
