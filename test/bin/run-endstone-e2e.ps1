@@ -317,6 +317,41 @@ New-Item -ItemType Directory -Path $serverDir -Force | Out-Null
 Expand-Archive -Path $bdsZip.FullName -DestinationPath $serverDir -Force
 Log "  BDS unpacked: $serverDir"
 
+# Tell the endstone CLI which BDS version this tree already contains.
+#
+# The BDS zip ships NO version.txt -- endstone writes that file itself, but only
+# on the code path that DOWNLOADS the server. We unpack the zip ourselves (to
+# use the pinned, SHA-256-verified artifact from versions.lock.ps1), so the file
+# is absent. Bootstrap._update() then reads it, gets the 0.0.0 fallback, decides
+# the tree is "an older version", and asks via click.confirm() whether to
+# update. Start-Process gives the child an immediately-EOF stdin, click.confirm
+# raises Abort().
+#
+# This covers the SECOND prompt, not the one in the CI failure (run 40077636813).
+# That Abort came from _install()'s "Bedrock Dedicated Server (v26.52) is not
+# found in ...\bds\bedrock_server" branch: the launcher was started with no
+# server folder, so it looked in a "bedrock_server" SUBDIR of the BDS tree
+# instead of the tree itself. _update() was never reached. See the -s argument
+# at the Start-Process below. Once -s points at the tree, _install() finds
+# bedrock_server.exe and calls _update(), which is the path this file silences.
+#
+# Verified locally against endstone 0.11.9 (the installed source) with an EOF
+# stdin: _install() -> click.confirm -> Abort; _update() with a version.txt
+# equal to __minecraft_version__ returns without prompting.
+#
+# So write the version endstone expects -- str(packaging.version.Version(
+# endstone.__minecraft_version__)), which round-trips "26.52" unchanged. Do NOT
+# "fix" this by passing -y: that makes endstone re-download BDS itself and
+# throws away the locked artifact. The value must match __minecraft_version__
+# (the bds lock entry's MC, minus its leading "1.") or _update() prompts again.
+$endstoneMcVersion = ($bdsLock.MC -replace '^1\.', '')
+# -Encoding ASCII matters: endstone reads this with encoding="utf-8" and feeds it
+# to packaging.version.Version. A BOM would arrive as '﻿26.52' and raise
+# InvalidVersion. PS 5.1's default "Default" encoding happens to be BOM-less for
+# ASCII text, but stating ASCII makes that independent of the host's ANSI codepage.
+Set-Content -Path (Join-Path $serverDir "version.txt") -Value $endstoneMcVersion -NoNewline -Encoding ASCII
+Log "  BDS version.txt: $endstoneMcVersion (skips the endstone update prompt)"
+
 # Bedrock server.properties. This file is written WHOLESALE, replacing the one
 # in the BDS zip, so every key the run depends on must appear here.
 #
@@ -461,20 +496,32 @@ $bdsStderr = Join-Path $serverDir "bds.stderr.log"
 $bdsPidFile = Join-Path $serverDir "bds.pid"
 # Start-Process -ArgumentList REFUSES both an empty collection and an explicit
 # $null on Windows PowerShell 5.1: "Cannot validate argument on parameter
-# 'ArgumentList'. The argument is null or empty". The endstone.exe console-script
-# path takes NO arguments, so passing @() aborted the whole platform at step 5
-# after BDS had already unpacked -- that is why the failed run's artifact had
-# bds/release-notes.txt but no bds.stdout.log (the process never started).
-# The ONLY way to launch argument-less is to omit the parameter outright; unlike
-# most parameters, -ArgumentList $null is not treated as "no arguments" here.
-# Do not "simplify" the branch below back into one call with $null or @().
-$endstoneProc = if ($endstoneModule) {
-    Start-Process -FilePath $endstoneExe -ArgumentList $endstoneModule `
-        -WorkingDirectory $serverDir -RedirectStandardOutput $bdsStdout -RedirectStandardError $bdsStderr -PassThru -NoNewWindow
-} else {
-    Start-Process -FilePath $endstoneExe `
-        -WorkingDirectory $serverDir -RedirectStandardOutput $bdsStdout -RedirectStandardError $bdsStderr -PassThru -NoNewWindow
-}
+# 'ArgumentList'. The argument is null or empty". So each branch below MUST pass
+# a non-empty argument array -- never @() and never $null.
+#
+# The launcher needs an explicit server folder. endstone's -s/--server-folder
+# defaults to the literal "bedrock_server", a RELATIVE path that Bootstrap
+# resolves as Path("bedrock_server").absolute() -- i.e. against the child's cwd,
+# not against the BDS tree. With -WorkingDirectory $serverDir and no argument,
+# it therefore looked for $serverDir\bedrock_server\bedrock_server.exe, which
+# does not exist (the zip unpacks bedrock_server.exe directly into $serverDir).
+# _install() then hit its "Bedrock Dedicated Server (v26.52) is not found in
+# ...\bds\bedrock_server" click.confirm() and Aborted on the EOF stdin that
+# Start-Process hands the child. That is the step 5 failure in run 40077636813;
+# bds.stdout.log held the prompt and no server ever started.
+#
+# Pass the ABSOLUTE $serverDir rather than "." so the intent does not depend on
+# cwd semantics. Both halves matter: _install() finds bedrock_server.exe there
+# and calls _update(), and _prepare() creates endstone.toml + plugins/ there and
+# _run() launches BDS with cwd=$serverDir -- so server.properties is picked up
+# from the same tree we unpacked into.
+#
+# The argument must come AFTER the module flags: `python -m endstone -s <dir>`,
+# not `python -s -m endstone ...` (-s would be python's own flag, and the -m
+# target must precede the module's argv).
+$endstoneArgs = if ($endstoneModule) { $endstoneModule + @("-s", $serverDir) } else { @("-s", $serverDir) }
+$endstoneProc = Start-Process -FilePath $endstoneExe -ArgumentList $endstoneArgs `
+    -WorkingDirectory $serverDir -RedirectStandardOutput $bdsStdout -RedirectStandardError $bdsStderr -PassThru -NoNewWindow
 Track-Pid $endstoneProc.Id
 $endstoneProc.Id | Set-Content $bdsPidFile
 Log "  endstone pid=$($endstoneProc.Id)"
