@@ -183,7 +183,12 @@ if ($javaPlatforms.Count -gt 0 -and -not (Test-Path $classPathFile)) {
 #   BackendScript     - the per-platform orchestrator script (for "self" only).
 #   BotScript         - the bot script the orchestrator runs.
 #   ServerReadyFile   - the log file whose readiness marker is grepped.
-#   ServerReadyPattern - the regex that marks server readiness.
+#   ServerReadyPattern - the regex that marks server readiness. NOTE: this key
+#                       (and ServerReadyFile) is currently UNUSED -- the dispatch
+#                       below only reads .Dispatch and .BackendScript, and every
+#                       per-platform script owns its own readiness loop. Kept in
+#                       step with those loops so a reader grepping the pattern
+#                       here is not misled; do not rely on it to gate anything.
 #   ResultsFile       - where the bot writes results.json.
 #   ChatPhrase        - the chat phrase the bot sends for the round-trip.
 #   Jdk               - the JDK the platform's server/backend runs on. Doc-only
@@ -291,7 +296,9 @@ $PlatformDefs = @{
         ServerScripts      = @("fetch-server.ps1 -Name bds -Auto")
         BotScript          = "run-e2e-bedrock.js"
         ServerReadyFile    = "bds/bds.stdout.log"
-        ServerReadyPattern = 'Server started\.|Done \('
+        # BDS prints "Server started in (1.8s)!" -- no period after "started",
+        # so 'Server started\.' can never match. Matches run-levilamina-e2e.ps1.
+        ServerReadyPattern = 'Server started|Done \('
         ResultsFile        = "bot-results.json"
         ChatPhrase         = "hello from e2e bot"
         Jdk                = 21

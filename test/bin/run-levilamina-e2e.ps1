@@ -292,6 +292,24 @@ if (-not (Test-Path $dllManifest)) {
     # Fall back to the source manifest if the build dir lacks one.
     $dllManifest = Join-Path $levilaminaSrc "manifest.json"
 }
+# A prebuilt bin/ dir is gitignored and REUSED without rebuilding when both the
+# dll and its manifest are present. That copy is generated from the source
+# manifest at build time, so a bin/ left over from an older checkout keeps the
+# manifest it was packed with and silently overrides the source one. The exact
+# trap this guards: a stale bin/ manifest still declaring a "LeviLamina"
+# dependency makes LeviLamina reject the mod with "will not be loaded because
+# dependency LeviLamina is missing" and load 0 mods -- which then surfaces as a
+# misleading readiness timeout. Compare against the source manifest and prefer
+# the source one on any drift rather than shipping a known-bad copy.
+$srcManifest = Join-Path $levilaminaSrc "manifest.json"
+if ((Test-Path $dllManifest) -and (Test-Path $srcManifest)) {
+    $packedManifest = Get-Content $dllManifest -Raw -ErrorAction SilentlyContinue
+    $sourceManifest = Get-Content $srcManifest -Raw -ErrorAction SilentlyContinue
+    if ($packedManifest -ne $sourceManifest) {
+        Log "  WARN: packed manifest differs from the source manifest; using the source manifest"
+        $dllManifest = $srcManifest
+    }
+}
 Log "  dll: $dllPath"
 Log "  manifest: $dllManifest"
 
@@ -582,9 +600,14 @@ for ($i = 0; $i -lt ($ServerReadySec / 5); $i++) {
     }
     if (Test-Path $bdsStdout) {
         $logContent = Get-Content $bdsStdout -Raw -ErrorAction SilentlyContinue
-        # BDS prints "Server started." on completion. LeviLamina logs the plugin
-        # enable line from NovaChatPlugin::enable().
-        if ($logContent -match 'Server started\.|Done \(') { $serverReady = $true; break }
+        # BDS prints "Server started in (1.8s)!" on completion -- NO period after
+        # "started", so the previous pattern's first alternative (which required
+        # a literal period there) could never match a real BDS line and this loop
+        # spun the full ServerReadySec timeout on a perfectly healthy server.
+        # Keep the bare "Server started" prefix; do not reintroduce the period.
+        # The 'Done \(' family covers Java-family servers ("Done (12.3s)!").
+        # LeviLamina logs the plugin enable line from NovaChatPlugin::enable().
+        if ($logContent -match 'Server started|Done \(') { $serverReady = $true; break }
     }
 }
 if (-not $serverReady) {
