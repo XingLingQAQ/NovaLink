@@ -123,6 +123,26 @@ void CommandHandler::registerCommands() {
 
     auto& registrar = ll::command::CommandRegistrar::getServerInstance();
 
+    // SUCCESS ACCOUNTING (BDS 1.26.51 / LeviLamina 26.51.7):
+    // every /nc handler below reports success by bumping output.mSuccessCount
+    // instead of calling output.success().
+    //
+    // 26.20.7 had TWO overloads -- CommandOutput::success() and
+    // success(msgId, params). 26.51.7 deleted the no-argument one; only
+    // success(msgId, params) survives. Calling that survivor with an empty
+    // msgId is NOT equivalent: it goes through addMessage(), which appends a
+    // CommandOutputMessage carrying that id, so the player gets a blank chat
+    // line (and BDS's own commands never do it -- all 153 `.success` message
+    // ids in the shipped binary are real keys like commands.give.success).
+    //
+    // The no-argument overload's entire job was to bump the success counter,
+    // and mSuccessCount is a public member (CommandOutput.h:27), so writing it
+    // directly is exactly what the removed overload did -- no message, same
+    // accounting. The counter matters: command blocks and conditional chains
+    // read it to decide whether the previous command succeeded. Player-visible
+    // feedback is unaffected because every handler already sends its own text
+    // through sendMessage().
+    //
     // Register /nc command
     auto& ncCommand = registrar.getOrCreateCommand(
         "nc",
@@ -139,7 +159,7 @@ void CommandHandler::registerCommands() {
                 auto* p = static_cast<Player*>(player);
                 handleHelp(p->getRealName(), p->getUuid().asString(), {}, isAdmin);
             }
-            output.success();
+            ++output.mSuccessCount;
         });
 
     // /nc join <channel> [password]
@@ -153,7 +173,7 @@ void CommandHandler::registerCommands() {
                 handleJoin(p->getRealName(), p->getUuid().asString(),
                     {params.channelId, params.password});
             }
-            output.success();
+            ++output.mSuccessCount;
         });
 
     // /nc leave
@@ -164,7 +184,7 @@ void CommandHandler::registerCommands() {
                 auto* p = static_cast<Player*>(player);
                 handleLeave(p->getRealName(), p->getUuid().asString(), {});
             }
-            output.success();
+            ++output.mSuccessCount;
         });
 
     // /nc list
@@ -175,7 +195,7 @@ void CommandHandler::registerCommands() {
                 auto* p = static_cast<Player*>(player);
                 handleList(p->getRealName(), p->getUuid().asString(), {});
             }
-            output.success();
+            ++output.mSuccessCount;
         });
 
     // /nc who [channel]
@@ -189,7 +209,7 @@ void CommandHandler::registerCommands() {
                           params.channelId.empty() ? std::vector<std::string>{} :
                           std::vector<std::string>{params.channelId});
             }
-            output.success();
+            ++output.mSuccessCount;
         });
 
     // /nc toggle
@@ -200,7 +220,7 @@ void CommandHandler::registerCommands() {
                 auto* p = static_cast<Player*>(player);
                 handleToggle(p->getRealName(), p->getUuid().asString(), {});
             }
-            output.success();
+            ++output.mSuccessCount;
         });
 
     // /nc reload (admin only)
@@ -225,7 +245,7 @@ void CommandHandler::registerCommands() {
                 auto* p = static_cast<Player*>(player);
                 handleReload(p->getRealName(), p->getUuid().asString(), {});
             }
-            output.success();
+            ++output.mSuccessCount;
         });
 
     // /nc auth <password> — player-only. Hidden from /nc help (the help line
@@ -243,7 +263,7 @@ void CommandHandler::registerCommands() {
                 auto& i18n = i18n::I18n::getInstance();
                 output.error(i18n.get("chat.command.player_only", origin.getLocaleCode()));
             }
-            output.success();
+            ++output.mSuccessCount;
         });
 
     // /nc announce <channel> <content> — player + console/RCON. The content
@@ -272,7 +292,7 @@ void CommandHandler::registerCommands() {
             }
             handleAnnounce(playerName, playerUuid,
                            {params.channelId, params.content, isPlayer ? "true" : "false"});
-            output.success();
+            ++output.mSuccessCount;
         });
 
     // ==================== Moderation subcommands ====================
@@ -308,7 +328,7 @@ void CommandHandler::registerCommands() {
             }
             handleMute(name, uuid, isConsole, level,
                        {params.targetName, params.duration, params.channelId});
-            output.success();
+            ++output.mSuccessCount;
         });
 
     ncCommand.overload<KickParams>()
@@ -330,7 +350,7 @@ void CommandHandler::registerCommands() {
                 isConsole = false;
             }
             handleKick(name, uuid, isConsole, level, {params.targetName, params.channelId});
-            output.success();
+            ++output.mSuccessCount;
         });
 
     ncCommand.overload<BanParams>()
@@ -354,7 +374,7 @@ void CommandHandler::registerCommands() {
             }
             handleBan(name, uuid, isConsole, level,
                       {params.targetName, params.duration, params.channelId});
-            output.success();
+            ++output.mSuccessCount;
         });
 
     ncCommand.overload<UnbanParams>()
@@ -376,7 +396,7 @@ void CommandHandler::registerCommands() {
                 isConsole = false;
             }
             handleUnban(name, uuid, isConsole, level, {params.targetName, params.channelId});
-            output.success();
+            ++output.mSuccessCount;
         });
 
     // /nc title <channel> <title> [subtitle] — player + console/RCON transport,
@@ -402,7 +422,7 @@ void CommandHandler::registerCommands() {
             }
             handleTitle(playerName, playerUuid,
                         {params.channelId, params.title, params.subtitle});
-            output.success();
+            ++output.mSuccessCount;
         });
 
     mCommandsRegistered = true;
