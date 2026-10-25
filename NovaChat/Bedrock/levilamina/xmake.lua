@@ -165,15 +165,19 @@ target("novachat-levilamina")
     -- plugin still links against LeviLamina at build time via add_packages
     -- above; only the runtime manifest dependency is dropped.
     after_build(function (target)
-        local targetdir = target:targetdir()
-        os.cp("manifest.json", targetdir)
+        -- The deployable mod dir is bin/<name>/ (what modpacker packs and what
+        -- test/bin/run-levilamina-e2e.ps1 installs), NOT target:targetdir(),
+        -- which is build/bin/ and is never shipped.
+        local moddir = path.join(os.projectdir(), "bin", target:name())
+        os.mkdir(moddir)
+        os.cp("manifest.json", moddir)
         -- resource_packs, not resources: Mod::getResourceDir() is
         -- <modDir>/resource_packs (LeviLamina Mod.cpp), and the mod reads
         -- getResourceDir()/default-config.json -- so a "resources" dir is never
         -- found and load() dies with "Unable to open
         -- ./plugins/novachat-levilamina/resource_packs/default-config.json".
-        os.cp("resources", targetdir .. "/resource_packs")
-        os.cp("src/i18n/lang", targetdir .. "/lang")
+        os.cp("resources", moddir .. "/resource_packs")
+        os.cp("src/i18n/lang", moddir .. "/lang")
     end)
 target_end()
 
