@@ -1,0 +1,1048 @@
+diff --git a/src/mc/deps/certificates/MinecraftServiceKeyManager.h b/src/mc/deps/certificates/MinecraftServiceKeyManager.h
+--- a/src/mc/deps/certificates/MinecraftServiceKeyManager.h
++++ b/src/mc/deps/certificates/MinecraftServiceKeyManager.h
+@@ -70,7 +70,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~MinecraftServiceKeyManager() /*override*/ = default;
++    virtual ~MinecraftServiceKeyManager() /*override*/;
+     // NOLINTEND
+ 
+ public:
+
+diff --git a/src/mc/deps/core/file/file_system/MemoryMappedFileAccess.h b/src/mc/deps/core/file/file_system/MemoryMappedFileAccess.h
+--- a/src/mc/deps/core/file/file_system/MemoryMappedFileAccess.h
++++ b/src/mc/deps/core/file/file_system/MemoryMappedFileAccess.h
+@@ -124,7 +124,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~MemoryMappedFileAccess() /*override*/ = default;
++    virtual ~MemoryMappedFileAccess() /*override*/;
+ 
+     virtual void* fopen(::Core::PathView filePath, ::std::string const& mode) /*override*/;
+ 
+
+diff --git a/src/mc/deps/core/threading/ToXAsyncBlock.h b/src/mc/deps/core/threading/ToXAsyncBlock.h
+--- a/src/mc/deps/core/threading/ToXAsyncBlock.h
++++ b/src/mc/deps/core/threading/ToXAsyncBlock.h
+@@ -28,7 +28,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ToXAsyncBlock() /*override*/ = default;
++    virtual ~ToXAsyncBlock() /*override*/;
+     // NOLINTEND
+ 
+ public:
+
+diff --git a/src/mc/editor/world/level/chunk/EditorChunkSource.h b/src/mc/editor/world/level/chunk/EditorChunkSource.h
+--- a/src/mc/editor/world/level/chunk/EditorChunkSource.h
++++ b/src/mc/editor/world/level/chunk/EditorChunkSource.h
+@@ -26,7 +26,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~EditorChunkSource() /*override*/ = default;
++    virtual ~EditorChunkSource() /*override*/;
+ 
+     virtual bool canCreateViews() const /*override*/;
+ 
+
+diff --git a/src/mc/entity/systems/EntitySystems.h b/src/mc/entity/systems/EntitySystems.h
+--- a/src/mc/entity/systems/EntitySystems.h
++++ b/src/mc/entity/systems/EntitySystems.h
+@@ -82,7 +82,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~EntitySystems() /*override*/ = default;
++    virtual ~EntitySystems() /*override*/;
+ 
+     virtual void tickMovementCatchup(::EntityRegistry& registry) /*override*/;
+ 
+
+diff --git a/src/mc/events/MinecraftEventing.h b/src/mc/events/MinecraftEventing.h
+--- a/src/mc/events/MinecraftEventing.h
++++ b/src/mc/events/MinecraftEventing.h
+@@ -424,7 +424,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~MinecraftEventing() /*override*/ = default;
++    virtual ~MinecraftEventing() /*override*/;
+ 
+     virtual ::IPurchaseEventing& getPurchaseEventing() /*override*/;
+ 
+
+diff --git a/src/mc/network/AsyncJoinTaskManager.h b/src/mc/network/AsyncJoinTaskManager.h
+--- a/src/mc/network/AsyncJoinTaskManager.h
++++ b/src/mc/network/AsyncJoinTaskManager.h
+@@ -75,7 +75,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~AsyncJoinTaskManager() /*override*/ = default;
++    virtual ~AsyncJoinTaskManager() /*override*/;
+     // NOLINTEND
+ 
+ public:
+
+diff --git a/src/mc/network/BatchedNetworkPeer.h b/src/mc/network/BatchedNetworkPeer.h
+--- a/src/mc/network/BatchedNetworkPeer.h
++++ b/src/mc/network/BatchedNetworkPeer.h
+@@ -58,7 +58,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~BatchedNetworkPeer() /*override*/ = default;
++    virtual ~BatchedNetworkPeer() /*override*/;
+ 
+     virtual void flush(::std::function<void()>&& callback) /*override*/;
+ 
+
+diff --git a/src/mc/network/ClientNetworkSystem.h b/src/mc/network/ClientNetworkSystem.h
+--- a/src/mc/network/ClientNetworkSystem.h
++++ b/src/mc/network/ClientNetworkSystem.h
+@@ -72,7 +72,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ClientNetworkSystem() /*override*/ = default;
++    virtual ~ClientNetworkSystem() /*override*/;
+ 
+     virtual ::Social::GameConnectionInfo const& getConnectionInfo() const /*override*/;
+ 
+
+diff --git a/src/mc/network/ServerNetworkHandler.h b/src/mc/network/ServerNetworkHandler.h
+--- a/src/mc/network/ServerNetworkHandler.h
++++ b/src/mc/network/ServerNetworkHandler.h
+@@ -346,7 +346,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ServerNetworkHandler() /*override*/ = default;
++    virtual ~ServerNetworkHandler() /*override*/;
+ 
+     virtual void onValidPacketReceived(
+         ::NetworkIdentifier const& netId,
+
+diff --git a/src/mc/options/AppConfigs.h b/src/mc/options/AppConfigs.h
+--- a/src/mc/options/AppConfigs.h
++++ b/src/mc/options/AppConfigs.h
+@@ -52,7 +52,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~AppConfigs() /*override*/ = default;
++    virtual ~AppConfigs() /*override*/;
+ 
+     virtual void loadFromData(::IAppConfigData const&);
+ 
+
+diff --git a/src/mc/resources/PackSettingsFactory.h b/src/mc/resources/PackSettingsFactory.h
+--- a/src/mc/resources/PackSettingsFactory.h
++++ b/src/mc/resources/PackSettingsFactory.h
+@@ -105,7 +105,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~PackSettingsFactory() = default;
++    virtual ~PackSettingsFactory();
+ 
+     virtual uint64 getAccessTimestamp() const;
+     // NOLINTEND
+
+diff --git a/src/mc/resources/ResourcePackManager.h b/src/mc/resources/ResourcePackManager.h
+--- a/src/mc/resources/ResourcePackManager.h
++++ b/src/mc/resources/ResourcePackManager.h
+@@ -61,7 +61,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ResourcePackManager() /*override*/ = default;
++    virtual ~ResourcePackManager() /*override*/;
+ 
+     virtual bool load(::ResourceLocation const& resourceLocation, ::std::string& resourceStream) const /*override*/;
+ 
+
+diff --git a/src/mc/resources/ResourcePackRepository.h b/src/mc/resources/ResourcePackRepository.h
+--- a/src/mc/resources/ResourcePackRepository.h
++++ b/src/mc/resources/ResourcePackRepository.h
+@@ -133,7 +133,7 @@
+ #ifdef LL_PLAT_S
+     virtual ~ResourcePackRepository() /*override*/;
+ #else // LL_PLAT_C
+-    virtual ~ResourcePackRepository() /*override*/ = default;
++    virtual ~ResourcePackRepository() /*override*/;
+ #endif
+ 
+     virtual void getResourcePacksByPackId(
+
+diff --git a/src/mc/scripting/ScriptPlugin.h b/src/mc/scripting/ScriptPlugin.h
+--- a/src/mc/scripting/ScriptPlugin.h
++++ b/src/mc/scripting/ScriptPlugin.h
+@@ -50,7 +50,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ScriptPlugin() /*override*/ = default;
++    virtual ~ScriptPlugin() /*override*/;
+ 
+     virtual ::std::optional<::Scripting::ScriptData> onLoadScript(::std::string const& name) /*override*/;
+ 
+
+diff --git a/src/mc/scripting/ServerScriptManager.h b/src/mc/scripting/ServerScriptManager.h
+--- a/src/mc/scripting/ServerScriptManager.h
++++ b/src/mc/scripting/ServerScriptManager.h
+@@ -150,7 +150,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ServerScriptManager() /*override*/ = default;
++    virtual ~ServerScriptManager() /*override*/;
+ 
+     virtual ::EventResult onServerUpdateEnd(::ServerInstance& instance) /*override*/;
+ 
+
+diff --git a/src/mc/scripting/modules/minecraft/ScriptBlockVolumeBase.h b/src/mc/scripting/modules/minecraft/ScriptBlockVolumeBase.h
+--- a/src/mc/scripting/modules/minecraft/ScriptBlockVolumeBase.h
++++ b/src/mc/scripting/modules/minecraft/ScriptBlockVolumeBase.h
+@@ -38,7 +38,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ScriptBlockVolumeBase() /*override*/ = default;
++    virtual ~ScriptBlockVolumeBase() /*override*/;
+ 
+     virtual ::Scripting::StrongTypedObjectHandle<::ScriptModuleMinecraft::ScriptBlockLocationIterator>
+     getBlockLocationIterator(::Scripting::WeakLifetimeScope scope) = 0;
+
+diff --git a/src/mc/scripting/modules/minecraft/ScriptWaypoint.h b/src/mc/scripting/modules/minecraft/ScriptWaypoint.h
+--- a/src/mc/scripting/modules/minecraft/ScriptWaypoint.h
++++ b/src/mc/scripting/modules/minecraft/ScriptWaypoint.h
+@@ -56,7 +56,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ScriptWaypoint() = default;
++    virtual ~ScriptWaypoint();
+ 
+     virtual ::std::unique_ptr<::ServerWaypoint> createWaypoint() const = 0;
+ 
+
+diff --git a/src/mc/scripting/modules/minecraft/events/ScriptWorldAfterEvents.h b/src/mc/scripting/modules/minecraft/events/ScriptWorldAfterEvents.h
+--- a/src/mc/scripting/modules/minecraft/events/ScriptWorldAfterEvents.h
++++ b/src/mc/scripting/modules/minecraft/events/ScriptWorldAfterEvents.h
+@@ -166,7 +166,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ScriptWorldAfterEvents() /*override*/ = default;
++    virtual ~ScriptWorldAfterEvents() /*override*/;
+ 
+     virtual ::Level& getLevel() const /*override*/;
+ 
+
+diff --git a/src/mc/server/ServerInstance.h b/src/mc/server/ServerInstance.h
+--- a/src/mc/server/ServerInstance.h
++++ b/src/mc/server/ServerInstance.h
+@@ -252,7 +252,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ServerInstance() /*override*/ = default;
++    virtual ~ServerInstance() /*override*/;
+ 
+     virtual void onLowMemory(::LowMemorySeverity) /*override*/;
+ 
+
+diff --git a/src/mc/server/ServerLevel.h b/src/mc/server/ServerLevel.h
+--- a/src/mc/server/ServerLevel.h
++++ b/src/mc/server/ServerLevel.h
+@@ -94,7 +94,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ServerLevel() /*override*/ = default;
++    virtual ~ServerLevel() /*override*/;
+ 
+     virtual bool initialize(
+         ::std::string const&   levelName,
+
+diff --git a/src/mc/server/ServerPlayerSleepManager.h b/src/mc/server/ServerPlayerSleepManager.h
+--- a/src/mc/server/ServerPlayerSleepManager.h
++++ b/src/mc/server/ServerPlayerSleepManager.h
+@@ -46,7 +46,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ServerPlayerSleepManager() /*override*/ = default;
++    virtual ~ServerPlayerSleepManager() /*override*/;
+ 
+     virtual void updateSleepingPlayerList() /*override*/;
+ 
+
+diff --git a/src/mc/server/commands/CommandOriginLoader.h b/src/mc/server/commands/CommandOriginLoader.h
+--- a/src/mc/server/commands/CommandOriginLoader.h
++++ b/src/mc/server/commands/CommandOriginLoader.h
+@@ -28,7 +28,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~CommandOriginLoader() /*override*/ = default;
++    virtual ~CommandOriginLoader() /*override*/;
+ 
+     virtual ::std::unique_ptr<::CommandOrigin> load(::CompoundTag const& tag) /*override*/;
+     // NOLINTEND
+
+diff --git a/src/mc/server/commands/DeferredScriptCommand.h b/src/mc/server/commands/DeferredScriptCommand.h
+--- a/src/mc/server/commands/DeferredScriptCommand.h
++++ b/src/mc/server/commands/DeferredScriptCommand.h
+@@ -40,7 +40,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~DeferredScriptCommand() /*override*/ = default;
++    virtual ~DeferredScriptCommand() /*override*/;
+ 
+     virtual void execute(::MinecraftCommands& commands) /*override*/;
+     // NOLINTEND
+
+diff --git a/src/mc/server/commands/MinecraftCommands.h b/src/mc/server/commands/MinecraftCommands.h
+--- a/src/mc/server/commands/MinecraftCommands.h
++++ b/src/mc/server/commands/MinecraftCommands.h
+@@ -53,7 +53,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~MinecraftCommands() = default;
++    virtual ~MinecraftCommands();
+     // NOLINTEND
+ 
+ public:
+
+diff --git a/src/mc/server/commands/functions/FunctionManager.h b/src/mc/server/commands/functions/FunctionManager.h
+--- a/src/mc/server/commands/functions/FunctionManager.h
++++ b/src/mc/server/commands/functions/FunctionManager.h
+@@ -76,7 +76,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~FunctionManager() = default;
++    virtual ~FunctionManager();
+     // NOLINTEND
+ 
+ public:
+
+diff --git a/src/mc/server/module/VanillaGameModuleServer.h b/src/mc/server/module/VanillaGameModuleServer.h
+--- a/src/mc/server/module/VanillaGameModuleServer.h
++++ b/src/mc/server/module/VanillaGameModuleServer.h
+@@ -43,7 +43,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~VanillaGameModuleServer() /*override*/ = default;
++    virtual ~VanillaGameModuleServer() /*override*/;
+ 
+     virtual void init(::ServerInstance& server, ::Bedrock::NotNullNonOwnerPtr<::Level> const& level) /*override*/;
+ 
+
+diff --git a/src/mc/websockets/automation/AutomationSession.h b/src/mc/websockets/automation/AutomationSession.h
+--- a/src/mc/websockets/automation/AutomationSession.h
++++ b/src/mc/websockets/automation/AutomationSession.h
+@@ -55,7 +55,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~AutomationSession() /*override*/ = default;
++    virtual ~AutomationSession() /*override*/;
+ 
+     virtual void onMessageRecieved(::std::string const& message) /*override*/;
+ 
+
+diff --git a/src/mc/world/Minecraft.h b/src/mc/world/Minecraft.h
+--- a/src/mc/world/Minecraft.h
++++ b/src/mc/world/Minecraft.h
+@@ -133,7 +133,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~Minecraft() /*override*/ = default;
++    virtual ~Minecraft() /*override*/;
+ 
+     virtual void setSimTimePause(bool pause);
+ 
+
+diff --git a/src/mc/world/SimpleSparseContainer.h b/src/mc/world/SimpleSparseContainer.h
+--- a/src/mc/world/SimpleSparseContainer.h
++++ b/src/mc/world/SimpleSparseContainer.h
+@@ -39,7 +39,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~SimpleSparseContainer() /*override*/ = default;
++    virtual ~SimpleSparseContainer() /*override*/;
+ 
+     virtual ::ItemStack const& getItem(int slot) const /*override*/;
+ 
+
+diff --git a/src/mc/world/actor/ActorDefinitionGroup.h b/src/mc/world/actor/ActorDefinitionGroup.h
+--- a/src/mc/world/actor/ActorDefinitionGroup.h
++++ b/src/mc/world/actor/ActorDefinitionGroup.h
+@@ -83,7 +83,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ActorDefinitionGroup() /*override*/ = default;
++    virtual ~ActorDefinitionGroup() /*override*/;
+     // NOLINTEND
+ 
+ public:
+
+diff --git a/src/mc/world/actor/ActorFactory.h b/src/mc/world/actor/ActorFactory.h
+--- a/src/mc/world/actor/ActorFactory.h
++++ b/src/mc/world/actor/ActorFactory.h
+@@ -52,7 +52,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ActorFactory() = default;
++    virtual ~ActorFactory();
+     // NOLINTEND
+ 
+ public:
+
+diff --git a/src/mc/world/actor/ai/goal/SnackGoal.h b/src/mc/world/actor/ai/goal/SnackGoal.h
+--- a/src/mc/world/actor/ai/goal/SnackGoal.h
++++ b/src/mc/world/actor/ai/goal/SnackGoal.h
+@@ -38,7 +38,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~SnackGoal() /*override*/ = default;
++    virtual ~SnackGoal() /*override*/;
+ 
+     virtual bool canUse() /*override*/;
+ 
+
+diff --git a/src/mc/world/actor/ai/navigation/PathNavigation.h b/src/mc/world/actor/ai/navigation/PathNavigation.h
+--- a/src/mc/world/actor/ai/navigation/PathNavigation.h
++++ b/src/mc/world/actor/ai/navigation/PathNavigation.h
+@@ -18,7 +18,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~PathNavigation() = default;
++    virtual ~PathNavigation();
+ 
+     virtual void initializeInternal(::Mob& mob, ::NavigationDescription const* description);
+ 
+
+diff --git a/src/mc/world/actor/ai/village/VillageManager.h b/src/mc/world/actor/ai/village/VillageManager.h
+--- a/src/mc/world/actor/ai/village/VillageManager.h
++++ b/src/mc/world/actor/ai/village/VillageManager.h
+@@ -94,7 +94,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~VillageManager() /*override*/ = default;
++    virtual ~VillageManager() /*override*/;
+ 
+     virtual ::std::weak_ptr<::Village>
+     fetchClosestVillage(::BlockPos const& position, int maxDistFromVillageBounds, uint searchRadius) const /*override*/;
+
+diff --git a/src/mc/world/actor/monster/EnderDragon.h b/src/mc/world/actor/monster/EnderDragon.h
+--- a/src/mc/world/actor/monster/EnderDragon.h
++++ b/src/mc/world/actor/monster/EnderDragon.h
+@@ -66,7 +66,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~EnderDragon() /*override*/ = default;
++    virtual ~EnderDragon() /*override*/;
+ 
+     virtual void reloadHardcoded(::ActorInitializationMethod method, ::VariantParameterList const& params) /*override*/;
+ 
+
+diff --git a/src/mc/world/actor/player/PlayerInventory.h b/src/mc/world/actor/player/PlayerInventory.h
+--- a/src/mc/world/actor/player/PlayerInventory.h
++++ b/src/mc/world/actor/player/PlayerInventory.h
+@@ -29,7 +29,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~PlayerInventory() /*override*/ = default;
++    virtual ~PlayerInventory() /*override*/;
+ 
+     virtual void containerSizeChanged(int size) /*override*/;
+ 
+
+diff --git a/src/mc/world/containers/ContainerRegistry.h b/src/mc/world/containers/ContainerRegistry.h
+--- a/src/mc/world/containers/ContainerRegistry.h
++++ b/src/mc/world/containers/ContainerRegistry.h
+@@ -43,7 +43,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ContainerRegistry() /*override*/ = default;
++    virtual ~ContainerRegistry() /*override*/;
+ 
+     virtual ::std::unique_ptr<::ListTag>
+     serializeContainerContent(::FullContainerName const& name, ::SaveContext const& saveContext) /*override*/;
+
+diff --git a/src/mc/world/containers/managers/controllers/CraftingContainerManagerController.h b/src/mc/world/containers/managers/controllers/CraftingContainerManagerController.h
+--- a/src/mc/world/containers/managers/controllers/CraftingContainerManagerController.h
++++ b/src/mc/world/containers/managers/controllers/CraftingContainerManagerController.h
+@@ -139,7 +139,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~CraftingContainerManagerController() /*override*/ = default;
++    virtual ~CraftingContainerManagerController() /*override*/;
+ 
+     virtual bool isOutputSlot(::std::string const& collectionName) const /*override*/;
+ 
+
+diff --git a/src/mc/world/inventory/network/ItemStackNetManagerClient.h b/src/mc/world/inventory/network/ItemStackNetManagerClient.h
+--- a/src/mc/world/inventory/network/ItemStackNetManagerClient.h
++++ b/src/mc/world/inventory/network/ItemStackNetManagerClient.h
+@@ -66,7 +66,7 @@
+     public:
+         // virtual functions
+         // NOLINTBEGIN
+-        virtual ~PredictiveContainer() = default;
++        virtual ~PredictiveContainer();
+         // NOLINTEND
+ 
+     public:
+
+diff --git a/src/mc/world/inventory/network/ItemStackNetManagerServer.h b/src/mc/world/inventory/network/ItemStackNetManagerServer.h
+--- a/src/mc/world/inventory/network/ItemStackNetManagerServer.h
++++ b/src/mc/world/inventory/network/ItemStackNetManagerServer.h
+@@ -62,7 +62,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ItemStackNetManagerServer() /*override*/ = default;
++    virtual ~ItemStackNetManagerServer() /*override*/;
+ 
+     virtual ::ItemStackRequestId getRequestId() const /*override*/;
+ 
+
+diff --git a/src/mc/world/inventory/network/SparseContainer.h b/src/mc/world/inventory/network/SparseContainer.h
+--- a/src/mc/world/inventory/network/SparseContainer.h
++++ b/src/mc/world/inventory/network/SparseContainer.h
+@@ -70,7 +70,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~SparseContainer() /*override*/ = default;
++    virtual ~SparseContainer() /*override*/;
+ 
+     virtual ::ItemStack const& getItem(int slot) const /*override*/;
+ 
+
+diff --git a/src/mc/world/inventory/network/crafting/ItemStackRequestActionCraftHandler.h b/src/mc/world/inventory/network/crafting/ItemStackRequestActionCraftHandler.h
+--- a/src/mc/world/inventory/network/crafting/ItemStackRequestActionCraftHandler.h
++++ b/src/mc/world/inventory/network/crafting/ItemStackRequestActionCraftHandler.h
+@@ -41,7 +41,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ItemStackRequestActionCraftHandler() = default;
++    virtual ~ItemStackRequestActionCraftHandler();
+     // NOLINTEND
+ 
+ public:
+
+diff --git a/src/mc/world/inventory/simulation/ContainerScreenValidation.h b/src/mc/world/inventory/simulation/ContainerScreenValidation.h
+--- a/src/mc/world/inventory/simulation/ContainerScreenValidation.h
++++ b/src/mc/world/inventory/simulation/ContainerScreenValidation.h
+@@ -51,7 +51,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ContainerScreenValidation() = default;
++    virtual ~ContainerScreenValidation();
+ 
+     virtual ::ContainerValidationResult
+     tryCraft(::std::unique_ptr<::ContainerValidationCraftInputs> craftInputs, uchar const numCrafts);
+
+diff --git a/src/mc/world/item/ComplexItem.h b/src/mc/world/item/ComplexItem.h
+--- a/src/mc/world/item/ComplexItem.h
++++ b/src/mc/world/item/ComplexItem.h
+@@ -17,7 +17,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ComplexItem() /*override*/ = default;
++    virtual ~ComplexItem() /*override*/;
+ 
+     virtual bool isComplex() const /*override*/;
+ 
+
+diff --git a/src/mc/world/level/ActorManager.h b/src/mc/world/level/ActorManager.h
+--- a/src/mc/world/level/ActorManager.h
++++ b/src/mc/world/level/ActorManager.h
+@@ -61,7 +61,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ActorManager() = default;
++    virtual ~ActorManager();
+ 
+     virtual ::Bedrock::PubSub::Connector<void(::Actor&)>& getRegisterEntityAddedConnector() /*override*/;
+ 
+
+diff --git a/src/mc/world/level/BedrockSpawner.h b/src/mc/world/level/BedrockSpawner.h
+--- a/src/mc/world/level/BedrockSpawner.h
++++ b/src/mc/world/level/BedrockSpawner.h
+@@ -60,7 +60,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~BedrockSpawner() /*override*/ = default;
++    virtual ~BedrockSpawner() /*override*/;
+ 
+     virtual void initializeServerSide(::ResourcePackManager& rpm, ::IWorldRegistriesProvider& registries) /*override*/;
+ 
+
+diff --git a/src/mc/world/level/DimensionManager.h b/src/mc/world/level/DimensionManager.h
+--- a/src/mc/world/level/DimensionManager.h
++++ b/src/mc/world/level/DimensionManager.h
+@@ -56,7 +56,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~DimensionManager() = default;
++    virtual ~DimensionManager();
+ 
+     virtual ::Bedrock::PubSub::Connector<void(::DimensionManager&)>&
+     getOnReadyForCustomDimensionRegistrationConnector() /*override*/;
+
+diff --git a/src/mc/world/level/FileArchiver.h b/src/mc/world/level/FileArchiver.h
+--- a/src/mc/world/level/FileArchiver.h
++++ b/src/mc/world/level/FileArchiver.h
+@@ -161,7 +161,7 @@
+     public:
+         // virtual functions
+         // NOLINTBEGIN
+-        virtual ~ProgressReporter() /*override*/ = default;
++        virtual ~ProgressReporter() /*override*/;
+ 
+         virtual void clear() /*override*/;
+         // NOLINTEND
+@@ -399,7 +399,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~FileArchiver() /*override*/ = default;
++    virtual ~FileArchiver() /*override*/;
+ 
+     virtual ::std::shared_ptr<::FilePickerSettings>
+     generateFilePickerSettings(::std::vector<::FileArchiver::ExportType> const& types, ::std::string const&) const;
+
+diff --git a/src/mc/world/level/GameplayUserManager.h b/src/mc/world/level/GameplayUserManager.h
+--- a/src/mc/world/level/GameplayUserManager.h
++++ b/src/mc/world/level/GameplayUserManager.h
+@@ -66,7 +66,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~GameplayUserManager() = default;
++    virtual ~GameplayUserManager();
+ 
+     virtual ::Bedrock::PubSub::Connector<void(::EntityContext&)>& getGameplayUserAddedConnector() /*override*/;
+ 
+
+diff --git a/src/mc/world/level/PhotoManager.h b/src/mc/world/level/PhotoManager.h
+--- a/src/mc/world/level/PhotoManager.h
++++ b/src/mc/world/level/PhotoManager.h
+@@ -51,7 +51,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~PhotoManager() = default;
++    virtual ~PhotoManager();
+ 
+     virtual ::Bedrock::PubSub::Connector<void(
+         ::cg::ImageBuffer&,
+
+diff --git a/src/mc/world/level/PlayerDimensionTransferer.h b/src/mc/world/level/PlayerDimensionTransferer.h
+--- a/src/mc/world/level/PlayerDimensionTransferer.h
++++ b/src/mc/world/level/PlayerDimensionTransferer.h
+@@ -71,7 +71,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~PlayerDimensionTransferer() /*override*/ = default;
++    virtual ~PlayerDimensionTransferer() /*override*/;
+ 
+     virtual void playerSaveLimboActors(
+         ::Player&                  player,
+
+diff --git a/src/mc/world/level/biome/registry/BiomeRegistry.h b/src/mc/world/level/biome/registry/BiomeRegistry.h
+--- a/src/mc/world/level/biome/registry/BiomeRegistry.h
++++ b/src/mc/world/level/biome/registry/BiomeRegistry.h
+@@ -93,7 +93,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~BiomeRegistry() /*override*/ = default;
++    virtual ~BiomeRegistry() /*override*/;
+     // NOLINTEND
+ 
+ public:
+
+diff --git a/src/mc/world/level/block/Block.h b/src/mc/world/level/block/Block.h
+--- a/src/mc/world/level/block/Block.h
++++ b/src/mc/world/level/block/Block.h
+@@ -125,7 +125,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~Block() = default;
++    virtual ~Block();
+     // NOLINTEND
+ 
+ public:
+
+diff --git a/src/mc/world/level/block/BlockVolumeBase.h b/src/mc/world/level/block/BlockVolumeBase.h
+--- a/src/mc/world/level/block/BlockVolumeBase.h
++++ b/src/mc/world/level/block/BlockVolumeBase.h
+@@ -17,7 +17,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~BlockVolumeBase() = default;
++    virtual ~BlockVolumeBase();
+ 
+     virtual ::BoundingBox getBoundingBox() const = 0;
+ 
+
+diff --git a/src/mc/world/level/block/actor/BeaconBlockActor.h b/src/mc/world/level/block/actor/BeaconBlockActor.h
+--- a/src/mc/world/level/block/actor/BeaconBlockActor.h
++++ b/src/mc/world/level/block/actor/BeaconBlockActor.h
+@@ -54,7 +54,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~BeaconBlockActor() /*override*/ = default;
++    virtual ~BeaconBlockActor() /*override*/;
+ 
+     virtual void tick(::BlockSource& region) /*override*/;
+ 
+
+diff --git a/src/mc/world/level/block/actor/BrushableBlockActor.h b/src/mc/world/level/block/actor/BrushableBlockActor.h
+--- a/src/mc/world/level/block/actor/BrushableBlockActor.h
++++ b/src/mc/world/level/block/actor/BrushableBlockActor.h
+@@ -59,7 +59,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~BrushableBlockActor() /*override*/ = default;
++    virtual ~BrushableBlockActor() /*override*/;
+ 
+     virtual void serverInitItemStackIds(
+         int                                            containerSlot,
+
+diff --git a/src/mc/world/level/block/actor/CauldronBlockActor.h b/src/mc/world/level/block/actor/CauldronBlockActor.h
+--- a/src/mc/world/level/block/actor/CauldronBlockActor.h
++++ b/src/mc/world/level/block/actor/CauldronBlockActor.h
+@@ -39,7 +39,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~CauldronBlockActor() /*override*/ = default;
++    virtual ~CauldronBlockActor() /*override*/;
+ 
+     virtual ::ItemStack const& getItem(int slot) const /*override*/;
+ 
+
+diff --git a/src/mc/world/level/block/actor/ChalkboardBlockActor.h b/src/mc/world/level/block/actor/ChalkboardBlockActor.h
+--- a/src/mc/world/level/block/actor/ChalkboardBlockActor.h
++++ b/src/mc/world/level/block/actor/ChalkboardBlockActor.h
+@@ -108,7 +108,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ChalkboardBlockActor() /*override*/ = default;
++    virtual ~ChalkboardBlockActor() /*override*/;
+ 
+     virtual bool save(::CompoundTag& tag, ::SaveContext const& saveContext) const /*override*/;
+ 
+
+diff --git a/src/mc/world/level/block/actor/ChemistryTableBlockActor.h b/src/mc/world/level/block/actor/ChemistryTableBlockActor.h
+--- a/src/mc/world/level/block/actor/ChemistryTableBlockActor.h
++++ b/src/mc/world/level/block/actor/ChemistryTableBlockActor.h
+@@ -44,7 +44,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ChemistryTableBlockActor() /*override*/ = default;
++    virtual ~ChemistryTableBlockActor() /*override*/;
+ 
+     virtual ::Container* getContainer() /*override*/;
+ 
+
+diff --git a/src/mc/world/level/block/actor/LabTableReaction.h b/src/mc/world/level/block/actor/LabTableReaction.h
+--- a/src/mc/world/level/block/actor/LabTableReaction.h
++++ b/src/mc/world/level/block/actor/LabTableReaction.h
+@@ -31,7 +31,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~LabTableReaction() = default;
++    virtual ~LabTableReaction();
+     // NOLINTEND
+ 
+ public:
+
+diff --git a/src/mc/world/level/block/states/BlockState.h b/src/mc/world/level/block/states/BlockState.h
+--- a/src/mc/world/level/block/states/BlockState.h
++++ b/src/mc/world/level/block/states/BlockState.h
+@@ -59,7 +59,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~BlockState() = default;
++    virtual ~BlockState();
+ 
+     virtual ::std::unique_ptr<::Tag> _toNBT(int val) const = 0;
+ 
+
+diff --git a/src/mc/world/level/block/traits/block_trait/Connection.h b/src/mc/world/level/block/traits/block_trait/Connection.h
+--- a/src/mc/world/level/block/traits/block_trait/Connection.h
++++ b/src/mc/world/level/block/traits/block_trait/Connection.h
+@@ -56,7 +56,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~Connection() /*override*/ = default;
++    virtual ~Connection() /*override*/;
+ 
+     virtual void applyToBlockType(::BlockType& blockType) const /*override*/;
+ 
+
+diff --git a/src/mc/world/level/block/traits/block_trait/ITrait.h b/src/mc/world/level/block/traits/block_trait/ITrait.h
+--- a/src/mc/world/level/block/traits/block_trait/ITrait.h
++++ b/src/mc/world/level/block/traits/block_trait/ITrait.h
+@@ -15,7 +15,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ITrait() = default;
++    virtual ~ITrait();
+ 
+     virtual void applyToBlockType(::BlockType& blockType) const = 0;
+ 
+
+diff --git a/src/mc/world/level/levelgen/VoidGenerator.h b/src/mc/world/level/levelgen/VoidGenerator.h
+--- a/src/mc/world/level/levelgen/VoidGenerator.h
++++ b/src/mc/world/level/levelgen/VoidGenerator.h
+@@ -44,7 +44,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~VoidGenerator() /*override*/ = default;
++    virtual ~VoidGenerator() /*override*/;
+ 
+     virtual ::BiomeSource const& getBiomeSource() const /*override*/;
+ 
+
+diff --git a/src/mc/world/level/levelgen/feature/registry/FeatureTypeFactory.h b/src/mc/world/level/levelgen/feature/registry/FeatureTypeFactory.h
+--- a/src/mc/world/level/levelgen/feature/registry/FeatureTypeFactory.h
++++ b/src/mc/world/level/levelgen/feature/registry/FeatureTypeFactory.h
+@@ -32,7 +32,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~FeatureTypeFactory() = default;
++    virtual ~FeatureTypeFactory();
+     // NOLINTEND
+ 
+ public:
+
+diff --git a/src/mc/world/level/levelgen/structure/StructureManager.h b/src/mc/world/level/levelgen/structure/StructureManager.h
+--- a/src/mc/world/level/levelgen/structure/StructureManager.h
++++ b/src/mc/world/level/levelgen/structure/StructureManager.h
+@@ -62,7 +62,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~StructureManager() /*override*/ = default;
++    virtual ~StructureManager() /*override*/;
+ 
+     virtual ::LegacyStructureTemplate& getOrCreateLegacy(::std::string const& structureName) /*override*/;
+ 
+
+diff --git a/src/mc/world/level/levelgen/v1/NetherGenerator.h b/src/mc/world/level/levelgen/v1/NetherGenerator.h
+--- a/src/mc/world/level/levelgen/v1/NetherGenerator.h
++++ b/src/mc/world/level/levelgen/v1/NetherGenerator.h
+@@ -73,7 +73,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~NetherGenerator() /*override*/ = default;
++    virtual ~NetherGenerator() /*override*/;
+ 
+     virtual void loadChunk(::LevelChunk& levelChunk, bool forceImmediateReplacementDataLoad) /*override*/;
+ 
+
+diff --git a/src/mc/world/level/levelgen/v1/OverworldGenerator.h b/src/mc/world/level/levelgen/v1/OverworldGenerator.h
+--- a/src/mc/world/level/levelgen/v1/OverworldGenerator.h
++++ b/src/mc/world/level/levelgen/v1/OverworldGenerator.h
+@@ -73,7 +73,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~OverworldGenerator() /*override*/ = default;
++    virtual ~OverworldGenerator() /*override*/;
+ 
+     virtual void loadChunk(::LevelChunk& lc, bool forceImmediateReplacementDataLoad) /*override*/;
+ 
+
+diff --git a/src/mc/world/level/levelgen/v1/OverworldGeneratorMultinoise.h b/src/mc/world/level/levelgen/v1/OverworldGeneratorMultinoise.h
+--- a/src/mc/world/level/levelgen/v1/OverworldGeneratorMultinoise.h
++++ b/src/mc/world/level/levelgen/v1/OverworldGeneratorMultinoise.h
+@@ -104,7 +104,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~OverworldGeneratorMultinoise() /*override*/ = default;
++    virtual ~OverworldGeneratorMultinoise() /*override*/;
+ 
+     virtual ::BiomeSource const& getBiomeSource() const /*override*/;
+ 
+
+diff --git a/src/mc/world/level/levelgen/v1/TheEndGenerator.h b/src/mc/world/level/levelgen/v1/TheEndGenerator.h
+--- a/src/mc/world/level/levelgen/v1/TheEndGenerator.h
++++ b/src/mc/world/level/levelgen/v1/TheEndGenerator.h
+@@ -74,7 +74,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~TheEndGenerator() /*override*/ = default;
++    virtual ~TheEndGenerator() /*override*/;
+ 
+     virtual void loadChunk(::LevelChunk& levelChunk, bool forceImmediateReplacementDataLoad) /*override*/;
+ 
+
+diff --git a/src/mc/world/level/storage/DBChunkStorage.h b/src/mc/world/level/storage/DBChunkStorage.h
+--- a/src/mc/world/level/storage/DBChunkStorage.h
++++ b/src/mc/world/level/storage/DBChunkStorage.h
+@@ -91,7 +91,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~DBChunkStorage() /*override*/ = default;
++    virtual ~DBChunkStorage() /*override*/;
+ 
+     virtual void shutdown() /*override*/;
+ 
+
+diff --git a/src/mc/world/level/storage/DBStorage.h b/src/mc/world/level/storage/DBStorage.h
+--- a/src/mc/world/level/storage/DBStorage.h
++++ b/src/mc/world/level/storage/DBStorage.h
+@@ -146,7 +146,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~DBStorage() /*override*/ = default;
++    virtual ~DBStorage() /*override*/;
+ 
+     virtual void addStorageObserver(::std::unique_ptr<::LevelStorageObserver> observer) /*override*/;
+ 
+
+diff --git a/src/mc/world/level/storage/LegacyChunkStorage.h b/src/mc/world/level/storage/LegacyChunkStorage.h
+--- a/src/mc/world/level/storage/LegacyChunkStorage.h
++++ b/src/mc/world/level/storage/LegacyChunkStorage.h
+@@ -45,7 +45,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~LegacyChunkStorage() /*override*/ = default;
++    virtual ~LegacyChunkStorage() /*override*/;
+ 
+     virtual void loadChunk(::LevelChunk& lc, bool forceImmediateReplacementDataLoad) /*override*/;
+ 
+
+diff --git a/src/mc/world/level/storage/LevelListCache.h b/src/mc/world/level/storage/LevelListCache.h
+--- a/src/mc/world/level/storage/LevelListCache.h
++++ b/src/mc/world/level/storage/LevelListCache.h
+@@ -61,7 +61,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~LevelListCache() /*override*/ = default;
++    virtual ~LevelListCache() /*override*/;
+ 
+     virtual void addLevel(::std::string const& levelId, ::LevelData&& levelData) /*override*/;
+ 
+
+diff --git a/src/mc/world/level/storage/LevelStorage.h b/src/mc/world/level/storage/LevelStorage.h
+--- a/src/mc/world/level/storage/LevelStorage.h
++++ b/src/mc/world/level/storage/LevelStorage.h
+@@ -36,7 +36,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~LevelStorage() = default;
++    virtual ~LevelStorage();
+ 
+     virtual void addStorageObserver(::std::unique_ptr<::LevelStorageObserver> observer) = 0;
+ 
+
+diff --git a/src/mc/world/level/storage/LevelStorageManager.h b/src/mc/world/level/storage/LevelStorageManager.h
+--- a/src/mc/world/level/storage/LevelStorageManager.h
++++ b/src/mc/world/level/storage/LevelStorageManager.h
+@@ -74,7 +74,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~LevelStorageManager() /*override*/ = default;
++    virtual ~LevelStorageManager() /*override*/;
+ 
+     virtual ::Bedrock::PubSub::Connector<void(::LevelStorage&)>& getOnSaveConnector() /*override*/;
+ 
+
+diff --git a/src/mc/world/level/ticking/TickingAreaView.h b/src/mc/world/level/ticking/TickingAreaView.h
+--- a/src/mc/world/level/ticking/TickingAreaView.h
++++ b/src/mc/world/level/ticking/TickingAreaView.h
+@@ -40,7 +40,7 @@
+ #ifdef LL_PLAT_S
+     virtual ~TickingAreaView() /*override*/;
+ #else // LL_PLAT_C
+-    virtual ~TickingAreaView() /*override*/ = default;
++    virtual ~TickingAreaView() /*override*/;
+ #endif
+ 
+     virtual void init(::Bounds const& bounds, bool isCircle) /*override*/;
+
+diff --git a/src/mc/world/scores/Scoreboard.h b/src/mc/world/scores/Scoreboard.h
+--- a/src/mc/world/scores/Scoreboard.h
++++ b/src/mc/world/scores/Scoreboard.h
+@@ -78,7 +78,7 @@
+ #ifdef LL_PLAT_S
+     virtual ~Scoreboard();
+ #else // LL_PLAT_C
+-    virtual ~Scoreboard() = default;
++    virtual ~Scoreboard();
+ #endif
+ 
+     virtual ::DisplayObjective const* setDisplayObjective(
+
+diff --git a/src/mc/world/scores/ServerScoreboard.h b/src/mc/world/scores/ServerScoreboard.h
+--- a/src/mc/world/scores/ServerScoreboard.h
++++ b/src/mc/world/scores/ServerScoreboard.h
+@@ -64,7 +64,7 @@
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~ServerScoreboard() /*override*/ = default;
++    virtual ~ServerScoreboard() /*override*/;
+ 
+     virtual void onObjectiveAdded(::Objective const& objective) /*override*/;
+ 

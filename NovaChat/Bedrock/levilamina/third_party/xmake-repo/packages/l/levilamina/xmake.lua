@@ -2,37 +2,39 @@
 --
 -- WHY THIS EXISTS
 -- ---------------
--- LeviLamina 26.51.x declares `virtual ~MinecraftCommands() = default;` in
--- src/mc/server/commands/MinecraftCommands.h. That class holds std::unique_ptr
--- members pointing at CommandRegistry, CommandOutputSender, Command and
--- DeferredCommandBase -- all of which are only forward-declared in that header.
--- An in-class defaulted destructor makes the compiler instantiate
--- std::default_delete<T> for each of them right there, and MSVC's <memory>
--- static_asserts `0 < sizeof(_Ty)`. With an incomplete type that is a hard
--- error, so the SDK cannot build at all:
+-- 26.51.7 does not compile under the MSVC 14.44 STL that windows-2022 ships.
+-- Between v26.20.7 and v26.51.0 upstream rewrote a batch of destructors from
+-- out-of-line declarations into in-class `= default` definitions:
+--
+--   v26.20.7:  virtual ~MinecraftCommands();
+--   v26.51.0+: virtual ~MinecraftCommands() = default;
+--
+-- That only breaks where the class owns a std::unique_ptr to a type the same
+-- header merely forward-declares: defaulting the destructor in the class body
+-- makes the compiler instantiate std::default_delete<T> right there, and MSVC's
+-- <memory> static_asserts `0 < sizeof(_Ty)`:
 --
 --   memory(3308,27): error: invalid application of 'sizeof' to an incomplete type 'CommandRegistry'
---   MinecraftCommands.h(56,13): note: in instantiation of member function 'std::unique_ptr<CommandRegistry>::~unique_ptr'
---   ExecuteCommandEvent.cpp(37,5): note: in defaulted destructor for 'MinecraftCommands' first required here
---   ... same for CommandOutputSender, DeferredCommandBase, Command
+--   MinecraftCommands.h(56,13): note: in defaulted destructor for 'MinecraftCommands' first required here
+--   ExecuteCommandEvent.cpp(37,5): note: ... first required here
 --
--- Upstream did not always write it that way. v26.20.7 has exactly
---   virtual ~MinecraftCommands();
--- (an out-of-line declaration) and that is what the compiler accepts, because
--- the destructor is then not required to be complete at each point of use. The
--- change to `= default` landed in v26.51.0 and is still present in v26.51.8 and
--- on main, so waiting for a fix is not an option.
+-- The same shape recurs across the SDK. 26.20.7 compiles and 26.51.7 does not,
+-- and the set is exactly measurable: of the 601 destructors that became
+-- `= default` between those tags, 83 sit on a class that holds a unique_ptr to
+-- a forward-declared type in its own header: 83 lines across 80 files.
 --
--- The patch restores the v26.20.7 declaration; nothing else in the header
--- changes and the four member types stay forward-declared. The destructor is
--- never odr-used by the SDK -- the generated ExecutingCommandEventHook derives
--- from MinecraftCommands but never destroys one, and LeviLamina 26.20.7's
--- shipped DLL imports only compileCommand/executeCommand for this class with no
--- destructor import at all -- so an unevaluated declaration both compiles and
--- links.
+-- The patch restores those 83 declarations to their v26.20.7 text verbatim --
+-- no other change, and every member type stays forward-declared. An unevaluated
+-- declaration is enough to compile and link because nothing odr-uses these
+-- destructors: the generated hooks derive from the SDK types but never destroy
+-- one, and 26.20.7's shipped DLL imports only compileCommand/executeCommand for
+-- MinecraftCommands, carrying no destructor import at all. The remaining 1518
+-- `= default` destructors are untouched -- they either own complete types or are
+-- never instantiated, which is why only these 83 show up in the build.
 --
--- This is a workaround for a defect in a third-party package, not a permanent
--- fork: drop it once upstream ships a buildable 26.51.x.
+-- Upstream never fixed this: v26.51.8 and main still declare both examples
+-- above as `= default`. Treat the patch as a workaround for a third-party
+-- defect, not a permanent fork, and drop it once a published 26.51.x builds.
 
 package("levilamina")
     add_urls("https://github.com/LiteLDev/LeviLamina.git")
@@ -42,11 +44,10 @@ package("levilamina")
 
     add_configs("target_type", {default = "server", values = {"server", "client"}})
 
-    -- Applies to every 26.51.x we pin. Verified against 26.51.7 and 26.51.8
-    -- (both declare the destructor inline); 26.20.7 and earlier already use the
-    -- out-of-line form, so the range deliberately starts at 26.51.0.
-    add_patches(">=26.51.0", path.join(os.scriptdir(), "patches", "26.51.7-outofline-dtor.patch"),
-        "ceb8aaffa6f2628118156afa41c645e6b5dd2bb715cf375fa0b8867389750869")
+    -- Range starts at 26.51.0, where the destructor rewrite landed. 26.20.7 and
+    -- earlier already carry the out-of-line form, so patching them would fail.
+    add_patches(">=26.51.0", path.join(os.scriptdir(), "patches", "26.51-mc-dtors.patch"),
+        "a2dc953e5a2769dd6b4e2bef17a1ba3b5761a5ff5b4d639a05915c69c057ee64")
 
     on_load(function(package)
         import("core.base.semver")
