@@ -18,19 +18,20 @@
 --   MinecraftCommands.h(56,13): note: in defaulted destructor for 'MinecraftCommands' first required here
 --   ExecuteCommandEvent.cpp(37,5): note: ... first required here
 --
--- The same shape recurs across the SDK. 26.20.7 compiles and 26.51.7 does not,
--- and the set is exactly measurable: of the 601 destructors that became
--- `= default` between those tags, 83 sit on a class that holds a unique_ptr to
--- a forward-declared type in its own header: 83 lines across 80 files.
+-- The same shape recurs across the SDK, and guessing which ones break is a trap
+-- worth recording: a first attempt selected only classes holding a unique_ptr to
+-- a type forward-declared in the SAME header and found 83. CI then died on
+-- RakPeer, whose ShadowBanList is declared as `namespace RakNet { class
+-- ShadowBanList; }` -- same hazard, different spelling, missed by that filter.
 --
--- The patch restores those 83 declarations to their v26.20.7 text verbatim --
--- no other change, and every member type stays forward-declared. An unevaluated
--- declaration is enough to compile and link because nothing odr-uses these
--- destructors: the generated hooks derive from the SDK types but never destroy
--- one, and 26.20.7's shipped DLL imports only compileCommand/executeCommand for
--- MinecraftCommands, carrying no destructor import at all. The remaining 1518
--- `= default` destructors are untouched -- they either own complete types or are
--- never instantiated, which is why only these 83 show up in the build.
+-- So this patch does not try to predict which destructors matter. It reverts
+-- every destructor in the server-compiled trees (src/ and src-server/, the two
+-- xmake actually builds for target_type=server) that upstream turned from an
+-- out-of-line declaration into `= default`: 377 lines across 332 files, each
+-- restored to its v26.20.7 text verbatim. That is exactly the form upstream
+-- shipped and tested at 26.20.7, so no judgement is involved. src-client/ is
+-- excluded on purpose -- the server build never compiles it and its files do not
+-- match the v26.51.7 tree the patch applies to.
 --
 -- Upstream never fixed this: v26.51.8 and main still declare both examples
 -- above as `= default`. Treat the patch as a workaround for a third-party
@@ -47,7 +48,7 @@ package("levilamina")
     -- Range starts at 26.51.0, where the destructor rewrite landed. 26.20.7 and
     -- earlier already carry the out-of-line form, so patching them would fail.
     add_patches(">=26.51.0", path.join(os.scriptdir(), "patches", "26.51-mc-dtors.patch"),
-        "a2dc953e5a2769dd6b4e2bef17a1ba3b5761a5ff5b4d639a05915c69c057ee64")
+        "7e00438d2a95f78b6b2fdb957e8f7a16d160a36f255ccae2717924fd8491941a")
 
     on_load(function(package)
         import("core.base.semver")
