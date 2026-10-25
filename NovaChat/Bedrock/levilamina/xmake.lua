@@ -167,7 +167,12 @@ target("novachat-levilamina")
     after_build(function (target)
         local targetdir = target:targetdir()
         os.cp("manifest.json", targetdir)
-        os.cp("resources", targetdir .. "/resources")
+        -- resource_packs, not resources: Mod::getResourceDir() is
+        -- <modDir>/resource_packs (LeviLamina Mod.cpp), and the mod reads
+        -- getResourceDir()/default-config.json -- so a "resources" dir is never
+        -- found and load() dies with "Unable to open
+        -- ./plugins/novachat-levilamina/resource_packs/default-config.json".
+        os.cp("resources", targetdir .. "/resource_packs")
         os.cp("src/i18n/lang", targetdir .. "/lang")
     end)
 target_end()

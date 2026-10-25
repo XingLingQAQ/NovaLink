@@ -482,6 +482,19 @@ $pluginDir = Join-Path $pluginsDir "novachat-levilamina"
 New-Item -ItemType Directory -Path $pluginDir -Force | Out-Null
 Copy-Item $dllPath -Destination $pluginDir -Force
 Copy-Item $dllManifest -Destination $pluginDir -Force
+# Default config template + translations. Mod::getResourceDir() is
+# <modDir>/resource_packs and the mod loads getResourceDir()/default-config.json
+# on load(), so without these the mod aborts with "Failed to load configuration"
+# and LeviLamina reports "0 mod(s) loaded".
+$dllDir = Split-Path -Parent $dllPath
+foreach ($resourceDir in 'resource_packs', 'lang') {
+    $resourceSrc = Join-Path $dllDir $resourceDir
+    if (Test-Path $resourceSrc) {
+        Copy-Item $resourceSrc -Destination $pluginDir -Recurse -Force
+    } else {
+        Log "  WARN: $resourceDir not found next to the .dll ($dllDir); the mod may fail to load"
+    }
+}
 Log "  plugin installed: $pluginDir"
 
 # Generate backend credentials early so the plugin config can reference them.

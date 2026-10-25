@@ -327,8 +327,10 @@ function sendChat(message) {
 }
 
 // Bedrock CommandRequest. origin.type='player' for a player-issued command.
-// version='52' matches the command protocol version bedrock-protocol negotiates
-// for 1.26.x; internal:false means it is a user-typed command (not scripting).
+// version must be the literal 'latest'. On 1.26.x a numeric-looking value ('52')
+// is rejected with a TERMINATING packet_violation_warning whose reason blames
+// the command length (boilerplate); BDS enforces it, PMMP/Nukkit/PNX do not.
+// player_entity_id is an unconditional li64 from 1.21.130 on, so it must stay.
 function sendCommand(command) {
   const cmd = command.startsWith('/') ? command : `/${command}`;
   console.log(`\n>>> ${cmd}`);
@@ -342,16 +344,13 @@ function sendCommand(command) {
       player_entity_id: BigInt(0),
     },
     internal: false,
-    version: '52',
+    version: 'latest',
   });
 }
 
 async function runSequence() {
   console.log('=== waiting for spawn ===');
-  // BDS drops an idle NetherNet session at ~15s (measured: spawn -> close
-  // 15.003s later on endstone and levilamina; every RakNet platform survived).
-  // This already runs from the 'spawn' handler, so it only needs a short settle.
-  await sleep(2000);
+  await sleep(15000);
   console.log('=== starting L1 command sequence ===');
 
   // L1 baseline: help / join / toggle / chat round-trip / list.
