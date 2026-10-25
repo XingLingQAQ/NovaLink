@@ -116,6 +116,19 @@ target("novachat-levilamina")
     end
     add_cxflags("/EHa", "/utf-8", "/W4", "/w44265", "/w44289", "/w44296", "/w45263", "/w44738", "/w45204")
     add_defines("NOMINMAX", "UNICODE", "_UNICODE")
+    -- _HAS_CXX23=1 is REQUIRED, not optional, and it must match how the SDK
+    -- itself is built. LeviLamina's own xmake.lua turns on C++23 STL features
+    -- with `add_defines("_HAS_CXX23=1")` while compiling as C++20 (see its
+    -- "work around to enable c++23" block), but that define is added WITHOUT
+    -- {public = true}, so it is not propagated to consumers like this target.
+    -- Without it, <utility> leaves std::to_underlying disabled and the SDK's
+    -- own Reflection.h fails inside OUR translation unit:
+    --   ll/api/reflection/Reflection.h(317): error C2039:
+    --     'to_underlying': is not a member of 'std'
+    -- Measured in CI run 40204683490. Matching the SDK's setting is the whole
+    -- point -- a differing _HAS_CXX23 would also mean differing inline/ABI
+    -- choices in headers we share with the loader.
+    add_defines("_HAS_CXX23=1")
     set_kind("shared")
     set_languages("c++20")
     set_symbols("debug")

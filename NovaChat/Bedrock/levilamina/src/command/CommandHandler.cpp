@@ -137,7 +137,7 @@ void CommandHandler::registerCommands() {
             const bool isAdmin = origin.getPermissionsLevel() >= CommandPermissionLevel::GameDirectors;
             if (auto* player = origin.getEntity(); player && player->isPlayer()) {
                 auto* p = static_cast<Player*>(player);
-                handleHelp(p->getName(), p->getUuid().asString(), {}, isAdmin);
+                handleHelp(p->getRealName(), p->getUuid().asString(), {}, isAdmin);
             }
             output.success();
         });
@@ -150,7 +150,7 @@ void CommandHandler::registerCommands() {
         .execute([this](CommandOrigin const& origin, CommandOutput& output, JoinParams const& params) {
             if (auto* player = origin.getEntity(); player && player->isPlayer()) {
                 auto* p = static_cast<Player*>(player);
-                handleJoin(p->getName(), p->getUuid().asString(),
+                handleJoin(p->getRealName(), p->getUuid().asString(),
                     {params.channelId, params.password});
             }
             output.success();
@@ -162,7 +162,7 @@ void CommandHandler::registerCommands() {
         .execute([this](CommandOrigin const& origin, CommandOutput& output, LeaveParams const&) {
             if (auto* player = origin.getEntity(); player && player->isPlayer()) {
                 auto* p = static_cast<Player*>(player);
-                handleLeave(p->getName(), p->getUuid().asString(), {});
+                handleLeave(p->getRealName(), p->getUuid().asString(), {});
             }
             output.success();
         });
@@ -173,7 +173,7 @@ void CommandHandler::registerCommands() {
         .execute([this](CommandOrigin const& origin, CommandOutput& output, ListParams const&) {
             if (auto* player = origin.getEntity(); player && player->isPlayer()) {
                 auto* p = static_cast<Player*>(player);
-                handleList(p->getName(), p->getUuid().asString(), {});
+                handleList(p->getRealName(), p->getUuid().asString(), {});
             }
             output.success();
         });
@@ -185,7 +185,7 @@ void CommandHandler::registerCommands() {
         .execute([this](CommandOrigin const& origin, CommandOutput& output, WhoParams const& params) {
             if (auto* player = origin.getEntity(); player && player->isPlayer()) {
                 auto* p = static_cast<Player*>(player);
-                handleWho(p->getName(), p->getUuid().asString(),
+                handleWho(p->getRealName(), p->getUuid().asString(),
                           params.channelId.empty() ? std::vector<std::string>{} :
                           std::vector<std::string>{params.channelId});
             }
@@ -198,7 +198,7 @@ void CommandHandler::registerCommands() {
         .execute([this](CommandOrigin const& origin, CommandOutput& output, ToggleParams const&) {
             if (auto* player = origin.getEntity(); player && player->isPlayer()) {
                 auto* p = static_cast<Player*>(player);
-                handleToggle(p->getName(), p->getUuid().asString(), {});
+                handleToggle(p->getRealName(), p->getUuid().asString(), {});
             }
             output.success();
         });
@@ -223,7 +223,7 @@ void CommandHandler::registerCommands() {
             }
             if (auto* player = origin.getEntity(); player && player->isPlayer()) {
                 auto* p = static_cast<Player*>(player);
-                handleReload(p->getName(), p->getUuid().asString(), {});
+                handleReload(p->getRealName(), p->getUuid().asString(), {});
             }
             output.success();
         });
@@ -237,7 +237,7 @@ void CommandHandler::registerCommands() {
         .execute([this](CommandOrigin const& origin, CommandOutput& output, AuthParams const& params) {
             if (auto* player = origin.getEntity(); player && player->isPlayer()) {
                 auto* p = static_cast<Player*>(player);
-                handleAuth(p->getName(), p->getUuid().asString(),
+                handleAuth(p->getRealName(), p->getUuid().asString(),
                            {params.password});
             } else {
                 auto& i18n = i18n::I18n::getInstance();
@@ -260,7 +260,7 @@ void CommandHandler::registerCommands() {
             bool isPlayer = false;
             if (auto* entity = origin.getEntity(); entity && entity->isPlayer()) {
                 auto* p = static_cast<Player*>(entity);
-                playerName = p->getName();
+                playerName = p->getRealName();
                 playerUuid = p->getUuid().asString();
                 isPlayer = true;
             } else {
@@ -394,7 +394,7 @@ void CommandHandler::registerCommands() {
             std::string playerUuid;
             if (auto* entity = origin.getEntity(); entity && entity->isPlayer()) {
                 auto* p = static_cast<Player*>(entity);
-                playerName = p->getName();
+                playerName = p->getRealName();
                 playerUuid = p->getUuid().asString();
             } else {
                 playerName = "Console";
@@ -668,7 +668,7 @@ void CommandHandler::sendMessage(const std::string& playerName, const std::strin
     }
 
     level->forEachPlayer([&](Player& player) {
-        if (player.getName() == playerName) {
+        if (player.getRealName() == playerName) {
             TextPacket packet = TextPacket::createRawMessage(message);
             player.sendNetworkPacket(packet);
             return false;

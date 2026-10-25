@@ -60,7 +60,20 @@ void ChatInterceptor::registerHooks() {
     sChatListener = eventBus.emplaceListener<ll::event::player::PlayerChatEvent>(
         [this](ll::event::player::PlayerChatEvent& event) {
             auto& player = event.self();
-            std::string playerName = player.getName();
+            // getRealName(), not getName(): BDS 1.26.51 (LeviLamina 26.51.7)
+            // REMOVED Player::getName() from Player.h -- 26.20.7 declared it at
+            // Player.h:1057 and 26.51.7 has no such member at all. Keeping it
+            // is a hard compile error in this TU:
+            //   ChatInterceptor.cpp(63): error C2039: 'getName': is not a
+            //     member of 'ServerPlayer'
+            // getRealName() is the drop-in replacement and is what the SDK
+            // documents as "the player's real in-game nickname"; its impl is
+            // byte-identical between 26.20.7 and 26.51.7 (Player.cpp:
+            // `isSimulated() ? *mName : ...XboxLiveName`). It is LLNDAPI, so it
+            // is exported by the SDK we already link against. Every name in the
+            // name->UUID map below must use the same accessor, or the map keys
+            // would no longer match the names in the chat events.
+            std::string playerName = player.getRealName();
             std::string playerUuid = player.getUuid().asString();
             std::string message = event.message();
 
@@ -90,7 +103,10 @@ void ChatInterceptor::registerHooks() {
     sJoinListener = eventBus.emplaceListener<ll::event::player::PlayerJoinEvent>(
         [this](ll::event::player::PlayerJoinEvent& event) {
             auto& player = event.self();
-            std::string playerName = player.getName();
+            // getRealName(): see the accessor note on the chat listener above.
+            // This name is written into the same name->UUID map the chat path
+            // reads, so both sides must use one accessor or lookups miss.
+            std::string playerName = player.getRealName();
             std::string playerUuid = player.getUuid().asString();
 
             // Read the player's client locale straight from the Bedrock login
@@ -584,9 +600,12 @@ void ChatInterceptor::displayMessage(const std::string& playerName, const std::s
         return;
     }
 
-    // Find player by name and send TextPacket
+    // Find player by name and send TextPacket.
+    // getRealName(): Player::getName() does not exist in 26.51.7 -- matching the
+    // accessor used to BUILD playerName is what keeps this comparison meaningful
+    // (see the accessor note on the chat listener near the top of this file).
     level->forEachPlayer([&](Player& player) {
-        if (player.getName() == playerName) {
+        if (player.getRealName() == playerName) {
             TextPacket packet = TextPacket::createRawMessage(formattedMessage);
             player.sendNetworkPacket(packet);
             return false; // Stop iteration
@@ -682,7 +701,8 @@ void ChatInterceptor::sendTitle(const std::string& playerName, const std::string
     }
 
     level->forEachPlayer([&](Player& player) {
-        if (player.getName() == playerName) {
+        // getRealName(): same accessor change as displayMessage above.
+        if (player.getRealName() == playerName) {
             // Send title timing packet
             SetTitlePacket timingPacket;
             timingPacket.mType = SetTitlePacketPayload::TitleType::Times;
