@@ -612,11 +612,13 @@ class NovaChatCommand:
 
         chat_handler = self._plugin.chat_handler
         if chat_handler:
-            enabled = chat_handler.toggle_chat(str(sender.unique_id))
+            # toggle_chat returns the new MODE ("HYBRID"/"REPLACE"), matching
+            # Nukkit and Levilamina, not a boolean.
+            new_mode = chat_handler.toggle_chat(str(sender.unique_id))
             self._i18n_send(
                 sender,
                 "chat.command.toggle.switched",
-                "on" if enabled else "off",
+                "NovaChat" if new_mode == "REPLACE" else "Hybrid",
             )
         else:
             self._send_message(sender, "§c聊天系统未初始化。")

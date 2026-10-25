@@ -152,6 +152,13 @@ class ChatHandler:
         # Player state tracking
         self._player_channels: Dict[str, str] = {}  # player_uuid -> channel_id
         self._chat_enabled: Dict[str, bool] = {}  # player_uuid -> enabled
+        # player_uuid -> "HYBRID" | "REPLACE". /nc toggle flips this, matching
+        # Nukkit (ToggleCommand -> ChannelCommandService.toggle) and Levilamina
+        # (ChatInterceptor::toggleChatMode). It is NOT an on/off switch: an
+        # earlier version toggled _chat_enabled here, so the bot's first /nc
+        # toggle silently disabled forwarding and the chat round-trip assertion
+        # could never pass.
+        self._chat_modes: Dict[str, str] = {}
         self._player_locales: Dict[str, str] = {}  # player_uuid -> locale (zh_CN/en_US)
 
         # Known channel registry (populated by ConfigSync from backend)
@@ -269,8 +276,10 @@ class ChatHandler:
                 self._config_manager.default_channel
             )
             
-            # Cancel vanilla chat if configured to replace it
-            if self._config_manager.replace_vanilla:
+            # REPLACE suppresses vanilla; the config flag ORs in so an operator
+            # can force it server-wide (matches Levilamina's
+            # `mReplaceVanilla || state.chatMode == ChatMode::REPLACE`).
+            if self._config_manager.replace_vanilla or self.get_chat_mode(player_uuid) == "REPLACE":
                 event.cancelled = True
 
             # Schedule the backend send on the network client's background
@@ -865,20 +874,30 @@ class ChatHandler:
             self._config_manager.default_channel
         )
     
-    def toggle_chat(self, player_uuid: str) -> bool:
+    def toggle_chat(self, player_uuid: str) -> str:
         """
-        Toggle NovaChat for a player.
-        
+        Flip a player's chat mode between HYBRID and REPLACE.
+
+        Mirrors Nukkit's ChannelCommandService.toggle and Levilamina's
+        ChatInterceptor::toggleChatMode, so /nc toggle means the same thing on
+        every platform: in HYBRID vanilla chat is preserved, in REPLACE it is
+        suppressed and only the channel copy goes out.
+
         Args:
             player_uuid: The player's UUID
-            
+
         Returns:
-            The new enabled state
+            The new mode name ("HYBRID" or "REPLACE")
         """
-        current = self._chat_enabled.get(player_uuid, True)
-        self._chat_enabled[player_uuid] = not current
-        self._logger.debug(f"Toggled chat for {player_uuid}: {not current}")
-        return not current
+        current = self._chat_modes.get(player_uuid, "HYBRID")
+        new_mode = "REPLACE" if current == "HYBRID" else "HYBRID"
+        self._chat_modes[player_uuid] = new_mode
+        self._logger.debug(f"Toggled chat mode for {player_uuid}: {new_mode}")
+        return new_mode
+
+    def get_chat_mode(self, player_uuid: str) -> str:
+        """A player's chat mode, defaulting to HYBRID."""
+        return self._chat_modes.get(player_uuid, "HYBRID")
     
     def is_chat_enabled(self, player_uuid: str) -> bool:
         """
@@ -1068,6 +1087,7 @@ class ChatHandler:
         # Set default channel
         self._player_channels[player_uuid] = self._config_manager.default_channel
         self._chat_enabled[player_uuid] = True
+        self._chat_modes[player_uuid] = "HYBRID"
 
         # Capture the player's full client locale. Endstone's Player.locale
         # exposes the language code the Bedrock client sent in its login
@@ -1107,6 +1127,7 @@ class ChatHandler:
         # Clean up player state
         self._player_channels.pop(player_uuid, None)
         self._chat_enabled.pop(player_uuid, None)
+        self._chat_modes.pop(player_uuid, None)
         self._player_locales.pop(player_uuid, None)
 
         self._logger.debug(f"Player {player.name} quit, cleaned up state")
