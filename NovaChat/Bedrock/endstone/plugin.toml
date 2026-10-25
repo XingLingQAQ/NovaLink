@@ -36,6 +36,8 @@ authors = ["NovaChat Team"]
 [plugin.commands]
 [plugin.commands.novachat]
 description = "NovaChat main command"
-usage = "/novachat <subcommand> [args]"
+# Each parameter needs an explicit `<name: type>`; a bare `<subcommand>`/[args]
+# placeholder is not a type and makes BDS reject the command outright.
+usage = "/novachat <subcommand: string> [args: message]"
 aliases = ["nc"]
 permission = "novachat.use"

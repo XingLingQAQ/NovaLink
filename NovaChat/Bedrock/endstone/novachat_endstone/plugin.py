@@ -177,7 +177,13 @@ class NovaChatPlugin(Plugin):
     commands = {
         "novachat": {
             "description": "NovaChat main command",
-            "usages": ["/novachat <subcommand> [args]"],
+            # Every parameter needs an explicit `<name: type>`; a bare `<subcommand>`
+            # / `[args]` placeholder is not a type, so BDS's parser rejected the
+            # whole command and every invocation came back as
+            #   Syntax error: Unexpected "help": at "nc >>help<<"
+            # (a multi-word `message` param must also be last). Subcommand
+            # validation stays in NovaChatCommand.on_command.
+            "usages": ["/novachat <subcommand: string> [args: message]"],
             "aliases": ["nc"],
             "permissions": ["novachat.use"],
         },

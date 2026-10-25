@@ -169,6 +169,14 @@ class NovaChatCommand:
 
             subcommand = args[0].lower()
             sub_args = args[1:]
+            # The declared usage ends in `[args: message]`, and endstone's
+            # `message` type swallows the rest of the line as ONE element. The
+            # handlers below index positional tokens (mute wants
+            # [player, duration, channel]), so split it back into tokens.
+            # Plain split(), not shlex: shlex treats a backslash as an escape
+            # and would mangle paths in announce/title content.
+            if len(sub_args) == 1 and " " in sub_args[0]:
+                sub_args = sub_args[0].split() or sub_args
 
             # Map subcommands to handlers
             handlers = {
