@@ -1,0 +1,13 @@
+diff --git a/src/mc/server/commands/MinecraftCommands.h b/src/mc/server/commands/MinecraftCommands.h
+index fd4dbb2d..9e6d0b82 100644
+--- a/src/mc/server/commands/MinecraftCommands.h
++++ b/src/mc/server/commands/MinecraftCommands.h
+@@ -53,7 +53,7 @@ class MinecraftCommands {
+ public:
+     // virtual functions
+     // NOLINTBEGIN
+-    virtual ~MinecraftCommands() = default;
++    virtual ~MinecraftCommands();
+     // NOLINTEND
+ 
+ public:

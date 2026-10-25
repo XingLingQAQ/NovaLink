@@ -64,22 +64,31 @@ if not sdk_disabled then
     -- passed). set_policy("network.skip_fetch", true) would block the package
     -- pull, so we rely on the option guard above to avoid the repo clone
     -- entirely when only the test target is built.
-    add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
-    -- Pin the SDK to the version this plugin was validated against.
+    -- Local override of the levilamina package, registered BEFORE levimc-repo.
     --
-    -- An unpinned add_requires("levilamina") resolves to the newest published
-    -- release on every fresh CI run. That silently floated us from the
-    -- validated 26.20.7 to 26.51.7, which no longer compiles against the MSVC
-    -- 14.44 STL that windows-2022 ships: its <memory> instantiates
-    -- default_delete<CommandRegistry> etc. over forward-declared types
-    -- (MinecraftCommands.h holds a unique_ptr to an incomplete CommandRegistry),
-    -- so the build dies in the SDK's own sources with
-    --   error: invalid application of 'sizeof' to an incomplete type
-    -- before any NovaChat code is compiled. The failure is entirely inside the
-    -- dependency, so there is nothing to fix on our side -- only the version to
-    -- hold still. Bump this deliberately, together with the runner image, after
-    -- confirming the new SDK builds under that image's toolset.
-    add_requires("levilamina 26.20.7", {configs = {target_type = "server"}})
+    -- Order matters and is not a style choice: repositories are consulted in
+    -- registration order and the first one that yields the package wins
+    -- (measured -- with repoA and repoB both defining zlib, the one registered
+    -- first supplies the definition, and swapping the two add_repositories
+    -- calls swaps the winner). So this line must stay above levimc-repo, or the
+    -- unpatched upstream definition is used and the 26.51.x build fails again.
+    --
+    -- The override carries one patch; see
+    -- third_party/xmake-repo/packages/l/levilamina/xmake.lua for why the SDK
+    -- needs it (an in-class defaulted destructor over forward-declared members).
+    add_repositories("novachat-levilamina-fix third_party/xmake-repo")
+    add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
+    -- Pin the SDK to the SAME version the E2E run installs as the runtime
+    -- loader (test/versions.lock.ps1 -> levilamina 26.51.7). A mod built against
+    -- a different SDK than the loader that hosts it fails at the first command:
+    -- LeviLamina resolves Minecraft APIs by symbol at runtime, so a skew shows
+    -- up as "Couldn't find: CommandOutput::success(void)" and a hard crash.
+    -- run-levilamina-e2e.ps1 asserts this pin matches the lock before building.
+    --
+    -- 26.51.7 does not build as published (see the patch note above); the local
+    -- override package is what makes the pinned version compilable. Do not
+    -- return to 26.20.7 -- that reintroduces exactly the skew this resolves.
+    add_requires("levilamina 26.51.7", {configs = {target_type = "server"}})
     -- levibuildscript provides the linkrule + modpacker rules; it is a pure-Lua
     -- rules package (no compile step), so it needs no version pin.
     add_requires("levibuildscript")

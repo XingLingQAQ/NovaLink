@@ -1,0 +1,5 @@
+# xmake verifies each add_patches entry against a hard-coded SHA-256, so these
+# files must keep the exact bytes they were hashed as. Without this, the
+# repository's core.autocrlf=true rewrites them to CRLF on checkout and the
+# digest no longer matches.
+*.patch -text
