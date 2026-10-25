@@ -520,40 +520,80 @@ $bdsPidFile = Join-Path $serverDir "bds.pid"
 # not `python -s -m endstone ...` (-s would be python's own flag, and the -m
 # target must precede the module's argv).
 #
-# --no-interactive is REQUIRED, and it is one of TWO independent stop paths that
-# both had to be closed. endstone's CLI declares
-# `-i, --interactive/--no-interactive` with default True
-# (endstone/cli/__init__.py lines 69-74) and forwards it to the bootstrap, whose
-# _endstone_runtime_env sets ENDSTONE_USE_INTERACTIVE_CONSOLE=1 only when
-# interactive is true (endstone/cli/base.py lines 312-320, and the string is
-# consumed by the native runtime). With it on, BDS's console reads a stdin that
-# Start-Process has already exhausted, and the server stops itself:
+# The launcher must be started with its STDIN PIPE HELD OPEN. That is the real
+# fix for the server stopping itself right after "Server started.":
 #
-#   [01:40:53 INFO]: Server started.
-#   [01:40:53 INFO]: [Novachat] Enabling novachat v1.0.0
-#   [01:40:53 INFO]: Server stop requested.
+#   [04:29:08 INFO]: Server started.
+#   [04:29:08 INFO]: [Novachat] Enabling novachat v1.0.0
+#   [04:29:08 INFO]: Server stop requested.
 #
-# That is run 40151105460, where the plugin was fully working -- the console
-# alone was enough to kill the server. It is also run 40106019993, where the
-# plugin was rejected outright at load time and BDS stopped anyway.
+# endstone's console reader treats stdin EOF as a shutdown request
+# (src/endstone/runtime/bedrock_hooks/console_input_reader.cpp):
 #
-# The OTHER path is a plugin whose on_enable raises: endstone then logs "Error
-# occurred when enabling" and BDS stops too (run 40149942743). That one is fixed
-# in the plugin, and both fixes are needed -- --no-interactive alone did not save
-# run 40146564696, because the plugin there still failed its isinstance check.
+#   auto line = EndstoneConsole::getInstance().readLine("> ");
+#   if (line.has_value()) { ... }
+#   else {
+#       // Ctrl + C, EOF
+#       console_input_.try_enqueue("stop");
+#       break;
+#   }
 #
-# Verified locally that this flag is the only difference it claims to be:
-# comparing Bootstrap._endstone_runtime_env for both settings shows the console
-# key is the ONLY difference and is absent with the flag. Also verified that
-# plain BDS (26.52.3, real tree) survives every stdin shape -- inherited, NUL,
-# closed pipe, held-open pipe -- so it is specifically endstone's console that
-# reacts to the exhausted stdin, not BDS itself.
+# and console.cpp reports EOF in BOTH branches -- replxx's input() returns nullptr
+# when ENDSTONE_USE_INTERACTIVE_CONSOLE is truthy, and std::getline fails
+# cin.good() otherwise. So the replxx console is NOT the cause and
+# --no-interactive does NOT avoid it; EndstoneServer::setLevel() calls
+# startEndstone() unconditionally. This is why run 40161731209 still stopped with
+# --no-interactive in place, and why run 40106019993 stopped even though the
+# plugin was rejected at load time and never ran: the stop never depended on our
+# plugin.
+#
+# Start-Process cannot express "stdin open but unused". It either lets the child
+# inherit this script's stdin -- already at EOF in CI -- or redirects from a FILE,
+# which reads EOF at its end. Either way the child reads EOF within milliseconds
+# and stops itself. hold-stdin-run.ps1 starts the child via .NET's Process with
+# RedirectStandardInput = $true and never writes to or closes that pipe, so
+# readLine() blocks and no "stop" is ever enqueued.
+#
+# Verified locally on endstone 0.11.14 + BDS 1.26.52.3 with NO plugin installed,
+# so the plugin cannot be a confounder: with stdin at EOF the server logged
+# "Server stop requested." in the same second as "Server started.", and with the
+# pipe held open it stayed up. Plain BDS on the same tree never stops for any
+# stdin shape, which is what isolates endstone's console reader as the cause.
 $endstoneArgs = if ($endstoneModule) { $endstoneModule + @("-s", $serverDir, "--no-interactive") } else { @("-s", $serverDir, "--no-interactive") }
-$endstoneProc = Start-Process -FilePath $endstoneExe -ArgumentList $endstoneArgs `
-    -WorkingDirectory $serverDir -RedirectStandardOutput $bdsStdout -RedirectStandardError $bdsStderr -PassThru -NoNewWindow
+# The wrapper takes everything from the environment: Start-Process joins
+# -ArgumentList with spaces and quotes nothing, so a $serverDir containing a
+# space (or the child's own argv) would split if it were passed as a parameter.
+# Verified that an argument line containing spaces and embedded quotes arrives
+# intact through both layers this way.
+$env:NOVACHAT_HOLD_STDIN_EXE = $endstoneExe
+$env:NOVACHAT_HOLD_STDIN_ARGS = ($endstoneArgs | ForEach-Object {
+    if ($_ -match '[\s"]') { '"' + ($_ -replace '(\\*)"', '$1$1\"') + '"' } else { $_ }
+}) -join ' '
+$env:NOVACHAT_HOLD_STDIN_CWD = $serverDir
+$env:NOVACHAT_HOLD_STDIN_PIDFILE = $bdsPidFile
+$endstoneProc = Start-Process -FilePath "powershell" -ArgumentList @(
+    "-NoProfile", "-ExecutionPolicy", "Bypass",
+    "-File", (Join-Path $binDir "hold-stdin-run.ps1")
+) -WorkingDirectory $serverDir -RedirectStandardOutput $bdsStdout -RedirectStandardError $bdsStderr -PassThru -NoNewWindow
 Track-Pid $endstoneProc.Id
-$endstoneProc.Id | Set-Content $bdsPidFile
-Log "  endstone pid=$($endstoneProc.Id)"
+# bds.pid must hold the SERVER's pid, not this wrapper's, or teardown would kill
+# the wrapper and orphan the server. The wrapper writes the real pid itself; fall
+# back to the wrapper's own pid only if it has not appeared yet.
+$serverPid = $null
+for ($i = 0; $i -lt 20; $i++) {
+    if (Test-Path $bdsPidFile) {
+        $candidate = (Get-Content $bdsPidFile -Raw -ErrorAction SilentlyContinue)
+        if ($candidate -and $candidate.Trim() -match '^\d+$') { $serverPid = [int]$candidate.Trim(); break }
+    }
+    Start-Sleep -Milliseconds 250
+}
+if (-not $serverPid) {
+    Log "WARN: the wrapper did not publish the server pid; tracking the wrapper instead"
+    $serverPid = $endstoneProc.Id
+    $serverPid | Set-Content $bdsPidFile
+}
+Track-Pid $serverPid
+Log "  endstone pid=$serverPid (wrapper pid=$($endstoneProc.Id))"
 
 # BDS readiness: "Done" or "Server started" + plugin enable marker.
 $serverReady = $false
