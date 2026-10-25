@@ -366,6 +366,26 @@ if ($leviLock -and $leviLock.RequiresBds -and $leviLock.RequiresBds -ne $bdsLock
     exit 2
 }
 
+# The SDK the mod COMPILES against is pinned separately, in its own xmake.lua,
+# and the check above does not cover it. A skew there stays invisible until
+# runtime: the mod loads and enables, then LeviLamina's symbol resolver fails
+# every Minecraft API it needs ("Couldn't find: CommandOutput::success(void)"
+# and friends), and the server dies with a bare "Process Crashed!" the moment a
+# command runs. Guard it so a mismatched pair fails here, naming both versions.
+$xmakeLua = Join-Path $levilaminaSrc 'xmake.lua'
+if ($leviLock -and (Test-Path $xmakeLua)) {
+    $sdkPin = [regex]::Match(
+        (Get-Content $xmakeLua -Raw),
+        'add_requires\(\s*"levilamina\s+([0-9][0-9.]*)"'
+    ).Groups[1].Value
+    if ($sdkPin -and $sdkPin -ne $leviLock.MC) {
+        Log "ERROR: SDK pin mismatch - xmake.lua builds against levilamina $sdkPin but versions.lock.ps1 pins the runtime loader to $($leviLock.MC). The mod would load, then crash on the first command."
+        Teardown-All
+        exit 2
+    }
+    if ($sdkPin) { Log "  SDK/runtime aligned: levilamina $sdkPin" }
+}
+
 $serverDir = Join-Path $RunsDir "bds"
 New-Item -ItemType Directory -Path $serverDir -Force | Out-Null
 Copy-Item (Join-Path $bdsDist '*') -Destination $serverDir -Recurse -Force
