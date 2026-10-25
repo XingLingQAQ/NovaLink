@@ -3,11 +3,27 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-# Endstone's plugin loader requires the distribution name to start with
-# "endstone-" (see endstone.dev tutorial "Create your first plugin"). The
-# previous name "novachat-endstone" already satisfies that prefix; keep it
-# so the installed wheel is discoverable by the Endstone plugin loader.
-name = "novachat-endstone"
+# Endstone enforces the distribution name in TWO steps, not one prefix test
+# (endstone/plugin/plugin_loader.py::_load_plugin_from_ep, read out of the
+# installed 0.11.8 source rather than retyped):
+#   1. ep.dist.name.replace("_", "-").startswith("endstone-")
+#   2. ep.dist.name.replace("_", "-") == "endstone-" + ep.name.replace("_", "-")
+# With the entry-point key `novachat` (see [project.entry-points."endstone"]
+# below), step 2 therefore requires the distribution to be EXACTLY
+# "endstone-novachat". The previous name "novachat-endstone" did not satisfy
+# even step 1 -- it merely LOOKED like it satisfied a prefix until you read
+# which prefix -- and endstone refused the plugin outright:
+#   Error occurred when trying to load plugin from entry point 'novachat':
+#   Invalid name.
+#   The name of distribution (novachat-endstone) does not start with
+#   'endstone-' or 'endstone_'.
+# Reproduced against the real loader by calling _load_plugin_from_ep with the
+# installed entry point: "novachat-endstone" -> REJECTED, "endstone-novachat"
+# -> clears the name gate. endstone 0.11.8 and 0.11.9 behave identically.
+# Only the distribution name is constrained. The python package directory stays
+# `novachat_endstone`, and plugin.toml's main stays
+# "novachat_endstone.plugin:NovaChatPlugin".
+name = "endstone-novachat"
 version = "1.0.0"
 description = "NovaChat plugin for Endstone - Cross-server chat integration for Minecraft Bedrock Edition"
 readme = "README.md"
