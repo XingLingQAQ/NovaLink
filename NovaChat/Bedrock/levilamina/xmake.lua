@@ -67,19 +67,17 @@ if not sdk_disabled then
     add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
     -- Pin the SDK to the version this plugin was validated against.
     --
-    -- An unpinned add_requires("levilamina") resolves to the newest published
-    -- release on every fresh CI run. That silently floated us from the
-    -- validated 26.20.7 to 26.51.7, which no longer compiles against the MSVC
-    -- 14.44 STL that windows-2022 ships: its <memory> instantiates
-    -- default_delete<CommandRegistry> etc. over forward-declared types
-    -- (MinecraftCommands.h holds a unique_ptr to an incomplete CommandRegistry),
-    -- so the build dies in the SDK's own sources with
-    --   error: invalid application of 'sizeof' to an incomplete type
-    -- before any NovaChat code is compiled. The failure is entirely inside the
-    -- dependency, so there is nothing to fix on our side -- only the version to
-    -- hold still. Bump this deliberately, together with the runner image, after
-    -- confirming the new SDK builds under that image's toolset.
-    add_requires("levilamina 26.20.7", {configs = {target_type = "server"}})
+    -- Pinned to the version the RUNTIME loader ships, not merely the one that
+    -- builds. versions.lock.ps1 pins levilamina 26.51.7 at runtime, and a mod
+    -- built against an older SDK loads and enables fine but fails every
+    -- Minecraft API at call time (LeviLamina's symbol resolver reports
+    -- "Couldn't find: CommandOutput::success(void)" etc.) and then the process
+    -- dies on the first command. run-levilamina-e2e.ps1 now asserts the two
+    -- agree before building.
+    --
+    -- 26.51.7 must be compiled the way its own build is (clang-cl,
+    -- _HAS_CXX23=1) -- see the Windows block in the target.
+    add_requires("levilamina 26.51.7", {configs = {target_type = "server"}})
     -- levibuildscript provides the linkrule + modpacker rules; it is a pure-Lua
     -- rules package (no compile step), so it needs no version pin.
     add_requires("levibuildscript")
@@ -105,8 +103,26 @@ target("novachat-levilamina")
         add_rules("@levibuildscript/linkrule")
         add_rules("@levibuildscript/modpacker")
     end
+    -- Flags mirror LiteLDev/levilamina-mod-template. 26.51.7 is built with
+    -- clang-cl and expects that toolchain here too; building the mod with plain
+    -- cl produced a DLL that loaded, enabled, and then failed every Minecraft
+    -- API call at runtime (symbol skew) and crashed on the first command.
     add_cxflags("/EHa", "/utf-8", "/W4", "/w44265", "/w44289", "/w44296", "/w45263", "/w44738", "/w45204")
-    add_defines("NOMINMAX", "UNICODE", "_UNICODE")
+    if is_plat("windows") then
+        add_cxflags(
+            "/EHs",
+            "-Wno-microsoft-cast",
+            "-Wno-invalid-offsetof",
+            "-Wno-c++2b-extensions",
+            "-Wno-microsoft-include",
+            "-Wno-overloaded-virtual",
+            "-Wno-ignored-qualifiers",
+            "-Wno-missing-field-initializers",
+            "-Wno-potentially-evaluated-expression",
+            "-Wno-pragma-system-header-outside-header",
+            {tools = {"clang_cl"}}
+        )
+    end
     set_kind("shared")
     set_languages("c++20")
     set_symbols("debug")
@@ -133,9 +149,19 @@ target("novachat-levilamina")
     set_targetdir("$(buildir)/bin")
     set_filename("novachat-levilamina.dll")
 
-    -- Windows-specific settings
+    -- Windows-specific settings.
+    --
+    -- clang-cl + _HAS_CXX23=1 is the toolchain 26.51.7 itself is built with,
+    -- per LiteLDev/levilamina-mod-template; the SDK headers assume it. Built
+    -- with plain cl, the mod loaded and enabled and then failed every Minecraft
+    -- API at call time (symbol skew) and killed the process on the first
+    -- command.
     if is_plat("windows") then
-        add_defines("WIN32", "_WIN32", "_WINDOWS")
+        add_defines("WIN32", "_WIN32", "_WINDOWS", "_HAS_CXX23=1", "NOMINMAX", "UNICODE", "_UNICODE")
+        -- Exceptions stay ON: our own sources throw/catch (NovaChatConfig's
+        -- config parse errors, the JSON and network paths). The template can
+        -- turn them off because its sample code never throws; we cannot.
+        set_toolchains("clang-cl")
         -- AUTH-002 TLS: link the OpenSSL libraries alongside the existing
         -- winsock / advapi32 system libs. The openssl xmake package (declared
         -- above) provides the import libs via add_packages; add_syslinks
