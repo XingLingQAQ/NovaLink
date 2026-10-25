@@ -889,6 +889,8 @@ class ChatHandler:
         Returns:
             The new mode name ("HYBRID" or "REPLACE")
         """
+        if not hasattr(self, "_chat_modes"):
+            self._chat_modes = {}
         current = self._chat_modes.get(player_uuid, "HYBRID")
         new_mode = "REPLACE" if current == "HYBRID" else "HYBRID"
         self._chat_modes[player_uuid] = new_mode
@@ -897,7 +899,9 @@ class ChatHandler:
 
     def get_chat_mode(self, player_uuid: str) -> str:
         """A player's chat mode, defaulting to HYBRID."""
-        return self._chat_modes.get(player_uuid, "HYBRID")
+        # hasattr guard: several tests build the handler via __new__ and stamp
+        # only the attributes they need, bypassing __init__.
+        return getattr(self, "_chat_modes", {}).get(player_uuid, "HYBRID")
     
     def is_chat_enabled(self, player_uuid: str) -> bool:
         """
