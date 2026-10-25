@@ -24,14 +24,24 @@
 -- RakPeer, whose ShadowBanList is declared as `namespace RakNet { class
 -- ShadowBanList; }` -- same hazard, different spelling, missed by that filter.
 --
--- So this patch does not try to predict which destructors matter. It reverts
--- every destructor in the server-compiled trees (src/ and src-server/, the two
--- xmake actually builds for target_type=server) that upstream turned from an
--- out-of-line declaration into `= default`: 377 lines across 332 files, each
--- restored to its v26.20.7 text verbatim. That is exactly the form upstream
--- shipped and tested at 26.20.7, so no judgement is involved. src-client/ is
--- excluded on purpose -- the server build never compiles it and its files do not
--- match the v26.51.7 tree the patch applies to.
+-- The safe set is therefore "changed to `= default` AND the class owns a
+-- unique_ptr to an incompletely-declared type", matched with a regex that also
+-- sees namespace-qualified forward declarations: 99 lines across 94 files in
+-- src/ and src-server/. Each is restored to its v26.20.7 text verbatim.
+--
+-- The filter has to cut both ways, and CI taught me the second direction too.
+-- Reverting ALL 377 changed destructors instead compiled cleanly and then failed
+-- to link with exactly three symbols:
+--
+--   ??1Command@@UEAA@XZ        unresolved (Command::~Command)
+--   ??1IDataOutput@@UEAA@XZ    unresolved
+--   ??1IDataInput@@UEAA@XZ     unresolved
+--
+-- Those three are abstract bases with no incomplete-type members, so they never
+-- needed the change; but something does destroy them, and as out-of-line
+-- declarations they become imports that prelink cannot resolve. The shipped
+-- 26.51.7 DLL imports none of the three, which confirms they are meant to stay
+-- `= default`. Keeping them out is what makes this patch both compile and link.
 --
 -- Upstream never fixed this: v26.51.8 and main still declare both examples
 -- above as `= default`. Treat the patch as a workaround for a third-party
@@ -48,7 +58,7 @@ package("levilamina")
     -- Range starts at 26.51.0, where the destructor rewrite landed. 26.20.7 and
     -- earlier already carry the out-of-line form, so patching them would fail.
     add_patches(">=26.51.0", path.join(os.scriptdir(), "patches", "26.51-mc-dtors.patch"),
-        "7e00438d2a95f78b6b2fdb957e8f7a16d160a36f255ccae2717924fd8491941a")
+        "d83ebdb1288e02f2fb579c5d17d161e5f98e9486913f8f3c51375175e9514979")
 
     on_load(function(package)
         import("core.base.semver")
