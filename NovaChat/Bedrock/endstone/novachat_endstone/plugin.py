@@ -26,10 +26,30 @@ Endstone API notes (0.11.x, verified 2026-08-12):
     ``on_command(sender, command, args)``.
 """
 
-from __future__ import annotations
+# NOTE: deliberately NO `from __future__ import annotations` in this module.
+#
+# Endstone's register_events validates each handler with
+#
+#     sig = inspect.signature(func)
+#     params = list(sig.parameters.values())
+#     if (len(params) != 1
+#         or not inspect.isclass(params[0].annotation)
+#         or not issubclass(params[0].annotation, Event)):
+#         "... invalid event handler signature ..."
+#
+# (endstone/plugin/__init__.py, lines 73-83). That reads the RAW annotation, not
+# typing.get_type_hints(). With the future import every annotation becomes a
+# STRING, so inspect.isclass("PlayerChatEvent") is False and all three handlers
+# are rejected even though the source looks correctly annotated. The event
+# handlers below therefore need their annotations evaluated eagerly, which is
+# only possible without that import. Nothing else here needs it: the annotated
+# names are all imported at module level, and the file uses typing.Optional
+# rather than PEP 604 unions.
 
 import asyncio
+import concurrent.futures
 import logging
+import threading
 from typing import TYPE_CHECKING, Optional, Any
 
 from novachat_endstone.config.manager import ConfigManager
@@ -48,7 +68,13 @@ from novachat_endstone.extension.extension_loader import ExtensionLoader
 # is absent (e.g. the pytest protocol suite, which never touches the event
 # system), fall back to a no-op decorator + sentinel when the import fails.
 try:
-    from endstone.event import event_handler, EventPriority
+    from endstone.event import (
+        event_handler,
+        EventPriority,
+        PlayerChatEvent,
+        PlayerJoinEvent,
+        PlayerQuitEvent,
+    )
     from endstone.plugin import Plugin
     _ENDSTONE_EVENT_HANDLER_AVAILABLE = True
     _ENDSTONE_PLUGIN_BASE_AVAILABLE = True
@@ -68,6 +94,20 @@ except ImportError:  # pragma: no cover - exercised only without endstone
         HIGH = 3
         HIGHEST = 4
         MONITOR = 5
+
+    # Event-type stand-ins. The handlers below annotate their parameter with
+    # these, because endstone resolves the event type from that annotation (an
+    # unannotated `event` parameter is rejected with "invalid event handler
+    # signature"). Without endstone the annotations are inert but must still
+    # resolve at import time.
+    class PlayerChatEvent:  # type: ignore[no-redef]
+        pass
+
+    class PlayerJoinEvent:  # type: ignore[no-redef]
+        pass
+
+    class PlayerQuitEvent:  # type: ignore[no-redef]
+        pass
 
     _ENDSTONE_EVENT_HANDLER_AVAILABLE = False
     _ENDSTONE_PLUGIN_BASE_AVAILABLE = False
@@ -203,8 +243,63 @@ class NovaChatPlugin(Plugin):
         self._extension_loader: Optional[ExtensionLoader] = None
         self._logger = logging.getLogger("NovaChat")
 
+        # Background event loop owned by this plugin (see _start_backend_loop).
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop_thread: Optional[threading.Thread] = None
+        # run_coroutine_threadsafe returns a concurrent.futures.Future.
+        self._connect_task: Optional[concurrent.futures.Future] = None
+
         # Setup logging
         self._setup_logging()
+
+    def _start_backend_loop(self) -> None:
+        """Start the dedicated event loop that drives the backend connection.
+
+        ``on_enable`` is a synchronous native callback with no running asyncio
+        loop, so the plugin cannot use ``asyncio.create_task`` and must not
+        depend on ``asyncio.get_event_loop()`` (which is deprecated and, on
+        3.12, no longer creates a loop for a non-main thread). A daemon thread
+        owns the loop and runs it forever; everything that needs a loop
+        (NetworkClient.connect, its read/keepalive tasks, and later
+        run_coroutine_threadsafe calls from BDS's main thread) uses this one.
+        """
+        if self._loop is not None and self._loop.is_running():
+            return
+
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+
+        # Bind `loop` locally: a later _stop_backend_loop() clears self._loop,
+        # and the thread must not then try to run None.
+        def _run() -> None:
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
+
+        self._loop_thread = threading.Thread(
+            target=_run, name="NovaChat-Backend-Loop", daemon=True
+        )
+        self._loop_thread.start()
+        self._logger.info("Backend event loop started")
+
+    def _stop_backend_loop(self) -> None:
+        """Stop the dedicated loop and join its thread (best effort)."""
+        loop, thread = self._loop, self._loop_thread
+        self._loop = None
+        self._loop_thread = None
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+        except Exception as e:  # noqa: BLE001 - shutdown must never raise
+            self._logger.debug(f"Could not stop backend loop cleanly: {e}")
+        if thread is not None:
+            thread.join(timeout=5.0)
+        try:
+            if not loop.is_closed():
+                loop.close()
+        except Exception as e:  # noqa: BLE001
+            self._logger.debug(f"Could not close backend loop: {e}")
+        self._logger.info("Backend event loop stopped")
 
     def _setup_logging(self) -> None:
         """Configure logging for the plugin."""
@@ -290,9 +385,27 @@ class NovaChatPlugin(Plugin):
             # Register commands
             self._register_commands()
             
-            # Connect to backend asynchronously
-            asyncio.create_task(self._connect_to_backend())
-            
+            # Connect to the backend on a loop this plugin owns.
+            #
+            # `asyncio.create_task` needs a RUNNING loop in the calling thread,
+            # and `on_enable` is a synchronous callback driven by native BDS
+            # code -- there is no asyncio loop here at all, so create_task
+            # raised "RuntimeError: no running event loop". That exception
+            # propagated out of on_enable, endstone reported "Error occurred
+            # when enabling novachat", and BDS then logged "Server stop
+            # requested." in the same second and shut down. The plugin must
+            # therefore supply its own loop rather than borrow the server's.
+            #
+            # A dedicated daemon thread owns the loop and runs it forever. That
+            # also gives NetworkClient.connect() a running loop to capture in
+            # self._loop (network/client.py), which the chat handler and the
+            # command handler need for run_coroutine_threadsafe when they are
+            # invoked from BDS's main thread.
+            self._start_backend_loop()
+            self._connect_task = asyncio.run_coroutine_threadsafe(
+                self._connect_to_backend(), self._loop
+            )
+
             # Load and enable extensions
             # Requirements: 10.2 - THE Endstone 扩展 SHALL 使用 Python 编写并放置在 extensions 目录
             self._load_extensions()
@@ -322,13 +435,20 @@ class NovaChatPlugin(Plugin):
             
             # Disconnect from backend
             if self._network_client:
+                # disconnect() schedules the socket close on the loop, so the
+                # loop must still be running when we call it -- stop it after.
                 self._network_client.disconnect()
                 self._logger.info("Disconnected from backend")
             
             # Clean up handlers
             self._chat_handler = None
             self._command_handler = None
-            
+
+            # Stop the loop this plugin owns, last, so disconnect() above could
+            # still schedule its close on a live loop.
+            self._stop_backend_loop()
+            self._network_client = None
+
             self._logger.info("NovaChat plugin disabled successfully!")
             
         except Exception as e:
@@ -398,16 +518,26 @@ class NovaChatPlugin(Plugin):
     # Priority: HIGH so NovaChat sees chat before lower-priority plugins,
     # letting us cancel/redirect it. ``ignore_cancelled=False`` keeps the
     # default behavior of skipping already-cancelled events.
+    #
+    # The ``event`` parameter MUST carry a type annotation. Endstone resolves
+    # which event a handler subscribes to from that annotation, so the previous
+    # unannotated ``def _on_player_chat(self, event)`` was rejected at register
+    # time (run 40149942743):
+    #
+    #   Plugin NovaChat attempted to register an invalid event handler
+    #   signature: _on_player_chat: (event)
+    #
+    # all three handlers were dropped, and endstone then failed the enable.
     # ------------------------------------------------------------------
 
     @event_handler(priority=EventPriority.HIGH)
-    def _on_player_chat(self, event):
+    def _on_player_chat(self, event: PlayerChatEvent):
         """Endstone PlayerChatEvent listener."""
         if self._chat_handler:
             self._chat_handler.on_player_chat(event)
 
     @event_handler(priority=EventPriority.HIGH)
-    def _on_player_join(self, event):
+    def _on_player_join(self, event: PlayerJoinEvent):
         """Endstone PlayerJoinEvent listener."""
         if self._chat_handler:
             try:
@@ -416,7 +546,7 @@ class NovaChatPlugin(Plugin):
                 self._logger.error(f"Error handling player join: {e}")
 
     @event_handler(priority=EventPriority.HIGH)
-    def _on_player_quit(self, event):
+    def _on_player_quit(self, event: PlayerQuitEvent):
         """Endstone PlayerQuitEvent listener."""
         if self._chat_handler:
             try:
