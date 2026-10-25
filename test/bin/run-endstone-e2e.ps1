@@ -624,8 +624,10 @@ Log "  BDS/Endstone ready"
 
 # Confirm plugin enable + backend auth (best-effort, not a hard gate -- the bot
 # assertions are the real gate).
-if (Test-Path $bdsStdout) {
-    $logContent = Get-Content $bdsStdout -Raw -ErrorAction SilentlyContinue
+$bdsConsole = @($bdsStdout, $bdsStderr) | Where-Object { Test-Path $_ }
+if ($bdsConsole.Count -gt 0) {
+    # The plugin is Python and logs to stderr, so $bdsStdout alone never matched.
+    $logContent = ($bdsConsole | ForEach-Object { Get-Content $_ -Raw -ErrorAction SilentlyContinue }) -join [Environment]::NewLine
     if ($logContent -match 'NovaChat plugin enabled successfully!') { Log "  plugin enabled (confirmed)" }
     if ($logContent -match 'Successfully connected and authenticated!|Connected to NovaLink backend') { Log "  backend auth (confirmed)" }
     if ($logContent -match 'Failed to connect to NovaLink backend') { Log "  WARN: plugin reported backend connect failure" }

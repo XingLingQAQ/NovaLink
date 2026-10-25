@@ -348,7 +348,10 @@ function sendCommand(command) {
 
 async function runSequence() {
   console.log('=== waiting for spawn ===');
-  await sleep(15000);
+  // BDS drops an idle NetherNet session at ~15s (measured: spawn -> close
+  // 15.003s later on endstone and levilamina; every RakNet platform survived).
+  // This already runs from the 'spawn' handler, so it only needs a short settle.
+  await sleep(2000);
   console.log('=== starting L1 command sequence ===');
 
   // L1 baseline: help / join / toggle / chat round-trip / list.

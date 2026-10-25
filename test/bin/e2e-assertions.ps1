@@ -127,7 +127,10 @@ function Test-BackendEvidence {
 # failure would turn a healthy platform red on an I/O hiccup.
 function Test-ServerLogFatal {
     param([string[]]$Paths)
-    $pattern = '\bFATAL\b|Traceback \(most recent call last\)|\bat com\.nova\.|Fatal error|Unhandled exception'
+    # FTL is LeviLamina's fatal level (it never prints "FATAL"), so a mod that
+    # refuses to load -- e.g. "Failed to load mod ..." -- was invisible here and
+    # the run only reddened via the much less direct bot assertions.
+    $pattern = '\bFATAL\b|\bFTL\b|Failed to load mod|Traceback \(most recent call last\)|\bat com\.nova\.|Fatal error|Unhandled exception'
     foreach ($p in $Paths) {
         if (-not $p) { continue }
         if (-not (Test-Path -LiteralPath $p)) { continue }
