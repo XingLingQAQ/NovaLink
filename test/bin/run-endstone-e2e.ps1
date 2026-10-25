@@ -519,7 +519,36 @@ $bdsPidFile = Join-Path $serverDir "bds.pid"
 # The argument must come AFTER the module flags: `python -m endstone -s <dir>`,
 # not `python -s -m endstone ...` (-s would be python's own flag, and the -m
 # target must precede the module's argv).
-$endstoneArgs = if ($endstoneModule) { $endstoneModule + @("-s", $serverDir) } else { @("-s", $serverDir) }
+#
+# --no-interactive is REQUIRED, and it is one of TWO independent stop paths that
+# both had to be closed. endstone's CLI declares
+# `-i, --interactive/--no-interactive` with default True
+# (endstone/cli/__init__.py lines 69-74) and forwards it to the bootstrap, whose
+# _endstone_runtime_env sets ENDSTONE_USE_INTERACTIVE_CONSOLE=1 only when
+# interactive is true (endstone/cli/base.py lines 312-320, and the string is
+# consumed by the native runtime). With it on, BDS's console reads a stdin that
+# Start-Process has already exhausted, and the server stops itself:
+#
+#   [01:40:53 INFO]: Server started.
+#   [01:40:53 INFO]: [Novachat] Enabling novachat v1.0.0
+#   [01:40:53 INFO]: Server stop requested.
+#
+# That is run 40151105460, where the plugin was fully working -- the console
+# alone was enough to kill the server. It is also run 40106019993, where the
+# plugin was rejected outright at load time and BDS stopped anyway.
+#
+# The OTHER path is a plugin whose on_enable raises: endstone then logs "Error
+# occurred when enabling" and BDS stops too (run 40149942743). That one is fixed
+# in the plugin, and both fixes are needed -- --no-interactive alone did not save
+# run 40146564696, because the plugin there still failed its isinstance check.
+#
+# Verified locally that this flag is the only difference it claims to be:
+# comparing Bootstrap._endstone_runtime_env for both settings shows the console
+# key is the ONLY difference and is absent with the flag. Also verified that
+# plain BDS (26.52.3, real tree) survives every stdin shape -- inherited, NUL,
+# closed pipe, held-open pipe -- so it is specifically endstone's console that
+# reacts to the exhausted stdin, not BDS itself.
+$endstoneArgs = if ($endstoneModule) { $endstoneModule + @("-s", $serverDir, "--no-interactive") } else { @("-s", $serverDir, "--no-interactive") }
 $endstoneProc = Start-Process -FilePath $endstoneExe -ArgumentList $endstoneArgs `
     -WorkingDirectory $serverDir -RedirectStandardOutput $bdsStdout -RedirectStandardError $bdsStderr -PassThru -NoNewWindow
 Track-Pid $endstoneProc.Id

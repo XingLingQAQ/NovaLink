@@ -456,10 +456,18 @@ class NovaChatCommand:
         # Update player's channel
         chat_handler = self._plugin.chat_handler
         if chat_handler:
-            # Use async join if connected to backend
-            if self._plugin.network_client and self._plugin.network_client.is_connected:
-                asyncio.create_task(
-                    chat_handler.join_channel(str(sender.unique_id), channel_id, password)
+            # Use async join if connected to backend.
+            #
+            # run_coroutine_threadsafe on the network client's loop, NOT
+            # asyncio.create_task: command handlers run on BDS's native command
+            # thread, where no asyncio loop is running, so create_task raises
+            # "RuntimeError: no running event loop" and the join silently never
+            # happens. Same bug class as on_enable, fixed the same way.
+            loop = self._plugin.network_client.loop if self._plugin.network_client else None
+            if loop is not None and self._plugin.network_client.is_connected:
+                asyncio.run_coroutine_threadsafe(
+                    chat_handler.join_channel(str(sender.unique_id), channel_id, password),
+                    loop,
                 )
                 self._i18n_send(sender, "chat.join.joining", channel_id)
             else:
@@ -497,10 +505,13 @@ class NovaChatCommand:
                 self._i18n_send(sender, "chat.action.already_default")
                 return True
 
-            # Use async leave if connected to backend
-            if self._plugin.network_client and self._plugin.network_client.is_connected:
-                asyncio.create_task(
-                    chat_handler.leave_channel(str(sender.unique_id))
+            # Use async leave if connected to backend. See _cmd_join for why this
+            # is run_coroutine_threadsafe and not asyncio.create_task.
+            loop = self._plugin.network_client.loop if self._plugin.network_client else None
+            if loop is not None and self._plugin.network_client.is_connected:
+                asyncio.run_coroutine_threadsafe(
+                    chat_handler.leave_channel(str(sender.unique_id)),
+                    loop,
                 )
                 self._i18n_send(sender, "chat.leave.leaving", current_channel)
             else:
@@ -565,10 +576,14 @@ class NovaChatCommand:
         if self._plugin.network_client and self._plugin.network_client.is_connected:
             chat_handler = self._plugin.chat_handler
             if chat_handler:
-                asyncio.create_task(
-                    chat_handler.who_channel(str(sender.unique_id), channel_id)
-                )
-                self._i18n_send(sender, "chat.who.fetching", channel_id)
+                # See _cmd_join: create_task would raise on the command thread.
+                loop = self._plugin.network_client.loop
+                if loop is not None:
+                    asyncio.run_coroutine_threadsafe(
+                        chat_handler.who_channel(str(sender.unique_id), channel_id),
+                        loop,
+                    )
+                    self._i18n_send(sender, "chat.who.fetching", channel_id)
         else:
             self._i18n_send(sender, "chat.network.not_connected_retry")
         return True
