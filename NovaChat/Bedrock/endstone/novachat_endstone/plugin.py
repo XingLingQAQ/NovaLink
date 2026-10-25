@@ -49,7 +49,9 @@ from novachat_endstone.extension.extension_loader import ExtensionLoader
 # system), fall back to a no-op decorator + sentinel when the import fails.
 try:
     from endstone.event import event_handler, EventPriority
+    from endstone.plugin import Plugin
     _ENDSTONE_EVENT_HANDLER_AVAILABLE = True
+    _ENDSTONE_PLUGIN_BASE_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised only without endstone
     def event_handler(func=None, *, priority=None, ignore_cancelled=False):
         """No-op fallback so the module imports without endstone installed."""
@@ -68,12 +70,25 @@ except ImportError:  # pragma: no cover - exercised only without endstone
         MONITOR = 5
 
     _ENDSTONE_EVENT_HANDLER_AVAILABLE = False
+    _ENDSTONE_PLUGIN_BASE_AVAILABLE = False
+
+    class Plugin:  # type: ignore[no-redef]
+        """Import-time stand-in so the class body below is valid without endstone.
+
+        Only ever used as a base class by the pytest suite, which never
+        instantiates the plugin through a BDS host. The real endstone base
+        replaces it whenever the package is installed.
+        """
+
+        def __init__(self) -> None:  # pragma: no cover - see docstring
+            pass
+
 
 if TYPE_CHECKING:
     pass
 
 
-class NovaChatPlugin:
+class NovaChatPlugin(Plugin):
     """
     Main NovaChat plugin class for Endstone.
 
@@ -84,12 +99,26 @@ class NovaChatPlugin:
     Validates: Requirements 10.1, 10.2, 10.3, 10.4
 
     Note:
-        The real Endstone plugin loader instantiates this class via the
-        ``endstone`` entry point (see pyproject.toml) and subclasses it from
-        ``endstone.plugin.Plugin`` at load time. When the ``endstone`` package
-        is NOT installed (e.g. unit tests for the protocol layer), this class
-        is still importable and behaves as a plain Python class so the test
-        suite can construct it without a BDS host.
+        This class MUST subclass ``endstone.plugin.Plugin``. Endstone's loader
+        instantiates the entry-point class itself and then checks
+
+            plugin = cls()
+            if not isinstance(plugin, Plugin):
+                "... does not extend endstone.plugin.Plugin"
+
+        so it does NOT subclass the class for us -- the earlier comment here
+        claimed it did, and that is why the plugin failed to load with exactly
+        that message even once the distribution name was correct.
+
+        ``server``, ``logger``, ``data_folder`` and ``register_events`` all come
+        from the native base. The plugin used to define its own Python
+        ``server``/``data_folder`` properties; those shadowed the native ones
+        and must NOT be reintroduced, or every ``self.server`` access sees the
+        plugin's own ``None`` instead of the live BDS server.
+
+        When endstone is not installed (the pytest protocol suite), ``Plugin``
+        falls back to a plain stand-in defined above so this module still
+        imports and the class body stays valid.
     """
 
     # Plugin metadata — kept in sync with plugin.toml.
@@ -163,18 +192,20 @@ class NovaChatPlugin:
     
     def __init__(self):
         """Initialize the plugin instance."""
+        # The native base sets up the server/logger/plugin_loader bindings the
+        # loader injects; skipping it leaves `self.server` raising
+        # "Attempted a typeid of nullptr pointer!".
+        super().__init__()
         self._config_manager: Optional[ConfigManager] = None
         self._network_client: Optional[NetworkClient] = None
         self._chat_handler: Optional[ChatHandler] = None
         self._command_handler: Optional[NovaChatCommand] = None
         self._extension_loader: Optional[ExtensionLoader] = None
         self._logger = logging.getLogger("NovaChat")
-        self._server: Any = None
-        self._data_folder: str = ""
-        
+
         # Setup logging
         self._setup_logging()
-    
+
     def _setup_logging(self) -> None:
         """Configure logging for the plugin."""
         handler = logging.StreamHandler()
@@ -186,27 +217,13 @@ class NovaChatPlugin:
         if not logger.handlers:
             logger.addHandler(handler)
         logger.setLevel(logging.INFO)
-    
-    @property
-    def server(self) -> Any:
-        """Get the server instance."""
-        return self._server
-    
-    @server.setter
-    def server(self, value: Any) -> None:
-        """Set the server instance."""
-        self._server = value
-    
-    @property
-    def data_folder(self) -> str:
-        """Get the plugin data folder path."""
-        return self._data_folder
-    
-    @data_folder.setter
-    def data_folder(self, value: str) -> None:
-        """Set the plugin data folder path."""
-        self._data_folder = value
-    
+
+    # NOTE: no `server` / `data_folder` properties here on purpose. Both are
+    # provided by the native endstone base class. Defining them as Python
+    # properties shadows the native descriptors, so `self.server` would return
+    # the plugin's own None instead of the live server, and every
+    # `self._plugin.server.online_players` call in the handlers would break.
+
     def on_load(self) -> None:
         """
         Called when the plugin is loaded.
@@ -471,7 +488,10 @@ class NovaChatPlugin:
         Requirements: 10.4 - WHEN 扩展加载 THEN 各平台扩展加载器 SHALL 调用对应的初始化方法
         """
         import os
-        extensions_dir = os.path.join(self._data_folder, "extensions")
+        # self.data_folder (native, from the endstone base class), not the old
+        # self._data_folder -- that Python attribute no longer exists now that
+        # the plugin extends Plugin instead of shadowing it.
+        extensions_dir = os.path.join(self.data_folder, "extensions")
         
         self._extension_loader = ExtensionLoader(self)
         extensions = self._extension_loader.load_extensions(extensions_dir)
