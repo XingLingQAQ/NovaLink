@@ -1228,15 +1228,3 @@ diff --git a/src/mc/world/scores/ServerScoreboard.h b/src/mc/world/scores/Server
  
      virtual void onObjectiveAdded(::Objective const& objective) /*override*/;
  
-diff --git a/src/mc/network/packet/SetTitlePacketPayload.h b/src/mc/network/packet/SetTitlePacketPayload.h
---- a/src/mc/network/packet/SetTitlePacketPayload.h
-+++ b/src/mc/network/packet/SetTitlePacketPayload.h
-@@ -34,7 +34,7 @@ public:
- public:
-     // prevent constructor by default
-     SetTitlePacketPayload& operator=(SetTitlePacketPayload const&);
--    SetTitlePacketPayload();
-+    MCAPI SetTitlePacketPayload();
- 
- public:
-     // member functions
