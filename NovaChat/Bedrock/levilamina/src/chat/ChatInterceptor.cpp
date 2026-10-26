@@ -22,6 +22,7 @@
 #include <regex>
 #include <algorithm>
 #include <string>
+#include <optional>
 #include <unordered_set>
 
 namespace novachat {
@@ -338,24 +339,34 @@ void ChatInterceptor::registerPacketHandlers() {
             level->forEachPlayer([&](Player& player) {
                 std::string playerUuid = player.getUuid().asString();
                 if (isPlayerInChannel(playerUuid, title->getChannelId())) {
-                    // Send title timing packet
-                    SetTitlePacket timingPacket;
-                    timingPacket.mType = SetTitlePacketPayload::TitleType::Times;
+                    // Send title timing packet.
+                    // BDS 1.26.51 (LeviLamina 26.51.7) dropped the exported
+                    // no-arg SetTitlePacketPayload() constructor -- only the
+                    // three-arg form is importable, so every packet here must
+                    // be built through it. The Times packet has no title text
+                    // and takes its three timings as member assignments, which
+                    // is what the constructor leaves for that type anyway.
+                    SetTitlePacket timingPacket(
+                        SetTitlePacketPayload::TitleType::Times,
+                        std::string(),
+                        std::nullopt);
                     timingPacket.mFadeInTime = title->getFadeIn();
                     timingPacket.mStayTime = title->getStay();
                     timingPacket.mFadeOutTime = title->getFadeOut();
                     player.sendNetworkPacket(timingPacket);
 
                     if (!title->getTitle().empty()) {
-                        SetTitlePacket titlePacket;
-                        titlePacket.mType = SetTitlePacketPayload::TitleType::Title;
-                        titlePacket.mTitleText = convertColorCodes(title->getTitle());
+                        SetTitlePacket titlePacket(
+                            SetTitlePacketPayload::TitleType::Title,
+                            convertColorCodes(title->getTitle()),
+                            std::nullopt);
                         player.sendNetworkPacket(titlePacket);
                     }
                     if (!title->getSubtitle().empty()) {
-                        SetTitlePacket subtitlePacket;
-                        subtitlePacket.mType = SetTitlePacketPayload::TitleType::Subtitle;
-                        subtitlePacket.mTitleText = convertColorCodes(title->getSubtitle());
+                        SetTitlePacket subtitlePacket(
+                            SetTitlePacketPayload::TitleType::Subtitle,
+                            convertColorCodes(title->getSubtitle()),
+                            std::nullopt);
                         player.sendNetworkPacket(subtitlePacket);
                     }
                 }
@@ -381,22 +392,25 @@ void ChatInterceptor::registerPacketHandlers() {
             level->forEachPlayer([&](Player& player) {
                 if (player.getUuid().asString() == mentionedUuidStr) {
                     // Title flash
-                    SetTitlePacket timingPacket;
-                    timingPacket.mType = SetTitlePacketPayload::TitleType::Times;
+                    SetTitlePacket timingPacket(
+                        SetTitlePacketPayload::TitleType::Times,
+                        std::string(),
+                        std::nullopt);
                     timingPacket.mFadeInTime = 10;
                     timingPacket.mStayTime = 40;
                     timingPacket.mFadeOutTime = 20;
                     player.sendNetworkPacket(timingPacket);
 
-                    SetTitlePacket titlePacket;
-                    titlePacket.mType = SetTitlePacketPayload::TitleType::Title;
-                    titlePacket.mTitleText = "§e@§r" +
-                        convertColorCodes(mention->getMentionerName());
+                    SetTitlePacket titlePacket(
+                        SetTitlePacketPayload::TitleType::Title,
+                        "§e@§r" + convertColorCodes(mention->getMentionerName()),
+                        std::nullopt);
                     player.sendNetworkPacket(titlePacket);
 
-                    SetTitlePacket subtitlePacket;
-                    subtitlePacket.mType = SetTitlePacketPayload::TitleType::Subtitle;
-                    subtitlePacket.mTitleText = convertColorCodes(subtitle);
+                    SetTitlePacket subtitlePacket(
+                        SetTitlePacketPayload::TitleType::Subtitle,
+                        convertColorCodes(subtitle),
+                        std::nullopt);
                     player.sendNetworkPacket(subtitlePacket);
 
                     return false;
@@ -704,8 +718,10 @@ void ChatInterceptor::sendTitle(const std::string& playerName, const std::string
         // getRealName(): same accessor change as displayMessage above.
         if (player.getRealName() == playerName) {
             // Send title timing packet
-            SetTitlePacket timingPacket;
-            timingPacket.mType = SetTitlePacketPayload::TitleType::Times;
+            SetTitlePacket timingPacket(
+                SetTitlePacketPayload::TitleType::Times,
+                std::string(),
+                std::nullopt);
             timingPacket.mFadeInTime = fadeIn;
             timingPacket.mStayTime = stay;
             timingPacket.mFadeOutTime = fadeOut;
@@ -713,17 +729,19 @@ void ChatInterceptor::sendTitle(const std::string& playerName, const std::string
 
             // Send main title
             if (!title.empty()) {
-                SetTitlePacket titlePacket;
-                titlePacket.mType = SetTitlePacketPayload::TitleType::Title;
-                titlePacket.mTitleText = convertColorCodes(title);
+                SetTitlePacket titlePacket(
+                    SetTitlePacketPayload::TitleType::Title,
+                    convertColorCodes(title),
+                    std::nullopt);
                 player.sendNetworkPacket(titlePacket);
             }
 
             // Send subtitle
             if (!subtitle.empty()) {
-                SetTitlePacket subtitlePacket;
-                subtitlePacket.mType = SetTitlePacketPayload::TitleType::Subtitle;
-                subtitlePacket.mTitleText = convertColorCodes(subtitle);
+                SetTitlePacket subtitlePacket(
+                    SetTitlePacketPayload::TitleType::Subtitle,
+                    convertColorCodes(subtitle),
+                    std::nullopt);
                 player.sendNetworkPacket(subtitlePacket);
             }
 
@@ -911,23 +929,27 @@ void ChatInterceptor::sendTitleByUuid(const std::string& playerUuid, const std::
     }
     level->forEachPlayer([&](Player& player) {
         if (player.getUuid().asString() == playerUuid) {
-            SetTitlePacket timingPacket;
-            timingPacket.mType = SetTitlePacketPayload::TitleType::Times;
+            SetTitlePacket timingPacket(
+                SetTitlePacketPayload::TitleType::Times,
+                std::string(),
+                std::nullopt);
             timingPacket.mFadeInTime = 10;
             timingPacket.mStayTime = 70;
             timingPacket.mFadeOutTime = 20;
             player.sendNetworkPacket(timingPacket);
 
             if (!title.empty()) {
-                SetTitlePacket titlePacket;
-                titlePacket.mType = SetTitlePacketPayload::TitleType::Title;
-                titlePacket.mTitleText = convertColorCodes(title);
+                SetTitlePacket titlePacket(
+                    SetTitlePacketPayload::TitleType::Title,
+                    convertColorCodes(title),
+                    std::nullopt);
                 player.sendNetworkPacket(titlePacket);
             }
             if (!subtitle.empty()) {
-                SetTitlePacket subtitlePacket;
-                subtitlePacket.mType = SetTitlePacketPayload::TitleType::Subtitle;
-                subtitlePacket.mTitleText = convertColorCodes(subtitle);
+                SetTitlePacket subtitlePacket(
+                    SetTitlePacketPayload::TitleType::Subtitle,
+                    convertColorCodes(subtitle),
+                    std::nullopt);
                 player.sendNetworkPacket(subtitlePacket);
             }
             return false;
