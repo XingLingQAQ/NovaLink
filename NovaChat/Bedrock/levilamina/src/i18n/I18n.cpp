@@ -250,6 +250,15 @@ I18n::I18n() {
     }
 }
 
+void I18n::registerLangDir(const std::filesystem::path& dir) {
+    // Guard the same way the constructor does: a missing dir must not throw
+    // (the plugin load path runs before the server is fully up and an
+    // exception here would abort mod loading).
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dir, ec) || ec) return;
+    loadLangDir(dir);
+}
+
 void I18n::loadLangDir(const std::filesystem::path& dir) {
     std::error_code ec;
     for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {

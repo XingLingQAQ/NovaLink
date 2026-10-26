@@ -3,6 +3,7 @@
 #include "network/NetworkClient.h"
 #include "chat/ChatInterceptor.h"
 #include "command/CommandHandler.h"
+#include "i18n/I18n.h"
 
 #include <ll/api/io/Logger.h>
 #include <ll/api/mod/NativeMod.h>
@@ -37,6 +38,19 @@ NovaChatPlugin& NovaChatPlugin::getInstance() {
 bool NovaChatPlugin::load() {
     auto& logger = mSelf.getLogger();
     logger.info("Loading NovaChat-LeviLamina...");
+
+    // Register this mod's own lang/ directory BEFORE anything looks up a
+    // message. I18n's built-in candidates are <exe-dir>/lang, the __FILE__-
+    // relative dev path and plugins/NovaChat/lang -- none of which is the mod
+    // directory, so a LeviLamina install (plugins/<modDir>/lang) was invisible
+    // and every lookup returned its key verbatim. CI run 40272156700 showed
+    // exactly that: the bot received "chat.command.help.title" and
+    // "chat.network.not_connected" as literal text.
+    // getLangDir() rather than getModDir()/"lang": Mod's constructor already
+    // builds mImpl->langDir = modDir / u8"lang" (Mod.cpp:47) and exposes it as
+    // a first-class accessor. Using it keeps this call correct even if the
+    // loader ever changes the on-disk layout.
+    i18n::I18n::getInstance().registerLangDir(mSelf.getLangDir());
 
     // Load configuration
     mConfig = std::make_unique<NovaChatConfig>(

@@ -38,6 +38,24 @@ public:
      */
     std::string errorMessage(const std::string& errorCode, const std::string& locale) const;
 
+    /**
+     * Register an extra lang/ directory and load it immediately.
+     *
+     * The constructor's built-in candidates (<exe-dir>/lang, the __FILE__-relative
+     * dev path, plugins/NovaChat/lang) do NOT include the mod's own directory.
+     * A LeviLamina mod is installed as plugins/<modDir>/ and its bundled lang/
+     * sits at plugins/<modDir>/lang, so without an explicit registration every
+     * lookup falls through to "return the key itself" and the player sees raw
+     * keys such as "chat.command.help.title" instead of the translated text.
+     *
+     * Loading happens eagerly rather than being queued for a later pass: the
+     * singleton may already be constructed (the first getInstance() call runs
+     * the candidate scan), so a queued path would never be read. Callers pass
+     * the path once during load(); re-registering the same directory just
+     * reloads it.
+     */
+    void registerLangDir(const std::filesystem::path& dir);
+
     static constexpr const char* DEFAULT_LOCALE = "zh_CN";
 
 private:

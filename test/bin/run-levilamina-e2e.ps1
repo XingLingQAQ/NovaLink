@@ -521,12 +521,22 @@ Log "  plugin installed: $pluginDir"
 $secretKey = New-RandomHex 32
 $clientPw  = New-RandomHex 16
 
-# Write the plugin's backend config (plugins/novachat-levilamina/config.json).
+# Write the plugin's backend config. The path is NOT <modDir>/config.json:
+# LeviLamina's Mod::getDataDir() is <modDir>/data (Mod.cpp: mImpl->dataDir =
+# mImpl->modDir / u8"data"), and NovaChatConfig's constructor builds
+# mConfigPath = dataDir / "config.json" (NovaChatConfig.cpp:200). Writing to
+# <modDir>/config.json therefore leaves the plugin's own file absent, so load()
+# falls back to the bundled template -- whose backend.port is 8888 -- and every
+# connect attempt goes to the wrong port. That is exactly what CI run
+# 40272156700 showed: "Created config.json from the bundled template" followed
+# by chat.network.not_connected, while the backend listened on 27907.
 # LeviLamina's NovaChatConfig saves JSON on first load; we pre-write it so the
 # plugin points at our backend from the first connect attempt.
 # CRITICAL: the username here MUST match clients[].username in novalink.yml
 # (the template uses "E2E_Client"), or the backend rejects with NC-401.
-$pluginConfig = Join-Path $pluginDir "config.json"
+$pluginDataDir = Join-Path $pluginDir "data"
+New-Item -ItemType Directory -Path $pluginDataDir -Force | Out-Null
+$pluginConfig = Join-Path $pluginDataDir "config.json"
 @"
 {
   "backend": {
