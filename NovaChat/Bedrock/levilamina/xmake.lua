@@ -111,6 +111,8 @@ target("novachat-levilamina")
     -- into the output (replaces the manual after_build os.cp below -- kept as a
     -- fallback in case modpacker is absent in a future levibuildscript version).
     if not sdk_disabled then
+        -- Event IDs must match the clang-cl runtime's type names.
+        set_toolchains("clang-cl")
         add_rules("@levibuildscript/linkrule")
         add_rules("@levibuildscript/modpacker")
     end

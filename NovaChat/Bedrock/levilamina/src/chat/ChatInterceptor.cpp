@@ -30,6 +30,8 @@ namespace novachat {
 using namespace novachat::protocol;
 using namespace novachat::network;
 
+static_assert(ll::event::getEventId<ll::event::PlayerChatEvent>.name == "ll::event::PlayerChatEvent");
+
 // Event listener handles
 static ll::event::ListenerPtr sChatListener;
 static ll::event::ListenerPtr sJoinListener;
@@ -47,9 +49,9 @@ ChatInterceptor::~ChatInterceptor() {
     unregisterHooks();
 }
 
-void ChatInterceptor::registerHooks() {
+bool ChatInterceptor::registerHooks() {
     if (mHooksRegistered) {
-        return;
+        return true;
     }
 
     auto& logger = mPlugin.getSelf().getLogger();
@@ -137,11 +139,18 @@ void ChatInterceptor::registerHooks() {
         }
     );
 
+    if (!sChatListener || !sJoinListener || !sLeaveListener) {
+        logger.error("Failed to register player event listeners; check the plugin's compiler matches LeviLamina.");
+        unregisterHooks();
+        return false;
+    }
+
     // Register packet handlers for incoming messages from backend
     registerPacketHandlers();
 
     mHooksRegistered = true;
     logger.info("Chat hooks registered successfully.");
+    return true;
 }
 
 void ChatInterceptor::registerPacketHandlers() {
@@ -485,7 +494,7 @@ void ChatInterceptor::registerPacketHandlers() {
 }
 
 void ChatInterceptor::unregisterHooks() {
-    if (!mHooksRegistered) {
+    if (!mHooksRegistered && !sChatListener && !sJoinListener && !sLeaveListener) {
         return;
     }
 

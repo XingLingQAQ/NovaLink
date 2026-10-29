@@ -15,6 +15,8 @@
 
 namespace novachat {
 
+static_assert(ll::event::getEventId<ll::event::ServerLevelTickEvent>.name == "ll::event::ServerLevelTickEvent");
+
 static ll::event::ListenerPtr sServerStartedListener;
 // levilamina 26.20.7 removed the ll/api/schedule/* API (ServerTimeScheduler +
 // RepeatTask no longer exist). We drive per-tick packet processing by
@@ -104,16 +106,10 @@ bool NovaChatPlugin::enable() {
     // Initialize command handler
     mCommandHandler = std::make_unique<CommandHandler>(*this);
 
-    // Connect to backend
-    if (!mNetworkClient->connect()) {
-        logger.warn("Failed to connect to NovaLink backend. Will retry in background.");
-    }
-
     // Register chat hooks
-    mChatInterceptor->registerHooks();
-
-    // Register commands
-    mCommandHandler->registerCommands();
+    if (!mChatInterceptor->registerHooks()) {
+        return false;
+    }
 
     // Process incoming packets on the server thread every tick (~50ms).
     // This replaces the old ll::schedule::ServerTimeScheduler + RepeatTask
@@ -126,6 +122,20 @@ bool NovaChatPlugin::enable() {
             }
         }
     );
+
+    if (!sTickListener) {
+        logger.error("Failed to register the server tick listener; check the plugin's compiler matches LeviLamina.");
+        mChatInterceptor->unregisterHooks();
+        return false;
+    }
+
+    // Connect to backend
+    if (!mNetworkClient->connect()) {
+        logger.warn("Failed to connect to NovaLink backend. Will retry in background.");
+    }
+
+    // Register commands
+    mCommandHandler->registerCommands();
 
     mEnabled = true;
     logger.info("NovaChat-LeviLamina enabled successfully.");

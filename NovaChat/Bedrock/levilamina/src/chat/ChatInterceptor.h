@@ -63,7 +63,7 @@ public:
      * Register chat hooks with LeviLamina.
      * Hooks into PlayerChatEvent and TextPacket handling.
      */
-    void registerHooks();
+    bool registerHooks();
 
     /**
      * Unregister chat hooks.
