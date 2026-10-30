@@ -637,15 +637,46 @@ debug: false
     # above" (verified 2026-10-18); on 25 it reaches "Done (".
     ReadyPattern = "(?i)Done \("; Jdk = "Jdk25"; ChatPhrase = "hello from e2e bot"
     McPort = 25565
-    # Gradle task + jar glob for the per-platform plugin build step.
-    # Folia API 26.x declares org.gradle.jvm.version=25, so the plugin must be
-    # compiled with JDK 25 (build.gradle sourceCompatibility=VERSION_25; no
-    # toolchain block, so the Gradle launcher JVM must be JDK 25).
+    # Folia API 26.x requires JDK 25.
+    # build includes shadowJar; the thin jar is disabled.
     GradleTask  = ":NovaChat:Plugin:folia:build"
     JarGlob     = "NovaChat/Plugin/folia/build/libs/NovaChat-Folia-*.jar"
     BuildJdk    = "Jdk25"
     PluginsSubdir = "folia/plugins"
     BotName     = "E2E_Bot_Alpha"
+    # Data folder follows plugin.yml's name.
+    PluginConfig = @{
+      RelativePath = "plugins/NovaChat-Folia/config.yml"
+      Body = @'
+config-version: 1
+
+backend:
+  host: "{{HOST}}"
+  port: {{PORT}}
+  username: "{{USERNAME}}"
+  password: "{{PASSWORD}}"
+  reconnect-delay: 5
+folia:
+  network-timeout: 5000
+chat:
+  replace_vanilla: false
+  default_channel: "local"
+  locale: "en_US"
+  channel-prefixes: {}
+format:
+  prefix: "&8[&bNovaChat&8]&r "
+  error: "&c错误: {message}"
+  success: "&a成功: {message}"
+  channels:
+    global: "&c[全服] &7{player}&f: {message}"
+    local: "&e[本地] &7{player}&f: {message}"
+    resource: "&a[资源] &7{player}&f: {message}"
+    pvp: "&c[PVP] &7{player}&f: {message}"
+    private_default: "&d[私聊] &7{player}&f: {message}"
+  default: "&7[{channel_color}{channel_name}] {player}&f: {message}"
+debug: false
+'@
+    }
   }
   pnx = @{
     LockName = 'nukkit';   BotScript = 'run-e2e-bedrock.js'; BotKind = 'bedrock'
@@ -1303,48 +1334,9 @@ function Invoke-Platform([string]$pf) {
         $result.chatRoundTrip = $chatEvidence
         if ($l1Evidence -and $chatEvidence) {
           $result.status = "PASS"
+        } elseif ($l1Evidence -and $def.PluginConfig) {
+          $result.status = "FAIL"; $result.notes = "plugin answered a command, but no NovaChat-formatted chat line reached the bot (chat round-trip not verified)"
         } elseif ($l1Evidence) {
-          # PARTIAL deliberately does NOT gate -- decision, not an oversight.
-          #
-          # The plugin side of the handshake IS provisioned, via
-          # Write-PluginBackendConfig, for every platform that declares a
-          # PluginConfig: nukkit, pnx and sponge. It writes the plugin's own
-          # config BEFORE first start with backend.port = 27905 and the SAME
-          # username/password that go into novalink.yml, so those three can
-          # authenticate and CAN complete the chat round-trip. A PARTIAL there
-          # is a real signal, not a harness artifact.
-          #
-          # Platforms with no PluginConfig entry are velocity and bungee only
-          # (both proxy-only and SKIPPED by this orchestrator anyway -- see
-          # their Note), plus bukkit, which is not driven through this path.
-          #
-          # Consequence, stated plainly: PASS now means the round-trip really
-          # happened on every platform this orchestrator actually runs. The
-          # previously-named nukkit/pnx/folia are no longer in the
-          # "cannot authenticate" category: nukkit and pnx declare PluginConfig,
-          # and folia is not gated here at all (no plugin-format guarantee is
-          # claimed for it -- it keeps its bundled template).
-          $result.status = "PARTIAL"; $result.notes = "plugin answered a command, but no NovaChat-formatted chat line reached the bot (chat round-trip not verified)"
-          # The plugin side of the handshake IS now provisioned for the
-          # platforms that declare a PluginConfig (sponge, nukkit, pnx) via
-          # Write-PluginBackendConfig, which writes the plugin's own config
-          # BEFORE first start with backend.port = 27905 and the SAME
-          # username/password that go into novalink.yml. Those platforms
-          # authenticate and CAN complete the chat round-trip; a PARTIAL there
-          # is a real signal, not a harness artifact.
-          #
-          # Platforms with no PluginConfig entry (velocity/bungee/folia) still
-          # keep their bundled template -- username "Survival_Server", port
-          # 8888 -- and cannot authenticate. For those, PARTIAL remains exactly
-          # what a healthy plugin produces: it loaded and answered /nc help,
-          # but has no backend to route through. Gating on PARTIAL would paint
-          # them red for a harness gap, which is the same class of dishonest
-          # signal as the vacuous PASS this gate replaced.
-          #
-          # Consequence, stated plainly: for a platform WITHOUT PluginConfig,
-          # PASS here would mean "plugin loaded and answered a command", not
-          # "chat round-trip verified". For sponge/nukkit/pnx, PASS means the
-          # round-trip really happened.
           $result.status = "PARTIAL"; $result.notes = "plugin answered a command, but chat round-trip not echoed (no PluginConfig for this platform, so the plugin keeps its bundled backend defaults)"
         } else {
           $result.status = "FAIL"; $result.notes = "no plugin-produced line in results.json (only vanilla traffic)"
