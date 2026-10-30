@@ -60,6 +60,8 @@ function Assert-JointBusinessResults {
     for ($i = 0; $i -lt $lines.Count - 1; $i++) {
       if ($lines[$i].text -match 'online members \([1-9][0-9]*\):') {
         $body = [string]$lines[$i + 1].text
+        $body = [regex]::Replace($body, ([string][char]0x00A7 + '.|&[0-9a-fk-or]'), '')
+        $body = ($body -replace '^\[NovaChat\]\s*', '').Trim()
         break
       }
     }

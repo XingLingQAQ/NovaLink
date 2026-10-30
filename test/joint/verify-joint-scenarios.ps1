@@ -12,6 +12,11 @@ $expectations = $ast.Find({ param($node)
   $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Assert-BotExpectations'
 }, $true)
 . ([scriptblock]::Create($expectations.Extent.Text))
+$proxyCheck = $ast.Find({ param($node)
+  $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Assert-ProxyPluginLoaded'
+}, $true)
+. ([scriptblock]::Create($proxyCheck.Extent.Text))
+function Read-LogText([string]$Path) { return [System.IO.File]::ReadAllText($Path) }
 
 function Assert-Check([bool]$Pass, [string]$Label) {
   if (-not $Pass) { throw "SelfTest failed: $Label" }
@@ -21,6 +26,16 @@ function Assert-Check([bool]$Pass, [string]$Label) {
 function New-Row([string]$Text, [double]$AtMs) {
   [PSCustomObject]@{ kind = 'messagestr'; text = $Text; atMs = $AtMs }
 }
+
+$proxyLog = [System.IO.Path]::GetTempFileName()
+try {
+  [System.IO.File]::WriteAllText($proxyLog, 'Loaded plugin NovaChat version 1.0')
+  $verdict = Assert-ProxyPluginLoaded 'selftest/proxy' 'bungee' $proxyLog
+  Assert-Check (-not $verdict.pass) 'loader registration does not prove plugin enabled'
+  [System.IO.File]::WriteAllText($proxyLog, 'NovaChat BungeeCord plugin enabled!')
+  $verdict = Assert-ProxyPluginLoaded 'selftest/proxy' 'bungee' $proxyLog
+  Assert-Check $verdict.pass 'plugin enable marker accepted'
+} finally { Remove-Item -LiteralPath $proxyLog -Force }
 
 function New-Results {
   $alice = [PSCustomObject]@{
@@ -76,6 +91,11 @@ $results = New-Results
 $results.Alice.sent[0].atMs = 90
 $verdicts = Get-Verdicts $results
 Assert-Check (@($verdicts | Where-Object { $_.id -eq 'round1/business/reconnect-membership' -and -not $_.pass }).Count -eq 1) 'pre-reconnect who cannot prove restored membership'
+
+$results = New-Results
+$results.Alice.received[4].text = '[NovaChat] E2EBizAlice, E2EBizBob'
+$verdicts = Get-Verdicts $results
+Assert-Check (@($verdicts | Where-Object { $_.id -eq 'round1/business/reconnect-membership' -and $_.pass }).Count -eq 1) 'Bungee prefixed member list accepted'
 
 $results = New-Results
 $results.Alice.received[4].text = '<E2EBizAlice> unrelated chat'
