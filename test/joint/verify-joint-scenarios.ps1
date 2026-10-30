@@ -16,7 +16,12 @@ $proxyCheck = $ast.Find({ param($node)
   $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Assert-ProxyPluginLoaded'
 }, $true)
 . ([scriptblock]::Create($proxyCheck.Extent.Text))
+$readyCheck = $ast.Find({ param($node)
+  $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Wait-LogMarker'
+}, $true)
+. ([scriptblock]::Create($readyCheck.Extent.Text))
 function Read-LogText([string]$Path) { return [System.IO.File]::ReadAllText($Path) }
+function Log([string]$Message) {}
 
 function Assert-Check([bool]$Pass, [string]$Label) {
   if (-not $Pass) { throw "SelfTest failed: $Label" }
@@ -35,6 +40,8 @@ try {
   [System.IO.File]::WriteAllText($proxyLog, 'NovaChat BungeeCord plugin enabled!')
   $verdict = Assert-ProxyPluginLoaded 'selftest/proxy' 'bungee' $proxyLog
   Assert-Check $verdict.pass 'plugin enable marker accepted'
+  [System.IO.File]::WriteAllText($proxyLog, 'java.net.BindException: Address already in use')
+  Assert-Check (-not (Wait-LogMarker $proxyLog 'Listening on' 1 'proxy')) 'bind failure stops readiness polling'
 } finally { Remove-Item -LiteralPath $proxyLog -Force }
 
 function New-Results {

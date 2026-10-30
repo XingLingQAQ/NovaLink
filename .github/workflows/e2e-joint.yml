@@ -8,6 +8,11 @@ on:
         type: choice
         default: velocity,bungee
         options: ["velocity,bungee", velocity, bungee]
+      modes:
+        description: Joint modes to run
+        type: choice
+        default: relay,lite
+        options: ["relay,lite", relay, lite]
   schedule:
     - cron: '20 5 * * *'
 
@@ -28,7 +33,7 @@ jobs:
       fail-fast: false
       matrix:
         proxy: [velocity]
-        mode: [relay, lite]
+        mode: ${{ fromJSON(inputs.modes == 'lite' && '["lite"]' || inputs.modes == 'relay' && '["relay"]' || '["relay","lite"]') }}
     env: &joint-env
       JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8 -Dconsole.encoding=UTF-8
       GRADLE_OPTS: -Dorg.gradle.daemon=false -Dfile.encoding=UTF-8
@@ -136,7 +141,7 @@ jobs:
           retention-days: 7
 
   joint-bungee:
-    if: github.event_name != 'workflow_dispatch' || contains(inputs.proxies, 'bungee')
+    if: github.event_name != 'workflow_dispatch' || (contains(inputs.proxies, 'bungee') && contains(inputs.modes, 'relay'))
     name: Joint Bungee + Bukkit + Nukkit (relay)
     runs-on: windows-2022
     timeout-minutes: 45

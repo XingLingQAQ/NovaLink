@@ -88,15 +88,14 @@ param(
   [string]$Jdk21 = "",
   [string]$Jdk25 = "",
 
-  # Ports. One distinct default per role so a leftover process from another
-  # harness cannot collide with this one.
-  [int]$BackendPort = 54720,
-  [int]$BackendWsPort = 54730,
-  [int]$ProxyPort = 54710,
-  [int]$JavaPort = 54700,
-  [int]$JavaRconPort = 54705,
-  [int]$ModPort = 54701,
-  [int]$ModRconPort = 54706,
+  # Keep listener ports below Windows' dynamic client port range.
+  [int]$BackendPort = 27720,
+  [int]$BackendWsPort = 27730,
+  [int]$ProxyPort = 27710,
+  [int]$JavaPort = 27700,
+  [int]$JavaRconPort = 27705,
+  [int]$ModPort = 27701,
+  [int]$ModRconPort = 27706,
   [int]$BedrockAPort = 19140,
   [int]$BedrockARconPort = 27021,
   [int]$BedrockBPort = 19141,
@@ -231,6 +230,10 @@ function Wait-LogMarker([string]$file, [string]$pattern, [int]$timeoutSec, [stri
   $deadline = (Get-Date).AddSeconds($timeoutSec)
   while ((Get-Date) -lt $deadline) {
     $text = Read-LogText $file
+    if ($text -match '\bBindException\b|FAILED TO BIND TO PORT') {
+      Log "  $label could not bind its listener (see $file)"
+      return $false
+    }
     if ($text -and ($text -match $pattern)) {
       Log "  $label ready (matched: $pattern)"
       return $true
