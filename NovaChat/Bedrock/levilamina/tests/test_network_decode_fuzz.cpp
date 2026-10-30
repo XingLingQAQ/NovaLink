@@ -30,7 +30,7 @@
 // extract — test existing pure boundaries + honestly mark residual gaps".
 //
 // Build & run:
-//   xmake f --sdk=n -m debug
+//   xmake f --levilamina_sdk=n -m debug
 //   xmake build novachat-levilamina-decode-fuzz-tests
 //   xmake run novachat-levilamina-decode-fuzz-tests
 //

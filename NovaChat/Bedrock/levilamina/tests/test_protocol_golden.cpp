@@ -20,7 +20,7 @@
 // current working directory looking for settings.gradle / .git.
 //
 // Build & run:
-//   xmake f --sdk=n -m debug
+//   xmake f --levilamina_sdk=n -m debug
 //   xmake build novachat-levilamina-golden-tests
 //   xmake run novachat-levilamina-golden-tests
 //

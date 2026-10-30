@@ -16,7 +16,7 @@
 // is exercised here without the LeviLamina SDK or BDS toolchain.
 //
 // Build & run:
-//   xmake f --sdk=n --openssl=n -m debug
+//   xmake f --levilamina_sdk=n --openssl=n -m debug
 //   xmake build novachat-levilamina-moderation-response-tests
 //   xmake run novachat-levilamina-moderation-response-tests
 //

@@ -84,7 +84,7 @@ tasks.register('xmakeConfigure', Exec) {
     //   hidden inside .xmake/cache/<pkg>/install.txt and the only visible
     //   symptom is a bare exit -1. Mirrors the old bedrock-ci.yml configure
     //   command `xmake f -a x64 -p windows -m release -y -v`.
-    commandLine 'xmake', 'f', '-c', '-a', 'x64', '-p', 'windows', '--toolchain=msvc', '-m', buildMode.toString(), '-y', '-v'
+    commandLine 'xmake', 'f', '-c', '-a', 'x64', '-p', 'windows', '--toolchain=clang-cl', '-m', buildMode.toString(), '-y', '-v'
     workingDir projectDir
     // Always run configure (do NOT gate on `.xmake` existing). A previous CI
     // failure can leave a STALE `.xmake` dir behind; if we skip configure when

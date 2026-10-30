@@ -16,7 +16,7 @@
 // NovaChat/Plugin/bukkit/.../command/{Mute,Kick,Ban,Unban}Command.java.
 //
 // Build & run:
-//   xmake f --sdk=n --openssl=n -m debug
+//   xmake f --levilamina_sdk=n --openssl=n -m debug
 //   xmake build novachat-levilamina-moderation-tests
 //   xmake run novachat-levilamina-moderation-tests
 //

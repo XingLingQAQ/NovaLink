@@ -19,7 +19,7 @@
 // next to the binary so the loader finds the bundles.
 //
 // Build & run:
-//   xmake f --sdk=n -m debug
+//   xmake f --levilamina_sdk=n -m debug
 //   xmake build novachat-levilamina-i18n-parity-tests
 //   xmake run novachat-levilamina-i18n-parity-tests
 //

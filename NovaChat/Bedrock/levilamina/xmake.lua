@@ -27,19 +27,15 @@ end
 
 -- Option to skip the LeviLamina SDK dependency (e.g. when only building the
 -- standalone protocol tests without the BDS toolchain / github access).
--- Usage:  xmake f --sdk=n  &&  xmake build novachat-levilamina-tests
-option("sdk")
-    set_default("y")
+-- Usage:  xmake f --levilamina_sdk=n  &&  xmake build novachat-levilamina-tests
+option("levilamina_sdk")
+    set_default(true)
     set_showmenu(true)
     set_description("Enable the LeviLamina SDK dependency (requires VS + github).")
 option_end()
 
--- NOTE: `xmake f --sdk=n` stores the option as the BOOLEAN false, not the
--- string "n" (xmake converts y/n option values). Comparing against "n" alone
--- therefore never matched and the SDK branch was always taken, so
--- `xmake f --sdk=n` still cloned the levimc repo and pulled levilamina. Accept
--- both spellings here and reuse the predicate for the target guards below.
-local sdk_disabled = (get_config("sdk") == "n") or (get_config("sdk") == false)
+-- `sdk` is reserved for the toolchain SDK installation path.
+local sdk_disabled = get_config("levilamina_sdk") == false
 
 -- Option to skip the OpenSSL package entirely.
 --
@@ -49,7 +45,7 @@ local sdk_disabled = (get_config("sdk") == "n") or (get_config("sdk") == false)
 -- Configure script rejects a cygwin Perl), so those runs need a way to
 -- configure and build the pure tests anyway. Defaults to on, so every existing
 -- invocation behaves exactly as before.
--- Usage:  xmake f --sdk=n --openssl=n  &&  xmake build novachat-levilamina-tests
+-- Usage:  xmake f --levilamina_sdk=n --openssl=n  &&  xmake build novachat-levilamina-tests
 option("openssl")
     set_default("y")
     set_showmenu(true)
@@ -60,7 +56,7 @@ option_end()
 local openssl_disabled = (get_config("openssl") == "n") or (get_config("openssl") == false)
 
 if not sdk_disabled then
-    -- LeviLamina SDK + official build rules (only pulled when --sdk=n is NOT
+    -- LeviLamina SDK + official build rules (only pulled when --levilamina_sdk=n is NOT
     -- passed). set_policy("network.skip_fetch", true) would block the package
     -- pull, so we rely on the option guard above to avoid the repo clone
     -- entirely when only the test target is built.
@@ -111,9 +107,8 @@ target("novachat-levilamina")
     -- into the output (replaces the manual after_build os.cp below -- kept as a
     -- fallback in case modpacker is absent in a future levibuildscript version).
     if not sdk_disabled then
-        -- Keep MSVC's SDK/linker environment, but match the runtime's event IDs.
-        set_toolset("cc", "clang-cl")
-        set_toolset("cxx", "clang-cl")
+        -- Event IDs must match the clang-cl runtime's type names.
+        set_toolchains("clang-cl")
         add_rules("@levibuildscript/linkrule")
         add_rules("@levibuildscript/modpacker")
     end
@@ -211,7 +206,7 @@ target_end()
 -- without the BDS toolchain or github access.
 --
 -- Build & run:
---   xmake f --sdk=n -m debug
+--   xmake f --levilamina_sdk=n -m debug
 --   xmake build novachat-levilamina-tests
 --   xmake run novachat-levilamina-tests
 target("novachat-levilamina-tests")
@@ -267,7 +262,7 @@ target_end()
 -- `xmake run` executes from the project dir, so no configuration is needed.
 --
 -- Build & run:
---   xmake f --sdk=n -m debug
+--   xmake f --levilamina_sdk=n -m debug
 --   xmake build novachat-levilamina-golden-tests
 --   xmake run novachat-levilamina-golden-tests
 target("novachat-levilamina-golden-tests")
@@ -305,7 +300,7 @@ local function defineOpensslTestTargets()
 -- server SSL_CTX so no BDS/plugin runtime is needed.
 --
 -- Build & run:
---   xmake f --sdk=n -m debug
+--   xmake f --levilamina_sdk=n -m debug
 --   xmake build novachat-levilamina-tls-tests
 --   xmake run novachat-levilamina-tls-tests
 target("novachat-levilamina-tls-tests")
@@ -358,7 +353,7 @@ target_end()
 -- null -> doRawSend falls through to ::send / tlsSend exactly as before).
 --
 -- Build & run:
---   xmake f --sdk=n -m debug
+--   xmake f --levilamina_sdk=n -m debug
 --   xmake build novachat-levilamina-send-tests
 --   xmake run novachat-levilamina-send-tests
 target("novachat-levilamina-send-tests")
@@ -418,7 +413,7 @@ end
 -- honest residual-gap note about the "close connection" audit expectation.
 --
 -- Build & run:
---   xmake f --sdk=n -m debug
+--   xmake f --levilamina_sdk=n -m debug
 --   xmake build novachat-levilamina-decode-fuzz-tests
 --   xmake run novachat-levilamina-decode-fuzz-tests
 target("novachat-levilamina-decode-fuzz-tests")
@@ -446,7 +441,7 @@ target_end()
 -- errorMessage() composites a non-empty localized string.
 --
 -- Build & run:
---   xmake f --sdk=n -m debug
+--   xmake f --levilamina_sdk=n -m debug
 --   xmake build novachat-levilamina-i18n-parity-tests
 --   xmake run novachat-levilamina-i18n-parity-tests
 target("novachat-levilamina-i18n-parity-tests")
@@ -488,7 +483,7 @@ target_end()
 -- it is the thin adapter over these builders and needs the BDS toolchain.
 --
 -- Build & run:
---   xmake f --sdk=n --openssl=n -m debug
+--   xmake f --levilamina_sdk=n --openssl=n -m debug
 --   xmake build novachat-levilamina-moderation-tests
 --   xmake run novachat-levilamina-moderation-tests
 target("novachat-levilamina-moderation-tests")
@@ -522,7 +517,7 @@ target_end()
 -- exact code ChatInterceptor runs is exercised here without ll::/mc:: headers.
 --
 -- Build & run:
---   xmake f --sdk=n --openssl=n -m debug
+--   xmake f --levilamina_sdk=n --openssl=n -m debug
 --   xmake build novachat-levilamina-moderation-response-tests
 --   xmake run novachat-levilamina-moderation-response-tests
 target("novachat-levilamina-moderation-response-tests")

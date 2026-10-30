@@ -33,7 +33,7 @@
 // the expected encodePacket output.
 //
 // Build & run:
-//   xmake f --sdk=n -m debug
+//   xmake f --levilamina_sdk=n -m debug
 //   xmake build novachat-levilamina-send-tests
 //   xmake run novachat-levilamina-send-tests
 //
