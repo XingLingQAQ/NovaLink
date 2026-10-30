@@ -16,6 +16,7 @@
 #include "../src/protocol/PacketIds.h"
 #include "../src/protocol/Packet.h"
 #include "../src/command/PlayerChannelAction.h"
+#include "../src/chat/PendingChannelActions.h"
 #include "../src/util/Sha256.h"
 #include "../src/i18n/I18n.h"
 
@@ -298,6 +299,29 @@ static void testPlayerChannelActionIdentity() {
     }
 }
 
+static void testPendingChannelActions() {
+    using Tracker = novachat::PendingChannelActions;
+    Tracker pending;
+    const Tracker::Clock::time_point now{};
+    pending.add("join-a", "player-a", now);
+    pending.add("join-b", "player-b", now);
+    pending.removePlayer("player-a");
+    pending.add("new-session-a", "player-a", now);
+    CHECK(pending.take("join-a", now).empty());
+    CHECK_EQ(pending.take("join-b", now), std::string("player-b"));
+    CHECK_EQ(pending.take("new-session-a", now), std::string("player-a"));
+    CHECK(pending.take("new-session-a", now).empty());
+
+    pending.add("late", "player-a", now);
+    CHECK(pending.take("late", now + Tracker::timeout).empty());
+    pending.add("before-timeout", "player-a", now);
+    CHECK_EQ(pending.take("before-timeout", now + Tracker::timeout - std::chrono::seconds(1)),
+             std::string("player-a"));
+    pending.add("disabled", "player-a", now);
+    pending.clear();
+    CHECK(pending.take("disabled", now).empty());
+}
+
 int main() {
     std::printf("Running NovaChat-LeviLamina protocol tests...\n");
 
@@ -310,6 +334,7 @@ int main() {
     testHandshakeResponseRoundTrip();
     testChannelActionPacket();
     testPlayerChannelActionIdentity();
+    testPendingChannelActions();
     testChannelActionIdsMatchJava();
     testAdminActionIds();
     testPlatformIds();

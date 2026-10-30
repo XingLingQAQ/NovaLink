@@ -495,6 +495,7 @@ void ChatInterceptor::registerPacketHandlers() {
 }
 
 void ChatInterceptor::unregisterHooks() {
+    mPendingChannelActions.clear();
     if (!mHooksRegistered && !sChatListener && !sJoinListener && !sLeaveListener) {
         return;
     }
@@ -524,6 +525,7 @@ void ChatInterceptor::unregisterHooks() {
 
 void ChatInterceptor::onPlayerJoin(const std::string& playerName, const std::string& playerUuid,
                                    const std::string& localeCode) {
+    mPendingChannelActions.removePlayer(playerUuid);
     auto& logger = mPlugin.getSelf().getLogger();
 
     // Update name mapping
@@ -567,6 +569,7 @@ void ChatInterceptor::onPlayerJoin(const std::string& playerName, const std::str
 }
 
 void ChatInterceptor::onPlayerLeave(const std::string& playerUuid) {
+    mPendingChannelActions.removePlayer(playerUuid);
     // Remove player state
     removePlayerState(playerUuid);
     
@@ -1143,11 +1146,7 @@ void ChatInterceptor::registerPendingAdminAction(const std::string& requestId, c
 
 void ChatInterceptor::registerPendingChannelAction(const std::string& requestId,
                                                    const std::string& playerUuid) {
-    if (requestId.empty() || playerUuid.empty()) {
-        return;
-    }
-    std::lock_guard<std::mutex> lock(mPendingChannelActionsMutex);
-    mPendingChannelActions.emplace(requestId, playerUuid);
+    mPendingChannelActions.add(requestId, playerUuid);
 }
 
 void ChatInterceptor::handleMembershipResponse(const protocol::ChannelActionResponsePacket& packet) {
@@ -1156,15 +1155,9 @@ void ChatInterceptor::handleMembershipResponse(const protocol::ChannelActionResp
         return;
     }
 
-    std::string playerUuid;
-    {
-        std::lock_guard<std::mutex> lock(mPendingChannelActionsMutex);
-        auto it = mPendingChannelActions.find(packet.getRequestId().toString());
-        if (it == mPendingChannelActions.end()) {
-            return;
-        }
-        playerUuid = it->second;
-        mPendingChannelActions.erase(it);
+    const auto playerUuid = mPendingChannelActions.take(packet.getRequestId().toString());
+    if (playerUuid.empty()) {
+        return;
     }
 
     auto& i18n = i18n::I18n::getInstance();
@@ -1189,16 +1182,9 @@ void ChatInterceptor::reportOperatorOutcome(const protocol::ChannelActionRespons
         return;
     }
 
-    std::string origin;
-    {
-        std::string reqId = packet.getRequestId().toString();
-        std::lock_guard<std::mutex> lock(mPendingChannelActionsMutex);
-        auto it = mPendingChannelActions.find(reqId);
-        if (it == mPendingChannelActions.end()) {
-            return;
-        }
-        origin = it->second;
-        mPendingChannelActions.erase(it);
+    const auto origin = mPendingChannelActions.take(packet.getRequestId().toString());
+    if (origin.empty()) {
+        return;
     }
 
     auto& i18n = i18n::I18n::getInstance();

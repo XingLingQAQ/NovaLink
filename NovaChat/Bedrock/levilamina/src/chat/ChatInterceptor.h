@@ -1,5 +1,7 @@
 #pragma once
 
+#include "PendingChannelActions.h"
+
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -377,14 +379,8 @@ private:
     std::unordered_map<std::string, std::string> mPendingAdminActions;
     mutable std::mutex mPendingAdminActionsMutex;
 
-    // Pending MODERATION channel-action tracking: request UUID -> player UUID
-    // (or the console sentinel). Separate from mPendingActions (which maps a
-    // WHO request to its channel) because the value here is an origin, not a
-    // channel. Populated by registerPendingChannelAction at send time and
-    // consumed by reportOperatorOutcome — the same request-UUID correlation
-    // the Java ChannelResponseTracker performs.
-    std::unordered_map<std::string, std::string> mPendingChannelActions;
-    mutable std::mutex mPendingChannelActionsMutex;
+    // Membership and moderation replies belong to the requesting player session.
+    PendingChannelActions mPendingChannelActions;
 };
 
 } // namespace novachat
