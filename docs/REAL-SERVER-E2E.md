@@ -2,7 +2,7 @@
 
 > 设计基线：2026-08-01 当前工作树。本文档只给出**可执行的设计**（脚本结构、版本固定、断言、回收、CI 编排）；实际下载/启动/接受 EULA 等执行动作由后续实施阶段按本文档落地，**不在本文档产出时执行**。
 >
-> 范围：Windows 本机 + CI 的 NovaLink backend + Paper / Folia / Velocity / BungeeCord / Nukkit / PowerNukkitX（PNX）/ Sponge 可行性。
+> 当前实现以 `test/` 为准，矩阵含 bukkit、folia、velocity、bungee、nukkit、pnx、sponge、endstone、levilamina 和 pmmp。下文原设计及早期实跑记录保留作历史参考；当前契约见 §1.5.1、§4 和 [test/README.md](../test/README.md)。本轮仅修文档，未执行全矩阵验证。
 
 ---
 
@@ -23,35 +23,40 @@
 - 不验证 Minecraft **玩家客户端的登录握手**（除非引入真实客户端自动登录，见 §7.4 的 P2 可行性——该路径依赖微软账号/Mojang 账号，自动化不可行或受反滥用限制）。
 - 不验证 Folia 的**多线程调度正确性**（真实服务器进程内的调度行为可冒烟，但线程交错断言不可靠）。
 - 不验证 BungeeCord 旧协议栈与高版本 Paper 下游的完整兼容（Bungee 仅做 `login`/`server` 级冒烟，见 §5.4）。
-- 不验证 **LeviLamina（C++ BDS）/ PocketMine-MP / Endstone / Fabric / NeoForge / Quilt / Forge** —— 模组加载器类需要 Gradle 9.5+（当前 wrapper 8.8，`novachat-mod` loader 子模块在 `settings.gradle` 中被注释）；PHP/Python/C++ 端有独立工具链，归为 P2 且不做 CI 默认执行。
+- LeviLamina、PocketMine-MP 和 Endstone 已纳入 `test/` 执行矩阵；Fabric / NeoForge / Quilt / Forge 不在这套 10 平台矩阵内。
 - 不验证 **Nukkit/PNX 的基岩客户端协议**（真实基岩客户端登录）；只验证 Nukkit/PNX 服务端进程 + 插件装载 + 到 backend 的 NovaProtocol 连线。
 - 不验证 **MySQL/Redis 持久化**：`database.type=memory`. MySQL/Redis/PostgreSQL 的真实持久化另由 `MySQLProvider*`/`RedisProvider*`/`PostgreSQLRealInstanceTest` 系列集成测试覆盖（直接连真实数据库实例，不依赖 Testcontainers）；`TestContainersConfig` 工具类此前是孤儿代码（无任何测试调用）已删除。
 
 ### 1.3 冻结平台红线
 
-无。所有纳入范围的平台均为活跃执行矩阵成员。
+10 个矩阵条目中，bungee 和 velocity 因缺少下游 Purpur 拓扑而按设计跳过，不执行完整 L1；其余条目已接入 runner。接入状态不代表本轮实跑通过。
 
 ---
 
-## 1.5 实施现状对账（2026-08-08）
+## 1.5 实施现状与历史记录
 
-> 本节是**事后对账**，记录 2026-08-01 ~ 2026-08-08 实际落地的 E2E 与下方 §2–§8 原始设计的差异。§2–§8 的设计 rationale 仍有效，保留不动；凡是现实与设计分叉之处，在本节显式标注。证据产物位于 gitignore 的 `.e2e/` 工作区（不入库，但本机磁盘可读）。
+> §1.5.1 按当前锁文件和 runner 更新；§1.5.2～§1.5.10 保留 2026-08 的本地 `.e2e/` 历史记录，不作为当前 `test/` 或 CI 的通过证明。
 
-### 1.5.1 平台 L1 达成矩阵
+### 1.5.1 当前 10 平台矩阵与 L1 契约
 
-L1 定义：一个真实协议机器人（Java 端用 mineflayer，Bedrock 端用 bedrock-protocol，均 `auth: 'offline'` 离线模式真实 Player 身份）连入服务端，完成完整 `/nc` 命令集 + **聊天往返**（机器人发 `hello from X bot` → 插件拦截 → backend 路由 → 插件收包 → 机器人渲染含**真实内容**的格式化消息，如 `[全服] E2E_Bot_X: hello from X bot`）。所有交互时间戳化写入 `.e2e/<platform>/bot/results.json`。
+完整 L1 要求真实协议机器人（Java 用 mineflayer，Bedrock 用 bedrock-protocol）连入服务端，验证 `/nc` 命令和聊天往返：机器人发测试内容 → 插件转发 → backend 路由 → 插件收包 → 机器人收到含频道、机器人身份和原始内容的格式化消息。自身发送记录、原版回显、仅命令成功或 `PARTIAL` 均不足以证明聊天回环。当前产物在 `.e2e-artifacts/runs/`。
 
-| 平台 | 服务端（实际） | 机器人 | L1 达成 | 状态 | 证据 |
-|---|---|---|---|---|---|
-| bukkit | Purpur 1.21.8（build 2497） | mineflayer `E2E_Bot_Alpha` | 2026-08-01 | ✅ L1 | `.e2e/bot/results.json` |
-| bungee | waterfall 1.21-615 → purpur 下游 | mineflayer `E2E_Bot_Bungee` | 2026-08-05 | ✅ L1 | `.e2e/bungee/bot/results.json` |
-| velocity | velocity 4.1.0-SNAPSHOT-13 → purpur 下游 | mineflayer `E2E_Bot_Velocity` | 2026-08-07–08 | ✅ L1 | `.e2e/velocity/bot/results.json` |
-| nukkit | Cloudburst Nukkit 1239 / Bedrock 1.26.30 | bedrock-protocol 3.57.0 `E2E_Bot_Nukkit` | 2026-08-07–08 | ✅ L1 | `.e2e/nukkit/bot/results.json` |
-| folia | Folia 1.21.11-14（build 14, JDK21） | mineflayer `E2E_Folia_Bot` | 2026-08-07–08 | ✅ L1 | `.e2e/folia/bot/results.json` |
-| pnx | Cloudburst Nukkit 1239 作为 fallback 服务端（PNX 插件用 Nukkit API，故在 Nukkit 上装载；真实 PNX jar 在本环境不可下载） | bedrock-protocol 3.57.0 `E2E_PNX_Bot` | 2026-08-07–08 | ✅ L1（fallback 服务端） | `.e2e/pnx/bot/results.json` |
-| sponge | SpongeVanilla 1.16.5-8.2.0（SpongeAPI 8.2.0, JDK17） | — | 2026-08-08 | ✅ L1 | 见 §1.5.6 |
+| 平台 | 当前锁定服务端 | 实现状态 |
+|---|---|---|
+| bukkit | Purpur 1.21.11-2568，JDK 21 | 独立 runner 已接入 |
+| folia | Folia 26.1.2-8，JDK 25 | 配置注入和严格聊天 gate 已完成；全矩阵实跑待验证 |
+| velocity | Velocity 4.1.0-SNAPSHOT-16，JDK 25 | `SKIPPED-BY-DESIGN`，非 Full L1 |
+| bungee | Waterfall 1.21-615，JDK 21 | `SKIPPED-BY-DESIGN`，非 Full L1 |
+| nukkit | Cloudburst Nukkit 1.0-SNAPSHOT build 1242 | 共享 runner 已接入 |
+| pnx | 同上，Nukkit fallback 服务端 | 共享 runner 已接入 |
+| sponge | SpongeVanilla 1.21.10-17.0.0，JDK 21 | 共享 runner 已接入 |
+| endstone | `bds` 1.26.52.3 | 独立 runner 已接入 |
+| levilamina | `bds-levilamina` 1.26.51.1 + LeviLamina 26.51.7 | 独立 runner 已接入 |
+| pmmp | PocketMine-MP 5.44.3 + `pmmp-php` | 严格聊天 gate 已完成；全矩阵实跑待验证 |
 
-> 日期说明：bungee 为 2026-08-05；bukkit 为 2026-08-01；velocity/nukkit/folia/pnx 的 `results.json` 时间戳为 2026-08-07 UTC（本机 UTC+8 跨日到 08-08），故记为 2026-08-07–08。
+PMMP 已设 `replace_vanilla: true`，首条聊天前保持转发开启，主 `chatOk` 纳入 `pass`；JOIN/LEAVE 包带 `playerId`、`playerName` 和 `platform`。Folia 配置写入 `plugins/NovaChat-Folia/config.yml`；folia、nukkit、pnx 和 sponge 四个配置平台在插件有响应但缺少聊天回环时判 `FAIL`。PMMP 另有 `Test-ServerLogFatal` 门槛；Folia 共享 runner 未显式调用该检查。
+
+平台 exit 3 为环境或基础设施阻塞（`SKIPPED`），`-RequireAllPlatforms` 将其视为失败；exit 4 为结构性限制（`SKIPPED-BY-DESIGN`），严格模式允许跳过，仍不记为 PASS。下载或哈希校验失败属于前置错误（平台 exit 2）。定向 CI 中，未选中的 job 可直接 exit 0 显绿；须核对选择范围、实际执行步骤、机器人记录及 `e2e-orchestrator-summary.json` 的逐平台状态。10 个条目和绿色工作流均不等于全矩阵真实通过。
 
 ### 1.5.2 与设计的关键分叉
 
@@ -264,6 +269,12 @@ e2e/                                  # 新增，不进 gradle 主构建
 
 ### 4.1 固定原则
 
+当前实际锁为 `test/versions.lock.ps1`。BDS 已通过 Minecraft links API（`https://net-secondary.web.minecraft-services.net/api/v1.0/download/links`）解析 `result.links[]` 的 `serverBedrockWindows`，下载路径为 `bedrockdedicatedserver/bin-win/`。`bds` 为 Endstone 独立 pin 1.26.52.3；`bds-levilamina` 为 LeviLamina 独立 pin 1.26.51.1。后者禁用 Auto，不能用 Mojang 当前最新版替换。
+
+LeviLamina 安装五件套为 `bds-levilamina`、`levilamina`（26.51.7）、`levilamina-preloader`（1.16.5）、`levilamina-peeditor`（3.9.0）和 `levilamina-runtime`（26.51.1-server.11），均有固定 SHA-256。loader 放 `plugins/LeviLamina/`；`PreLoader.dll` 和 `bedrock_runtime_data` 放 BDS 根目录，执行 `PeEditor.exe -mb` 后启动 `bedrock_server_mod.exe`。SDK 须与 loader 同版；独立测试目标使用 `--levilamina_sdk=n`，不能写成工具链 SDK 路径参数 `--sdk=n`。安装细节见 [test/README.md](../test/README.md#levilamina-installation-and-sdk)。
+
+`bds -Auto` 仅在 Endstone 元数据指向同一下载 URL 时采用其 SHA-256，否则只记录计算值。links API 不可用或缺 Windows 链接时，fetch 可 exit 0 且不产出文件；runner 无可用 BDS 时写明原因并 exit 3。实际下载或哈希校验失败为平台 exit 2，均不证明 Bedrock 实跑通过。以下锁示例保留为早期设计，当前版本和哈希以实际锁文件为准。
+
 - **一切外部下载物进入 `versions.lock.ps1`**：`name / url / sha256 / eula-required / mcv / engine`。
 - URL 指向固定版本构建产物（PaperMC API 的 `https://api.papermc.io/v2/projects/paper/versions/<MC>/builds/<build>/downloads/paper-<MC>-<build>.jar` 或项目官方下载直链），**不用 `latest`**；升级 = 改 lock 文件 + 更新 SHA，不允许“自动跟随最新”。
 - 锁文件内容示例（字段含义即文档）：
@@ -369,7 +380,7 @@ java -Xmx512m -cp $cp com.nova.link.NovaLinkMain <runs>/novalink/novalink.yml
 
 - **Velocity**：`velocity.toml` 设 `bind = "127.0.0.1:<MC_SERVER_PORT>"`、`online-mode = false`；下游 Paper 的 `server.properties` 里 `server-port` 用 266xx、`online-mode=false`、`server-ip=127.0.0.1`；`velocity.toml` 的 `secret` 与 Paper `spigot.yml` 的 `velocity.secret` 对齐（或用 `paper-global.yml` 的 `proxies.velocity.enabled=true`）。插件配置指向 backend，与代理无关。
 - **BungeeCord**：`config.yml` 设 `listeners[0].host = 127.0.0.1:<MC_SERVER_PORT>`；`online_mode: false`；`ip_forward: false`（P1 冒烟不强制 IP forwarding，减少 Paper 端配置面）。
-- 断言只做「代理进程起来 → 插件连上 backend → 消息路由可达」，不断言真实玩家通过代理进服（无玩家客户端，见 §9）。
+- 上述为历史拓扑设计。当前 `test/` 共享 runner 缺少下游 Purpur，bungee/velocity 在断言前即 `SKIPPED-BY-DESIGN`，不能记为 Full L1。
 
 ---
 
@@ -474,18 +485,18 @@ java -Xmx512m -cp $cp com.nova.link.NovaLinkMain <runs>/novalink/novalink.yml
 |---|---|---|---|
 | 1 | 真实 Minecraft 玩家客户端登录（微软/Mojang 账号） | 账号认证受反滥用限制，无法无人值守 | **不可自动化**（仅 P2 可选用 offline-mode 机器人，非 CI） |
 | 2 | Folia 多线程调度正确性断言 | 线程交错不可重复，断言不可靠 | **不建议自动化**（仅冒烟） |
-| 3 | LeviLamina / PocketMine-MP / Endstone | C++/PHP/Python 独立工具链 + 依赖下载面过大 | **P2 外、不在执行矩阵** |
+| 3 | LeviLamina / PocketMine-MP / Endstone | 使用各自独立工具链和 runner | 已纳入当前矩阵；本轮未实跑，全矩阵验证待统一执行 |
 | 4 | Fabric / NeoForge / Quilt / Forge | 需要 Gradle 9.5+（当前 wrapper 8.8，loader 子模块未纳入构建），且为 mod 加载器（需额外 bootstrap） | **不可执行**（构建前置未满足） |
 | 5 | MySQL/Redis 持久化路径 | 已有 Testcontainers 覆盖；引入 DB 依赖会放大外部服务抖动 | 不在本套件（归现有测试） |
 | 6 | 真实基岩客户端登录 Nukkit/PNX | 基岩登录协议 + 设备模拟复杂 | **不可自动化**（仅服务端进程 + NovaProtocol 连线） |
-| 7 | BungeeCord 与高版本下游完整兼容 | Bungee 维护周期慢、下游协议组合爆炸 | 仅 login/server 级冒烟 |
+| 7 | BungeeCord / Velocity 代理拓扑 | 当前 runner 缺少下游 Purpur | `SKIPPED-BY-DESIGN`，非 Full L1 |
 | 8 | 公网网络环境下的下载与防火墙行为 | 本套件全回环；真实部署网络策略超出自动化范围 | 不覆盖 |
 
 ---
 
 ## 10. 落地检查清单（实施阶段按此执行）
 
-> 实际落地进度见 §1.5 对账：7/7 Java 平台已达 L1（bukkit/bungee/velocity/nukkit/folia/pnx/sponge）。下方原设计清单保留不动作为完整度参照；实际工作区布局为 `.e2e/`（非 `e2e/`），机器人走真实 MC 协议（非内嵌协议客户端 A），backend 走 `java -cp`（非 `java -jar`）——见 §1.5.2 分叉表。
+> 当前实施状态见 §1.5.1：10 个条目已接入编排，其中两个代理按设计跳过；PMMP 和 Folia 的严格聊天 gate 已完成，全矩阵实跑待统一验证。下方原设计清单保留作历史参照，不作为通过证明。
 
 - [ ] `e2e/` 目录与 §3.1 结构落地，`artifacts/`、`report/` 入 `.gitignore`
 - [ ] `versions.lock.ps1` 填实（URL + 实测 SHA-256），`fetch-server.ps1` 校验闭环

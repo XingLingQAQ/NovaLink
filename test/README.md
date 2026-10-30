@@ -24,10 +24,10 @@ powershell -File test/bin/fetch-server.ps1 -Name <platform> -DistDir .e2e-artifa
 ```
 
 Uses the `Url` + `Sha256` pinned in `versions.lock.ps1`. Downloads to a
-PID-unique `.download.tmp`, computes `Get-FileHash -Algorithm SHA256`, and
-**strictly compares** to the lock hash. Mismatch → delete tmp, error out (never
-run an unverified binary). This is how functional + joint E2E pin a known-good,
-reproducible version.
+PID-unique `.download.tmp`, computes SHA-256, and strictly compares it to a
+non-empty lock hash. A mismatch discards the tmp and retries up to three
+verification attempts before failing. Some lock entries still have empty
+hashes; those only record the computed hash and do not establish a verified pin.
 
 ### AUTO mode (`-Auto`) — for runnable-smoke on the plugin's declared api-version
 
@@ -36,9 +36,8 @@ powershell -File test/bin/fetch-server.ps1 -Name <platform> -Auto -DistDir .e2e-
 ```
 
 Calls the platform's API at runtime to discover the **latest** build + URL,
-downloads it, computes SHA-256 on the fly, and **logs the hash for
-traceability but does NOT fail on a mismatch** (the latest can change daily;
-pinned mode is the one that enforces the hash). When the API itself supplies a
+downloads it, computes SHA-256 on the fly, and logs it for traceability when no
+expected hash is available. When the API supplies a
 content hash — PaperMC `fill-data.papermc.io` URLs embed the SHA-256 in the path
 — Auto mode still verifies it. Used for the smoke matrix where each plugin is
 tested against its declared api-version's latest supported server.
@@ -46,9 +45,10 @@ tested against its declared api-version's latest supported server.
 ### Cache
 
 If `dist/<File>` exists AND the hash matches (pinned) OR the `.sha256` sidecar
-matches the cached file (Auto), reuse without re-downloading. BDS zips
-(`Kind = 'zip'`) are extracted to `dist/bds-<version>/` and the extracted dir is
-cached too.
+matches the cached file (no expected hash), reuse without re-downloading.
+`Kind = 'zip'` entries are extracted to `dist/<Name>-<MC>/`; this keeps
+`bds-1.26.52/` and `bds-levilamina-1.26.51/` separate. Existing extracted
+directories are reused. `Kind = 'archive'` leaves extraction to the runner.
 
 ### Concurrency
 
@@ -69,70 +69,98 @@ $env:HTTPS_PROXY="http://127.0.0.1:7890"
 
 ## Platform coverage
 
-`versions.lock.ps1` has an entry (with `Kind` + `Auto` fields) for all 8
-platforms. `Kind` is `jar` | `zip` | `phar` (controls whether `fetch-server.ps1`
-extracts); `Auto = $true` marks platforms that support auto-detect-latest (all
-of them).
+`versions.lock.ps1` describes servers and supporting runtimes for the 10-platform
+E2E matrix. `Kind` is `jar` | `zip` | `phar` | `archive`; `Auto = $true` marks
+entries with a latest-version resolver. The LeviLamina set and `pmmp-php` are
+pin-only. The table describes the checked-in lock and resolver, not a new run.
 
-| Platform | Engine (declared) | Source API for `-Auto` | Kind | Pinned? | Auto verified locally? |
-|----------|-------------------|------------------------|------|---------|-------------------------|
-| `purpur` | Purpur 26.2 (build 2620), JDK 21 | `api.purpurmc.org/v2/purpur/<MC>` → `builds.latest` → `/<MC>/<build>/download` | jar | YES (real SHA-256) | pinned verified 2026-08-12 |
-| `folia` | Folia 26.1.2-8, JDK 25 | scrape `papermc.io/downloads/folia` → `fill-data.papermc.io/.../folia-<MC>-<b>.jar` (SHA in path) | jar | content-addressed (SHA in URL) | resolver implemented |
-| `velocity` | Velocity 4.1.0-SNAPSHOT-16, JDK 25 | scrape `papermc.io/downloads/velocity` → `fill-data.papermc.io/.../velocity-4.1.0-SNAPSHOT-<b>.jar` | jar | content-addressed | resolver implemented |
-| `waterfall` | Waterfall 1.21-615, JDK 21 (BungeeCord API-compatible, EOL 2026-06) | scrape `papermc.io/downloads/waterfall` → `fill-data.papermc.io/.../waterfall-<MC>-<b>.jar` | jar | content-addressed | resolver implemented |
-| `nukkit` | Cloudburst 1.0-SNAPSHOT build 1242, JDK 21 | `repo.opencollab.dev/maven-snapshots/.../maven-metadata.xml` → timestamp+buildNumber | jar | hash auto-computed | resolver implemented |
-| `sponge` | SpongeVanilla 1.21.10-17.0.0, JDK 21 | scrape `spongepowered.org/downloads/spongevanilla` → `.../spongevanilla-<ver>-universal.jar` | jar | hash auto-computed | resolver implemented |
-| `bds` | Bedrock Dedicated Server (serves endstone + levilamina) | minecraft.net pocketbedlinks JSON (see "BDS" below) | zip | documented placeholder | **documented-only** (minecraft.net blocks this env) |
-| `pocketmine` | PocketMine-MP 5.44.3 (api 5.0.0+), PHP | `update.pmmp.io/api?channel=stable` → `download_url` (GitHub release phar) | phar | hash auto-computed | **auto verified 2026-08-09** |
+| Lock name | Engine | Source for `-Auto` | Kind | Lock SHA-256 |
+|-----------|--------|--------------------|------|-------------|
+| `purpur` | Purpur 1.21.11-2568, JDK 21 | `api.purpurmc.org/v2/purpur/<MC>` → latest build → download | jar | fixed |
+| `folia` | Folia 26.1.2-8, JDK 25 | `papermc.io/downloads/folia` → `fill-data.papermc.io` (SHA in path) | jar | fixed |
+| `velocity` | Velocity 4.1.0-SNAPSHOT-16, JDK 25 | `papermc.io/downloads/velocity` → `fill-data.papermc.io` | jar | fixed |
+| `waterfall` | Waterfall 1.21-615, JDK 21 | `papermc.io/downloads/waterfall` → `fill-data.papermc.io` | jar | fixed |
+| `nukkit` | Cloudburst 1.0-SNAPSHOT build 1242, JDK 21; also used for PNX | `repo.opencollab.dev` Maven snapshot metadata | jar | empty |
+| `sponge` | SpongeVanilla 1.21.10-17.0.0, JDK 21 | `spongepowered.org/downloads/spongevanilla` → universal jar | jar | empty |
+| `bds` | BDS 1.26.52.3 for Endstone | Minecraft services links API | zip | fixed |
+| `bds-levilamina` | BDS 1.26.51.1 for LeviLamina | pin-only | zip | fixed |
+| `pocketmine` | PocketMine-MP 5.44.3, PHP | `update.pmmp.io/api?channel=stable` → `download_url` | phar | empty |
 
 > Java declared versions come from each plugin's `plugin.yml` / `build.gradle`
 > (`NovaChat/Plugin/{bukkit,folia}/`, `NovaChat/Proxy/{velocity,bungee}/`,
 > `NovaChat/Bedrock/{nukkit,endstone,levilamina,pmmp}/`, `NovaChat/Sponge/sponge/`).
-> Bedrock `bds` serves BOTH endstone + levilamina (both run on top of Mojang BDS).
+> `bds` serves Endstone; `bds-levilamina` is a separate, incompatible version pin.
 
 ### Bedrock Dedicated Server (BDS)
 
-BDS is a **ZIP** (not a jar), native binary (no JDK). `fetch-server.ps1`
-extracts it to `dist/bds-<version>/` after download. The real BDS URL is served
-by minecraft.net's `pocketbedlinks` JSON, which the download page
-(`https://www.minecraft.net/en-us/download/server/bedrock`) fetches at runtime
-via JS. That endpoint is **blocked from this environment** (TLS dropped even with
-a browser UA; the page is JS-rendered with no static URL).
+BDS is a native ZIP (no JDK). `Resolve-BdsLatest` calls
+`https://net-secondary.web.minecraft-services.net/api/v1.0/download/links`
+and selects `result.links[]` with `downloadType = serverBedrockWindows`.
+The Windows download URL uses
+`https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-<version>.zip`.
+The former `pocketbedlinks` / `bedrockdedicatedserverbinaries` description is obsolete.
 
-`-Auto` therefore logs the detection approach + URL pattern and exits 0 without
-downloading — it is **documented-only**, not a script failure. The levilamina /
-endstone E2E agents supply a locally-cached BDS zip via their own scripts.
-When no zip is present, the endstone/levilamina scripts record
-`skip-reason.txt` and exit **3 (SKIPPED)**; the orchestrator reports those
-platforms as `SKIPPED (BDS unavailable)`, never as PASS.
+`-Name bds -Auto` resolves and downloads the current BDS. It verifies Endstone's
+`bedrock-server-data` SHA-256 only when that metadata names the exact same URL;
+otherwise it records the computed hash. An unreachable links API or a missing
+Windows link returns exit 0 without an artifact; a runner with no usable BDS
+then writes `skip-reason.txt` and exits 3. Download/hash failures are prereq
+errors (runner exit 2). Fetch exit 0 alone proves no E2E result.
 
-URL pattern (documented):
-```
-https://www.minecraft.net/bedrockdedicatedserverbinaries/<platform>/bedrock-server-<MC>.<patch>.zip
-```
-where `<platform>` is `win` or `linux`. Detection approach: fetch the download
-page, extract the `pocketbedlinks` JSON URL from the page's
-`data-mc-config-strings` attribute, call that JSON for the
-`serverBedrockWindows` / `serverBedrockLinux` download URL.
+The Endstone pin is `bds` 1.26.52.3. LeviLamina 26.51.7 requires
+`bds-levilamina` 1.26.51.1 (`RequiresBds = '1.26.51'`), so its runner fetches
+the separate pin without `-Auto`. The latest BDS must not replace that pin.
+
+### LeviLamina installation and SDK
+
+`run-levilamina-e2e.ps1` fetches five SHA-256-pinned packages:
+
+| Lock name | Version | Installation |
+|-----------|---------|--------------|
+| `bds-levilamina` | 1.26.51.1 | BDS run directory |
+| `levilamina` | 26.51.7 | `plugins/LeviLamina/` (DLL + manifest) |
+| `levilamina-preloader` | 1.16.5 | `PreLoader.dll` in the BDS root |
+| `levilamina-peeditor` | 3.9.0 | `PeEditor.exe -mb` patches the BDS image |
+| `levilamina-runtime` | 26.51.1-server.11 | `bedrock_runtime_data` in the BDS root |
+
+The runner starts `bedrock_server_mod.exe` and installs the NovaChat DLL with
+its manifest. Copying only the loader ZIP is insufficient. The SDK in
+`NovaChat/Bedrock/levilamina/xmake.lua` must match the runtime loader (26.51.7).
+For standalone targets, `xmake f --levilamina_sdk=n` disables the SDK dependency;
+`--sdk=n` is not this switch (`sdk` is the toolchain SDK path). This does not
+build or validate the real BDS plugin.
 
 ## Platform E2E scripts
 
 | Platform | Status | Script |
 |----------|--------|--------|
-| bukkit | Full (L1) | `bin/run-bukkit-e2e.ps1` |
-| folia | Full (L1) | orchestrator |
-| velocity | Full (L1) | orchestrator |
-| bungee (BungeeCord via Waterfall) | Full (L1) | orchestrator |
-| nukkit | Full (L1) | orchestrator |
-| sponge | Full (L1) | orchestrator |
-| endstone (BDS) | Bedrock E2E | `bin/run-endstone-e2e.ps1` |
-| levilamina (BDS) | Bedrock E2E | `bin/run-levilamina-e2e.ps1` |
-| pmmp (PocketMine) | Bedrock E2E | `bin/run-pmmp-e2e.ps1` |
+| bukkit | L1 runner wired | `bin/run-bukkit-e2e.ps1` |
+| folia | Backend config + strict chat gate implemented | orchestrator → multiplatform runner |
+| velocity | `SKIPPED-BY-DESIGN`; no full L1 | orchestrator → multiplatform runner |
+| bungee (BungeeCord via Waterfall) | `SKIPPED-BY-DESIGN`; no full L1 | orchestrator → multiplatform runner |
+| nukkit | Runner wired | orchestrator → multiplatform runner |
+| pnx | Runner wired; Nukkit fallback server | orchestrator → multiplatform runner |
+| sponge | Runner wired | orchestrator → multiplatform runner |
+| endstone (BDS) | Runner wired | `bin/run-endstone-e2e.ps1` |
+| levilamina (BDS) | Runner wired | `bin/run-levilamina-e2e.ps1` |
+| pmmp (PocketMine) | Strict chat gate implemented | `bin/run-pmmp-e2e.ps1` |
 
-The Java platforms (bukkit/folia/velocity/bungee/nukkit/sponge) reached L1 in
-the local `.e2e/` harness (see `docs/REAL-SERVER-E2E.md` §1.5.1). The Bedrock
-platforms (endstone/levilamina/pmmp) are wired through the orchestrator +
-their dedicated scripts.
+These are 10 matrix entries, not 10 verified passes. The committed harness skips
+bungee/velocity before running assertions because it lacks their downstream
+Purpur topology. Earlier local `.e2e/` records do not establish current CI L1.
+
+PMMP and Folia's final L1 contract requires authenticated plugin/backend
+connectivity, plugin command evidence, and an inbound
+plugin-formatted `[channel] <bot>: <original phrase>` message after the bot
+sends chat. Sent rows, vanilla echoes, command-only success, and `PARTIAL`
+do not satisfy it. PMMP now sets `replace_vanilla: true`, keeps forwarding
+enabled before the first chat, and includes the main `chatOk` in `pass`.
+Its JOIN/LEAVE packets carry `playerId`, `playerName`, and `platform`.
+Folia now receives backend config at `plugins/NovaChat-Folia/config.yml`.
+The four configured platforms (folia/nukkit/pnx/sponge) fail when plugin
+evidence is present but the chat round-trip is missing. PMMP additionally gates
+on `Test-ServerLogFatal`; the shared Folia runner does not explicitly call it.
+Verify all runnable platforms in one unfiltered workflow before claiming full-matrix coverage.
 
 ## Exit codes (SKIP is not PASS)
 
@@ -141,14 +169,20 @@ their dedicated scripts.
 | 0 | L1 pass | `PASS` |
 | 1 | L1 fail | `FAIL` |
 | 2 | prereq error (build/download failed) | `FAIL` |
-| 3 | skipped; no test ran | `SKIPPED` |
+| 3 | Environment/infrastructure blocked; no test ran | `SKIPPED` |
+| 4 | Structural limit (bungee/velocity); no test ran | `SKIPPED-BY-DESIGN` |
 
 A platform that runs zero assertions is never reported as `PASS`.
-`run-e2e-orchestrator.ps1 -RequireAllPlatforms` treats `SKIPPED` as a failure;
-CI passes `-Pe2eRequireAllPlatforms=true`, so a green job always means the
-requested platform actually ran. The per-platform terminal state is written to
+`run-e2e-orchestrator.ps1 -RequireAllPlatforms` fails on exit 3, but permits
+exit 4 while retaining `SKIPPED-BY-DESIGN`. CI enables this with
+`-Pe2eRequireAllPlatforms=true`; only bungee/velocity use `continue-on-error`.
+In a targeted dispatch, jobs outside `platforms` exit 0 without E2E assertions
+and can appear green. A green job or workflow alone does not prove full L1.
+Check the selection, actual Run E2E step, bot transcript, and per-platform
+terminal state written to
 `.e2e-artifacts/runs/e2e-orchestrator-summary.json`
-(`status`, `skipped`, `skippedReason`).
+(`status`, `exitCode`, `skipped`, `skippedByDesign`, `skippedReason`). The
+multiplatform details, including `chatRoundTrip`, are in `runs/e2e-summary.json`.
 
 ## EULA policy (CI)
 
@@ -158,7 +192,7 @@ throwaway per-run server directory at start time. This overrides the
 explicit CI policy: CI is a throwaway environment and the EULA file never
 enters the repository. The harness does NOT commit a `eula.txt`; it generates
 one on the fly and it dies with the run directory. (Engines with `Eula = $true`
-in `versions.lock.ps1`: purpur, folia, bds.)
+in `versions.lock.ps1`: purpur, folia, bds, bds-levilamina.)
 
 ## Layout
 
