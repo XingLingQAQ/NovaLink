@@ -160,7 +160,7 @@ L1 E2E 当前只覆盖 `/nc` 命令集与聊天往返的**冒烟子集**，并�
 - `/nc reload`、`/nc debug`（运维命令）
 - `WhoCommand` 后端 who-query（pre-existing 后端缺口，见 §1.5.8 #2）
 
-**联合测试单独验收**：`test/joint/run-joint.ps1` 已接入 `e2e-joint.yml`。relay 拓扑为 Velocity + Purpur + Nukkit，lite 拓扑为 Velocity + Purpur。门禁要求接收端双向投递、频道隔离的正反对照、Java bot 重连和实际成员列表；诊断行不能代替必需断言。该工作流与单平台 L1 分别统计。未执行的私聊隐私、后端重启、TLS／真实数据库和原生 PNX 场景仍未验收。
+**联合测试单独验收**：`test/joint/run-joint.ps1` 已接入 `e2e-joint.yml`。relay 用例分别使用 Velocity 或 Bungee + Purpur + Nukkit，lite 用例使用 Velocity + Purpur。门禁要求接收端双向投递、频道隔离的正反对照、Java bot 重连和实际成员列表；诊断行不能代替必需断言。该工作流与单平台 L1 分别统计。未执行的私聊隐私、后端重启、TLS／真实数据库和原生 PNX 场景仍未验收。
 
 ## 2. 总览：MVP 与分阶段扩展
 

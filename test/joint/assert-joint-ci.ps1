@@ -1,7 +1,8 @@
 ﻿[CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)][string]$JointRoot,
-  [Parameter(Mandatory = $true)][ValidateSet('relay', 'lite')][string]$ProxyMode
+  [Parameter(Mandatory = $true)][ValidateSet('relay', 'lite')][string]$ProxyMode,
+  [ValidateSet('velocity', 'bungee')][string]$ProxyPlatform = 'velocity'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,9 +12,10 @@ $summary = [System.IO.File]::ReadAllText($files[0].FullName, [System.Text.Encodi
 if ($summary.proxyMode -ne $ProxyMode -or -not $summary.overallPass) { throw 'Joint run did not pass in the requested mode' }
 if (@($summary.rounds).Count -ne 1) { throw 'Joint CI requires exactly one round' }
 $round = $summary.rounds[0]
-if ($round.status -ne 'PASS' -or $round.proxy -ne 'velocity' -or $round.java -ne 'bukkit' -or $round.mod) {
-  throw 'Joint CI requires Velocity with Bukkit and no mod leg'
+if ($round.status -ne 'PASS' -or $round.proxy -ne $ProxyPlatform -or $round.java -ne 'bukkit' -or $round.mod) {
+  throw "Joint CI requires $ProxyPlatform with Bukkit and no mod leg"
 }
+if ($ProxyPlatform -eq 'bungee' -and $ProxyMode -ne 'relay') { throw 'Bungee CI supports relay only' }
 if ($ProxyMode -eq 'relay' -and $round.bedrock -ne 'nukkit') { throw 'Relay CI requires Nukkit' }
 
 $required = @(
@@ -47,4 +49,4 @@ foreach ($id in $required) {
 $failed = @($round.assertions | Where-Object { $_.kind -ne 'diagnostic' -and -not $_.pass })
 if ($failed.Count) { throw "Summary contains $($failed.Count) failed gating assertions" }
 $gating = @($round.assertions | Where-Object { $_.kind -ne 'diagnostic' })
-Write-Host "Joint $ProxyMode evidence accepted: $($gating.Count) gating assertions; diagnostics excluded"
+Write-Host "Joint $ProxyPlatform/$ProxyMode evidence accepted: $($gating.Count) gating assertions; diagnostics excluded"

@@ -702,6 +702,8 @@ $botStdout = Join-Path $RunsDir "bot.stdout.log"
 $botStderr = Join-Path $RunsDir "bot.stderr.log"
 $botProc = Start-Process -FilePath "node" -ArgumentList @("run-e2e-bedrock.js") -WorkingDirectory $botDir `
     -RedirectStandardOutput $botStdout -RedirectStandardError $botStderr -PassThru -NoNewWindow
+# Keep the native process handle; PowerShell 5.1 otherwise loses ExitCode.
+$null = $botProc.Handle
 Track-Pid $botProc.Id
 $botTimedOut = -not $botProc.WaitForExit($BotTimeoutSec * 1000)
 if ($botTimedOut) { Stop-Pid $botProc.Id }

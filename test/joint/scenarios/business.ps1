@@ -82,9 +82,9 @@ function Assert-JointBusinessResults {
 function Invoke-JointBusinessScenarios {
   param($Round, [string]$RoundDir, [string]$McVersion)
 
-  if ($Round.Proxy -ne 'velocity' -or -not $Round.Java) {
-    New-JointAssertion -Id "round$($Round.Index)/business/topology" -Token 'Velocity with Java downstream' `
-      -Pass $false -Evidence 'NOT EXECUTED: business driver requires Velocity and a Java downstream' -Kind 'diagnostic'
+  if ($Round.Proxy -notin @('velocity', 'bungee') -or -not $Round.Java) {
+    New-JointAssertion -Id "round$($Round.Index)/business/topology" -Token 'Velocity/Bungee with Java downstream' `
+      -Pass $false -Evidence 'NOT EXECUTED: business driver requires Velocity/Bungee and a Java downstream' -Kind 'diagnostic'
     return
   }
 

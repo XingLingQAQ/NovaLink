@@ -35,9 +35,28 @@ def venvPython = System.getProperty('os.name').toLowerCase().contains('windows')
     ? layout.projectDirectory.file('.novachat_venv/Scripts/python.exe').asFile
     : layout.projectDirectory.file('.novachat_venv/bin/python').asFile
 
+def readEndstoneVersion = { String lockText ->
+    def bdsEntry = lockText =~ /(?ms)^[ \t]*@\{\s*Name[ \t]*=[ \t]*'bds'[ \t]*\r?\n(.*?)^[ \t]*\}/
+    if (!bdsEntry.find()) {
+        throw new GradleException('Cannot pin Endstone: test/versions.lock.ps1 has no bds entry. Restore that entry before installing test dependencies.')
+    }
+    def version = bdsEntry.group(1) =~ /(?m)^[ \t]*EndstoneVersion[ \t]*=[ \t]*'([0-9]+\.[0-9]+\.[0-9]+)'[ \t]*(?:#.*)?\r?$/
+    if (!version.find()) {
+        throw new GradleException('Cannot pin Endstone: the bds entry in test/versions.lock.ps1 needs an EndstoneVersion in x.y.z format. Restore its tested version before installing test dependencies.')
+    }
+    return version.group(1)
+}
+
 tasks.register('pythonEnv', Exec) {
     group = 'build'
     description = 'Creates a virtualenv and installs the package in editable mode.'
+    def versionsLock = rootProject.file('test/versions.lock.ps1')
+    if (!versionsLock.isFile()) {
+        throw new GradleException('Cannot pin Endstone: test/versions.lock.ps1 is missing. Restore the lock file before installing test dependencies.')
+    }
+    def endstoneRequirement = "endstone==${readEndstoneVersion(versionsLock.getText('UTF-8'))}"
+    inputs.file versionsLock
+    inputs.file layout.projectDirectory.file('pyproject.toml')
     outputs.dir venvDir
 
     def venv = venvDir.asFile
@@ -45,14 +64,11 @@ tasks.register('pythonEnv', Exec) {
 
     // Use a single command sequence so the venv exists before pip runs.
     if (System.getProperty('os.name').toLowerCase().contains('windows')) {
-        commandLine 'cmd', '/c', "${pythonCmd} -m venv \"${venv}\" && \"${venvPy}\" -m pip install --upgrade pip && \"${venvPy}\" -m pip install -e \".[dev]\""
+        commandLine 'cmd', '/c', "${pythonCmd} -m venv \"${venv}\" && \"${venvPy}\" -m pip install --upgrade pip && \"${venvPy}\" -m pip install -e \".[dev]\" \"${endstoneRequirement}\""
     } else {
-        commandLine 'sh', '-c', "${pythonCmd} -m venv \"${venv}\" && \"${venvPy}\" -m pip install --upgrade pip && \"${venvPy}\" -m pip install -e \".[dev]\""
+        commandLine 'sh', '-c', "${pythonCmd} -m venv \"${venv}\" && \"${venvPy}\" -m pip install --upgrade pip && \"${venvPy}\" -m pip install -e \".[dev]\" \"${endstoneRequirement}\""
     }
     workingDir projectDir
-
-    // Re-create if the venv marker is missing.
-    onlyIf { !venv.exists() || !venvPy.exists() }
 }
 
 tasks.register('pytest', Exec) {

@@ -625,8 +625,10 @@ function Send-Rcon {
       $body.WriteByte(0); $body.WriteByte(0)
       $payloadBytes = $body.ToArray()
       $lenBytes = [BitConverter]::GetBytes([int]$payloadBytes.Length)
-      $stream.Write($lenBytes, 0, 4)
-      $stream.Write($payloadBytes, 0, $payloadBytes.Length)
+      $frame = New-Object byte[] (4 + $payloadBytes.Length)
+      [Buffer]::BlockCopy($lenBytes, 0, $frame, 0, 4)
+      [Buffer]::BlockCopy($payloadBytes, 0, $frame, 4, $payloadBytes.Length)
+      $stream.Write($frame, 0, $frame.Length)
       $stream.Flush()
     }
     # Returns @{ Id; Type; Body } or $null at a clean end-of-stream.
@@ -1763,6 +1765,7 @@ function Start-Bot([string]$role, [string]$planPath, [string]$workDir, [string]$
   New-Item -ItemType Directory -Force -Path $workDir | Out-Null
   $proc = Start-PlainProcess -FilePath "node" -Arguments @($jointBotScript, "--plan", $planPath) `
     -WorkingDirectory $workDir -StdoutPath $stdoutPath -StderrPath $stderrPath
+  $null = $proc.Handle
   Track-Pid $proc.Id "bot-$role"
   Log "  bot $role pid=$($proc.Id)"
   return $proc
@@ -1836,7 +1839,7 @@ function Assert-Absent([string]$assertionId, [string]$token, $receiverResult) {
 # anything. A proxy named in -Platforms is part of the topology under test, so
 # "it started" is not enough -- its log must carry the plugin's own init line.
 function Assert-ProxyPluginLoaded([string]$assertionId, [string]$proxyName, [string]$logPath) {
-  $pattern = 'NovaChat Velocity plugin enabled|NovaChat plugin enabled|Loaded plugin novachat'
+  $pattern = 'NovaChat (Velocity|BungeeCord) plugin enabled|NovaChat plugin enabled|Loaded plugin novachat'
   $text = Read-LogText $logPath
   $pass = [bool]($text -and ($text -match $pattern))
   $evidence = ''
@@ -3764,6 +3767,20 @@ function Invoke-Round($round, [string]$roundDir) {
         Write-ProxyPluginConfig -path (Join-Path $plugCfgDir "config.toml") `
           -clientId $clientSecrets[$round.Proxy].Username -clientPassword $clientSecrets[$round.Proxy].Password `
           -mode $ProxyMode -identities $(if ($ProxyMode -eq 'relay') { $relayIdentities } else { $null })
+      } elseif ($round.Proxy -eq 'bungee') {
+        $servers = @{}
+        foreach ($name in $downstreams.Keys) { $servers[$name] = @{ address = "127.0.0.1:$($downstreams[$name])"; restricted = $false; motd = 'Joint E2E' } }
+        $config = @{ online_mode = $false; ip_forward = $false; connection_throttle = 0; servers = $servers
+          permissions = @{ default = @('novachat.channel.global') }
+          listeners = @(@{ host = "127.0.0.1:$ProxyPort"; priorities = @(@($downstreams.Keys)[0]); max_players = 5; force_default_server = $true; query_enabled = $false }) }
+        $plugin = @{ 'config-version' = 1; mode = 'relay'; debug = $true
+          backend = @{ host = '127.0.0.1'; port = $BackendPort; username = ''; password = $relaySharedPassword; identities = $relayIdentities }
+          chat = @{ replace_vanilla = $true; default_channel = 'global'; locale = 'en_US' } }
+        $plugCfgDir = Join-Path $dir 'plugins/NovaChat'
+        New-Item -ItemType Directory -Force -Path $plugCfgDir | Out-Null
+        # JSON is valid YAML for both Bungee loaders.
+        [IO.File]::WriteAllText((Join-Path $dir 'config.yml'), ($config | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding $false))
+        [IO.File]::WriteAllText((Join-Path $plugCfgDir 'config.yml'), ($plugin | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding $false))
       }
       $jarPath = Join-Path $DistDir $script:DefJarName[$round.Proxy]
       $java = Join-Path $jdkPath "bin/java.exe"

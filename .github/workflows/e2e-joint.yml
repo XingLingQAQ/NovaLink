@@ -2,6 +2,12 @@ name: E2E (Joint Servers)
 
 on:
   workflow_dispatch:
+    inputs:
+      proxies:
+        description: Proxy cases to run (unselected jobs are skipped)
+        type: choice
+        default: velocity,bungee
+        options: ["velocity,bungee", velocity, bungee]
   schedule:
     - cron: '20 5 * * *'
 
@@ -14,20 +20,22 @@ concurrency:
 
 jobs:
   joint:
+    if: github.event_name != 'workflow_dispatch' || contains(inputs.proxies, 'velocity')
     name: Joint Velocity + Bukkit (${{ matrix.mode }})
     runs-on: windows-2022
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
+        proxy: [velocity]
         mode: [relay, lite]
-    env:
+    env: &joint-env
       JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8 -Dconsole.encoding=UTF-8
       GRADLE_OPTS: -Dorg.gradle.daemon=false -Dfile.encoding=UTF-8
-      JOINT_ROOT: ${{ github.workspace }}/.e2e-artifacts/joint-ci/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.mode }}
-      JOINT_EVIDENCE: ${{ github.workspace }}/.e2e-artifacts/joint-evidence/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.mode }}
+      JOINT_ROOT: ${{ github.workspace }}/.e2e-artifacts/joint-ci/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.proxy }}-${{ matrix.mode }}
+      JOINT_EVIDENCE: ${{ github.workspace }}/.e2e-artifacts/joint-evidence/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.proxy }}-${{ matrix.mode }}
 
-    steps:
+    steps: &joint-steps
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -83,11 +91,12 @@ jobs:
         shell: powershell
         env:
           JOINT_MODE: ${{ matrix.mode }}
+          JOINT_PROXY: ${{ matrix.proxy }}
         run: |
-          $platforms = if ($env:JOINT_MODE -eq 'relay') { 'velocity,bukkit,nukkit' } else { 'velocity,bukkit' }
+          $platforms = if ($env:JOINT_MODE -eq 'relay') { "$env:JOINT_PROXY,bukkit,nukkit" } else { "$env:JOINT_PROXY,bukkit" }
           ./test/joint/run-joint.ps1 -Platforms $platforms -Rounds 1 -MaxConcurrentServers 3 -ProxyMode $env:JOINT_MODE -JointRoot $env:JOINT_ROOT -KeepArtifacts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./test/joint/assert-joint-ci.ps1 -JointRoot $env:JOINT_ROOT -ProxyMode $env:JOINT_MODE
+          ./test/joint/assert-joint-ci.ps1 -JointRoot $env:JOINT_ROOT -ProxyMode $env:JOINT_MODE -ProxyPlatform $env:JOINT_PROXY
 
       - name: Collect joint evidence
         if: always()
@@ -120,8 +129,20 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: joint-${{ matrix.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: joint-${{ matrix.proxy }}-${{ matrix.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.JOINT_EVIDENCE }}
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
+
+  joint-bungee:
+    if: github.event_name != 'workflow_dispatch' || contains(inputs.proxies, 'bungee')
+    name: Joint Bungee + Bukkit + Nukkit (relay)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    strategy:
+      matrix:
+        proxy: [bungee]
+        mode: [relay]
+    env: *joint-env
+    steps: *joint-steps

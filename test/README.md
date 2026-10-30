@@ -173,7 +173,8 @@ Verify all runnable platforms in one unfiltered workflow before claiming full-ma
 ## Joint CI coverage
 
 `e2e-joint.yml` runs the existing joint harness separately from the L1 matrix.
-Relay mode uses Velocity + Purpur + Nukkit; lite mode uses Velocity + Purpur.
+Relay cases use Velocity or Bungee + Purpur + Nukkit; the lite case uses
+Velocity + Purpur. The `proxies` workflow input can select either proxy family.
 It requires receiver-recorded cross-server traffic in relay mode, channel
 isolation with positive controls, and a Java bot reconnect followed by actual
 membership and bidirectional chat evidence. `assert-joint-ci.ps1` rejects a
@@ -189,7 +190,7 @@ failure. The L1 job summary reports its JSON status; an unselected platform's
 Run E2E step is skipped. A green job alone remains insufficient evidence.
 
 This does not establish native PNX coverage (the PNX plugin uses a Nukkit
-fallback), Bungee downstream coverage, every admin/private-message scenario,
+fallback), Bungee lite coverage, every admin/private-message scenario,
 backend-restart recovery, or a TLS/persistent-database topology. Those require
 their own recorded assertions; unit and embedded tests are separate evidence.
 

@@ -96,7 +96,9 @@ $summaryDir = Join-Path $PSScriptRoot ('.selftest-' + [guid]::NewGuid().ToString
 $summaryFile = Join-Path $summaryDir 'joint-summary.json'
 New-Item -ItemType Directory -Path $summaryDir | Out-Null
 try {
-  foreach ($mode in @('relay', 'lite')) {
+  foreach ($case in @(@{ Proxy = 'velocity'; Mode = 'relay' }, @{ Proxy = 'velocity'; Mode = 'lite' }, @{ Proxy = 'bungee'; Mode = 'relay' })) {
+    $mode = $case.Mode
+    $proxy = $case.Proxy
     $assertions = @(Get-Verdicts (New-Results))
     $ids = if ($mode -eq 'relay') {
       @('java-to-bedrock', 'bedrock-to-java', 'proxy-plugin-loaded', 'relay-links-created',
@@ -109,25 +111,29 @@ try {
     }
     $summary = [PSCustomObject]@{
       proxyMode = $mode; overallPass = $true
-      rounds = @([PSCustomObject]@{ status = 'PASS'; proxy = 'velocity'; java = 'bukkit'; mod = $null
+      rounds = @([PSCustomObject]@{ status = 'PASS'; proxy = $proxy; java = 'bukkit'; mod = $null
         bedrock = $(if ($mode -eq 'relay') { 'nukkit' } else { $null }); assertions = $assertions })
     }
     [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
-    & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode
-    Assert-Check $true "CI $mode accepts complete synthetic evidence"
+    & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy
+    Assert-Check $true "CI $proxy/$mode accepts complete synthetic evidence"
+    $wrongProxy = if ($proxy -eq 'velocity') { 'bungee' } else { 'velocity' }
+    $rejected = $false
+    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $wrongProxy } catch { $rejected = $true }
+    Assert-Check $rejected "CI $proxy/$mode rejects wrong proxy"
 
     $required = $assertions | Where-Object { $_.id -eq 'round1/iso/phase1-isolated-from-bob' }
     $required.kind = 'diagnostic'
     [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
     $rejected = $false
-    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode } catch { $rejected = $true }
-    Assert-Check $rejected "CI $mode rejects diagnostic substitution"
+    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy } catch { $rejected = $true }
+    Assert-Check $rejected "CI $proxy/$mode rejects diagnostic substitution"
 
     $summary.rounds[0].assertions = @($assertions | Where-Object { $_.id -ne $required.id })
     [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
     $rejected = $false
-    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode } catch { $rejected = $true }
-    Assert-Check $rejected "CI $mode rejects missing assertion"
+    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy } catch { $rejected = $true }
+    Assert-Check $rejected "CI $proxy/$mode rejects missing assertion"
   }
 } finally {
   Remove-Item -LiteralPath $summaryFile -ErrorAction SilentlyContinue

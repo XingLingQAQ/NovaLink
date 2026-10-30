@@ -1215,6 +1215,8 @@ function Invoke-Platform([string]$pf) {
     $botErr = Join-Path $runsDir "bot.stderr.log"
     $botProc = Start-Process -FilePath "node" -ArgumentList @($def.BotScript) -WorkingDirectory $botDir `
       -RedirectStandardOutput $botOut -RedirectStandardError $botErr -PassThru -NoNewWindow
+    # Keep the native process handle; PowerShell 5.1 otherwise loses ExitCode.
+    $null = $botProc.Handle
     Track-Pid $botProc.Id "$pf-bot"
     $result.pids += $botProc.Id
 
