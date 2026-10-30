@@ -60,11 +60,6 @@ option_end()
 local openssl_disabled = (get_config("openssl") == "n") or (get_config("openssl") == false)
 
 if not sdk_disabled then
-    -- Select the runtime's compiler before package and target detection.
-    if is_plat("windows") then
-        set_toolchains("clang-cl")
-    end
-
     -- LeviLamina SDK + official build rules (only pulled when --sdk=n is NOT
     -- passed). set_policy("network.skip_fetch", true) would block the package
     -- pull, so we rely on the option guard above to avoid the repo clone
@@ -116,6 +111,9 @@ target("novachat-levilamina")
     -- into the output (replaces the manual after_build os.cp below -- kept as a
     -- fallback in case modpacker is absent in a future levibuildscript version).
     if not sdk_disabled then
+        -- Keep MSVC's SDK/linker environment, but match the runtime's event IDs.
+        set_toolset("cc", "clang-cl")
+        set_toolset("cxx", "clang-cl")
         add_rules("@levibuildscript/linkrule")
         add_rules("@levibuildscript/modpacker")
     end
