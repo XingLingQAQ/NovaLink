@@ -308,6 +308,8 @@ private:
     // Register packet handlers for incoming messages from backend
     void registerPacketHandlers();
 
+    void handleMembershipResponse(const protocol::ChannelActionResponsePacket& packet);
+
     // Format message using channel format
     std::string formatMessage(const std::string& channelId, const std::string& playerName,
                               const std::string& message);

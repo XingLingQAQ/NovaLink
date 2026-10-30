@@ -15,6 +15,7 @@
 #include "../src/protocol/VarInt.h"
 #include "../src/protocol/PacketIds.h"
 #include "../src/protocol/Packet.h"
+#include "../src/command/PlayerChannelAction.h"
 #include "../src/util/Sha256.h"
 #include "../src/i18n/I18n.h"
 
@@ -277,6 +278,26 @@ static void testI18nKickMuteNotice() {
     CHECK(muteEnLower.find("muted") != std::string::npos);
 }
 
+static void testPlayerChannelActionIdentity() {
+    const std::string playerId = "ef54ce1b-6518-f2e6-c115-b844ec13e7d8";
+    for (auto action : {ChannelAction::JOIN, ChannelAction::LEAVE}) {
+        auto request = novachat::makePlayerChannelAction(
+            action, "global", playerId, "E2E_Bot_LeviLam", "channel-password");
+        PacketBuffer buffer;
+        request->write(buffer);
+        buffer.resetReaderIndex();
+        ChannelActionPacket decoded;
+        decoded.read(buffer);
+        CHECK_EQ(decoded.getAction(), action);
+        CHECK_EQ(decoded.getChannelId(), std::string("global"));
+        CHECK_EQ(decoded.getPassword(), std::string("channel-password"));
+        CHECK_EQ(decoded.getExtra().at("playerId"), playerId);
+        CHECK_EQ(decoded.getExtra().at("playerName"), std::string("E2E_Bot_LeviLam"));
+        CHECK_EQ(decoded.getExtra().at("platform"), std::string("levilamina"));
+        CHECK_EQ(buffer.readableBytes(), 0);
+    }
+}
+
 int main() {
     std::printf("Running NovaChat-LeviLamina protocol tests...\n");
 
@@ -288,6 +309,7 @@ int main() {
     testHandshakeResponseFieldOrder();
     testHandshakeResponseRoundTrip();
     testChannelActionPacket();
+    testPlayerChannelActionIdentity();
     testChannelActionIdsMatchJava();
     testAdminActionIds();
     testPlatformIds();

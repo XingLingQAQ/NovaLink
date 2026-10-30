@@ -228,6 +228,7 @@ void ChatInterceptor::registerPacketHandlers() {
                     response->getMessage(), response->getErrorCode());
             }
 
+            handleMembershipResponse(*response);
             reportOperatorOutcome(*response);
         }
     );
@@ -1149,10 +1150,42 @@ void ChatInterceptor::registerPendingChannelAction(const std::string& requestId,
     mPendingChannelActions.emplace(requestId, playerUuid);
 }
 
+void ChatInterceptor::handleMembershipResponse(const protocol::ChannelActionResponsePacket& packet) {
+    const auto action = packet.getAction();
+    if (action != ChannelAction::JOIN && action != ChannelAction::LEAVE) {
+        return;
+    }
+
+    std::string playerUuid;
+    {
+        std::lock_guard<std::mutex> lock(mPendingChannelActionsMutex);
+        auto it = mPendingChannelActions.find(packet.getRequestId().toString());
+        if (it == mPendingChannelActions.end()) {
+            return;
+        }
+        playerUuid = it->second;
+        mPendingChannelActions.erase(it);
+    }
+
+    auto& i18n = i18n::I18n::getInstance();
+    const auto locale = getPlayerLocale(playerUuid);
+    const auto prefix = mPlugin.getConfig()->getPrefix();
+    std::string message;
+    if (!packet.isSuccess()) {
+        message = i18n.errorMessage(packet.getErrorCode(), locale);
+    } else if (action == ChannelAction::JOIN) {
+        setPlayerChannel(playerUuid, packet.getChannelId());
+        message = i18n.get("chat.join.joined", locale, {packet.getChannelId()});
+    } else {
+        removePlayerFromChannel(playerUuid, packet.getChannelId());
+        message = i18n.get("chat.leave.left", locale,
+            {packet.getChannelId(), getPlayerState(playerUuid).currentChannel});
+    }
+    displayMessageByUuid(playerUuid, convertColorCodes(prefix + message));
+}
+
 void ChatInterceptor::reportOperatorOutcome(const protocol::ChannelActionResponsePacket& packet) {
     if (!moderation::isModerationAction(packet.getAction())) {
-        // JOIN/LEAVE/WHO keep their existing rendering (or lack of it); this
-        // path exists only for the moderation commands that went silent.
         return;
     }
 

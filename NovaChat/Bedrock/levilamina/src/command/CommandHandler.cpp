@@ -1,4 +1,5 @@
 #include "CommandHandler.h"
+#include "PlayerChannelAction.h"
 #include "../NovaChatPlugin.h"
 #include "../config/NovaChatConfig.h"
 #include "../chat/ChatInterceptor.h"
@@ -507,18 +508,15 @@ void CommandHandler::handleJoin(const std::string& playerName, const std::string
     // Send join request to backend
     auto* networkClient = mPlugin.getNetworkClient();
     if (networkClient && networkClient->isConnected()) {
-        auto packet = std::make_unique<ChannelActionPacket>(
-            ChannelAction::JOIN, channelId, password
-        );
+        auto packet = makePlayerChannelAction(
+            ChannelAction::JOIN, channelId, playerUuid, playerName, password);
+        if (auto* interceptor = mPlugin.getChatInterceptor()) {
+            interceptor->registerPendingChannelAction(packet->getRequestId().toString(), playerUuid);
+        }
         networkClient->sendPacket(std::move(packet));
 
-        // Update local state
-        if (auto* interceptor = mPlugin.getChatInterceptor()) {
-            interceptor->setPlayerChannel(playerUuid, channelId);
-        }
-
         sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
-            i18n.get("chat.join.joined", locale, {channelId})));
+            i18n.get("chat.join.joining", locale, {channelId})));
     } else {
         sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
             i18n.get("chat.network.not_connected", locale)));
@@ -549,18 +547,19 @@ void CommandHandler::handleLeave(const std::string& playerName, const std::strin
 
     // Send leave request to backend
     auto* networkClient = mPlugin.getNetworkClient();
-    if (networkClient && networkClient->isConnected()) {
-        auto packet = std::make_unique<ChannelActionPacket>(
-            ChannelAction::LEAVE, currentChannel
-        );
-        networkClient->sendPacket(std::move(packet));
+    if (!networkClient || !networkClient->isConnected()) {
+        sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
+            i18n.get("chat.network.not_connected", locale)));
+        return;
     }
 
-    // Update local state
-    interceptor->setPlayerChannel(playerUuid, defaultChannel);
+    auto packet = makePlayerChannelAction(
+        ChannelAction::LEAVE, currentChannel, playerUuid, playerName);
+    interceptor->registerPendingChannelAction(packet->getRequestId().toString(), playerUuid);
+    networkClient->sendPacket(std::move(packet));
 
     sendMessage(playerName, ChatInterceptor::convertColorCodes(prefix +
-        i18n.get("chat.leave.left", locale, {currentChannel, defaultChannel})));
+        i18n.get("chat.leave.leaving", locale, {currentChannel})));
 }
 
 void CommandHandler::handleList(const std::string& playerName, const std::string& playerUuid,
