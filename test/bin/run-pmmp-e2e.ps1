@@ -619,6 +619,7 @@ if (-not (Test-BotDepsCurrent $botDir)) {
     finally { Pop-Location }
 }
 $resultsFile = Join-Path $RunsDir "bot-results.json"
+$botRunId = Initialize-BotRun $resultsFile
 $env:SERVER_HOST = "127.0.0.1"
 $env:SERVER_PORT = "$McPort"
 $env:BOT_NAME = "E2E_Bot_PMMP"
@@ -632,8 +633,8 @@ $botStderr = Join-Path $RunsDir "bot.stderr.log"
 $botProc = Start-Process -FilePath "node" -ArgumentList @("run-e2e-bedrock.js") -WorkingDirectory $botDir `
     -RedirectStandardOutput $botStdout -RedirectStandardError $botStderr -PassThru -NoNewWindow
 Track-Pid $botProc.Id
-$botProc.WaitForExit($BotTimeoutSec * 1000) | Out-Null
-if (-not $botProc.HasExited) { Stop-Pid $botProc.Id }
+$botTimedOut = -not $botProc.WaitForExit($BotTimeoutSec * 1000)
+if ($botTimedOut) { Stop-Pid $botProc.Id }
 # WaitForExit(timeout) returning false leaves the process object stale, so
 # ExitCode throws and the log line came out as "bot exit code=" with nothing
 # after it -- which hid the real reason the bot died (e.g. a missing module).
@@ -657,6 +658,9 @@ if (Test-Path $resultsFile) {
     # bedrock payload, where the ANSI read fails and the UTF-8 read parses.
     $resultsJson = [System.IO.File]::ReadAllText($resultsFile, [System.Text.Encoding]::UTF8)
     $results = $resultsJson | ConvertFrom-Json
+    $runFailure = Get-BotRunFailure -Results $results -ExitCode $botProc.ExitCode `
+        -TimedOut $botTimedOut -ExpectedRunId $botRunId -ServerLogPaths @($pmmpStdout,$pmmpStderr,$novaStdout,$novaStderr)
+    if ($runFailure) { Log "  RUN FAILED: $runFailure" }
     # Get-BotReceivedRows drops the bot's own outgoing lines. sendCommand() in
     # run-e2e-bedrock.js records every command into the SAME received[] list
     # with kind='sent', so the old $msgs contained "/nc join global" (matched
@@ -692,7 +696,7 @@ if (Test-Path $resultsFile) {
     $noFatal = ($null -eq $fatal)
     Log ("  join={0} list={1} chat={2} plugin={3} backend={4} noFatal={5}" -f $joinOk, $listOk, $chatOk, $pluginOk, $backendOk, $noFatal)
     if (-not $noFatal) { Log ("  FATAL in server log: {0}:{1}: {2}" -f $fatal.Path, $fatal.LineNumber, $fatal.Line.Trim()) }
-    $pass = $joinOk -and $listOk -and $chatOk -and $pluginOk -and $backendOk -and $noFatal
+    $pass = $joinOk -and $listOk -and $chatOk -and $pluginOk -and $backendOk -and $noFatal -and (-not $runFailure)
 } else {
     Log "ERROR: results.json not written: $resultsFile"
 }

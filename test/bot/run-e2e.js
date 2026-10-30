@@ -14,6 +14,7 @@
 const mineflayer = require('mineflayer');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const HOST = process.env.E2E_MC_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.E2E_MC_PORT || '25565', 10);
@@ -21,6 +22,9 @@ const MC_VERSION = process.env.E2E_MC_VERSION || '1.21.8';
 const USERNAME = process.env.E2E_BOT_USERNAME || 'E2E_Bot_Alpha';
 const RESULTS = process.env.E2E_RESULTS_FILE || path.join(__dirname, 'results.json');
 const TIMEOUT_MS = parseInt(process.env.E2E_TIMEOUT_MS || '360000', 10);
+const RUN_ID = process.env.E2E_RUN_ID || crypto.randomUUID();
+let sequenceComplete = false;
+let intentionalQuit = false;
 
 const received = [];
 function record(kind, raw, text) {
@@ -53,9 +57,12 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 bot.on('messagestr', (msg, position, jsonMsg, sender, verified) => record('messagestr', msg, msg));
 bot.on('chat', (username, message) => record('chat', `<${username}> ${message}`, `<${username}> ${message}`));
 bot.on('systemChat', (msg, n) => record('systemChat', msg, plainText(msg)));
-bot.on('kicked', (reason, loggedIn) => { record('kicked', reason, plainText(reason)); console.log('[KICKED]', reason, loggedIn); });
-bot.on('error', (err) => { record('error', err && err.message, err && err.stack); console.log('[ERROR]', err); });
-bot.on('end', () => { record('end', 'connection ended', 'connection ended'); console.log('[END] connection ended'); });
+bot.on('kicked', (reason) => { record('kicked', reason, plainText(reason)); failRun('bot was kicked'); });
+bot.on('error', (err) => { record('error', err && err.message, err && err.stack); failRun(err); });
+bot.on('end', () => {
+  record('end', 'connection ended', 'connection ended');
+  if (!intentionalQuit) failRun('connection ended before the bot quit');
+});
 
 function sendCmd(cmd) {
   console.log(`\n>>> ${cmd}`);
@@ -65,6 +72,8 @@ function sendCmd(cmd) {
 
 function writeResults(extra) {
   const payload = Object.assign({
+    runId: RUN_ID,
+    sequenceComplete,
     platform: process.env.E2E_PLATFORM || 'bukkit',
     server: process.env.E2E_SERVER_ID || 'purpur',
     minecraftVersion: MC_VERSION,
@@ -75,6 +84,11 @@ function writeResults(extra) {
   }, extra || {});
   fs.writeFileSync(RESULTS, JSON.stringify(payload, null, 2));
   console.log('results.json written:', RESULTS);
+}
+
+function failRun(error) {
+  writeResults({ error: String(error) });
+  process.exit(1);
 }
 
 async function runSequence() {
@@ -105,8 +119,6 @@ async function runSequence() {
   await sleep(2500);
 
   // HYBRID mode: channel-routed + vanilla preserved
-  sendCmd('/nc toggle');
-  await sleep(2500);
   sendCmd('/nc global hello via hybrid from e2e');
   await sleep(3000);
   sendCmd('vanilla chat preserved e2e');
@@ -141,10 +153,13 @@ async function runSequence() {
   await sleep(3000);
 
   console.log('=== sequence done ===');
+  sequenceComplete = true;
   writeResults();
   await sleep(1500);
+  intentionalQuit = true;
   try { bot.quit('e2e done'); } catch {}
   await sleep(1000);
+  writeResults();
   process.exit(0);
 }
 
@@ -161,6 +176,7 @@ bot.once('spawn', () => {
 setTimeout(() => {
   console.log('[TIMEOUT] reached, flushing results and exiting');
   writeResults({ timedOut: true });
+  intentionalQuit = true;
   try { bot.quit('timeout'); } catch {}
   process.exit(2);
 }, TIMEOUT_MS);

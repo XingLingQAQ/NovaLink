@@ -482,14 +482,12 @@ if ($MultiPlatforms.Count -gt 0) {
                 # switch keeps a SKIPPED arm instead of rejecting it.
                 $mpStatus = $row.status
                 $mpReason = if (Test-SkipStatus $mpStatus) { $row.notes } else { '' }
-                # PARTIAL maps to 0 like the batch does: only FAIL reds the run.
-                # The exit code is re-derived from the status so the strict-mode
-                # computation below sees the same code the status implies.
                 $mpRowExit = switch ($mpStatus) {
+                    'PASS'              { 0 }
                     'FAIL'              { 1 }
                     'SKIPPED'           { 3 }
                     'SKIPPED-BY-DESIGN' { 4 }
-                    default             { 0 }
+                    default             { 1 }
                 }
                 $results += [pscustomobject]@{ platform = $p; exitCode = $mpRowExit; status = $mpStatus; skippedReason = $mpReason }
             } else {

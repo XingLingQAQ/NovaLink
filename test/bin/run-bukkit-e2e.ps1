@@ -91,7 +91,7 @@ function Show-FailureLogs([string]$reason) {
 $purpurLock = Get-LockedServer -Name 'purpur'
 if (-not $purpurLock) { Log "ERROR: no 'purpur' entry in test/versions.lock.ps1"; exit 2 }
 $purpurFile = $purpurLock.File
-$mcVersion  = $purpurLock.MC
+$mcVersion  = if ($purpurLock.BotMcVersion) { $purpurLock.BotMcVersion } else { $purpurLock.MC }
 $serverId   = "purpur-$($purpurLock.MC)-$($purpurLock.Build)"
 
 # Track every PID we start so teardown is guaranteed.
@@ -390,12 +390,13 @@ Log "  Purpur ready"
 # 7. Run the bot.
 # ---------------------------------------------------------------------------
 Log "step 6: installing + running the mineflayer bot"
-if (-not (Test-Path (Join-Path $botDir "node_modules/mineflayer"))) {
+if (-not (Test-BotDepsCurrent $botDir)) {
     Push-Location $botDir
     try { npm ci --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { Log "ERROR: npm ci failed"; Teardown-All; Show-FailureLogs "npm ci failed"; exit 2 } }
     finally { Pop-Location }
 }
 $resultsFile = Join-Path $RunsDir "bot-results.json"
+$botRunId = Initialize-BotRun $resultsFile
 $env:E2E_MC_HOST = "127.0.0.1"
 $env:E2E_MC_PORT = "$McPort"
 $env:E2E_MC_VERSION = $mcVersion
@@ -409,8 +410,8 @@ $botStderr = Join-Path $RunsDir "bot.stderr.log"
 $botProc = Start-Process -FilePath "node" -ArgumentList @("run-e2e.js") -WorkingDirectory $botDir `
     -RedirectStandardOutput $botStdout -RedirectStandardError $botStderr -PassThru -NoNewWindow
 Track-Pid $botProc.Id
-$botProc.WaitForExit($BotTimeoutSec * 1000) | Out-Null
-if (-not $botProc.HasExited) { Stop-Pid $botProc.Id }
+$botTimedOut = -not $botProc.WaitForExit($BotTimeoutSec * 1000)
+if ($botTimedOut) { Stop-Pid $botProc.Id }
 # WaitForExit(timeout) returning false leaves the process object stale, so
 # ExitCode throws and the log line came out as "bot exit code=" with nothing
 # after it -- which hid the real reason the bot died (e.g. a missing module).
@@ -434,6 +435,9 @@ if (Test-Path $resultsFile) {
     # and 7+, matching the producer.
     $resultsJson = [System.IO.File]::ReadAllText($resultsFile, [System.Text.Encoding]::UTF8)
     $results = $resultsJson | ConvertFrom-Json
+    $runFailure = Get-BotRunFailure -Results $results -ExitCode $botProc.ExitCode `
+        -TimedOut $botTimedOut -ExpectedRunId $botRunId -ServerLogPaths @($purpStdout,$purpStderr,$novaStdout,$novaStderr)
+    if ($runFailure) { Log "  RUN FAILED: $runFailure" }
     # Get-BotReceivedRows drops the bot's own outgoing lines. run-e2e.js records
     # every sendCmd() into the SAME received[] list with kind='sent', so the old
     # $msgs contained "/nc join global" and "hello from e2e bot" -- the exact
@@ -491,7 +495,7 @@ if (Test-Path $resultsFile) {
     Log ("  join={0} list={1} chat={2} plugin={3} backend={4} noFatal={5}" -f `
         $joinOk, $listOk, $chatOk, $pluginOk, $backendOk, $noFatal)
     if (-not $noFatal) { Log ("  FATAL in server log: {0}:{1}: {2}" -f $fatal.Path, $fatal.LineNumber, $fatal.Line.Trim()) }
-    $pass = $joinOk -and $listOk -and $chatOk -and $pluginOk -and $backendOk -and $noFatal
+    $pass = $joinOk -and $listOk -and $chatOk -and $pluginOk -and $backendOk -and $noFatal -and (-not $runFailure)
 } else {
     Log "ERROR: results.json not written: $resultsFile"
 }

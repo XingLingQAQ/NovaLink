@@ -972,6 +972,7 @@ function Invoke-Platform([string]$pf) {
   $novaDir   = Join-Path $runsDir "novalink"
   $botDir    = $BotDir  # shared bot dir (run-e2e.js + run-e2e-bedrock.js + package.json)
   $resultsFile = Join-Path $runsDir "bot-results.json"
+  $botRunId = Initialize-BotRun $resultsFile
   # Candidate log paths in preference order; the first that exists wins. bukkit
   # resolves to runs/<pf>/paper/bukkit.stdout.log (start-server.ps1 names the
   # file "<Platform>.stdout.log", i.e. the platform NAME, not the SubDir).
@@ -1221,13 +1222,15 @@ function Invoke-Platform([string]$pf) {
     while (-not $botProc.HasExited -and (Get-Date) -lt $botDeadline) {
       Start-Sleep -Seconds 3
     }
-    if (-not $botProc.HasExited) {
+    $botTimedOut = -not $botProc.HasExited
+    if ($botTimedOut) {
       Log "  bot timed out after ${BotWaitSec}s -- killing"
       Stop-Process -Id $botProc.Id -Force -ErrorAction SilentlyContinue
       $result.status = "FAIL"; $result.notes = "bot timed out"
     } else {
       Log "  bot exited (code=$($botProc.ExitCode))"
     }
+    $botProc.WaitForExit()
     if (Test-Path $botOut) {
       $botLines = Get-Content $botOut -Tail 8 -ErrorAction SilentlyContinue
       if ($botLines) { $botLines | ForEach-Object { Log "    BOT: $_" } }
@@ -1253,6 +1256,14 @@ function Invoke-Platform([string]$pf) {
         Log "  WARN: $($result.notes)"
       }
       if ($results) {
+        $runFailure = Get-BotRunFailure -Results $results -ExitCode $botProc.ExitCode `
+          -TimedOut $botTimedOut -ExpectedRunId $botRunId `
+          -ServerLogPaths @((Join-Path $serverDir "$pf.stdout.log"), (Join-Path $serverDir "$pf.stderr.log"),
+            (Join-Path $novaDir "stdout.log"), (Join-Path $novaDir "stderr.log"))
+        if ($runFailure) {
+          $result.status = "FAIL"; $result.notes = $runFailure
+          return $result
+        }
         # Get-BotReceivedRows drops the bot's own outgoing traffic: both bot
         # scripts record every command they send into the SAME received[] list
         # with kind='sent'. The previous loop below walked results.received
@@ -1334,6 +1345,9 @@ function Invoke-Platform([string]$pf) {
         $result.chatRoundTrip = $chatEvidence
         if ($l1Evidence -and $chatEvidence) {
           $result.status = "PASS"
+          if ($pf -eq 'pnx' -and $def.LockName -eq 'nukkit') {
+            $result.notes = "PNX plugin compatibility on Nukkit; native PNX server is not verified"
+          }
         } elseif ($l1Evidence -and $def.PluginConfig) {
           $result.status = "FAIL"; $result.notes = "plugin answered a command, but no NovaChat-formatted chat line reached the bot (chat round-trip not verified)"
         } elseif ($l1Evidence) {
@@ -1397,7 +1411,7 @@ $overallPass = $true
 foreach ($pf in $RequestedPlatforms) {
   $pfResult = Invoke-Platform $pf
   $allResults += $pfResult
-  if ($pfResult.status -eq "FAIL") { $overallPass = $false }
+  if ($pfResult.status -notin @('PASS', 'SKIPPED', 'SKIPPED-BY-DESIGN')) { $overallPass = $false }
   # A skip of either class ran no assertions, so it must not print an L1/chat
   # verdict. The two classes are named distinctly and the by-design one carries
   # its structural reason, so a reader can tell "cannot run here" from "the
@@ -1461,7 +1475,7 @@ $byDesignResults  = @($allResults | Where-Object { $_.status -eq "SKIPPED-BY-DES
 $skippedSummary   = ($skippedResults  | ForEach-Object { $_.platform }) -join ", "
 $byDesignSummary  = ($byDesignResults | ForEach-Object { $_.platform }) -join ", "
 if (-not $overallPass) {
-  $failed = ($allResults | Where-Object { $_.status -eq "FAIL" } | ForEach-Object { $_.platform }) -join ", "
+  $failed = ($allResults | Where-Object { $_.status -notin @('PASS', 'SKIPPED', 'SKIPPED-BY-DESIGN') } | ForEach-Object { $_.platform }) -join ", "
   Log "=== E2E FAILED for: $failed ==="
   if ($skippedResults.Count  -gt 0) { Log "=== also SKIPPED (environment blocked, no test ran): $skippedSummary ===" }
   if ($byDesignResults.Count -gt 0) { Log "=== also SKIPPED-BY-DESIGN (no assertions; by design): $byDesignSummary ===" }

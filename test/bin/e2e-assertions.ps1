@@ -134,9 +134,48 @@ function Test-ServerLogFatal {
     foreach ($p in $Paths) {
         if (-not $p) { continue }
         if (-not (Test-Path -LiteralPath $p)) { continue }
-        $hit = Select-String -LiteralPath $p -Pattern $pattern -List -ErrorAction SilentlyContinue
+        $hit = Select-String -LiteralPath $p -Pattern $pattern -List -ErrorAction Stop
         if ($hit) { return $hit }
     }
+    return $null
+}
+
+function Initialize-BotRun {
+    param([string]$ResultsFile)
+    if (Test-Path -LiteralPath $ResultsFile) {
+        if (-not (Test-Path -LiteralPath $ResultsFile -PathType Leaf)) { throw "Bot result path is not a file: $ResultsFile" }
+        Remove-Item -LiteralPath $ResultsFile -Force
+    }
+    $env:E2E_RUN_ID = [guid]::NewGuid().ToString('N')
+    return $env:E2E_RUN_ID
+}
+
+function Get-BotRunFailure {
+    param(
+        $Results,
+        $ExitCode,
+        [bool]$TimedOut = $false,
+        [string]$ExpectedRunId,
+        [string[]]$ServerLogPaths = @()
+    )
+    if ($TimedOut) { return 'bot exceeded the runner deadline' }
+    if ($null -eq $ExitCode) { return 'bot exit code is unavailable' }
+    if ($ExitCode -ne 0) { return "bot exited with code $ExitCode" }
+    if ($null -eq $Results) { return 'bot results are missing' }
+    if (-not $ExpectedRunId -or -not $Results.PSObject.Properties['runId'] -or $Results.runId -ne $ExpectedRunId) { return 'bot results belong to another run' }
+    if ($Results.PSObject.Properties['timedOut'] -and $Results.timedOut) { return 'bot reported a timeout' }
+    if ($Results.PSObject.Properties['error'] -and $Results.error) { return "bot reported an error: $($Results.error)" }
+    if (-not $Results.PSObject.Properties['sequenceComplete'] -or $Results.sequenceComplete -isnot [bool] -or -not $Results.sequenceComplete) { return 'bot sequence did not finish' }
+    if (-not $Results.PSObject.Properties['received']) { return 'bot traffic is missing' }
+    $rows = @(Get-BotReceivedRows $Results)
+    if (-not @($rows | Where-Object { $_.kind -eq 'spawn' }).Count) { return 'bot never spawned' }
+    $failure = $rows | Where-Object { $_.kind -in @('error', 'kicked') } | Select-Object -First 1
+    if ($failure) { return "bot $($failure.kind): $($failure.text)" }
+    foreach ($logPath in $ServerLogPaths) {
+        if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) { return "server log is missing: $logPath" }
+    }
+    try { $fatal = Test-ServerLogFatal $ServerLogPaths } catch { return "server log could not be read: $($_.Exception.Message)" }
+    if ($fatal) { return "fatal server log at $($fatal.Path):$($fatal.LineNumber): $($fatal.Line.Trim())" }
     return $null
 }
 

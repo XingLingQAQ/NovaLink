@@ -41,6 +41,9 @@ const PLATFORM = process.env.PLATFORM || 'bedrock';
 const MC_VERSION = process.env.MC_VERSION || '1.26.40';
 const RESULTS = process.env.RESULTS_FILE || path.join(__dirname, 'results.json');
 const TIMEOUT_MS = parseInt(process.env.TIMEOUT_MS || '360000', 10);
+const RUN_ID = process.env.E2E_RUN_ID || crypto.randomUUID();
+let sequenceComplete = false;
+let intentionalQuit = false;
 
 // ---------------------------------------------------------------------------
 // Login JWT patch for PMMP 5.44+ (Bedrock protocol 944+ / OIDC offline login).
@@ -116,6 +119,8 @@ function record(kind, raw, text) {
 
 function writeResults(extra) {
   const payload = Object.assign({
+    runId: RUN_ID,
+    sequenceComplete,
     platform: PLATFORM,
     host: HOST,
     port: PORT,
@@ -126,6 +131,11 @@ function writeResults(extra) {
   }, extra || {});
   fs.writeFileSync(RESULTS, JSON.stringify(payload, null, 2));
   console.log('results.json written:', RESULTS);
+}
+
+function failRun(error) {
+  writeResults({ error: String(error) });
+  process.exit(1);
 }
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -295,14 +305,17 @@ function attachListeners(c) {
   });
   c.on('kick', (reason) => {
     record('kicked', JSON.stringify(reason), (reason && reason.message) || JSON.stringify(reason));
+    failRun('bot was kicked');
   });
   c.on('error', (err) => {
     record('error', err && err.message, err && err.stack);
     console.log('[ERROR]', err);
+    failRun(err);
   });
   c.on('close', () => {
     record('close', 'connection closed', 'connection closed');
     console.log('[CLOSE] connection closed');
+    if (!intentionalQuit) failRun('connection closed before the bot quit');
   });
 }
 
@@ -393,10 +406,13 @@ async function runSequence() {
   await sleep(2500);
 
   console.log('=== sequence done ===');
+  sequenceComplete = true;
   writeResults();
   await sleep(1500);
+  intentionalQuit = true;
   try { client.close(); } catch {}
   await sleep(1000);
+  writeResults();
   process.exit(0);
 }
 
@@ -413,6 +429,7 @@ client.once('spawn', () => {
 setTimeout(() => {
   console.log('[TIMEOUT] reached, flushing results and exiting');
   writeResults({ timedOut: true });
+  intentionalQuit = true;
   try { client.close(); } catch {}
   process.exit(2);
 }, TIMEOUT_MS);

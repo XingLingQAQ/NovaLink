@@ -143,6 +143,8 @@ def e2eRequiredPaths = [
     'test/bin/fetch-server.ps1',
     'test/bin/write-classpath.init.gradle',
     'test/bin/verify-orchestration-paths.ps1',
+    'test/bin/e2e-assertions.ps1',
+    'test/bin/test-e2e-assertions.ps1',
     'test/bin/run-e2e-orchestrator.ps1',
     'test/bin/run-bukkit-e2e.ps1',
     'test/bin/run-endstone-e2e.ps1',
