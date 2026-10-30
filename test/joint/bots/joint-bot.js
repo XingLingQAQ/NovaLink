@@ -26,6 +26,8 @@
 //   chat             { text }                       send a chat line
 //   cmd              { text }                       send a slash command
 //   wait             { ms }                         sleep
+//   arm              { token }                     track a token without waiting
+//   reconnect        { timeoutMs, delayMs }        reconnect Java once
 //   expect           { id, token, timeoutMs }       assert token arrives
 //   expectAbsent     { id, token }                  assert token NEVER arrives (checked at exit)
 //   expectEvent      { id, kind, match, timeoutMs } assert a recorded effect arrives
@@ -411,6 +413,7 @@ function expectEffect(step) {
   if (immediate) {
     assertions.push({
       id, token: id, pass: true, waitedMs: 0, evidence: immediate.text, kind: 'effect',
+      diagnostic: step.diagnostic === true,
     });
     console.log(`[EXPECT-EVENT PASS] ${id} (already recorded: ${immediate.text})`);
     return Promise.resolve(true);
@@ -913,7 +916,7 @@ function createBedrockTransport(onChatLine) {
           player_entity_id: BigInt(0),
         },
         internal: false,
-        version: '52',
+        version: 'latest',
       });
     },
     close: () => { try { client.close(); } catch (e) { /* already gone */ } },
@@ -965,20 +968,94 @@ const absentChecks = [];
 // ---------------------------------------------------------------------------
 // Step execution
 // ---------------------------------------------------------------------------
-async function runPlan(transport) {
+function waitTransportEvent(current, event, timeoutMs, start) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      current.bot.removeListener(event, success);
+      current.bot.removeListener('error', fail);
+      if (event !== 'end') {
+        current.bot.removeListener('end', ended);
+        current.bot.removeListener('kicked', kicked);
+      }
+    };
+    const success = () => { cleanup(); resolve(); };
+    const fail = (error) => { cleanup(); reject(error); };
+    const ended = () => fail(new Error(`connection ended before ${event}`));
+    const kicked = (reason) => fail(new Error(`connection rejected: ${componentText(reason)}`));
+    const timer = setTimeout(() => fail(new Error(`timed out waiting for ${event}`)), timeoutMs);
+    current.bot.once(event, success);
+    current.bot.once('error', fail);
+    if (event !== 'end') {
+      current.bot.once('end', ended);
+      current.bot.once('kicked', kicked);
+    }
+    try { if (start) start(); } catch (error) { fail(error); }
+  });
+}
+
+async function reconnectJava(current, step, factory) {
+  const timeoutMs = Number(step.timeoutMs == null ? 30000 : step.timeoutMs);
+  const delayMs = Number(step.delayMs == null ? 1000 : step.delayMs);
+  if (KIND !== 'java') throw new Error('reconnect supports Java bots only');
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000 ||
+      !Number.isFinite(delayMs) || delayMs < 0 || delayMs > 5000 || delayMs >= timeoutMs) {
+    throw new Error('reconnect requires timeoutMs in 1..60000 and delayMs in 0..5000 below timeoutMs');
+  }
+  const deadline = now() + timeoutMs;
+  const remaining = () => {
+    const ms = deadline - now();
+    if (ms <= 0) throw new Error('reconnect deadline exceeded');
+    return ms;
+  };
+  let next = null;
+  try {
+    await waitTransportEvent(current, 'end', remaining(), () => current.close());
+    record('reconnect', 'disconnected', 'disconnected', { phase: 'disconnected' });
+    await sleep(Math.min(delayMs, remaining()));
+    remaining();
+    state.players.clear();
+    state.kicked = null;
+    state.spawned = false;
+    next = factory();
+    if (!SELFTEST) transport = next;
+    await waitTransportEvent(next, next.spawnEvent, remaining());
+    state.spawned = true;
+    record('reconnect', 'spawned', 'spawned', { phase: 'spawned' });
+    assertions.push({ id: step.id || 'reconnect', token: USERNAME, pass: true,
+      evidence: 'old connection ended; same Java username spawned on one new connection', kind: 'reconnect' });
+    return next;
+  } catch (error) {
+    if (next) next.close();
+    assertions.push({ id: step.id || 'reconnect', token: USERNAME, pass: false,
+      evidence: String(error.message || error), kind: 'reconnect' });
+    throw error;
+  }
+}
+
+async function runPlan(activeTransport, factory = buildTransport) {
   for (const step of plan.steps) {
     const label = step.id ? `[${step.id}]` : '';
     console.log(`\n=== STEP ${label} ${step.action}`);
     switch (step.action) {
       case 'chat':
-        transport.sendChat(render(step.text));
+        activeTransport.sendChat(render(step.text));
         break;
       case 'cmd':
-        transport.sendCommand(render(step.text));
+        activeTransport.sendCommand(render(step.text));
         break;
       case 'wait':
         await sleep(parseInt(step.ms || 1000, 10));
         break;
+      case 'reconnect':
+        activeTransport = await reconnectJava(activeTransport, step, factory);
+        break;
+      case 'arm': {
+        const token = render(step.token);
+        if (!token) throw new Error('arm requires a non-empty token');
+        if (!expectedTokens.includes(token)) expectedTokens.push(token);
+        break;
+      }
       case 'expect': {
         const token = render(step.token);
         if (!expectedTokens.includes(token)) expectedTokens.push(token);
@@ -1035,7 +1112,7 @@ async function runPlan(transport) {
         await awaitHandoff(step.key, step.timeoutMs || 30000);
         break;
       case 'quit':
-        transport.close();
+        activeTransport.close();
         await sleep(1500);
         break;
       default:
@@ -1182,6 +1259,77 @@ const SELFTEST_CASES = [
   },
 ];
 
+async function runLifecycleSelftest() {
+  const assert = require('assert');
+  const { EventEmitter } = require('events');
+  const checks = [
+    { name: 'reconnect routes later commands to new transport', outcome: 'spawn', ok: true },
+    { name: 'reconnect disconnect timeout never dials', outcome: 'disconnect-timeout', ok: false },
+    { name: 'reconnect spawn timeout closes new transport', outcome: 'spawn-timeout', ok: false },
+    { name: 'reconnect rejection never retries', outcome: 'kicked', ok: false },
+    { name: 'reconnect early end never passes', outcome: 'end', ok: false },
+    { name: 'reconnect transport error never passes', outcome: 'error', ok: false },
+    { name: 'reconnect rejects unbounded timeout', outcome: 'invalid', ok: false },
+  ];
+  for (const check of checks) {
+    assertions.length = 0;
+    let dials = 0;
+    let closes = 0;
+    const commands = [];
+    const old = { bot: new EventEmitter(), close() {
+      if (check.outcome !== 'disconnect-timeout') this.bot.emit('end');
+    }, sendCommand() { throw new Error('used old connection'); } };
+    const factory = () => {
+      dials++;
+      assert.strictEqual(state.players.size, 0);
+      assert.strictEqual(state.kicked, null);
+      const next = { bot: new EventEmitter(), spawnEvent: 'spawn',
+        close() { closes++; }, sendCommand(cmd) { commands.push(cmd); } };
+      setTimeout(() => {
+        if (check.outcome === 'spawn') next.bot.emit('spawn');
+        if (check.outcome === 'kicked') next.bot.emit('kicked', 'refused');
+        if (check.outcome === 'end') next.bot.emit('end');
+        if (check.outcome === 'error') next.bot.emit('error', new Error('refused'));
+      }, 5);
+      return next;
+    };
+    state.players.add('stale');
+    state.kicked = { reason: 'stale' };
+    plan.steps = [
+      { id: 'reconnect', action: 'reconnect', timeoutMs: check.outcome === 'invalid' ? 60001 : 80, delayMs: 0 },
+      { action: 'cmd', text: '/nc who global' },
+    ];
+    let error = null;
+    try { await runPlan(old, factory); } catch (e) { error = e; }
+    assert.strictEqual(error == null, check.ok, check.name);
+    assert.strictEqual(dials, ['disconnect-timeout', 'invalid'].includes(check.outcome) ? 0 : 1, check.name);
+    assert.strictEqual(closes, check.ok || dials === 0 ? 0 : 1, check.name);
+    assert.deepStrictEqual(commands, check.ok ? ['/nc who global'] : [], check.name);
+    assert.strictEqual(old.bot.listenerCount('end'), 0, check.name);
+    console.log(`[SELFTEST PASS] ${check.name}`);
+  }
+
+  assertions.length = 0;
+  expectedTokens.length = 0;
+  seenTokens.clear();
+  received.length = 0;
+  plan.steps = [{ action: 'arm', token: 'synchronous-receipt' },
+    { action: 'cmd', text: '/test' },
+    { id: 'receipt', action: 'expect', token: 'synchronous-receipt', timeoutMs: 20 }];
+  await runPlan({ sendCommand() { noteInbound('synchronous-receipt'); } });
+  assert.strictEqual(assertions[0].pass, true);
+  console.log('[SELFTEST PASS] arm captures receipt before expect');
+
+  assertions.length = 0;
+  effects.length = 0;
+  recordEffect('title', 'diagnostic title', {});
+  await expectEffect({ id: 'diagnostic-fast', kind: 'title', match: 'diagnostic title', diagnostic: true });
+  assert.strictEqual(assertions[0].diagnostic, true);
+  console.log('[SELFTEST PASS] immediate effect preserves diagnostic');
+  plan.steps = [];
+  return checks.length + 2;
+}
+
 async function runSelftest() {
   const failures = [];
   for (const testCase of SELFTEST_CASES) {
@@ -1246,7 +1394,8 @@ async function runSelftest() {
   for (const f of failures) {
     assertions.push({ id: `selftest/${f}`, token: f, pass: false, waitedMs: 0, evidence: 'self-test case did not behave', kind: 'selftest' });
   }
-  const total = SELFTEST_CASES.length;
+  const lifecycleCases = await runLifecycleSelftest();
+  const total = SELFTEST_CASES.length + lifecycleCases;
   console.log(`\n[SELFTEST] ${total - failures.length}/${total} cases behaved as expected`);
   return failures.length === 0;
 }

@@ -379,9 +379,8 @@ function Invoke-IsolationScenarios {
 # serialized.
 #
 # ORDERING IS LOAD-BEARING (joint-bot.js noteInbound): a bot records a token
-# only once `expectedTokens` contains it, and only `expect` / `expectAbsent`
-# steps add to that list. In each plan every expect precedes the action that
-# produces its line, and actors are released by handoffs, not fixed sleeps.
+# only once `expectedTokens` contains it. `arm` precedes the producer;
+# `expect` waits afterwards. Handoffs release the other actor.
 #
 # ACKS. A handoffSet whose pattern never matched THROWS and aborts the rest of
 # that bot's plan (joint-bot.js runPlan), so every ack below is keyed on a line
@@ -440,52 +439,45 @@ function Get-IsolationPlanSteps {
   $ackA     = [regex]::Escape("$JoinAckToken $ChannelA")
   $ackB     = [regex]::Escape("$JoinAckToken $ChannelB")
 
-  # ALICE: in ChannelA throughout; speaks in phases 1 and 3.
   $alice = @(
-    # Arm first, then act: an `expect` declared after the command races the ack.
+    @{ id = 'iso-arm-a'; action = 'arm'; token = "$JoinAckToken $ChannelA" },
+    @{ id = 'iso-join-a'; action = 'cmd'; text = "/nc join $ChannelA" },
     @{ id = 'iso-join-a-settle'; action = 'expect'; token = "$JoinAckToken $ChannelA"; timeoutMs = 20000 },
-    @{ id = 'iso-join-a';        action = 'cmd';    text = "/nc join $ChannelA" },
-    # Wait for bob to join B and arm his absence before speaking; the handoff is
-    # the gate and the short wait only stops the arm racing the line.
-    @{ id = 'iso-wait-ready';    action = 'handoffGet'; key = 'iso-bob-ready'; timeoutMs = 200000 },
-    @{ id = 'iso-ready-slack';   action = 'wait'; ms = 1000 },
-    @{ id = 'iso-wait-phase1';   action = 'handoffGet'; key = 'iso-phase1'; timeoutMs = 200000 },
-    # Own echo: deterministic ack source AND the orchestrator's positive half.
-    # Armed before the line is spoken so the expectation cannot miss it.
-    @{ id = 'iso-expect-own-echo'; action = 'expect'; token = $tControl; timeoutMs = 60000 },
-    @{ id = 'iso-send-phase1';   action = 'chat';   text = "iso control $tControl" },
-    @{ id = 'iso-ack1';          action = 'handoffSet'; key = 'iso-alice-ack1'; pattern = [regex]::Escape($tControl) },
-    # Arm the phase-2 absence NOW. Bob cannot speak until the harness sets
-    # iso-phase2, and it does that only after iso-alice-ack1.
+    @{ id = 'iso-wait-ready'; action = 'handoffGet'; key = 'iso-bob-ready'; timeoutMs = 60000 },
+    @{ id = 'iso-wait-phase1'; action = 'handoffGet'; key = 'iso-phase1'; timeoutMs = 60000 },
+    @{ id = 'iso-arm-own-echo'; action = 'arm'; token = $tControl },
+    @{ id = 'iso-send-phase1'; action = 'chat'; text = "iso control $tControl" },
+    @{ id = 'iso-expect-own-echo'; action = 'expect'; token = $tControl; timeoutMs = 20000 },
     @{ id = 'iso-absent-control-marker'; action = 'expectAbsent'; token = $tBobLine },
-    @{ id = 'iso-wait-phase3';   action = 'handoffGet'; key = 'iso-phase3'; timeoutMs = 200000 },
-    # Bob comes to A (not the other way round): alice's channel never changes,
-    # so the phase-2 negative and the phase-3 delivery are judged on one state.
-    @{ id = 'iso-wait-ready3';   action = 'handoffGet'; key = 'iso-bob-ready3'; timeoutMs = 200000 },
-    @{ id = 'iso-expect-own-shared'; action = 'expect'; token = $tShared; timeoutMs = 60000 },
-    @{ id = 'iso-send-phase3';   action = 'chat';   text = "iso shared $tShared" },
-    @{ id = 'iso-ack3';          action = 'handoffSet'; key = 'iso-alice-ack3'; pattern = [regex]::Escape($tShared) }
+    @{ id = 'iso-ready2'; action = 'handoffSet'; key = 'iso-alice-ready2'; pattern = [regex]::Escape($tControl) },
+    @{ id = 'iso-ack1'; action = 'handoffSet'; key = 'iso-alice-ack1'; pattern = [regex]::Escape($tControl) },
+    @{ id = 'iso-wait-phase3'; action = 'handoffGet'; key = 'iso-phase3'; timeoutMs = 60000 },
+    @{ id = 'iso-wait-ready3'; action = 'handoffGet'; key = 'iso-bob-ready3'; timeoutMs = 60000 },
+    @{ id = 'iso-arm-own-shared'; action = 'arm'; token = $tShared },
+    @{ id = 'iso-send-phase3'; action = 'chat'; text = "iso shared $tShared" },
+    @{ id = 'iso-expect-own-shared'; action = 'expect'; token = $tShared; timeoutMs = 20000 },
+    @{ id = 'iso-ack3'; action = 'handoffSet'; key = 'iso-alice-ack3'; pattern = [regex]::Escape($tShared) }
   )
 
-  # BOB: joins B, speaks in phase 2, then joins A.
   $bob = @(
+    @{ id = 'iso-arm-b'; action = 'arm'; token = "$JoinAckToken $ChannelB" },
+    @{ id = 'iso-join-b'; action = 'cmd'; text = "/nc join $ChannelB" },
     @{ id = 'iso-join-b-settle'; action = 'expect'; token = "$JoinAckToken $ChannelB"; timeoutMs = 20000 },
-    @{ id = 'iso-join-b';        action = 'cmd';    text = "/nc join $ChannelB" },
-    # Arm the absence BEFORE publishing readiness, so the harness cannot release
-    # alice's phase-1 line into a window where this token is unarmed.
     @{ id = 'iso-absent-control'; action = 'expectAbsent'; token = $tControl },
-    @{ id = 'iso-ready';         action = 'handoffSet'; key = 'iso-bob-ready'; pattern = $ackB },
-    @{ id = 'iso-wait-phase2';   action = 'handoffGet'; key = 'iso-phase2'; timeoutMs = 200000 },
-    @{ id = 'iso-expect-own-echo'; action = 'expect'; token = $tBobLine; timeoutMs = 60000 },
-    @{ id = 'iso-send-phase2';   action = 'chat';   text = "iso fromb $tBobLine" },
-    @{ id = 'iso-ack2';          action = 'handoffSet'; key = 'iso-bob-ack2'; pattern = [regex]::Escape($tBobLine) },
-    @{ id = 'iso-wait-phase3';   action = 'handoffGet'; key = 'iso-phase3'; timeoutMs = 200000 },
+    @{ id = 'iso-ready'; action = 'handoffSet'; key = 'iso-bob-ready'; pattern = $ackB },
+    @{ id = 'iso-wait-phase2'; action = 'handoffGet'; key = 'iso-phase2'; timeoutMs = 60000 },
+    @{ id = 'iso-arm-own-echo'; action = 'arm'; token = $tBobLine },
+    @{ id = 'iso-send-phase2'; action = 'chat'; text = "iso fromb $tBobLine" },
+    @{ id = 'iso-expect-own-echo'; action = 'expect'; token = $tBobLine; timeoutMs = 20000 },
+    @{ id = 'iso-ack2'; action = 'handoffSet'; key = 'iso-bob-ack2'; pattern = [regex]::Escape($tBobLine) },
+    @{ id = 'iso-wait-phase3'; action = 'handoffGet'; key = 'iso-phase3'; timeoutMs = 60000 },
+    @{ id = 'iso-arm-a'; action = 'arm'; token = "$JoinAckToken $ChannelA" },
+    @{ id = 'iso-join-a'; action = 'cmd'; text = "/nc join $ChannelA" },
     @{ id = 'iso-join-a-settle'; action = 'expect'; token = "$JoinAckToken $ChannelA"; timeoutMs = 20000 },
-    @{ id = 'iso-join-a';        action = 'cmd';    text = "/nc join $ChannelA" },
-    # Arm the delivery before publishing readiness3.
-    @{ id = 'iso-expect-shared'; action = 'expect'; token = $tShared; timeoutMs = 200000 },
-    @{ id = 'iso-ready3';        action = 'handoffSet'; key = 'iso-bob-ready3'; pattern = $ackA },
-    @{ id = 'iso-ack3';          action = 'handoffSet'; key = 'iso-bob-ack3'; pattern = [regex]::Escape($tShared) }
+    @{ id = 'iso-arm-shared'; action = 'arm'; token = $tShared },
+    @{ id = 'iso-ready3'; action = 'handoffSet'; key = 'iso-bob-ready3'; pattern = $ackA },
+    @{ id = 'iso-expect-shared'; action = 'expect'; token = $tShared; timeoutMs = 30000 },
+    @{ id = 'iso-ack3'; action = 'handoffSet'; key = 'iso-bob-ack3'; pattern = [regex]::Escape($tShared) }
   )
 
   return @{

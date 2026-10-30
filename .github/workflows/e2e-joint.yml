@@ -1,0 +1,127 @@
+name: E2E (Joint Servers)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 5 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-joint-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  joint:
+    name: Joint Velocity + Bukkit (${{ matrix.mode }})
+    runs-on: windows-2022
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [relay, lite]
+    env:
+      JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8 -Dconsole.encoding=UTF-8
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dfile.encoding=UTF-8
+      JOINT_ROOT: ${{ github.workspace }}/.e2e-artifacts/joint-ci/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.mode }}
+      JOINT_EVIDENCE: ${{ github.workspace }}/.e2e-artifacts/joint-evidence/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.mode }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Parse joint scripts with Windows PowerShell
+        shell: powershell
+        run: ./test/joint/verify-joint-syntax.ps1 -Path ./test/joint
+
+      - name: Set up Java 21 and 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            25
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: test/bot/package-lock.json
+
+      - name: Check bot and scenario machinery without servers
+        shell: powershell
+        run: |
+          node --check test/joint/bots/joint-bot.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./test/joint/run-joint.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./test/joint/verify-joint-scenarios.ps1
+
+      - name: Install locked bot dependencies
+        shell: pwsh
+        run: npx --yes npm@10 ci --prefix test/bot --no-audit --no-fund
+
+      - name: Cache server distributions
+        uses: actions/cache@v4
+        with:
+          path: .e2e-artifacts/dist
+          key: joint-dist-${{ runner.os }}-${{ hashFiles('test/versions.lock.ps1') }}
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper/dists
+          key: joint-gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle', '**/gradle.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            joint-gradle-${{ runner.os }}-
+
+      - name: Run joint servers and require recorded evidence
+        shell: powershell
+        env:
+          JOINT_MODE: ${{ matrix.mode }}
+        run: |
+          $platforms = if ($env:JOINT_MODE -eq 'relay') { 'velocity,bukkit,nukkit' } else { 'velocity,bukkit' }
+          ./test/joint/run-joint.ps1 -Platforms $platforms -Rounds 1 -MaxConcurrentServers 3 -ProxyMode $env:JOINT_MODE -JointRoot $env:JOINT_ROOT -KeepArtifacts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./test/joint/assert-joint-ci.ps1 -JointRoot $env:JOINT_ROOT -ProxyMode $env:JOINT_MODE
+
+      - name: Collect joint evidence
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:JOINT_EVIDENCE | Out-Null
+          $root = [IO.Path]::GetFullPath($env:JOINT_ROOT).TrimEnd([char[]]'\/')
+          $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+          foreach ($file in @(Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue)) {
+            $relative = $file.FullName.Substring($root.Length + 1)
+            if ($relative -match '(^|[\\/])world[^\\/]*[\\/]' -or $file.Name -match '^\d+\.log$') { continue }
+            if ($file.Name -notlike '*.log' -and $file.Name -notlike '*.results.json' -and $file.Name -ne 'joint-summary.json' -and $file.Name -notlike 'plan-*.json') { continue }
+            $destination = Join-Path $env:JOINT_EVIDENCE $relative
+            $source = $null
+            $target = $null
+            try {
+              New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+              $source = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+              $target = [IO.File]::Create($destination)
+              $source.CopyTo($target)
+            } catch {
+              Write-Warning "Evidence copy skipped ${relative}: $($_.Exception.Message)"
+            } finally {
+              if ($target) { $target.Dispose() }
+              if ($source) { $source.Dispose() }
+            }
+          }
+
+      - name: Upload joint evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: joint-${{ matrix.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.JOINT_EVIDENCE }}
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7

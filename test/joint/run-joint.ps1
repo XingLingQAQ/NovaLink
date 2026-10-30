@@ -26,7 +26,7 @@
 #   different server binary. -Platforms controls the legs:
 #
 #     -Platforms "velocity,bukkit,nukkit"      (default: java=velocity+bukkit,
-#                                               mod=fabric, bedrock=nukkit)
+#                                               bedrock=nukkit; fabric opt-in)
 #     -Platforms "velocity,fabric,nukkit"      (rotate the Java leg to fabric)
 #     -Rounds 1                                (single topology; the CI mode)
 #
@@ -56,7 +56,7 @@ param(
   # Comma-separated legs. Recognised platform names are the keys of
   # $PlatformDefs below; the legacy aliases (purpur->bukkit, pocketmine->pmmp,
   # powernukkitx->pnx) are accepted and normalised.
-  [string]$Platforms = "velocity,bukkit,fabric,nukkit",
+  [string]$Platforms = "velocity,bukkit,nukkit",
 
   # How many rounds to run and how the legs rotate. Round 1 is the -Platforms
   # topology verbatim. Rounds 2+ rotate ONLY the Bedrock leg (alternating the
@@ -170,6 +170,7 @@ $binDir  = Join-Path $RepoRoot "test/bin"
 $jointBinDir = Join-Path $RepoRoot "test/joint/bots"
 $confDir = Join-Path $RepoRoot "test/conf"
 $jointBotScript = Join-Path $jointBinDir "joint-bot.js"
+. (Join-Path $PSScriptRoot "scenarios/business.ps1")
 
 # --- logging -----------------------------------------------------------------
 $script:RunId = (Get-Date -Format "yyyyMMdd-HHmmss")
@@ -361,7 +362,7 @@ $PlatformDefs = @{
     LockName = 'pocketmine'; Kind = 'bedrock'; SubDir = 'pmmp'
     Jdk = $null; ReadyPattern = '(?i)Done'
     JarGlob = ''; PluginsSubdir = 'plugins'; ClientId = 'E2E_JobPmmp'
-    BotMcVersion = '1.26.40'
+    BotMcVersion = '1.26.30'
   }
   pnx = @{
     LockName = 'nukkit'; Kind = 'bedrock'; SubDir = 'pnx'
@@ -868,6 +869,11 @@ function Invoke-GradleBuild($roundList, [string[]]$requestedPlatforms) {
   $initScripts = [System.Collections.Generic.List[string]]::new()
   $perPlatformCalls = @()
   $built = @{}
+  if ($ProxyMode -eq 'relay') {
+    $tasks.Add(':StarLink:core:jar')
+    $tasks.Add(':StarLink:core:writeRuntimeClasspath')
+    $initScripts.Add((Join-Path $binDir 'write-classpath.init.gradle'))
+  }
 
   foreach ($pf in $requestedPlatforms) {
     $name = Resolve-PlatformName $pf
@@ -1076,6 +1082,10 @@ global_channels:
   global:
     display_name: "Global"
     permission: "novachat.channel.global"
+    max_capacity: 1000
+  local:
+    display_name: "Local"
+    permission: ""
     max_capacity: 1000
 
 clients:
@@ -1766,6 +1776,7 @@ function Wait-Bots([object[]]$bots, [int]$timeoutSec) {
       Log "  bot $($b.Role) still running after ${timeoutSec}s -- killing"
       Stop-Process -Id $b.Process.Id -Force -ErrorAction SilentlyContinue
     } else {
+      $b.Process.WaitForExit()
       Log "  bot $($b.Role) exited (code=$($b.Process.ExitCode))"
     }
   }
@@ -1791,7 +1802,6 @@ function Assert-Delivered([string]$assertionId, [string]$token, $receiverResult)
   if ($receiverResult -and $receiverResult.received) {
     foreach ($entry in $receiverResult.received) {
       if ($entry.text -and $entry.text.Contains($token)) { $hit = $entry; break }
-      if ($entry.raw -and $entry.raw.Contains($token)) { $hit = $entry; break }
     }
   }
   return [PSCustomObject]@{
@@ -2243,6 +2253,10 @@ function Assert-RelayAttributionAndDelivery([string]$assertionId, [string]$token
 
 function Assert-BotExpectations([string]$role, $result) {
   $out = @()
+  if (-not $result -or $result.error -or $result.timedOut) {
+    $out += New-JointAssertion -Id "$role/completed" -Token 'results' -Pass $false `
+      -Evidence "recording=$([bool]$result); error=$($result.error); timedOut=$($result.timedOut)" -Kind 'bot-completion'
+  }
   if (-not $result) { return $out }
   if ($result.assertions) {
     foreach ($a in $result.assertions) {
@@ -2951,6 +2965,8 @@ function Invoke-LiteRound($round, [string]$roundDir) {
     # them today; the reason is reported, never swallowed.
     $assertions += Invoke-ModerationScenarios -RoundIndex $round.Index -ProxyLog $proxyLog `
       -AliceRes $aliceRes -BobRes $bobRes -RunId "$tokenPrefix-lite"
+
+    $assertions += Invoke-JointBusinessScenarios -Round $round -RoundDir $roundDir -McVersion $javaMc
 
     # `diagnostic` observations are recorded, never gated.
     $failed = @($assertions | Where-Object { -not $_.pass -and $_.kind -ne 'diagnostic' })
@@ -3845,8 +3861,7 @@ function Invoke-Round($round, [string]$roundDir) {
 
     # Bedrock protocol version the bot speaks.
     #
-    # Order: the platform's explicit BotMcVersion (PlatformDefs), then the
-    # lock's BotMcVersion, then a safe default.
+    # Lock first, then the platform fallback.
     #
     # The lock's MC field is NEVER used here. For Bedrock engines it holds the
     # SERVER release line, not a protocol version: `nukkit` has MC
@@ -3860,15 +3875,13 @@ function Invoke-Round($round, [string]$roundDir) {
     $bedrockMc = '1.26.40'
     if ($round.Bedrock) {
       $bDef = $PlatformDefs[$round.Bedrock]
-      if ($bDef.BotMcVersion) {
+      $bLock = Get-LockedServer -Name $bDef.LockName
+      if ($bLock -and $bLock.BotMcVersion) {
+        $bedrockMc = $bLock.BotMcVersion
+      } elseif ($bDef.BotMcVersion) {
         $bedrockMc = $bDef.BotMcVersion
       } else {
-        $bLock = Get-LockedServer -Name $bDef.LockName
-        if ($bLock -and $bLock.BotMcVersion) {
-          $bedrockMc = $bLock.BotMcVersion
-        } else {
-          Log "  NOTE: no BotMcVersion for $($round.Bedrock); using protocol $bedrockMc"
-        }
+        Log "  NOTE: no BotMcVersion for $($round.Bedrock); using protocol $bedrockMc"
       }
     }
 
@@ -3901,8 +3914,10 @@ function Invoke-Round($round, [string]$roundDir) {
     }
 
     $javaSteps = @(
+      @{ id = 'arm-reply'; action = 'arm'; token = $replyToken },
       @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
       @{ id = 'settle'; action = 'wait'; ms = 4000 },
+      @{ id = 'wait-bedrock-ready'; action = 'handoffGet'; key = 'cross-bedrock-ready'; timeoutMs = 45000 },
       @{ id = 'send-cross'; action = 'chat'; text = "joint-java-to-bedrock $chatToken" },
       @{ id = 'expect-reply'; action = 'expect'; token = $replyToken; timeoutMs = 45000 }
     )
@@ -3977,8 +3992,10 @@ function Invoke-Round($round, [string]$roundDir) {
     $javaSteps += @{ id = 'quit'; action = 'quit' }
 
     $bedSteps = @(
+      @{ id = 'arm-java'; action = 'arm'; token = $chatToken },
       @{ id = 'join-global'; action = 'cmd'; text = '/nc join global' },
       @{ id = 'settle'; action = 'wait'; ms = 4000 },
+      @{ id = 'cross-ready'; action = 'handoffSet'; key = 'cross-bedrock-ready'; pattern = 'spawned' },
       @{ id = 'expect-java'; action = 'expect'; token = $chatToken; timeoutMs = 45000 },
       @{ id = 'send-reply'; action = 'chat'; text = "joint-bedrock-to-java $replyToken" },
       @{ id = 'settle2'; action = 'wait'; ms = 3000 }
@@ -4180,6 +4197,8 @@ function Invoke-Round($round, [string]$roundDir) {
     if (-not $bedRes) {
       $result.notes = (($result.notes, 'bedrock bot wrote no results.json') | Where-Object { $_ }) -join '; '
     }
+
+    $assertions += Invoke-JointBusinessScenarios -Round $round -RoundDir $roundDir -McVersion $javaMc
 
     # `diagnostic` observations are recorded, never gated -- same rule as the
     # lite round. Without the kind filter an intentionally-failed diagnostic
@@ -4605,8 +4624,8 @@ $summary = [PSCustomObject]@{
 Log ""
 Log "=== JOINT E2E SUMMARY ==="
 foreach ($res in $roundResults) {
-  $passCount = @($res.assertions | Where-Object { $_.pass }).Count
-  $total = @($res.assertions).Count
+  $passCount = @($res.assertions | Where-Object { $_.pass -and $_.kind -ne 'diagnostic' }).Count
+  $total = @($res.assertions | Where-Object { $_.kind -ne 'diagnostic' }).Count
   Log ("  round {0} [{1}] {2}  ({3}/{4} assertions)" -f $res.round, $res.topology, $res.status, $passCount, $total)
   if ($res.notes) { Log "         $($res.notes)" }
 }
