@@ -2,7 +2,9 @@
 
 > 设计基线：2026-08-01 当前工作树。本文档只给出**可执行的设计**（脚本结构、版本固定、断言、回收、CI 编排）；实际下载/启动/接受 EULA 等执行动作由后续实施阶段按本文档落地，**不在本文档产出时执行**。
 >
-> 当前实现以 `test/` 为准，矩阵含 bukkit、folia、velocity、bungee、nukkit、pnx、sponge、endstone、levilamina 和 pmmp。下文原设计及早期实跑记录保留作历史参考；当前契约见 §1.5.1、§4 和 [test/README.md](../test/README.md)。本轮仅修文档，未执行全矩阵验证。
+> 当前实现以 `test/` 为准，矩阵含 bukkit、folia、velocity、bungee、nukkit、pnx、sponge、endstone、levilamina 和 pmmp。下文原设计及早期实跑记录保留作历史参考；当前契约见 §1.5.1、§4 和 [test/README.md](../test/README.md)。完整矩阵的通过情况以未过滤的 CI 运行产物为准。
+
+Endstone 运行器按 `bds.EndstoneVersion` 安装固定版本，并校验其要求的 Minecraft 版本。Endstone 包和 BDS 必须同时升级，L1 运行不使用 `-Auto` 替换配套 BDS。
 
 ---
 

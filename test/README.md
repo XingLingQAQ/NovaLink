@@ -107,7 +107,11 @@ Windows link returns exit 0 without an artifact; a runner with no usable BDS
 then writes `skip-reason.txt` and exits 3. Download/hash failures are prereq
 errors (runner exit 2). Fetch exit 0 alone proves no E2E result.
 
-The Endstone pin is `bds` 1.26.52.3. LeviLamina 26.51.7 requires
+The Endstone runner installs `EndstoneVersion` (0.11.14) from the `bds` lock,
+checks its Minecraft version against the pin, and fetches BDS 1.26.52.3 without
+`-Auto`. The package and BDS must be upgraded together; floating Endstone can
+otherwise prompt for a different BDS release and stall the run.
+LeviLamina 26.51.7 requires
 `bds-levilamina` 1.26.51.1 (`RequiresBds = '1.26.51'`), so its runner fetches
 the separate pin without `-Auto`. The latest BDS must not replace that pin.
 

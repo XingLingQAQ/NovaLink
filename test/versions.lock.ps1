@@ -262,6 +262,7 @@ $LockedServers = @(
     @{
         Name    = 'bds'
         MC      = '1.26.52'
+        EndstoneVersion = '0.11.14'
         Build   = '3'
         Engine  = 'bds'
         Url     = 'https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-1.26.52.3.zip'

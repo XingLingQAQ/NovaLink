@@ -280,7 +280,7 @@ $PlatformDefs = @{
     endstone = @{
         Dispatch           = "self"
         BackendScript      = "run-endstone-e2e.ps1"
-        ServerScripts      = @("fetch-server.ps1 -Name bds -Auto")
+        ServerScripts      = @("fetch-server.ps1 -Name bds")
         BotScript          = "run-e2e-bedrock.js"
         ServerReadyFile    = "bds/bds.stdout.log"
         ServerReadyPattern = 'Server started\.|Done \('
@@ -293,7 +293,7 @@ $PlatformDefs = @{
     levilamina = @{
         Dispatch           = "self"
         BackendScript      = "run-levilamina-e2e.ps1"
-        ServerScripts      = @("fetch-server.ps1 -Name bds -Auto")
+        ServerScripts      = @("fetch-server.ps1 -Name bds-levilamina")
         BotScript          = "run-e2e-bedrock.js"
         ServerReadyFile    = "bds/bds.stdout.log"
         # BDS prints "Server started in (1.8s)!" -- no period after "started",

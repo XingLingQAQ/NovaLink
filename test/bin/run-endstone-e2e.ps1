@@ -7,7 +7,7 @@
 #   2. Install the NovaChat endstone plugin (python package, editable) into a
 #      venv that Endstone's BDS host will import.
 #   3. Fetch + unpack the Bedrock Dedicated Server (BDS) via fetch-server.ps1
-#      -Name bds -Auto, then install Endstone on top of it.
+#      -Name bds, paired with the locked Endstone package.
 #   4. Generate backend config + start the NovaLink backend.
 #   5. Start BDS+Endstone, wait for the "Done" log line + plugin enable.
 #   6. Run the bedrock-protocol bot (test/bot/run-e2e-bedrock.js).
@@ -71,6 +71,11 @@ function Log([string]$msg) {
 # 2193 -- the number BDS 1.26.52 advertises and accepts. The fallback only fires
 # against a lock revision older than the BotMcVersion field.
 $bdsLock = Get-LockedServer -Name 'bds'
+if (-not $bdsLock -or -not $bdsLock.EndstoneVersion) {
+    Log "ERROR: the bds lock must include its compatible EndstoneVersion"
+    exit 2
+}
+$endstoneVersion = $bdsLock.EndstoneVersion
 $botMcVersion = if ($bdsLock -and $bdsLock.BotMcVersion) {
     $bdsLock.BotMcVersion
 } else {
@@ -244,7 +249,7 @@ $venvPy = Join-Path $endstoneVenv "Scripts/python.exe"
 $savedEap = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 & $venvPy -m pip install --upgrade pip 1>$buildOut 2>$buildErr
-& $venvPy -m pip install "endstone>=0.11,<0.12" 1>>$buildOut 2>>$buildErr
+& $venvPy -m pip install "endstone==$endstoneVersion" 1>>$buildOut 2>>$buildErr
 $pipExit = $LASTEXITCODE
 if ($pipExit -ne 0) { $ErrorActionPreference = $savedEap; Log "ERROR: pip install endstone failed (see $buildErr)"; exit 2 }
 & $venvPy -m pip install -e $endstoneSrc 1>>$buildOut 2>>$buildErr
@@ -252,6 +257,12 @@ $pipExit = $LASTEXITCODE
 $ErrorActionPreference = $savedEap
 if ($pipExit -ne 0) { Log "ERROR: pip install novachat_endstone failed (see $buildErr)"; exit 2 }
 Log "  endstone venv: $endstoneVenv"
+$installedMcVersion = (& $venvPy -c 'import endstone; print(endstone.__minecraft_version__)').Trim()
+$expectedMcVersion = $bdsLock.MC -replace '^1\.', ''
+if ($LASTEXITCODE -ne 0 -or $installedMcVersion -ne $expectedMcVersion) {
+    Log "ERROR: Endstone $endstoneVersion requires BDS $installedMcVersion, but the lock specifies $expectedMcVersion"
+    exit 2
+}
 
 # Locate the endstone launcher entry point. Endstone ships a console script
 # `endstone` in the venv's Scripts/ that launches BDS with the plugin host.
@@ -273,42 +284,12 @@ Log "  endstone launcher: $endstoneExe"
 # 3. Fetch BDS + set up the Endstone run directory.
 # ---------------------------------------------------------------------------
 Log "step 3: fetching Bedrock Dedicated Server (BDS)"
-# Pass -Auto to match the orchestrator's declared ServerScripts for endstone
-# (run-e2e-orchestrator.ps1 endstone.PlatformDef). With -Auto, fetch-server.ps1
-# queries the Minecraft services links API for the current BDS zip (see its
-# Resolve-BdsLatest) and downloads + SHA-256-verifies it. Only a genuine API
-# failure returns @{ Skip = $true } and exits 0 WITHOUT downloading; the pinned
-# bds URL in versions.lock.ps1 is a real artifact, not a placeholder, so even a
-# non-Auto run downloads that instead. Any other fetch-server failure exits
-# non-zero and this script turns it into exit 2 (a real prereq error) -- not a
-# SKIP, because a failed download is a bug, not an unavailable environment.
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $binDir "fetch-server.ps1") -Name "bds" -Auto -DistDir $DistDir
+# Endstone and BDS must stay on the same locked Minecraft release.
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $binDir "fetch-server.ps1") -Name "bds" -DistDir $DistDir
 if ($LASTEXITCODE -ne 0) { Log "ERROR: fetch-server failed for bds"; exit 2 }
-# The BDS zip lands in $DistDir (freshly downloaded by fetch-server, a locally-
-# cached zip per versions.lock.ps1 bds notes, or a cache hit from a prior run).
-# Unpack it into the run directory. When fetch-server exits 0 but no BDS zip is
-# present, Resolve-BdsLatest reported a genuine skip and logged its reason on a
-# [fetch] line above; record that as the machine-readable reason and exit 3.
-# Exiting 0 here made CI report "endstone PASS" for a platform that never
-# started a server or ran the bot (run 39056124289).
-# Select the zip by NAME. The levilamina platform pins its own BDS (1.26.51, see
-# the bds-levilamina lock entry) and drops a SECOND bedrock-server zip into the
-# same shared dist dir, so a bare bedrock-server*.zip glob could hand endstone
-# the 1.26.51 tree -- which is the one version it refuses. Prefer this
-# platform's pinned file; in -Auto mode the links API may have resolved a newer
-# build under a different name, so fall back to any bedrock-server zip that is
-# not the levilamina one rather than skipping a good download.
-$leviBdsFile = (Get-LockedServer -Name 'bds-levilamina').File
-$pinnedBds = if ($bdsLock) { Get-Item (Join-Path $DistDir $bdsLock.File) -ErrorAction SilentlyContinue } else { $null }
-$bdsZip = if ($pinnedBds) {
-    $pinnedBds
-} else {
-    Get-ChildItem (Join-Path $DistDir "bedrock-server*.zip") -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -ne $leviBdsFile } |
-        Select-Object -First 1
-}
+$bdsZip = Get-Item -LiteralPath (Join-Path $DistDir $bdsLock.File) -ErrorAction SilentlyContinue
 if (-not $bdsZip) {
-    Log "SKIP: BDS server binary unavailable - endstone E2E not run (fetch-server exited 0 without downloading; see the [fetch] line above for the reason, e.g. the Minecraft services links API was unreachable)"
+    Log "SKIP: the pinned BDS archive $($bdsLock.File) is unavailable; endstone E2E did not run"
     Set-Content -Path (Join-Path $RunsDir "skip-reason.txt") -Value "BDS unavailable"
     exit 3
 }
