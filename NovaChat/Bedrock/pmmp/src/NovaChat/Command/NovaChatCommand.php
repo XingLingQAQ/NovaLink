@@ -235,7 +235,12 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
                 $networkClient->sendChannelAction(
                     ChannelActionPacket::ACTION_JOIN,
                     $channelId,
-                    $password
+                    $password,
+                    [
+                        "playerId" => $sender->getUniqueId()->toString(),
+                        "playerName" => $sender->getName(),
+                        "platform" => "pmmp",
+                    ]
                 );
             }
             $chatHandler->setPlayerChannel($sender, $channelId);
@@ -275,7 +280,13 @@ class NovaChatCommand extends Command implements PluginOwned, CommandExecutor {
                 if ($networkClient !== null && $networkClient->isAuthenticated()) {
                     $networkClient->sendChannelAction(
                         ChannelActionPacket::ACTION_LEAVE,
-                        $currentChannel
+                        $currentChannel,
+                        "",
+                        [
+                            "playerId" => $sender->getUniqueId()->toString(),
+                            "playerName" => $sender->getName(),
+                            "platform" => "pmmp",
+                        ]
                     );
                 }
             }

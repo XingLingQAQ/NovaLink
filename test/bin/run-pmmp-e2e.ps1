@@ -484,7 +484,7 @@ backend:
   server-version: "5.0.0"
   reconnect-delay: 5
 chat:
-  replace_vanilla: false
+  replace_vanilla: true
   default_channel: "local"
 debug: false
 "@ | Set-Content -Path $pluginConfig
@@ -668,10 +668,6 @@ if (Test-Path $resultsFile) {
     # replaces the old `global|list` regex, which matched the bot's own
     # "/nc list" row.
     #
-    # chatOk is NOT part of the pass gate on this platform -- see the detailed
-    # note where it is computed below. backendOk is the flag that proves the
-    # link: it requires a /nc who prompt that PMMP prints only after
-    # NetworkClient::isAuthenticated() succeeds.
     $rows = Get-BotReceivedRows $results
     $msgs = Get-BotReceivedTexts $rows
     # joinOk: NovaChatCommand::handleJoin prints "Joined channel: <id>" as a
@@ -680,32 +676,7 @@ if (Test-Path $resultsFile) {
     # "E2E_Bot_X joined the game" banner.
     $joinOk   = [bool]($msgs -match 'Joined channel')
     $listOk   = [bool]($msgs -match 'NovaChat Channels')
-    # chatOk is computed for DIAGNOSTICS ONLY and is deliberately NOT in the
-    # pass gate. It cannot be satisfied in this harness, for two independent
-    # reasons that are properties of the harness and the plugin's command
-    # surface, not of a broken link:
-    #
-    #   1. This harness writes chat.replace_vanilla: false. PMMP's
-    #      ChatHandler::onPlayerChat reads that as HYBRID and returns early --
-    #      "HYBRID mode: let vanilla chat handle the message. Forwarding here
-    #      would produce duplicates (vanilla + backend)" -- so the phrase is
-    #      never forwarded to the backend and no channel-format row comes back.
-    #   2. PMMP's /nc toggle is NOT a HYBRID/REPLACE mode switch. Unlike
-    #      LeviLamina's ChatInterceptor::toggleChatMode (HYBRID <-> REPLACE) and
-    #      unlike the shared bot comment's "one toggle reaches REPLACE",
-    #      NovaChatCommand::handleToggle -> ChatHandler::toggleChat flips a
-    #      per-player chat-enabled flag. run-e2e-bedrock.js sends /nc toggle
-    #      once before the phrase, which turns the bot's chat OFF; onPlayerChat
-    #      then returns at the chatEnabled check before the mode check is even
-    #      reached. A second toggle restores "enabled", but the phrase has
-    #      already been sent by then.
-    #
-    # Making chatOk reachable would mean changing the harness to
-    # replace_vanilla: true AND removing/relocating that toggle for PMMP -- a
-    # behaviour change to the shared bot script that would also alter the
-    # endstone/levilamina runs. Until then, asserting it would guarantee a red
-    # run that says nothing about the plugin, so it is excluded from $pass and
-    # reported in the per-flag log line. backendOk is the link proof.
+    # Require the plugin envelope; vanilla echoes never satisfy the round-trip.
     $chatOk   = (@(Select-BotRowsByPlainText $rows '\[[^\]]+\]\s*E2E_Bot_PMMP\s*:\s*.*hello from e2e bot' |
         Where-Object { $_.kind -eq 'text:raw' })).Count -ge 1
     # pluginOk: a line only NovaChat can emit reached the bot.
@@ -719,14 +690,9 @@ if (Test-Path $resultsFile) {
     # looked in the wrong place and was a constant true.
     $fatal = Test-ServerLogFatal @($pmmpStdout, $pmmpStderr)
     $noFatal = ($null -eq $fatal)
-    # chat= is informational: it is expected FALSE under this harness (see the
-    # chatOk note above) and is not part of $pass.
-    Log ("  join={0} list={1} chat={2} (diagnostic, not gated) plugin={3} backend={4} noFatal={5}" -f $joinOk, $listOk, $chatOk, $pluginOk, $backendOk, $noFatal)
+    Log ("  join={0} list={1} chat={2} plugin={3} backend={4} noFatal={5}" -f $joinOk, $listOk, $chatOk, $pluginOk, $backendOk, $noFatal)
     if (-not $noFatal) { Log ("  FATAL in server log: {0}:{1}: {2}" -f $fatal.Path, $fatal.LineNumber, $fatal.Line.Trim()) }
-    # chatOk is excluded on purpose: it is unsatisfiable here for the reasons
-    # documented at its computation, so gating on it would make every run red
-    # regardless of NovaLink's health.
-    $pass = $joinOk -and $listOk -and $pluginOk -and $backendOk -and $noFatal
+    $pass = $joinOk -and $listOk -and $chatOk -and $pluginOk -and $backendOk -and $noFatal
 } else {
     Log "ERROR: results.json not written: $resultsFile"
 }

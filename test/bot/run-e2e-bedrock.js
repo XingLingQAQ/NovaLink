@@ -349,6 +349,7 @@ function sendCommand(command) {
 }
 
 async function runSequence() {
+  const toggleControlsMode = PLATFORM !== 'pmmp';
   console.log('=== waiting for spawn ===');
   await sleep(15000);
   console.log('=== starting L1 command sequence ===');
@@ -358,31 +359,28 @@ async function runSequence() {
   await sleep(3000);
   sendCommand('/nc join global');
   await sleep(3000);
-  // ONE toggle reaches REPLACE; the second toggle this used to send returned
-  // the player to HYBRID. PMMP's onPlayerChat returns early in HYBRID
-  // ("let vanilla chat handle the message. Forwarding here would produce
-  // duplicates"), so the phrase below was never forwarded there -- it was only
-  // ever vanilla's own echo. Endstone and LeviLamina do forward in HYBRID, so
-  // for them this only makes the round-trip deterministic rather than
-  // mode-dependent. Toggle back afterwards so the hybrid section still runs in
-  // the mode it names.
-  sendCommand('/nc toggle');
+  // PMMP's toggle disables forwarding; its harness configures REPLACE directly.
+  if (toggleControlsMode) sendCommand('/nc toggle');
   await sleep(2500);
   // The round-trip assertion target: bot sends CHAT_PHRASE -> plugin intercepts
   // -> backend routes -> plugin receives -> bot renders the formatted message
   // containing CHAT_PHRASE.
   sendChat(CHAT_PHRASE);
   await sleep(4000);
-  sendCommand('/nc toggle');
+  if (toggleControlsMode) {
+    sendCommand('/nc toggle');
+  } else {
+    sendCommand('/nc toggle');
+    await sleep(500);
+    sendCommand('/nc toggle');
+  }
   await sleep(2500);
   sendCommand('/nc list');
   await sleep(2500);
   sendCommand('/nc who');
   await sleep(2500);
 
-  // HYBRID mode: channel-routed + vanilla preserved.
-  sendCommand('/nc toggle');
-  await sleep(2500);
+  // Mode-switch platforms are back in HYBRID; PMMP forwarding is enabled again.
   sendChat('vanilla chat preserved e2e');
   await sleep(3000);
 

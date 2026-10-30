@@ -310,6 +310,39 @@ final class ModerationCommandTest extends TestCase {
     // ban — action constant + extras
     // ==================================================================
 
+    public function testJoinCarriesPlayerIdentityAndPassword(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client, null, $this->staleChannelHandler());
+        $player = new FakePlayer();
+
+        $command->execute($player, "nc", ["join", "global", "channel-secret"]);
+
+        self::assertCount(1, $client->channelActions);
+        $action = $client->channelActions[0];
+        self::assertSame(ChannelActionPacket::ACTION_JOIN, $action["action"]);
+        self::assertSame("global", $action["channelId"]);
+        self::assertSame("channel-secret", $action["password"]);
+        self::assertSame($player->getUniqueId()->toString(), $action["extra"]["playerId"]);
+        self::assertSame("Alice", $action["extra"]["playerName"]);
+        self::assertSame("pmmp", $action["extra"]["platform"]);
+    }
+
+    public function testLeaveCarriesPlayerIdentity(): void {
+        $client = new RecordingNetworkClient();
+        $command = $this->makeCommand($client, null, $this->staleChannelHandler());
+        $player = new FakePlayer();
+
+        $command->execute($player, "nc", ["leave"]);
+
+        self::assertCount(1, $client->channelActions);
+        $action = $client->channelActions[0];
+        self::assertSame(ChannelActionPacket::ACTION_LEAVE, $action["action"]);
+        self::assertSame("staff", $action["channelId"]);
+        self::assertSame($player->getUniqueId()->toString(), $action["extra"]["playerId"]);
+        self::assertSame("Alice", $action["extra"]["playerName"]);
+        self::assertSame("pmmp", $action["extra"]["platform"]);
+    }
+
     public function testBanFromConsoleSendsSentinelAndConsoleTag(): void {
         $client = new RecordingNetworkClient();
         $command = $this->makeCommand($client);
