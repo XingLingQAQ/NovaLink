@@ -3509,7 +3509,7 @@ function Assert-ModerationScenarios {
   $unbanLine = if ($backendText -and ($backendText -match '(?m)^.*unbanned in channel global by.*$')) { $Matches[0].Trim() } else { '' }
   $banRefusal = & $verdict $TargetRes 'target' 'mod-ban-join-refused' 'ban-blocks-rejoin' 'join refused with NC-403'
   if (-not $banRefusal.pass -and $banRefusal.evidence -match '^\[target\]\s*$') {
-    $banRefusal.evidence = ('[target] no NC-403 was rendered; the /nc join succeeded while the ban was active ' +
+    $banRefusal.evidence = ('[target] no NC-403 was rendered; rejection by the channel ban was not verified ' +
       $(if ($banLine) { "(authority: $banLine)" } else { '' }))
   }
   $out += $banRefusal
@@ -3786,6 +3786,7 @@ servers:
 $($serverLines -join "`n")
 permissions:
   default:
+    - novachat.use
     - novachat.channel.global
 listeners:
   - host: 127.0.0.1:$ProxyPort
