@@ -162,9 +162,36 @@ enabled before the first chat, and includes the main `chatOk` in `pass`.
 Its JOIN/LEAVE packets carry `playerId`, `playerName`, and `platform`.
 Folia now receives backend config at `plugins/NovaChat-Folia/config.yml`.
 The four configured platforms (folia/nukkit/pnx/sponge) fail when plugin
-evidence is present but the chat round-trip is missing. PMMP additionally gates
-on `Test-ServerLogFatal`; the shared Folia runner does not explicitly call it.
+evidence is present but the chat round-trip is missing. All L1 runners also
+require `Get-BotRunFailure` to accept the run: exit code 0, a matching `runId`,
+`sequenceComplete: true`, a spawn, no timeout/error/kick, and readable server
+logs without a fatal marker. A previous result file is removed before launch.
+`PARTIAL` and `UNKNOWN` are failures. Normal client shutdown after the sequence
+is allowed; a connection lost before the bot requests shutdown is a failure.
 Verify all runnable platforms in one unfiltered workflow before claiming full-matrix coverage.
+
+## Joint CI coverage
+
+`e2e-joint.yml` runs the existing joint harness separately from the L1 matrix.
+Relay mode uses Velocity + Purpur + Nukkit; lite mode uses Velocity + Purpur.
+It requires receiver-recorded cross-server traffic in relay mode, channel
+isolation with positive controls, and a Java bot reconnect followed by actual
+membership and bidirectional chat evidence. `assert-joint-ci.ps1` rejects a
+missing or diagnostic-only required assertion.
+
+```powershell
+powershell -File test/joint/run-joint.ps1 -Platforms velocity,bukkit,nukkit `
+  -Rounds 1 -MaxConcurrentServers 3 -ProxyMode relay -KeepArtifacts
+```
+
+Both workflows retain filtered logs and JSON evidence on success as well as
+failure. The L1 job summary reports its JSON status; an unselected platform's
+Run E2E step is skipped. A green job alone remains insufficient evidence.
+
+This does not establish native PNX coverage (the PNX plugin uses a Nukkit
+fallback), Bungee downstream coverage, every admin/private-message scenario,
+backend-restart recovery, or a TLS/persistent-database topology. Those require
+their own recorded assertions; unit and embedded tests are separate evidence.
 
 ## Exit codes (SKIP is not PASS)
 
@@ -180,8 +207,8 @@ A platform that runs zero assertions is never reported as `PASS`.
 `run-e2e-orchestrator.ps1 -RequireAllPlatforms` fails on exit 3, but permits
 exit 4 while retaining `SKIPPED-BY-DESIGN`. CI enables this with
 `-Pe2eRequireAllPlatforms=true`; only bungee/velocity use `continue-on-error`.
-In a targeted dispatch, jobs outside `platforms` exit 0 without E2E assertions
-and can appear green. A green job or workflow alone does not prove full L1.
+In a targeted dispatch, the Run E2E step is skipped for jobs outside
+`platforms`; those jobs can still appear green. A green job or workflow alone does not prove full L1.
 Check the selection, actual Run E2E step, bot transcript, and per-platform
 terminal state written to
 `.e2e-artifacts/runs/e2e-orchestrator-summary.json`

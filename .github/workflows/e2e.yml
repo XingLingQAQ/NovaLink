@@ -18,8 +18,7 @@
 #      the harness provisions, and sponge runs on 21 now.
 #   4. Runs `./gradlew realE2E -PenableRealE2E=true` which dispatches to
 #      test/bin/run-e2e-orchestrator.ps1 for the requested platform subset.
-#   5. On failure, uploads e2e artifacts (logs, results.json, bot-results.json)
-#      for post-mortem.
+#   5. Uploads logs, bot results and JSON summaries after each attempted E2E run.
 #
 # Coverage notes:
 #   - ALL 10 platforms are IMPLEMENTED in the committed harness:
@@ -310,41 +309,33 @@ jobs:
       # The Gradle preflight fails if any required script, lock, bot package, or
       # config template is absent. Platform failures also fail this step.
       # ---------------------------------------------------------------------
-      - name: Run E2E (${{ matrix.platform }})
+      - name: Select E2E platform
+        id: selection
         shell: pwsh
         env:
-          # One platform per job. A manual dispatch may narrow the matrix with
-          # the `platforms` input; jobs outside that selection are skipped by the
-          # guard below instead of each re-running the same batch. The input
-          # defaults to empty (full matrix) -- a non-empty default would make
-          # every job run that same list, which is what happened before.
-          E2E_PLATFORMS: ${{ matrix.platform }}
           E2E_SELECTED: ${{ github.event.inputs.platforms }}
           E2E_PLATFORM: ${{ matrix.platform }}
         run: |
+          $selected = @($env:E2E_SELECTED -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          $shouldRun = $selected.Count -eq 0 -or $selected -contains $env:E2E_PLATFORM
+          "selected=$($shouldRun.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if (-not $shouldRun) {
+            $msg = "SKIPPED: NO TESTS RAN for $($env:E2E_PLATFORM) -- not in the requested set ($($selected -join ', ')). A green check here does not mean this platform passed."
+            Write-Host "::warning::$msg"
+            $msg | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
+      - name: Run E2E (${{ matrix.platform }})
+        id: e2e
+        if: steps.selection.outputs.selected == 'true'
+        shell: pwsh
+        env:
+          E2E_PLATFORMS: ${{ matrix.platform }}
+        run: |
+          'started=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           chcp 65001
           $OutputEncoding = [System.Text.Encoding]::UTF8
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          $selected = ($env:E2E_SELECTED -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-          if ($selected.Count -gt 0 -and ($selected -notcontains $env:E2E_PLATFORM)) {
-            # A targeted dispatch skips the platforms it did not ask for, and
-            # those jobs still show a GREEN check because exit 0 is the only
-            # honest code here (reding them would punish a legitimate targeted
-            # run). That makes a skipped job indistinguishable from a passing
-            # one in the checks list, and reading a targeted run as a full
-            # verification is a real mistake -- run 40106019993 was dispatched
-            # with platforms=endstone, and its "E2E levilamina success" job ran
-            # zero assertions.
-            #
-            # So make the no-op loud: a warning annotation (yellow in the UI)
-            # plus a step summary that states plainly that nothing ran. Do not
-            # turn this into a failure -- a caller who narrows the matrix is
-            # entitled to skip the rest.
-            $msg = "NO TESTS RAN for $($env:E2E_PLATFORM) -- skipped, not in the requested set ($($selected -join ', ')). A green check here does not mean this platform passed."
-            Write-Host "::warning::$msg"
-            $msg | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            exit 0
-          }
           ./gradlew realE2E --console=plain `
             '-PenableRealE2E=true' `
             '-Pe2eRequireAllPlatforms=true' `
@@ -361,7 +352,7 @@ jobs:
       # cache, not diagnostic output.
       # ---------------------------------------------------------------------
       - name: List E2E artifacts (diagnostics)
-        if: failure() || cancelled()
+        if: always() && steps.e2e.outputs.started == 'true'
         shell: pwsh
         run: |
           if (-not (Test-Path -LiteralPath .e2e-artifacts)) {
@@ -414,11 +405,10 @@ jobs:
       # then copy ONLY the diagnostic whitelist into a separate directory with
       # FileShare.ReadWrite (survives a writer that is still appending), then
       # upload only that directory. Locked files are retried and, if they stay
-      # locked, skipped -- never fatal: this step runs on an already-failing
-      # job and must not replace the real error with its own.
+      # locked, skipped -- collection must not replace the E2E verdict.
       # ---------------------------------------------------------------------
       - name: Collect E2E logs (kill stragglers, copy whitelist)
-        if: failure() || cancelled()
+        if: always() && steps.e2e.outputs.started == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -555,8 +545,7 @@ jobs:
           #   dist/               -- multi-hundred-MB server-binary cache
           #   *.exe/*.dll/*.so    -- server/plugin native payloads
           #   python venv trees   -- see the venv note below.
-          # Kept: *.log, *.txt (includes skip-reason.txt and eula.txt),
-          # bot-results.json and the run summary JSON.
+          # Kept: *.log, bot-results.json, summary JSON and skip-reason.txt.
           #
           # The python venv exclusion is what keeps this artifact readable.
           # endstone creates `runs/endstone/endstone-venv/` INSIDE the tree we
@@ -570,7 +559,7 @@ jobs:
           # Lib\ + Scripts\ pair, and any *.dist-info directory.
           $binaryExt = @('.jar', '.mca', '.mcr', '.dat', '.nbt', '.zip', '.phar',
                          '.exe', '.dll', '.so', '.dylib', '.class', '.pdb')
-          $keepNames = @('bot-results.json', 'e2e-orchestrator-summary.json', 'e2e-summary.json')
+          $keepNames = @('bot-results.json', 'e2e-orchestrator-summary.json', 'e2e-summary.json', 'skip-reason.txt')
 
           # Path fragments that identify a python virtualenv / installed package
           # tree. `EndsWith`-style matching is deliberately not used: these must
@@ -594,7 +583,6 @@ jobs:
               -not ($_.Name -match '^\d+\.log$') -and
               (
                 ($_.Extension -ieq '.log') -or
-                ($_.Extension -ieq '.txt') -or
                 ($keepNames -contains $_.Name) -or
                 ($_.Name -like '*summary*.json')
               )
@@ -668,14 +656,31 @@ jobs:
             Write-Host '[collect] WARNING: no diagnostic files were copied; the artifact will be empty.'
           }
 
-          # Never fail this step. It runs on a job that already failed, and a
-          # red collection step would replace the real error in the annotation.
-          # A stray non-zero exit from a .NET call would otherwise leak out
-          # through pwsh's $LASTEXITCODE.
+          # Keep collection errors separate from the E2E verdict.
           exit 0
 
+      - name: Summarize E2E JSON verdict
+        if: always() && steps.e2e.outputs.started == 'true'
+        shell: pwsh
+        env:
+          E2E_PLATFORM: ${{ matrix.platform }}
+        run: |
+          $summaryFile = '.e2e-artifacts/logs-only/runs/e2e-orchestrator-summary.json'
+          try {
+            $rows = @(Get-Content -LiteralPath $summaryFile -Raw -Encoding utf8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop)
+            $row = $rows | Where-Object { $_.platform -eq $env:E2E_PLATFORM } | Select-Object -First 1
+            if (-not $row -or -not $row.status) { throw 'No platform verdict in JSON summary' }
+            $message = "$($env:E2E_PLATFORM): $($row.status) (JSON verdict; job conclusion is not the test result)."
+            if ($row.skippedReason) { $message += " $($row.skippedReason)" }
+          } catch {
+            $message = "$($env:E2E_PLATFORM): UNVERIFIED -- no readable JSON verdict; PASS is not established. $($_.Exception.Message)"
+            Write-Warning $message
+          }
+          Write-Host $message
+          $message | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
       # ---------------------------------------------------------------------
-      # On failure (or cancellation), upload the clean directory built above:
+      # After each attempted E2E run, upload the clean directory built above:
       # per-platform server/backend/bot logs, plugin-build logs, bot results and
       # the run summary -- and nothing else. The upload no longer walks the run
       # directories, so it cannot trip over a live server's *.jar or a
@@ -690,8 +695,8 @@ jobs:
       # artifacts, with "No files were found with the provided path:
       # .e2e-artifacts/" in each job log.
       # ---------------------------------------------------------------------
-      - name: Upload E2E artifacts on failure
-        if: failure() || cancelled()
+      - name: Upload E2E evidence
+        if: always() && steps.e2e.outputs.started == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: e2e-${{ matrix.platform }}-${{ github.run_id }}

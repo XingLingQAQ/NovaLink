@@ -46,7 +46,7 @@ Endstone 运行器按 `bds.EndstoneVersion` 安装固定版本，并校验其要
 | 平台 | 当前锁定服务端 | 实现状态 |
 |---|---|---|
 | bukkit | Purpur 1.21.11-2568，JDK 21 | 独立 runner 已接入 |
-| folia | Folia 26.1.2-8，JDK 25 | 配置注入和严格聊天 gate 已完成；全矩阵实跑待验证 |
+| folia | Folia 26.1.2-8，JDK 25 | 配置注入和严格聊天 gate 已完成 |
 | velocity | Velocity 4.1.0-SNAPSHOT-16，JDK 25 | `SKIPPED-BY-DESIGN`，非 Full L1 |
 | bungee | Waterfall 1.21-615，JDK 21 | `SKIPPED-BY-DESIGN`，非 Full L1 |
 | nukkit | Cloudburst Nukkit 1.0-SNAPSHOT build 1242 | 共享 runner 已接入 |
@@ -54,9 +54,9 @@ Endstone 运行器按 `bds.EndstoneVersion` 安装固定版本，并校验其要
 | sponge | SpongeVanilla 1.21.10-17.0.0，JDK 21 | 共享 runner 已接入 |
 | endstone | `bds` 1.26.52.3 | 独立 runner 已接入 |
 | levilamina | `bds-levilamina` 1.26.51.1 + LeviLamina 26.51.7 | 独立 runner 已接入 |
-| pmmp | PocketMine-MP 5.44.3 + `pmmp-php` | 严格聊天 gate 已完成；全矩阵实跑待验证 |
+| pmmp | PocketMine-MP 5.44.3 + `pmmp-php` | 严格聊天 gate 已完成 |
 
-PMMP 已设 `replace_vanilla: true`，首条聊天前保持转发开启，主 `chatOk` 纳入 `pass`；JOIN/LEAVE 包带 `playerId`、`playerName` 和 `platform`。Folia 配置写入 `plugins/NovaChat-Folia/config.yml`；folia、nukkit、pnx 和 sponge 四个配置平台在插件有响应但缺少聊天回环时判 `FAIL`。PMMP 另有 `Test-ServerLogFatal` 门槛；Folia 共享 runner 未显式调用该检查。
+PMMP 已设 `replace_vanilla: true`，首条聊天前保持转发开启，主 `chatOk` 纳入 `pass`；JOIN/LEAVE 包带 `playerId`、`playerName` 和 `platform`。Folia 配置写入 `plugins/NovaChat-Folia/config.yml`。全部 L1 runner 统一检查运行 ID、完成标志、退出码、超时和服务器致命日志；缺少真实聊天回环、`PARTIAL` 和 `UNKNOWN` 均不能判成功。
 
 平台 exit 3 为环境或基础设施阻塞（`SKIPPED`），`-RequireAllPlatforms` 将其视为失败；exit 4 为结构性限制（`SKIPPED-BY-DESIGN`），严格模式允许跳过，仍不记为 PASS。下载或哈希校验失败属于前置错误（平台 exit 2）。定向 CI 中，未选中的 job 可直接 exit 0 显绿；须核对选择范围、实际执行步骤、机器人记录及 `e2e-orchestrator-summary.json` 的逐平台状态。10 个条目和绿色工作流均不等于全矩阵真实通过。
 
@@ -160,7 +160,7 @@ L1 E2E 当前只覆盖 `/nc` 命令集与聊天往返的**冒烟子集**，并�
 - `/nc reload`、`/nc debug`（运维命令）
 - `WhoCommand` 后端 who-query（pre-existing 后端缺口，见 §1.5.8 #2）
 
-**跨服联合测试也未实现**：当前每个平台 L1 为单服务端 + backend 的冒烟；多服务端同时连线同一 backend 的跨服路由（GLOBAL 频道广播、SERVER 频道隔离、world filter 边界）尚未做真实进程级联合断言（单列为后续 follow-up）。
+**联合测试单独验收**：`test/joint/run-joint.ps1` 已接入 `e2e-joint.yml`。relay 拓扑为 Velocity + Purpur + Nukkit，lite 拓扑为 Velocity + Purpur。门禁要求接收端双向投递、频道隔离的正反对照、Java bot 重连和实际成员列表；诊断行不能代替必需断言。该工作流与单平台 L1 分别统计。未执行的私聊隐私、后端重启、TLS／真实数据库和原生 PNX 场景仍未验收。
 
 ## 2. 总览：MVP 与分阶段扩展
 

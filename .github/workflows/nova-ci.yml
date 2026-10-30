@@ -70,6 +70,13 @@ jobs:
         shell: pwsh
         run: ./test/bin/verify-orchestration-paths.ps1
 
+      - name: Test E2E assertion gates
+        shell: pwsh
+        run: ./test/bin/test-e2e-assertions.ps1
+
+      - name: Test E2E bot lifecycle
+        run: node --test test/bot/test-run-lifecycle.js
+
   panel:
     name: Panel lint + production build
     runs-on: ubuntu-latest
