@@ -175,6 +175,12 @@ PNX uses the official [3.0.6 release](https://github.com/PowerNukkitX/PowerNukki
 with its SHA-256 pinned separately from Nukkit. The plugin targets the
 `org.powernukkitx` API on Java 21; the bot uses Bedrock 1.26.60 (protocol 2225).
 Earlier Nukkit fallback results do not validate this native PNX version.
+The launcher opens `java.base/java.lang` for PNX's event executor and seeds
+`chunk-settings.spawnThreshold: 16` for the test's view distance of 4.
+The bot connects through PNX's built-in HTTP NetherNet signalling endpoint;
+LAN discovery is not used for this platform.
+The PNX adapter also snapshots entity metadata before asynchronous encoding,
+preventing the 3.0.6 live-map race while preserving packet-event cancellation.
 
 ## Joint CI coverage
 

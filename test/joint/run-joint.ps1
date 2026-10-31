@@ -1490,6 +1490,7 @@ allow-the-end=off
 "@
       [System.IO.File]::WriteAllText((Join-Path $serverDir "server.properties"), $props,
         (New-Object System.Text.UTF8Encoding $false))
+      $pnxChunkSettings = if ($platform -eq 'pnx') { "chunk-settings:`r`n  spawnThreshold: 16" } else { '' }
       $nukkitYml = @"
 aliases:
   showtheversion:
@@ -1515,6 +1516,7 @@ level-settings:
 chunk-sending:
   per-tick: 4
   max-chunks: 192
+$pnxChunkSettings
 player:
   save-player-data: false
 "@
@@ -1565,7 +1567,9 @@ xbox-auth=off
   }
 
   $javaArgs = @("-Xms512M", "-Xmx1024M", "-jar", $jarPath, "nogui")
-  if ($platform -eq 'pnx') { $javaArgs += @('--skip-setup', '--accept-license') }
+  if ($platform -eq 'pnx') {
+    $javaArgs = @('--add-opens=java.base/java.lang=ALL-UNNAMED') + $javaArgs + @('--skip-setup', '--accept-license')
+  }
   $java = Join-Path $jdkPath "bin/java.exe"
   if (-not (Test-Path -LiteralPath $java)) { $java = Join-Path $jdkPath "bin/java" }
   $proc = Start-JvmProcess -JavaExe $java -Arguments $javaArgs -WorkingDirectory $serverDir `
@@ -1740,6 +1744,7 @@ function New-CrossServerPlan {
   param(
     [string]$role,
     [string]$kind,
+    [string]$platform,
     [string]$username,
     [int]$port,
     [string]$mcVersion,
@@ -1752,6 +1757,7 @@ function New-CrossServerPlan {
   $plan = [ordered]@{
     role = $role
     kind = $kind
+    platform = $platform
     username = $username
     host = '127.0.0.1'
     port = $port
@@ -4121,7 +4127,7 @@ chat:
     $javaPlanJson = New-CrossServerPlan -role 'java' -kind $javaKind -username $javaBotUser -port $javaTargetPort `
       -mcVersion $javaMc -resultsFile (Join-Path $botWork "java.results.json") -handoffDir $handoffDir `
       -timeoutMs ($botBudgetSec * 1000) -runId "$($script:RunId)-r$($round.Index)" -steps $javaSteps
-    $bedPlanJson = New-CrossServerPlan -role 'bedrock' -kind 'bedrock' -username $bedBotUser -port $ports.Bedrock `
+    $bedPlanJson = New-CrossServerPlan -role 'bedrock' -kind 'bedrock' -platform $round.Bedrock -username $bedBotUser -port $ports.Bedrock `
       -mcVersion $bedrockMc -resultsFile (Join-Path $botWork "bedrock.results.json") -handoffDir $handoffDir `
       -timeoutMs ($botBudgetSec * 1000) -runId "$($script:RunId)-r$($round.Index)" -steps $bedSteps
     [System.IO.File]::WriteAllText($javaPlanPath, $javaPlanJson, $utf8NoBom)

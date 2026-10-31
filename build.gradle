@@ -139,6 +139,7 @@ def e2eRequiredPaths = [
     'test/bot/package-lock.json',
     'test/bot/run-e2e.js',
     'test/bot/run-e2e-bedrock.js',
+    'test/bot/pnx-client.js',
     'test/bin/build-plugin-phar.php',
     'test/bin/fetch-server.ps1',
     'test/bin/write-classpath.init.gradle',

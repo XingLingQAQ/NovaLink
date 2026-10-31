@@ -268,7 +268,8 @@ function makeClient() {
   // defaultSkin that PMMP rejects. Merge the legacy skin fields (SkinData/
   // SkinResourcePatch/etc.) with the PMMP-required ClientData bool/string fields.
   const skinData = Object.assign({}, SKIN_FIELDS, PMMP_CLIENT_DATA_FIELDS);
-  const c = bedrock.createClient({
+  const createClient = PLATFORM === 'pnx' ? require('./pnx-client').createPnxClient : bedrock.createClient;
+  const c = createClient({
     host: HOST,
     port: PORT,
     username: USERNAME,

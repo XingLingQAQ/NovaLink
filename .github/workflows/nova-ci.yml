@@ -74,8 +74,8 @@ jobs:
         shell: pwsh
         run: ./test/bin/test-e2e-assertions.ps1
 
-      - name: Test E2E bot lifecycle
-        run: node --test test/bot/test-run-lifecycle.js
+      - name: Test E2E bot lifecycle and PNX signalling
+        run: node --test test/bot/test-run-lifecycle.js test/bot/test-pnx-client.js
 
   panel:
     name: Panel lint + production build

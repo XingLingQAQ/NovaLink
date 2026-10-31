@@ -110,6 +110,7 @@ const SELFTEST = process.argv.includes('--selftest')
 
 const plan = SELFTEST ? { steps: [], runId: 'selftest', role: 'selftest' } : loadPlan();
 const KIND = (plan.kind || 'java').toLowerCase();
+const PLATFORM = plan.platform || '';
 const USERNAME = plan.username || (SELFTEST ? 'SelfTestBot' : undefined);
 const HOST = plan.host || '127.0.0.1';
 const PORT = parseInt(plan.port, 10);
@@ -781,7 +782,10 @@ function createBedrockTransport(onChatLine) {
     };
   }
 
-  const client = bedrock.createClient({
+  const createClient = PLATFORM === 'pnx'
+    ? options => require('../../bot/pnx-client').createPnxClient(options, bedrock)
+    : bedrock.createClient;
+  const client = createClient({
     host: HOST,
     port: PORT,
     username: USERNAME,

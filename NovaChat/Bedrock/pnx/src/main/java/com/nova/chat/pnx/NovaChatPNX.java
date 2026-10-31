@@ -19,6 +19,7 @@ import com.nova.chat.pnx.chat.MessageFormatter;
 import com.nova.chat.pnx.command.NovaChatCommand;
 import com.nova.chat.pnx.config.NovaChatConfig;
 import com.nova.chat.pnx.form.ChannelFormManager;
+import com.nova.chat.pnx.listener.ActorDataSnapshotListener;
 import com.nova.chat.pnx.listener.LocaleListener;
 import com.nova.chat.pnx.network.NetworkClient;
 import com.nova.chat.pnx.world.WorldMonitor;
@@ -166,6 +167,8 @@ public class NovaChatPNX extends PluginBase implements Listener {
 
         // Shared command intent service (Architecture B client-core)
         initializeChannelCommandService();
+
+        getServer().getPluginManager().registerEvents(new ActorDataSnapshotListener(), this);
 
         // Initialize chat interceptor
         chatInterceptor = new ChatInterceptor(this);

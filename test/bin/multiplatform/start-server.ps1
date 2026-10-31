@@ -177,10 +177,12 @@ allow-the-end=off
     # Keep the key set minimal: Nukkit falls back to its compiled-in defaults
     # for anything absent (level-settings.default-format defaults to leveldb).
     $nukkitYmlFile = Join-Path $serverDir "nukkit.yml"
+    $pnxChunkSettings = if ($Platform -eq 'pnx') { "chunk-settings:`r`n  spawnThreshold: 16" } else { "" }
     @"
 settings:
   language: "eng"
   force-language: false
+$pnxChunkSettings
 "@ | Set-Content -Path $nukkitYmlFile -NoNewline
 } else {
     # Java edition (Purpur/Folia/Velocity/Waterfall/Sponge) server.properties.
@@ -218,7 +220,9 @@ $pidFile = Join-Path $serverDir "$Platform.pid"
 Remove-Item $stdout, $stderr, $pidFile -ErrorAction SilentlyContinue
 
 $jvmArgs = @("-Xms${MemoryMb}M", "-Xmx${MemoryMb}M", "-jar", $jarPath, "nogui")
-if ($Platform -eq 'pnx') { $jvmArgs += @('--skip-setup', '--accept-license') }
+if ($Platform -eq 'pnx') {
+    $jvmArgs = @('--add-opens=java.base/java.lang=ALL-UNNAMED') + $jvmArgs + @('--skip-setup', '--accept-license')
+}
 $proc = Start-Process -FilePath $java -ArgumentList $jvmArgs -WorkingDirectory $serverDir `
     -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
 $proc.Id | Set-Content -Encoding ascii $pidFile
