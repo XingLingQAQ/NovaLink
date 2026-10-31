@@ -1,8 +1,8 @@
 package com.nova.chat.pnx.listener;
 
-import cn.nukkit.Player;
-import cn.nukkit.event.player.PlayerJoinEvent;
-import cn.nukkit.utils.LoginChainData;
+import org.powernukkitx.Player;
+import org.powernukkitx.event.player.PlayerJoinEvent;
+import org.powernukkitx.lang.LangCode;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
 import org.junit.jupiter.api.AfterEach;
@@ -21,14 +21,6 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/**
- * Unit tests for the PNX {@link LocaleListener}.
- *
- * <p>Verifies the bedrock-specific locale capture: the client language code is
- * read from {@code LoginChainData.getLanguageCode()} on join and registered with
- * the shared {@link I18n} service. Covers the happy path, blank locale, null
- * player, and the exception fallback that leaves the player unregistered.
- */
 @DisplayName("PNX LocaleListener")
 @ExtendWith(MockitoExtension.class)
 class LocaleListenerTest {
@@ -39,9 +31,6 @@ class LocaleListenerTest {
     private PlayerJoinEvent event;
     @Mock
     private Player player;
-    @Mock
-    private LoginChainData loginChainData;
-
     private LocaleListener listener = new LocaleListener();
 
     @AfterEach
@@ -51,12 +40,11 @@ class LocaleListenerTest {
     }
 
     @Test
-    @DisplayName("registers parsed locale from login chain language code")
-    void registersLocaleFromLoginChain() {
+    @DisplayName("registers parsed locale from player language code")
+    void registersLocaleFromPlayerLanguage() {
         when(event.getPlayer()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(PLAYER_ID);
-        when(player.getLoginChainData()).thenReturn(loginChainData);
-        when(loginChainData.getLanguageCode()).thenReturn("en_US");
+        when(player.getLanguageCode()).thenReturn(LangCode.en_US);
 
         listener.onPlayerJoin(event);
 
@@ -69,8 +57,7 @@ class LocaleListenerTest {
     void registersZhCnLocale() {
         when(event.getPlayer()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(PLAYER_ID);
-        when(player.getLoginChainData()).thenReturn(loginChainData);
-        when(loginChainData.getLanguageCode()).thenReturn("zh_CN");
+        when(player.getLanguageCode()).thenReturn(LangCode.zh_CN);
 
         listener.onPlayerJoin(event);
 
@@ -79,13 +66,12 @@ class LocaleListenerTest {
     }
 
     @Test
-    @DisplayName("blank language code clears any prior registration (parse returns null)")
-    void blankLanguageCodeClearsRegistration() {
+    @DisplayName("missing language code clears any prior registration")
+    void missingLanguageCodeClearsRegistration() {
         I18n.registerPlayerLocale(PLAYER_ID, Locale.US);
         when(event.getPlayer()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(PLAYER_ID);
-        when(player.getLoginChainData()).thenReturn(loginChainData);
-        when(loginChainData.getLanguageCode()).thenReturn("   ");
+        when(player.getLanguageCode()).thenReturn(null);
 
         listener.onPlayerJoin(event);
 
@@ -101,16 +87,15 @@ class LocaleListenerTest {
         listener.onPlayerJoin(event);
 
         verify(player, never()).getUniqueId();
-        verify(loginChainData, never()).getLanguageCode();
+        verify(player, never()).getLanguageCode();
     }
 
     @Test
-    @DisplayName("getLoginChainData throwing falls back silently (player unregistered)")
-    void loginChainExceptionFallsBackSilently() {
+    @DisplayName("language lookup failure leaves the player unregistered")
+    void languageLookupExceptionFallsBackSilently() {
         when(event.getPlayer()).thenReturn(player);
-        // getUniqueId is never reached because getLoginChainData throws first; lenient.
         lenient().when(player.getUniqueId()).thenReturn(PLAYER_ID);
-        when(player.getLoginChainData()).thenThrow(new RuntimeException("not ready"));
+        when(player.getLanguageCode()).thenThrow(new RuntimeException("not ready"));
 
         listener.onPlayerJoin(event);
 

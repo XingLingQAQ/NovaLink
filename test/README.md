@@ -80,7 +80,8 @@ pin-only. The table describes the checked-in lock and resolver, not a new run.
 | `folia` | Folia 26.1.2-8, JDK 25 | `papermc.io/downloads/folia` → `fill-data.papermc.io` (SHA in path) | jar | fixed |
 | `velocity` | Velocity 4.1.0-SNAPSHOT-16, JDK 25 | `papermc.io/downloads/velocity` → `fill-data.papermc.io` | jar | fixed |
 | `waterfall` | Waterfall 1.21-615, JDK 21 | `papermc.io/downloads/waterfall` → `fill-data.papermc.io` | jar | fixed |
-| `nukkit` | Cloudburst 1.0-SNAPSHOT build 1242, JDK 21; also used for PNX | `repo.opencollab.dev` Maven snapshot metadata | jar | empty |
+| `nukkit` | Cloudburst 1.0-SNAPSHOT build 1242, JDK 21 | `repo.opencollab.dev` Maven snapshot metadata | jar | empty |
+| `powernukkitx` | Native PowerNukkitX 3.0.6, JDK 21, Bedrock 1.26.60 | pin-only | jar | fixed |
 | `sponge` | SpongeVanilla 1.21.10-17.0.0, JDK 21 | `spongepowered.org/downloads/spongevanilla` → universal jar | jar | empty |
 | `bds` | BDS 1.26.52.3 for Endstone | Minecraft services links API | zip | fixed |
 | `bds-levilamina` | BDS 1.26.51.1 for LeviLamina | pin-only | zip | fixed |
@@ -143,7 +144,7 @@ build or validate the real BDS plugin.
 | velocity | `SKIPPED-BY-DESIGN`; no full L1 | orchestrator → multiplatform runner |
 | bungee (BungeeCord via Waterfall) | `SKIPPED-BY-DESIGN`; no full L1 | orchestrator → multiplatform runner |
 | nukkit | Runner wired | orchestrator → multiplatform runner |
-| pnx | Runner wired; Nukkit fallback server | orchestrator → multiplatform runner |
+| pnx | Native PowerNukkitX 3.0.6; API 3.x | orchestrator → multiplatform runner |
 | sponge | Runner wired | orchestrator → multiplatform runner |
 | endstone (BDS) | Runner wired | `bin/run-endstone-e2e.ps1` |
 | levilamina (BDS) | Runner wired | `bin/run-levilamina-e2e.ps1` |
@@ -170,6 +171,11 @@ logs without a fatal marker. A previous result file is removed before launch.
 is allowed; a connection lost before the bot requests shutdown is a failure.
 Verify all runnable platforms in one unfiltered workflow before claiming full-matrix coverage.
 
+PNX uses the official [3.0.6 release](https://github.com/PowerNukkitX/PowerNukkitX/releases/tag/3.0.6),
+with its SHA-256 pinned separately from Nukkit. The plugin targets the
+`org.powernukkitx` API on Java 21; the bot uses Bedrock 1.26.60 (protocol 2225).
+Earlier Nukkit fallback results do not validate this native PNX version.
+
 ## Joint CI coverage
 
 `e2e-joint.yml` runs the existing joint harness separately from the L1 matrix.
@@ -189,8 +195,8 @@ Both workflows retain filtered logs and JSON evidence on success as well as
 failure. The L1 job summary reports its JSON status; an unselected platform's
 Run E2E step is skipped. A green job alone remains insufficient evidence.
 
-This does not establish native PNX coverage (the PNX plugin uses a Nukkit
-fallback), Bungee lite coverage, every admin/private-message scenario,
+The default joint cases do not exercise the native PNX topology (it has a
+separate L1 matrix entry), Bungee lite, every admin/private-message scenario,
 backend-restart recovery, or a TLS/persistent-database topology. Those require
 their own recorded assertions; unit and embedded tests are separate evidence.
 

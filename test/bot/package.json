@@ -10,8 +10,8 @@
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
-    "bedrock-protocol": "3.60.1",
-    "minecraft-data": "3.117.0",
+    "bedrock-protocol": "3.61.0",
+    "minecraft-data": "3.119.0",
     "mineflayer": "^4.39.0"
   }
 }

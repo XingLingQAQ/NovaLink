@@ -1,10 +1,10 @@
 package com.nova.chat.pnx.chat;
 
-import cn.nukkit.Player;
-import cn.nukkit.Server;
-import cn.nukkit.event.player.PlayerChatEvent;
-import cn.nukkit.level.Level;
-import cn.nukkit.scheduler.ServerScheduler;
+import org.powernukkitx.Player;
+import org.powernukkitx.Server;
+import org.powernukkitx.event.player.PlayerChatEvent;
+import org.powernukkitx.level.Level;
+import org.powernukkitx.scheduler.ServerScheduler;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.client.network.ChannelResponseTracker;
@@ -45,7 +45,7 @@ import static org.mockito.Mockito.when;
  *
  * <p>Covers the bedrock-specific chat interception ({@code onPlayerChat}) and the
  * target-side KICK/MUTE notice rendering ({@code PNXChannelResponseAdapter.notifyKickMuteTarget})
- * added in UX §5. Platform API ({@code cn.nukkit.*}) is mocked with Mockito; the
+ * added in UX §5. Platform API ({@code org.powernukkitx.*}) is mocked with Mockito; the
  * private adapter is reached via reflection bound to a real {@link NetworkClient}
  * outer instance so the adapter's {@code plugin} field reads resolve against the
  * mocked plugin.

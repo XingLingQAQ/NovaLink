@@ -1,11 +1,11 @@
 package com.nova.chat.pnx.chat;
 
-import cn.nukkit.Player;
-import cn.nukkit.event.EventHandler;
-import cn.nukkit.event.EventPriority;
-import cn.nukkit.event.Listener;
-import cn.nukkit.event.player.PlayerChatEvent;
-import cn.nukkit.event.player.PlayerJoinEvent;
+import org.powernukkitx.Player;
+import org.powernukkitx.event.EventHandler;
+import org.powernukkitx.event.EventPriority;
+import org.powernukkitx.event.Listener;
+import org.powernukkitx.event.player.PlayerChatEvent;
+import org.powernukkitx.event.player.PlayerJoinEvent;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.itemdisplay.ItemDisplayTokens;
 import com.nova.chat.client.state.ChatMode;
@@ -15,7 +15,6 @@ import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.pnx.NovaChatPNX;
 
-import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -206,27 +205,14 @@ public class ChatInterceptor implements Listener {
         }
     }
 
-    /**
-     * Extracts the display fields (id / count / custom name) of the player's
-     * held item. The PNX compile API ({@code cn.nukkit.item.Item}) exposes no
-     * namespaced id, so a {@code minecraft:*} id is derived from the vanilla
-     * display name (e.g. "Netherite Sword" → {@code minecraft:netherite_sword}),
-     * keeping the payload shape aligned with the protocol golden samples.
-     * Empty hand → air payload, matching the Bedrock renderers' "Empty"
-     * placeholder behavior.
-     */
     private String buildMainHandItemJson(Player player) {
-        cn.nukkit.item.Item hand = player.getInventory() != null
-                ? player.getInventory().getItemInHand() : null;
-        if (hand == null || hand.isNull() || hand.getId() == 0 || hand.getCount() <= 0) {
+        org.powernukkitx.item.Item hand = player.getInventory() != null
+                ? player.getInventory().getItemInMainHand() : null;
+        if (hand == null || hand.isNull() || hand.getCount() <= 0) {
             return ItemDisplayTokens.emptyHandJson();
         }
-        String baseName = hand.getName() != null ? hand.getName() : "";
-        String id = baseName.isBlank()
-                ? ""
-                : "minecraft:" + baseName.toLowerCase(Locale.ROOT).replace(' ', '_');
         String customName = hand.hasCustomName() ? hand.getCustomName() : null;
-        return ItemDisplayTokens.buildItemJson(id, hand.getCount(), customName);
+        return ItemDisplayTokens.buildItemJson(hand.getId(), hand.getCount(), customName);
     }
 
     /**

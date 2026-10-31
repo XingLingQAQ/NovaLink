@@ -1,7 +1,7 @@
 name: NovaChat
 version: ${version}
 main: com.nova.chat.pnx.NovaChatPNX
-api: ["2.0.0"]
+api: ["3.0.6"]
 description: Cross-server chat channel system for PowerNukkitX Bedrock
 author: Nova Team
 website: https://github.com/nova/novachat
@@ -9,10 +9,10 @@ website: https://github.com/nova/novachat
 # ==========================================
 # Version Compatibility
 # ==========================================
-# Supported PowerNukkitX API: 2.0.0+
-# Supported Minecraft Bedrock: 1.20+ through 26.30 (protocol 1001)
+# Supported PowerNukkitX API: 3.0.6
+# Supported Minecraft Bedrock: 1.26.60 (protocol 2225)
 # NovaProtocol version: 1
-# Minimum Java version: 17
+# Minimum Java version: 21
 # ==========================================
 
 commands:

@@ -1,26 +1,14 @@
 package com.nova.chat.pnx.listener;
 
-import cn.nukkit.Player;
-import cn.nukkit.event.EventHandler;
-import cn.nukkit.event.EventPriority;
-import cn.nukkit.event.Listener;
-import cn.nukkit.event.player.PlayerJoinEvent;
+import org.powernukkitx.Player;
+import org.powernukkitx.event.EventHandler;
+import org.powernukkitx.event.EventPriority;
+import org.powernukkitx.event.Listener;
+import org.powernukkitx.event.player.PlayerJoinEvent;
+import org.powernukkitx.lang.LangCode;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
 
-/**
- * Captures each Bedrock player's client locale from the login chain and
- * registers it with the shared {@link I18n} service so per-player messages
- * render in the player's own language.
- *
- * <p>Bedrock sends the language code in the login chain data (not via a
- * locale-change event like Java Edition), so a single {@link PlayerJoinEvent}
- * handler is enough. There is no later locale-change event to listen for.
- */
-// TODO(dedup): byte-identical near-duplicate of
-// com.nova.chat.nukkit.listener.LocaleListener (only the package differs; PNX
-// reuses the cn.nukkit API). Not unified — no shared Bedrock-common module
-// exists and adding cn.nukkit to NovaChat:common would pollute all platforms.
 public class LocaleListener implements Listener {
 
     @EventHandler(priority = EventPriority.LOWEST)
@@ -30,11 +18,11 @@ public class LocaleListener implements Listener {
             return;
         }
         try {
-            String languageCode = player.getLoginChainData().getLanguageCode();
-            I18n.registerPlayerLocale(player.getUniqueId(), LocaleResolver.parse(languageCode));
+            LangCode languageCode = player.getLanguageCode();
+            I18n.registerPlayerLocale(player.getUniqueId(),
+                    LocaleResolver.parse(languageCode == null ? null : languageCode.name()));
         } catch (Throwable t) {
-            // Login chain data may be unavailable during mock/test joins; fall
-            // back to the default locale by leaving the player unregistered.
+            // Locale unavailable during join
         }
     }
 }

@@ -1,7 +1,7 @@
 package com.nova.chat.pnx.command;
 
-import cn.nukkit.Player;
-import cn.nukkit.command.CommandSender;
+import org.powernukkitx.Player;
+import org.powernukkitx.command.CommandSender;
 import com.nova.chat.pnx.NovaChatPNX;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

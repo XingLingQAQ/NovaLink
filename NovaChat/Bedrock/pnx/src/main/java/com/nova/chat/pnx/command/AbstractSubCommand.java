@@ -1,8 +1,8 @@
 package com.nova.chat.pnx.command;
 
-import cn.nukkit.Player;
-import cn.nukkit.command.CommandSender;
-import cn.nukkit.utils.TextFormat;
+import org.powernukkitx.Player;
+import org.powernukkitx.command.CommandSender;
+import org.powernukkitx.utils.TextFormat;
 import com.nova.chat.client.error.ErrorCode;
 import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.format.DurationFormatter;

@@ -26,8 +26,7 @@
 #                          from the vanilla server, which refuses to boot without
 #                          an accepted eula.txt just like Purpur/Folia)
 #   nukkit   -> nukkit    (JDK 21, no EULA)
-#   pnx      -> nukkit    (JDK 21, no EULA; PNX runs on the Cloudburst Nukkit
-#                          server jar -- see .e2e/bin/start-pnx.ps1 caveat)
+#   pnx      -> powernukkitx (JDK 21, native PNX 3.x)
 # The caller (run-multiplatform-e2e.ps1) passes -JdkHome, so these are docs,
 # not dispatch: this script just runs whatever java it is handed.
 #
@@ -74,7 +73,7 @@ $PlatformMap = @{
     # contains "done", so a loose pattern matches a server that never booted.
     # The "s" + ")" suffix keeps "Done (" from matching anything in the menu.
     nukkit   = @{ LockName='nukkit';   SubDir='nukkit';  Eula=$false; ReadyPattern='Done \([0-9.]+s\)!' }
-    pnx      = @{ LockName='nukkit';   SubDir='pnx';     Eula=$false; ReadyPattern='Done \([0-9.]+s\)!' }
+    pnx      = @{ LockName='powernukkitx'; SubDir='pnx'; Eula=$false; ReadyPattern='Done \([0-9.]+s\)!' }
 }
 
 if (-not $PlatformMap.ContainsKey($Platform)) {
@@ -219,6 +218,7 @@ $pidFile = Join-Path $serverDir "$Platform.pid"
 Remove-Item $stdout, $stderr, $pidFile -ErrorAction SilentlyContinue
 
 $jvmArgs = @("-Xms${MemoryMb}M", "-Xmx${MemoryMb}M", "-jar", $jarPath, "nogui")
+if ($Platform -eq 'pnx') { $jvmArgs += @('--skip-setup', '--accept-license') }
 $proc = Start-Process -FilePath $java -ArgumentList $jvmArgs -WorkingDirectory $serverDir `
     -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
 $proc.Id | Set-Content -Encoding ascii $pidFile

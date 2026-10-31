@@ -1,7 +1,7 @@
 package com.nova.chat.pnx.chat;
 
-import cn.nukkit.Player;
-import cn.nukkit.Server;
+import org.powernukkitx.Player;
+import org.powernukkitx.Server;
 import com.nova.chat.pnx.NovaChatPNX;
 import com.nova.chat.common.chat.MentionParser;
 

@@ -1,12 +1,12 @@
 package com.nova.chat.pnx;
 
-import cn.nukkit.Player;
-import cn.nukkit.event.EventHandler;
-import cn.nukkit.event.Listener;
-import cn.nukkit.event.player.PlayerFormRespondedEvent;
-import cn.nukkit.event.player.PlayerQuitEvent;
-import cn.nukkit.plugin.PluginBase;
-import cn.nukkit.scheduler.AsyncTask;
+import org.powernukkitx.Player;
+import org.powernukkitx.event.EventHandler;
+import org.powernukkitx.event.Listener;
+import org.powernukkitx.event.player.PlayerFormRespondedEvent;
+import org.powernukkitx.event.player.PlayerQuitEvent;
+import org.powernukkitx.plugin.PluginBase;
+import org.powernukkitx.scheduler.AsyncTask;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.i18n.LocaleResolver;
@@ -239,10 +239,10 @@ public class NovaChatPNX extends PluginBase implements Listener {
      */
     private void registerCommands() {
         commandHandler = new NovaChatCommand(this);
-        cn.nukkit.command.Command existing = getServer().getCommandMap().getCommand("novachat");
+        org.powernukkitx.command.Command existing = getServer().getCommandMap().getCommand("novachat");
         boolean wired = false;
-        if (existing instanceof cn.nukkit.command.PluginCommand) {
-            ((cn.nukkit.command.PluginCommand<?>) existing).setExecutor(commandHandler);
+        if (existing instanceof org.powernukkitx.command.PluginCommand) {
+            ((org.powernukkitx.command.PluginCommand<?>) existing).setExecutor(commandHandler);
             wired = true;
         }
         if (!wired) {

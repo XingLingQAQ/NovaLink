@@ -1,8 +1,8 @@
 package com.nova.chat.pnx.network;
 
-import cn.nukkit.Player;
-import cn.nukkit.Server;
-import cn.nukkit.scheduler.ServerScheduler;
+import org.powernukkitx.Player;
+import org.powernukkitx.Server;
+import org.powernukkitx.scheduler.ServerScheduler;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.ignore.IgnoreListService;
 import com.nova.chat.client.network.AbstractPlatformNetworkClient;

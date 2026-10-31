@@ -50,13 +50,15 @@ Endstone 运行器按 `bds.EndstoneVersion` 安装固定版本，并校验其要
 | velocity | Velocity 4.1.0-SNAPSHOT-16，JDK 25 | `SKIPPED-BY-DESIGN`，非 Full L1 |
 | bungee | Waterfall 1.21-615，JDK 21 | `SKIPPED-BY-DESIGN`，非 Full L1 |
 | nukkit | Cloudburst Nukkit 1.0-SNAPSHOT build 1242 | 共享 runner 已接入 |
-| pnx | 同上，Nukkit fallback 服务端 | 共享 runner 已接入 |
+| pnx | 原生 PowerNukkitX 3.0.6，JDK 21，Bedrock 1.26.60 | 独立版本锁，插件使用 3.x API |
 | sponge | SpongeVanilla 1.21.10-17.0.0，JDK 21 | 共享 runner 已接入 |
 | endstone | `bds` 1.26.52.3 | 独立 runner 已接入 |
 | levilamina | `bds-levilamina` 1.26.51.1 + LeviLamina 26.51.7 | 独立 runner 已接入 |
 | pmmp | PocketMine-MP 5.44.3 + `pmmp-php` | 严格聊天 gate 已完成 |
 
 PMMP 已设 `replace_vanilla: true`，首条聊天前保持转发开启，主 `chatOk` 纳入 `pass`；JOIN/LEAVE 包带 `playerId`、`playerName` 和 `platform`。Folia 配置写入 `plugins/NovaChat-Folia/config.yml`。全部 L1 runner 统一检查运行 ID、完成标志、退出码、超时和服务器致命日志；缺少真实聊天回环、`PARTIAL` 和 `UNKNOWN` 均不能判成功。
+
+PNX 已改用[官方 3.0.6 发布包](https://github.com/PowerNukkitX/PowerNukkitX/releases/tag/3.0.6)，锁定 SHA-256 和协议 2225。插件同步迁移到 `org.powernukkitx` API。此前“PNX 通过”的 Nukkit 回退记录只证明兼容路径，不能作为这次原生 PNX 验证的证据。
 
 平台 exit 3 为环境或基础设施阻塞（`SKIPPED`），`-RequireAllPlatforms` 将其视为失败；exit 4 为结构性限制（`SKIPPED-BY-DESIGN`），严格模式允许跳过，仍不记为 PASS。下载或哈希校验失败属于前置错误（平台 exit 2）。定向 CI 中，未选中的 job 可直接 exit 0 显绿；须核对选择范围、实际执行步骤、机器人记录及 `e2e-orchestrator-summary.json` 的逐平台状态。10 个条目和绿色工作流均不等于全矩阵真实通过。
 

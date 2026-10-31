@@ -1,17 +1,17 @@
 package com.nova.chat.pnx.form;
 
-import cn.nukkit.Player;
-import cn.nukkit.form.element.ElementButton;
-import cn.nukkit.form.element.ElementDropdown;
-import cn.nukkit.form.element.ElementInput;
-import cn.nukkit.form.element.ElementLabel;
-import cn.nukkit.form.element.ElementToggle;
-import cn.nukkit.form.response.FormResponseCustom;
-import cn.nukkit.form.response.FormResponseModal;
-import cn.nukkit.form.response.FormResponseSimple;
-import cn.nukkit.form.window.FormWindowCustom;
-import cn.nukkit.form.window.FormWindowModal;
-import cn.nukkit.form.window.FormWindowSimple;
+import org.powernukkitx.Player;
+import org.powernukkitx.form.element.simple.ElementButton;
+import org.powernukkitx.form.element.custom.ElementDropdown;
+import org.powernukkitx.form.element.custom.ElementInput;
+import org.powernukkitx.form.element.ElementLabel;
+import org.powernukkitx.form.element.custom.ElementToggle;
+import org.powernukkitx.form.response.CustomResponse;
+import org.powernukkitx.form.response.ModalResponse;
+import org.powernukkitx.form.response.SimpleResponse;
+import org.powernukkitx.form.window.CustomForm;
+import org.powernukkitx.form.window.ModalForm;
+import org.powernukkitx.form.window.SimpleForm;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.command.CommandResult;
 import com.nova.chat.client.command.PlayerMessages;
@@ -94,7 +94,7 @@ public class ChannelFormManager {
      */
     public void showChannelSelectionForm(Player player) {
         UUID playerId = player.getUniqueId();
-        FormWindowSimple form = new FormWindowSimple(
+        SimpleForm form = new SimpleForm(
             I18n.tr(playerId, "chat.form.title.select"),
             ""
         );
@@ -114,24 +114,24 @@ public class ChannelFormManager {
                         ? I18n.tr(playerId, "chat.debug.value_connected")
                         : I18n.tr(playerId, "chat.debug.value_disconnected"))).append("\n");
         content.append("\n").append(I18n.tr(playerId, "chat.form.content.select_action"));
-        form.setContent(content.toString());
+        form.content(content.toString());
 
         // Add main action buttons
-        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.join")));
-        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.create")));
-        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.leave")));
-        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.toggle_mode")));
-        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.info")));
-        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.settings")));
+        form.addElement(new ElementButton(I18n.tr(playerId, "chat.form.button.join")));
+        form.addElement(new ElementButton(I18n.tr(playerId, "chat.form.button.create")));
+        form.addElement(new ElementButton(I18n.tr(playerId, "chat.form.button.leave")));
+        form.addElement(new ElementButton(I18n.tr(playerId, "chat.form.button.toggle_mode")));
+        form.addElement(new ElementButton(I18n.tr(playerId, "chat.form.button.info")));
+        form.addElement(new ElementButton(I18n.tr(playerId, "chat.form.button.settings")));
 
         // Add quick-join buttons for common channels (excluding current)
         for (String channel : quickJoinChannels) {
             if (!channel.equals(currentChannel)) {
-                form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.quick_join", channel)));
+                form.addElement(new ElementButton(I18n.tr(playerId, "chat.form.button.quick_join", channel)));
             }
         }
 
-        player.showFormWindow(form, FORM_CHANNEL_SELECT);
+        form.send(player, FORM_CHANNEL_SELECT);
     }
 
     /**
@@ -141,7 +141,7 @@ public class ChannelFormManager {
      */
     public void showJoinChannelForm(Player player) {
         UUID playerId = player.getUniqueId();
-        FormWindowCustom form = new FormWindowCustom(I18n.tr(playerId, "chat.form.title.join"));
+        CustomForm form = new CustomForm(I18n.tr(playerId, "chat.form.title.join"));
 
         form.addElement(new ElementLabel(I18n.tr(playerId, "chat.form.label.join_prompt")));
 
@@ -157,7 +157,7 @@ public class ChannelFormManager {
         form.addElement(new ElementInput(I18n.tr(playerId, "chat.form.label.password_optional"),
                 I18n.tr(playerId, "chat.form.placeholder.password_join"), ""));
 
-        player.showFormWindow(form, FORM_JOIN_CHANNEL);
+        form.send(player, FORM_JOIN_CHANNEL);
     }
 
     /**
@@ -167,7 +167,7 @@ public class ChannelFormManager {
      */
     public void showCreateChannelForm(Player player) {
         UUID playerId = player.getUniqueId();
-        FormWindowCustom form = new FormWindowCustom(I18n.tr(playerId, "chat.form.title.create"));
+        CustomForm form = new CustomForm(I18n.tr(playerId, "chat.form.title.create"));
 
         form.addElement(new ElementLabel(I18n.tr(playerId, "chat.form.label.create_prompt")));
         form.addElement(new ElementInput(I18n.tr(playerId, "chat.form.label.channel_name"),
@@ -176,7 +176,7 @@ public class ChannelFormManager {
                 I18n.tr(playerId, "chat.form.placeholder.password_create"), ""));
         form.addElement(new ElementToggle(I18n.tr(playerId, "chat.form.label.auto_join"), true));
 
-        player.showFormWindow(form, FORM_CREATE_CHANNEL);
+        form.send(player, FORM_CREATE_CHANNEL);
     }
 
     /**
@@ -198,14 +198,15 @@ public class ChannelFormManager {
         // Store pending leave for this player
         pendingChannelLeave.put(player.getUniqueId(), currentChannel);
 
-        FormWindowModal form = new FormWindowModal(
+        ModalForm form = new ModalForm(
             I18n.tr(playerId, "chat.form.title.leave_confirm"),
-            I18n.tr(playerId, "chat.form.content.leave_prompt", currentChannel, defaultChannel),
+            I18n.tr(playerId, "chat.form.content.leave_prompt", currentChannel, defaultChannel)
+        ).text(
             I18n.tr(playerId, "chat.form.button.confirm"),
             I18n.tr(playerId, "chat.form.button.cancel")
         );
 
-        player.showFormWindow(form, FORM_LEAVE_CONFIRM);
+        form.send(player, FORM_LEAVE_CONFIRM);
     }
 
     /**
@@ -218,7 +219,7 @@ public class ChannelFormManager {
         PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         String currentChannel = state.getActiveChannel();
 
-        FormWindowSimple form = new FormWindowSimple(
+        SimpleForm form = new SimpleForm(
             I18n.tr(playerId, "chat.form.title.info"),
             ""
         );
@@ -242,10 +243,10 @@ public class ChannelFormManager {
             }
         }
 
-        form.setContent(content.toString());
-        form.addButton(new ElementButton(I18n.tr(playerId, "chat.form.button.back")));
+        form.content(content.toString());
+        form.addElement(new ElementButton(I18n.tr(playerId, "chat.form.button.back")));
 
-        player.showFormWindow(form, FORM_CHANNEL_INFO);
+        form.send(player, FORM_CHANNEL_INFO);
     }
 
     /**
@@ -258,13 +259,13 @@ public class ChannelFormManager {
         PlayerChannelState state = plugin.getChatInterceptor().getOrCreateState(player);
         ChatMode currentMode = state.isModeOverridden() ? state.getChatMode() : plugin.getChatInterceptor().getGlobalMode();
 
-        FormWindowCustom form = new FormWindowCustom(I18n.tr(playerId, "chat.form.title.settings"));
+        CustomForm form = new CustomForm(I18n.tr(playerId, "chat.form.title.settings"));
 
         form.addElement(new ElementLabel(I18n.tr(playerId, "chat.form.label.settings_prompt")));
         form.addElement(new ElementToggle(I18n.tr(playerId, "chat.form.label.channel_mode"), currentMode == ChatMode.REPLACE));
         form.addElement(new ElementLabel(I18n.tr(playerId, "chat.form.content.settings_channel")));
 
-        player.showFormWindow(form, FORM_SETTINGS);
+        form.send(player, FORM_SETTINGS);
     }
 
     /**
@@ -284,13 +285,13 @@ public class ChannelFormManager {
 
         switch (formId) {
             case FORM_CHANNEL_SELECT:
-                handleChannelSelectResponse(player, (FormResponseSimple) response);
+                handleChannelSelectResponse(player, (SimpleResponse) response);
                 break;
             case FORM_JOIN_CHANNEL:
-                handleJoinChannelResponse(player, (FormResponseCustom) response);
+                handleJoinChannelResponse(player, (CustomResponse) response);
                 break;
             case FORM_CREATE_CHANNEL:
-                handleCreateChannelResponse(player, (FormResponseCustom) response);
+                handleCreateChannelResponse(player, (CustomResponse) response);
                 break;
             case FORM_LEAVE_CONFIRM:
                 handleLeaveConfirmResponse(player, response);
@@ -300,7 +301,7 @@ public class ChannelFormManager {
                 showChannelSelectionForm(player);
                 break;
             case FORM_SETTINGS:
-                handleSettingsResponse(player, (FormResponseCustom) response);
+                handleSettingsResponse(player, (CustomResponse) response);
                 break;
         }
     }
@@ -309,8 +310,8 @@ public class ChannelFormManager {
     /**
      * Handles the channel selection form response.
      */
-    private void handleChannelSelectResponse(Player player, FormResponseSimple response) {
-        int buttonId = response.getClickedButtonId();
+    private void handleChannelSelectResponse(Player player, SimpleResponse response) {
+        int buttonId = response.buttonId();
 
         switch (buttonId) {
             case 0: // Join channel
@@ -355,14 +356,14 @@ public class ChannelFormManager {
     /**
      * Handles the join channel form response.
      */
-    private void handleJoinChannelResponse(Player player, FormResponseCustom response) {
+    private void handleJoinChannelResponse(Player player, CustomResponse response) {
         String channelId = null;
         String password = null;
 
         // Check if we have a dropdown (available channels list)
         if (!availableChannels.isEmpty()) {
             // Form has: Label, Dropdown, Input (channel ID), Input (password)
-            int dropdownSelection = response.getDropdownResponse(1).getElementID();
+            int dropdownSelection = response.getDropdownResponse(1).elementId();
 
             if (dropdownSelection > 0) {
                 // User selected from dropdown (index 0 is "manual input")
@@ -390,7 +391,7 @@ public class ChannelFormManager {
     /**
      * Handles the create channel form response.
      */
-    private void handleCreateChannelResponse(Player player, FormResponseCustom response) {
+    private void handleCreateChannelResponse(Player player, CustomResponse response) {
         // Form has: Label, Input (name), Input (password), Toggle (auto-join)
         String channelName = response.getInputResponse(1);
         String password = response.getInputResponse(2);
@@ -408,9 +409,9 @@ public class ChannelFormManager {
      * Handles the leave confirmation form response.
      */
     private void handleLeaveConfirmResponse(Player player, Object response) {
-        if (response instanceof FormResponseModal) {
-            FormResponseModal modalResponse = (FormResponseModal) response;
-            if (modalResponse.getClickedButtonId() == 0) {
+        if (response instanceof ModalResponse) {
+            ModalResponse modalResponse = (ModalResponse) response;
+            if (modalResponse.buttonId() == 0) {
                 // User confirmed
                 String channelToLeave = pendingChannelLeave.remove(player.getUniqueId());
                 if (channelToLeave != null) {
@@ -427,7 +428,7 @@ public class ChannelFormManager {
     /**
      * Handles the settings form response.
      */
-    private void handleSettingsResponse(Player player, FormResponseCustom response) {
+    private void handleSettingsResponse(Player player, CustomResponse response) {
         // Form has: Label, Toggle (channel mode), Label
         boolean channelMode = response.getToggleResponse(1);
 

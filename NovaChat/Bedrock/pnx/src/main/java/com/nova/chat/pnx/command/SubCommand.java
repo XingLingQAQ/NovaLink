@@ -1,6 +1,6 @@
 package com.nova.chat.pnx.command;
 
-import cn.nukkit.command.CommandSender;
+import org.powernukkitx.command.CommandSender;
 
 import java.util.List;
 

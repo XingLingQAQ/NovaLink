@@ -1,7 +1,7 @@
 package com.nova.chat.pnx.command;
 
-import cn.nukkit.command.CommandSender;
-import cn.nukkit.utils.TextFormat;
+import org.powernukkitx.command.CommandSender;
+import org.powernukkitx.utils.TextFormat;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.pnx.NovaChatPNX;
 
@@ -50,7 +50,7 @@ public class HelpCommand extends AbstractSubCommand {
 
     @Override
     public boolean execute(CommandSender sender, String[] args) {
-        UUID playerId = sender instanceof cn.nukkit.Player ? ((cn.nukkit.Player) sender).getUniqueId() : null;
+        UUID playerId = sender instanceof org.powernukkitx.Player ? ((org.powernukkitx.Player) sender).getUniqueId() : null;
         sender.sendMessage(TextFormat.colorize(I18n.tr(playerId, "chat.command.help.title")));
 
         Map<String, SubCommand> subCommands = parentCommand.getSubCommands();

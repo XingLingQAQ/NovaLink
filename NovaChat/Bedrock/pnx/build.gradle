@@ -4,22 +4,22 @@ plugins {
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_17
-    targetCompatibility = JavaVersion.VERSION_17
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
 }
 
 repositories {
     mavenCentral()
     maven { url 'https://repo.opencollab.dev/maven-snapshots' }
     maven { url 'https://repo.opencollab.dev/maven-releases' }
-    maven { url 'https://jitpack.io' }
-    // PowerNukkitX repository
-    maven { url 'https://oss.sonatype.org/content/repositories/snapshots/' }
+    maven { url 'https://repo.powernukkitx.org/releases' }
 }
 
-// PowerNukkitX version - using JitPack for reliable access
 ext {
-    powernukkitxVersion = '2.0.0-SNAPSHOT'
+    powernukkitxVersion = '3.0.6-20261027.165713-1'
 }
 
 dependencies {
@@ -35,13 +35,12 @@ dependencies {
     compileOnly "org.projectlombok:lombok:${lombokVersion}"
     annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
     implementation "com.google.code.gson:gson:${gsonVersion}"
+    implementation "org.yaml:snakeyaml:${snakeYamlVersion}"
 
     // Logging
-    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+    compileOnly "org.slf4j:slf4j-api:${slf4jVersion}"
 
-    // PowerNukkitX API - using Nukkit API (compatible base)
-    // PowerNukkitX extends Nukkit, so we use Nukkit API for compilation
-    compileOnly "cn.nukkit:nukkit:${nukkitVersion}"
+    compileOnly "org.powernukkitx:server:${powernukkitxVersion}"
 
     // Testing
     testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
@@ -49,9 +48,7 @@ dependencies {
     testImplementation "org.assertj:assertj-core:${assertjVersion}"
     testImplementation "org.mockito:mockito-core:${mockitoVersion}"
     testImplementation "org.mockito:mockito-junit-jupiter:${mockitoVersion}"
-    // Bedrock platform API on the test classpath so Mockito can mock cn.nukkit.*
-    // (compileOnly keeps it out of the shaded artifact; tests need it resolvable).
-    testImplementation "cn.nukkit:nukkit:${nukkitVersion}"
+    testImplementation "org.powernukkitx:server:${powernukkitxVersion}"
 }
 
 tasks.named('test') {
@@ -71,6 +68,7 @@ shadowJar {
     // Relocate dependencies to avoid conflicts
     relocate 'io.netty', 'com.nova.chat.pnx.libs.netty'
     relocate 'com.google.gson', 'com.nova.chat.pnx.libs.gson'
+    relocate 'org.yaml.snakeyaml', 'com.nova.chat.pnx.libs.snakeyaml'
     
     // Exclude unnecessary files
     exclude 'META-INF/*.SF'
@@ -85,6 +83,7 @@ shadowJar {
         // Include runtime dependencies
         include(dependency('io.netty:.*'))
         include(dependency('com.google.code.gson:gson'))
+        include(dependency('org.yaml:snakeyaml'))
     }
 }
 

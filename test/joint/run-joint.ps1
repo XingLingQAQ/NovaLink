@@ -368,13 +368,13 @@ $PlatformDefs = @{
     BotMcVersion = '1.26.30'
   }
   pnx = @{
-    LockName = 'nukkit'; Kind = 'bedrock'; SubDir = 'pnx'
+    LockName = 'powernukkitx'; Kind = 'bedrock'; SubDir = 'pnx'
     Jdk = 'Jdk21'; ReadyPattern = '(?i)Done \([0-9.]+s\)!'
     GradleTask = ':NovaChat:Bedrock:pnx:build'; BuildJdk = 'Jdk21'
     JarGlob = 'NovaChat/Bedrock/pnx/build/libs/NovaChat-PNX-*.jar'
 
     PluginsSubdir = 'plugins'; ClientId = 'E2E_JobPnx'
-    BotMcVersion = '1.26.40'
+    BotMcVersion = '1.26.60'
   }
   velocity = @{
     LockName = 'velocity'; Kind = 'proxy'; SubDir = 'velocity'
@@ -1565,6 +1565,7 @@ xbox-auth=off
   }
 
   $javaArgs = @("-Xms512M", "-Xmx1024M", "-jar", $jarPath, "nogui")
+  if ($platform -eq 'pnx') { $javaArgs += @('--skip-setup', '--accept-license') }
   $java = Join-Path $jdkPath "bin/java.exe"
   if (-not (Test-Path -LiteralPath $java)) { $java = Join-Path $jdkPath "bin/java" }
   $proc = Start-JvmProcess -JavaExe $java -Arguments $javaArgs -WorkingDirectory $serverDir `

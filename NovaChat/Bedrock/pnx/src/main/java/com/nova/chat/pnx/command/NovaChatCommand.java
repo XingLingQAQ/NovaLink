@@ -1,9 +1,9 @@
 package com.nova.chat.pnx.command;
 
-import cn.nukkit.Player;
-import cn.nukkit.command.Command;
-import cn.nukkit.command.CommandExecutor;
-import cn.nukkit.command.CommandSender;
+import org.powernukkitx.Player;
+import org.powernukkitx.command.Command;
+import org.powernukkitx.command.CommandExecutor;
+import org.powernukkitx.command.CommandSender;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.pnx.NovaChatPNX;
 

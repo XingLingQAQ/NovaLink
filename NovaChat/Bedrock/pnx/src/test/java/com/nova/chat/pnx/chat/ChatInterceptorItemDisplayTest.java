@@ -1,10 +1,10 @@
 package com.nova.chat.pnx.chat;
 
-import cn.nukkit.Player;
-import cn.nukkit.event.player.PlayerChatEvent;
-import cn.nukkit.inventory.PlayerInventory;
-import cn.nukkit.item.Item;
-import cn.nukkit.level.Level;
+import org.powernukkitx.Player;
+import org.powernukkitx.event.player.PlayerChatEvent;
+import org.powernukkitx.inventory.HumanInventory;
+import org.powernukkitx.item.Item;
+import org.powernukkitx.level.Level;
 import com.nova.chat.client.itemdisplay.ItemDisplayTokens;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
@@ -59,7 +59,7 @@ class ChatInterceptorItemDisplayTest {
     @Mock
     private Level level;
     @Mock
-    private PlayerInventory inventory;
+    private HumanInventory inventory;
     @Mock
     private Item mainHand;
     @Mock
@@ -85,11 +85,10 @@ class ChatInterceptorItemDisplayTest {
         when(level.getName()).thenReturn("world");
         when(player.hasPermission(ItemDisplayTokens.PERMISSION_ITEM)).thenReturn(true);
         when(player.getInventory()).thenReturn(inventory);
-        when(inventory.getItemInHand()).thenReturn(mainHand);
+        when(inventory.getItemInMainHand()).thenReturn(mainHand);
         when(mainHand.isNull()).thenReturn(false);
-        when(mainHand.getId()).thenReturn(743);
+        when(mainHand.getId()).thenReturn("minecraft:netherite_sword");
         when(mainHand.getCount()).thenReturn(2);
-        when(mainHand.getName()).thenReturn("Netherite Sword");
         when(mainHand.hasCustomName()).thenReturn(false);
 
         when(chatEvent.isCancelled()).thenReturn(false);
@@ -117,7 +116,7 @@ class ChatInterceptorItemDisplayTest {
     }
 
     @Test
-    @DisplayName("[i] token sends an ItemDisplayPacket with a display-name-derived id, after the chat packet")
+    @DisplayName("[i] token sends an ItemDisplayPacket with the native item id after the chat packet")
     void tokenSendsItemDisplayPacket() {
         chat("look at this [i]");
 
@@ -130,7 +129,6 @@ class ChatInterceptorItemDisplayTest {
         assertThat(display.getSenderId()).isEqualTo(PLAYER_ID);
         assertThat(display.getSenderName()).isEqualTo("Steve");
         assertThat(display.getChannelId()).isEqualTo("global");
-        // PNX exposes no namespaced id; it is derived from the display name.
         assertThat(display.getItemJson())
                 .contains("\"id\":\"minecraft:netherite_sword\"")
                 .contains("\"count\":2")

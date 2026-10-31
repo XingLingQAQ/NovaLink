@@ -1,6 +1,6 @@
 package com.nova.chat.pnx.config;
 
-import cn.nukkit.utils.Config;
+import org.powernukkitx.utils.Config;
 import com.nova.chat.client.network.ClientConnectionConfig;
 import com.nova.chat.pnx.NovaChatPNX;
 import lombok.Getter;

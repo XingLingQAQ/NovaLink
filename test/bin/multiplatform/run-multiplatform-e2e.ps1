@@ -679,8 +679,7 @@ debug: false
     }
   }
   pnx = @{
-    LockName = 'nukkit';   BotScript = 'run-e2e-bedrock.js'; BotKind = 'bedrock'
-    # Same jar, same startFinished ready line as nukkit (see above).
+    LockName = 'powernukkitx'; BotScript = 'run-e2e-bedrock.js'; BotKind = 'bedrock'
     ReadyPattern = "(?i)Done \([0-9.]+s\)!"; Jdk = "Jdk21"; ChatPhrase = "hello from e2e bot"
     # Same UDP port as nukkit (see above); one value shared by server and bot.
     McPort = 19132
@@ -1347,8 +1346,8 @@ function Invoke-Platform([string]$pf) {
         $result.chatRoundTrip = $chatEvidence
         if ($l1Evidence -and $chatEvidence) {
           $result.status = "PASS"
-          if ($pf -eq 'pnx' -and $def.LockName -eq 'nukkit') {
-            $result.notes = "PNX plugin compatibility on Nukkit; native PNX server is not verified"
+          if ($pf -eq 'pnx') {
+            $result.notes = "Native PowerNukkitX $($bedrockLock.Build); protocol $($bedrockLock.BotMcVersion)"
           }
         } elseif ($l1Evidence -and $def.PluginConfig) {
           $result.status = "FAIL"; $result.notes = "plugin answered a command, but no NovaChat-formatted chat line reached the bot (chat round-trip not verified)"

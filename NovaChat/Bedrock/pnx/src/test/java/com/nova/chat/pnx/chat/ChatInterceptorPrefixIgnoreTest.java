@@ -1,9 +1,9 @@
 package com.nova.chat.pnx.chat;
 
-import cn.nukkit.Player;
-import cn.nukkit.Server;
-import cn.nukkit.event.player.PlayerChatEvent;
-import cn.nukkit.level.Level;
+import org.powernukkitx.Player;
+import org.powernukkitx.Server;
+import org.powernukkitx.event.player.PlayerChatEvent;
+import org.powernukkitx.level.Level;
 import com.nova.chat.client.channel.KnownChannelRegistry;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.ignore.IgnoreListService;

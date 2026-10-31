@@ -195,6 +195,22 @@ $LockedServers = @(
         Auto    = $true
     }
 
+    # PNX 3.x uses org.powernukkitx; keep its API and bot protocol pinned together.
+    @{
+        Name    = 'powernukkitx'
+        MC      = '1.26.60'
+        Build   = '3.0.6'
+        Engine  = 'powernukkitx'
+        Url     = 'https://github.com/PowerNukkitX/PowerNukkitX/releases/download/3.0.6/powernukkitx.jar'
+        Sha256  = '10822D818C1F2C7D423092A235F3F04BD0EB915B2298B204ED1697D7A0DD9539'
+        Eula    = $false
+        Jdk     = 21
+        File    = 'powernukkitx-3.0.6.jar'
+        BotMcVersion = '1.26.60'
+        Kind    = 'jar'
+        Auto    = $false
+    }
+
     # Sponge: SpongeVanilla 1.21.10-17.0.0 (SpongeAPI 17.0.0 / MC 1.21.10). JDK 21.
     # The runtime is 21, not 17: the universal jar's installer/bootstrap classes
     # are class-file 65.0, so JDK 17 fails at launch with

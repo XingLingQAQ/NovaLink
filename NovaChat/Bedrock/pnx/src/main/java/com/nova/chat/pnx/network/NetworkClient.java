@@ -196,7 +196,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 return;
             }
 
-            cn.nukkit.Player player = plugin.getServer().getPlayer(senderId).orElse(null);
+            org.powernukkitx.Player player = plugin.getServer().getPlayer(senderId).orElse(null);
             if (player == null) {
                 plugin.debug("AdminActionResponsePacket target player not online: " + senderId);
                 return;
@@ -271,7 +271,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                     id -> plugin.getServer().getPlayer(id).orElse(null) != null,
                     plugin.getIgnoreListService());
             for (com.nova.chat.client.privatemsg.PrivateMessageService.Delivery delivery : deliveries) {
-                cn.nukkit.Player player = plugin.getServer().getPlayer(delivery.getPlayerId()).orElse(null);
+                org.powernukkitx.Player player = plugin.getServer().getPlayer(delivery.getPlayerId()).orElse(null);
                 if (player != null) {
                     player.sendMessage(plugin.getMessageFormatter().colorize(delivery.getLine()));
                 }
@@ -296,7 +296,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         String senderName = packet.getSenderName();
         String itemJson = packet.getItemJson();
         plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-            for (cn.nukkit.Player player : plugin.getServer().getOnlinePlayers().values()) {
+            for (org.powernukkitx.Player player : plugin.getServer().getOnlinePlayers().values()) {
                 // Skip senders the viewer has ignored (/nc ignore)
                 com.nova.chat.client.ignore.IgnoreListService ignoreService = plugin.getIgnoreListService();
                 if (ignoreService != null && ignoreService.isIgnored(player.getUniqueId(), senderName)) {
@@ -361,7 +361,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
             return;
         }
         plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-            cn.nukkit.Player player = plugin.getServer().getOnlinePlayers().get(mentionedId);
+            org.powernukkitx.Player player = plugin.getServer().getOnlinePlayers().get(mentionedId);
             if (player == null
                     || !plugin.getChatInterceptor().shouldNotifyMention(mentionedId, mentionerId)) {
                 return;
@@ -401,7 +401,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                     plugin.getPrivateMessageService()
                             .renderError(packet, id -> plugin.getServer().getPlayer(id).orElse(null) != null)
                             .ifPresent(delivery -> {
-                                cn.nukkit.Player player =
+                                org.powernukkitx.Player player =
                                         plugin.getServer().getPlayer(delivery.getPlayerId()).orElse(null);
                                 if (player != null) {
                                     player.sendMessage(plugin.getMessageFormatter().colorize(delivery.getLine()));
@@ -423,7 +423,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         @Override
         public void setActiveChannel(java.util.UUID playerId, String channelId) {
             plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                org.powernukkitx.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
                 if (player == null) {
                     return;
                 }
@@ -434,7 +434,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         @Override
         public void rollbackJoin(java.util.UUID playerId, String attemptedChannel, String previousChannel) {
             plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                org.powernukkitx.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
                 if (player == null) {
                     return;
                 }
@@ -448,7 +448,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         @Override
         public void sendJoinSuccess(java.util.UUID playerId, String channelId) {
             plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                org.powernukkitx.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
                 if (player == null) {
                     return;
                 }
@@ -460,7 +460,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         @Override
         public void sendLeaveSuccess(java.util.UUID playerId, String channelId) {
             plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                org.powernukkitx.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
                 if (player == null) {
                     return;
                 }
@@ -475,7 +475,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 return;
             }
             plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                org.powernukkitx.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
                 if (player == null) {
                     return;
                 }
@@ -486,7 +486,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         @Override
         public void sendLeaveChannelStatusBar(java.util.UUID playerId) {
             plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                org.powernukkitx.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
                 if (player == null) {
                     return;
                 }
@@ -498,13 +498,13 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         @Override
         public void sendErrorMessage(java.util.UUID playerId, String text) {
             plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                org.powernukkitx.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
                 if (player == null) {
                     return;
                 }
                 NovaChatConfig cfg = plugin.getNovaChatConfig();
                 String full = cfg.getFormatPrefix() + cfg.getFormatError().replace("{message}", text);
-                player.sendMessage(cn.nukkit.utils.TextFormat.colorize('&', full));
+                player.sendMessage(org.powernukkitx.utils.TextFormat.colorize('&', full));
             });
         }
 
@@ -512,7 +512,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         public void sendWhoResult(java.util.UUID playerId, String channelId, String displayName,
                                   String membersCsv, String memberCount) {
             plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-                cn.nukkit.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+                org.powernukkitx.Player player = plugin.getServer().getPlayer(playerId).orElse(null);
                 if (player == null) {
                     return;
                 }
@@ -537,7 +537,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
             final String operator = notice.getOperator();
             final String durationText = notice.getDurationText();
             plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
-                cn.nukkit.Player target = plugin.getServer().getOnlinePlayers().get(notice.getTargetId());
+                org.powernukkitx.Player target = plugin.getServer().getOnlinePlayers().get(notice.getTargetId());
                 if (target == null) {
                     return; // not on this server
                 }
@@ -590,7 +590,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
          * @param subtitle      already-resolved subtitle text (&amp;-coded)
          * @param actionBarText already-resolved action-bar text (&amp;-coded)
          */
-        private void showTargetNotice(cn.nukkit.Player target, java.util.UUID targetId,
+        private void showTargetNotice(org.powernukkitx.Player target, java.util.UUID targetId,
                                       String titleKey, String subtitle, String actionBarText) {
             target.sendTitle(plugin.getMessageFormatter().colorize(I18n.tr(targetId, titleKey)),
                     plugin.getMessageFormatter().colorize(subtitle),
@@ -608,7 +608,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * @param player the recipient
      * @param channelId the channel to display; if null/blank, nothing is sent
      */
-    private void sendChannelStatusBar(cn.nukkit.Player player, String channelId) {
+    private void sendChannelStatusBar(org.powernukkitx.Player player, String channelId) {
         if (channelId == null || channelId.isEmpty()) {
             return;
         }
@@ -634,7 +634,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
 
         @Override
         public void runAsync(Runnable task) {
-            plugin.getServer().getScheduler().scheduleAsyncTask(plugin, new cn.nukkit.scheduler.AsyncTask() {
+            plugin.getServer().getScheduler().scheduleAsyncTask(plugin, new org.powernukkitx.scheduler.AsyncTask() {
                 @Override
                 public void onRun() {
                     task.run();

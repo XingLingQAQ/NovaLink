@@ -1,6 +1,6 @@
 package com.nova.chat.pnx.command;
 
-import cn.nukkit.command.CommandSender;
+import org.powernukkitx.command.CommandSender;
 import com.nova.chat.client.command.ChannelCommandService;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.pnx.NovaChatPNX;

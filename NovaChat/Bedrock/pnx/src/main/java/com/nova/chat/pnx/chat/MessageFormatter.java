@@ -1,7 +1,7 @@
 package com.nova.chat.pnx.chat;
 
-import cn.nukkit.Player;
-import cn.nukkit.utils.TextFormat;
+import org.powernukkitx.Player;
+import org.powernukkitx.utils.TextFormat;
 import com.nova.chat.client.format.FormatTemplateEngine;
 import com.nova.chat.client.format.LegacyColorCodes;
 import com.nova.chat.client.format.MessageFormatService;
