@@ -18,9 +18,6 @@ on:
         type: choice
         default: nukkit,pnx
         options: ["nukkit,pnx", nukkit, pnx]
-  schedule:
-    - cron: '20 5 * * *'
-
 permissions:
   contents: read
 

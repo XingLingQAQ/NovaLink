@@ -1,7 +1,7 @@
 # NovaLink real-server E2E CI -- OPT-IN.
 #
-# This workflow is OPT-IN: it only runs on manual dispatch (workflow_dispatch)
-# or nightly schedule. It NEVER runs on push/PR, because E2E depends on external
+# This workflow is OPT-IN: it only runs on manual dispatch (workflow_dispatch).
+# It NEVER runs on push/PR, because E2E depends on external
 # server downloads (Purpur, PaperMC, Cloudburst maven, pmmp, minecraft.net BDS)
 # whose availability is flaky and would intermittently redden PRs. The main
 # build+test CI lives in nova-ci.yml.
@@ -30,7 +30,7 @@
 #   - Server-binary downloads (Purpur, PaperMC, Cloudburst maven, Sponge
 #     maven, pmmp, minecraft.net BDS) are flaky and may be blocked from some
 #     runner environments. A blocked download is NOT tolerated as green: the
-#     platform exits non-zero and the job reds. A nightly that hides a download
+#     platform exits non-zero and the job reds. A run that hides a download
 #     block hides the product failures that share the same job.
 #   - SKIPPED is NOT PASS, and the two kinds of skip are not the same thing.
 #     The per-platform scripts distinguish them by exit code:
@@ -70,14 +70,10 @@ on:
         description: 'Comma-separated platforms to run (leave empty to run the full matrix, one platform per job)'
         required: false
         default: ''
-  schedule:
-    # Nightly at 03:30 UTC -- only runs on the default branch.
-    - cron: '30 3 * * *'
-
 permissions:
   contents: read
 
-# One E2E run at a time per ref (nightly + manual dispatch don't pile up).
+# One E2E run at a time per ref.
 # Per-platform matrix jobs still fan out within a single run.
 concurrency:
   group: e2e-${{ github.ref }}
@@ -103,7 +99,7 @@ jobs:
     #   Proxy-only. run-multiplatform-e2e.ps1 skips them from its $PlatformDefs
     #   Note before any bot round-trip, so they never execute the L1 chat flow
     #   and a red there can never mean a NovaLink chat regression. Their only
-    #   meaningful failure mode is the proxy plugin build, which the nightly is
+    #   meaningful failure mode is the proxy plugin build, which this workflow is
     #   not the right signal for. They report exit 4 (SKIPPED-BY-DESIGN).
     #
     # MUST red (continue-on-error: false) -- bukkit, folia, nukkit, pnx, sponge,

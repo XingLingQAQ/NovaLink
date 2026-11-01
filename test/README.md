@@ -188,7 +188,8 @@ preventing the 3.0.6 live-map race while preserving packet-event cancellation.
 Relay cases use Velocity or Bungee + Purpur + either Nukkit or native PNX 3;
 the lite case uses Velocity + Purpur. The `proxies` workflow input selects
 the proxy family, and `bedrock` selects `nukkit`, `pnx`, or both for relay.
-Scheduled runs cover both Bedrock servers; the lite case runs once.
+Default inputs cover both Bedrock servers; the lite case runs once.
+Both real-server E2E workflows run only on manual dispatch.
 It requires receiver-recorded cross-server traffic in relay mode, channel
 isolation with positive controls, and a Java bot reconnect followed by actual
 membership and bidirectional chat evidence. `assert-joint-ci.ps1` rejects a
