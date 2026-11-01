@@ -42,14 +42,35 @@ function Get-JointProxySwitchFixture {
 }
 
 function Get-JointProxyPlayerSwitchSteps {
-  param([string]$Phase, [string]$Server)
+  param([string]$Phase, [string]$Server, [string]$RunId)
+  $token = switch ($Phase) {
+    'right' { "$RunId-placed-right" }
+    'move' { "$RunId-leg-moved" }
+    'return' { "$RunId-leg-return" }
+    default { throw "Unknown switch phase: $Phase" }
+  }
   @(
     @{ action = 'handoffGet'; key = "switch-$Phase-command-go"; timeoutMs = 90000 },
     @{ action = 'checkpoint'; key = "switch-$Phase-command" },
     @{ action = 'cmd'; text = "/server $Server" },
-    @{ id = "switch-$Phase-respawn"; action = 'expectEvent'; kind = 'respawn'; sinceCheckpoint = "switch-$Phase-command"; timeoutMs = 30000 },
-    @{ action = 'signal'; key = "switch-$Phase-command-done" }
+    @{ action = 'signal'; key = "switch-$Phase-command-done"; value = 'command-issued' },
+    @{ id = "switch-$Phase-server-confirmed"; action = 'expectText'; pattern = ('^' + [regex]::Escape($token) + '$');
+      sinceCheckpoint = "switch-$Phase-command"; timeoutMs = 30000; required = $true },
+    @{ action = 'signal'; key = "switch-$Phase-target-confirmed" }
   )
+}
+
+function Invoke-JointProxyLegProbe {
+  param([string]$Mode, [string]$Phase, [string]$Server, [string]$Username, [string]$Token,
+    [string]$HandoffDir, [string]$RunId, [scriptblock]$SendLegProbe)
+  if ($Mode -eq 'callback') { $null = & $SendLegProbe $Server $Username $Token; return }
+  $deadline = (Get-Date).AddSeconds(35)
+  $lastError = ''
+  do {
+    try { $null = & $SendLegProbe $Server $Username $Token } catch { $lastError = $_.Exception.Message }
+    if (Wait-Handoff $HandoffDir $RunId "switch-$Phase-target-confirmed" 1) { return }
+  } while ((Get-Date) -lt $deadline)
+  throw "No receiver confirmation from Java leg $Server for $Username; $lastError"
 }
 
 function Invoke-JointProxyPlayerSwitch {
@@ -85,7 +106,7 @@ function Get-JointProxySwitchPlans {
       @{ action = 'signal'; key = "switch-$lower-ready" }
     )
     if ($role -eq 'Right' -and $SwitchMode -eq 'player-command') {
-      $plans[$role] += Get-JointProxyPlayerSwitchSteps 'right' $SecondaryServer
+      $plans[$role] += Get-JointProxyPlayerSwitchSteps 'right' $SecondaryServer $RunId
     }
     $plans[$role] += @(
       @{ action = 'handoffGet'; key = 'switch-topology-ready'; timeoutMs = 90000 },
@@ -101,7 +122,7 @@ function Get-JointProxySwitchPlans {
     @{ id = 'switch-pre-reverse'; action = 'expect'; token = "$RunId-pre-reply"; timeoutMs = 30000 },
     @{ action = 'signal'; key = 'switch-pre-done' }
   )
-  if ($SwitchMode -eq 'player-command') { $plans.Mover += Get-JointProxyPlayerSwitchSteps 'move' $SecondaryServer }
+  if ($SwitchMode -eq 'player-command') { $plans.Mover += Get-JointProxyPlayerSwitchSteps 'move' $SecondaryServer $RunId }
   $plans.Mover += @(
     @{ action = 'handoffGet'; key = 'switch-moved-go'; timeoutMs = 60000 },
     @{ action = 'checkpoint'; key = 'switch-moved' },
@@ -145,7 +166,7 @@ function Get-JointProxySwitchPlans {
         @{ id = 'switch-reply-absent'; action = 'expectAbsent'; token = "$RunId-scoped-reply" }
       )
     } else {
-      $plans[$role] += @{ id = 'switch-scoped-joined'; action = 'expect'; token = 'Joined channel'; timeoutMs = 20000 }
+      $plans[$role] += @{ id = 'switch-scoped-joined'; action = 'expectText'; pattern = (Get-JointRecoveryJoinPattern $ScopedChannel); sinceCheckpoint = 'switch-isolation'; timeoutMs = 20000; required = $true }
     }
     $plans[$role] += @(
       @{ action = 'signal'; key = "switch-$($role.ToLowerInvariant())-isolated" },
@@ -161,7 +182,7 @@ function Get-JointProxySwitchPlans {
     @{ id = 'switch-scoped-secret'; action = 'expect'; token = "$RunId-scoped-secret"; timeoutMs = 30000 },
     @{ action = 'chat'; text = "$RunId-scoped-reply" }
   )
-  if ($SwitchMode -eq 'player-command') { $plans.Mover += Get-JointProxyPlayerSwitchSteps 'return' $PrimaryServer }
+  if ($SwitchMode -eq 'player-command') { $plans.Mover += Get-JointProxyPlayerSwitchSteps 'return' $PrimaryServer $RunId }
   foreach ($role in @('Mover', 'Left', 'Right')) {
     $plans[$role] += @(
       @{ action = 'handoffGet'; key = 'switch-return-go'; timeoutMs = 90000 },
@@ -207,7 +228,7 @@ function Assert-JointProxySwitchResults {
   foreach ($pair in @(@{ Name = 'mover'; Result = $MoverRes }, @{ Name = 'left'; Result = $LeftRes }, @{ Name = 'right'; Result = $RightRes })) {
     $res = $pair.Result
     $ok = $null -ne $res -and $res.runId -ceq $RunId -and $res.kind -ceq 'java' -and -not $res.error -and -not $res.timedOut -and (Test-JointBotRecording $res) -and @($res.assertions | Where-Object { -not $_.pass -and -not $_.diagnostic }).Count -eq 0
-    New-JointAssertion "$prefix/$($pair.Name)-completed" 'recording' $ok "error=$($res.error); timedOut=$($res.timedOut)" 'proxy-switch'
+    New-JointAssertion "$prefix/$($pair.Name)-completed" 'recording' $ok (Get-JointRecoveryFailureDetails $res) 'proxy-switch'
     $ok = Test-JointRecoveryReceipt $res "$RunId-placed-$($pair.Name)"
     New-JointAssertion "$prefix/leg-$($pair.Name)" 'targeted downstream probe' $ok 'Destination bot must receive the tellraw issued only on its assigned Java leg.' 'proxy-switch'
   }
@@ -228,7 +249,13 @@ function Assert-JointProxySwitchResults {
   }
   $secret = Test-JointRecoveryReceipt $MoverRes "$RunId-scoped-secret" 'switch-isolation'
   $reply = Test-JointRecoveryReceipt $RightRes "$RunId-scoped-reply" 'switch-isolation'
-  New-JointAssertion "$prefix/owned-channel-bidirectional" 'scoped chat' ($secret -and $reply) 'Two actual receivers on the owning backend identity.' 'proxy-switch'
+  $moverJoined = Test-JointRecoveryJoin $MoverRes 'switch-isolation' $ScopedChannel
+  $rightJoined = Test-JointRecoveryJoin $RightRes 'switch-isolation' $ScopedChannel
+  $moverPlaced = Test-JointRecoveryReceipt $MoverRes "$RunId-leg-moved"
+  $rightPlaced = Test-JointRecoveryReceipt $RightRes "$RunId-placed-right"
+  $scopedDelivered = $secret -and $reply -and $moverJoined -and $rightJoined -and $moverPlaced -and $rightPlaced
+  New-JointAssertion "$prefix/owned-channel-bidirectional" 'scoped chat' $scopedDelivered `
+    "Destination chat plus explicit $ScopedChannel joins and target-leg probes: moverJoined=$moverJoined; rightJoined=$rightJoined; moverPlaced=$moverPlaced; rightPlaced=$rightPlaced" 'proxy-switch'
   $denial = @()
   $isolation = Get-JointRecoveryCheckpoint $LeftRes 'switch-isolation'
   if ($null -ne $isolation) {
@@ -241,7 +268,7 @@ function Assert-JointProxySwitchResults {
   foreach ($name in @('secret', 'reply')) {
     $leak = Test-JointRecoveryReceipt $LeftRes "$RunId-scoped-$name"
     $control = Test-JointRecoveryReceipt $LeftRes "$RunId-return" 'switch-return'
-    $ok = $secret -and $reply -and $control -and -not $leak -and $denial.Count -gt 0
+    $ok = $scopedDelivered -and $control -and -not $leak -and $denial.Count -gt 0
     New-JointAssertion "$prefix/no-cross-link-$name" "$RunId-scoped-$name" $ok 'Absence requires real scoped deliveries, explicit cross-client denial, and a later positive delivery on the excluded receiver.' 'proxy-switch'
   }
 }
@@ -267,7 +294,7 @@ function Invoke-JointProxySwitchScenarios {
     Invoke-JointProxyPlayerSwitch $SwitchMode 'right' $fixture.Usernames.Right $SecondaryServer $handoffs $RunId $SwitchPlayer
     $null = & $SendLegProbe $PrimaryServer $fixture.Usernames.Mover "$RunId-placed-mover"
     $null = & $SendLegProbe $PrimaryServer $fixture.Usernames.Left "$RunId-placed-left"
-    $null = & $SendLegProbe $SecondaryServer $fixture.Usernames.Right "$RunId-placed-right"
+    Invoke-JointProxyLegProbe $SwitchMode 'right' $SecondaryServer $fixture.Usernames.Right "$RunId-placed-right" $handoffs $RunId $SendLegProbe
     Set-Handoff $handoffs $RunId 'switch-topology-ready' 'ready'
     foreach ($role in @('mover', 'left', 'right')) {
       if (-not (Wait-Handoff $handoffs $RunId "switch-$role-placed" 40)) { throw "$role did not receive its assigned Java leg probe" }
@@ -277,7 +304,7 @@ function Invoke-JointProxySwitchScenarios {
       if (-not (Wait-Handoff $handoffs $RunId $key 40)) { throw "Missing $key" }
     }
     Invoke-JointProxyPlayerSwitch $SwitchMode 'move' $fixture.Usernames.Mover $SecondaryServer $handoffs $RunId $SwitchPlayer
-    $null = & $SendLegProbe $SecondaryServer $fixture.Usernames.Mover "$RunId-leg-moved"
+    Invoke-JointProxyLegProbe $SwitchMode 'move' $SecondaryServer $fixture.Usernames.Mover "$RunId-leg-moved" $handoffs $RunId $SendLegProbe
     Set-Handoff $handoffs $RunId 'switch-moved-go' 'go'
     foreach ($key in @('switch-moved-done', 'switch-left-moved-done', 'switch-right-moved-done')) {
       if (-not (Wait-Handoff $handoffs $RunId $key 50)) { throw "Missing $key" }
@@ -289,7 +316,7 @@ function Invoke-JointProxySwitchScenarios {
     Set-Handoff $handoffs $RunId 'switch-scoped-go' 'go'
     if (-not (Wait-Handoff $handoffs $RunId 'switch-scoped-done' 40)) { throw 'Scoped bidirectional control did not finish.' }
     Invoke-JointProxyPlayerSwitch $SwitchMode 'return' $fixture.Usernames.Mover $PrimaryServer $handoffs $RunId $SwitchPlayer
-    $null = & $SendLegProbe $PrimaryServer $fixture.Usernames.Mover "$RunId-leg-return"
+    Invoke-JointProxyLegProbe $SwitchMode 'return' $PrimaryServer $fixture.Usernames.Mover "$RunId-leg-return" $handoffs $RunId $SendLegProbe
     Set-Handoff $handoffs $RunId 'switch-return-go' 'go'
     foreach ($role in @('mover', 'left', 'right')) {
       if (-not (Wait-Handoff $handoffs $RunId "switch-$role-return-ready" 50)) { throw "$role did not return to the shared channel" }

@@ -1,6 +1,7 @@
 package com.nova.link.database;
 
 import com.nova.link.database.dialect.MigrationDialect;
+import com.nova.link.database.dialect.MySQLDialect;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -11,14 +12,15 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Runs database schema migrations for NovaLink.
  *
- * <p>The runner is dialect-agnostic: all SQL (migration table DDL, per-version
- * statements, and the migration-record INSERT) is supplied by a
- * {@link MigrationDialect}. This lets a single runner drive MySQL, PostgreSQL,
- * SQLite, and any future backend without per-backend migration code.
+ * <p>Schema and migration metadata SQL are supplied by a {@link MigrationDialect}.
+ * MySQL conditional index creation is adapted during execution so recorded
+ * migration checksums stay stable.
  *
  * <p>Requirements: 22.1 - Auto-migration on startup
  */
@@ -29,6 +31,12 @@ public class DatabaseMigration {
     private static final String STATUS_STARTED = "STARTED";
     private static final String STATUS_COMPLETED = "COMPLETED";
     private static final String STATUS_FAILED = "FAILED";
+    private static final Pattern MYSQL_CONDITIONAL_INDEX = Pattern.compile(
+            "\\A\\s*CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+"
+                    + "(?<conditional>IF\\s+NOT\\s+EXISTS\\s+)"
+                    + "(?<index>`(?:``|[^`])+`|[A-Za-z_][A-Za-z0-9_$]*)\\s+ON\\s+"
+                    + "(?<table>`(?:``|[^`])+`|[A-Za-z_][A-Za-z0-9_$]*)\\s*\\(.*\\z",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
     private final DataSource dataSource;
     private final MigrationDialect dialect;
@@ -416,12 +424,46 @@ public class DatabaseMigration {
         }
     }
 
-    private void executeStatements(Connection conn, List<String> statements) throws SQLException {
+    void executeStatements(Connection conn, List<String> statements) throws SQLException {
         for (String sql : statements) {
+            String executableSql = prepareMigrationSql(conn, sql);
+            if (executableSql == null) {
+                continue;
+            }
             try (Statement statement = conn.createStatement()) {
-                statement.execute(sql);
+                statement.execute(executableSql);
             }
         }
+    }
+
+    private String prepareMigrationSql(Connection conn, String sql) throws SQLException {
+        if (!(dialect instanceof MySQLDialect)) {
+            return sql;
+        }
+        Matcher index = MYSQL_CONDITIONAL_INDEX.matcher(sql);
+        if (!index.matches()) {
+            return sql;
+        }
+        String lookupSql = "SELECT 1 FROM information_schema.statistics "
+                + "WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?";
+        try (PreparedStatement lookup = conn.prepareStatement(lookupSql)) {
+            lookup.setString(1, unquoteIdentifier(index.group("table")));
+            lookup.setString(2, unquoteIdentifier(index.group("index")));
+            try (ResultSet result = lookup.executeQuery()) {
+                if (result.next()) {
+                    return null;
+                }
+            }
+        }
+        // keep recorded SQL unchanged for migration checksums
+        return sql.substring(0, index.start("conditional")) + sql.substring(index.end("conditional"));
+    }
+
+    private static String unquoteIdentifier(String identifier) {
+        if (identifier.startsWith("`")) {
+            return identifier.substring(1, identifier.length() - 1).replace("``", "`");
+        }
+        return identifier;
     }
 
     private void executeControlSql(Connection conn, String sql) throws SQLException {

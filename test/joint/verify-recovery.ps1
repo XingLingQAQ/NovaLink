@@ -77,7 +77,7 @@ Assert-RecoveryCheck $rejected 'same Java leg cannot masquerade as two servers'
 $switchPlans = Get-JointProxySwitchPlans 'pure'
 Assert-RecoveryCheck ($switchPlans.Count -eq 3) 'switch plan has mover plus two anchored receivers'
 Assert-RecoveryCheck (@($switchPlans.Mover | Where-Object { $_.action -eq 'cmd' -and $_.text.StartsWith('/server ') }).Count -eq 2) 'mover requests both real server switches'
-Assert-RecoveryCheck (@($switchPlans.Right | Where-Object { $_.action -eq 'expectEvent' -and $_.sinceCheckpoint }).Count -eq 1) 'secondary observer waits for a fresh transport respawn'
+Assert-RecoveryCheck (@($switchPlans.Right | Where-Object { $_.id -eq 'switch-right-server-confirmed' -and $_.action -eq 'expectText' -and $_.sinceCheckpoint -and $_.required }).Count -eq 1) 'secondary observer requires its fresh destination probe'
 $callbackPlans = Get-JointProxySwitchPlans 'pure' -SwitchMode 'callback'
 Assert-RecoveryCheck (@($callbackPlans.Mover | Where-Object { $_.action -eq 'cmd' -and $_.text.StartsWith('/server ') }).Count -eq 0) 'callback switch mode delegates movement to parent'
 
@@ -99,6 +99,10 @@ Add-RecoveryPhase $mover 'switch-moved-membership' 102 'E2ESwitchMover, E2ESwitc
 $mover.received += [PSCustomObject]@{ kind = 'checkpoint'; key = 'switch-isolation'; atMs = 200 }
 $right.received += [PSCustomObject]@{ kind = 'checkpoint'; key = 'switch-isolation'; atMs = 200 }
 $left.received += [PSCustomObject]@{ kind = 'checkpoint'; key = 'switch-isolation'; atMs = 200 }
+foreach ($res in @($mover, $right)) {
+  $res.sent += [PSCustomObject]@{ text = '/nc join joint-switch-owned'; atMs = 201 }
+  $res.received += New-RecoveryRow 'Joined channel joint-switch-owned' 202
+}
 $left.sent += [PSCustomObject]@{ text = '/nc join joint-switch-owned'; atMs = 201 }
 $left.received += New-RecoveryRow '[NC-403] Forbidden' 202
 $mover.received += New-RecoveryRow 'pure-scoped-secret' 250

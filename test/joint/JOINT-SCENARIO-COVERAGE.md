@@ -1,8 +1,9 @@
 # NovaChat JOINT Cross-Platform E2E — Scenario Coverage
 
-**Integration review**: 2026-11-01. Main-thread wiring is in progress.
-**Real acceptance this round**: NOT RUN. No current result may be inferred
-from historical runs, unit tests, syntax checks, fixtures or diagnostics.
+**Integration review**: 2026-11-01. Main-thread wiring is implemented.
+**Real acceptance this round**: initial Relay run failed; fixes and fresh
+acceptance are in progress. Historical runs, unit tests, syntax checks,
+fixtures and diagnostics do not substitute for current game evidence.
 **Historical snapshots retained below**: 2026-08-08 and 2026-10-18/21.
 
 ## Current selection and evidence contract
@@ -49,7 +50,11 @@ a TLS backend. Required
 case IDs are in `test/environment/cases.psd1`: `ENV-TLS-TRUSTED-*`,
 `ENV-TLS-UNTRUSTED-*`, `ENV-MYSQL-*`, `ENV-POSTGRES-*`. Trusted bidirectional
 control, explicit untrusted-CA rejection and SQL row identity across a real
-backend restart must be recorded. It has no real acceptance result yet.
+backend restart must be recorded. Run
+[41272492807](https://github.com/XingLingQAQ/NovaLink/actions/runs/41272492807)
+at `787ad13` passed trusted TLS (3/3), untrusted-CA rejection (4/4) and
+PostgreSQL (5/5). MySQL failed before game startup on migration 10 and needs
+a fresh real run after its fix.
 
 See [manual commands and prerequisites](../README.md#joint-manual-e2e-coverage).
 
@@ -217,18 +222,23 @@ this change's scope).
 
 ## Real results still to record
 
-Every row below is pending for this integration. Fill it only from the
-selected manual run, not from the historical matrix above.
+The complete joint selections still need a fresh passing run. Scoped results
+already recorded below do not turn a failed workflow into a pass.
 
 | Selection | Missing real acceptance evidence |
 |---|---|
 | Relay `core`, Nukkit and native PNX | Run ID/commit and pinned versions; receiver transcripts; complete required assertions and native PNX enable marker |
 | Velocity Lite and Bungee Lite `core` | Actual proxy mode/topology and receiver/downstream recordings |
 | `business` in each selected mode/proxy | Three recordings, DM/reply exclusion controls, permission denial and mute/unmute outcomes |
-| Velocity/Bungee `lite-moderation` | Console action log, ordinary-player refusals, channel-scoped enforcement/restoration and kick keeps Minecraft connected |
+| Velocity/Bungee `lite-moderation` | Run 41271531739 at `e23cb70`: 18/18 required rows passed on each proxy; combined business selection failed and needs a fresh run |
 | `recovery` | Old/new backend PID, authentication timeline, post-restart membership/delivery and bounded Bedrock reconnect results |
 | Dual-Bukkit `proxy-switch` | Two process/link identities, targeted destination probes, outbound/return switch, fresh membership and exactly-once scoped delivery |
-| Independent TLS/SQL environment suite | Per-case `public/environment-summary.json`, actual Bukkit/Fabric recordings, certificate rejection control and persisted row identity after restart |
+| Independent TLS/SQL environment suite | Run 41272492807 recorded 3/3 trusted TLS, 4/4 untrusted-CA rejection and 5/5 PostgreSQL. MySQL needs a fresh run after migration repair |
+
+Bungee's switch driver is `fixtureNativeAPI`, through the console-only
+fixture and the proxy's real connect API. Velocity uses `/server`. Both
+drivers require receiver-side destination probes and link isolation; the
+Bungee fixture does not validate Waterfall's unavailable command module.
 
 For joint runs retain `.e2e-artifacts/joint/<runId>/` (or the explicit
 `JointRoot`), `joint-summary.json`, the selected group list, assertion IDs,

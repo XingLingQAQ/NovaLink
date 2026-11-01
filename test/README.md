@@ -195,9 +195,10 @@ preventing the 3.0.6 live-map race while preserving packet-event cancellation.
 
 ## Joint manual E2E coverage
 
-The 2026-11-01 integration is being wired and has not had real-server
-acceptance. These entries describe selected paths and required evidence,
-not successful runs. All E2E workflows are manual (`workflow_dispatch`);
+The 2026-11-01 integration has manual acceptance in progress. These entries
+describe selected paths and required evidence; recorded results are in
+[the coverage manifest](FEATURE-COVERAGE.md#recorded-results).
+All E2E workflows are manual (`workflow_dispatch`);
 the daily E2E schedule has been removed.
 
 `e2e-joint.yml` selects `proxies` (`velocity`, `bungee`, or both), `modes`
@@ -224,6 +225,12 @@ dispatch; topology validation must reject them before servers start.
 backend link identity. It requires exactly one Bukkit primary and no Mod
 leg; the secondary uses `ModPort` / `ModRconPort`. A proxy + two Bukkit
 servers + Bedrock needs four concurrent server slots.
+
+Bungee switching uses the console-only
+[native API fixture](joint/fixtures/bungee-switch/README.md), because the
+locked Waterfall distribution's command-module download returns 404. This
+verifies real player movement and destination-side evidence; it does not
+validate the upstream `/server` command.
 
 Examples of the interface being integrated (these commands were not run):
 
@@ -259,8 +266,9 @@ The separate manual workflow is
 [`.github/workflows/e2e-environment.yml`](../.github/workflows/e2e-environment.yml).
 It is not a joint scenario group and has no daily schedule. Its runner is
 `environment/run-environment.ps1` (PowerShell 7.4+); definitions and required
-IDs are in `environment/cases.psd1`. No environment case has real acceptance
-evidence from this round.
+IDs are in `environment/cases.psd1`. Trusted TLS, untrusted-CA rejection and
+PostgreSQL have real evidence in the coverage manifest; MySQL still needs
+successful acceptance after its migration fix.
 
 Manual dispatch example (not executed this round):
 

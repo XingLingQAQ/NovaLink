@@ -1199,7 +1199,9 @@ and recordings before carrying one forward as an unresolved current defect.
 
 ## 14. What still needs real acceptance
 
-* No scenario added or rewired in this round has a real acceptance result.
+* Initial joint acceptance failed and needs a fresh run after follow-up fixes.
+  Environment run 41272492807 at `787ad13` passed trusted/untrusted TLS and
+  PostgreSQL; MySQL failed on migration 10 before game startup.
   Historical observations and code-derived hypotheses are not current results.
 * Complete selected manual runs for Velocity/Bungee relay and Lite, native
   PNX, `business`, `lite-moderation`, backend/Bedrock `recovery`, and the real

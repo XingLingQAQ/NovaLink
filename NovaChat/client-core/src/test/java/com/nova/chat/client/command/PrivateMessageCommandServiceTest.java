@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -130,6 +131,43 @@ class PrivateMessageCommandServiceTest {
         assertThat(sent).hasSize(1);
         assertThat(sent.get(0).getTargetName()).isEqualTo("Alex");
         assertThat(sent.get(0).getContent()).isEqualTo("hello again");
+    }
+
+    @Test
+    @DisplayName("reply follows the latest delivered partner after a control whisper and both reply directions")
+    void replyFollowsLatestDeliveredPartner() {
+        UUID watcher = UUID.fromString("22222222-2222-2222-2222-222222222222");
+        UUID target = UUID.fromString("33333333-3333-3333-3333-333333333333");
+        Set<UUID> online = Set.of(PLAYER, watcher, target);
+
+        assertThat(PrivateMessageCommandService.msg(okSender, PLAYER, "Steve", "s1",
+                new String[]{"Watch", "control"})).isEmpty();
+        sent.get(0).setTargetId(watcher);
+        service.handleIncoming(sent.get(0), online::contains, null);
+        assertThat(service.getReplyTarget(PLAYER)).contains("Watch");
+
+        assertThat(PrivateMessageCommandService.msg(okSender, PLAYER, "Steve", "s1",
+                new String[]{"Target", "direct"})).isEmpty();
+        sent.get(1).setTargetId(target);
+        service.handleIncoming(sent.get(1), online::contains, null);
+        assertThat(service.getReplyTarget(PLAYER)).contains("Target");
+
+        assertThat(PrivateMessageCommandService.reply(service, okSender, target, "Target", "s1",
+                new String[]{"first reply"})).isEmpty();
+        sent.get(2).setTargetId(PLAYER);
+        service.handleIncoming(sent.get(2), online::contains, null);
+
+        assertThat(PrivateMessageCommandService.reply(service, okSender, PLAYER, "Steve", "s1",
+                new String[]{"retarget"})).isEmpty();
+        sent.get(3).setTargetId(target);
+        var deliveries = service.handleIncoming(sent.get(3), online::contains, null);
+
+        assertThat(sent).extracting(PrivateMessagePacket::getTargetName)
+                .containsExactly("Watch", "Target", "Steve", "Target");
+        assertThat(deliveries).extracting(PrivateMessageService.Delivery::getPlayerId)
+                .containsExactly(PLAYER, target);
+        assertThat(deliveries.get(1).getRole()).isEqualTo(PrivateMessageService.Role.RECEIVED);
+        assertThat(deliveries.get(1).getLine()).contains("Steve", "retarget");
     }
 
     @Test

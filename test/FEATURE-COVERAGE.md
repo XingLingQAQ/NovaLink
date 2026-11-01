@@ -1,6 +1,6 @@
 # NovaChat Real-Server E2E Feature Coverage Manifest
 
-**Integration review**: 2026-11-01. This round has not had real-server acceptance.
+**Integration review**: 2026-11-01. Real-server acceptance is in progress.
 **Historical evidence date**: 2026-08-08. The original seven-platform matrix
 and `.e2e/` evidence below are retained as a dated snapshot. `TESTED` there
 means the old script exercised a path, sometimes only its refusal response;
@@ -10,8 +10,8 @@ it does not validate the present binaries or the new scenario groups.
 
 All E2E workflows require manual dispatch. The daily E2E schedule is removed.
 The default joint selection is `core`; other groups require explicit
-`ScenarioGroups` / `scenario_groups` selection. Integration is in progress;
-none of the rows below has a real result for this round.
+`ScenarioGroups` / `scenario_groups` selection. Required evidence and the
+latest observed results are recorded separately below.
 
 | Entry | Coverage being integrated | Real result still required |
 |---|---|---|
@@ -22,6 +22,18 @@ none of the rows below has a real result for this round.
 | `proxy-switch` | Relay with real Bukkit + `bukkit2`, selected by `SecondaryJavaPlatform bukkit` | Destination-only probes, outbound/return switch, exactly-once chat, membership and SERVER-channel cross-link refusal |
 | Native PNX | Official PowerNukkitX 3.0.6, `org.powernukkitx` API 3.x, Bedrock 1.26.60 | Actual native server/plugin enable and receiver-recorded game traffic; old Nukkit-hosted runs do not qualify |
 | Independent `e2e-environment` | Manual TLS trusted/untrusted and MySQL/PostgreSQL cases using actual Bukkit + Fabric | Certificate-chain rejection controls, game messages, SQL row identity across backend restart and fresh post-restart delivery |
+
+### Recorded results
+
+| Run / commit | Selection | Observed result |
+|---|---|---|
+| [41272492807](https://github.com/XingLingQAQ/NovaLink/actions/runs/41272492807) / `787ad13` | Bukkit + Fabric, trusted TLS | PASS, 3/3 required assertions |
+| Same run | Untrusted CA after trusted game control | PASS, 4/4 required assertions |
+| Same run | PostgreSQL game messages across backend restart | PASS, 5/5 required assertions |
+| Same run | MySQL | FAIL: migration 10 uses unsupported `CREATE INDEX IF NOT EXISTS`; game cases did not execute |
+| [41271524062](https://github.com/XingLingQAQ/NovaLink/actions/runs/41271524062) / `e23cb70` | Both proxies, PNX, `business,recovery,proxy-switch` | FAIL; follow-up fixes and fresh acceptance required |
+| [41271531739](https://github.com/XingLingQAQ/NovaLink/actions/runs/41271531739) / `e23cb70` | Velocity mention sound | Required sound assertion PASS: `minecraft:entity.experience_orb.pickup` received as an entity sound |
+| Same run | Velocity and Bungee Lite moderation | All 18 required moderation assertions passed on each proxy; the combined workflow failed on extended-business timing/console input |
 
 Lite management has a real console-driven entry in
 `joint/scenarios/lite-moderation.ps1`, including Bungee Lite; it is no longer

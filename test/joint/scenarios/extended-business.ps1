@@ -28,17 +28,23 @@ function Get-ExtendedBusinessPlans {
   $plans = @{}
   foreach ($role in @('Sender', 'Target', 'Observer')) {
     $steps = @($pm.$role) + @($mute.$role)
-    # Arm every recorder before the first peer can send.
-    $plans[$role] = @($steps | Where-Object { $_.action -in @('arm', 'expectAbsent') }) + @(
-      @{ action = 'arm'; token = 'Joined channel global' },
+    # Keep reset steps beside the commands whose fresh receipts they guard.
+    $ordered = @($steps | Where-Object { $_.action -eq 'expectAbsent' -or ($_.action -eq 'arm' -and -not $_.reset) }) + @(
       @{ action = 'wait'; ms = 2000 },
+      @{ action = 'arm'; token = 'Joined channel global'; reset = $true },
       @{ id = 'extended-join-global'; action = 'cmd'; text = '/nc join global' },
       @{ id = 'extended-joined-global'; action = 'expect'; token = 'Joined channel global'; timeoutMs = 20000 }
-    ) + @($steps | Where-Object { $_.action -notin @('arm', 'expectAbsent') }) + @(
+    ) + @($steps | Where-Object { $_.action -notin @('arm', 'expectAbsent') -or ($_.action -eq 'arm' -and $_.reset) }) + @(
       @{ action = 'handoffGet'; key = 'extended-release'; timeoutMs = 45000 },
       @{ action = 'wait'; ms = 3000 },
       @{ id = 'extended-quit'; action = 'quit' }
     )
+    $plans[$role] = @()
+    foreach ($step in $ordered) {
+      $plans[$role] += $step
+      # Velocity forwards command bursts below its default 50 ms limit.
+      if ($step.action -eq 'cmd') { $plans[$role] += @{ action = 'wait'; ms = 100 } }
+    }
   }
   return $plans
 }

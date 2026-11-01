@@ -177,6 +177,7 @@ $jointBotScript = Join-Path $jointBinDir "joint-bot.js"
 . (Join-Path $PSScriptRoot "scenarios/lite-moderation.ps1")
 . (Join-Path $PSScriptRoot "scenarios/recovery.ps1")
 . (Join-Path $PSScriptRoot "scenarios/proxy-switch.ps1")
+. (Join-Path $PSScriptRoot "fixtures/bungee-switch/installer.ps1")
 try {
   $script:SelectedScenarioGroups = @(Resolve-JointScenarioGroups -Value $ScenarioGroups)
 } catch {
@@ -536,7 +537,14 @@ function Start-JvmProcess {
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError = $true
   $psi.CreateNoWindow = $true
-  $proc = [System.Diagnostics.Process]::Start($psi)
+  $savedInputEncoding = [Console]::InputEncoding
+  try {
+    # .NET Framework inherits this encoding, including its stdin BOM.
+    [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+    $proc = [System.Diagnostics.Process]::Start($psi)
+  } finally {
+    [Console]::InputEncoding = $savedInputEncoding
+  }
 
   # Drain the redirected pipes into files on background events. Reading
   # synchronously (ReadToEnd) would block until exit and starve the readiness
@@ -3572,6 +3580,9 @@ function Invoke-Round($round, [string]$roundDir) {
     java = $round.Java
     secondaryJava = $round.SecondaryJava
     scenarioGroups = @($script:SelectedScenarioGroups)
+    proxySwitchDriver = $(if ('proxy-switch' -in $script:SelectedScenarioGroups) {
+      if ($round.Proxy -eq 'bungee') { 'fixtureNativeAPI' } else { 'player-command' }
+    } else { $null })
     backendRestarts = @()
     mod = $round.Mod
     bedrock = $round.Bedrock
@@ -3777,6 +3788,10 @@ function Invoke-Round($round, [string]$roundDir) {
           -mode $ProxyMode -identities $relayIdentities
       }
       $jarPath = Join-Path $DistDir $script:DefJarName[$round.Proxy]
+      if ($round.Proxy -eq 'bungee' -and 'proxy-switch' -in $script:SelectedScenarioGroups) {
+        $fixtureJar = Install-JointBungeeSwitchFixture -ServerJar $jarPath -JdkHome $jdkPath -ServerDirectory $dir
+        Log "  installed native Bungee switch fixture: $fixtureJar"
+      }
       $java = Join-Path $jdkPath "bin/java.exe"
       if (-not (Test-Path -LiteralPath $java)) { $java = Join-Path $jdkPath "bin/java" }
       $p = Start-JvmProcess -JavaExe $java `
@@ -4357,6 +4372,16 @@ function Invoke-JointOptionalScenarios {
     if ($ProxyMode -eq 'relay') {
       $adminCommand = {
         param([string]$Command)
+        if ($Command -match '^nc unmute\s+') {
+          if (-not $BackendState -or -not $BackendState.Process -or $BackendState.Process.HasExited) {
+            throw 'Backend console is unavailable for unmute.'
+          }
+          $backendCommand = $Command.Substring(3)
+          Log "    backend-console> $backendCommand"
+          $BackendState.Process.StandardInput.WriteLine($backendCommand)
+          $BackendState.Process.StandardInput.Flush()
+          return
+        }
         Log "    bukkit-rcon> $Command"
         $response = Send-Rcon -Port $Ports.JavaRcon -Password 'joint-e2e-rcon' -Command $Command
         if ($null -eq $response) { throw "Bukkit RCON did not execute: $Command" }
@@ -4370,6 +4395,32 @@ function Invoke-JointOptionalScenarios {
       -Mode $ProxyMode -Port $ProxyPort -AdminCommand $proxyConsole
   }
   if ('proxy-switch' -in $script:SelectedScenarioGroups) {
+    $switchMode = 'player-command'
+    $switchPlayer = $null
+    if ($Round.Proxy -eq 'bungee') {
+      $switchMode = 'callback'
+      $switchPlayer = {
+        param([string]$Username, [string]$Server)
+        $proxyProcess = $ServerProcesses[$Round.Proxy]
+        $proxyLog = Join-Path (Join-Path $RoundDir $Round.Proxy) 'proxy.stdout.log'
+        $before = (Read-LogText $proxyLog).Length
+        if ((Read-LogText $proxyLog) -notmatch 'JointSwitchFixture ready') { throw 'Native Bungee switch fixture did not load.' }
+        if (-not $proxyProcess -or $proxyProcess.HasExited) { throw 'Bungee process is unavailable.' }
+        $proxyProcess.StandardInput.WriteLine("jointswitch $Username $Server")
+        $proxyProcess.StandardInput.Flush()
+        $marker = 'JointSwitchFixture switched ' + $Username + ' -> ' + $Server
+        $deadline = (Get-Date).AddSeconds(30)
+        do {
+          if ($proxyProcess.HasExited) { throw 'Bungee exited during the native switch.' }
+          $text = Read-LogText $proxyLog
+          $fresh = $text.Substring([Math]::Min($before, $text.Length))
+          if ($fresh.Contains($marker)) { return }
+          if ($fresh -match 'JointSwitchFixture error') { throw $Matches[0] }
+          Start-Sleep -Milliseconds 100
+        } while ((Get-Date) -lt $deadline)
+        throw "Native Bungee switch did not complete: $Username -> $Server"
+      }
+    }
     $sendLegProbe = {
       param([string]$Server, [string]$Username, [string]$Token)
       $serverProcess = $ServerProcesses[$Server]
@@ -4386,7 +4437,7 @@ function Invoke-JointOptionalScenarios {
       -RunId "$($script:RunId)-r$($Round.Index)-proxy-switch" -WorkDir (Join-Path $RoundDir 'bots/proxy-switch') `
       -ProxyPort $ProxyPort -McVersion $McVersion -PrimaryServer $Round.Java -SecondaryServer $Round.SecondaryJava `
       -PrimaryIdentity "E2E_Relay_$($Round.Java)" -SecondaryIdentity 'E2E_Relay_bukkit2' `
-      -SendLegProbe $sendLegProbe
+      -SendLegProbe $sendLegProbe -SwitchMode $switchMode -SwitchPlayer $switchPlayer
   }
   if ('recovery' -in $script:SelectedScenarioGroups) {
     if (-not $BackendState) { throw 'Recovery requires the live backend process and its generated configuration.' }

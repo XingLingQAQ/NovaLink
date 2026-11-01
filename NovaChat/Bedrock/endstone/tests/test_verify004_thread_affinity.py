@@ -426,25 +426,45 @@ class TestConcurrentPacketDrain:
                 (net.handlers[PacketIds.CHANNEL_ACTION_RESPONSE], resp)
             )
 
-        barrier = threading.Barrier(len(workloads))
+        from time import monotonic
+
+        barrier = threading.Barrier(len(workloads) + 1)
         errors = []
 
         def _drive(fn, pkt):
             try:
-                barrier.wait(timeout=10)
+                barrier.wait()
                 fn(pkt)
             except Exception as e:  # pragma: no cover - assertion target
                 errors.append(e)
 
         threads = [
-            threading.Thread(target=_drive, args=(fn, pkt), name=f"v004-{i}")
+            threading.Thread(
+                target=_drive, args=(fn, pkt), name=f"v004-{i}", daemon=True
+            )
             for i, (fn, pkt) in enumerate(workloads)
         ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10.0)
-            assert not t.is_alive(), "worker did not finish; deadlock suspected"
+        started = []
+        released = False
+        try:
+            for t in threads:
+                t.start()
+                started.append(t)
+            # Thread creation has its own cost on a busy CI worker.
+            try:
+                barrier.wait(timeout=60.0)
+            except threading.BrokenBarrierError:
+                pytest.fail("workers did not all reach the start barrier after creation")
+            released = True
+        finally:
+            if not released:
+                barrier.abort()
+            deadline = monotonic() + 60.0
+            for t in started:
+                t.join(timeout=max(0.0, deadline - monotonic()))
+
+        alive = [t.name for t in started if t.is_alive()]
+        assert not alive, f"workers did not finish; deadlock suspected: {alive}"
 
         assert not errors, f"concurrent handlers raised: {errors}"
 

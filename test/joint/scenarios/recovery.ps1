@@ -13,23 +13,42 @@ function Get-RecoveryRequiredAssertionIds {
   )) { "$prefix/$name" }
 }
 
+function ConvertTo-JointRecoveryText {
+  param([string]$Text)
+  [regex]::Replace($Text, '(?i)(?:\u00a7|&)[0-9a-fk-orx]', '').Trim()
+}
+
+function Get-JointRecoveryJoinPattern {
+  param([string]$Channel)
+  '(?:^|\s)(?:Joined channel|\u5df2\u52a0\u5165\u9891\u9053)\s+' + [regex]::Escape($Channel) + '\s*$'
+}
+
+function Get-JointRecoveryWhoPattern {
+  '(?:online members\s*\(([1-9][0-9]*)\):|\u5728\u7ebf\u6210\u5458\s*\uff08([1-9][0-9]*)\s*\u4eba\uff09\uff1a)\s*$'
+}
+
 function Get-JointRecoveryWhoSteps {
   param([string]$Phase, [string]$Channel = 'global')
   @(
     @{ action = 'checkpoint'; key = $Phase },
-    @{ action = 'arm'; token = 'online members ('; reset = $true },
     @{ action = 'cmd'; text = "/nc who $Channel" },
-    @{ id = "$Phase-who"; action = 'expect'; token = 'online members ('; timeoutMs = 20000 }
+    @{ id = "$Phase-who"; action = 'expectText'; pattern = (Get-JointRecoveryWhoPattern); sinceCheckpoint = $Phase; timeoutMs = 20000 }
   )
+}
+
+function Get-JointRecoveryFailureDetails {
+  param($Result)
+  $failed = @(@($Result.assertions) + @($Result.absentChecks) | Where-Object { $null -ne $_ -and -not $_.pass -and -not $_.diagnostic } | ForEach-Object { $_.id })
+  "error=$($Result.error); timedOut=$($Result.timedOut); failed assertions=[$($failed -join ', ')]"
 }
 
 function Get-JointRecoveryPlans {
   param([Parameter(Mandatory = $true)][string]$RunId, [string]$Channel = 'global')
   $java = @(
     @{ action = 'arm'; token = "$RunId-pre-bedrock" },
-    @{ action = 'arm'; token = 'Joined channel' },
+    @{ action = 'checkpoint'; key = 'recovery-joining' },
     @{ action = 'cmd'; text = "/nc join $Channel" },
-    @{ id = 'recovery-join'; action = 'expect'; token = 'Joined channel'; timeoutMs = 20000 },
+    @{ id = 'recovery-join'; action = 'expectText'; pattern = (Get-JointRecoveryJoinPattern $Channel); sinceCheckpoint = 'recovery-joining'; timeoutMs = 20000 },
     @{ action = 'signal'; key = 'recovery-java-ready' },
     @{ action = 'handoffGet'; key = 'recovery-bedrock-ready'; timeoutMs = 60000 },
     @{ action = 'chat'; text = "$RunId-pre-java" },
@@ -56,9 +75,9 @@ function Get-JointRecoveryPlans {
   )
   $bedrock = @(
     @{ action = 'arm'; token = "$RunId-pre-java" },
-    @{ action = 'arm'; token = 'Joined channel' },
+    @{ action = 'checkpoint'; key = 'recovery-joining' },
     @{ action = 'cmd'; text = "/nc join $Channel" },
-    @{ id = 'recovery-join'; action = 'expect'; token = 'Joined channel'; timeoutMs = 20000 },
+    @{ id = 'recovery-join'; action = 'expectText'; pattern = (Get-JointRecoveryJoinPattern $Channel); sinceCheckpoint = 'recovery-joining'; timeoutMs = 20000 },
     @{ action = 'signal'; key = 'recovery-bedrock-ready' },
     @{ action = 'handoffGet'; key = 'recovery-java-ready'; timeoutMs = 60000 },
     @{ id = 'recovery-pre-java'; action = 'expect'; token = "$RunId-pre-java"; timeoutMs = 30000 },
@@ -113,9 +132,9 @@ function Test-JointRecoveryMembership {
   if ($nextBoundary) { $until = [Math]::Min($until, (Get-JointBotRowAtMs $nextBoundary)) }
   $lines = @(Get-JointRecoveryChatRows $Result -SinceMs $query.atMs -UntilMs $until)
   for ($i = 0; $i -lt $lines.Count - 1; $i++) {
-    if ([string]$lines[$i].text -notmatch 'online members \(([1-9][0-9]*)\):\s*$') { continue }
-    $count = [int]$Matches[1]
-    $body = [regex]::Replace([string]$lines[$i + 1].text, ([string][char]0x00A7 + '.|&[0-9a-fk-or]'), '')
+    if ((ConvertTo-JointRecoveryText ([string]$lines[$i].text)) -notmatch (Get-JointRecoveryWhoPattern)) { continue }
+    $count = if ($Matches[1]) { [int]$Matches[1] } else { [int]$Matches[2] }
+    $body = ConvertTo-JointRecoveryText ([string]$lines[$i + 1].text)
     $body = ($body -replace '^\[NovaChat\]\s*', '').Trim()
     if ($body -cnotmatch '^[A-Za-z0-9_ ]+(?:,\s*[A-Za-z0-9_ ]+)*$') { continue }
     $names = @($body -split ',\s*')
@@ -123,6 +142,19 @@ function Test-JointRecoveryMembership {
     if (@($Members | Where-Object { $names -cnotcontains $_ }).Count -eq 0) { return $true }
   }
   return $false
+}
+
+function Test-JointRecoveryJoin {
+  param($Result, [string]$Phase, [string]$Channel)
+  $since = Get-JointRecoveryCheckpoint $Result $Phase
+  if ($null -eq $since) { return $false }
+  $query = @($Result.sent | Where-Object { $_.text -ceq "/nc join $Channel" -and $_.atMs -ge $since }) | Select-Object -First 1
+  if (-not $query) { return $false }
+  $pattern = Get-JointRecoveryJoinPattern $Channel
+  $hits = @(Get-JointRecoveryChatRows $Result -SinceMs $query.atMs -UntilMs ($query.atMs + 20000) | Where-Object {
+    (ConvertTo-JointRecoveryText ([string]$_.text)) -match $pattern
+  })
+  return $hits.Count -gt 0
 }
 
 function Test-JointRecoveryReceipt {
@@ -146,7 +178,7 @@ function Assert-JointRecoveryResults {
   foreach ($role in @(@{ Name = 'java'; Result = $JavaRes; Kind = 'java' }, @{ Name = 'bedrock'; Result = $BedrockRes; Kind = 'bedrock' })) {
     $res = $role.Result
     $complete = $null -ne $res -and $res.runId -ceq $RunId -and $res.kind -ceq $role.Kind -and -not $res.error -and -not $res.timedOut -and (Test-JointBotRecording $res) -and @($res.assertions | Where-Object { -not $_.pass -and -not $_.diagnostic }).Count -eq 0
-    New-JointAssertion "$prefix/$($role.Name)-completed" 'recording' $complete "kind=$($res.kind); error=$($res.error); timedOut=$($res.timedOut)" 'recovery'
+    New-JointAssertion "$prefix/$($role.Name)-completed" 'recording' $complete ("kind=$($res.kind); " + (Get-JointRecoveryFailureDetails $res)) 'recovery'
     $members = Test-JointRecoveryMembership $res 'backend-restored' @($JavaUsername, $BedrockUsername) $Channel
     New-JointAssertion "$prefix/restart-membership-$($role.Name)" 'post-restart /nc who' $members 'Both member names must occur in a fresh receiver-side member list, without a new JOIN.' 'recovery'
   }

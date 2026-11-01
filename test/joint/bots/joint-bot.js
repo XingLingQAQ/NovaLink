@@ -31,6 +31,7 @@
 //   arm              { token, reset }                     track a token without waiting
 //   reconnect        { timeoutMs, delayMs }        reconnect Java or Bedrock once
 //   expect           { id, token, timeoutMs }       assert token arrives
+//   expectText       { id, pattern, sinceCheckpoint } match normalized received chat
 //   expectAbsent     { id, token }                  assert token NEVER arrives (checked at exit)
 //   expectEvent      { id, kind, match, timeoutMs } assert a recorded effect arrives
 //   expectEventAbsent{ id, kind, match, withinMs }  assert no matching effect within the window
@@ -109,7 +110,8 @@ function loadPlan() {
 // with no topology running, and it deliberately includes steps that MUST fail,
 // so a broken matcher cannot masquerade as a green run.
 const RECOVERY_SELFTEST = process.argv.includes('--selftest-recovery')
-const SELFTEST = process.argv.includes('--selftest') || RECOVERY_SELFTEST
+const TEXT_SELFTEST = process.argv.includes('--selftest-text')
+const SELFTEST = process.argv.includes('--selftest') || RECOVERY_SELFTEST || TEXT_SELFTEST
 
 const plan = SELFTEST ? { steps: [], runId: 'selftest', role: 'selftest' } : loadPlan();
 const KIND = (plan.kind || 'java').toLowerCase();
@@ -366,6 +368,36 @@ function expectToken(id, token, timeoutMs) {
     }, timeoutMs || 30000);
     pending.push(p);
   });
+}
+
+function normalizedChatText(text) {
+  return String(text || '').replace(/(?:\u00a7|&)[0-9a-fk-orx]/gi, '').trim();
+}
+
+function checkpointIndex(key) {
+  if (!key) return -1;
+  const index = received.map((row) => row.kind === 'checkpoint' && row.key === key).lastIndexOf(true);
+  if (index < 0) throw new Error(`missing checkpoint: ${key}`);
+  return index;
+}
+
+async function expectText(step) {
+  const pattern = new RegExp(step.pattern);
+  const sinceIndex = checkpointIndex(step.sinceCheckpoint);
+  const started = now();
+  const timeoutMs = Number(step.timeoutMs == null ? 15000 : step.timeoutMs);
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new Error('expectText timeout must be in 1..60000');
+  let hit = null;
+  do {
+    hit = received.slice(sinceIndex + 1).find((row) =>
+      (row.kind === 'messagestr' || /^text:(chat|system|raw|json|translation|announcement|whisper)$/.test(row.kind)) &&
+      pattern.test(normalizedChatText(row.text)));
+    if (hit || now() - started >= timeoutMs) break;
+    await sleep(Math.min(50, timeoutMs - (now() - started)));
+  } while (true);
+  assertions.push({ id: step.id || step.pattern, token: step.pattern, pass: !!hit,
+    waitedMs: now() - started, evidence: hit ? hit.text : '', kind: 'chat-pattern' });
+  return !!hit;
 }
 
 // ---------------------------------------------------------------------------
@@ -1076,7 +1108,15 @@ async function runPlan(activeTransport, factory = buildTransport) {
       case 'expect': {
         const token = render(step.token);
         if (!expectedTokens.includes(token)) expectedTokens.push(token);
-        await expectToken(step.id || token, token, step.timeoutMs || 30000);
+        const ok = await expectToken(step.id || token, token, step.timeoutMs || 30000);
+        if (!ok && step.required === true) throw new Error(`required receipt failed: ${step.id || token}`);
+        break;
+      }
+      case 'expectText': {
+        const ok = await expectText(Object.assign({}, step, {
+          pattern: render(step.pattern), sinceCheckpoint: render(step.sinceCheckpoint),
+        }));
+        if (!ok && step.required === true) throw new Error(`required chat pattern failed: ${step.id || step.pattern}`);
         break;
       }
       case 'expectAbsent': {
@@ -1277,6 +1317,37 @@ const SELFTEST_CASES = [
   },
 ];
 
+async function runTextSelftest() {
+  const assert = require('assert');
+  const cases = [
+    { text: '[NovaChat] \u00a7aJoined channel \u00a7eglobal', pattern: '(?:Joined channel|\\u5df2\\u52a0\\u5165\\u9891\\u9053)\\s+global$', ok: true },
+    { text: '[NovaChat] \u5df2\u52a0\u5165\u9891\u9053 \u00a7eglobal', pattern: '(?:Joined channel|\\u5df2\\u52a0\\u5165\\u9891\\u9053)\\s+global$', ok: true },
+    { text: 'Channel Global online members \u00a77(2):', pattern: 'online members\\s*\\(2\\):$', ok: true },
+    { text: '\u00a76\u9891\u9053 \u00a7eGlobal \u00a76\u5728\u7ebf\u6210\u5458 \u00a77\uff082 \u4eba\uff09\uff1a', pattern: '\\u5728\\u7ebf\\u6210\\u5458\\s*\\uff082\\s*\\u4eba\\uff09\\uff1a$', ok: true },
+    { text: 'Joined channel wrong', pattern: 'Joined channel global$', ok: false },
+    { text: 'unrelated', raw: 'Joined channel global', pattern: 'Joined channel global$', ok: false },
+    { text: 'Joined channel global', pattern: 'Joined channel global$', stale: true, ok: false },
+    { text: 'Joined channel global', pattern: 'Joined channel global$', kind: 'actionBar', ok: false },
+  ];
+  for (const test of cases) {
+    received.length = 0;
+    assertions.length = 0;
+    if (test.stale) record('text:raw', test.text, test.text);
+    record('checkpoint', 'text-test', 'text-test', { key: 'text-test' });
+    if (!test.stale) record(test.kind || 'text:raw', test.raw || test.text, test.text);
+    const actual = await expectText({ id: 'localized-receipt', pattern: test.pattern, sinceCheckpoint: 'text-test', timeoutMs: 5 });
+    assert.strictEqual(actual, test.ok, JSON.stringify(test));
+  }
+  plan.steps = [{ action: 'checkpoint', key: 'required' },
+    { id: 'required-pattern', action: 'expectText', pattern: '^never$', sinceCheckpoint: 'required', timeoutMs: 5, required: true },
+    { action: 'cmd', text: '/should-not-send' }];
+  let commands = 0;
+  await assert.rejects(runPlan({ sendCommand() { commands++; } }), /required chat pattern failed/);
+  assert.strictEqual(commands, 0);
+  console.log('[SYNTHETIC] localized chat, phase boundaries, raw-only rejection and required-step abort checked');
+  return true;
+}
+
 async function runLifecycleSelftest() {
   const assert = require('assert');
   const { EventEmitter } = require('events');
@@ -1452,7 +1523,7 @@ const hardTimer = setTimeout(() => {
 
 if (SELFTEST) {
   clearTimeout(hardTimer);
-  (RECOVERY_SELFTEST ? runLifecycleSelftest().then(() => true) : runSelftest()).then((ok) => {
+  (TEXT_SELFTEST ? runTextSelftest() : RECOVERY_SELFTEST ? runLifecycleSelftest().then(() => true) : runSelftest()).then((ok) => {
     finished = true;
     console.log(ok ? '[SELFTEST] OK' : '[SELFTEST] FAILED');
     process.exit(ok ? 0 : 1);
