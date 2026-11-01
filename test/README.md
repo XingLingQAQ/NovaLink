@@ -195,7 +195,7 @@ preventing the 3.0.6 live-map race while preserving packet-event cancellation.
 
 ## Joint manual E2E coverage
 
-The 2026-11-01 integration has manual acceptance in progress. These entries
+The selected 2026-11-01 manual acceptance cases passed. These entries
 describe selected paths and required evidence; recorded results are in
 [the coverage manifest](FEATURE-COVERAGE.md#recorded-results).
 All E2E workflows are manual (`workflow_dispatch`);
@@ -212,7 +212,7 @@ selection. It defaults to `core`, which is always included. Extra groups
 require explicit manual selection. Do not combine incompatible modes in one
 dispatch; topology validation must reject them before servers start.
 
-| Group | Topology and prerequisites | Required evidence; real acceptance pending |
+| Group | Topology and prerequisites | Required evidence |
 |---|---|---|
 | `core` | Velocity or Bungee; relay with Bedrock, or Lite | Receiver-recorded chat, channel isolation with positive controls, Java reconnect followed by fresh membership and bidirectional chat |
 | `business` | Either mode; Java downstream, three ordinary bots, `global`/`local`, real operator callback | DM and `/nc r` delivery, sender confirmation, third-party exclusion, offline refusal, channel-scoped mute and unmute restoration |
@@ -232,7 +232,7 @@ locked Waterfall distribution's command-module download returns 404. This
 verifies real player movement and destination-side evidence; it does not
 validate the upstream `/server` command.
 
-Examples of the interface being integrated (these commands were not run):
+Manual interface examples:
 
 ```powershell
 # Bungee Lite, including the explicit management and business groups.
@@ -269,7 +269,7 @@ It is not a joint scenario group and has no daily schedule. Its runner is
 IDs are in `environment/cases.psd1`. All four cases have real passing evidence
 in the coverage manifest; MySQL passed after its migration repair.
 
-Manual dispatch example (not executed this round):
+Manual dispatch example:
 
 ```powershell
 gh workflow run e2e-environment.yml -f cases="tls-trusted,tls-untrusted,mysql,postgresql"

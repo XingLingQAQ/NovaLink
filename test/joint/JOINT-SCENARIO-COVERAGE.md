@@ -1,9 +1,9 @@
 # NovaChat JOINT Cross-Platform E2E — Scenario Coverage
 
 **Integration review**: 2026-11-01. Main-thread wiring is implemented.
-**Real acceptance this round**: initial Relay run failed; fixes and fresh
-acceptance are in progress. Historical runs, unit tests, syntax checks,
-fixtures and diagnostics do not substitute for current game evidence.
+**Real acceptance this round**: the corrected Lite and native-PNX Relay
+selections passed on both proxies. Historical runs, unit tests, syntax
+checks, fixtures and diagnostics do not substitute for current game evidence.
 **Historical snapshots retained below**: 2026-08-08 and 2026-10-18/21.
 
 ## Current selection and evidence contract
@@ -15,7 +15,7 @@ IDs come from `scenarios/registry.ps1`; the runner and `assert-joint-ci.ps1`
 must receive matching selections. Unknown groups, incompatible topologies,
 missing required IDs and diagnostic-only evidence cannot satisfy acceptance.
 
-| Group | Required topology | Required ID families and observations; real run pending |
+| Group | Required topology | Required ID families and observations |
 |---|---|---|
 | `core` | Velocity/Bungee relay with Bedrock, or Velocity/Bungee Lite + Bukkit | `round<N>/iso/*`, `round<N>/business/reconnect-*`, plus mode-specific delivery, link and attribution IDs |
 | `business` | Relay or Lite; three ordinary Java bots, two channels, real operator callback | `round<N>/extended-business/*`, `round<N>/pm/*`, `round<N>/channel-mute/*`: DM/reply privacy, offline refusal, mute scope and restoration |
@@ -221,19 +221,20 @@ this change's scope).
   joint-summary.json              per-round status + every assertion with its token
 ```
 
-## Real results still to record
+## Recorded results and coverage limits
 
-The complete joint selections still need a fresh passing run. Scoped results
-already recorded below do not turn a failed workflow into a pass.
+Runs 41274531514 and 41274540721 at `6e5a2c7` passed the complete selected
+groups. Earlier failed runs remain failures; passing rows inside them do not
+turn those workflows into passes.
 
-| Selection | Missing real acceptance evidence |
+| Selection | Recorded evidence and limits |
 |---|---|
-| Relay `core`, Nukkit and native PNX | Run ID/commit and pinned versions; receiver transcripts; complete required assertions and native PNX enable marker |
+| Native-PNX Relay with two Bukkit servers | Run 41274540721: 174/174 gating rows per proxy; native PNX marker and every selected required group ID verified. Nukkit was not selected in this run |
 | Velocity Lite and Bungee Lite `core` | Run 41274531514 at `6e5a2c7`: complete `core,business,lite-moderation` selections passed, Velocity 148/148 and Bungee 147/147 |
-| `business` in each selected mode/proxy | Three recordings, DM/reply exclusion controls, permission denial and mute/unmute outcomes |
+| `business` in both modes/proxies | Runs 41274531514 and 41274540721 passed three-recorder DM/reply controls, permission denial and channel-scoped mute/unmute |
 | Velocity/Bungee `lite-moderation` | Run 41271531739 at `e23cb70`: 18/18 required rows passed on each proxy; combined business selection failed and needs a fresh run |
-| `recovery` | Old/new backend PID, authentication timeline, post-restart membership/delivery and bounded Bedrock reconnect results |
-| Dual-Bukkit `proxy-switch` | Two process/link identities, targeted destination probes, outbound/return switch, fresh membership and exactly-once scoped delivery |
+| `recovery` | Run 41274540721: 13/13 required rows per proxy; new backend PID, fresh authentication/JWT, member lists and post-restart/reconnect bidirectional delivery |
+| Dual-Bukkit `proxy-switch` | Same run: 23/23 required rows per proxy, including destination probes, movement/return, exact delivery and SERVER-channel link isolation |
 | Independent TLS/SQL environment suite | Run 41272492807 recorded 3/3 trusted TLS, 4/4 untrusted-CA rejection and 5/5 PostgreSQL; run 41274536675 recorded 5/5 MySQL after migration repair |
 
 Bungee's switch driver is `fixtureNativeAPI`, through the console-only

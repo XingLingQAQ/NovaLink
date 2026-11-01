@@ -1199,7 +1199,8 @@ and recordings before carrying one forward as an unresolved current defect.
 
 ## 14. What still needs real acceptance
 
-* Initial joint acceptance failed and needs a fresh run after follow-up fixes.
+* Initial joint acceptance failures were repaired. Run 41274540721 at
+  `6e5a2c7` passed both native-PNX Relay selections, 174/174 gating rows each.
   Environment run 41272492807 at `787ad13` passed trusted/untrusted TLS and
   PostgreSQL. Run 41274536675 at `6e5a2c7` passed MySQL after migration repair;
   run 41274531514 passed both complete Lite selections.
