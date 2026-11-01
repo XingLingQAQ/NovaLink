@@ -1,8 +1,11 @@
 # NovaChat Real-Server E2E Harness (committed)
 
 This directory holds the **committed, portable** E2E harness that runs in GitHub
-Actions. It is a trimmed, CI-friendly port of the richer local harness that
-lives under `.e2e/` (gitignored, Windows-machine-specific).
+Actions on manual dispatch. It is a trimmed, CI-friendly port of the richer
+local harness under `.e2e/` (gitignored, Windows-machine-specific).
+
+The 2026-11-01 scenario and environment integration has not had real-server
+acceptance. Historical logs, syntax checks and fixtures are separate evidence.
 
 ## Why a separate `test/` source tree?
 
@@ -25,9 +28,12 @@ powershell -File test/bin/fetch-server.ps1 -Name <platform> -DistDir .e2e-artifa
 
 Uses the `Url` + `Sha256` pinned in `versions.lock.ps1`. Downloads to a
 PID-unique `.download.tmp`, computes SHA-256, and strictly compares it to a
-non-empty lock hash. A mismatch discards the tmp and retries up to three
-verification attempts before failing. Some lock entries still have empty
-hashes; those only record the computed hash and do not establish a verified pin.
+valid lock hash. Missing, malformed or placeholder hashes fail before cache
+access, directory creation or download. A matching sidecar cannot authorize a
+PINNED artifact. A mismatch discards the tmp and retries up to three
+verification attempts before failing. Nukkit, Sponge and PocketMine-MP now
+have fixed SHA-256 pins corroborated against official metadata; provenance,
+byte counts and artifact identity checks are recorded in `versions.lock.ps1`.
 
 ### AUTO mode (`-Auto`) — for runnable-smoke on the plugin's declared api-version
 
@@ -40,12 +46,15 @@ downloads it, computes SHA-256 on the fly, and logs it for traceability when no
 expected hash is available. When the API supplies a
 content hash — PaperMC `fill-data.papermc.io` URLs embed the SHA-256 in the path
 — Auto mode still verifies it. Used for the smoke matrix where each plugin is
-tested against its declared api-version's latest supported server.
+tested against its declared api-version's latest supported server. A failed
+resolver falls back to the fixed entry and enforces the full PINNED contract;
+it cannot turn a missing hash or unavailable artifact into a successful skip.
 
 ### Cache
 
-If `dist/<File>` exists AND the hash matches (pinned) OR the `.sha256` sidecar
-matches the cached file (no expected hash), reuse without re-downloading.
+When an expected hash exists, reuse `dist/<File>` only after it matches.
+The `.sha256` sidecar path is allowed only after successful AUTO resolution
+with no upstream hash. It cannot substitute for a PINNED or API-supplied hash.
 `Kind = 'zip'` entries are extracted to `dist/<Name>-<MC>/`; this keeps
 `bds-1.26.52/` and `bds-levilamina-1.26.51/` separate. Existing extracted
 directories are reused. `Kind = 'archive'` leaves extraction to the runner.
@@ -80,12 +89,12 @@ pin-only. The table describes the checked-in lock and resolver, not a new run.
 | `folia` | Folia 26.1.2-8, JDK 25 | `papermc.io/downloads/folia` → `fill-data.papermc.io` (SHA in path) | jar | fixed |
 | `velocity` | Velocity 4.1.0-SNAPSHOT-16, JDK 25 | `papermc.io/downloads/velocity` → `fill-data.papermc.io` | jar | fixed |
 | `waterfall` | Waterfall 1.21-615, JDK 21 | `papermc.io/downloads/waterfall` → `fill-data.papermc.io` | jar | fixed |
-| `nukkit` | Cloudburst 1.0-SNAPSHOT build 1242, JDK 21 | `repo.opencollab.dev` Maven snapshot metadata | jar | empty |
+| `nukkit` | Cloudburst 1.0-SNAPSHOT build 1242, JDK 21 | `repo.opencollab.dev` Maven snapshot metadata | jar | fixed |
 | `powernukkitx` | Native PowerNukkitX 3.0.6, JDK 21, Bedrock 1.26.60 | pin-only | jar | fixed |
-| `sponge` | SpongeVanilla 1.21.10-17.0.0, JDK 21 | `spongepowered.org/downloads/spongevanilla` → universal jar | jar | empty |
+| `sponge` | SpongeVanilla 1.21.10-17.0.0, JDK 21 | `spongepowered.org/downloads/spongevanilla` → universal jar | jar | fixed |
 | `bds` | BDS 1.26.52.3 for Endstone | Minecraft services links API | zip | fixed |
 | `bds-levilamina` | BDS 1.26.51.1 for LeviLamina | pin-only | zip | fixed |
-| `pocketmine` | PocketMine-MP 5.44.3, PHP | `update.pmmp.io/api?channel=stable` → `download_url` | phar | empty |
+| `pocketmine` | PocketMine-MP 5.44.3, PHP | `update.pmmp.io/api?channel=stable` → `download_url` | phar | fixed |
 
 > Java declared versions come from each plugin's `plugin.yml` / `build.gradle`
 > (`NovaChat/Plugin/{bukkit,folia}/`, `NovaChat/Proxy/{velocity,bungee}/`,
@@ -103,10 +112,12 @@ The former `pocketbedlinks` / `bedrockdedicatedserverbinaries` description is ob
 
 `-Name bds -Auto` resolves and downloads the current BDS. It verifies Endstone's
 `bedrock-server-data` SHA-256 only when that metadata names the exact same URL;
-otherwise it records the computed hash. An unreachable links API or a missing
-Windows link returns exit 0 without an artifact; a runner with no usable BDS
-then writes `skip-reason.txt` and exits 3. Download/hash failures are prereq
-errors (runner exit 2). Fetch exit 0 alone proves no E2E result.
+otherwise it records the computed hash after successful AUTO resolution. An
+unreachable links API or missing Windows link falls back to the verified pin.
+A missing/invalid pin or failed download/hash check fails closed; fetch does
+not return exit 0 without an artifact. The bounded whole-download retry for a
+truncated BDS ZIP remains in place. A verified download proves artifact
+integrity only; it is not an E2E acceptance result.
 
 The Endstone runner installs `EndstoneVersion` (0.11.14) from the `bds` lock,
 checks its Minecraft version against the pin, and fetches BDS 1.26.52.3 without
@@ -182,35 +193,97 @@ LAN discovery is not used for this platform.
 The PNX adapter also snapshots entity metadata before asynchronous encoding,
 preventing the 3.0.6 live-map race while preserving packet-event cancellation.
 
-## Joint CI coverage
+## Joint manual E2E coverage
 
-`e2e-joint.yml` runs the existing joint harness separately from the L1 matrix.
-Relay cases use Velocity or Bungee + Purpur + either Nukkit or native PNX 3;
-the lite case uses Velocity + Purpur. The `proxies` workflow input selects
-the proxy family, and `bedrock` selects `nukkit`, `pnx`, or both for relay.
-Default inputs cover both Bedrock servers; the lite case runs once.
-Both real-server E2E workflows run only on manual dispatch.
-It requires receiver-recorded cross-server traffic in relay mode, channel
-isolation with positive controls, and a Java bot reconnect followed by actual
-membership and bidirectional chat evidence. `assert-joint-ci.ps1` rejects a
-missing or diagnostic-only required assertion.
-PNX additionally requires a locked native server version, API 3.x, and the
-NovaChat-PNX enable marker in the real server log.
+The 2026-11-01 integration is being wired and has not had real-server
+acceptance. These entries describe selected paths and required evidence,
+not successful runs. All E2E workflows are manual (`workflow_dispatch`);
+the daily E2E schedule has been removed.
+
+`e2e-joint.yml` selects `proxies` (`velocity`, `bungee`, or both), `modes`
+(`relay`, `lite`, or both), and relay `bedrock` (`nukkit`, `pnx`, or both).
+Velocity Lite and Bungee Lite have real proxy + Bukkit execution paths;
+Lite starts no standalone backend. Relay uses a proxy + Bukkit + Bedrock.
+PNX means native PowerNukkitX 3.0.6, not the former Nukkit fallback.
+
+`-ScenarioGroups` / workflow input `scenario_groups` is a comma-separated
+selection. It defaults to `core`, which is always included. Extra groups
+require explicit manual selection. Do not combine incompatible modes in one
+dispatch; topology validation must reject them before servers start.
+
+| Group | Topology and prerequisites | Required evidence; real acceptance pending |
+|---|---|---|
+| `core` | Velocity or Bungee; relay with Bedrock, or Lite | Receiver-recorded chat, channel isolation with positive controls, Java reconnect followed by fresh membership and bidirectional chat |
+| `business` | Either mode; Java downstream, three ordinary bots, `global`/`local`, real operator callback | DM and `/nc r` delivery, sender confirmation, third-party exclusion, offline refusal, channel-scoped mute and unmute restoration |
+| `lite-moderation` | Lite only; Velocity or Bungee console stdin, ordinary target/observer bots | Permission denial, mute/unmute, channel kick without Minecraft disconnect, ban/rejoin refusal, unban and channel scope |
+| `recovery` | Relay only; real Java + Bedrock clients and backend stop/start callbacks | New backend PID, authenticated links, fresh membership and bidirectional delivery after restart, one bounded Bedrock reconnect |
+| `proxy-switch` | Relay only; primary Bukkit plus `-SecondaryJavaPlatform bukkit` (`bukkit2`) | Real outbound/return switch, destination-only probes, fresh membership, exactly-once delivery and SERVER-channel cross-link refusal |
+
+`-SecondaryJavaPlatform` / `secondary_java_platform` defaults to `none`.
+`bukkit` creates a second Bukkit process with a distinct port, RCON port and
+backend link identity. It requires exactly one Bukkit primary and no Mod
+leg; the secondary uses `ModPort` / `ModRconPort`. A proxy + two Bukkit
+servers + Bedrock needs four concurrent server slots.
+
+Examples of the interface being integrated (these commands were not run):
 
 ```powershell
-powershell -File test/joint/run-joint.ps1 -Platforms velocity,bukkit,nukkit `
-  -Rounds 1 -MaxConcurrentServers 3 -ProxyMode relay -KeepArtifacts
+# Bungee Lite, including the explicit management and business groups.
+gh workflow run e2e-joint.yml -f proxies=bungee -f modes=lite `
+  -f scenario_groups="core,business,lite-moderation"
 
-gh workflow run e2e-joint.yml -f proxies=velocity,bungee -f modes=relay -f bedrock=pnx
+# Relay with a real second Bukkit downstream.
+powershell -File test/joint/run-joint.ps1 -Platforms "velocity,bukkit,nukkit" `
+  -Rounds 1 -MaxConcurrentServers 4 -ProxyMode relay `
+  -ScenarioGroups "core,proxy-switch" -SecondaryJavaPlatform bukkit -KeepArtifacts
+
+# Backend restart and Bedrock reconnect extend core's Java reconnect.
+gh workflow run e2e-joint.yml -f proxies=velocity -f modes=relay -f bedrock=nukkit `
+  -f scenario_groups="core,recovery"
 ```
 
-Both workflows retain filtered logs and JSON evidence on success as well as
-failure. The L1 job summary reports its JSON status; an unselected platform's
-Run E2E step is skipped. A green job alone remains insufficient evidence.
+`joint/scenarios/registry.ps1` defines required IDs for the selected groups.
+`assert-joint-ci.ps1` must receive the same groups and secondary Java selection
+as the runner. Missing, diagnostic-only or failed required rows do not
+establish acceptance. PNX also requires the locked native version/API 3.x
+and the NovaChat-PNX enable marker in the actual server log.
 
-The joint cases do not cover Bungee lite, every admin/private-message scenario,
-backend-restart recovery, or a TLS/persistent-database topology. Those require
-their own recorded assertions; unit and embedded tests are separate evidence.
+Retain selected inputs, exact bot plans, receiver transcripts, process logs
+and `joint-summary.json`. An unselected job or a green workflow alone is not
+evidence. See [joint scenario coverage](joint/JOINT-SCENARIO-COVERAGE.md) for
+pending results and [the coverage plan](joint/COVERAGE-PLAN.md) for remaining gaps.
+
+## Independent environment E2E (manual only)
+
+The separate manual workflow is
+[`.github/workflows/e2e-environment.yml`](../.github/workflows/e2e-environment.yml).
+It is not a joint scenario group and has no daily schedule. Its runner is
+`environment/run-environment.ps1` (PowerShell 7.4+); definitions and required
+IDs are in `environment/cases.psd1`. No environment case has real acceptance
+evidence from this round.
+
+Manual dispatch example (not executed this round):
+
+```powershell
+gh workflow run e2e-environment.yml -f cases="tls-trusted,tls-untrusted,mysql,postgresql"
+```
+
+| Case | Real topology and required observations |
+|---|---|
+| `tls-trusted` | Actual Bukkit + Fabric plugins authenticate to the TLS backend and exchange game messages in both directions |
+| `tls-untrusted` | Establish trusted bidirectional control; restart Fabric with an unrelated CA; require an explicit certificate-chain error, no new authentication and no receiver delivery during an observed window |
+| `mysql` | Actual Bukkit/Fabric messages stored in MySQL, unchanged row read from a fresh backend process, then fresh bidirectional game delivery |
+| `postgresql` | The same persistence/restart checks against PostgreSQL |
+
+Prerequisites include JDK 21, built backend/Bukkit/Fabric artifacts, the locked
+server/Fabric runtime, bot dependencies, OpenSSL and distinct listener ports.
+SQL cases need a dedicated database or explicit `-ProvisionDatabases` with
+Docker available. A prerequisite failure is a failure/blocker, not a skipped
+success. Only filtered evidence under
+`.e2e-artifacts/environment/<runId>-<case>/public/` is intended for upload;
+`environment-summary.json` must be backed by game recordings and restart
+evidence. `-PlanOnly`, fixtures and connection-only probes do not establish
+TLS or SQL game-path acceptance.
 
 ## Exit codes (SKIP is not PASS)
 
@@ -251,13 +324,20 @@ test/
   versions.lock.ps1           # pinned server URLs + SHA-256 + Kind/Auto fields
   README.md                   # this file
   bin/
-    fetch-server.ps1          # two-mode download: PINNED (strict hash) | -Auto (latest)
+    fetch-server.ps1          # fail-closed PINNED; explicit AUTO smoke contract
+    verify-fetch-server.ps1   # offline fixtures; not real-server evidence
     write-classpath.init.gradle  # export StarLink:core runtime classpath
     run-bukkit-e2e.ps1        # full bukkit/Purpur L1 orchestrator
     run-e2e-orchestrator.ps1  # multi-platform dispatcher
     run-endstone-e2e.ps1      # Bedrock endstone (BDS) E2E
     run-levilamina-e2e.ps1    # Bedrock levilamina (BDS) E2E
     run-pmmp-e2e.ps1          # Bedrock PocketMine-MP E2E
+  joint/
+    run-joint.ps1             # selected real-server scenario groups
+    scenarios/registry.ps1    # required IDs and group/mode constraints
+  environment/
+    run-environment.ps1       # independent manual TLS/SQL game paths
+    cases.psd1                # cases and required assertion IDs
   conf/
     novalink.template.yml     # backend config template (ports/keys templated)
   bot/

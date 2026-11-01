@@ -1,45 +1,80 @@
 # NovaChat JOINT Cross-Platform E2E — Scenario Coverage
 
-**Last reviewed**: 2026-10-21
-**Previous review**: 2026-08-08 (the matrix below was rebuilt from source + the
-2026-08-08 evidence; anything that could not be re-confirmed is marked UNKNOWN
-rather than carried forward as PASS/FAIL).
+**Integration review**: 2026-11-01. Main-thread wiring is in progress.
+**Real acceptance this round**: NOT RUN. No current result may be inferred
+from historical runs, unit tests, syntax checks, fixtures or diagnostics.
+**Historical snapshots retained below**: 2026-08-08 and 2026-10-18/21.
 
-## How to read this document
+## Current selection and evidence contract
 
-The 2026-08-08 run produced evidence for a **two-platform, proxy-less**
-topology (Purpur + Nukkit). The harness has since been rewritten:
+All E2E workflows are manual (`workflow_dispatch`). The daily E2E schedule
+has been removed. `ScenarioGroups` / `scenario_groups` defaults to `core` and
+always includes it. The other groups require explicit selection. Required
+IDs come from `scenarios/registry.ps1`; the runner and `assert-joint-ci.ps1`
+must receive matching selections. Unknown groups, incompatible topologies,
+missing required IDs and diagnostic-only evidence cannot satisfy acceptance.
 
-* paths come from `test/versions.lock.ps1` instead of hardcoded `D:\...` paths,
-* platform combinations are parameterised (`-Platforms`),
-* rounds rotate one leg at a time (proxy + java + mod + bedrock, then swap the
-  bedrock leg, then swap the java leg),
-* **a Velocity proxy is part of the default topology**,
-* cross-server assertions are proven from the **receiver's** recording.
+| Group | Required topology | Required ID families and observations; real run pending |
+|---|---|---|
+| `core` | Velocity/Bungee relay with Bedrock, or Velocity/Bungee Lite + Bukkit | `round<N>/iso/*`, `round<N>/business/reconnect-*`, plus mode-specific delivery, link and attribution IDs |
+| `business` | Relay or Lite; three ordinary Java bots, two channels, real operator callback | `round<N>/extended-business/*`, `round<N>/pm/*`, `round<N>/channel-mute/*`: DM/reply privacy, offline refusal, mute scope and restoration |
+| `lite-moderation` | Lite only; actual Velocity or Bungee proxy console stdin; target + observer bots | `round<N>/lite-moderation/*`: permission denial, mute/unmute, kick/rejoin, ban/unban, channel scope, Minecraft connection retained after channel kick |
+| `recovery` | Relay only; real Java + Bedrock clients and backend restart callbacks | `round<N>/recovery/*`: changed backend PID, reauthenticated links, membership and bidirectional game traffic after restart and one bounded Bedrock reconnect |
+| `proxy-switch` | Relay only; Bukkit primary + real `bukkit2`, `SecondaryJavaPlatform bukkit` | `round<N>/proxy-switch/*`: destination probes, switch and return, fresh who body, exactly-once deliveries and SERVER-channel link isolation |
 
-Two columns follow from that:
+The `business` group extends the basic `business/reconnect-*` assertions that
+are already required by `core`; the similar names do not mean the extended
+group ran by default. A console command being written is only an action, not
+proof that moderation worked. Negative observations need a completed receiver
+recording, an armed observation window and positive delivery controls.
 
-| Column | Meaning |
-|---|---|
-| **Status (source)** | What the code says today, re-read on 2026-10-18. This is a code-level verdict, not a test result. |
-| **Status (harness)** | Whether the rewritten harness exercises it, and in which topology. |
+Bungee Lite has its own real proxy + Bukkit entry. Lite moderation is driven
+through the proxy's real console; the old claim that Lite management has no
+execution entry is obsolete. Relay `proxy-switch` explicitly starts two
+Bukkit processes with separate ports/RCON/link identities. This option
+requires exactly one Bukkit primary and no Mod leg; the secondary uses
+`ModPort` / `ModRconPort`. The default single-Java topology does not imply
+a switch occurred.
 
-`UNKNOWN` means exactly that: the 2026-08-08 evidence predates the current code
-and no run has been made since. Do not read UNKNOWN as PASS.
+Current `pnx` means native PowerNukkitX 3.0.6, API 3.x, Bedrock 1.26.60.
+Nukkit is a separate artifact. Old Nukkit-hosted PNX compatibility evidence
+does not validate the native runtime. Nukkit, Sponge and PMMP now have fixed
+SHA-256 pins; PINNED and AUTO fallback fail before cache/download on an
+invalid pin. AUTO without an upstream hash remains smoke evidence only.
 
-## What the harness now asserts (the primary path)
+The separate manual workflow is
+[`.github/workflows/e2e-environment.yml`](../../.github/workflows/e2e-environment.yml).
+It is outside the joint group list and runs actual Bukkit + Fabric against
+a TLS backend. Required
+case IDs are in `test/environment/cases.psd1`: `ENV-TLS-TRUSTED-*`,
+`ENV-TLS-UNTRUSTED-*`, `ENV-MYSQL-*`, `ENV-POSTGRES-*`. Trusted bidirectional
+control, explicit untrusted-CA rejection and SQL row identity across a real
+backend restart must be recorded. It has no real acceptance result yet.
 
-Every round proves two cross-process deliveries, each in the **receiver's**
+See [manual commands and prerequisites](../README.md#joint-manual-e2e-coverage).
+
+## Historical review context
+
+The 2026-08-08 run used a proxy-less Purpur + Nukkit topology. The old matrix
+below also includes findings from 2026-10-18/21. Its source and harness status
+columns describe those snapshots; NOT ASSERTED and topology limits there
+must not override the current group table. Product findings need fresh
+source review and real results after the present integration.
+
+## Relay core delivery contract
+
+Relay `core` requires two cross-process deliveries, each in the **receiver's**
 results file:
 
 1. `java-to-bedrock` — the Java-leg bot sends a message carrying a per-round
    token; the Bedrock-leg bot's recording must contain that token.
 2. `bedrock-to-java` — the mirror direction.
 
-A round PASSes only when both directions are observed. A bot's own belief that
-it sent something is never sufficient evidence.
+Both directions and every other required assertion for the selected groups
+must be observed. A bot's own belief that it sent something is insufficient
+evidence. No real run of this round's integration has established that result.
 
-## Scenario matrix
+## Historical scenario matrix (2026-10-18/21)
 
 | # | Scenario | Status (source) | Status (harness) | Notes |
 |---|----------|-----------------|------------------|-------|
@@ -63,7 +98,7 @@ it sent something is never sufficient evidence.
 | N1 | **Proxy forwards Java↔Java** | Implemented (Velocity plugin is a first-class client) | **TOPOLOGY-ONLY** | The default topology puts a Velocity proxy in front of the Java leg, but the round asserts Java↔Bedrock, not proxy↔proxy. A same-proxy Java↔Java assertion needs two Java legs, which the round builder does not produce (it allows at most one Java + one Mod leg). |
 | N2 | **Mod (Fabric) leg loads and connects** | Mod builds; the loader shim needs a self-contained jar (`test/bin/fabric-fatjar.init.gradle`) and the `server` entrypoint in `fabric.mod.json` is broken | **ASSERTED (load only)** | Verified 2026-10-18: with the E2E jar the server reaches `Done (…)` and logs `Server started, initializing NovaChat connection…`. Whether messages then route is covered by the round assertion. |
 
-## Moderation authority on relay (established 2026-10-21, from the code)
+## Historical moderation authority on relay (2026-10-21 source review)
 
 `ChannelActionHandler.requireModerationPermission` admits four levels, and on a
 relay topology only one of them is reachable from this harness:
@@ -83,8 +118,8 @@ returns before any permission lookup, `AbstractModerationManager
 mute/kick/ban/unban through the bukkit server's own RCON, and uses a player bot
 only for the permission-denied case.
 
-The relay run also proved three moderation defects; they are listed under
-"Product defects" below.
+The historical relay run reported three moderation defects below. Their
+current status remains subject to source review and real revalidation.
 
 ### 2026-10-21 — moderation defects the relay run proved
 
@@ -112,7 +147,7 @@ The relay run also proved three moderation defects; they are listed under
   callback. A player who runs a moderation command cannot tell an accepted
   command from a refused one.
 
-## Product defects confirmed against source on 2026-10-18
+## Historical product findings from the 2026-10-18 source review
 
 ### BUG-J1 — cross-server invite: **STALE, appears fixed**
 `InviteCommand` now sends the packet with `targetName` when the local
@@ -147,18 +182,20 @@ class genuinely lacks the interface**, so the workaround disappears as soon as
 the descriptor is fixed. Reported here rather than fixed in `src/**` (out of
 this change's scope).
 
-## Harness limitations (current)
+## Remaining coverage boundaries
 
-1. **Two bots per round.** The plan is a Java bot + a Bedrock bot. Scenarios
-   needing a third non-joining observer cannot be expressed.
-2. **One Java + one Mod leg per round.** The round builder caps each kind at
-   one, which is what keeps the process ceiling at 4. That also rules out a
-   same-proxy Java↔Java assertion (N1).
-3. **Tab-complete (D10)** stays untestable: neither bot library exposes it.
-4. **No mid-run backend restart.** The backend is started once per round and
-   torn down at the end.
-5. **Proxy downstreams are Java+Mod only.** Velocity does not front Bedrock
-   servers; the Bedrock bot always joins its server directly.
+1. Default `core` does not imply the optional groups ran. Extended business
+   uses three bot roles; switch uses mover + two anchored observers.
+2. A second Java server requires explicit `SecondaryJavaPlatform bukkit`.
+   The normal single-Java round cannot establish destination switching.
+3. Mention tab-complete remains outside these bot plans.
+4. Backend restart is explicit `recovery`, distinct from core Java reconnect.
+5. Proxy downstreams are Java servers; Bedrock connects directly. The switch
+   group does not establish Bedrock server switching.
+6. Full create/invite/accept lifecycle, ignore, exact list semantics and
+   custom title timings are not established merely by selecting `business`.
+7. Fixtures, `PlanOnly` output and diagnostic assertions are separate from
+   real acceptance evidence, including fetch integrity diagnostics.
 
 ## Evidence layout (rewritten harness)
 
@@ -168,28 +205,35 @@ this change's scope).
   round-<n>/
     backend/{novalink.yml,stdout.log,stderr.log}
     <platform>/{server.stdout.log,server.stderr.log,<properties>}
+    bukkit2/                    optional real secondary Bukkit process
     <proxy>/proxy.stdout.log
     bots/
       plan-java.json / plan-bedrock.json    exact steps handed to each bot
       java.results.json / bedrock.results.json
       java.stdout.log / bedrock.stdout.log
+      <selected-group>/         plans, per-role results and driver evidence
   joint-summary.json              per-round status + every assertion with its token
 ```
 
-## Summary of this review
+## Real results still to record
 
-| Bucket | Count | Items |
-|---|---|---|
-| Asserted by the rewritten harness | 2 | E12, N2 (load) |
-| Implemented in source, not asserted | 9 | A2, B4, B5, C7, C8, E11, F13, G15, H17 |
-| Blocked on private-channel id plumbing | 4 | A1, B6, H16, D9 (mention is independent but unwired) |
-| Not implemented (client) | 1 | A3 |
-| Not testable with the current bots | 1 | D10 |
-| Topology-only / needs a second Java leg | 1 | N1 |
-| Behaviour explicitly UNKNOWN (source exists, no run) | — | B4, B5, and every "not asserted" row above |
+Every row below is pending for this integration. Fill it only from the
+selected manual run, not from the historical matrix above.
 
-The honest headline: the harness now **proves** the cross-server chat path
-end-to-end and can be pointed at any platform combination, but most of the
-moderation/admin/channel-lifecycle scenarios are only *reachable* — they are not
-yet asserted, and the 2026-08-08 verdicts for them must not be quoted as
-current results.
+| Selection | Missing real acceptance evidence |
+|---|---|
+| Relay `core`, Nukkit and native PNX | Run ID/commit and pinned versions; receiver transcripts; complete required assertions and native PNX enable marker |
+| Velocity Lite and Bungee Lite `core` | Actual proxy mode/topology and receiver/downstream recordings |
+| `business` in each selected mode/proxy | Three recordings, DM/reply exclusion controls, permission denial and mute/unmute outcomes |
+| Velocity/Bungee `lite-moderation` | Console action log, ordinary-player refusals, channel-scoped enforcement/restoration and kick keeps Minecraft connected |
+| `recovery` | Old/new backend PID, authentication timeline, post-restart membership/delivery and bounded Bedrock reconnect results |
+| Dual-Bukkit `proxy-switch` | Two process/link identities, targeted destination probes, outbound/return switch, fresh membership and exactly-once scoped delivery |
+| Independent TLS/SQL environment suite | Per-case `public/environment-summary.json`, actual Bukkit/Fabric recordings, certificate rejection control and persisted row identity after restart |
+
+For joint runs retain `.e2e-artifacts/joint/<runId>/` (or the explicit
+`JointRoot`), `joint-summary.json`, the selected group list, assertion IDs,
+exact plans and relevant process logs. Environment public evidence is under
+`.e2e-artifacts/environment/<runId>-<case>/public/`; keep credentials, private
+keys and unfiltered logs outside uploaded artifacts. Record failures and
+prerequisite blockers explicitly; neither an unavailable environment nor a
+missing artifact is a successful acceptance result.

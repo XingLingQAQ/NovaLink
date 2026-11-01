@@ -74,8 +74,22 @@ jobs:
         shell: pwsh
         run: ./test/bin/test-e2e-assertions.ps1
 
+      - name: Test pinned and auto download contracts without servers
+        shell: pwsh
+        run: ./test/bin/verify-fetch-server.ps1
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: test/bot/package-lock.json
+
+      - name: Install locked bot dependencies
+        run: npx --yes npm@10 ci --prefix test/bot --no-audit --no-fund
+
       - name: Test E2E bot lifecycle and PNX signalling
-        run: node --test test/bot/test-run-lifecycle.js test/bot/test-pnx-client.js
+        run: node --test test/bot/test-run-lifecycle.js test/bot/test-pnx-client.js test/joint/bots/sound-observer.test.js
 
   panel:
     name: Panel lint + production build

@@ -18,6 +18,15 @@ on:
         type: choice
         default: nukkit,pnx
         options: ["nukkit,pnx", nukkit, pnx]
+      scenario_groups:
+        description: "CSV: core,business,lite-moderation,recovery,proxy-switch (core is always included)"
+        type: string
+        default: core
+      secondary_java_platform:
+        description: Second Bukkit downstream (required for proxy-switch)
+        type: choice
+        default: none
+        options: [none, bukkit]
 permissions:
   contents: read
 
@@ -27,7 +36,7 @@ concurrency:
 
 jobs:
   joint:
-    if: github.event_name != 'workflow_dispatch' || (contains(inputs.proxies, 'velocity') && (contains(inputs.modes, 'lite') || contains(inputs.bedrock, 'nukkit')))
+    if: contains(inputs.proxies, 'velocity') && (contains(inputs.modes, 'lite') || contains(inputs.bedrock, 'nukkit'))
     name: Joint Velocity + Bukkit (${{ matrix.mode }})
     runs-on: windows-2022
     timeout-minutes: 45
@@ -35,11 +44,13 @@ jobs:
       fail-fast: false
       matrix:
         proxy: [velocity]
-        mode: ${{ fromJSON((inputs.modes == 'lite' || (github.event_name == 'workflow_dispatch' && !contains(inputs.bedrock, 'nukkit'))) && '["lite"]' || inputs.modes == 'relay' && '["relay"]' || '["relay","lite"]') }}
+        mode: ${{ fromJSON((inputs.modes == 'lite' || !contains(inputs.bedrock, 'nukkit')) && '["lite"]' || inputs.modes == 'relay' && '["relay"]' || '["relay","lite"]') }}
         bedrock: [nukkit]
     env: &joint-env
       JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8 -Dconsole.encoding=UTF-8
       GRADLE_OPTS: -Dorg.gradle.daemon=false -Dfile.encoding=UTF-8
+      JOINT_SCENARIO_GROUPS: ${{ inputs.scenario_groups }}
+      JOINT_SECONDARY_JAVA: ${{ inputs.secondary_java_platform }}
       JOINT_ROOT: ${{ github.workspace }}/.e2e-artifacts/joint-ci/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.proxy }}-${{ matrix.mode }}-${{ matrix.mode == 'relay' && matrix.bedrock || 'none' }}
       JOINT_EVIDENCE: ${{ github.workspace }}/.e2e-artifacts/joint-evidence/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.proxy }}-${{ matrix.mode }}-${{ matrix.mode == 'relay' && matrix.bedrock || 'none' }}
 
@@ -50,6 +61,19 @@ jobs:
       - name: Parse joint scripts with Windows PowerShell
         shell: powershell
         run: ./test/joint/verify-joint-syntax.ps1 -Path ./test/joint
+
+      - name: Validate selected scenario topology before starting servers
+        shell: powershell
+        env:
+          JOINT_MODE: ${{ matrix.mode }}
+          JOINT_PROXY: ${{ matrix.proxy }}
+        run: |
+          . ./test/joint/scenarios/registry.ps1
+          $groups = @(Resolve-JointScenarioGroups -Value $env:JOINT_SCENARIO_GROUPS)
+          $null = Get-JointScenarioAssertionIds -ScenarioGroups $groups -RoundIndex 1 -Mode $env:JOINT_MODE -Proxy $env:JOINT_PROXY
+          if ('proxy-switch' -in $groups -and $env:JOINT_SECONDARY_JAVA -ne 'bukkit') {
+            throw 'proxy-switch requires secondary_java_platform=bukkit'
+          }
 
       - name: Set up Java 21 and 25
         uses: actions/setup-java@v5
@@ -103,9 +127,10 @@ jobs:
           JOINT_BEDROCK: ${{ matrix.bedrock }}
         run: |
           $platforms = if ($env:JOINT_MODE -eq 'relay') { "$env:JOINT_PROXY,bukkit,$env:JOINT_BEDROCK" } else { "$env:JOINT_PROXY,bukkit" }
-          ./test/joint/run-joint.ps1 -Platforms $platforms -Rounds 1 -MaxConcurrentServers 3 -ProxyMode $env:JOINT_MODE -JointRoot $env:JOINT_ROOT -KeepArtifacts
+          $serverLimit = if ($env:JOINT_SECONDARY_JAVA -eq 'bukkit') { 4 } else { 3 }
+          ./test/joint/run-joint.ps1 -Platforms $platforms -Rounds 1 -MaxConcurrentServers $serverLimit -ProxyMode $env:JOINT_MODE -JointRoot $env:JOINT_ROOT -ScenarioGroups $env:JOINT_SCENARIO_GROUPS -SecondaryJavaPlatform $env:JOINT_SECONDARY_JAVA -KeepArtifacts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./test/joint/assert-joint-ci.ps1 -JointRoot $env:JOINT_ROOT -ProxyMode $env:JOINT_MODE -ProxyPlatform $env:JOINT_PROXY -BedrockPlatform $env:JOINT_BEDROCK
+          ./test/joint/assert-joint-ci.ps1 -JointRoot $env:JOINT_ROOT -ProxyMode $env:JOINT_MODE -ProxyPlatform $env:JOINT_PROXY -BedrockPlatform $env:JOINT_BEDROCK -ScenarioGroups $env:JOINT_SCENARIO_GROUPS -SecondaryJavaPlatform $env:JOINT_SECONDARY_JAVA
 
       - name: Collect joint evidence
         if: always()
@@ -117,7 +142,7 @@ jobs:
           foreach ($file in @(Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue)) {
             $relative = $file.FullName.Substring($root.Length + 1)
             if ($relative -match '(^|[\\/])world[^\\/]*[\\/]' -or $file.Name -match '^\d+\.log$') { continue }
-            if ($file.Name -notlike '*.log' -and $file.Name -notlike '*.results.json' -and $file.Name -ne 'joint-summary.json' -and $file.Name -notlike 'plan-*.json') { continue }
+            if ($file.Name -notlike '*.log' -and $file.Name -notlike '*.results.json' -and $file.Name -ne 'joint-summary.json' -and $file.Name -ne 'admin-requests.json' -and $file.Name -notlike 'plan-*.json') { continue }
             $destination = Join-Path $env:JOINT_EVIDENCE $relative
             $source = $null
             $target = $null
@@ -145,20 +170,21 @@ jobs:
           retention-days: 7
 
   joint-bungee:
-    if: github.event_name != 'workflow_dispatch' || (contains(inputs.proxies, 'bungee') && contains(inputs.modes, 'relay') && contains(inputs.bedrock, 'nukkit'))
-    name: Joint Bungee + Bukkit + Nukkit (relay)
+    if: contains(inputs.proxies, 'bungee') && (contains(inputs.modes, 'lite') || contains(inputs.bedrock, 'nukkit'))
+    name: Joint Bungee + Bukkit (${{ matrix.mode }})
     runs-on: windows-2022
     timeout-minutes: 45
     strategy:
+      fail-fast: false
       matrix:
         proxy: [bungee]
-        mode: [relay]
+        mode: ${{ fromJSON((inputs.modes == 'lite' || !contains(inputs.bedrock, 'nukkit')) && '["lite"]' || inputs.modes == 'relay' && '["relay"]' || '["relay","lite"]') }}
         bedrock: [nukkit]
     env: *joint-env
     steps: *joint-steps
 
   joint-pnx:
-    if: github.event_name != 'workflow_dispatch' || (contains(inputs.modes, 'relay') && contains(inputs.bedrock, 'pnx'))
+    if: contains(inputs.modes, 'relay') && contains(inputs.bedrock, 'pnx')
     name: Joint ${{ matrix.proxy }} + Bukkit + PNX 3 (relay)
     runs-on: windows-2022
     timeout-minutes: 45

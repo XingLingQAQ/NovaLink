@@ -3,6 +3,8 @@ param()
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'scenarios/business.ps1')
+. (Join-Path $PSScriptRoot 'scenarios/registry.ps1')
+Write-Host '[SYNTHETIC] Offline scenario and summary contracts; no real server evidence is produced'
 $main = Join-Path $PSScriptRoot 'run-joint.ps1'
 $tokens = $null
 $errors = $null
@@ -122,11 +124,43 @@ Assert-Check (@($verdicts | Where-Object { $_.id -eq 'round1/business/alice-comp
 $summaryDir = Join-Path $PSScriptRoot ('.selftest-' + [guid]::NewGuid().ToString('N'))
 $summaryFile = Join-Path $summaryDir 'joint-summary.json'
 New-Item -ItemType Directory -Path $summaryDir | Out-Null
+function New-ContractSummary {
+  param([string]$Groups, [string]$Mode, [string]$Proxy, [string]$Secondary = '')
+  $selected = @(Resolve-JointScenarioGroups -Value $Groups)
+  $ids = @(Get-JointScenarioAssertionIds -ScenarioGroups $selected -RoundIndex 1 -Mode $Mode -Proxy $Proxy)
+  if ($Mode -eq 'relay') { $ids += @('round1/java-to-bedrock', 'round1/bedrock-to-java', 'round1/relay-chat-attribution-and-delivery') }
+  $rows = @($ids | ForEach-Object {
+    New-JointAssertion -Id $_ -Token 'synthetic-contract' -Pass $true -Evidence 'Synthetic summary fixture only' -Kind 'contract-fixture'
+  })
+  [PSCustomObject]@{
+    proxyMode = $Mode; overallPass = $true; scenarioGroups = $selected
+    rounds = @([PSCustomObject]@{
+      status = 'PASS'; proxy = $Proxy; java = 'bukkit'; mod = $null; secondaryJava = $Secondary
+      bedrock = $(if ($Mode -eq 'relay') { 'nukkit' } else { $null }); assertions = $rows
+    })
+  }
+}
+
+function Invoke-ContractGuard {
+  param($Summary, [string]$Groups, [string]$Mode, [string]$Proxy, [string]$Secondary = 'none')
+  [IO.File]::WriteAllText($summaryFile, ($Summary | ConvertTo-Json -Depth 12))
+  & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $Mode `
+    -ProxyPlatform $Proxy -BedrockPlatform 'nukkit' -ScenarioGroups $Groups -SecondaryJavaPlatform $Secondary
+}
+
+function Assert-ContractRejected {
+  param($Summary, [string]$Groups, [string]$Mode, [string]$Proxy, [string]$Reason, [string]$Secondary = 'none')
+  $failure = ''
+  try { Invoke-ContractGuard $Summary $Groups $Mode $Proxy $Secondary } catch { $failure = $_.Exception.Message }
+  Assert-Check ($failure.Contains($Reason)) "synthetic contract rejects $Reason"
+}
+
 try {
   foreach ($case in @(
     @{ Proxy = 'velocity'; Mode = 'relay'; Bedrock = 'nukkit' },
     @{ Proxy = 'velocity'; Mode = 'relay'; Bedrock = 'pnx' },
     @{ Proxy = 'velocity'; Mode = 'lite'; Bedrock = 'nukkit' },
+    @{ Proxy = 'bungee'; Mode = 'lite'; Bedrock = 'nukkit' },
     @{ Proxy = 'bungee'; Mode = 'relay'; Bedrock = 'nukkit' },
     @{ Proxy = 'bungee'; Mode = 'relay'; Bedrock = 'pnx' }
   )) {
@@ -145,10 +179,13 @@ try {
     foreach ($id in $ids) {
       $assertions += New-JointAssertion -Id "round1/$id" -Token 'synthetic' -Pass $true -Evidence 'fixture'
     }
+    if ($mode -eq 'lite' -and $proxy -eq 'velocity') {
+      $assertions += New-JointAssertion -Id 'bob/expect-mention-sound' -Token 'minecraft:entity.experience_orb.pickup' -Pass $true -Evidence 'fixture'
+    }
     $summary = [PSCustomObject]@{
-      proxyMode = $mode; overallPass = $true
+      proxyMode = $mode; overallPass = $true; scenarioGroups = @('core')
       rounds = @([PSCustomObject]@{ status = 'PASS'; proxy = $proxy; java = 'bukkit'; mod = $null
-        bedrock = $(if ($mode -eq 'relay') { $bedrock } else { $null }); assertions = $assertions })
+        bedrock = $(if ($mode -eq 'relay') { $bedrock } else { $null }); secondaryJava = $null; assertions = $assertions })
     }
     [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
     & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock
@@ -195,6 +232,76 @@ try {
       Assert-Check $rejected "CI $label rejects missing native-runtime evidence"
     }
   }
+
+  Assert-Check ((@(Resolve-JointScenarioGroups ' BUSINESS,core,business ') -join ',') -ceq 'core,business') 'scenario groups include core and normalize duplicates'
+  Assert-Check ((@(Resolve-JointScenarioGroups '') -join ',') -ceq 'core') 'empty selection defaults to core'
+  foreach ($selection in @('core,unknown', 'core,,business')) {
+    $rejected = $false
+    try { $null = Resolve-JointScenarioGroups $selection } catch { $rejected = $_.Exception.Message -match 'Unknown joint scenario group' }
+    Assert-Check $rejected "unknown or empty CSV group rejected: $selection"
+  }
+  foreach ($case in @(
+    @{ Groups = 'lite-moderation'; Mode = 'relay' },
+    @{ Groups = 'recovery'; Mode = 'lite' },
+    @{ Groups = 'proxy-switch'; Mode = 'lite' }
+  )) {
+    $rejected = $false
+    try { $null = Get-JointScenarioAssertionIds -ScenarioGroups $case.Groups -RoundIndex 1 -Mode $case.Mode -Proxy 'bungee' } catch {
+      $rejected = $_.Exception.Message.Contains("Scenario group '$($case.Groups)' requires")
+    }
+    Assert-Check $rejected "registry rejects $($case.Groups) in $($case.Mode)"
+  }
+  $liteIds = @(Get-JointScenarioAssertionIds -ScenarioGroups @('lite-moderation') -RoundIndex 1 -Mode 'lite' -Proxy 'bungee')
+  Assert-Check (@($liteIds | Where-Object { $_ -like 'round1/lite-moderation/*' }).Count -eq 18 -and
+    'round1/lite-moderation/drive' -in $liteIds) 'all 18 Lite moderation IDs including drive are mandatory'
+
+  foreach ($case in @(
+    @{ Group = 'business'; Mode = 'lite'; Proxy = 'bungee'; Secondary = 'none'; Id = 'round1/pm/observer-positive-control' },
+    @{ Group = 'lite-moderation'; Mode = 'lite'; Proxy = 'bungee'; Secondary = 'none'; Id = 'round1/lite-moderation/permission-unmute' },
+    @{ Group = 'recovery'; Mode = 'relay'; Proxy = 'velocity'; Secondary = 'none'; Id = 'round1/recovery/backend-process-restarted' },
+    @{ Group = 'proxy-switch'; Mode = 'relay'; Proxy = 'bungee'; Secondary = 'bukkit'; Id = 'round1/proxy-switch/wrong-link-denied' }
+  )) {
+    $leg = if ($case.Secondary -eq 'bukkit') { 'bukkit2' } else { '' }
+    $fixture = New-ContractSummary $case.Group $case.Mode $case.Proxy $leg
+    Invoke-ContractGuard $fixture $case.Group $case.Mode $case.Proxy $case.Secondary
+    Assert-Check $true "complete synthetic $($case.Group) summary accepted"
+    $requiredRow = @($fixture.rounds[0].assertions | Where-Object { $_.id -ceq $case.Id })[0]
+    $requiredRow.kind = 'diagnostic'
+    Assert-ContractRejected $fixture $case.Group $case.Mode $case.Proxy $case.Id $case.Secondary
+    $fixture.rounds[0].assertions = @($fixture.rounds[0].assertions | Where-Object { $_.id -cne $case.Id })
+    $driveId = "round1/$($case.Group)/drive"
+    if (@($fixture.rounds[0].assertions | Where-Object { $_.id -ceq $driveId }).Count -eq 0) {
+      $fixture.rounds[0].assertions += New-JointAssertion -Id $driveId -Token 'synthetic' -Pass $true -Evidence 'Drive alone is insufficient'
+    }
+    Assert-ContractRejected $fixture $case.Group $case.Mode $case.Proxy $case.Id $case.Secondary
+  }
+
+  $fixture = New-ContractSummary 'business' 'lite' 'bungee'
+  $fixture.scenarioGroups = @('core')
+  Assert-ContractRejected $fixture 'business' 'lite' 'bungee' 'summary.scenarioGroups mismatch'
+  $fixture = New-ContractSummary 'core' 'lite' 'bungee'
+  $fixture.PSObject.Properties.Remove('scenarioGroups')
+  Assert-ContractRejected $fixture 'core' 'lite' 'bungee' 'summary.scenarioGroups'
+  $fixture = New-ContractSummary 'business' 'lite' 'bungee'
+  Assert-ContractRejected $fixture 'core' 'lite' 'bungee' 'summary.scenarioGroups mismatch'
+
+  $fixture = New-ContractSummary 'recovery' 'relay' 'velocity'
+  $fixture.rounds[0].bedrock = $null
+  Assert-ContractRejected $fixture 'recovery' 'relay' 'velocity' "Scenario group 'recovery' requires"
+  $fixture = New-ContractSummary 'proxy-switch' 'relay' 'bungee' 'bukkit2'
+  $fixture.rounds[0].secondaryJava = 'bukkit'
+  Assert-ContractRejected $fixture 'proxy-switch' 'relay' 'bungee' "Scenario group 'proxy-switch' requires" 'bukkit'
+  $fixture = New-ContractSummary 'core' 'relay' 'bungee' 'bukkit2'
+  Assert-ContractRejected $fixture 'core' 'relay' 'bungee' 'Unexpected secondary Java leg'
+  $fixture = New-ContractSummary 'core' 'relay' 'bungee'
+  Assert-ContractRejected $fixture 'core' 'relay' 'bungee' 'Requested secondary Bukkit' 'bukkit'
+
+  $fixture = New-ContractSummary 'core' 'lite' 'bungee'
+  $fixture.rounds[0].assertions += $fixture.rounds[0].assertions[0]
+  Assert-ContractRejected $fixture 'core' 'lite' 'bungee' 'Required gating assertion'
+  $fixture = New-ContractSummary 'core' 'lite' 'bungee'
+  $fixture.rounds[0].assertions[0].pass = 'true'
+  Assert-ContractRejected $fixture 'core' 'lite' 'bungee' 'Required gating assertion'
 } finally {
   Remove-Item -LiteralPath $summaryFile -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $summaryDir

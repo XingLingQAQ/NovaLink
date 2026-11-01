@@ -199,6 +199,21 @@ public class ProxyChatCore {
         return backendRouter;
     }
 
+    public void restoreOnlineMemberships(AbstractPlatformNetworkClient client) {
+        if (!client.isAuthenticated()) {
+            return;
+        }
+        for (ProxyPlayer player : platform.getOnlinePlayers()) {
+            String server = player.getCurrentServer();
+            if (getNetworkClientFor(server) != client) {
+                continue;
+            }
+            com.nova.chat.client.channel.ChannelMembershipRestorer.restore(
+                    getPlayerState(player.getUniqueId()), player.getName(), platform.getPlatformType(),
+                    null, server, client::sendPacket);
+        }
+    }
+
     /**
      * Handles one packet the relay router received on a backend link.
      *

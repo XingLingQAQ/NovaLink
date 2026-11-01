@@ -6,6 +6,7 @@ import com.nova.chat.common.protocol.NovaProtocol;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.PacketRegistry;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
+import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.proxy.platform.ProxyPlatform;
 
@@ -213,6 +214,20 @@ public final class LocalAuthorityClient extends AbstractPlatformNetworkClient
         dispatcher.runLater(() -> process(packet), responseDelayMillis);
     }
 
+    /** Reports the completed authority result to player or console senders. */
+    public boolean sendChannelAction(ChannelActionPacket packet,
+                                     Consumer<ChannelActionResponsePacket> completion) {
+        Objects.requireNonNull(packet, "packet");
+        Objects.requireNonNull(completion, "completion");
+        if (!active.get() || authority == null) {
+            return false;
+        }
+        tracker.cleanupExpired();
+        tracker.track(packet);
+        dispatcher.runLater(() -> process(packet, completion), responseDelayMillis);
+        return true;
+    }
+
     /**
      * @return the tracker that correlates channel actions with their local
      *         responses (the shared dispatcher consumes from it)
@@ -284,6 +299,10 @@ public final class LocalAuthorityClient extends AbstractPlatformNetworkClient
 
     /** Runs one upstream packet through the authority and delivers the result. */
     private void process(Packet packet) {
+        process(packet, null);
+    }
+
+    private void process(Packet packet, Consumer<ChannelActionResponsePacket> completion) {
         LocalAuthority target = authority;
         if (target == null) {
             debug("Lite authority not bound yet; dropping "
@@ -301,6 +320,10 @@ public final class LocalAuthorityClient extends AbstractPlatformNetworkClient
         }
         for (Packet response : downstream) {
             deliver(response);
+            if (completion != null && response instanceof ChannelActionResponsePacket actionResponse
+                    && packet.getRequestId().equals(actionResponse.getRequestId())) {
+                completion.accept(actionResponse);
+            }
             // Fan the accepted line out to the downstream servers so players
             // connected straight to them see it too. Relay does not need this:
             // the backend owns fan-out there.

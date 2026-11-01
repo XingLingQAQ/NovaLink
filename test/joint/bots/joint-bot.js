@@ -26,8 +26,10 @@
 //   chat             { text }                       send a chat line
 //   cmd              { text }                       send a slash command
 //   wait             { ms }                         sleep
-//   arm              { token }                     track a token without waiting
-//   reconnect        { timeoutMs, delayMs }        reconnect Java once
+//   checkpoint       { key }                       record a local phase boundary
+//   signal           { key, value }                publish an orchestration barrier
+//   arm              { token, reset }                     track a token without waiting
+//   reconnect        { timeoutMs, delayMs }        reconnect Java or Bedrock once
 //   expect           { id, token, timeoutMs }       assert token arrives
 //   expectAbsent     { id, token }                  assert token NEVER arrives (checked at exit)
 //   expectEvent      { id, kind, match, timeoutMs } assert a recorded effect arrives
@@ -106,7 +108,8 @@ function loadPlan() {
 // no server. It is how the new effect assertions are demonstrated on a machine
 // with no topology running, and it deliberately includes steps that MUST fail,
 // so a broken matcher cannot masquerade as a green run.
-const SELFTEST = process.argv.includes('--selftest')
+const RECOVERY_SELFTEST = process.argv.includes('--selftest-recovery')
+const SELFTEST = process.argv.includes('--selftest') || RECOVERY_SELFTEST
 
 const plan = SELFTEST ? { steps: [], runId: 'selftest', role: 'selftest' } : loadPlan();
 const KIND = (plan.kind || 'java').toLowerCase();
@@ -394,10 +397,11 @@ function effectMatches(effect, kind, match, where, whereValue) {
   return true;
 }
 
-function findEffect(kind, match, where, whereValue, sinceMs) {
+function findEffect(kind, match, where, whereValue, sinceMs, sinceIndex) {
   for (let i = effects.length - 1; i >= 0; i--) {
     const e = effects[i];
     if (sinceMs != null && e.atMs < sinceMs) continue;
+    if (sinceIndex != null && received.indexOf(e) <= sinceIndex) continue;
     if (effectMatches(e, kind, match, where, whereValue)) return e;
   }
   return null;
@@ -410,7 +414,12 @@ function expectEffect(step) {
   // An effect that already arrived before the step ran still counts: the plan
   // author cannot know the exact packet ordering, and re-waiting for something
   // already recorded would turn a real observation into a timeout.
-  const immediate = findEffect(step.kind, step.match, step.where, step.whereValue);
+  let sinceIndex = null;
+  if (step.sinceCheckpoint) {
+    sinceIndex = received.map((row) => row.kind === 'checkpoint' && row.key === step.sinceCheckpoint).lastIndexOf(true);
+    if (sinceIndex < 0) throw new Error(`missing checkpoint: ${step.sinceCheckpoint}`);
+  }
+  const immediate = findEffect(step.kind, step.match, step.where, step.whereValue, undefined, sinceIndex);
   if (immediate) {
     assertions.push({
       id, token: id, pass: true, waitedMs: 0, evidence: immediate.text, kind: 'effect',
@@ -423,7 +432,7 @@ function expectEffect(step) {
     let done = false;
     const tick = () => {
       if (done) return;
-      const hit = findEffect(step.kind, step.match, step.where, step.whereValue, started);
+      const hit = findEffect(step.kind, step.match, step.where, step.whereValue, started, sinceIndex);
       if (hit) { done = true; clearInterval(poll); clearTimeout(timer); finish(true, hit); return; }
     };
     const finish = (ok, hit) => {
@@ -549,6 +558,7 @@ function expectState(step) {
 // ---------------------------------------------------------------------------
 function createJavaTransport(onChatLine) {
   const mineflayer = requireBotLib('mineflayer');
+  let closed = false;
   const bot = mineflayer.createBot({
     host: HOST,
     port: PORT,
@@ -636,41 +646,8 @@ function createJavaTransport(onChatLine) {
   });
   bot.on('title_clear', () => recordEffect('titleClear', 'titles cleared', {}));
 
-  // -- sound ----------------------------------------------------------------
-  bot.on('soundEffectHeard', (soundName, position, volume, pitch) => {
-    const pos = position ? `${position.x},${position.y},${position.z}` : '';
-    recordEffect('sound', `${soundName} @ ${pos} vol=${volume} pitch=${pitch}`, {
-      sound: soundName, position: pos, volume, pitch,
-    });
-  });
-  bot.on('hardcodedSoundEffectHeard', (soundId, category, position, volume, pitch) => {
-    // Only reached when the id cannot be resolved to a name; recording it keeps
-    // "unresolvable" visible instead of silently dropping the sound.
-    const pos = position ? `${position.x},${position.y},${position.z}` : '';
-    recordEffect('soundId', `id=${soundId} cat=${category} @ ${pos}`, {
-      soundId, category, position: pos, volume, pitch,
-    });
-  });
-  // mineflayer's sound plugin listens to `sound_effect` and `named_sound_effect`
-  // only. A 1.19+ server may send `entity_sound_effect` instead -- Velocity's
-  // ConnectedPlayer#playSound ALWAYS does, because it routes the sound through
-  // the player's backend server entity -- and no library event fires for it.
-  // Without this listener a proxy-rendered mention sound is invisible.
-  bot._client.on('entity_sound_effect', (packet) => {
-    const sound = (packet && packet.sound) || {};
-    const name = (sound.data && sound.data.soundName) || (sound.soundId != null ? `id:${sound.soundId}` : 'unknown');
-    recordEffect('sound', `${name} @ entity:${packet.entityId} vol=${packet.volume} pitch=${packet.pitch}`, {
-      sound: name, entityId: packet.entityId, volume: packet.volume, pitch: packet.pitch,
-      source: 'entity_sound_effect',
-    });
-  });
-  // Diagnostic: name every sound-carrying packet that arrives, whatever the
-  // decoder made of it. This is what tells "the server never sent a sound" apart
-  // from "the server sent one the libraries do not surface".
-  bot._client.on('raw', (buffer, meta) => {
-    if (!meta || !/sound/i.test(meta.name || '')) return;
-    recordEffect('rawSoundPacket', meta.name, { name: meta.name, bytes: buffer ? buffer.length : 0 });
-  });
+  const detachSounds = require('./sound-observer').attachJavaSoundObserver(bot, recordEffect);
+  bot.once('end', detachSounds);
 
   // -- connection lifecycle -------------------------------------------------
   bot.on('kicked', (reason, loggedIn) => {
@@ -683,6 +660,7 @@ function createJavaTransport(onChatLine) {
   });
   bot.on('error', (err) => record('error', err && err.message, err && err.stack));
   bot.on('end', () => {
+    closed = true;
     state.kicked = state.kicked || null;
     record('end', 'connection ended', 'connection ended');
   });
@@ -706,7 +684,11 @@ function createJavaTransport(onChatLine) {
   });
 
   return {
+    kind: 'java',
     spawnEvent: 'spawn',
+    closeEvent: 'end',
+    rejectEvent: 'kicked',
+    isClosed: () => closed,
     bot,
     sendChat: (text) => { sent.push({ atMs: now(), text }); console.log(`\n>>> ${text}`); bot.chat(text); },
     sendCommand: (text) => {
@@ -734,6 +716,7 @@ function createJavaTransport(onChatLine) {
 // BDS/Nukkit/PNX/Endstone accept the same payloads, so the shims are always on.
 // ---------------------------------------------------------------------------
 function createBedrockTransport(onChatLine) {
+  let closed = false;
   const bedrock = requireBotLib('bedrock-protocol');
   const crypto = require('crypto');
   const JWT = requireBotLib('jsonwebtoken');
@@ -902,10 +885,17 @@ function createBedrockTransport(onChatLine) {
     recordEffect('kicked', txt, state.kicked);
   });
   client.on('error', (err) => record('error', err && err.message, err && err.stack));
-  client.on('close', () => record('close', 'connection closed', 'connection closed'));
+  client.on('close', () => {
+    closed = true;
+    record('close', 'connection closed', 'connection closed');
+  });
 
   return {
+    kind: 'bedrock',
     spawnEvent: 'spawn',
+    closeEvent: 'close',
+    rejectEvent: 'kick',
+    isClosed: () => closed,
     bot: client,
     sendChat: (text) => {
       sent.push({ atMs: now(), text });
@@ -980,35 +970,44 @@ const absentChecks = [];
 // Step execution
 // ---------------------------------------------------------------------------
 function waitTransportEvent(current, event, timeoutMs, start) {
+  const closeEvent = current.closeEvent || 'end';
+  const rejectEvent = current.rejectEvent || 'kicked';
   return new Promise((resolve, reject) => {
+    let settled = false;
     const cleanup = () => {
       clearTimeout(timer);
       current.bot.removeListener(event, success);
       current.bot.removeListener('error', fail);
-      if (event !== 'end') {
-        current.bot.removeListener('end', ended);
-        current.bot.removeListener('kicked', kicked);
-      }
+      current.bot.removeListener(closeEvent, ended);
+      current.bot.removeListener(rejectEvent, kicked);
     };
-    const success = () => { cleanup(); resolve(); };
-    const fail = (error) => { cleanup(); reject(error); };
-    const ended = () => fail(new Error(`connection ended before ${event}`));
+    const success = () => { if (settled) return; settled = true; cleanup(); resolve(); };
+    const fail = (error) => { if (settled) return; settled = true; cleanup(); reject(error); };
+    const ended = () => fail(new Error(`connection closed before ${event}`));
     const kicked = (reason) => fail(new Error(`connection rejected: ${componentText(reason)}`));
     const timer = setTimeout(() => fail(new Error(`timed out waiting for ${event}`)), timeoutMs);
     current.bot.once(event, success);
     current.bot.once('error', fail);
-    if (event !== 'end') {
-      current.bot.once('end', ended);
-      current.bot.once('kicked', kicked);
+    if (event !== closeEvent) {
+      current.bot.once(closeEvent, ended);
+      current.bot.once(rejectEvent, kicked);
     }
-    try { if (start) start(); } catch (error) { fail(error); }
+    try {
+      if (event === closeEvent && current.isClosed && current.isClosed()) {
+        if (start) start();
+        success();
+      } else if (event !== closeEvent && current.isClosed && current.isClosed()) {
+        ended();
+      } else if (start) start();
+    } catch (error) { fail(error); }
   });
 }
 
-async function reconnectJava(current, step, factory) {
+async function reconnectTransport(current, step, factory) {
   const timeoutMs = Number(step.timeoutMs == null ? 30000 : step.timeoutMs);
   const delayMs = Number(step.delayMs == null ? 1000 : step.delayMs);
-  if (KIND !== 'java') throw new Error('reconnect supports Java bots only');
+  const kind = current.kind || KIND;
+  if (!['java', 'bedrock'].includes(kind)) throw new Error(`unsupported reconnect kind: ${kind}`);
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000 ||
       !Number.isFinite(delayMs) || delayMs < 0 || delayMs > 5000 || delayMs >= timeoutMs) {
     throw new Error('reconnect requires timeoutMs in 1..60000 and delayMs in 0..5000 below timeoutMs');
@@ -1021,8 +1020,8 @@ async function reconnectJava(current, step, factory) {
   };
   let next = null;
   try {
-    await waitTransportEvent(current, 'end', remaining(), () => current.close());
-    record('reconnect', 'disconnected', 'disconnected', { phase: 'disconnected' });
+    await waitTransportEvent(current, current.closeEvent || 'end', remaining(), () => current.close());
+    record('reconnect', 'disconnected', 'disconnected', { phase: 'disconnected', protocol: kind });
     await sleep(Math.min(delayMs, remaining()));
     remaining();
     state.players.clear();
@@ -1032,9 +1031,9 @@ async function reconnectJava(current, step, factory) {
     if (!SELFTEST) transport = next;
     await waitTransportEvent(next, next.spawnEvent, remaining());
     state.spawned = true;
-    record('reconnect', 'spawned', 'spawned', { phase: 'spawned' });
+    record('reconnect', 'spawned', 'spawned', { phase: 'spawned', protocol: kind, attempts: 1 });
     assertions.push({ id: step.id || 'reconnect', token: USERNAME, pass: true,
-      evidence: 'old connection ended; same Java username spawned on one new connection', kind: 'reconnect' });
+      evidence: `old transport closed; same ${kind} username received spawn on one new connection`, kind: 'reconnect' });
     return next;
   } catch (error) {
     if (next) next.close();
@@ -1059,10 +1058,17 @@ async function runPlan(activeTransport, factory = buildTransport) {
         await sleep(parseInt(step.ms || 1000, 10));
         break;
       case 'reconnect':
-        activeTransport = await reconnectJava(activeTransport, step, factory);
+        activeTransport = await reconnectTransport(activeTransport, step, factory);
+        break;
+      case 'checkpoint':
+        record('checkpoint', step.key, step.key, { key: step.key });
+        break;
+      case 'signal':
+        publishHandoff(step.key, step.value == null ? 'ready' : render(step.value));
         break;
       case 'arm': {
         const token = render(step.token);
+        if (step.reset === true) seenTokens.delete(token);
         if (!token) throw new Error('arm requires a non-empty token');
         if (!expectedTokens.includes(token)) expectedTokens.push(token);
         break;
@@ -1085,6 +1091,7 @@ async function runPlan(activeTransport, factory = buildTransport) {
         // later step (including other bots' cross-server tokens), turning one
         // missing effect into a pile of unrelated failures.
         await expectEffect(Object.assign({}, step, {
+          sinceCheckpoint: step.sinceCheckpoint != null ? render(step.sinceCheckpoint) : undefined,
           match: step.match != null ? render(step.match) : undefined,
           whereValue: step.whereValue != null ? render(step.whereValue) : undefined,
         }));
@@ -1282,24 +1289,36 @@ async function runLifecycleSelftest() {
     { name: 'reconnect transport error never passes', outcome: 'error', ok: false },
     { name: 'reconnect rejects unbounded timeout', outcome: 'invalid', ok: false },
   ];
-  for (const check of checks) {
+  const bedrockChecks = checks.map((check) => Object.assign({}, check, { kind: 'bedrock' }));
+  bedrockChecks.push({ name: 'already closed Bedrock transport reconnects once', kind: 'bedrock', outcome: 'already-closed', ok: true });
+  bedrockChecks.push({ name: 'closed replacement cannot fake Bedrock spawn', kind: 'bedrock', outcome: 'closed-new', ok: false });
+  for (const check of checks.concat(bedrockChecks)) {
     assertions.length = 0;
+    const kind = check.kind || 'java';
+    const closeEvent = kind === 'bedrock' ? 'close' : 'end';
+    const rejectEvent = kind === 'bedrock' ? 'kick' : 'kicked';
     let dials = 0;
     let closes = 0;
+    let oldCloses = 0;
     const commands = [];
-    const old = { bot: new EventEmitter(), close() {
-      if (check.outcome !== 'disconnect-timeout') this.bot.emit('end');
-    }, sendCommand() { throw new Error('used old connection'); } };
+    const old = { kind, closeEvent, rejectEvent, bot: new EventEmitter(),
+      isClosed: () => check.outcome === 'already-closed',
+      close() {
+        oldCloses++;
+        if (!['disconnect-timeout', 'already-closed'].includes(check.outcome)) this.bot.emit(closeEvent);
+      }, sendCommand() { throw new Error('used old connection'); } };
     const factory = () => {
       dials++;
+      assert.strictEqual(oldCloses, 1, 'old transport closed before dialing');
       assert.strictEqual(state.players.size, 0);
       assert.strictEqual(state.kicked, null);
-      const next = { bot: new EventEmitter(), spawnEvent: 'spawn',
+      const next = { kind, closeEvent, rejectEvent, bot: new EventEmitter(), spawnEvent: 'spawn',
+        isClosed: () => check.outcome === 'closed-new',
         close() { closes++; }, sendCommand(cmd) { commands.push(cmd); } };
       setTimeout(() => {
-        if (check.outcome === 'spawn') next.bot.emit('spawn');
-        if (check.outcome === 'kicked') next.bot.emit('kicked', 'refused');
-        if (check.outcome === 'end') next.bot.emit('end');
+        if (['spawn', 'already-closed'].includes(check.outcome)) next.bot.emit('spawn');
+        if (check.outcome === 'kicked') next.bot.emit(rejectEvent, 'refused');
+        if (check.outcome === 'end') next.bot.emit(closeEvent);
         if (check.outcome === 'error') next.bot.emit('error', new Error('refused'));
       }, 5);
       return next;
@@ -1316,8 +1335,8 @@ async function runLifecycleSelftest() {
     assert.strictEqual(dials, ['disconnect-timeout', 'invalid'].includes(check.outcome) ? 0 : 1, check.name);
     assert.strictEqual(closes, check.ok || dials === 0 ? 0 : 1, check.name);
     assert.deepStrictEqual(commands, check.ok ? ['/nc who global'] : [], check.name);
-    assert.strictEqual(old.bot.listenerCount('end'), 0, check.name);
-    console.log(`[SELFTEST PASS] ${check.name}`);
+    assert.strictEqual(old.bot.listenerCount(closeEvent), 0, check.name);
+    console.log(`[SYNTHETIC PASS] ${kind}: ${check.name}`);
   }
 
   assertions.length = 0;
@@ -1337,8 +1356,20 @@ async function runLifecycleSelftest() {
   await expectEffect({ id: 'diagnostic-fast', kind: 'title', match: 'diagnostic title', diagnostic: true });
   assert.strictEqual(assertions[0].diagnostic, true);
   console.log('[SELFTEST PASS] immediate effect preserves diagnostic');
+  assertions.length = 0;
+  effects.length = 0;
+  received.length = 0;
+  recordEffect('respawn', 'stale respawn', {});
+  record('checkpoint', 'switch', 'switch', { key: 'switch' });
+  await expectEffect({ id: 'stale-respawn', kind: 'respawn', sinceCheckpoint: 'switch', timeoutMs: 10 });
+  assert.strictEqual(assertions[0].pass, false);
+  console.log('[SYNTHETIC PASS] pre-checkpoint respawn cannot prove switch');
+  recordEffect('respawn', 'actual replacement respawn', {});
+  await expectEffect({ id: 'fresh-respawn', kind: 'respawn', sinceCheckpoint: 'switch', timeoutMs: 10 });
+  assert.strictEqual(assertions[1].pass, true);
+  console.log('[SYNTHETIC PASS] post-checkpoint respawn can prove switch');
   plan.steps = [];
-  return checks.length + 2;
+  return checks.length + bedrockChecks.length + 4;
 }
 
 async function runSelftest() {
@@ -1421,7 +1452,7 @@ const hardTimer = setTimeout(() => {
 
 if (SELFTEST) {
   clearTimeout(hardTimer);
-  runSelftest().then((ok) => {
+  (RECOVERY_SELFTEST ? runLifecycleSelftest().then(() => true) : runSelftest()).then((ok) => {
     finished = true;
     console.log(ok ? '[SELFTEST] OK' : '[SELFTEST] FAILED');
     process.exit(ok ? 0 : 1);

@@ -95,6 +95,18 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 getChannelResponseTracker(),
                 new PNXChannelResponseAdapter());
         registerPnxHandlers();
+        onAuthenticated(() -> plugin.getServer().getScheduler().scheduleTask(plugin, this::restoreOnlineMemberships));
+    }
+
+    private void restoreOnlineMemberships() {
+        if (!isAuthenticated() || plugin.getChatInterceptor() == null) {
+            return;
+        }
+        for (var player : plugin.getServer().getOnlinePlayers().values()) {
+            com.nova.chat.client.channel.ChannelMembershipRestorer.restore(
+                    plugin.getChatInterceptor().getPlayerState(player.getUniqueId()), player.getName(),
+                    PlatformType.POWERNUKKITX, player.getLevel().getName(), null, this::sendPacket);
+        }
     }
 
     /**

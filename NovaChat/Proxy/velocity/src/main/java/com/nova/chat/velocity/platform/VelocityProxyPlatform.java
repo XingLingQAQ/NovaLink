@@ -132,7 +132,9 @@ public final class VelocityProxyPlatform implements ProxyPlatform {
         }
         try {
             Key key = Key.key("minecraft", toResourcePath(soundId));
-            handle.playSound(Sound.sound(key, Sound.Source.PLAYER, volume, pitch));
+            // Velocity implements the emitter overload; Audience#playSound(Sound) is a no-op.
+            handle.playSound(Sound.sound(key, Sound.Source.PLAYER, volume, pitch),
+                    Sound.Emitter.self());
         } catch (Exception e) {
             plugin.debug("Failed to play mention sound: " + e.getMessage());
         }

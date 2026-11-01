@@ -105,11 +105,9 @@ if (-not $lock) { Log "ERROR: no lock entry for '$($pm.LockName)' in versions.lo
 
 # Ensure the jar is present (pinned mode by default; -Auto passed by caller if desired).
 $jarPath = Join-Path $DistDir $lock.File
-if (-not (Test-Path $jarPath)) {
-    Log "fetching $($pm.LockName) jar via fetch-server.ps1..."
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $binDir "fetch-server.ps1") -Name $pm.LockName -DistDir $DistDir
-    if ($LASTEXITCODE -ne 0) { Log "ERROR: fetch-server failed for $($pm.LockName)"; exit 1 }
-}
+Log "verifying $($pm.LockName) jar via fetch-server.ps1..."
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $binDir "fetch-server.ps1") -Name $pm.LockName -DistDir $DistDir
+if ($LASTEXITCODE -ne 0) { Log "ERROR: fetch-server failed for $($pm.LockName)"; exit 1 }
 if (-not (Test-Path $jarPath)) { Log "ERROR: jar still not present after fetch: $jarPath"; exit 1 }
 
 # --- lay down the run directory ----------------------------------------------

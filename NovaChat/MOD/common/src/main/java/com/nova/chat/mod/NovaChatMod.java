@@ -117,6 +117,15 @@ public class NovaChatMod {
         MessageFormatter messageFormatter = new MessageFormatter(config.getFormats(), defaultFormat);
         ChatInterceptor chatInterceptor = new ChatInterceptor(platform, networkClient, config,
                 messageFormatter, knownChannelRegistry, ignoreListService);
+        networkClient.onAuthenticated(() -> platform.execute(() -> {
+            if (!networkClient.isAuthenticated()) { return; }
+            for (var playerId : platform.getOnlinePlayerIds()) {
+                com.nova.chat.client.channel.ChannelMembershipRestorer.restore(
+                        chatInterceptor.getPlayerState(playerId), platform.getPlayerName(playerId),
+                        platform.getPlatformType().toCommon(), platform.getCurrentWorld(playerId),
+                        null, networkClient::sendPacket);
+            }
+        }));
 
         // Shared channel command service
         PlatformType commonPlatformType = platform.getPlatformType().toCommon();

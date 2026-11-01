@@ -16,21 +16,12 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/**
- * Sound-id translation on Velocity.
- *
- * <p>{@link MentionNotifier#DEFAULT_SOUND} is spelled like a Bukkit
- * {@code Sound} enum member, not like a registry resource path. Lowercasing it
- * and prefixing {@code minecraft:} produced
- * {@code minecraft:entity_experience_orb_pickup}, which no client resolves, so
- * the mention sound was silent. Nothing caught it because no test asserted the
- * id that reaches the client.
- */
-@DisplayName("Velocity platform sound ids")
+@DisplayName("Velocity platform sound dispatch")
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class VelocityProxyPlatformSoundTest {
@@ -88,10 +79,37 @@ class VelocityProxyPlatformSoundTest {
                 .isEqualTo("minecraft:entity.experience_orb.pickup");
     }
 
-    /** @return the resource key string of the sound Velocity was asked to play */
+    @Test
+    @DisplayName("mention notifications use Velocity's self-emitter overload")
+    void mentionUsesSelfEmitter() {
+        platform.notifyMention(new VelocityProxyPlayer(player), "&eAlice", "Mentioned you");
+
+        Sound sound = capturedSound();
+        assertThat(sound.name().asString()).isEqualTo("minecraft:entity.experience_orb.pickup");
+        assertThat(sound.source()).isEqualTo(Sound.Source.PLAYER);
+        assertThat(sound.volume()).isEqualTo(1f);
+        assertThat(sound.pitch()).isEqualTo(1f);
+    }
+
+    @Test
+    @DisplayName("the emitter overload preserves volume and pitch")
+    void preservesPlaybackParameters() {
+        platform.playSound(new VelocityProxyPlayer(player), MentionNotifier.DEFAULT_SOUND, 0.5f, 1.25f);
+
+        Sound sound = capturedSound();
+        assertThat(sound.source()).isEqualTo(Sound.Source.PLAYER);
+        assertThat(sound.volume()).isEqualTo(0.5f);
+        assertThat(sound.pitch()).isEqualTo(1.25f);
+    }
+
     private String capturedSoundKey() {
+        return capturedSound().name().asString();
+    }
+
+    private Sound capturedSound() {
         ArgumentCaptor<Sound> sound = ArgumentCaptor.forClass(Sound.class);
-        verify(player).playSound(sound.capture());
-        return sound.getValue().name().asString();
+        verify(player).playSound(sound.capture(), eq(Sound.Emitter.self()));
+        verify(player, never()).playSound(org.mockito.ArgumentMatchers.any(Sound.class));
+        return sound.getValue();
     }
 }

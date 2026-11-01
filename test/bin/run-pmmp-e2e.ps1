@@ -370,22 +370,16 @@ if ($fatJar) {
 # 2. Fetch PocketMine-MP phar + PHP (other agent owns fetch-server.ps1).
 # ---------------------------------------------------------------------------
 Log "step 2: fetching PocketMine-MP phar"
-# Try the shared fetch-server.ps1 first. If it has no 'pocketmine' entry yet
-# (another agent owns versions.lock.ps1), it will exit non-zero -- in that case
-# we fall back to a directly-downloaded phar already present in $DistDir.
-$fetchOk = $false
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $binDir "fetch-server.ps1") -Name "pocketmine" -DistDir $DistDir
-if ($LASTEXITCODE -eq 0) { $fetchOk = $true } else { Log "  fetch-server.ps1 has no 'pocketmine' pin yet; falling back to direct phar in $DistDir" }
-$pmmpPhar = Get-ChildItem (Join-Path $DistDir "PocketMine-MP*.phar") -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $pmmpPhar) {
-    $pmmpPhar = Get-ChildItem (Join-Path $DistDir "*.phar") -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'pocket|pmmp' } | Select-Object -First 1
+if ($LASTEXITCODE -ne 0) {
+    Log "ERROR: PocketMine-MP download or checksum verification failed"
+    exit 2
 }
+. (Join-Path (Split-Path -Parent $binDir) 'versions.lock.ps1')
+$pmmpPin = Get-LockedServer -Name 'pocketmine'
+$pmmpPhar = Get-Item -LiteralPath (Join-Path $DistDir $pmmpPin.File) -ErrorAction SilentlyContinue
 if (-not $pmmpPhar) {
-    if ($fetchOk) {
-        Log "ERROR: fetch-server reported success but no PocketMine-MP phar found under $DistDir"
-    } else {
-        Log "ERROR: no PocketMine-MP phar in $DistDir. Download it from https://github.com/pmmp/PocketMine-MP/releases and place it there."
-    }
+    Log "ERROR: verified PocketMine-MP phar is missing from $DistDir"
     exit 2
 }
 Log "  phar: $($pmmpPhar.FullName)"

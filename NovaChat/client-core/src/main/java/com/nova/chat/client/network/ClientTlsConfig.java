@@ -24,14 +24,43 @@ import java.util.Objects;
  */
 public final class ClientTlsConfig {
 
+    public static final String ENABLED_PROPERTY = "novachat.backend.tls.enabled";
+    public static final String CA_CERT_PROPERTY = "novachat.backend.tls.caCertFile";
+    public static final String CLIENT_CERT_PROPERTY = "novachat.backend.tls.clientCertFile";
+    public static final String CLIENT_KEY_PROPERTY = "novachat.backend.tls.clientKeyFile";
+
     private final String caCertFile;
     private final String clientCertFile;
     private final String clientKeyFile;
 
     public ClientTlsConfig(String caCertFile, String clientCertFile, String clientKeyFile) {
+        if (hasText(clientCertFile) != hasText(clientKeyFile)) {
+            throw new IllegalArgumentException("TLS client certificate and private key must be configured together");
+        }
         this.caCertFile = caCertFile;
         this.clientCertFile = clientCertFile;
         this.clientKeyFile = clientKeyFile;
+    }
+
+    public static ClientTlsConfig fromSystemProperties() {
+        String enabled = System.getProperty(ENABLED_PROPERTY, "false").trim();
+        if (!"true".equalsIgnoreCase(enabled) && !"false".equalsIgnoreCase(enabled)) {
+            throw new IllegalArgumentException(ENABLED_PROPERTY + " must be true or false");
+        }
+        String ca = System.getProperty(CA_CERT_PROPERTY);
+        String cert = System.getProperty(CLIENT_CERT_PROPERTY);
+        String key = System.getProperty(CLIENT_KEY_PROPERTY);
+        if (!Boolean.parseBoolean(enabled)) {
+            if (hasText(ca) || hasText(cert) || hasText(key)) {
+                throw new IllegalArgumentException("TLS material requires " + ENABLED_PROPERTY + "=true");
+            }
+            return null;
+        }
+        return new ClientTlsConfig(ca, cert, key);
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     public String getCaCertFile() {

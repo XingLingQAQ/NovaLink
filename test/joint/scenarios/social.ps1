@@ -613,3 +613,202 @@ function Invoke-SocialScenarios {
 
   return $out
 }
+
+function Get-ChannelMutePlanSteps {
+  param(
+    [string]$RunId,
+    [string]$SenderName = 'E2EExtSender',
+    [string]$Channel = 'global',
+    [string]$OtherChannel = 'local'
+  )
+
+  $t = @{
+    Before = "$RunId-mute-before"; Permission = "$RunId-mute-permission"
+    Suppressed = "$RunId-mute-suppressed"; Alive = "$RunId-mute-alive"
+    LocalReady = "$RunId-mute-localready"; Other = "$RunId-mute-other"
+    ReturnReady = "$RunId-mute-returnready"
+    StillMuted = "$RunId-mute-stillmuted"; Restored = "$RunId-mute-restored"
+  }
+  $sender = @(); $target = @(); $observer = @()
+  foreach ($token in $t.Values) {
+    $sender += @{ action = 'arm'; token = $token }
+    $target += @{ action = 'arm'; token = $token }
+    $observer += @{ action = 'arm'; token = $token }
+  }
+  foreach ($token in @($t.Suppressed, $t.StillMuted)) {
+    $target += @{ id = "mute-absent-$token"; action = 'expectAbsent'; token = $token }
+    $observer += @{ id = "mute-absent-$token"; action = 'expectAbsent'; token = $token }
+  }
+  $sender += @(
+    @{ action = 'chat'; text = $t.Before },
+    @{ action = 'expect'; token = $t.Before; timeoutMs = 20000 },
+    @{ action = 'handoffGet'; key = 'mute-target-baseline'; timeoutMs = 30000 },
+    @{ action = 'handoffGet'; key = 'mute-observer-denied'; timeoutMs = 30000 },
+    @{ action = 'chat'; text = $t.Permission },
+    @{ action = 'expect'; token = $t.Permission; timeoutMs = 20000 },
+    @{ action = 'handoffGet'; key = 'mute-target-permission'; timeoutMs = 30000 },
+    @{ action = 'handoffGet'; key = 'mute-observer-permission'; timeoutMs = 30000 },
+    @{ action = 'handoffSet'; key = 'mute-ready'; pattern = [regex]::Escape($t.Permission) },
+    @{ action = 'handoffGet'; key = 'mute-applied'; timeoutMs = 45000 },
+    @{ action = 'chat'; text = $t.Suppressed },
+    @{ action = 'handoffSet'; key = 'mute-probe-sent'; pattern = [regex]::Escape($t.Permission) },
+    @{ action = 'handoffGet'; key = 'mute-global-control'; timeoutMs = 30000 },
+    @{ action = 'arm'; token = "Joined channel $OtherChannel" },
+    @{ action = 'cmd'; text = "/nc join $OtherChannel" },
+    @{ action = 'expect'; token = "Joined channel $OtherChannel"; timeoutMs = 20000 },
+    @{ action = 'handoffSet'; key = 'mute-sender-local'; pattern = "Joined channel $OtherChannel" },
+    @{ action = 'expect'; token = $t.LocalReady; timeoutMs = 30000 },
+    @{ action = 'chat'; text = $t.Other },
+    @{ action = 'handoffGet'; key = 'mute-other-delivered'; timeoutMs = 30000 },
+    @{ action = 'cmd'; text = "/nc join $Channel" },
+    @{ action = 'expect'; token = "Joined channel $Channel"; timeoutMs = 20000 },
+    @{ action = 'handoffGet'; key = 'mute-target-returned'; timeoutMs = 30000 },
+    @{ action = 'expect'; token = $t.ReturnReady; timeoutMs = 30000 },
+    @{ action = 'handoffGet'; key = 'mute-observer-returned'; timeoutMs = 30000 },
+    @{ action = 'chat'; text = $t.StillMuted },
+    @{ action = 'handoffSet'; key = 'mute-scope-complete'; pattern = [regex]::Escape($t.LocalReady) },
+    @{ action = 'handoffGet'; key = 'mute-unmuted'; timeoutMs = 45000 },
+    @{ action = 'chat'; text = $t.Restored },
+    @{ action = 'handoffGet'; key = 'mute-target-restored'; timeoutMs = 30000 },
+    @{ action = 'handoffGet'; key = 'mute-observer-restored'; timeoutMs = 30000 },
+    @{ action = 'handoffSet'; key = 'extended-finished'; pattern = [regex]::Escape($t.LocalReady) }
+  )
+  $target += @(
+    @{ action = 'expect'; token = $t.Before; timeoutMs = 45000 },
+    @{ action = 'handoffSet'; key = 'mute-target-baseline'; pattern = [regex]::Escape($t.Before) },
+    @{ action = 'expect'; token = $t.Permission; timeoutMs = 45000 },
+    @{ action = 'handoffSet'; key = 'mute-target-permission'; pattern = [regex]::Escape($t.Permission) },
+    @{ action = 'handoffGet'; key = 'mute-probe-sent'; timeoutMs = 45000 },
+    @{ action = 'wait'; ms = 3000 },
+    @{ action = 'chat'; text = $t.Alive },
+    @{ action = 'handoffGet'; key = 'mute-sender-local'; timeoutMs = 30000 },
+    @{ action = 'arm'; token = "Joined channel $OtherChannel" },
+    @{ action = 'cmd'; text = "/nc join $OtherChannel" },
+    @{ action = 'expect'; token = "Joined channel $OtherChannel"; timeoutMs = 20000 },
+    @{ action = 'chat'; text = $t.LocalReady },
+    @{ action = 'expect'; token = $t.Other; timeoutMs = 30000 },
+    @{ action = 'handoffSet'; key = 'mute-other-delivered'; pattern = [regex]::Escape($t.Other) },
+    @{ action = 'cmd'; text = "/nc join $Channel" },
+    @{ action = 'expect'; token = "Joined channel $Channel"; timeoutMs = 20000 },
+    @{ action = 'chat'; text = $t.ReturnReady },
+    @{ action = 'handoffSet'; key = 'mute-target-returned'; pattern = [regex]::Escape($t.Other) },
+    @{ action = 'expect'; token = $t.Restored; timeoutMs = 60000 },
+    @{ action = 'handoffSet'; key = 'mute-target-restored'; pattern = [regex]::Escape($t.Restored) }
+  )
+  $observer += @(
+    @{ action = 'expect'; token = $t.Before; timeoutMs = 45000 },
+    @{ action = 'arm'; token = 'NC-403' },
+    @{ id = 'mute-permission-attempt'; action = 'cmd'; text = "/nc mute $SenderName 5m $Channel" },
+    @{ id = 'mute-permission-refusal'; action = 'expect'; token = 'NC-403'; timeoutMs = 20000 },
+    @{ action = 'handoffSet'; key = 'mute-observer-denied'; pattern = 'NC-403' },
+    @{ action = 'expect'; token = $t.Permission; timeoutMs = 30000 },
+    @{ action = 'handoffSet'; key = 'mute-observer-permission'; pattern = [regex]::Escape($t.Permission) },
+    @{ action = 'expect'; token = $t.Alive; timeoutMs = 60000 },
+    @{ action = 'handoffSet'; key = 'mute-global-control'; pattern = [regex]::Escape($t.Alive) },
+    @{ action = 'expect'; token = $t.ReturnReady; timeoutMs = 60000 },
+    @{ action = 'handoffSet'; key = 'mute-observer-returned'; pattern = [regex]::Escape($t.ReturnReady) },
+    @{ action = 'expect'; token = $t.Restored; timeoutMs = 90000 },
+    @{ action = 'handoffSet'; key = 'mute-observer-restored'; pattern = [regex]::Escape($t.Restored) }
+  )
+  return @{ Sender = $sender; Target = $target; Observer = $observer; Tokens = $t }
+}
+
+function Assert-ChannelMuteScenarios {
+  param(
+    [int]$RoundIndex, [string]$RunId, $SenderRes, $TargetRes, $ObserverRes,
+    [string]$SenderName = 'E2EExtSender', [string]$Channel = 'global', [string]$OtherChannel = 'local'
+  )
+
+  $prefix = "round$RoundIndex/channel-mute"
+  $t = (Get-ChannelMutePlanSteps -RunId $RunId -SenderName $SenderName -Channel $Channel -OtherChannel $OtherChannel).Tokens
+  $sent = {
+    param($res, [string]$text)
+    @($res.sent | Where-Object { $_.text -ceq $text -and $null -ne $_.atMs }) | Select-Object -Last 1
+  }
+  $line = {
+    param($res, [string]$text, [double]$since = 0)
+    foreach ($row in @(Get-JointBotRows $res -Kind 'messagestr' -SinceMs $since)) {
+      $plain = [regex]::Replace([string]$row.text, ([string][char]0x00A7 + '.|&[0-9a-fk-or]'), '')
+      if ($plain.Contains($text)) { return $row }
+    }
+  }
+  $healthy = {
+    param($res)
+    [bool]((Test-JointBotRecording $res) -and -not $res.error -and -not $res.timedOut -and
+      $res.handoff.'extended-release' -eq 'go')
+  }
+  $restoredSend = & $sent $SenderRes $t.Restored
+  $restored = @{}
+  foreach ($pair in @(@{ Name = 'target'; Res = $TargetRes }, @{ Name = 'observer'; Res = $ObserverRes })) {
+    $row = & $line $pair.Res $t.Restored
+    $restored[$pair.Name] = [bool]((& $healthy $pair.Res) -and (& $healthy $SenderRes) -and $restoredSend -and $row)
+    New-JointAssertion -Id "$prefix/unmute-restores-$($pair.Name)" -Token $t.Restored -Pass $restored[$pair.Name] `
+      -Evidence "sender attempt=$($restoredSend.text); receiver=$($row.text)" -Kind 'channel-mute'
+  }
+  $permissionCmd = & $sent $ObserverRes "/nc mute $SenderName 5m $Channel"
+  $denied = if ($permissionCmd) { & $line $ObserverRes 'NC-403' $permissionCmd.atMs } else { $null }
+  New-JointAssertion -Id "$prefix/permission-refused" -Token 'NC-403' -Pass ([bool]($denied -and (& $healthy $ObserverRes))) `
+    -Evidence "ordinary player command=$($permissionCmd.text); refusal after attempt=$($denied.text)" -Kind 'channel-mute'
+  $permissionSend = & $sent $SenderRes $t.Permission
+  $permissionTarget = & $line $TargetRes $t.Permission
+  $permissionObserver = & $line $ObserverRes $t.Permission
+  $permissionGood = [bool]($denied -and $permissionSend -and $permissionTarget -and $permissionObserver -and
+    $denied.atMs -le $permissionObserver.atMs)
+  New-JointAssertion -Id "$prefix/permission-denied-keeps-chat" -Token $t.Permission -Pass $permissionGood `
+    -Evidence "refusal=$($denied.text); target=$($permissionTarget.text); observer=$($permissionObserver.text)" -Kind 'channel-mute'
+
+  $aliveSend = & $sent $TargetRes $t.Alive
+  $alive = & $line $ObserverRes $t.Alive
+  $probeSend = & $sent $SenderRes $t.Suppressed
+  $senderAlive = if ($probeSend) { & $line $SenderRes $t.Alive $probeSend.atMs } else { $null }
+  $aliveGood = [bool]($aliveSend -and $alive -and $senderAlive -and (& $healthy $TargetRes) -and
+    (& $healthy $ObserverRes) -and (& $healthy $SenderRes))
+  New-JointAssertion -Id "$prefix/muted-channel-still-delivers" -Token $t.Alive -Pass $aliveGood `
+    -Evidence "other player sends in $Channel=$($aliveSend.text); observer=$($alive.text)" -Kind 'channel-mute'
+  foreach ($pair in @(@{ Name = 'target'; Res = $TargetRes }, @{ Name = 'observer'; Res = $ObserverRes })) {
+    $before = & $line $pair.Res $t.Before
+    $beforeSend = & $sent $SenderRes $t.Before
+    $beforeGood = [bool]($before -and $beforeSend -and (& $healthy $pair.Res) -and (& $healthy $SenderRes))
+    New-JointAssertion -Id "$prefix/premute-delivered-to-$($pair.Name)" -Token $t.Before -Pass $beforeGood `
+      -Evidence "sender=$($beforeSend.text); receiver=$($before.text)" -Kind 'channel-mute'
+    $probe = & $sent $SenderRes $t.Suppressed
+    $verdict = Find-JointBotVerdict $pair.Res "mute-absent-$($t.Suppressed)"
+    $absent = @(Get-JointBotRows $pair.Res -Kind 'messagestr' -TextContains $t.Suppressed).Count -eq 0
+    $ok = [bool]($beforeGood -and $permissionGood -and $probe -and $aliveGood -and $restored[$pair.Name] -and
+      $verdict -and $verdict.pass -and $verdict.token -ceq $t.Suppressed -and $absent -and $before.atMs -lt $alive.atMs)
+    New-JointAssertion -Id "$prefix/muted-absent-from-$($pair.Name)" -Token $t.Suppressed -Pass $ok `
+      -Evidence "attempt=$($probe.text); baseline=$beforeGood; channel alive=$aliveGood; restored=$($restored[$pair.Name]); armed absence=$([bool]$verdict); leak=$(-not $absent)" -Kind 'channel-mute'
+  }
+
+  $otherSend = & $sent $SenderRes $t.Other
+  $localJoins = $true
+  foreach ($res in @($SenderRes, $TargetRes)) {
+    $join = & $sent $res "/nc join $OtherChannel"
+    $ack = if ($join) { & $line $res "Joined channel $OtherChannel" $join.atMs } else { $null }
+    $localJoins = $localJoins -and [bool]$ack
+  }
+  $other = & $line $TargetRes $t.Other
+  $otherGood = [bool]($localJoins -and $otherSend -and $other -and (& $healthy $SenderRes) -and (& $healthy $TargetRes))
+  New-JointAssertion -Id "$prefix/other-channel-delivered" -Token $t.Other -Pass $otherGood `
+    -Evidence "both $OtherChannel join acknowledgements=$localJoins; sender=$($otherSend.text); target=$($other.text)" -Kind 'channel-mute'
+  $stillSend = & $sent $SenderRes $t.StillMuted
+  $returnSend = & $sent $TargetRes $t.ReturnReady
+  $senderReturn = & $line $SenderRes $t.ReturnReady
+  $observerReturn = & $line $ObserverRes $t.ReturnReady
+  $stillAbsent = $otherGood -and $aliveGood -and $restored.target -and $restored.observer -and [bool]$stillSend
+  foreach ($pair in @(@{ Res = $SenderRes; Boundary = $senderReturn }, @{ Res = $TargetRes; Boundary = $returnSend })) {
+    $res = $pair.Res
+    $join = & $sent $res "/nc join $Channel"
+    $ack = if ($join) { & $line $res "Joined channel $Channel" $join.atMs } else { $null }
+    $stillAbsent = $stillAbsent -and [bool]($ack -and $pair.Boundary -and $ack.atMs -le $pair.Boundary.atMs)
+  }
+  $stillAbsent = $stillAbsent -and [bool]($senderReturn -and $observerReturn -and $returnSend -and
+    $senderReturn.atMs -le $stillSend.atMs)
+  foreach ($res in @($TargetRes, $ObserverRes)) {
+    $verdict = Find-JointBotVerdict $res "mute-absent-$($t.StillMuted)"
+    $stillAbsent = $stillAbsent -and [bool]($verdict -and $verdict.pass -and $verdict.token -ceq $t.StillMuted -and
+      @(Get-JointBotRows $res -Kind 'messagestr' -TextContains $t.StillMuted).Count -eq 0)
+  }
+  New-JointAssertion -Id "$prefix/mute-persists-after-channel-switch" -Token $t.StillMuted -Pass $stillAbsent `
+    -Evidence "other channel delivery=$otherGood; return to $Channel acknowledged; second attempt=$($stillSend.text); both armed absences and later restoration required" -Kind 'channel-mute'
+}

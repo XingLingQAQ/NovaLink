@@ -57,6 +57,9 @@ param(
   # $PlatformDefs below; the legacy aliases (purpur->bukkit, pocketmine->pmmp,
   # powernukkitx->pnx) are accepted and normalised.
   [string]$Platforms = "velocity,bukkit,nukkit",
+  [string]$ScenarioGroups = "core",
+  [ValidateSet("none", "bukkit")]
+  [string]$SecondaryJavaPlatform = "none",
 
   # How many rounds to run and how the legs rotate. Round 1 is the -Platforms
   # topology verbatim. Rounds 2+ rotate ONLY the Bedrock leg (alternating the
@@ -110,9 +113,8 @@ param(
   # lite.storage.type = memory) and starts NO backend at all.
   #
   # Lite changes what the round can prove, so the round is asserted differently
-  # -- see Invoke-LiteProbe. In particular no downstream plugin can participate:
-  # there is no backend for them to connect to, and nothing in-tree carries
-  # player chat from a downstream server to the proxy (no plugin messaging).
+  # -- see Invoke-LiteRound. Downstream plugins use plugin messaging, while
+  # moderation is driven through the proxy console.
   [ValidateSet("relay", "lite")]
   [string]$ProxyMode = "relay",
 
@@ -169,7 +171,18 @@ $binDir  = Join-Path $RepoRoot "test/bin"
 $jointBinDir = Join-Path $RepoRoot "test/joint/bots"
 $confDir = Join-Path $RepoRoot "test/conf"
 $jointBotScript = Join-Path $jointBinDir "joint-bot.js"
+. (Join-Path $PSScriptRoot "scenarios/registry.ps1")
 . (Join-Path $PSScriptRoot "scenarios/business.ps1")
+. (Join-Path $PSScriptRoot "scenarios/extended-business.ps1")
+. (Join-Path $PSScriptRoot "scenarios/lite-moderation.ps1")
+. (Join-Path $PSScriptRoot "scenarios/recovery.ps1")
+. (Join-Path $PSScriptRoot "scenarios/proxy-switch.ps1")
+try {
+  $script:SelectedScenarioGroups = @(Resolve-JointScenarioGroups -Value $ScenarioGroups)
+} catch {
+  Write-Error -Message "Scenario prerequisite validation failed: $($_.Exception.Message)" -ErrorAction Continue
+  exit 2
+}
 
 # --- logging -----------------------------------------------------------------
 $script:RunId = (Get-Date -Format "yyyyMMdd-HHmmss")
@@ -391,6 +404,10 @@ $PlatformDefs = @{
     PluginsSubdir = 'plugins'; Proxy = $true
   }
 }
+
+$PlatformDefs.bukkit2 = $PlatformDefs.bukkit.Clone()
+$PlatformDefs.bukkit2.SubDir = 'bukkit2'
+$PlatformDefs.bukkit2.ClientId = 'E2E_JobBukkit2'
 
 # Aliases so callers can use whichever name they already know.
 $PlatformAliases = @{
@@ -810,7 +827,8 @@ function Split-PlatformLegs([string[]]$names) {
 # that kind's leg is the one being rotated; a list with one entry therefore
 # repeats (the right behaviour for -Rounds 1 or for a caller who named a single
 # platform of that kind).
-function Build-Rounds([hashtable]$legs, [string[]]$bedrockSweep, [string[]]$javaSweep, [int]$count) {
+function Build-Rounds([hashtable]$legs, [string[]]$bedrockSweep, [string[]]$javaSweep, [int]$count,
+                      [string]$SecondaryJavaPlatform = "none") {
   $roundList = @()
   $bedrockList = @($bedrockSweep | Where-Object { $_ })
   $javaList = @($javaSweep | Where-Object { $_ })
@@ -836,11 +854,13 @@ function Build-Rounds([hashtable]$legs, [string[]]$bedrockSweep, [string[]]$java
       }
     }
 
-    $serverCount = @($legs.Proxy, $javaLeg, $modLeg, $bedrockLeg | Where-Object { $_ }).Count
+    $secondary = if ($SecondaryJavaPlatform -eq "bukkit") { "bukkit2" } else { $null }
+    $serverCount = @($legs.Proxy, $javaLeg, $secondary, $modLeg, $bedrockLeg | Where-Object { $_ }).Count
     $roundList += [PSCustomObject]@{
       Index = $i + 1
       Proxy = $legs.Proxy
       Java = $javaLeg
+      SecondaryJava = $secondary
       Mod = $modLeg
       Bedrock = $bedrockLeg
       ServerCount = $serverCount
@@ -853,6 +873,7 @@ function Format-RoundLabel($round) {
   $parts = @()
   if ($round.Proxy) { $parts += $round.Proxy }
   if ($round.Java) { $parts += $round.Java }
+  if ($round.SecondaryJava) { $parts += $round.SecondaryJava }
   if ($round.Mod) { $parts += $round.Mod }
   if ($round.Bedrock) { $parts += $round.Bedrock }
   return ($parts -join ' + ')
@@ -1043,7 +1064,8 @@ function Install-Plugin([string]$platform, [string]$serverDir) {
 # The backend config is written verbatim (not via the shared template) because
 # the joint run needs THREE distinct client identities -- one per server leg --
 # and the template only carries one. Every password is generated per run.
-function Write-BackendConfig([string]$path, $clients, [string]$superAdminPassword) {
+function Write-BackendConfig([string]$path, $clients, [string]$superAdminPassword,
+                             [hashtable]$ClientChannels = $null) {
   $clientBlocks = @()
   foreach ($c in $clients) {
     $clientBlocks += @"
@@ -1051,6 +1073,21 @@ function Write-BackendConfig([string]$path, $clients, [string]$superAdminPasswor
     password: "$($c.Password)"
     display_name: "$($c.DisplayName)"
 "@
+    if ($ClientChannels -and $ClientChannels.ContainsKey([string]$c.Username)) {
+      $channels = $ClientChannels[[string]$c.Username]
+      $channelLines = @('    channels:')
+      foreach ($channelId in @($channels.Keys | Sort-Object)) {
+        $channel = $channels[$channelId]
+        $channelLines += @"
+      ${channelId}:
+        display_name: "$($channel.display_name)"
+        scope: $($channel.scope)
+        permission: "$($channel.permission)"
+        max_capacity: $($channel.max_capacity)
+"@
+      }
+      $clientBlocks[-1] += "`r`n" + ($channelLines -join "`r`n")
+    }
   }
   $body = @"
 # NovaLink backend config for the JOINT E2E run (generated per run).
@@ -1365,7 +1402,7 @@ world-routing:
   #
   # Only bukkit/folia parse this section; fabric/nukkit/pnx take no section so
   # their loaders never see an unknown key.
-  if ($platform -in @('bukkit', 'folia')) {
+  if ($platform -in @('bukkit', 'bukkit2', 'folia')) {
     $pluginConfig += @"
 
 plugin-messaging:
@@ -1406,7 +1443,7 @@ sync-chunk-writes=false
       [System.IO.File]::WriteAllText((Join-Path $serverDir "server.properties"), $props,
         (New-Object System.Text.UTF8Encoding $false))
     }
-    { $_ -in @('bukkit', 'folia') } {
+    { $_ -in @('bukkit', 'bukkit2', 'folia') } {
       $cfgDir = Join-Path $serverDir "plugins/NovaChat"
       New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
       [System.IO.File]::WriteAllText((Join-Path $cfgDir "config.yml"), $pluginConfig,
@@ -1603,12 +1640,16 @@ xbox-auth=off
 # Velocity needs a velocity.toml that (a) binds the joint port, (b) runs offline,
 # and (c) lists the downstream servers this round started. The plugin's own
 # config.toml is separate and is written by Install-Plugin/Write-ProxyPluginConfig.
-function Write-VelocityToml([string]$path, [hashtable]$downstreams) {
+function Write-VelocityToml([string]$path, [hashtable]$downstreams, [string]$PrimaryServer = '') {
   $serverLines = @()
-  foreach ($name in $downstreams.Keys) {
+  foreach ($name in @($downstreams.Keys | Sort-Object)) {
     $serverLines += "$($name) = `"127.0.0.1:$($downstreams[$name])`""
   }
-  $tryFirst = @($downstreams.Keys)[0]
+  if (-not $PrimaryServer) { $PrimaryServer = @($downstreams.Keys | Sort-Object)[0] }
+  if (-not $PrimaryServer -or -not $downstreams.ContainsKey($PrimaryServer)) {
+    throw "Primary downstream '$PrimaryServer' is not configured"
+  }
+  $tryFirst = $PrimaryServer
   $toml = @"
 config-version = "2.8"
 bind = "127.0.0.1:$ProxyPort"
@@ -1651,6 +1692,93 @@ enabled = false
 port = $ProxyPort
 "@
   [System.IO.File]::WriteAllText($path, $toml, (New-Object System.Text.UTF8Encoding $false))
+}
+
+function Write-BungeeConfig([string]$path, [hashtable]$downstreams, [string]$PrimaryServer = '') {
+  if (-not $PrimaryServer) { $PrimaryServer = @($downstreams.Keys | Sort-Object)[0] }
+  if (-not $PrimaryServer -or -not $downstreams.ContainsKey($PrimaryServer)) {
+    throw "Primary downstream '$PrimaryServer' is not configured"
+  }
+  $serverLines = foreach ($name in @($downstreams.Keys | Sort-Object)) {
+    "  ${name}:`n    address: 127.0.0.1:$($downstreams[$name])`n    restricted: false`n    motd: Joint E2E"
+  }
+  $body = @"
+online_mode: false
+ip_forward: false
+connection_throttle: 0
+servers:
+$($serverLines -join "`n")
+permissions:
+  default:
+    - novachat.use
+    - novachat.channel.global
+    - bungeecord.command.server
+listeners:
+  - host: 127.0.0.1:$ProxyPort
+    priorities:
+      - $PrimaryServer
+    max_players: 10
+    force_default_server: true
+    query_enabled: false
+"@
+  [IO.File]::WriteAllText($path, $body, (New-Object Text.UTF8Encoding $false))
+}
+
+function Write-BungeePluginConfig([string]$path, [string]$clientId, [string]$clientPassword,
+                                  [string]$mode = 'relay', [hashtable]$identities = $null) {
+  if ($mode -eq 'lite') {
+    $section = @"
+lite:
+  server-id: "$clientId"
+  channels:
+    global:
+      display-name: Global
+      max-capacity: 0
+      slow-mode: 0
+    local:
+      display-name: Local
+      max-capacity: 0
+      slow-mode: 0
+  storage:
+    type: memory
+"@
+  } else {
+    $identityLines = @()
+    if ($identities) {
+      $identityLines = @($identities.Keys | Sort-Object | ForEach-Object { "    ${_}: $($identities[$_])" })
+    }
+    $username = if ($identityLines.Count) { '' } else { $clientId }
+    $identitySection = if ($identityLines.Count) { "  identities:`n$($identityLines -join "`n")" } else { '' }
+    $section = @"
+backend:
+  host: 127.0.0.1
+  port: $BackendPort
+  username: "$username"
+  password: "$clientPassword"
+  reconnect-delay: 3
+$identitySection
+"@
+  }
+  $body = @"
+config-version: 1
+mode: $mode
+debug: true
+$section
+chat:
+  replace_vanilla: true
+  default_channel: global
+  locale: en_US
+  channel-prefixes: {}
+format:
+  prefix: "[NovaChat] "
+  error: "Error: {message}"
+  success: "Success: {message}"
+  default: "[{channel_name}] {player}: {message}"
+  channels:
+    global: "[Global] {player}: {message}"
+    local: "[Local] {player}: {message}"
+"@
+  [IO.File]::WriteAllText($path, $body, (New-Object Text.UTF8Encoding $false))
 }
 
 # Proxy plugin configuration. The shape depends on the mode:
@@ -2491,6 +2619,9 @@ function Invoke-LiteRound($round, [string]$roundDir) {
     topology = "lite: $(Format-RoundLabel $round)"
     proxy = $round.Proxy
     java = $round.Java
+    secondaryJava = $round.SecondaryJava
+    scenarioGroups = @($script:SelectedScenarioGroups)
+    backendRestarts = @()
     mod = $round.Mod
     bedrock = $round.Bedrock
     status = 'UNKNOWN'
@@ -2506,6 +2637,7 @@ function Invoke-LiteRound($round, [string]$roundDir) {
 
   $ports = @{
     Java = $JavaPort; JavaRcon = $JavaRconPort
+    SecondaryJava = $ModPort; SecondaryJavaRcon = $ModRconPort
     Mod = $ModPort; ModRcon = $ModRconPort
     Bedrock = $BedrockAPort; BedrockRcon = $BedrockARconPort
   }
@@ -2524,6 +2656,14 @@ function Invoke-LiteRound($round, [string]$roundDir) {
         -clientId 'E2E_LiteBukkit' -clientPassword 'lite-probe' `
         -stdoutPath (Join-Path $d "server.stdout.log") -stderrPath (Join-Path $d "server.stderr.log")
       if ($p) { $serverProcs[$round.Java] = $p; $downstreams[$round.Java] = $ports.Java }
+    }
+    if ($round.SecondaryJava) {
+      $dir = Join-Path $roundDir $round.SecondaryJava
+      $p = Start-PlatformServer -platform $round.SecondaryJava -serverDir $dir `
+        -port $ports.SecondaryJava -rconPort $ports.SecondaryJavaRcon `
+        -clientId 'E2E_LiteBukkit2' -clientPassword 'lite-probe' `
+        -stdoutPath (Join-Path $dir "server.stdout.log") -stderrPath (Join-Path $dir "server.stderr.log")
+      if ($p) { $serverProcs[$round.SecondaryJava] = $p; $downstreams[$round.SecondaryJava] = $ports.SecondaryJava }
     }
     if ($round.Mod) {
       $d = Join-Path $roundDir $round.Mod
@@ -2551,11 +2691,19 @@ function Invoke-LiteRound($round, [string]$roundDir) {
       return $result
     }
     $null = Install-Plugin $round.Proxy $dir
-    Write-VelocityToml -path (Join-Path $dir "velocity.toml") -downstreams $downstreams
-    $plugCfgDir = Join-Path $dir "plugins/novachat"
-    New-Item -ItemType Directory -Force -Path $plugCfgDir | Out-Null
-    Write-ProxyPluginConfig -path (Join-Path $plugCfgDir "config.toml") `
-      -clientId 'E2E_LiteProxy' -clientPassword '' -mode 'lite'
+    if ($round.Proxy -eq 'velocity') {
+      Write-VelocityToml -path (Join-Path $dir "velocity.toml") -downstreams $downstreams -PrimaryServer $round.Java
+      $plugCfgDir = Join-Path $dir "plugins/novachat"
+      New-Item -ItemType Directory -Force -Path $plugCfgDir | Out-Null
+      Write-ProxyPluginConfig -path (Join-Path $plugCfgDir "config.toml") `
+        -clientId 'E2E_LiteProxy' -clientPassword '' -mode 'lite'
+    } else {
+      Write-BungeeConfig -path (Join-Path $dir 'config.yml') -downstreams $downstreams -PrimaryServer $round.Java
+      $plugCfgDir = Join-Path $dir 'plugins/NovaChat'
+      New-Item -ItemType Directory -Force -Path $plugCfgDir | Out-Null
+      Write-BungeePluginConfig -path (Join-Path $plugCfgDir 'config.yml') `
+        -clientId 'E2E_LiteProxy' -clientPassword '' -mode 'lite'
+    }
     $jarPath = Join-Path $DistDir $script:DefJarName[$round.Proxy]
     $java = Join-Path $jdkPath "bin/java.exe"
     if (-not (Test-Path -LiteralPath $java)) { $java = Join-Path $jdkPath "bin/java" }
@@ -2578,7 +2726,8 @@ function Invoke-LiteRound($round, [string]$roundDir) {
     $ready = $false
     while ((Get-Date) -lt $deadline) {
       $text = Read-LogText $proxyLog
-      if ($text -match 'NovaChat Velocity plugin enabled' -and $text -match 'Listening on') { $ready = $true; break }
+      $pluginReady = Assert-ProxyPluginLoaded 'readiness/proxy' $round.Proxy $proxyLog
+      if ($pluginReady.pass -and $text -match $PlatformDefs[$round.Proxy].ReadyPattern) { $ready = $true; break }
       Start-Sleep -Seconds 2
     }
     if (-not $ready) {
@@ -2685,15 +2834,6 @@ function Invoke-LiteRound($round, [string]$roundDir) {
       @{ id = 'expect-dm'; action = 'expect'; token = $dmToken; timeoutMs = 60000 },
       @{ id = 'mention-settle'; action = 'wait'; ms = 1500 },
       @{ id = 'alice-no-self-mention-title'; action = 'expectEventAbsent'; kind = 'title'; match = 'E2ELiteAlice'; withinMs = 3000 },
-      # MODERATION REACHABILITY PROBE (see Invoke-ModerationScenarios).
-      # A proxy-connected player runs the moderation command the topology would
-      # need to support. Alice is the TARGET here on purpose: if the command
-      # ever starts working, the proof is that her own next line disappears, and
-      # this probe must not pre-empt that. What comes back is recorded verbatim
-      # and judged as a diagnostic -- the point is to make the current behaviour
-      # visible in every run, not to lock a defect in.
-      @{ id = 'probe-mute'; action = 'cmd'; text = '/nc mute E2ELiteBob 1h global' },
-      @{ id = 'probe-settle'; action = 'wait'; ms = 2500 },
       @{ id = 'quit'; action = 'quit' }
     )
     $bobSteps = @(
@@ -2716,18 +2856,7 @@ function Invoke-LiteRound($round, [string]$roundDir) {
       @{ id = 'expect-join-actionbar'; action = 'expectEvent'; kind = 'actionBar'; match = 'Current channel: global'; timeoutMs = 20000 },
       # EFFECT: Alice's @mention must reach Bob as a title naming Alice.
       @{ id = 'expect-mention-title'; action = 'expectEvent'; kind = 'title'; match = 'E2ELiteAlice'; timeoutMs = 60000 },
-      # EFFECT (diagnostic, does not gate): the mention should also play the
-      # configured sound. MEASURED 2026-10-21: NO sound packet reaches the client
-      # at all -- the raw-packet probe recorded 14 `sound_effect` packets during
-      # the run and not one at the mention instant, and no `entity_sound_effect`
-      # ever arrived. Two independent causes are visible in source:
-      #   1. VelocityProxyPlatform#playSound builds `minecraft:entity_experience_orb_pickup`
-      #      from DEFAULT_SOUND, which is not a registry id (`entity.experience_orb.pickup`).
-      #   2. ConnectedPlayer#playSound routes through the backend server entity and
-      #      returns early when the player has no server / the sound is client-only.
-      # The assertion stays so the gap is visible in every run's report; it is
-      # diagnostic so a known product defect does not make the lite run red.
-      @{ id = 'expect-mention-sound'; action = 'expectEvent'; kind = 'sound'; match = 'experience_orb'; timeoutMs = 8000; diagnostic = $true },
+      @{ id = 'expect-mention-sound'; action = 'expectEvent'; kind = 'sound'; match = 'minecraft:entity.experience_orb.pickup @ '; timeoutMs = 8000; diagnostic = ($round.Proxy -ne 'velocity') },
       @{ id = 'who'; action = 'cmd'; text = '/nc who global' },
       @{ id = 'settle2'; action = 'wait'; ms = 2000 },
       @{ id = 'bad-channel'; action = 'cmd'; text = '/nc join nosuchchannel' },
@@ -2988,14 +3117,9 @@ function Invoke-LiteRound($round, [string]$roundDir) {
       }
     }
 
-    # ---- moderation EFFECT scenarios (separate gating group) ----
-    # Kept apart from the chat assertions above so a failure names the feature
-    # that broke. See Invoke-ModerationScenarios for why lite cannot execute
-    # them today; the reason is reported, never swallowed.
-    $assertions += Invoke-ModerationScenarios -RoundIndex $round.Index -ProxyLog $proxyLog `
-      -AliceRes $aliceRes -BobRes $bobRes -RunId "$tokenPrefix-lite"
-
     $assertions += Invoke-JointBusinessScenarios -Round $round -RoundDir $roundDir -McVersion $javaMc
+    $assertions += @(Invoke-JointOptionalScenarios -Round $round -RoundDir $roundDir -McVersion $javaMc `
+      -Ports $ports -ServerProcesses $serverProcs)
 
     # `diagnostic` observations are recorded, never gated.
     $failed = @($assertions | Where-Object { -not $_.pass -and $_.kind -ne 'diagnostic' })
@@ -3026,180 +3150,6 @@ function Invoke-LiteRound($round, [string]$roundDir) {
 
   $result.assertions = $assertions
   return $result
-}
-
-# --- moderation EFFECT scenarios (separate gating group) ----------------------
-#
-# Why this exists as its own group instead of more steps in the happy-path chat
-# plan: every chat assertion above proves a line ARRIVED, and a command that
-# changes no state cannot fail any of them. The harness had never executed a
-# single mute/kick/ban, so a command could report "success" while doing nothing
-# and the run stayed green -- which is exactly what happened to PMMP's kick and
-# mute (they sent `target`, the backend reads `targetName`, so they could never
-# have worked). This group asserts STATE CHANGED, and a failure here names the
-# feature that broke instead of hiding among the chat assertions.
-#
-# Lite cannot run these (see Invoke-ModerationScenarios) but RELAY can, and
-# Invoke-RelayModeration below does: a sub-server plugin in relay has its own
-# authenticated backend link, so a command issued there reaches the authority.
-# The player-vs-console authority split is documented there, with the code
-# references that decide which sender is possible.
-#
-# WHAT EACH SCENARIO ASSERTS, and from whose recording:
-#
-#   mute-takes-effect      bob (observer) mutes alice (target) in `global`;
-#                          alice speaks; bob's recording must NOT contain the
-#                          token, and neither may any other observer's.
-#                          GATING (negative) + GATING (control): alice speaks a
-#                          CONTROL token in the same channel BEFORE the mute, so
-#                          "she cannot speak at all" cannot fake the result.
-#   mute-is-channel-scoped alice speaks in `local`, where she is not muted; the
-#                          line MUST arrive. Proves the mute is not a blanket
-#                          silence -- without this, "mute works" and "every line
-#                          from alice is broken" are indistinguishable.
-#   kick-takes-effect      bob kicks alice from `global`; alice speaks; nobody
-#                          receives it (she is no longer a member).
-#   kick-is-not-a-ban      alice rejoins `global`; the rejoin must SUCCEED and
-#                          her next line must arrive. A kick that behaves like a
-#                          ban would pass every "kick worked" assertion.
-#   ban-blocks-rejoin      bob bans alice; alice's `/nc join global` must be
-#                          REFUSED -- the refusal is rendered to alice as an
-#                          NC-403 error line, which is her own recording.
-#   unban-restores         bob unbans; alice's join succeeds and her line arrives.
-#   permission-denied      alice (not an operator) tries to mute bob; the
-#                          attempt must be refused (NC-403 to alice) AND bob's
-#                          line must still arrive. Both halves gate: a refusal
-#                          that still applies the effect is worse than none.
-#
-# HONEST LIMITS, stated so a green run is not over-read:
-#
-#   * The mute's effect on the SENDER is unobservable. The backend drops a muted
-#     line silently (MessagePipeline SENDER_MUTED) and the lite authority only
-#     sends NC-436 when the muted player speaks -- so the sender-side story is
-#     "nothing happened", which no chat assertion can distinguish from a
-#     dropped connection. Only the observer-side absence is asserted.
-#   * The kick/mute TARGET notice (title + action bar) exists in the product
-#     (`notifyKickMuteTarget`), but this group does not depend on it: the bot's
-#     effect observation is a parallel agent's work, and a target notice proves
-#     the NOTICE arrived, not that the state changed.
-#   * `kick` here means "removed from the channel", not "disconnected from the
-#     server". The product implements the former.
-#
-# Each token carries the run id, so a stale recording from an earlier run can
-# never satisfy an assertion.
-
-# Runs the moderation-effect group against an already-running lite topology.
-#
-# PRECONDITION, and the reason this function refuses to run rather than
-# soft-passing: a moderation command must have an execution path to the
-# authority. In lite the ONLY such path is a proxy-connected player running a
-# /nc command whose plugin is connected and authenticated to a backend -- and
-# lite starts no backend. A downstream plugin's /nc mute therefore stops at
-# `checkConnection()` with NC-503 and never reaches the authority, while the
-# proxy's own /nc has no moderation subcommand at all (ProxyCommandCore:
-# help/join/leave/list/who/toggle/ignore/unignore/msg/r/reload).
-#
-# So the scenarios below become executable the moment EITHER (a) a proxy-side
-# moderation command exists, or (b) a plugin gains an authenticated path into
-# the lite authority. Until then every one of them is reported as `diagnostic`
-# with the reason spelled out -- a named gap, not a green tick. That is the
-# honest outcome: writing the assertions now and marking them gating would fail
-# the run on an architectural absence the harness cannot fix, and marking them
-# passing without running them would be the exact vacuity this group exists to
-# prevent.
-function Invoke-ModerationScenarios {
-  param(
-    [int]$RoundIndex,
-    [string]$ProxyLog,
-    $AliceRes,
-    $BobRes,
-    [string]$RunId
-  )
-
-  $prefix = "round$RoundIndex/mod"
-  $out = @()
-
-  # ---- 0. Reachability: could a moderation command execute at all? ----
-  # This is the assertion that makes the rest honest. Without it every scenario
-  # below would report "not executed" for a reason a reader has to take on
-  # faith. Here the run's OWN evidence answers it: alice ran `/nc mute` as a
-  # proxy-connected player, and whatever came back is in her recording.
-  #
-  # The probe is deliberately a real command with a real target and duration.
-  # Two outcomes are possible, and both are informative:
-  #   * a mute acknowledgement / refusal        -> moderation IS reachable on
-  #     this topology; the scenarios below should be promoted to gating;
-  #   * NC-404 "Not found"                      -> the proxy treated "mute" as
-  #     a CHANNEL NAME (ProxyCommandCore's default branch forwards an unknown
-  #     subcommand as a channel message), so no moderation path exists.
-  #
-  # Kind 'diagnostic': this records a product-shape fact, it does not gate. The
-  # scenarios it explains are separately reported as not-executed.
-  #
-  # Match the response by shape, not by a bare substring: the word "mute" also
-  # appears in the /nc help listing and in unrelated chat, and counting those
-  # would report a reachable surface that does not exist.
-  $probeHit = $null
-  if ($AliceRes -and $AliceRes.received) {
-    foreach ($entry in $AliceRes.received) {
-      $t = if ($entry.text) { [string]$entry.text } else { [string]$entry.raw }
-      if (-not $t) { continue }
-      if ($t.Contains('NC-404') -or $t.Contains('NC-403') -or $t.Contains('NC-436') -or
-          $t.Contains('Muting') -or $t.Contains('muted by') -or $t.Contains('Player muted')) {
-        $probeHit = $entry; break
-      }
-    }
-  }
-  $reachable = $false
-  $probeText = if ($probeHit) { [string]$probeHit.text } else { '' }
-  $probeEvidence = if (-not $AliceRes) {
-    'alice recorded nothing, so the probe cannot be judged'
-  } elseif (-not $probeHit) {
-    'alice recorded no response to /nc mute at all (no acknowledgement and no error)'
-  } else {
-    "alice's response to /nc mute E2ELiteBob: $probeText"
-  }
-  if ($probeHit) {
-    # A response only counts as "reachable" when it is NOT the unknown-channel
-    # fallthrough. NC-404 is the proxy saying it read "mute" as a channel name.
-    $reachable = -not $probeText.Contains('NC-404')
-  }
-  $out += [PSCustomObject]@{
-    id = "$prefix/moderation-command-reachable"
-    token = 'probe-mute'
-    pass = $reachable
-    evidence = $probeEvidence
-    kind = 'diagnostic'
-  }
-
-  $reason = if ($reachable) {
-    'the probe shows a moderation surface, but this group has not been promoted to gating yet'
-  } else {
-    'no moderation execution path on this topology: /nc from a proxy-connected player has no mute/kick/ban subcommand (ProxyCommandCore treats the word as a channel name), and a downstream player''s /nc stops at checkConnection() because lite starts no backend'
-  }
-
-  # ---- 1..7: the effect scenarios ----
-  # Each is reported with the assertion it WOULD make, so the gap is precise
-  # and reviewable rather than a bare "skipped".
-  $scenarios = @(
-    @{ Id = 'mute-takes-effect';       What = 'muted target''s line never reaches any observer; a pre-mute control line from the same sender did' }
-    @{ Id = 'mute-is-channel-scoped';  What = 'the same target speaks in an unmuted channel and the line DOES arrive' }
-    @{ Id = 'kick-takes-effect';       What = 'kicked target''s next line never reaches any observer' }
-    @{ Id = 'kick-is-not-a-ban';       What = 'the kicked target can rejoin the channel and is heard again' }
-    @{ Id = 'ban-blocks-rejoin';       What = 'the banned target''s /nc join is refused (NC-403 rendered to the target)' }
-    @{ Id = 'unban-restores';          What = 'after unban the join succeeds and the target is heard again' }
-    @{ Id = 'permission-denied';       What = 'a non-operator''s mute is refused AND the target''s line still arrives' }
-  )
-  foreach ($s in $scenarios) {
-    $out += [PSCustomObject]@{
-      id = "$prefix/$($s.Id)"
-      token = $s.What
-      pass = $false
-      evidence = "NOT EXECUTED: $reason"
-      kind = 'diagnostic'
-    }
-  }
-  return $out
 }
 
 # --- relay moderation EFFECT scenarios ---------------------------------------
@@ -3623,6 +3573,9 @@ function Invoke-Round($round, [string]$roundDir) {
     topology = (Format-RoundLabel $round)
     proxy = $round.Proxy
     java = $round.Java
+    secondaryJava = $round.SecondaryJava
+    scenarioGroups = @($script:SelectedScenarioGroups)
+    backendRestarts = @()
     mod = $round.Mod
     bedrock = $round.Bedrock
     status = 'UNKNOWN'
@@ -3637,6 +3590,7 @@ function Invoke-Round($round, [string]$roundDir) {
   # upstream and cross-server routing would be indistinguishable from local.
   $legs = @()
   if ($round.Java) { $legs += $round.Java }
+  if ($round.SecondaryJava) { $legs += $round.SecondaryJava }
   if ($round.Mod) { $legs += $round.Mod }
   if ($round.Bedrock) { $legs += $round.Bedrock }
 
@@ -3671,6 +3625,7 @@ function Invoke-Round($round, [string]$roundDir) {
   $relayDownstreams = @()
   if ($round.Proxy) {
     if ($round.Java) { $relayDownstreams += $round.Java }
+    if ($round.SecondaryJava) { $relayDownstreams += $round.SecondaryJava }
     if ($round.Mod) { $relayDownstreams += $round.Mod }
   }
   $relayIdentities = @{}
@@ -3708,8 +3663,15 @@ function Invoke-Round($round, [string]$roundDir) {
   $backendWork = Join-Path $backendDir "work"
   New-Item -ItemType Directory -Force -Path $backendWork | Out-Null
   $backendConfig = Join-Path $backendDir "novalink.yml"
+  $backendClientChannels = @{}
+  if ('proxy-switch' -in $script:SelectedScenarioGroups) {
+    $switchFixture = Get-JointProxySwitchFixture -PrimaryServer $round.Java -SecondaryServer $round.SecondaryJava `
+      -PrimaryIdentity $relayIdentities[$round.Java] -SecondaryIdentity $relayIdentities[$round.SecondaryJava]
+    $backendClientChannels = $switchFixture.BackendClientChannels
+  }
   if ($ProxyMode -eq 'relay') {
-    Write-BackendConfig -path $backendConfig -clients $backendClients -superAdminPassword $superAdminPassword
+    Write-BackendConfig -path $backendConfig -clients $backendClients -superAdminPassword $superAdminPassword `
+      -ClientChannels $backendClientChannels
     Log "  backend config: $backendConfig ($($backendClients.Count) clients, super-admin enabled)"
   } else {
     Log "  lite mode: no backend is started (the proxy is self-contained)"
@@ -3738,11 +3700,19 @@ function Invoke-Round($round, [string]$roundDir) {
       }
     }
 
+    $backendState = [PSCustomObject]@{
+      Process = $bk; Config = $backendConfig; WorkDir = $backendWork
+      Stdout = (Join-Path $backendDir 'stdout.log'); Stderr = (Join-Path $backendDir 'stderr.log')
+      Generation = 0; AdminPassword = $superAdminPassword; Restarts = @()
+      Identities = @($backendClients | ForEach-Object { $_.Username } | Sort-Object -Unique)
+    }
+
     # ---- servers ----
     $serverProcs = @{}
     $downstreams = @{}
     $ports = @{
       Java = $JavaPort; JavaRcon = $JavaRconPort
+      SecondaryJava = $ModPort; SecondaryJavaRcon = $ModRconPort
       Mod = $ModPort; ModRcon = $ModRconPort
       Bedrock = $BedrockAPort; BedrockRcon = $BedrockARconPort
     }
@@ -3754,6 +3724,14 @@ function Invoke-Round($round, [string]$roundDir) {
         -clientId $clientSecrets[$round.Java].Username -clientPassword $clientSecrets[$round.Java].Password `
         -stdoutPath (Join-Path $dir "server.stdout.log") -stderrPath (Join-Path $dir "server.stderr.log")
       if ($p) { $serverProcs[$round.Java] = $p; $downstreams[$round.Java] = $ports.Java }
+    }
+    if ($round.SecondaryJava) {
+      $dir = Join-Path $roundDir $round.SecondaryJava
+      $p = Start-PlatformServer -platform $round.SecondaryJava -serverDir $dir `
+        -port $ports.SecondaryJava -rconPort $ports.SecondaryJavaRcon `
+        -clientId $clientSecrets[$round.SecondaryJava].Username -clientPassword $clientSecrets[$round.SecondaryJava].Password `
+        -stdoutPath (Join-Path $dir "server.stdout.log") -stderrPath (Join-Path $dir "server.stderr.log")
+      if ($p) { $serverProcs[$round.SecondaryJava] = $p; $downstreams[$round.SecondaryJava] = $ports.SecondaryJava }
     }
     if ($round.Mod) {
       $dir = Join-Path $roundDir $round.Mod
@@ -3787,58 +3765,19 @@ function Invoke-Round($round, [string]$roundDir) {
       # backend themselves, so all cross-server assertions still passed.
       $null = Install-Plugin $round.Proxy $dir
       if ($round.Proxy -eq 'velocity') {
-        Write-VelocityToml -path (Join-Path $dir "velocity.toml") -downstreams $downstreams
+        Write-VelocityToml -path (Join-Path $dir "velocity.toml") -downstreams $downstreams -PrimaryServer $round.Java
         $plugCfgDir = Join-Path $dir "plugins/novachat"
         New-Item -ItemType Directory -Force -Path $plugCfgDir | Out-Null
         Write-ProxyPluginConfig -path (Join-Path $plugCfgDir "config.toml") `
           -clientId $clientSecrets[$round.Proxy].Username -clientPassword $clientSecrets[$round.Proxy].Password `
           -mode $ProxyMode -identities $(if ($ProxyMode -eq 'relay') { $relayIdentities } else { $null })
       } elseif ($round.Proxy -eq 'bungee') {
-        $serverNames = @($downstreams.Keys | Sort-Object)
-        $serverLines = foreach ($name in $serverNames) {
-          "  ${name}:`n    address: 127.0.0.1:$($downstreams[$name])`n    restricted: false`n    motd: Joint E2E"
-        }
-        $identityLines = foreach ($name in ($relayIdentities.Keys | Sort-Object)) {
-          "    ${name}: $($relayIdentities[$name])"
-        }
-        $config = @"
-online_mode: false
-ip_forward: false
-connection_throttle: 0
-servers:
-$($serverLines -join "`n")
-permissions:
-  default:
-    - novachat.use
-    - novachat.channel.global
-listeners:
-  - host: 127.0.0.1:$ProxyPort
-    priorities:
-      - $($serverNames[0])
-    max_players: 10
-    force_default_server: true
-    query_enabled: false
-"@
-        $plugin = @"
-config-version: 1
-mode: relay
-debug: true
-backend:
-  host: 127.0.0.1
-  port: $BackendPort
-  username: ""
-  password: "$relaySharedPassword"
-  identities:
-$($identityLines -join "`n")
-chat:
-  replace_vanilla: true
-  default_channel: global
-  locale: en_US
-"@
+        Write-BungeeConfig -path (Join-Path $dir 'config.yml') -downstreams $downstreams -PrimaryServer $round.Java
         $plugCfgDir = Join-Path $dir 'plugins/NovaChat'
         New-Item -ItemType Directory -Force -Path $plugCfgDir | Out-Null
-        [IO.File]::WriteAllText((Join-Path $dir 'config.yml'), $config, (New-Object Text.UTF8Encoding $false))
-        [IO.File]::WriteAllText((Join-Path $plugCfgDir 'config.yml'), $plugin, (New-Object Text.UTF8Encoding $false))
+        Write-BungeePluginConfig -path (Join-Path $plugCfgDir 'config.yml') `
+          -clientId $clientSecrets[$round.Proxy].Username -clientPassword $relaySharedPassword `
+          -mode $ProxyMode -identities $relayIdentities
       }
       $jarPath = Join-Path $DistDir $script:DefJarName[$round.Proxy]
       $java = Join-Path $jdkPath "bin/java.exe"
@@ -3971,8 +3910,8 @@ chat:
     $replyToken = "$tokenPrefix-bedrock-to-java"
 
     # ---- relay moderation phase ----
-    # Runs only where it can: a proxy in relay mode (the proxy's /nc has no
-    # moderation subcommand) AND a Java leg behind it (the console that issues
+    # Runs through the downstream console in relay mode; lite uses its proxy
+    # console in scenarios/lite-moderation.ps1. The console that issues
     # the commands lives on that server, and its plugin has a backend link).
     # Without those the group is reported as diagnostic with the reason.
     $moderationOn = ($ProxyMode -eq 'relay' -and $round.Proxy -and $round.Java)
@@ -4101,11 +4040,8 @@ chat:
     }
     $bedSteps += @{ id = 'quit'; action = 'quit' }
 
-    # Non-operator. An op (Start-PlatformServer writes it into ops.json) so the
-    # plugin's own `novachat.mute` gate passes, but NOT a backend super-admin --
-    # so the refusal comes from ChannelActionHandler.requireModerationPermission,
-    # not from the command layer. Direct to the Java leg: the proxy has no
-    # moderation subcommand at all.
+    # Direct Bukkit peer: op locally, ordinary at the backend.
+    # This checks the backend refusal independently of proxy permissions.
     $modSteps = @()
     if ($moderationOn) {
       $modSteps = @(
@@ -4289,6 +4225,9 @@ chat:
     }
 
     $assertions += Invoke-JointBusinessScenarios -Round $round -RoundDir $roundDir -McVersion $javaMc
+    $assertions += @(Invoke-JointOptionalScenarios -Round $round -RoundDir $roundDir -McVersion $javaMc `
+      -Ports $ports -ServerProcesses $serverProcs -BackendState $backendState -BedrockMcVersion $bedrockMc)
+    $result.backendRestarts = @($backendState.Restarts)
 
     # `diagnostic` observations are recorded, never gated -- same rule as the
     # lite round. Without the kind filter an intentionally-failed diagnostic
@@ -4310,7 +4249,7 @@ chat:
     # Dump diagnostics before teardown so the log files are still being written,
     # then stop every process this round started (in reverse order).
     if ($result.status -ne 'PASS') {
-      foreach ($name in @($round.Java, $round.Mod, $round.Bedrock, $round.Proxy)) {
+      foreach ($name in @($round.Java, $round.SecondaryJava, $round.Mod, $round.Bedrock, $round.Proxy)) {
         if (-not $name) { continue }
         $dir = Join-Path $roundDir $name
         Write-LogTail (Join-Path $dir "server.stdout.log") 30 "$name stdout"
@@ -4327,7 +4266,7 @@ chat:
     # can skip chunk generation. Only Java-style engines are cached: their
     # world format is stable across platforms in this harness, and the Bedrock
     # engines use a different layout entirely.
-    foreach ($pf in @($round.Java, $round.Mod)) {
+    foreach ($pf in @($round.Java, $round.SecondaryJava, $round.Mod)) {
       if (-not $pf) { continue }
       $generated = Join-Path (Join-Path $roundDir $pf) "world"
       $cacheDir = Join-Path (Join-Path $JointRoot "seed") $pf
@@ -4355,6 +4294,168 @@ chat:
 
   $result.assertions = $assertions
   return $result
+}
+
+function Assert-JointRoundTopology {
+  param($Round)
+  if ($Round.Proxy -notin @('velocity', 'bungee') -or -not $Round.Java) {
+    throw 'Core scenarios require Velocity/Bungee and a primary Java downstream.'
+  }
+  if ($ProxyMode -eq 'relay' -and -not $Round.Bedrock) {
+    throw 'Core relay scenarios require a real Bedrock leg.'
+  }
+  if ($Round.SecondaryJava -and ($Round.Java -ne 'bukkit' -or $Round.Mod)) {
+    throw 'SecondaryJavaPlatform=bukkit requires Bukkit primary and cannot share ModPort/ModRconPort with a Mod leg.'
+  }
+  if ('proxy-switch' -in $script:SelectedScenarioGroups -and
+      ($Round.Java -ne 'bukkit' -or $Round.SecondaryJava -ne 'bukkit2')) {
+    throw 'proxy-switch requires Bukkit primary and -SecondaryJavaPlatform bukkit.'
+  }
+  $null = Get-JointScenarioAssertionIds -ScenarioGroups $script:SelectedScenarioGroups `
+    -RoundIndex $Round.Index -Mode $ProxyMode -Proxy $Round.Proxy
+  $portsUsed = @($ProxyPort, $JavaPort, $JavaRconPort)
+  if ($ProxyMode -eq 'relay') { $portsUsed += @($BackendPort, $BackendWsPort) }
+  if ($Round.Mod -or $Round.SecondaryJava) { $portsUsed += @($ModPort, $ModRconPort) }
+  if ($Round.Bedrock) {
+    $portsUsed += $BedrockAPort
+    if ($Round.Bedrock -ne 'pmmp') { $portsUsed += $BedrockARconPort }
+  }
+  if (@($portsUsed | Where-Object { $_ -lt 1 -or $_ -gt 65535 }).Count -gt 0 -or
+      @($portsUsed | Select-Object -Unique).Count -ne $portsUsed.Count) {
+    throw 'Active round ports must be distinct and within 1..65535.'
+  }
+}
+
+function Assert-JointScenarioCoverage {
+  param($RoundResult)
+  $required = @(Get-JointScenarioAssertionIds -ScenarioGroups $script:SelectedScenarioGroups `
+    -RoundIndex $RoundResult.round -Mode $ProxyMode -Proxy $RoundResult.proxy)
+  $missing = @()
+  foreach ($id in $required) {
+    $matches = @($RoundResult.assertions | Where-Object { $_.id -ceq $id })
+    if ($matches.Count -ne 1 -or $matches[0].pass -ne $true -or $matches[0].kind -eq 'diagnostic') {
+      $missing += $id
+    }
+  }
+  $evidence = if ($missing.Count) { 'Missing, failed, duplicated or diagnostic: ' + ($missing -join ', ') }
+              else { "All $($required.Count) required assertions have individual gating evidence." }
+  New-JointAssertion -Id "round$($RoundResult.round)/scenario-groups-complete" `
+    -Token ($script:SelectedScenarioGroups -join ',') -Pass ($missing.Count -eq 0) -Evidence $evidence -Kind 'scenario-coverage'
+}
+
+function Invoke-JointOptionalScenarios {
+  param($Round, [string]$RoundDir, [string]$McVersion, [hashtable]$Ports,
+    [hashtable]$ServerProcesses, $BackendState = $null, [string]$BedrockMcVersion = '')
+
+  $proxyConsole = {
+    param([string]$Command)
+    $proxyProcess = $ServerProcesses[$Round.Proxy]
+    if (-not $proxyProcess -or $proxyProcess.HasExited) { throw 'Proxy console process is unavailable.' }
+    Log "    proxy-console> $Command"
+    $proxyProcess.StandardInput.WriteLine($Command)
+    $proxyProcess.StandardInput.Flush()
+  }
+  if ('business' -in $script:SelectedScenarioGroups) {
+    $adminCommand = $proxyConsole
+    if ($ProxyMode -eq 'relay') {
+      $adminCommand = {
+        param([string]$Command)
+        Log "    bukkit-rcon> $Command"
+        $response = Send-Rcon -Port $Ports.JavaRcon -Password 'joint-e2e-rcon' -Command $Command
+        if ($null -eq $response) { throw "Bukkit RCON did not execute: $Command" }
+      }
+    }
+    Invoke-ExtendedBusinessScenarios -Round $Round -RoundDir $RoundDir -McVersion $McVersion `
+      -Port $ProxyPort -AdminCommand $adminCommand
+  }
+  if ('lite-moderation' -in $script:SelectedScenarioGroups) {
+    Invoke-JointLiteModerationScenarios -Round $Round -RoundDir $RoundDir -McVersion $McVersion `
+      -Mode $ProxyMode -Port $ProxyPort -AdminCommand $proxyConsole
+  }
+  if ('proxy-switch' -in $script:SelectedScenarioGroups) {
+    $sendLegProbe = {
+      param([string]$Server, [string]$Username, [string]$Token)
+      $serverProcess = $ServerProcesses[$Server]
+      if (-not $serverProcess -or $serverProcess.HasExited) { throw "Java leg $Server is unavailable." }
+      $rcon = if ($Server -ceq $Round.Java) { $Ports.JavaRcon }
+              elseif ($Server -ceq $Round.SecondaryJava) { $Ports.SecondaryJavaRcon }
+              else { throw "Unknown Java leg: $Server" }
+      $payload = @{ text = $Token } | ConvertTo-Json -Compress
+      $response = Send-Rcon -Port $rcon -Password 'joint-e2e-rcon' `
+        -Command "minecraft:tellraw $Username $payload" -TimeoutMs 10000
+      if ($null -eq $response) { throw "Could not send the targeted probe on $Server." }
+    }
+    Invoke-JointProxySwitchScenarios -RoundIndex $Round.Index `
+      -RunId "$($script:RunId)-r$($Round.Index)-proxy-switch" -WorkDir (Join-Path $RoundDir 'bots/proxy-switch') `
+      -ProxyPort $ProxyPort -McVersion $McVersion -PrimaryServer $Round.Java -SecondaryServer $Round.SecondaryJava `
+      -PrimaryIdentity "E2E_Relay_$($Round.Java)" -SecondaryIdentity 'E2E_Relay_bukkit2' `
+      -SendLegProbe $sendLegProbe
+  }
+  if ('recovery' -in $script:SelectedScenarioGroups) {
+    if (-not $BackendState) { throw 'Recovery requires the live backend process and its generated configuration.' }
+    $stopBackend = {
+      $old = $BackendState.Process
+      if (-not $old -or $old.HasExited) { throw 'Backend exited before the recovery stop.' }
+      $oldId = $old.Id
+      $script:RelayPanelJwt = $null
+      $old.StandardInput.Close()
+      $deadline = (Get-Date).AddSeconds(30)
+      while (-not $old.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
+      if (-not $old.HasExited) {
+        Log "    backend $oldId did not exit gracefully; terminating it"
+        $old.Kill()
+        if (-not $old.WaitForExit(5000)) { throw 'Old backend did not exit.' }
+      }
+      $deadline = (Get-Date).AddSeconds(10)
+      while ((Test-PortOpen $BackendPort) -or (Test-PortOpen $BackendWsPort)) {
+        if ((Get-Date) -ge $deadline) { throw 'Old backend ports were not released.' }
+        Start-Sleep -Milliseconds 200
+      }
+      Log "    backend stopped: pid=$oldId; both ports released"
+      @{ Stopped = $true; ProcessId = $oldId }
+    }
+    $startBackend = {
+      $BackendState.Generation++
+      $restartDir = Join-Path (Join-Path $RoundDir 'backend') "restart-$($BackendState.Generation)"
+      New-Item -ItemType Directory -Force -Path $restartDir | Out-Null
+      $BackendState.Stdout = Join-Path $restartDir 'stdout.log'
+      $BackendState.Stderr = Join-Path $restartDir 'stderr.log'
+      $newBackend = Start-Backend -configPath $BackendState.Config -workDir $BackendState.WorkDir `
+        -stdoutPath $BackendState.Stdout -stderrPath $BackendState.Stderr
+      if (-not $newBackend) { throw 'Restarted backend did not become ready.' }
+      $BackendState.Process = $newBackend
+      $script:RelayPanelJwt = Connect-BackendRest 'E2E_SuperAdmin' $BackendState.AdminPassword
+      if (-not $script:RelayPanelJwt) { throw 'REST login failed after backend restart.' }
+      $BackendState.Restarts += [PSCustomObject]@{
+        processId = $newBackend.Id; stdout = $BackendState.Stdout; stderr = $BackendState.Stderr; jwtRefreshed = $true
+      }
+      Log "    backend restarted: pid=$($newBackend.Id); fresh stdout=$($BackendState.Stdout); REST login refreshed"
+      @{ Ready = $true; ProcessId = $newBackend.Id }
+    }
+    $waitBackendLinks = {
+      if ($BackendState.Generation -lt 1) { throw 'Recovery must authenticate against a fresh backend log.' }
+      $deadline = (Get-Date).AddSeconds(60)
+      do {
+        if ($BackendState.Process.HasExited) { throw 'Restarted backend exited while waiting for authentication.' }
+        $auth = Get-BackendAuthIdentities $BackendState.Stdout
+        $missing = @($BackendState.Identities | Where-Object { $auth.Identities -cnotcontains $_ })
+        if ($missing.Count -eq 0) {
+          Log "    fresh backend authenticated: $($BackendState.Identities -join ', ')"
+          return $true
+        }
+        Start-Sleep -Milliseconds 500
+      } while ((Get-Date) -lt $deadline)
+      Log "    backend links missing from fresh log: $($missing -join ', ')"
+      return $false
+    }
+    $targetPort = if ($Round.Proxy) { $ProxyPort } else { $Ports.Java }
+    $javaClient = @{ Kind = 'java'; Username = 'E2ERecoverJava'; Port = $targetPort; McVersion = $McVersion }
+    $bedrockClient = @{ Kind = 'bedrock'; Username = 'E2ERecoverBed'; Port = $Ports.Bedrock;
+      McVersion = $BedrockMcVersion; Platform = $Round.Bedrock }
+    Invoke-JointRecoveryScenarios -RoundIndex $Round.Index -RunId "$($script:RunId)-r$($Round.Index)-recovery" `
+      -WorkDir (Join-Path $RoundDir 'bots/recovery') -JavaClient $javaClient -BedrockClient $bedrockClient `
+      -StopBackend $stopBackend -StartBackend $startBackend -WaitBackendLinks $waitBackendLinks
+  }
 }
 
 # --- prerequisite checks -----------------------------------------------------
@@ -4446,6 +4547,8 @@ Log "=== NovaChat JOINT E2E START (run $($script:RunId)) ==="
 Log "RepoRoot: $RepoRoot"
 Log "Platforms: $Platforms"
 Log "ProxyMode: $ProxyMode"
+Log "ScenarioGroups: $($script:SelectedScenarioGroups -join ',')"
+Log "SecondaryJavaPlatform: $SecondaryJavaPlatform"
 Log "JDK21: $(if ($Jdk21) { $Jdk21 } else { '<unresolved>' })"
 Log "JDK25: $(if ($Jdk25) { $Jdk25 } else { '<unresolved>' })"
 Log "JDK17: $(if ($Jdk17) { $Jdk17 } else { '<unresolved>' })"
@@ -4460,58 +4563,80 @@ if ($split.Unknown.Count -gt 0) {
   Log "  valid: $($PlatformDefs.Keys -join ', ')  (aliases: $($PlatformAliases.Keys -join ', '))"
   exit 2
 }
-$legs = $split.Legs
-if (-not $legs.Java -and -not $legs.Mod -and -not $legs.Bedrock) {
-  Log "FATAL: -Platforms must name at least one server leg (a proxy alone has nothing to front)"
+try {
+  $legs = $split.Legs
+  if ($requested -contains 'bukkit2' -or $legs.Java -contains 'bukkit2') {
+    throw 'Use -SecondaryJavaPlatform bukkit to request bukkit2; it is not a primary or rotating platform.'
+  }
+  if ($SecondaryJavaPlatform -eq 'bukkit' -and ($legs.Mod.Count -gt 0 -or $legs.Java.Count -ne 1 -or $legs.Java[0] -ne 'bukkit')) {
+    throw 'SecondaryJavaPlatform=bukkit requires exactly one Bukkit primary and no Mod leg.'
+  }
+  if (-not $legs.Java -and -not $legs.Mod -and -not $legs.Bedrock) {
+    Log "FATAL: -Platforms must name at least one server leg (a proxy alone has nothing to front)"
+    exit 2
+  }
+  Log "Legs: proxy=$(if ($legs.Proxy) { $legs.Proxy } else { '-' }) java=$($legs.Java -join ',') mod=$($legs.Mod -join ',') bedrock=$($legs.Bedrock -join ',')"
+
+  # @() around the pipeline matters: an empty -BedrockRotation splits to one empty
+  # string, the Where-Object drops it, and the result is $null rather than an empty
+  # array. On PowerShell 5.1 `$null.Count` is a hard error under StrictMode and an
+  # inconsistent 0 elsewhere, so normalise it here.
+  $bedrockSweep = @()
+  $javaSweep = @()
+  if (-not [string]::IsNullOrWhiteSpace($BedrockRotation)) {
+    $bedrockSweep = @($BedrockRotation -split ',' |
+      ForEach-Object { Resolve-PlatformName $_.Trim() } | Where-Object { $_ })
+  }
+  if (-not [string]::IsNullOrWhiteSpace($JavaRotation)) {
+    $javaSweep = @($JavaRotation -split ',' |
+      ForEach-Object { Resolve-PlatformName $_.Trim() } | Where-Object { $_ })
+  }
+
+  # Default rotation lists when the caller did not name one. The intent of the
+  # round strategy is to CHANGE a leg, and a rotation list of one entry cannot do
+  # that, so the default sweeps every executable platform of that kind: Bedrock
+  # legs are cheap to swap (nukkit <-> pmmp <-> pnx) and Java legs are the two
+  # plugin platforms (bukkit <-> folia).
+  #
+  # Note the asymmetry: a caller who names ONE bedrock platform in -Platforms still
+  # gets the full default rotation. That is intentional for -Rounds > 1 -- the
+  # point of extra rounds is to move a leg. Pass -BedrockRotation / -JavaRotation
+  # explicitly to pin it, or -Rounds 1 to stay on a single topology.
+  if ($bedrockSweep.Count -eq 0 -and $legs.Bedrock.Count -gt 0) {
+    $bedrockSweep = @($legs.Bedrock[0])
+    foreach ($candidate in @('nukkit', 'pmmp', 'pnx')) {
+      if ($candidate -ne $legs.Bedrock[0] -and ($bedrockSweep -notcontains $candidate)) {
+        $bedrockSweep += $candidate
+      }
+    }
+    Log "Bedrock rotation (default): $($bedrockSweep -join ' -> ')"
+  }
+  if ($javaSweep.Count -eq 0 -and $legs.Java.Count -gt 0) {
+    $javaSweep = @($legs.Java[0])
+    foreach ($candidate in $(if ($SecondaryJavaPlatform -eq 'bukkit') { @('bukkit') } else { @('bukkit', 'folia') })) {
+      if ($candidate -ne $legs.Java[0] -and ($javaSweep -notcontains $candidate)) {
+        $javaSweep += $candidate
+      }
+    }
+    Log "Java rotation (default): $($javaSweep -join ' -> ')"
+  }
+
+  foreach ($pf in $javaSweep) {
+    if (-not $PlatformDefs.ContainsKey($pf) -or $PlatformDefs[$pf].Kind -ne 'java' -or $pf -eq 'bukkit2') { throw "Invalid primary Java rotation: $pf" }
+  }
+  foreach ($pf in $bedrockSweep) {
+    if (-not $PlatformDefs.ContainsKey($pf) -or $PlatformDefs[$pf].Kind -ne 'bedrock') { throw "Invalid Bedrock rotation: $pf" }
+  }
+  $roundList = @(Build-Rounds -legs $legs -bedrockSweep $bedrockSweep -javaSweep $javaSweep -count $Rounds `
+    -SecondaryJavaPlatform $SecondaryJavaPlatform)
+  if ($roundList.Count -eq 0) { throw 'At least one round is required.' }
+  foreach ($r in $roundList) { Assert-JointRoundTopology $r }
+  $plannedPlatforms = @($roundList | ForEach-Object { $_.Proxy; $_.Java; $_.SecondaryJava; $_.Mod; $_.Bedrock } |
+    Where-Object { $_ } | Select-Object -Unique)
+} catch {
+  Write-Error -Message "Topology prerequisite validation failed: $($_.Exception.Message)" -ErrorAction Continue
   exit 2
 }
-Log "Legs: proxy=$(if ($legs.Proxy) { $legs.Proxy } else { '-' }) java=$($legs.Java -join ',') mod=$($legs.Mod -join ',') bedrock=$($legs.Bedrock -join ',')"
-
-# @() around the pipeline matters: an empty -BedrockRotation splits to one empty
-# string, the Where-Object drops it, and the result is $null rather than an empty
-# array. On PowerShell 5.1 `$null.Count` is a hard error under StrictMode and an
-# inconsistent 0 elsewhere, so normalise it here.
-$bedrockSweep = @()
-$javaSweep = @()
-if (-not [string]::IsNullOrWhiteSpace($BedrockRotation)) {
-  $bedrockSweep = @($BedrockRotation -split ',' |
-    ForEach-Object { Resolve-PlatformName $_.Trim() } | Where-Object { $_ })
-}
-if (-not [string]::IsNullOrWhiteSpace($JavaRotation)) {
-  $javaSweep = @($JavaRotation -split ',' |
-    ForEach-Object { Resolve-PlatformName $_.Trim() } | Where-Object { $_ })
-}
-
-# Default rotation lists when the caller did not name one. The intent of the
-# round strategy is to CHANGE a leg, and a rotation list of one entry cannot do
-# that, so the default sweeps every executable platform of that kind: Bedrock
-# legs are cheap to swap (nukkit <-> pmmp <-> pnx) and Java legs are the two
-# plugin platforms (bukkit <-> folia).
-#
-# Note the asymmetry: a caller who names ONE bedrock platform in -Platforms still
-# gets the full default rotation. That is intentional for -Rounds > 1 -- the
-# point of extra rounds is to move a leg. Pass -BedrockRotation / -JavaRotation
-# explicitly to pin it, or -Rounds 1 to stay on a single topology.
-if ($bedrockSweep.Count -eq 0 -and $legs.Bedrock.Count -gt 0) {
-  $bedrockSweep = @($legs.Bedrock[0])
-  foreach ($candidate in @('nukkit', 'pmmp', 'pnx')) {
-    if ($candidate -ne $legs.Bedrock[0] -and ($bedrockSweep -notcontains $candidate)) {
-      $bedrockSweep += $candidate
-    }
-  }
-  Log "Bedrock rotation (default): $($bedrockSweep -join ' -> ')"
-}
-if ($javaSweep.Count -eq 0 -and $legs.Java.Count -gt 0) {
-  $javaSweep = @($legs.Java[0])
-  foreach ($candidate in @('bukkit', 'folia')) {
-    if ($candidate -ne $legs.Java[0] -and ($javaSweep -notcontains $candidate)) {
-      $javaSweep += $candidate
-    }
-  }
-  Log "Java rotation (default): $($javaSweep -join ' -> ')"
-}
-
-$roundList = Build-Rounds -legs $legs -bedrockSweep $bedrockSweep -javaSweep $javaSweep -count $Rounds
 
 # Enforce the concurrency ceiling before anything starts. The round builder is
 # the only place topologies are constructed, so checking here is enough.
@@ -4524,7 +4649,7 @@ foreach ($r in $roundList) {
 Log "Planned rounds:"
 foreach ($r in $roundList) { Log "  round $($r.Index): $(Format-RoundLabel $r)" }
 
-$prereqIssues = Test-Prereqs $requested
+$prereqIssues = Test-Prereqs $plannedPlatforms
 if ($prereqIssues.Count -gt 0) {
   Log "PREREQ FAILURES:"
   foreach ($i in $prereqIssues) { Log "  - $i" }
@@ -4545,6 +4670,7 @@ if ($ProxyMode -eq 'relay') {
 foreach ($r in $roundList) {
   if ($r.Proxy) { $requiredPorts += @{ Name = "$($r.Proxy) proxy"; Port = $ProxyPort } }
   if ($r.Java) { $requiredPorts += @{ Name = "$($r.Java) game"; Port = $JavaPort }; $requiredPorts += @{ Name = "$($r.Java) rcon"; Port = $JavaRconPort } }
+  if ($r.SecondaryJava) { $requiredPorts += @{ Name = "bukkit2 game"; Port = $ModPort }; $requiredPorts += @{ Name = "bukkit2 rcon"; Port = $ModRconPort } }
   if ($r.Mod) { $requiredPorts += @{ Name = "$($r.Mod) game"; Port = $ModPort }; $requiredPorts += @{ Name = "$($r.Mod) rcon"; Port = $ModRconPort } }
   if ($r.Bedrock) {
     if ($r.Bedrock -eq 'pmmp') {
@@ -4571,7 +4697,7 @@ if ($busyPorts.Count -gt 0) {
   exit 2
 }
 
-if (-not (Resolve-PlatformJars (@($legs.Proxy) + $legs.Java + $legs.Mod + $legs.Bedrock | Where-Object { $_ }))) {
+if (-not (Resolve-PlatformJars $plannedPlatforms)) {
   exit 2
 }
 
@@ -4581,6 +4707,7 @@ if ($PlanOnly) {
   foreach ($r in $roundList) {
     Log "  round $($r.Index): $(Format-RoundLabel $r)  (servers: $($r.ServerCount))"
     if ($r.Java) { Log "    java     : $($r.Java)  jar=$(if ($script:DefJarName[$r.Java]) { $script:DefJarName[$r.Java] } else { '<none>' })  jdk=$($PlatformDefs[$r.Java].Jdk)" }
+    if ($r.SecondaryJava) { Log "    secondary: $($r.SecondaryJava) jar=$($script:DefJarName[$r.SecondaryJava]) jdk=$($PlatformDefs[$r.SecondaryJava].Jdk) port=$ModPort rcon=$ModRconPort" }
     if ($r.Mod) { Log "    mod      : $($r.Mod)  jar=$(if ($script:DefJarName[$r.Mod]) { $script:DefJarName[$r.Mod] } else { '<none>' })  jdk=$($PlatformDefs[$r.Mod].Jdk)" }
     if ($r.Bedrock) { Log "    bedrock  : $($r.Bedrock)  jar=$(if ($script:DefJarName[$r.Bedrock]) { $script:DefJarName[$r.Bedrock] } else { '<none>' })  jdk=$($PlatformDefs[$r.Bedrock].Jdk)" }
     if ($r.Proxy) { Log "    proxy    : $($r.Proxy)  jar=$(if ($script:DefJarName[$r.Proxy]) { $script:DefJarName[$r.Proxy] } else { '<none>' })  jdk=$($PlatformDefs[$r.Proxy].Jdk)" }
@@ -4593,7 +4720,7 @@ if ($PlanOnly) {
 if (-not $SkipBuild) {
   Log ""
   Log "=== building platform artifacts ==="
-  if (-not (Invoke-GradleBuild $roundList $requested)) { Log "FATAL: build failed"; exit 2 }
+  if (-not (Invoke-GradleBuild $roundList (@($plannedPlatforms | Where-Object { $_ -ne 'bukkit2' })))) { Log "FATAL: build failed"; exit 2 }
 
   # Fabric's E2E jar is produced through an init script, so it needs its own
   # invocation with the extra properties the script reads.
@@ -4638,7 +4765,7 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 # broken whenever a candidate's CDN was slow.
 $fetchTargets = @()
 foreach ($r in $roundList) {
-  foreach ($pf in @($r.Proxy, $r.Java, $r.Mod, $r.Bedrock)) {
+  foreach ($pf in @($r.Proxy, $r.Java, $r.SecondaryJava, $r.Mod, $r.Bedrock)) {
     if (-not $pf) { continue }
     # Fabric has no versions.lock.ps1 entry: its launcher jar and fabric-api are
     # runtime pieces pinned in $FabricRuntime and fetched by
@@ -4682,6 +4809,12 @@ foreach ($r in $roundList) {
   } else {
     Invoke-Round -round $r -roundDir $roundDir
   }
+  $coverage = Assert-JointScenarioCoverage $res
+  $res.assertions += $coverage
+  if (-not $coverage.pass) {
+    $res.status = 'FAIL'
+    $res.notes = (($res.notes, $coverage.evidence) | Where-Object { $_ }) -join '; '
+  }
   $roundResults += $res
   if ($res.status -ne 'PASS') { $overallPass = $false }
   Log "=== ROUND $($r.Index) RESULT: $($res.status) ==="
@@ -4704,6 +4837,8 @@ $summary = [PSCustomObject]@{
   runId = $script:RunId
   platforms = $Platforms
   proxyMode = $ProxyMode
+  scenarioGroups = @($script:SelectedScenarioGroups)
+  secondaryJava = $(if ($SecondaryJavaPlatform -eq 'bukkit') { 'bukkit2' } else { $null })
   rounds = $roundResults
   overallPass = $overallPass
 }

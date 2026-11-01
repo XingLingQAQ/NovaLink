@@ -14,9 +14,9 @@
 #       downloads it, computes SHA-256 on the fly, and logs the hash for
 #       traceability. Used for the smoke matrix where each plugin is tested
 #       against its declared api-version's latest supported server. Auto mode
-#       does NOT fail on hash mismatch (the latest can change daily); it still
-#       verifies when the API supplies a content hash (PaperMC fill-data URLs
-#       embed the SHA-256 in the path -- those ARE verified).
+#       permits a missing expected hash only after successful API resolution.
+#       API-supplied hashes are verified; a failed API falls back to a strict
+#       pin. Neither a missing pin nor an unavailable API is a successful skip.
 #
 # Cache: if dist/<File> exists AND the hash matches (pinned) OR the sidecar
 # matches (Auto), reuse without re-downloading. Kind=zip entries are extracted
@@ -63,8 +63,6 @@ if (-not $entry) {
     exit 1
 }
 
-if (-not (Test-Path $DistDir)) { New-Item -ItemType Directory -Path $DistDir -Force | Out-Null }
-
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
@@ -86,6 +84,18 @@ function Get-FileSha256([string]$file) {
         }
     } finally {
         $sha.Dispose()
+    }
+}
+
+function Assert-ExpectedSha256([string]$hash, [string]$source, [switch]$Required) {
+    if ([string]::IsNullOrEmpty($hash)) {
+        if ($Required) {
+            throw "[fetch:PINNED_SHA256_REQUIRED] $source has no SHA-256. Set a verified Sha256 in test/versions.lock.ps1 before using cached files or downloading."
+        }
+        return
+    }
+    if ($hash -notmatch '\A[0-9a-fA-F]{64}\z' -or $hash -match '\A([0-9a-fA-F])\1{63}\z') {
+        throw "[fetch:EXPECTED_SHA256_INVALID] $source requires a SHA-256 of 64 hexadecimal characters, without placeholders. Refusing cached files and downloads."
     }
 }
 
@@ -318,15 +328,13 @@ if ($Auto) {
 # resolved one and fall back to the pin.
 $effectiveMc = $entry.MC
 
+if ($resolved -and $resolved.Skip) {
+    $why = if ($resolved.SkipReason) { $resolved.SkipReason } else { 'auto-detect unavailable' }
+    Write-Warning "[fetch] -Auto unavailable ($why); falling back to pinned entry ($($entry.File))."
+    $resolved = $null
+}
+
 if ($resolved) {
-    # Auto-detect can return a Skip sentinel when the platform API is genuinely
-    # unreachable. Callers treat exit 0 + no artifact as a documented skip, so
-    # report the real reason and leave the decision to them.
-    if ($resolved.Skip) {
-        $why = if ($resolved.SkipReason) { $resolved.SkipReason } else { 'auto-detect unavailable' }
-        Write-Host "[fetch] $($entry.Name): no download performed ($why). Exit 0 (not a script failure)."
-        exit 0
-    }
     $url = $resolved.Url
     $file = $resolved.File
     $expected = $resolved.ExpectedSha256  # may be $null (no API-supplied hash)
@@ -342,6 +350,14 @@ if ($resolved) {
         Write-Host "[fetch] using pinned $($entry.File) (Auto fallback / no resolver result)."
     }
 }
+
+if ($autoMode) {
+    Assert-ExpectedSha256 -hash $expected -source "AUTO API for '$($entry.Name)' ($url)"
+} else {
+    Assert-ExpectedSha256 -hash $expected -source "PINNED '$($entry.Name)' ($file)" -Required
+}
+
+if (-not (Test-Path $DistDir)) { New-Item -ItemType Directory -Path $DistDir -Force | Out-Null }
 
 $dest = Join-Path $DistDir $file
 $sidecar = "$dest.sha256"
@@ -379,7 +395,7 @@ if (Test-Path $dest) {
             if ($extractDir) { Expand-ServerZip $dest $extractDir }
             return
         }
-    } else {
+    } elseif ($autoMode) {
         # Auto mode without an API hash: reuse if the sidecar matches the
         # cached file (means we already downloaded + hashed it once).
         $sidecarHash = Read-Sidecar $sidecar

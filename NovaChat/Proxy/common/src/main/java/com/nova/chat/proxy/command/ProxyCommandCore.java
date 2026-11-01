@@ -36,9 +36,8 @@ import java.util.stream.Collectors;
 /**
  * Platform-agnostic {@code /novachat} + {@code /nc} command core.
  *
- * <p>Owns all eleven subcommands (help, join, leave, list, who, toggle, ignore,
- * unignore, msg, r, reload) plus the channel-message fallback and the Tab
- * completions. The platform shells keep only the command registration glue:
+ * <p>Owns player and moderation subcommands, the channel-message fallback,
+ * and Tab completions. The platform shells keep only the command registration glue:
  * Velocity's {@code SimpleCommand} (execute/suggest/hasPermission) and
  * BungeeCord's {@code Command} + {@code TabExecutor} (execute/onTabComplete).
  *
@@ -53,8 +52,10 @@ public class ProxyCommandCore {
     /** Subcommands in help order; also the first-level Tab completion set. */
     public static final List<String> SUBCOMMANDS = List.of(
             "help", "join", "leave", "list", "who", "toggle",
-            "ignore", "unignore", "msg", "r", "reload");
+            "ignore", "unignore", "msg", "r", "reload",
+            "mute", "unmute", "kick", "ban", "unban");
 
+    private final LiteModerationCommands moderationCommands;
     private final ProxyPlatform platform;
     private final ProxyChatCore chatCore;
     private final ChannelCommandService channelCommands;
@@ -80,6 +81,7 @@ public class ProxyCommandCore {
                             PrivateMessageService privateMessageService,
                             KnownChannelRegistry knownChannelRegistry,
                             Supplier<? extends ProxyConfigView> configSupplier) {
+        this.moderationCommands = new LiteModerationCommands(platform, chatCore, knownChannelRegistry);
         this.platform = platform;
         this.chatCore = chatCore;
         this.channelCommands = channelCommands;
@@ -116,6 +118,8 @@ public class ProxyCommandCore {
             case "msg" -> handleMsg(sender, subArgs);
             case "r" -> handleReply(sender, subArgs);
             case "reload" -> handleReload(sender);
+            case "mute", "unmute", "kick", "ban", "unban" ->
+                    moderationCommands.execute(sender, subCommand, subArgs);
             // Anything else is treated as a channel name (e.g. /nc global hi)
             default -> handleChannelMessage(sender, subCommand, subArgs);
         }
@@ -131,11 +135,16 @@ public class ProxyCommandCore {
             String prefix = args == null || args.length == 0 ? "" : args[0].toLowerCase();
             return SUBCOMMANDS.stream()
                     .filter(cmd -> cmd.startsWith(prefix))
+                    .filter(cmd -> !LiteModerationCommands.COMMANDS.contains(cmd)
+                            || moderationCommands.canUse(sender, cmd))
                     .collect(Collectors.toList());
         }
 
         // UX-DESIGN §2.3: complete channel names for join / leave.
         String sub = args[0].toLowerCase();
+        if (LiteModerationCommands.COMMANDS.contains(sub)) {
+            return moderationCommands.suggest(sender, sub, args);
+        }
         String prefix = args[1] == null ? "" : args[1].toLowerCase();
         switch (sub) {
             case "join": {
@@ -252,6 +261,14 @@ public class ProxyCommandCore {
                 I18n.tr(playerId, "chat.command.help.line_reply")));
         sender.sendMessage(chatCore.getFormatter().parseColors(
                 I18n.tr(playerId, "chat.command.help.line_msg")));
+
+        for (String command : LiteModerationCommands.COMMANDS) {
+            if (moderationCommands.canUse(sender, command)) {
+                String line = command.equals("unmute") ? "/nc unmute <player|UUID> [channel]"
+                        : I18n.tr(playerId, "chat.command.help.line_" + command);
+                sender.sendMessage(chatCore.getFormatter().parseColors(line));
+            }
+        }
 
         if (sender.hasPermission("novachat.admin")) {
             sender.sendMessage(chatCore.getFormatter().parseColors(

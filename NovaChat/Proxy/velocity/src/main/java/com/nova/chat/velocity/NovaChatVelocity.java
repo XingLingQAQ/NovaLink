@@ -423,8 +423,13 @@ public class NovaChatVelocity {
         }
         // UX-DESIGN §2.1: each link parses ConfigSync with its own identity, so
         // a sub-server's per-client channel roster is filtered correctly.
-        relayLinks.onLinkCreated(link -> com.nova.chat.client.channel.ConfigSyncHandlerRegistrar
-                .register(link.getClient(), knownChannelRegistry, link.getIdentity()));
+        relayLinks.onLinkCreated(link -> {
+            com.nova.chat.client.channel.ConfigSyncHandlerRegistrar
+                    .register(link.getClient(), knownChannelRegistry, link.getIdentity());
+            link.getClient().onAuthenticated(() -> platform.runAsync(() -> {
+                if (chatCore != null) { chatCore.restoreOnlineMemberships(link.getClient()); }
+            }));
+        });
         java.util.List<com.nova.chat.proxy.relay.RelayBackendLinks.Link> links =
                 relayLinks.start(config.getBackendHost(), config.getBackendPort());
         for (com.nova.chat.proxy.relay.RelayBackendLinks.Link link : links) {

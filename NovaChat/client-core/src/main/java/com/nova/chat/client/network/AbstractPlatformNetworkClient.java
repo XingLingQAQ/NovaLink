@@ -149,6 +149,11 @@ public abstract class AbstractPlatformNetworkClient {
         return core().isAuthenticated();
     }
 
+    /** Platform callbacks must schedule their own game-thread hop. */
+    public void onAuthenticated(Runnable listener) {
+        core().onAuthenticated(listener);
+    }
+
     /** @return the shared packet registry */
     public PacketRegistry getPacketRegistry() {
         return core().getPacketRegistry();

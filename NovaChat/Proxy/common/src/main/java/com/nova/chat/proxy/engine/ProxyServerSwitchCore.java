@@ -96,19 +96,10 @@ public class ProxyServerSwitchCore {
             return;
         }
 
-        String currentChannel = state.getActiveChannel();
-
-        // Send a join request for the current channel on the new server.
-        // The backend will determine if the player can stay in the channel.
-
-        ChannelActionPacket joinPacket = new ChannelActionPacket(ChannelAction.JOIN, currentChannel);
-        joinPacket.addExtra("player_uuid", player.getUniqueId().toString());
-        joinPacket.addExtra("player_name", player.getName());
-        joinPacket.addExtra("server", newServer);
-
-        client.sendPacket(joinPacket);
+        com.nova.chat.client.channel.ChannelMembershipRestorer.restore(
+                state, player.getName(), platform.getPlatformType(), null, newServer, client::sendPacket);
         platform.logDebug("Requested channel join after server switch: "
-                + currentChannel + " on " + newServer);
+                + state.getActiveChannel() + " on " + newServer);
     }
 
     /**
@@ -125,8 +116,9 @@ public class ProxyServerSwitchCore {
         AbstractPlatformNetworkClient client = chatCore.getNetworkClientFor(server);
         if (client != null && client.isAuthenticated()) {
             ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.JOIN, defaultChannel);
-            packet.addExtra("player_uuid", player.getUniqueId().toString());
-            packet.addExtra("player_name", player.getName());
+            packet.addExtra("playerId", player.getUniqueId().toString());
+            packet.addExtra("playerName", player.getName());
+            packet.addExtra("platform", platform.getPlatformType().name());
             packet.addExtra("server", server);
 
             client.sendPacket(packet);

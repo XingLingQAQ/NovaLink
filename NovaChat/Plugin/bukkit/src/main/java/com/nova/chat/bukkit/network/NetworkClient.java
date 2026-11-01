@@ -145,6 +145,18 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         registerHandler(MentionPacket.class, this::handleMention);
         registerHandler(ItemDisplayPacket.class, this::handleItemDisplay);
         registerHandler(PrivateMessagePacket.class, this::handlePrivateMessage);
+        onAuthenticated(() -> plugin.getServer().getScheduler().runTask(plugin, this::restoreOnlineMemberships));
+    }
+
+    private void restoreOnlineMemberships() {
+        if (!isAuthenticated() || plugin.getChatInterceptor() == null) {
+            return;
+        }
+        for (var player : plugin.getServer().getOnlinePlayers()) {
+            com.nova.chat.client.channel.ChannelMembershipRestorer.restore(
+                    plugin.getChatInterceptor().getPlayerState(player.getUniqueId()), player.getName(),
+                    PlatformType.BUKKIT, player.getWorld().getName(), null, this::sendPacket);
+        }
     }
 
     /**

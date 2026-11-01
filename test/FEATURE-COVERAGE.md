@@ -1,17 +1,58 @@
 # NovaChat Real-Server E2E Feature Coverage Manifest
 
-**Date**: 2026-08-08
-**Scope**: All 7 active Java platforms, real-server E2E with real bot clients.
-**Evidence**: Each TESTED cell cites the results.json file and the key evidence line.
+**Integration review**: 2026-11-01. This round has not had real-server acceptance.
+**Historical evidence date**: 2026-08-08. The original seven-platform matrix
+and `.e2e/` evidence below are retained as a dated snapshot. `TESTED` there
+means the old script exercised a path, sometimes only its refusal response;
+it does not validate the present binaries or the new scenario groups.
+
+## Current manual acceptance queue
+
+All E2E workflows require manual dispatch. The daily E2E schedule is removed.
+The default joint selection is `core`; other groups require explicit
+`ScenarioGroups` / `scenario_groups` selection. Integration is in progress;
+none of the rows below has a real result for this round.
+
+| Entry | Coverage being integrated | Real result still required |
+|---|---|---|
+| `core` | Receiver chat, channel-isolation controls and Java reconnect; Velocity/Bungee relay or Lite | Fresh plans, receiver recordings and every required registry ID |
+| `business` | Three-bot DM/reply privacy, offline refusal and channel-scoped mute/unmute | Receiver delivery and exclusion with live positive controls; sender confirmation alone is insufficient |
+| `lite-moderation` | Real Velocity/Bungee Lite console commands; ordinary player permission denial, mute/kick/ban and inverse actions | Both bot recordings, channel scope, kick keeps Minecraft connected and ban blocks rejoin |
+| `recovery` | Relay backend process restart and bounded Bedrock reconnect | Changed PID, fresh membership and bidirectional delivery after both events |
+| `proxy-switch` | Relay with real Bukkit + `bukkit2`, selected by `SecondaryJavaPlatform bukkit` | Destination-only probes, outbound/return switch, exactly-once chat, membership and SERVER-channel cross-link refusal |
+| Native PNX | Official PowerNukkitX 3.0.6, `org.powernukkitx` API 3.x, Bedrock 1.26.60 | Actual native server/plugin enable and receiver-recorded game traffic; old Nukkit-hosted runs do not qualify |
+| Independent `e2e-environment` | Manual TLS trusted/untrusted and MySQL/PostgreSQL cases using actual Bukkit + Fabric | Certificate-chain rejection controls, game messages, SQL row identity across backend restart and fresh post-restart delivery |
+
+Lite management has a real console-driven entry in
+`joint/scenarios/lite-moderation.ps1`, including Bungee Lite; it is no longer
+an area with no execution path. The selected registry IDs must be present as
+non-diagnostic assertions. An unselected job, a fixture or a process starting
+is not a real acceptance result.
+
+Nukkit, Sponge and PocketMine-MP have fixed SHA-256 pins in
+`versions.lock.ps1`. PINNED downloads reject missing/invalid/placeholder hashes
+before cache access or download. A sidecar cannot replace the expected hash.
+Successful AUTO resolution may retain its no-upstream-hash smoke contract;
+API-supplied hashes and fixed-entry fallback remain strict.
+
+See [the harness README](README.md#joint-manual-e2e-coverage) for selection
+and prerequisites, and [joint coverage](joint/JOINT-SCENARIO-COVERAGE.md) for
+the pending evidence record. Create/invite/accept lifecycle, ignore, full
+who/list semantics and custom effects remain gaps unless an explicit current
+required ID and real recording cover them.
+
+## Historical evidence legend (2026-08-08)
+
+**Evidence**: Each historical TESTED cell cites its old results file and observation.
 **Legend**:
 - TESTED = Feature exercised with real evidence captured
 - NOT-IMPL = Feature not implemented on this platform (verified via command class source)
 - NOT-RUN = Script ready but not run this session
 - N/A = Not applicable to this platform type
 
-## Feature x Platform Matrix
+## Historical Feature x Platform Matrix (2026-08-08)
 
-| Feature | bukkit | velocity | bungee | sponge | nukkit | pnx | folia |
+| Feature | bukkit | velocity | bungee | sponge | nukkit | pnx (legacy Nukkit run) | folia |
 |---|---|---|---|---|---|---|---|
 | help | TESTED | TESTED | TESTED | TESTED | TESTED | TESTED | TESTED |
 | join | TESTED | TESTED | TESTED | TESTED | TESTED | TESTED | TESTED |
@@ -36,7 +77,7 @@
 | NC-404 channel/player not found | TESTED | NOT-RUN | NOT-RUN | NOT-RUN | NOT-RUN | NOT-RUN | NOT-RUN |
 | reconnect re-sync | TESTED | TESTED | TESTED | TESTED | TESTED | TESTED | TESTED |
 
-## Evidence Index
+## Historical Evidence Index
 
 ### bukkit (Purpur 1.21.8, mineflayer)
 - results: `.e2e/bot/results.json` (21711 bytes)
@@ -96,7 +137,11 @@
 - mute: L77 "未知命令: mute"
 - reconnect re-spawn: L91
 
-### pnx (PowerNukkitX on Cloudburst Nukkit, Bedrock 1.26.30, bedrock-protocol)
+### pnx-labelled historical Nukkit run (not native PowerNukkitX 3)
+
+This old label refers to the Nukkit-hosted fallback. Current `pnx` selects
+native PowerNukkitX 3.0.6; none of the observations below validates that runtime.
+
 - results: `.e2e/pnx/bot/results.json` (11669 bytes)
 - stdout: `.e2e/pnx/bot/run-stdout.log`
 - help: shows help/join/leave/list/who/toggle/channel
@@ -121,7 +166,7 @@
 - NC-433: L106
 - reconnect re-spawn: L113
 
-## Platform Implementation Summary
+## Historical Platform Implementation Summary (2026-08-08)
 
 | Platform | Commands implemented | Admin commands | Chat modes |
 |---|---|---|---|
@@ -130,10 +175,10 @@
 | bungee | help,join,leave,list,who,toggle + handleChannelMessage | reload | REPLACE + HYBRID (/nc <ch> <msg>) |
 | sponge | help,join,leave,list,who,toggle | reload,debug (permission-gated) | REPLACE + HYBRID (vanilla preserved) |
 | nukkit | help,join,leave,list,who,toggle,channel,reload,debug | reload,debug | REPLACE + HYBRID (toggle = on/off) |
-| pnx | help,join,leave,list,who,toggle,channel,reload,debug | reload,debug | REPLACE + HYBRID (toggle = on/off) |
+| pnx (legacy Nukkit run) | help,join,leave,list,who,toggle,channel,reload,debug | reload,debug | REPLACE + HYBRID (toggle = on/off) |
 | folia | help,join,leave,list,who,toggle | reload,debug | REPLACE + HYBRID (vanilla preserved) |
 
-## Bugs Found (Real E2E Evidence)
+## Historical Bugs Found (2026-08-08 evidence; not revalidated this round)
 
 ### BUG-1: announce/title player-only restriction blocks RCON console
 - **Platform**: bukkit
@@ -154,7 +199,7 @@
 - **Impact**: On Bedrock platforms, toggle cycles between "chat on" and "chat off" (or between REPLACE and HYBRID), but the semantics differ from bukkit where toggle cycles REPLACE<->HYBRID with explicit mode names. The Bedrock toggle does not clearly distinguish the two modes.
 - **Severity**: Low — cosmetic/UX inconsistency, not a functional bug.
 
-## Honest Gaps
+## Historical gaps (2026-08-08; current acceptance queue above)
 
 1. **kick**: Script sends /nc kick on bukkit only (DEFERRED — the kick test was not fully exercised because the target player does not exist, so it would return NC-404 like invite). The kick DELIVERY test (target receives kick notification) is deferred to the joint 2-platform E2E agent.
 
@@ -166,7 +211,7 @@
 
 5. **HYBRID /nc <ch> <msg> on nukkit/pnx/folia**: These platforms return "未知命令: global" when sent `/nc global <msg>`, meaning the HYBRID routing path (`handleChannelMessage`) is not implemented on these platforms. This is NOT-IMPL, not a bug — the command class does not have a default branch for channel message routing.
 
-## Files Changed (all under .e2e/, gitignored)
+## Historical files changed (2026-08-08, under .e2e/)
 
 - `.e2e/bot/run-e2e.js` — extended bukkit bot script (full feature sequence)
 - `.e2e/bot/package.json` — added "start" script

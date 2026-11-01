@@ -318,6 +318,17 @@ public final class LocalAuthority {
             return List.of();
         }
 
+        if (isBanned(senderId, channelId)) {
+            notifySender(senderId, ErrorCode.FORBIDDEN);
+            return List.of();
+        }
+        PlayerChannelState senderState = senderId != null ? stateOf(senderId) : null;
+        if (senderState != null && !senderState.isJoined(channelId)
+                && !channelId.equals(senderState.getActiveChannel())) {
+            notifySender(senderId, ErrorCode.NOT_IN_CHANNEL);
+            return List.of();
+        }
+
         // Mutes are checked before slow mode: a muted player must not also burn
         // their send slot, and NC-436 tells them why they were rejected.
         if (isMuted(senderId, channelId)) {
@@ -440,6 +451,10 @@ public final class LocalAuthority {
         // only silencing the player, and it covers the rejoin a kicked player is
         // otherwise free to perform.
         if (isBanned(playerId, channelId)) {
+            PlayerChannelState state = stateOf(playerId);
+            if (state != null) {
+                state.rollbackJoin(channelId, packet.getExtra("previousChannel"));
+            }
             platform.logDebug("Lite ban rejected " + playerName(packet, player)
                     + " joining " + channelId);
             return failure(ChannelAction.JOIN, packet, ErrorCode.FORBIDDEN);
@@ -690,12 +705,15 @@ public final class LocalAuthority {
         }
 
         Set<UUID> channelMembers = members.get(channelId);
-        if (channelMembers == null || !channelMembers.remove(targetId)) {
+        boolean removed = channelMembers != null && channelMembers.remove(targetId);
+        PlayerChannelState state = stateOf(targetId);
+        boolean localMember = state != null && (state.isJoined(channelId)
+                || channelId.equals(state.getActiveChannel()));
+        if (!removed && !localMember) {
             return failure(ChannelAction.KICK, packet, ErrorCode.NOT_IN_CHANNEL);
         }
-        PlayerChannelState state = stateOf(targetId);
         if (state != null) {
-            state.leaveChannel(channelId);
+            removeLocalMembership(state, channelId);
             persist(targetId, state);
         } else if (store.isPersistent()) {
             // No live state means the target is offline or was never loaded.
@@ -774,9 +792,20 @@ public final class LocalAuthority {
             evicted.add(channelId);
         }
         PlayerChannelState state = stateOf(targetId);
+        if (state != null) {
+            Set<String> localChannels = new java.util.LinkedHashSet<>(state.getJoinedChannels());
+            if (state.getActiveChannel() != null) {
+                localChannels.add(state.getActiveChannel());
+            }
+            for (String localChannel : localChannels) {
+                if ((global || channelId.equals(localChannel)) && !evicted.contains(localChannel)) {
+                    evicted.add(localChannel);
+                }
+            }
+        }
         if (state != null && !evicted.isEmpty()) {
             for (String evictedChannel : evicted) {
-                state.leaveChannel(evictedChannel);
+                removeLocalMembership(state, evictedChannel);
             }
             persist(targetId, state);
         } else if (store.isPersistent()) {
@@ -848,6 +877,13 @@ public final class LocalAuthority {
         ChannelActionResponsePacket response = success(ChannelAction.UNBAN, packet, channelId);
         response.addExtra("targetId", targetId.toString());
         return response;
+    }
+
+    private static void removeLocalMembership(PlayerChannelState state, String channelId) {
+        if (channelId.equals(state.getActiveChannel()) && !state.isJoined(channelId)) {
+            state.joinChannel(channelId);
+        }
+        state.leaveChannel(channelId);
     }
 
     /**

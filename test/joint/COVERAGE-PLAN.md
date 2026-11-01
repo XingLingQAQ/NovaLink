@@ -1,16 +1,65 @@
-# JOINT E2E — Coverage Plan for Ten Uncovered Areas
+# JOINT E2E — Coverage Plan and Manual Integration Status
 
-**Status**: plan only. No scenario below is wired into `run-joint.ps1` yet.
-**Baseline read**: `test/joint/run-joint.ps1` (4583 lines, working-tree copy),
-`test/joint/bots/joint-bot.js` (1305 lines),
-`.e2e-artifacts/joint/20261021-113425/joint-summary.json` (lite, 44 assertions),
-`.e2e-artifacts/joint/20261021-111749/joint-summary.json` (relay, 49 assertions).
-**Product code** was read to decide, per area, whether a failure would be a real
-bug or a harness artefact; file:line references are to the current tree.
+**Integration review**: 2026-11-01. Main-thread wiring is in progress.
+**Real acceptance this round**: NOT RUN. The entries below describe code and
+selected execution paths; no new real-server result is established.
+
+## Current entry points
+
+All E2E workflows require manual dispatch. The daily E2E schedule has been
+removed. Joint `ScenarioGroups` / workflow input `scenario_groups` defaults
+to `core`, which is always included. Every extension needs explicit manual
+selection. `scenarios/registry.ps1` supplies required IDs; the runner and
+`assert-joint-ci.ps1` must use the same group and secondary Java selection.
+Unknown or incompatible selections must fail before servers start.
+
+| Selection | Current implementation/integration scope | Real acceptance still needed |
+|---|---|---|
+| `core` | Velocity/Bungee relay or Lite; receiver chat, isolation controls and Java reconnect | Complete required IDs, real receiver recordings and fresh membership/bidirectional delivery |
+| `business` | `extended-business.ps1`: three-bot DM/reply privacy, offline refusal and channel-scoped mute/unmute | Sender/target/observer recordings and live positive controls in each selected mode/proxy |
+| `lite-moderation` | Actual Velocity or Bungee Lite console stdin; ordinary target/observer bots; permission denial, mute/kick/ban and inverse actions | Channel-scoped enforcement/restoration, refused rejoin under ban and Minecraft connection retained after channel kick |
+| `recovery` | Relay Java + Bedrock; real backend stop/start and bounded Bedrock reconnect | Changed backend PID, authenticated links, fresh membership and bidirectional game delivery after each event |
+| `proxy-switch` | Relay Bukkit primary plus a real `bukkit2`, selected with `SecondaryJavaPlatform bukkit` | Destination-only probes, switch and return, fresh who body, exactly-once chat and SERVER-channel cross-link refusal |
+| Independent `e2e-environment` | Manual TLS trusted/untrusted + MySQL/PostgreSQL with actual Bukkit + Fabric; outside joint groups | Trusted control, explicit certificate-chain rejection, real messages, unchanged SQL row across backend restart and fresh post-restart delivery |
+
+`SecondaryJavaPlatform` / `secondary_java_platform` defaults to `none`.
+The switch topology uses two independent Bukkit processes, ports, RCON ports
+and backend link identities; Fabric is not its required second destination.
+The secondary uses `ModPort` / `ModRconPort` and cannot coexist with a Mod
+leg; request exactly one Bukkit primary. Allow four server slots with the
+proxy + two Bukkit servers + Bedrock. The independent manual workflow is
+[`.github/workflows/e2e-environment.yml`](../../.github/workflows/e2e-environment.yml);
+case prerequisites and required IDs are in `test/environment/cases.psd1`.
+
+Lite moderation now has a real console-driven execution entry on both proxy
+families. This does not establish title production or full channel lifecycle
+coverage. The optional `business` group extends core's existing
+`business/reconnect-*` assertions; its name alone does not include every
+business idea in the ten-area design below.
+
+Current `pnx` is native PowerNukkitX 3.0.6 (`org.powernukkitx` API 3.x,
+Bedrock 1.26.60). Historical Nukkit-hosted compatibility evidence does not
+validate it. Nukkit, Sponge and PMMP have fixed SHA-256 pins. PINNED and AUTO
+fixed-entry fallback fail before cache/download on missing, invalid or
+placeholder hashes; successful AUTO resolution without an upstream hash
+retains the explicit smoke contract. Artifact integrity is not game-path
+acceptance evidence.
+
+See [manual commands](../README.md#joint-manual-e2e-coverage) and
+[the pending result record](JOINT-SCENARIO-COVERAGE.md#real-results-still-to-record).
+
+## Historical design baseline
+
+The ten areas below retain the 2026-10-21 design analysis and historical
+source observations. Unless a current note says otherwise, "today", "missing"
+and line-number references refer to that snapshot, not the current tree.
+Use function names and registry IDs for present wiring. Historical run
+references are `.e2e-artifacts/joint/20261021-113425/joint-summary.json` (Lite)
+and `20261021-111749/joint-summary.json` (relay); neither accepts this round.
 
 ---
 
-## 0. Ground rules this plan is written against
+## 0. Historical ground rules for the ten-area design
 
 ### 0.1 Observation primitives actually available
 
@@ -57,6 +106,11 @@ bug or a harness artefact; file:line references are to the current tree.
 ---
 
 ## Area 1 — Private messaging
+
+Current integration: `business` now supplies sender, target and third-party
+observer plans for DM, replies, offline refusal and privacy controls. This
+supersedes the old "not covered anywhere" observation below; real receiver
+results are still pending.
 
 ### What to assert
 
@@ -173,8 +227,8 @@ Assert-Delivered  …/dm-offline-refused    'is not online' $senderRes
   offline target — by design — so it cannot be a separate assertion; assert the
   *refusal*, not its reason.
 * **`/nc r` immediately after reconnect.** `onPlayerQuit` clears the reply map
-  (`PrivateMessageService.onPlayerQuit`), and the joint bot has no reconnect step
-  (see area 9).
+  (`PrivateMessageService.onPlayerQuit`). A reconnect step now exists, but the
+  selected groups do not by themselves assert reply-target restoration.
 
 ---
 
@@ -333,13 +387,15 @@ Assert-Delivered  …/dm-offline-refused    'is not online' $senderRes
 
 ### Topology
 
-**relay only** — and only via the backend console.
+**Original title-production design: relay via the backend console.**
+The new Lite management entry executes mute/unmute/kick/ban/unban through
+real proxy console stdin; it does not exercise title production or custom
+timing values. Do not generalize this title-specific gap into a claim that
+Lite has no management execution entry.
 
-* lite: the proxy's `ProxyCommandCore.SUBCOMMANDS` has no `title`
-  (`ProxyCommandCore.java:54-56`), so a proxy player's `/nc title` falls through
-  `default -> handleChannelMessage` and is read as a message to a channel named
-  "title". A direct-connect player's `/nc title` stops at `checkConnection()`
-  because lite starts no backend. **No title can be produced in lite.**
+* lite: title production was absent in the historical command surface.
+  Neither selecting `lite-moderation` nor observing its console writes proves
+  that a title reached a player. Keep title/effect acceptance separate.
 * relay via RCON **does not work either**: `TitleCommand.isPlayerOnly() == false`
   and it sets `CONSOLE_SENTINEL_UUID` (`TitleCommand.java:52-58`, `:76-84`), but
   `AdminActionHandler.handleTitle` is gated on
@@ -465,6 +521,10 @@ dispatcher (`NetworkClient` → `dispatcher.handle` → `BukkitChannelResponseAd
 
 ## Area 5 — Channel isolation
 
+Current integration: isolation with live delivery controls is required by
+`core` in both modes. The original design below remains the rationale; fresh
+recordings and non-diagnostic required IDs are still needed this round.
+
 ### What to assert
 
 1. **A line in channel A does not reach a player whose active channel is B.**
@@ -544,6 +604,11 @@ negative half is not vacuous because the control line proves delivery works.
 ---
 
 ## Area 6 — Channel lifecycle (create → invite → accept → read/write)
+
+Current scope: full create/invite/accept lifecycle remains a proposed area.
+`business` covers PM and channel mute; `lite-moderation` covers management;
+`proxy-switch` covers a seeded SERVER channel and cross-link refusal. None
+of those selections alone establishes this full lifecycle.
 
 ### What to assert
 
@@ -738,6 +803,11 @@ assertion. This is a cheap, fully deterministic group.
 
 ## Area 8 — Cross-server player switch
 
+Current integration: `proxy-switch` implements a real dual-Bukkit route and
+return, destination probes, fresh membership and exactly-once delivery. The
+REST attribution idea below remains a separate design requirement unless a
+required current assertion and real recording demonstrate it.
+
 ### What to assert
 
 1. **After the switch, the player is still a member of their channel.**
@@ -781,31 +851,28 @@ assertion. This is a cheap, fully deterministic group.
   put back into the **default** channel, losing their chosen one. Assertion 1
   with a **non-default** channel is what makes this visible.
 
-### Topology
+### Current topology and prerequisites
 
-**relay only.** It needs a proxy with more than one downstream server and the
-verbatim `/server <name>` proxy command. Today's default run list has no mod leg,
-so `[servers]` has one entry and there is nowhere to switch to.
+Relay only, with Velocity or Bungee, primary Bukkit and
+`-SecondaryJavaPlatform bukkit`. The secondary is a real `bukkit2` process,
+not a reused first server or an implicit Fabric substitute. Use distinct
+listener/RCON ports and distinct backend link identities. The main thread
+supplies the real destination probes and proxy switch action.
 
-### Prerequisites
-
-1. **Two downstreams behind the proxy** — `-Platforms velocity,bukkit,fabric,nukkit`
-   (or `velocity,bukkit,…,fabric`), so `Write-VelocityToml` writes two `[servers]`
-   keys.
-2. **A verb to switch**: the java bot sends `/server <other>` through
-   `bot.chat` (`sendCommand`). Velocity's built-in `/server` must be enabled; the
-   generated `velocity.toml` sets `announce-proxy-commands = false` but does not
-   disable the command itself.
-3. The mod leg must be a *working* NovaChat client (its own relay link), or
-   assertion 4 is meaningless.
-4. A non-default channel to be a member of before the switch — i.e. a second
-   `global_channels` entry (shared prerequisite with areas 5 and 10).
+The mover travels to the second Bukkit server and returns, while two peers
+stay anchored on their assigned downstreams. A targeted probe must reach
+its assigned receiver; a console write alone cannot establish location.
+Fresh `/nc who` and post-boundary chat are needed at each destination. The
+SERVER-channel case requires the owning link to deliver in both directions,
+the other link to receive a refusal, and an exclusion observation backed by
+a later positive delivery on that excluded receiver.
 
 ### Gating vs diagnostic
 
 * 1, 2, 3: **gating.** Behavioural, on recordings that exist.
-* 4: **gating in relay**, because the REST record is authoritative and the
-  harness already parses it.
+* 4: **proposed additional gate**, not established by the current switch ID
+  family alone. A post-switch REST record would provide authoritative
+  attribution; retain that requirement separately from destination probes.
 * 5: **diagnostic.** `Write-ProxyPluginConfig` sets `debug = false` for relay
   (`:1646`) precisely because packet-level debug floods the log and starves the
   harness's poll. The switch line is `logDebug`, so it is unavailable at the
@@ -829,6 +896,11 @@ so `[servers]` has one entry and there is nowhere to switch to.
 
 ## Area 9 — Reconnect
 
+Current integration separates core Java client reconnect from optional
+`recovery` (actual backend restart plus one bounded Bedrock reconnect). Both
+require fresh membership and bidirectional receiver evidence; real acceptance
+for this round remains pending.
+
 ### What to assert
 
 1. **After a disconnect and reconnect, the player is a member again.**
@@ -840,8 +912,8 @@ so `[servers]` has one entry and there is nowhere to switch to.
 
 ### Why it can fail
 
-Read from the code, this area is likely to be **RED on the strong reading**, and
-the plan should say so up front:
+The following is a historical code-derived hypothesis from the design
+baseline. It is not a measured result or a fresh verdict after integration:
 
 * On disconnect, `ProxyChatCore.onPlayerDisconnect` **destroys** the state:
   `states.removeState(playerId)` and `firstConnections.remove(playerId)`
@@ -862,43 +934,34 @@ the plan should say so up front:
   defect, and the existing coverage doc's G14 ("reconnect logic exists") does not
   distinguish membership from active channel.
 
-### Topology
+### Current topology and prerequisites
 
-**Both** would work behaviourally, but see prerequisites — the *mechanism* to
-reconnect does not exist yet.
+Core Java reconnect runs in either mode. The bot now has a controlled
+`reconnect` action; the historical absence of a reconnect verb is no longer
+a blocker. Require a fresh spawn, a later membership response and new
+bidirectional delivery. Do not reuse pre-disconnect observations.
 
-### Prerequisites
-
-**Blocked on orchestration.** The joint bot has no reconnect step: the only
-disconnect verb is `quit`, which is terminal (`joint-bot.js:1037-1040`). Two ways
-to get a reconnect:
-
-* (a) **New bot process with the same username after the first exits.** This is
-  expressible with today's plan vocabulary (two roles, same `username`, distinct
-  `role` so `handoffPath` does not collide — `joint-bot.js:264`). But it needs
-  the orchestrator to start bot 2 only after bot 1 exits, which is a
-  `run-joint.ps1` change (`Start-Bot` / `Wait-Bots` are per-role and started
-  together, `:4024-4032`).
-* (b) **A `reconnect` step in `joint-bot.js`.** Cleaner (one process, one
-  recording), but `joint-bot.js` lives under `test/joint/**` and is off-limits in
-  this task.
-
-Either way this area **cannot be implemented without touching `test/joint/`**.
-Report it as sequence-after rather than inventing a workaround.
+The optional `recovery` group is relay-only with real Java and Bedrock
+clients. The parent provides stop/start callbacks for the actual backend
+using the same configuration/database and waits for links to authenticate.
+Old and new PIDs must differ. After fresh post-restart membership and traffic,
+the Bedrock bot performs one bounded reconnect and must produce another
+fresh membership response and bidirectional delivery. No automatic retry
+loop or process-ready marker can substitute for those observations.
 
 ### Gating vs diagnostic
 
-* 1, 2: **gating** once the mechanism exists.
-* 3: **gating, but the expectation must be written down first.** If the product
-  intends "reconnect returns you to the default channel", then asserting
-  "restores the chosen channel" would encode a wish, not a contract. The
-  recommendation is to gate 1 and 2 and record 3 as `diagnostic` with the
-  observed behaviour spelled out, then let the team decide whether the reset is a
-  defect.
+* 1, 2: **required** by the selected reconnect/recovery path; fresh real
+  membership and receiver recordings are still pending.
+* 3: **diagnostic until the non-default-channel contract is explicit**. A
+  reconnect to `global` does not prove restoration of an arbitrary previously
+  active channel. Record the observed behavior separately.
 
 ### Unobservable today
 
-* **The whole area**, until the reconnect mechanism exists.
+* **Restoration of an arbitrary previously active channel** is not established
+  by reconnecting to `global`. Keep the intended non-default-channel contract
+  explicit before claiming that stronger coverage.
 * **The proxy's `LEAVE`-on-disconnect** is observable in the backend log only
   indirectly (no INFO line for a LEAVE). `notifyBackendDisconnect` sends one
   LEAVE per joined channel (`ProxyChatCore.java:806-820`) with `logout=true`;
@@ -1020,9 +1083,10 @@ Other concrete failure modes:
 
 ---
 
-## 11. Prerequisites the harness is missing (consolidated)
+## 11. Historical prerequisite inventory (2026-10-21)
 
-Ordered by how many areas each one unblocks.
+The current entry-point table supersedes resolved prerequisites. Items below
+remain design context, not a claim that all are still absent.
 
 | # | Prerequisite | Unblocks | Cost |
 |---|---|---|---|
@@ -1030,8 +1094,8 @@ Ordered by how many areas each one unblocks.
 | P2 | **A second proxy-connected Java bot in the relay round** (new role in `Invoke-Round`) | 6 (create/invite/accept), 8 (a same-server peer) | new bot process + ~50 lines of plan |
 | P3 | **`Send-BackendConsole` helper** — write a line to the backend's held-open stdin, wait for the marker in `backend/stdout.log` | 3 (titles), 6 (console create as an alternative operator path), 10 (operator-driven who) | one helper; the stdin pipe already exists (`run-joint.ps1:561-568`) |
 | P4 | **Backend-log → bot handoff**: regex `Created private channel: (\S+)` / `Created invitation (\S+)` after a console/command create, then `Set-Handoff` | 6 | one helper, reuses `Wait-LogMarker` |
-| P5 | **A mod (fabric) leg in the relay round** so the proxy has two downstreams | 8 | `-Platforms velocity,bukkit,fabric,nukkit` + a working fabric relay link |
-| P6 | **A reconnect mechanism** (second process with the same username, or a bot step) | 9 | **`test/joint/**` change — blocked in this task** |
+| P5 | **A real second Java downstream** | 8 | Current route: `SecondaryJavaPlatform bukkit` creates `bukkit2`; Fabric is not required |
+| P6 | **A reconnect mechanism** | 9 | Controlled Java/Bedrock reconnect actions and recovery driver now exist; real acceptance pending |
 | P7 | **An `expectEventCount` / offline effect count** (duplicate titles, duplicate bars) | 3.4, 4, 5.3 | can be done **offline** over `results.effects[]` — no bot change |
 | P8 | **A sound that survives the proxy** | 2.5 | product/routing, not harness |
 
@@ -1047,7 +1111,7 @@ assume a player super-admin; the existing harness comment
 
 ---
 
-## 12. Ranking — which areas would catch a real bug today
+## 12. Historical ranking and code-derived hypotheses (2026-10-21)
 
 | Rank | Area | Why it should be RED/buggy now | Cost |
 |---|---|---|---|
@@ -1060,13 +1124,14 @@ assume a player super-admin; the existing harness comment
 | 7 | **3 — title timings + title isolation** | Four-layer pass-through with silent fallback to defaults; needs P3 first. | P1 + P3 |
 | 8 | **6 — channel lifecycle** | Real, heavy: also surfaces the "create result never rendered" defect on the way. | P2 + P4 |
 | 9 | **8 — server switch** | Real (the silent `getNetworkClientFor == null` return) but needs a two-downstream relay topology first. | P1 + P5 |
-| 10 | **9 — reconnect** | Likely contradicts the stated requirement (active channel resets to default), but **cannot be expressed** without a `test/joint/**` change. | P6 |
+| 10 | **9 — reconnect** | Historical concern: active channel resets to default. Reconnect now has execution paths; a stronger non-default-channel contract still needs explicit evidence. | P6 (implemented; real result pending) |
 
 ---
 
-## 13. Defects found in the existing harness (report, not fixed here)
+## 13. Historical harness findings (2026-10-21; current state unverified)
 
-These are in files this task must not modify. Each is concrete.
+These findings refer to the old design baseline. Re-read the present source
+and recordings before carrying one forward as an unresolved current defect.
 
 1. **`diagnostic` is silently dropped on a fast `expectEvent`.** `expectEffect`
    sets `diagnostic: step.diagnostic` only in the async `finish()` path
@@ -1125,23 +1190,31 @@ These are in files this task must not modify. Each is concrete.
    one config decision is worth stating once, centrally, rather than in each
    scenario's comment.
 
-> **Note on citations**: line numbers in this document were re-verified against
-> the working tree at the time of writing. `run-joint.ps1` changed under this
-> task (the `probePort` experiment in `Start-PlatformServer` was reverted), so
-> every reference above was re-located by pattern and corrected. If the file
-> moves again, the assertion **ids** and the function names are the stable
-> anchors, not the line numbers.
+> **Note on citations**: source line numbers below the historical baseline
+> belong to the original review. Current wiring changes those locations;
+> function names, selected group definitions and assertion IDs are the stable
+> anchors. These notes do not record a new source or real-server acceptance run.
 
 ---
 
-## 14. What this plan does **not** claim
+## 14. What still needs real acceptance
 
-* No scenario here has been executed. Every "expected RED" is a code-derived
-  prediction with a file:line anchor, not a measurement.
-* Areas 6, 8 and 9 have prerequisites that make them expensive; they are written
-  so they can be merged later without re-deriving the analysis, not because they
-  are ready to run.
-* Nothing here asserts sound, custom title timings, create/invite results, or
-  reconnect state as **gating**, because the harness (or, in the create case, the
-  product) cannot observe them today. Those four are the honest holes left after
-  this plan.
+* No scenario added or rewired in this round has a real acceptance result.
+  Historical observations and code-derived hypotheses are not current results.
+* Complete selected manual runs for Velocity/Bungee relay and Lite, native
+  PNX, `business`, `lite-moderation`, backend/Bedrock `recovery`, and the real
+  dual-Bukkit `proxy-switch` route. Record commit/run IDs, selected groups,
+  exact plans, required assertion rows and receiver/process evidence.
+* Run the independent manual environment suite for trusted/untrusted TLS,
+  MySQL and PostgreSQL with actual Bukkit/Fabric clients. Retain explicit
+  certificate rejection controls and SQL row identity before/after a real
+  backend restart. Socket probes, fixtures and embedded storage tests are
+  separate evidence.
+* Full create/invite/accept lifecycle, ignore, custom title timings and an
+  arbitrary active-channel restoration contract remain gaps unless current
+  required IDs and real observations explicitly cover them. Source modules
+  existing on disk do not establish that they were selected or executed.
+* Prerequisite failures and missing artifacts must remain failures/blockers.
+  A diagnostic-only row or an unavailable environment cannot become a
+  successful acceptance result. Fixed artifact hash verification establishes
+  integrity, not server behavior.

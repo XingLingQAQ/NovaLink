@@ -105,6 +105,7 @@ public final class CoreNetworkClient {
 
     private final AtomicBoolean connected = new AtomicBoolean(false);
     private final AtomicBoolean authenticated = new AtomicBoolean(false);
+    private final java.util.List<Runnable> authenticatedListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final AtomicBoolean reconnecting = new AtomicBoolean(false);
     private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
 
@@ -554,6 +555,11 @@ public final class CoreNetworkClient {
         return authenticated.get();
     }
 
+    /** Runs after each successful authentication, including reconnects, on the network thread. */
+    public void onAuthenticated(Runnable listener) {
+        authenticatedListeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
     public PacketRegistry getPacketRegistry() {
         return packetRegistry;
     }
@@ -888,9 +894,18 @@ public final class CoreNetworkClient {
 
     private void handleHandshakeResponse(HandshakeResponsePacket response) {
         if (response.isSuccess()) {
-            authenticated.set(true);
+            boolean firstResponse = authenticated.compareAndSet(false, true);
             logger.info("Successfully authenticated with NovaLink backend");
             completeAuth(true);
+            if (firstResponse) {
+                for (Runnable listener : authenticatedListeners) {
+                    try {
+                        listener.run();
+                    } catch (RuntimeException e) {
+                        logger.error("Authentication listener failed: " + e.getMessage());
+                    }
+                }
+            }
             return;
         }
 

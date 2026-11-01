@@ -139,7 +139,7 @@ public final class ClientConnectionConfig {
         private int maxReconnectDelaySeconds = DEFAULT_MAX_RECONNECT_DELAY_SECONDS;
         private long requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS;
         private boolean autoReconnect = true;
-        private ClientTlsConfig tls;
+        private ClientTlsConfig tls = ClientTlsConfig.fromSystemProperties();
 
         public Builder host(String host) {
             this.host = Objects.requireNonNull(host, "host");
@@ -212,7 +212,7 @@ public final class ClientConnectionConfig {
         /**
          * AUTH-002: configures client-side TLS. When set, the network pipeline
          * prepends an {@code SslHandler} so the challenge-response handshake runs
-         * inside an encrypted channel. {@code null} (the default) keeps plaintext.
+         * inside an encrypted channel. {@code null} explicitly selects plaintext.
          *
          * @param tls client TLS config, or {@code null} for plaintext
          */

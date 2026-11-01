@@ -174,14 +174,15 @@ $LockedServers = @(
     # Auto-detect: repo.opencollab.dev/maven-snapshots/cn/nukkit/nukkit/
     #   1.0-SNAPSHOT/maven-metadata.xml -> timestamp + buildNumber -> jar URL.
     #   (ci.opencollab.dev Jenkins is 502-down; the maven mirror is canonical.)
-    # No pre-pinned hash from the mirror; Auto mode computes SHA-256 on the fly.
+    # SHA-256: official Url + .sha256; 26,976,154 bytes (2026-11-01).
+    # Full ZIP CRC checked; Main-Class cn.nukkit.Nukkit, git f8d1d4632d43e023dff675d21a74bb96fdf3b336.
     @{
         Name    = 'nukkit'
         MC      = '1.0-SNAPSHOT'
         Build   = '1242'
         Engine  = 'nukkit'
         Url     = 'https://repo.opencollab.dev/maven-snapshots/cn/nukkit/nukkit/1.0-SNAPSHOT/nukkit-1.0-20260809.225630-1242.jar'
-        Sha256  = ''  # Auto-computed on first download; pinned mode refuses to run with empty hash.
+        Sha256  = 'A0EB0E50C93A50044FE6F1268888B70A1ECC43D8B6438788B871A0D51C33F421'
         Eula    = $false
         Jdk     = 21
         File    = 'nukkit-1.0-20260809.225630-1242.jar'
@@ -228,7 +229,9 @@ $LockedServers = @(
         Build   = '17.0.0'
         Engine  = 'spongevanilla'
         Url     = 'https://repo.spongepowered.org/repository/maven-releases/org/spongepowered/spongevanilla/1.21.10-17.0.0/spongevanilla-1.21.10-17.0.0-universal.jar'
-        Sha256  = ''  # Auto-computed on first download.
+        # Official Url + .sha256; 8,606,046 bytes, full ZIP CRC checked (2026-11-01).
+        # InstallerMain; Implementation-Version 1.21.10-17.0.0, git ab34e23bc3730ad07415596594bdaf9dcabaea86.
+        Sha256  = '407F97FD0A07C93E7986F1BB5198E8E1D17F4849AC6E2306B640B2D5BE429642'
         Eula    = $false
         Jdk     = 21
         File    = 'spongevanilla-1.21.10-17.0.0-universal.jar'
@@ -428,14 +431,16 @@ $LockedServers = @(
     # download_url (-> github.com/pmmp/PocketMine-MP/releases/download/<ver>/
     # PocketMine-MP.phar). GitHub release assets are reachable even though
     # api.github.com is 403 from this env.
-    # No pre-pinned hash; Auto mode computes SHA-256 on the fly.
+    # SHA-256: github.com/pmmp/PocketMine-MP/releases/expanded_assets/5.44.3.
+    # 3,354,057 bytes; all Phar entry CRCs + signature checked (2026-11-01).
+    # VersionInfo 5.44.3; official build_info.json: build 2617, Bedrock 1.26.30.
     @{
         Name    = 'pocketmine'
         MC      = '5.44.3'
         Build   = '2617'
         Engine  = 'pocketmine'
         Url     = 'https://github.com/pmmp/PocketMine-MP/releases/download/5.44.3/PocketMine-MP.phar'
-        Sha256  = ''  # Auto-computed on first download.
+        Sha256  = 'D8B4D87A64124D83659F629C87D6A8E0E142192F6C719FE4684272FF44105539'
         Eula    = $false
         Jdk     = 0    # PocketMine is PHP, not Java.
         File    = 'PocketMine-MP.phar'
