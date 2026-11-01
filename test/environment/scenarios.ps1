@@ -545,7 +545,8 @@ function Invoke-EnvironmentScenarios {
     $javaVersion = & $java -version 2>&1
     if ($LASTEXITCODE -ne 0 -or ($javaVersion -join "`n") -notmatch 'version "21[.]') { throw 'Jdk21 must select Java 21' }
     foreach ($tool in @('node', 'openssl', 'curl')) { $null = Get-Command $tool -CommandType Application -ErrorAction Stop }
-    $nodeVersion = & (Get-Command node -CommandType Application).Source --version
+    $node = Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $nodeVersion = & $node.Source --version
     if ($LASTEXITCODE -ne 0 -or $nodeVersion -notmatch '^v24\.') { throw 'The environment runner requires Node 24' }
     if ($ProvisionDatabases -and @($Cases | Where-Object { $_ -in @('mysql', 'postgresql') }).Count -gt 0) {
         $null = Get-Command docker -CommandType Application -ErrorAction Stop
