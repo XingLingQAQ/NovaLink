@@ -123,9 +123,17 @@ $summaryDir = Join-Path $PSScriptRoot ('.selftest-' + [guid]::NewGuid().ToString
 $summaryFile = Join-Path $summaryDir 'joint-summary.json'
 New-Item -ItemType Directory -Path $summaryDir | Out-Null
 try {
-  foreach ($case in @(@{ Proxy = 'velocity'; Mode = 'relay' }, @{ Proxy = 'velocity'; Mode = 'lite' }, @{ Proxy = 'bungee'; Mode = 'relay' })) {
+  foreach ($case in @(
+    @{ Proxy = 'velocity'; Mode = 'relay'; Bedrock = 'nukkit' },
+    @{ Proxy = 'velocity'; Mode = 'relay'; Bedrock = 'pnx' },
+    @{ Proxy = 'velocity'; Mode = 'lite'; Bedrock = 'nukkit' },
+    @{ Proxy = 'bungee'; Mode = 'relay'; Bedrock = 'nukkit' },
+    @{ Proxy = 'bungee'; Mode = 'relay'; Bedrock = 'pnx' }
+  )) {
     $mode = $case.Mode
     $proxy = $case.Proxy
+    $bedrock = $case.Bedrock
+    $label = if ($mode -eq 'relay') { "$proxy/$mode/$bedrock" } else { "$proxy/$mode" }
     $assertions = @(Get-Verdicts (New-Results))
     $ids = if ($mode -eq 'relay') {
       @('java-to-bedrock', 'bedrock-to-java', 'proxy-plugin-loaded', 'relay-links-created',
@@ -133,34 +141,59 @@ try {
     } else {
       @('lite-mode-active', 'downstream-upstream-roundtrip', 'proxy-to-downstream-chat')
     }
+    if ($mode -eq 'relay' -and $bedrock -eq 'pnx') { $ids += 'native-pnx-runtime' }
     foreach ($id in $ids) {
       $assertions += New-JointAssertion -Id "round1/$id" -Token 'synthetic' -Pass $true -Evidence 'fixture'
     }
     $summary = [PSCustomObject]@{
       proxyMode = $mode; overallPass = $true
       rounds = @([PSCustomObject]@{ status = 'PASS'; proxy = $proxy; java = 'bukkit'; mod = $null
-        bedrock = $(if ($mode -eq 'relay') { 'nukkit' } else { $null }); assertions = $assertions })
+        bedrock = $(if ($mode -eq 'relay') { $bedrock } else { $null }); assertions = $assertions })
     }
     [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
-    & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy
-    Assert-Check $true "CI $proxy/$mode accepts complete synthetic evidence"
+    & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock
+    Assert-Check $true "CI $label accepts complete synthetic evidence"
     $wrongProxy = if ($proxy -eq 'velocity') { 'bungee' } else { 'velocity' }
     $rejected = $false
-    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $wrongProxy } catch { $rejected = $true }
-    Assert-Check $rejected "CI $proxy/$mode rejects wrong proxy"
+    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $wrongProxy -BedrockPlatform $bedrock } catch { $rejected = $true }
+    Assert-Check $rejected "CI $label rejects wrong proxy"
+
+    if ($mode -eq 'relay') {
+      $wrongBedrock = if ($bedrock -eq 'pnx') { 'nukkit' } else { 'pnx' }
+      $rejected = $false
+      try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $wrongBedrock } catch { $rejected = $true }
+      Assert-Check $rejected "CI $label rejects a different Bedrock server"
+    }
 
     $required = $assertions | Where-Object { $_.id -eq 'round1/iso/phase1-isolated-from-bob' }
+    $requiredKind = $required.kind
     $required.kind = 'diagnostic'
     [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
     $rejected = $false
-    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy } catch { $rejected = $true }
-    Assert-Check $rejected "CI $proxy/$mode rejects diagnostic substitution"
+    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock } catch { $rejected = $true }
+    Assert-Check $rejected "CI $label rejects diagnostic substitution"
 
     $summary.rounds[0].assertions = @($assertions | Where-Object { $_.id -ne $required.id })
     [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
     $rejected = $false
-    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy } catch { $rejected = $true }
-    Assert-Check $rejected "CI $proxy/$mode rejects missing assertion"
+    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock } catch { $rejected = $true }
+    Assert-Check $rejected "CI $label rejects missing assertion"
+
+    if ($mode -eq 'relay' -and $bedrock -eq 'pnx') {
+      $required.kind = $requiredKind
+      $summary.rounds[0].assertions = $assertions
+      $native = $assertions | Where-Object { $_.id -eq 'round1/native-pnx-runtime' }
+      $native.kind = 'diagnostic'
+      [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
+      $rejected = $false
+      try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock } catch { $rejected = $_.Exception.Message -match 'native-pnx-runtime' }
+      Assert-Check $rejected "CI $label rejects diagnostic native-runtime evidence"
+      $summary.rounds[0].assertions = @($assertions | Where-Object { $_.id -ne 'round1/native-pnx-runtime' })
+      [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
+      $rejected = $false
+      try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock } catch { $rejected = $_.Exception.Message -match 'native-pnx-runtime' }
+      Assert-Check $rejected "CI $label rejects missing native-runtime evidence"
+    }
   }
 } finally {
   Remove-Item -LiteralPath $summaryFile -ErrorAction SilentlyContinue

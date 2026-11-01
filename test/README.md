@@ -185,24 +185,29 @@ preventing the 3.0.6 live-map race while preserving packet-event cancellation.
 ## Joint CI coverage
 
 `e2e-joint.yml` runs the existing joint harness separately from the L1 matrix.
-Relay cases use Velocity or Bungee + Purpur + Nukkit; the lite case uses
-Velocity + Purpur. The `proxies` workflow input can select either proxy family.
+Relay cases use Velocity or Bungee + Purpur + either Nukkit or native PNX 3;
+the lite case uses Velocity + Purpur. The `proxies` workflow input selects
+the proxy family, and `bedrock` selects `nukkit`, `pnx`, or both for relay.
+Scheduled runs cover both Bedrock servers; the lite case runs once.
 It requires receiver-recorded cross-server traffic in relay mode, channel
 isolation with positive controls, and a Java bot reconnect followed by actual
 membership and bidirectional chat evidence. `assert-joint-ci.ps1` rejects a
 missing or diagnostic-only required assertion.
+PNX additionally requires a locked native server version, API 3.x, and the
+NovaChat-PNX enable marker in the real server log.
 
 ```powershell
 powershell -File test/joint/run-joint.ps1 -Platforms velocity,bukkit,nukkit `
   -Rounds 1 -MaxConcurrentServers 3 -ProxyMode relay -KeepArtifacts
+
+gh workflow run e2e-joint.yml -f proxies=velocity,bungee -f modes=relay -f bedrock=pnx
 ```
 
 Both workflows retain filtered logs and JSON evidence on success as well as
 failure. The L1 job summary reports its JSON status; an unselected platform's
 Run E2E step is skipped. A green job alone remains insufficient evidence.
 
-The default joint cases do not exercise the native PNX topology (it has a
-separate L1 matrix entry), Bungee lite, every admin/private-message scenario,
+The joint cases do not cover Bungee lite, every admin/private-message scenario,
 backend-restart recovery, or a TLS/persistent-database topology. Those require
 their own recorded assertions; unit and embedded tests are separate evidence.
 

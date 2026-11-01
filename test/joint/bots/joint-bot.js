@@ -757,8 +757,15 @@ function createBedrockTransport(onChatLine) {
     // BDS/PMMP accept the pair as well, so one shape serves every engine.
     const patch = JSON.stringify({ geometry: { default: 'geometry.humanoid.custom' } });
     const geometry = JSON.stringify({
-      format_version: '1.12.0',
-      'minecraft:geometry': [],
+      format_version: '1.14.0',
+      'minecraft:geometry': [{
+        description: {
+          identifier: 'geometry.humanoid.custom', texture_width: W, texture_height: H,
+          visible_bounds_width: 2, visible_bounds_height: 2.5,
+          visible_bounds_offset: [0, 0.75, 0],
+        },
+        bones: [],
+      }],
     });
 
     return {

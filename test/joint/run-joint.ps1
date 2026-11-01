@@ -1258,14 +1258,14 @@ function Start-PlatformServer {
   # ("Initialized 0 plugins" in the bukkit log, no NovaChat line in Nukkit's).
   $null = Install-Plugin $platform $serverDir
 
-  # Nukkit/PNX initialise EncryptionUtils eagerly and fetch their Xbox discovery
+  # Nukkit initialises EncryptionUtils eagerly and fetches its Xbox discovery
   # document over TLS from client.discovery.minecraft-services.net. That host is
   # unreachable from CI and from this box, and the failure is an
   # AssertionError inside the static initializer -- the server dies before the
   # console exists. Nukkit caches the response in the SERVER ROOT as
   # discovery-cache.json / openid-cache.json; seed them from any previously
   # populated run directory so the lookup never happens.
-  if ($platform -in @('nukkit', 'pnx')) {
+  if ($platform -eq 'nukkit') {
     $cacheSources = @(
       (Join-Path $RepoRoot ".e2e-artifacts/dist/nukkit-cache"),
       (Join-Path $RepoRoot ".e2e/nukkit")
@@ -1336,6 +1336,22 @@ chat:
 # message is indistinguishable from one that was never attempted.
 debug: $debugFlag
 "@
+
+  if ($platform -eq 'pnx') {
+    $pluginConfig = "config-version: 1`r`n`r`n" + $pluginConfig
+    $pluginConfig += @"
+
+format:
+  prefix: "[NovaChat] "
+  error: "Error: {message}"
+  success: "{message}"
+  default: "[{channel_name}] {player}: {message}"
+  channels: {}
+world-routing:
+  enabled: false
+  mappings: {}
+"@
+  }
 
   # Plugin-messaging identity for the legs that can run behind a proxy.
   #
@@ -4203,6 +4219,21 @@ chat:
     if ($round.Proxy) {
       $assertions += Assert-ProxyPluginLoaded "round$($round.Index)/proxy-plugin-loaded" $round.Proxy `
         (Join-Path (Join-Path $roundDir $round.Proxy) "proxy.stdout.log")
+    }
+
+    if ($round.Bedrock -eq 'pnx') {
+      $pnxBuild = (Get-LockedServer -Name 'powernukkitx').Build
+      $pnxLog = Join-Path (Join-Path $roundDir 'pnx') 'server.stdout.log'
+      $pnxPattern = 'This server is running PowerNukkitX version ' + [regex]::Escape($pnxBuild) +
+        '(?:-SNAPSHOT)?\s+[^\r\n]*\(API 3\.\d+(?:\.\d+)*\)'
+      $nativePnx = Assert-LogContains "round$($round.Index)/native-pnx-runtime" `
+        "PowerNukkitX $pnxBuild; API 3.x" $pnxLog $pnxPattern
+      $pnxPlugin = Assert-LogContains "round$($round.Index)/pnx-plugin-loaded" `
+        'NovaChat-PNX' $pnxLog 'NovaChat-PNX enabled successfully!'
+      $nativePnx.kind = 'native-runtime'
+      $nativePnx.pass = [bool]($nativePnx.pass -and $pnxPlugin.pass)
+      $nativePnx.evidence = "$($nativePnx.evidence); $($pnxPlugin.evidence)"
+      $assertions += $nativePnx
     }
 
     # ---- relay: per-server backend identities (commit 95c9a85) ----

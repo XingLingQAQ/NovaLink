@@ -2,7 +2,8 @@
 param(
   [Parameter(Mandatory = $true)][string]$JointRoot,
   [Parameter(Mandatory = $true)][ValidateSet('relay', 'lite')][string]$ProxyMode,
-  [ValidateSet('velocity', 'bungee')][string]$ProxyPlatform = 'velocity'
+  [ValidateSet('velocity', 'bungee')][string]$ProxyPlatform = 'velocity',
+  [ValidateSet('nukkit', 'pnx')][string]$BedrockPlatform = 'nukkit'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,7 +17,8 @@ if ($round.status -ne 'PASS' -or $round.proxy -ne $ProxyPlatform -or $round.java
   throw "Joint CI requires $ProxyPlatform with Bukkit and no mod leg"
 }
 if ($ProxyPlatform -eq 'bungee' -and $ProxyMode -ne 'relay') { throw 'Bungee CI supports relay only' }
-if ($ProxyMode -eq 'relay' -and $round.bedrock -ne 'nukkit') { throw 'Relay CI requires Nukkit' }
+if ($ProxyMode -eq 'relay' -and $round.bedrock -ne $BedrockPlatform) { throw "Relay CI requires $BedrockPlatform" }
+if ($ProxyMode -eq 'lite' -and $round.bedrock) { throw 'Lite CI must not contain a Bedrock leg' }
 
 $required = @(
   'round1/iso/phase1-alice-line-accepted',
@@ -37,6 +39,7 @@ if ($ProxyMode -eq 'relay') {
   $required += @('round1/java-to-bedrock', 'round1/bedrock-to-java', 'round1/proxy-plugin-loaded',
     'round1/relay-links-created', 'round1/relay-distinct-backend-identities',
     'round1/relay-chat-attribution-and-delivery')
+  if ($BedrockPlatform -eq 'pnx') { $required += 'round1/native-pnx-runtime' }
 } else {
   $required += @('round1/lite-mode-active', 'round1/downstream-upstream-roundtrip', 'round1/proxy-to-downstream-chat')
 }
@@ -49,4 +52,5 @@ foreach ($id in $required) {
 $failed = @($round.assertions | Where-Object { $_.kind -ne 'diagnostic' -and -not $_.pass })
 if ($failed.Count) { throw "Summary contains $($failed.Count) failed gating assertions" }
 $gating = @($round.assertions | Where-Object { $_.kind -ne 'diagnostic' })
-Write-Host "Joint $ProxyPlatform/$ProxyMode evidence accepted: $($gating.Count) gating assertions; diagnostics excluded"
+$topology = if ($ProxyMode -eq 'relay') { "$ProxyPlatform/$ProxyMode/$BedrockPlatform" } else { "$ProxyPlatform/$ProxyMode" }
+Write-Host "Joint $topology evidence accepted: $($gating.Count) gating assertions; diagnostics excluded"

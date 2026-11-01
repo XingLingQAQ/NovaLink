@@ -2,7 +2,6 @@ const crypto = require('node:crypto');
 
 function prepareIdentity(client) {
   const JWT = require('jsonwebtoken');
-  client.createClientChain(null, true);
   const hash = crypto.createHash('sha1').update(client.username).digest('hex');
   const leguuid = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
   client.multiplayerToken = JWT.sign({
@@ -13,6 +12,15 @@ function prepareIdentity(client) {
     audience: 'api://auth-minecraft-services/multiplayer',
     header: { x5u: client.clientX509, typ: undefined },
   });
+}
+
+function patchIdentity(client, sign = prepareIdentity) {
+  const generate = client.createClientChain.bind(client);
+  client.createClientChain = (key, offline) => {
+    const result = generate(key, offline);
+    if (offline) sign(client);
+    return result;
+  };
 }
 
 function attachHttpSignalling(client, request = fetch) {
@@ -47,7 +55,8 @@ function createPnxClient(options, library = require('bedrock-protocol')) {
   });
   client.once('connect_allowed', () => {
     attachHttpSignalling(client);
-    client.once('session', () => prepareIdentity(client));
+    patchIdentity(client);
+    client.once('session', () => client.createClientChain(null, true));
     client.connect();
   });
   client.on('network_stack_latency', packet => {
@@ -72,4 +81,4 @@ function createPnxClient(options, library = require('bedrock-protocol')) {
   return client;
 }
 
-module.exports = { createPnxClient, attachHttpSignalling };
+module.exports = { createPnxClient, attachHttpSignalling, patchIdentity };

@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { attachHttpSignalling } = require('./pnx-client');
+const { attachHttpSignalling, patchIdentity } = require('./pnx-client');
 
 function fixture() {
   const client = new EventEmitter();
@@ -17,6 +17,28 @@ function fixture() {
 
 const offer = { type: 'CONNECTREQUEST', connectionId: 7n, data: 'offer SDP' };
 const settle = () => new Promise(resolve => setImmediate(resolve));
+
+test('PNX identity survives SDK chain regeneration at login', () => {
+  const calls = [];
+  const client = { createClientChain: (key, offline) => {
+    calls.push([key, offline]);
+    client.multiplayerToken = 'sdk identity';
+    return 'generated';
+  } };
+  patchIdentity(client, c => { c.multiplayerToken = 'stable PNX identity'; });
+  for (const key of ['signalling', 'login']) {
+    assert.equal(client.createClientChain(key, true), 'generated');
+    assert.equal(client.multiplayerToken, 'stable PNX identity');
+  }
+  assert.deepEqual(calls, [['signalling', true], ['login', true]]);
+});
+
+test('PNX identity patch preserves authenticated SDK chains', () => {
+  const client = { createClientChain: () => { client.multiplayerToken = 'authenticated'; } };
+  patchIdentity(client, () => assert.fail('offline signer must not replace an authenticated token'));
+  client.createClientChain('service key', false);
+  assert.equal(client.multiplayerToken, 'authenticated');
+});
 
 test('PNX HTTP signal sends the offer and routes the answer to the same connection', async () => {
   const f = fixture();
