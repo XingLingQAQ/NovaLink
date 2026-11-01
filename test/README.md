@@ -266,9 +266,8 @@ The separate manual workflow is
 [`.github/workflows/e2e-environment.yml`](../.github/workflows/e2e-environment.yml).
 It is not a joint scenario group and has no daily schedule. Its runner is
 `environment/run-environment.ps1` (PowerShell 7.4+); definitions and required
-IDs are in `environment/cases.psd1`. Trusted TLS, untrusted-CA rejection and
-PostgreSQL have real evidence in the coverage manifest; MySQL still needs
-successful acceptance after its migration fix.
+IDs are in `environment/cases.psd1`. All four cases have real passing evidence
+in the coverage manifest; MySQL passed after its migration repair.
 
 Manual dispatch example (not executed this round):
 

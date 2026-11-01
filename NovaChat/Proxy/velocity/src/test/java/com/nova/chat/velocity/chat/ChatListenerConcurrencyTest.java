@@ -270,7 +270,8 @@ class ChatListenerConcurrencyTest {
             soundCount.incrementAndGet();
             senderThreads.add(Thread.currentThread());
             return null;
-        }).when(player).playSound(any(net.kyori.adventure.sound.Sound.class));
+        }).when(player).playSound(any(net.kyori.adventure.sound.Sound.class),
+                eq(net.kyori.adventure.sound.Sound.Emitter.self()));
 
         playersById.put(id, player);
         return player;

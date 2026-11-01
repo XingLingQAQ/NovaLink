@@ -34,6 +34,8 @@ latest observed results are recorded separately below.
 | [41271524062](https://github.com/XingLingQAQ/NovaLink/actions/runs/41271524062) / `e23cb70` | Both proxies, PNX, `business,recovery,proxy-switch` | FAIL; follow-up fixes and fresh acceptance required |
 | [41271531739](https://github.com/XingLingQAQ/NovaLink/actions/runs/41271531739) / `e23cb70` | Velocity mention sound | Required sound assertion PASS: `minecraft:entity.experience_orb.pickup` received as an entity sound |
 | Same run | Velocity and Bungee Lite moderation | All 18 required moderation assertions passed on each proxy; the combined workflow failed on extended-business timing/console input |
+| [41274531514](https://github.com/XingLingQAQ/NovaLink/actions/runs/41274531514) / `6e5a2c7` | Both Lite proxies, `core,business,lite-moderation` | PASS: Velocity 148/148, Bungee 147/147 gating assertions, including all required group IDs |
+| [41274536675](https://github.com/XingLingQAQ/NovaLink/actions/runs/41274536675) / `6e5a2c7` | MySQL after migration repair | PASS, 5/5; the same game-message row survived a graceful backend restart, then bidirectional game delivery resumed |
 
 Lite management has a real console-driven entry in
 `joint/scenarios/lite-moderation.ps1`, including Bungee Lite; it is no longer

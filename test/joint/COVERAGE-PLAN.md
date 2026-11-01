@@ -1201,7 +1201,8 @@ and recordings before carrying one forward as an unresolved current defect.
 
 * Initial joint acceptance failed and needs a fresh run after follow-up fixes.
   Environment run 41272492807 at `787ad13` passed trusted/untrusted TLS and
-  PostgreSQL; MySQL failed on migration 10 before game startup.
+  PostgreSQL. Run 41274536675 at `6e5a2c7` passed MySQL after migration repair;
+  run 41274531514 passed both complete Lite selections.
   Historical observations and code-derived hypotheses are not current results.
 * Complete selected manual runs for Velocity/Bungee relay and Lite, native
   PNX, `business`, `lite-moderation`, backend/Bedrock `recovery`, and the real

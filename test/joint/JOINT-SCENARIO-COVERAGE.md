@@ -53,8 +53,9 @@ control, explicit untrusted-CA rejection and SQL row identity across a real
 backend restart must be recorded. Run
 [41272492807](https://github.com/XingLingQAQ/NovaLink/actions/runs/41272492807)
 at `787ad13` passed trusted TLS (3/3), untrusted-CA rejection (4/4) and
-PostgreSQL (5/5). MySQL failed before game startup on migration 10 and needs
-a fresh real run after its fix.
+PostgreSQL (5/5). MySQL subsequently passed 5/5 after migration repair in run
+[41274536675](https://github.com/XingLingQAQ/NovaLink/actions/runs/41274536675)
+at `6e5a2c7`.
 
 See [manual commands and prerequisites](../README.md#joint-manual-e2e-coverage).
 
@@ -228,12 +229,12 @@ already recorded below do not turn a failed workflow into a pass.
 | Selection | Missing real acceptance evidence |
 |---|---|
 | Relay `core`, Nukkit and native PNX | Run ID/commit and pinned versions; receiver transcripts; complete required assertions and native PNX enable marker |
-| Velocity Lite and Bungee Lite `core` | Actual proxy mode/topology and receiver/downstream recordings |
+| Velocity Lite and Bungee Lite `core` | Run 41274531514 at `6e5a2c7`: complete `core,business,lite-moderation` selections passed, Velocity 148/148 and Bungee 147/147 |
 | `business` in each selected mode/proxy | Three recordings, DM/reply exclusion controls, permission denial and mute/unmute outcomes |
 | Velocity/Bungee `lite-moderation` | Run 41271531739 at `e23cb70`: 18/18 required rows passed on each proxy; combined business selection failed and needs a fresh run |
 | `recovery` | Old/new backend PID, authentication timeline, post-restart membership/delivery and bounded Bedrock reconnect results |
 | Dual-Bukkit `proxy-switch` | Two process/link identities, targeted destination probes, outbound/return switch, fresh membership and exactly-once scoped delivery |
-| Independent TLS/SQL environment suite | Run 41272492807 recorded 3/3 trusted TLS, 4/4 untrusted-CA rejection and 5/5 PostgreSQL. MySQL needs a fresh run after migration repair |
+| Independent TLS/SQL environment suite | Run 41272492807 recorded 3/3 trusted TLS, 4/4 untrusted-CA rejection and 5/5 PostgreSQL; run 41274536675 recorded 5/5 MySQL after migration repair |
 
 Bungee's switch driver is `fixtureNativeAPI`, through the console-only
 fixture and the proxy's real connect API. Velocity uses `/server`. Both
