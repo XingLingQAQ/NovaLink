@@ -269,9 +269,10 @@ database:
     if ($Database.Type -ne 'memory') {
         $sslMode = if ($Database.Type -eq 'mysql') { 'REQUIRED' } else { 'require' }
         $yaml += "`n  $($Database.Type):`n"
-        foreach ($pair in @(@('host', 'Host'), @('port', 'Port'), @('database', 'Database'), @('username', 'Username'), @('password', 'Password'))) {
+        foreach ($pair in @(@('host', 'Host'), @('database', 'Database'), @('username', 'Username'), @('password', 'Password'))) {
             $yaml += "    $($pair[0]): '$(([string]$Database[$pair[1]]).Replace("'", "''"))'`n"
         }
+        $yaml += "    port: $([int]$Database.Port)`n"
         $yaml += "    pool-size: 3`n    ssl-mode: $sslMode`n"
     }
     $yaml += @"
@@ -583,6 +584,7 @@ function Invoke-EnvironmentScenarios {
         if (-not $IsWindows) { [IO.File]::SetUnixFileMode($context.Private, [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute) }
         foreach ($key in @('AdminPassword', 'ClientPassword', 'JwtSecret')) {
             $context[$key] = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+            if ($key -eq 'ClientPassword') { $context[$key] = 'environment-' + $context[$key] }
             $context.Secrets.Add($context[$key])
         }
         $assertions = [Collections.Generic.List[object]]::new()

@@ -648,7 +648,7 @@ function Invoke-EffectScenarios {
       }
       $out += New-JointAssertion -Id "$prefix/mention-sound-observable" -Token 'experience_orb' `
         -Pass $false -Kind 'diagnostic' `
-        -Evidence ("${what}. Expected on this topology: Velocity ConnectedPlayer#playSound writes only ClientboundSoundEntityPacket (entity_sound_effect) and returns early unless the player has a connected backend server entity, which a proxy-connected bot does not; Bukkit's own playSound path only runs for a player whose MentionPacket arrived on the sub-server (direct-connect), and in relay the proxy has already notified that player and passes them in `excluded`.")
+        -Evidence ("${what}. Inspect the receiver's decoded sound rows and the platform playback path; a missing sound is not an expected success.")
     }
   }
 

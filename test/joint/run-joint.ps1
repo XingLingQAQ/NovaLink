@@ -3154,15 +3154,12 @@ function Invoke-LiteRound($round, [string]$roundDir) {
 
 # --- relay moderation EFFECT scenarios ---------------------------------------
 #
-# These are the SAME scenarios as the lite group above, run on the one topology
-# where a moderation command can reach the authority: relay.
+# Relay moderation uses the backend authority; Lite uses lite-moderation.ps1.
 #
 # WHO CAN ISSUE A MODERATION COMMAND, read from the code rather than assumed:
 #
-#   * A proxy-connected player cannot. ProxyCommandCore.SUBCOMMANDS is
-#     help/join/leave/list/who/toggle/ignore/unignore/msg/r/reload; an unknown
-#     subcommand falls through to handleChannelMessage, so `/nc mute X 1h` is
-#     read as a message to a channel named "mute" and answers NC-404.
+#   * Proxy moderation commands target LocalAuthority in Lite mode.
+#     Relay's operator path below uses the Bukkit console/RCON connection.
 #   * A player connected straight to a sub-server CAN send the packet (its
 #     plugin holds its own authenticated backend link in relay), but the
 #     backend's authority check decides the outcome:
@@ -3550,7 +3547,7 @@ function Assert-ModerationScenarios {
   $out += [PSCustomObject]@{
     id = "$prefix/mute-is-channel-scoped"; token = 'second-channel control'
     pass = $true; kind = 'diagnostic'
-    evidence = 'SKIPPED (not applicable): Write-BackendConfig declares one channel (global); proving channel-scoped muting needs a second channel plus an observer whose active channel is that one, and moving the observer would invalidate the rest of the group. The narrower property is covered by premute-control-delivered + mute-takes-effect-*.'
+    evidence = 'Not executed by the core moderation plan; select the business group for channel-scoped mute and unmute evidence.'
   }
   return $out
 }
