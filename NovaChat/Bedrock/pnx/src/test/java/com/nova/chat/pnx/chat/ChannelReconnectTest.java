@@ -8,6 +8,7 @@ import com.nova.chat.pnx.NovaChatPNX;
 import com.nova.chat.pnx.config.NovaChatConfig;
 import com.nova.chat.pnx.network.NetworkClient;
 import com.nova.chat.client.network.ChannelResponseTracker;
+import com.nova.chat.client.network.ChannelResponseDispatcher;
 import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
@@ -16,7 +17,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
-import java.lang.reflect.Method;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -46,6 +46,9 @@ class ChannelReconnectTest {
     private final Player player = mock(Player.class);
     private final Level level = mock(Level.class);
     private final ChannelResponseTracker tracker = new ChannelResponseTracker();
+    private final ChannelResponseDispatcher.ChannelResponseAdapter adapter =
+            mock(ChannelResponseDispatcher.ChannelResponseAdapter.class);
+    private final ChannelResponseDispatcher dispatcher = new ChannelResponseDispatcher(tracker, adapter);
     private final Map<UUID, Player> online = new HashMap<>();
     private final List<ChannelActionPacket> wire = new ArrayList<>();
     private final ArrayDeque<Runnable> deadlines = new ArrayDeque<>();
@@ -90,6 +93,10 @@ class ChannelReconnectTest {
             }
             return null;
         }).when(client).sendPacket(any(Packet.class));
+        doAnswer(invocation -> {
+            interceptor.getState(invocation.getArgument(0)).setActiveChannel(invocation.getArgument(1));
+            return null;
+        }).when(adapter).setActiveChannel(any(UUID.class), anyString());
         online.put(playerId, player);
         interceptor = new ChatInterceptor(plugin);
     }
@@ -240,6 +247,114 @@ class ChannelReconnectTest {
     }
 
     @Test
+    void reauthenticationWaitsForReversedMembershipRepliesBeforeSelecting() throws Exception {
+        var state = interceptor.getOrCreateState(player);
+        state.setActiveChannel("local");
+        state.joinChannel("trade");
+        when(player.hasPermission("novachat.channel.trade")).thenReturn(true);
+
+        interceptor.restorePlayerChannels(player, false);
+        assertThat(joinRequests()).extracting(ChannelActionPacket::getChannelId).containsExactly("global", "trade");
+        ChannelActionPacket global = joinRequests().get(0);
+        ChannelActionPacket trade = joinRequests().get(1);
+        respond(trade, true, "");
+        assertThat(state.getActiveChannel()).isEqualTo("local");
+        assertThat(joinRequests()).hasSize(2);
+        respond(global, true, "");
+        assertThat(joinRequests()).extracting(ChannelActionPacket::getChannelId).containsExactly("global", "trade", "local");
+        respond(joinRequests().get(2), true, "");
+
+        assertThat(state.getActiveChannel()).isEqualTo("local");
+        assertThat(state.getJoinedChannels()).containsExactlyInAnyOrder("global", "trade", "local");
+        assertThat(tracker.size()).isZero();
+        assertThat(joinRequests()).allSatisfy(request -> {
+            assertThat(request.getExtra("playerId")).isEqualTo(playerId.toString());
+            assertThat(request.getExtra("playerName")).isEqualTo("RecoverPlayer");
+            assertThat(request.getExtra("platform")).isEqualTo("POWERNUKKITX");
+            assertThat(request.getExtra("world")).isEqualTo("world");
+        });
+    }
+
+    @Test
+    void reauthenticationRejectionDropsMembershipAndConfirmsDefault() throws Exception {
+        var state = interceptor.getOrCreateState(player);
+        state.setActiveChannel("local");
+        interceptor.restorePlayerChannels(player, false);
+        respond(joinRequests().get(0), true, "");
+        respond(joinRequests().get(1), false, "NC-403");
+
+        assertThat(state.getJoinedChannels()).containsExactly("global");
+        assertThat(joinRequests()).extracting(ChannelActionPacket::getChannelId).containsExactly("global", "local", "global");
+        respond(joinRequests().get(2), true, "");
+        assertThat(state.getActiveChannel()).isEqualTo("global");
+    }
+
+    @Test
+    void reauthenticationTimeoutDropsSelectionAndIgnoresLateReply() throws Exception {
+        var state = interceptor.getOrCreateState(player);
+        state.setActiveChannel("local");
+        interceptor.restorePlayerChannels(player, false);
+        respond(joinRequests().get(0), true, "");
+        ChannelActionPacket selected = joinRequests().get(1);
+        deadlines.removeFirst().run();
+        deadlines.removeFirst().run();
+
+        respond(selected, true, "");
+        respond(joinRequests().get(2), true, "");
+        assertThat(state.getActiveChannel()).isEqualTo("global");
+        assertThat(state.getJoinedChannels()).containsExactly("global");
+    }
+
+    @Test
+    void manualSelectionDuringMembershipRestoreKeepsAllMemberships() throws Exception {
+        var state = interceptor.getOrCreateState(player);
+        state.setActiveChannel("local");
+        when(player.hasPermission("novachat.channel.other")).thenReturn(true);
+        interceptor.restorePlayerChannels(player, false);
+        state.setActiveChannel("other");
+        respond(joinRequests().get(0), true, "");
+        assertThat(joinRequests()).extracting(ChannelActionPacket::getChannelId).containsExactly("global", "local");
+        respond(joinRequests().get(1), true, "");
+        assertThat(state.getActiveChannel()).isEqualTo("other");
+        assertThat(joinRequests()).extracting(ChannelActionPacket::getChannelId).containsExactly("global", "local", "other");
+        respond(joinRequests().get(2), true, "");
+        assertThat(state.getActiveChannel()).isEqualTo("other");
+        assertThat(state.getJoinedChannels()).containsExactlyInAnyOrder("global", "local", "other");
+    }
+
+    @Test
+    void manualSelectionDuringFinalJoinIsAlsoConfirmedOnBackend() throws Exception {
+        var state = interceptor.getOrCreateState(player);
+        state.setActiveChannel("local");
+        when(player.hasPermission("novachat.channel.other")).thenReturn(true);
+        interceptor.restorePlayerChannels(player, false);
+        respond(joinRequests().get(0), true, "");
+        state.setActiveChannel("other");
+        respond(joinRequests().get(1), true, "");
+
+        assertThat(state.getActiveChannel()).isEqualTo("other");
+        assertThat(joinRequests()).extracting(ChannelActionPacket::getChannelId).containsExactly("global", "local", "other");
+        respond(joinRequests().get(2), true, "");
+        assertThat(state.getActiveChannel()).isEqualTo("other");
+    }
+
+    @Test
+    void reauthenticationRepliesCannotSelectForANewSession() throws Exception {
+        interceptor.getOrCreateState(player).setActiveChannel("local");
+        interceptor.restorePlayerChannels(player, false);
+        respond(joinRequests().get(0), true, "");
+        ChannelActionPacket selected = joinRequests().get(1);
+        disconnect();
+        online.put(playerId, player);
+        var replacement = interceptor.getOrCreateState(player);
+
+        respond(selected, true, "");
+        deadlines.forEach(Runnable::run);
+        assertThat(replacement.getActiveChannel()).isEqualTo("global");
+        assertThat(replacement.getJoinedChannels()).containsExactly("global");
+    }
+
+    @Test
     void selectionExpiresAndIsConsumedOnlyOnce() {
         AtomicLong now = new AtomicLong();
         RecentChannelSelections selections = new RecentChannelSelections(now::get);
@@ -289,8 +404,8 @@ class ChannelReconnectTest {
         ChannelActionResponsePacket response = new ChannelActionResponsePacket(
                 success, ChannelAction.JOIN, request.getChannelId(), errorCode, "");
         response.setRequestId(request.getRequestId());
-        Method handler = ChatInterceptor.class.getDeclaredMethod("handleChannelRestoreResponse", ChannelActionResponsePacket.class);
-        handler.setAccessible(true);
-        handler.invoke(interceptor, response);
+        if (!interceptor.handleChannelRestoreResponse(response)) {
+            dispatcher.handle(response);
+        }
     }
 }

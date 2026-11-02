@@ -22,7 +22,9 @@ import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.pnx.NovaChatPNX;
 
 import java.util.Map;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -54,7 +56,18 @@ public class ChatInterceptor implements Listener {
     private final Map<UUID, PendingChannelRestore> channelRestores = new ConcurrentHashMap<>();
 
     private record PendingChannelRestore(UUID playerId, PlayerChannelState session, String channel,
-                                         String previousChannel, ChannelResponseTracker tracker) { }
+                                         String previousChannel, ChannelResponseTracker tracker,
+                                         boolean activate, ChannelRestoreBatch batch) { }
+
+    private static final class ChannelRestoreBatch {
+        private String deferredChannel;
+        private int remainingMemberships;
+
+        private ChannelRestoreBatch(String deferredChannel, int remainingMemberships) {
+            this.deferredChannel = deferredChannel;
+            this.remainingMemberships = remainingMemberships;
+        }
+    }
 
     /** Single dedup state shared by all inbound mention notifications on this client. */
     private final MentionNotifier mentionNotifier = new MentionNotifier();
@@ -371,9 +384,13 @@ public class ChatInterceptor implements Listener {
         }
         String selected = recentSelections.take(playerId);
         for (var entry : channelRestores.entrySet()) {
-            if (playerId.equals(entry.getValue().playerId()) && channelRestores.remove(entry.getKey(), entry.getValue())) {
-                selected = entry.getValue().channel();
-                entry.getValue().tracker().consume(entry.getKey());
+            PendingChannelRestore pending = entry.getValue();
+            if (playerId.equals(pending.playerId()) && channelRestores.remove(entry.getKey(), pending)) {
+                if (pending.session() == state && pending.batch() == null
+                        && Objects.equals(pending.previousChannel(), state.getActiveChannel())) {
+                    selected = pending.channel();
+                }
+                pending.tracker().consume(entry.getKey());
             }
         }
         if (selected != null || joining) {
@@ -381,8 +398,16 @@ public class ChatInterceptor implements Listener {
                     ? selected : plugin.getNovaChatConfig().getDefaultChannel();
             requestChannelRestore(player, state, channel);
         } else {
-            com.nova.chat.client.channel.ChannelMembershipRestorer.restore(
-                    state, player.getName(), PlatformType.POWERNUKKITX, player.getLevel().getName(), null, client::sendPacket);
+            var memberships = new ArrayList<>(state.getJoinedChannels());
+            memberships.remove(state.getActiveChannel());
+            ChannelRestoreBatch batch = new ChannelRestoreBatch(state.getActiveChannel(), memberships.size());
+            if (memberships.isEmpty()) {
+                restoreSelectedChannel(player, state, batch);
+            } else {
+                for (String channel : memberships) {
+                    requestChannelRestore(player, state, channel, false, batch);
+                }
+            }
         }
     }
 
@@ -392,6 +417,11 @@ public class ChatInterceptor implements Listener {
     }
 
     private void requestChannelRestore(Player player, PlayerChannelState state, String channel) {
+        requestChannelRestore(player, state, channel, true, null);
+    }
+
+    private void requestChannelRestore(Player player, PlayerChannelState state, String channel,
+                                       boolean activate, ChannelRestoreBatch batch) {
         var client = plugin.getNetworkClient();
         if (client == null || !client.isAuthenticated()) {
             return;
@@ -402,7 +432,8 @@ public class ChatInterceptor implements Listener {
         request.addExtra("platform", PlatformType.POWERNUKKITX.name());
         request.addExtra("world", player.getLevel().getName());
         PendingChannelRestore pending = new PendingChannelRestore(
-                player.getUniqueId(), state, channel, state.getActiveChannel(), client.getChannelResponseTracker());
+                player.getUniqueId(), state, channel, state.getActiveChannel(), client.getChannelResponseTracker(),
+                activate, batch);
         UUID requestId = request.getRequestId();
         channelRestores.put(requestId, pending);
         client.sendPacket(request);
@@ -414,6 +445,7 @@ public class ChatInterceptor implements Listener {
                 if (online != null && getState(expired.playerId()) == expired.session()) {
                     sendChannelLeave(online, expired.channel(), false);
                     restoreDefaultChannel(online, expired);
+                    finishMembershipRestore(online, expired);
                 }
             }
         }, (int) (NovaConstants.PENDING_REQUEST_TIMEOUT_MS / 50));
@@ -434,10 +466,13 @@ public class ChatInterceptor implements Listener {
                 return;
             }
             if (packet.isSuccess() && packet.getAction() == ChannelAction.JOIN
-                    && pending.channel().equals(packet.getChannelId()) && canRestoreChannel(player, pending.channel())) {
+                    && pending.channel().equals(packet.getChannelId()) && canRestoreChannel(player, pending.channel())
+                    && (pending.activate() || pending.session().isJoined(pending.channel()))) {
                 pending.session().joinChannel(pending.channel());
-                if (pending.previousChannel().equals(pending.session().getActiveChannel())) {
+                if (pending.activate() && Objects.equals(pending.previousChannel(), pending.session().getActiveChannel())) {
                     pending.session().setActiveChannel(pending.channel());
+                } else if (pending.activate() && pending.session().getActiveChannel() != null) {
+                    requestChannelRestore(player, pending.session(), pending.session().getActiveChannel(), true, pending.batch());
                 }
             } else {
                 if (packet.isSuccess()) {
@@ -445,15 +480,38 @@ public class ChatInterceptor implements Listener {
                 }
                 restoreDefaultChannel(player, pending);
             }
+            finishMembershipRestore(player, pending);
         });
         return true;
     }
 
     private void restoreDefaultChannel(Player player, PendingChannelRestore pending) {
-        if (!pending.channel().equals(plugin.getNovaChatConfig().getDefaultChannel())
-                && pending.previousChannel().equals(pending.session().getActiveChannel())) {
-            requestChannelRestore(player, pending.session(), plugin.getNovaChatConfig().getDefaultChannel());
+        boolean restoreSelection = pending.activate()
+                && Objects.equals(pending.previousChannel(), pending.session().getActiveChannel());
+        pending.session().leaveChannel(pending.channel());
+        if (restoreSelection && !pending.channel().equals(plugin.getNovaChatConfig().getDefaultChannel())) {
+            requestChannelRestore(player, pending.session(), plugin.getNovaChatConfig().getDefaultChannel(), true, pending.batch());
         }
+    }
+
+    private void finishMembershipRestore(Player player, PendingChannelRestore pending) {
+        if (!pending.activate() && --pending.batch().remainingMemberships == 0) {
+            restoreSelectedChannel(player, pending.session(), pending.batch());
+        }
+    }
+
+    private void restoreSelectedChannel(Player player, PlayerChannelState state, ChannelRestoreBatch batch) {
+        String deferred = batch.deferredChannel;
+        batch.deferredChannel = null;
+        if (deferred != null && !deferred.equals(state.getActiveChannel()) && state.isJoined(deferred)) {
+            batch.remainingMemberships = 1;
+            requestChannelRestore(player, state, deferred, false, batch);
+            return;
+        }
+        // Backend JOIN also selects; wait for the membership replies first.
+        String channel = state.getActiveChannel();
+        requestChannelRestore(player, state,
+                channel != null ? channel : plugin.getNovaChatConfig().getDefaultChannel(), true, batch);
     }
 
     private void sendChannelLeave(Player player, String channel, boolean logout) {

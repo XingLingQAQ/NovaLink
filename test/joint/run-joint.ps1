@@ -666,34 +666,28 @@ function Send-Rcon {
 
     & $writePacket 7 2 $Command
 
-    # Collect every response packet for this command until the server stops
-    # answering. Two things depend on this loop:
-    #   * Purpur/Paper execute RCON input on the MAIN thread. Dropping the
-    #     socket straight after the write made the queued command lose its
-    #     output -- and, on a busy server, the command itself was never
-    #     dispatched at all (run 20261021-024605: `nc kick` and `nc mute` were
-    #     never executed while `nc ban`/`nc unban` were). Staying connected
-    #     until the server has actually answered is what makes the drive real.
-    #   * The terminator is a packet with an EMPTY body; without it a multi-line
-    #     response would be truncated.
+    # A distinct boundary request follows every chunk of the command response.
     $sb = New-Object System.Text.StringBuilder
-    # Purpur runs RCON input on the MAIN thread, and this box's server
-    # treads water for 10-30 s at a time under world-gen load. A short
-    # deadline closed the socket before the command was dispatched, which
-    # silently LOST `nc kick` and `nc mute` in runs 20261021-022040 and
-    # 20261021-030741 (empty response, no apply line). Waiting for the
-    # server's own answer is the only proof the command ran.
+    $answered = $false
+    $completed = $false
+    $boundarySent = $false
     $deadline = (Get-Date).AddSeconds([Math]::Max(10, [int]($TimeoutMs / 1000)))
     while ((Get-Date) -lt $deadline) {
       $p = & $readPacket
       if ($null -eq $p) { break }
-      if ($p.Id -ne 7) { continue }
-      if ($p.Body -eq '') {
-        if ($sb.Length -gt 0) { break }
-        continue
+      if ($p.Id -eq 8 -and $p.Type -eq 0) {
+        $completed = $true
+        break
       }
-      $null = $sb.Append($p.Body).Append("`n")
+      if ($p.Id -ne 7 -or $p.Type -ne 0) { continue }
+      $answered = $true
+      if (-not $boundarySent) {
+        & $writePacket 8 0 ''
+        $boundarySent = $true
+      }
+      if ($p.Body -ne '') { $null = $sb.Append($p.Body).Append("`n") }
     }
+    if (-not $answered -or -not $completed) { return $null }
     # Small grace period before closing: the command's effects are queued on
     # the main thread and the server must get a chance to run them.
     Start-Sleep -Milliseconds 700
@@ -2017,7 +2011,7 @@ function Assert-ProxyPluginLoaded([string]$assertionId, [string]$proxyName, [str
 # substrate-level check.
 function Assert-LogContains([string]$assertionId, [string]$token, [string]$logPath,
                             [string]$pattern) {
-  $text = Read-LogText $logPath
+  $text = [regex]::Replace((Read-LogText $logPath), ([string][char]27 + '\[[0-?]*[ -/]*[@-~]'), '')
   $pass = [bool]($text -and ($text -match $pattern))
   $evidence = ''
   if ($pass) {

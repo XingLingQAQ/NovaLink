@@ -85,7 +85,7 @@ function Get-CustomEffectsPlans {
       $steps += @(
         @{ action = 'wait'; ms = $CommandIntervalMs },
         @{ action = 'checkpoint'; key = "ce-$id-start" },
-        @{ action = 'cmd'; text = "/nc $ownChannel $before" },
+        @{ action = 'chat'; text = $before },
         @{ id = "ce-$id-before"; action = 'expectText'; pattern = ([regex]::Escape($before) + '$');
           sinceCheckpoint = "ce-$id-start"; timeoutMs = 15000; required = $true },
         @{ action = 'signal'; key = "ce-$id-$lower-ready" },
@@ -117,7 +117,7 @@ function Get-CustomEffectsPlans {
       $steps += @(
         @{ action = 'handoffGet'; key = "ce-$id-observe"; timeoutMs = 45000 },
         @{ action = 'wait'; ms = ([math]::Max($CommandIntervalMs, $ObservationMs)) },
-        @{ action = 'cmd'; text = "/nc $ownChannel $after" },
+        @{ action = 'chat'; text = $after },
         @{ id = "ce-$id-after"; action = 'expectText'; pattern = ([regex]::Escape($after) + '$');
           sinceCheckpoint = "ce-$id-start"; timeoutMs = 15000; required = $true },
         @{ action = 'checkpoint'; key = "ce-$id-end" },

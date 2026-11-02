@@ -109,8 +109,10 @@ foreach ($role in @('Sender', 'Target', 'Observer')) {
       $commands++; $waited = 0
     }
   }
-  $expectedCommands = if ($role -eq 'Sender') { 7 } else { 5 }
+  $expectedCommands = if ($role -eq 'Sender') { 3 } else { 1 }
   Assert-CustomContract ($commands -eq $expectedCommands) "$role command count"
+  $markers = @($plans[$role] | Where-Object { $_.action -eq 'chat' })
+  Assert-CustomContract ($markers.Count -eq 4) "$role current-channel marker count"
   $titles = @($plans[$role] | Where-Object { $_.action -eq 'cmd' -and $_.text -like '/nc title *' })
   $expectedTitles = if ($role -eq 'Sender') { 2 } else { 0 }
   Assert-CustomContract ($titles.Count -eq $expectedTitles) "$role real title command count"
