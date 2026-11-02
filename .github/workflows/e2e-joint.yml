@@ -19,7 +19,7 @@ on:
         default: nukkit,pnx
         options: ["nukkit,pnx", nukkit, pnx]
       scenario_groups:
-        description: "CSV: core,business,lite-moderation,recovery,proxy-switch,channel-lifecycle,social-contract,custom-effects (core is always included)"
+        description: "CSV: core,business,lite-moderation,recovery,proxy-switch,channel-lifecycle,social-contract,custom-effects,completion (core is always included)"
         type: string
         default: core
       secondary_java_platform:
@@ -103,7 +103,7 @@ jobs:
           ./test/joint/verify-joint-scenarios.ps1
           . ./test/joint/scenarios/registry.ps1
           $groups = @(Resolve-JointScenarioGroups -Value $env:JOINT_SCENARIO_GROUPS)
-          foreach ($group in @('channel-lifecycle', 'social-contract', 'custom-effects')) {
+          foreach ($group in @('channel-lifecycle', 'social-contract', 'custom-effects', 'completion')) {
             if ($group -in $groups) {
               & "./test/joint/scenarios/verify-$group.ps1"
             }

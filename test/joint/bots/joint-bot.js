@@ -25,6 +25,7 @@
 // Step actions (each step is awaited in order):
 //   chat             { text }                       send a chat line
 //   cmd              { text }                       send a slash command
+//   query            { text, pattern, timeoutMs }   poll read-only who/list for a fresh receipt
 //   wait             { ms }                         sleep
 //   checkpoint       { key }                       record a local phase boundary
 //   signal           { key, value }                publish an orchestration barrier
@@ -111,7 +112,8 @@ function loadPlan() {
 // so a broken matcher cannot masquerade as a green run.
 const RECOVERY_SELFTEST = process.argv.includes('--selftest-recovery')
 const TEXT_SELFTEST = process.argv.includes('--selftest-text')
-const SELFTEST = process.argv.includes('--selftest') || RECOVERY_SELFTEST || TEXT_SELFTEST
+const COMPLETION_SELFTEST = process.argv.includes('--selftest-completion')
+const SELFTEST = process.argv.includes('--selftest') || RECOVERY_SELFTEST || TEXT_SELFTEST || COMPLETION_SELFTEST
 
 const plan = SELFTEST ? { steps: [], runId: 'selftest', role: 'selftest' } : loadPlan();
 const KIND = (plan.kind || 'java').toLowerCase();
@@ -381,14 +383,18 @@ function checkpointIndex(key) {
   return index;
 }
 
-async function expectText(step) {
+async function expectText(step, query) {
   const pattern = new RegExp(step.pattern);
   const sinceIndex = checkpointIndex(step.sinceCheckpoint);
   const started = now();
   const timeoutMs = Number(step.timeoutMs == null ? 15000 : step.timeoutMs);
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new Error('expectText timeout must be in 1..60000');
+  const intervalMs = Number(step.intervalMs == null ? 1000 : step.intervalMs);
+  if (query && (!Number.isFinite(intervalMs) || intervalMs < 1 || intervalMs > 5000)) throw new Error('query interval must be in 1..5000');
+  let nextQuery = started;
   let hit = null;
   do {
+    if (query && now() >= nextQuery) { query(); nextQuery = now() + intervalMs; }
     hit = received.slice(sinceIndex + 1).find((row) =>
       (row.kind === 'messagestr' || /^text:(chat|system|raw|json|translation|announcement|whisper)$/.test(row.kind)) &&
       pattern.test(normalizedChatText(row.text)));
@@ -588,6 +594,109 @@ function expectState(step) {
 // ---------------------------------------------------------------------------
 // Transport: Java (mineflayer)
 // ---------------------------------------------------------------------------
+function completionMatches(step, candidates) {
+  return candidates.length >= (step.minCandidates || 0)
+    && (step.mustInclude || []).every((value) => candidates.includes(render(value)))
+    && (step.mustExclude || []).every((value) => !candidates.includes(render(value)));
+}
+
+function createJavaCompletionObserver(bot) {
+  const custom = new Set();
+  const packetIndices = [];
+  let lastPushIndex = -1;
+  let transactionId = 1000000;
+  let pending = null;
+  let ended = false;
+  const capture = (packetName, packet) => {
+    const payload = JSON.parse(JSON.stringify(packet));
+    record('completionPacket', JSON.stringify(payload), packetName, {
+      packetName, direction: 'clientbound', packet: payload, localTime: new Date().toString(),
+      synthetic: SELFTEST,
+    });
+    return received.length - 1;
+  };
+  const onPush = (packet) => {
+    const index = capture('chat_suggestions', packet);
+    if (![0, 1, 2].includes(packet.action) || !Array.isArray(packet.entries)) return;
+    if (packet.action === 2) custom.clear();
+    for (const entry of packet.entries) {
+      if (packet.action === 1) custom.delete(entry);
+      else custom.add(entry);
+    }
+    packetIndices.push(index);
+    lastPushIndex = index;
+  };
+  const onReply = (packet) => {
+    const index = capture('tab_complete', packet);
+    if (pending && packet.transactionId === pending.id) pending.resolve({ packet, index });
+  };
+  const onEnd = () => {
+    ended = true;
+    if (pending) pending.reject(new Error('connection ended during completion'));
+    bot._client.removeListener('chat_suggestions', onPush);
+    bot._client.removeListener('tab_complete', onReply);
+  };
+  bot._client.on('chat_suggestions', onPush);
+  bot._client.on('tab_complete', onReply);
+  bot.once('end', onEnd);
+
+  return async (step) => {
+    const text = render(step.text);
+    const prefix = text.substring(text.lastIndexOf(' ') + 1);
+    if (!prefix.startsWith('@') || text.startsWith('/')) throw new Error('complete requires a chat mention prefix');
+    if (!['chat_suggestions', 'tab_complete'].includes(step.protocolMode)) throw new Error('unknown completion protocolMode');
+    const timeoutMs = Number(step.timeoutMs || 10000);
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new Error('invalid completion timeout');
+    const startedAtMs = now();
+    const input = record('completionInput', text, text, {
+      stepId: step.id, protocolMode: step.protocolMode, prefix, localTime: new Date().toString(),
+    });
+    let candidates;
+    let sources;
+    let response = null;
+    if (step.protocolMode === 'tab_complete') {
+      const id = ++transactionId;
+      let timer;
+      const reply = new Promise((resolve, reject) => {
+        pending = { id, resolve, reject };
+        timer = setTimeout(() => reject(new Error('tab_complete response timed out')), timeoutMs);
+      });
+      try {
+        if (ended) throw new Error('completion connection already ended');
+        const request = { transactionId: id, text, assumeCommand: false };
+        sent.push({ atMs: now(), localTime: new Date().toString(), action: 'complete', stepId: step.id,
+          packetName: 'tab_complete', text, packet: request });
+        bot._client.write('tab_complete', request);
+        response = await reply;
+      } finally {
+        clearTimeout(timer);
+        pending = null;
+      }
+      candidates = response.packet.matches.map((entry) => typeof entry === 'string' ? entry : entry.match);
+      sources = [response.index];
+    } else {
+      const checkpoint = step.sinceCheckpoint ? checkpointIndex(render(step.sinceCheckpoint)) : -1;
+      if (step.sinceCheckpoint && checkpoint < 0) throw new Error('completion checkpoint missing');
+      const settleMs = Number(step.settleMs == null ? 1000 : step.settleMs);
+      do {
+        if (ended) throw new Error('connection ended during completion');
+        candidates = Array.from(custom).filter((entry) => entry.toLowerCase().startsWith(prefix.toLowerCase()));
+        if (lastPushIndex > checkpoint && now() - startedAtMs >= settleMs && completionMatches(step, candidates)) break;
+        await sleep(20);
+      } while (now() - startedAtMs < timeoutMs);
+      if (lastPushIndex <= checkpoint) throw new Error('no fresh chat_suggestions packet for completion');
+      sources = packetIndices.slice();
+    }
+    return record('completion', JSON.stringify(candidates), candidates.join(', '), {
+      stepId: step.id, inputAtMs: input.atMs, inputText: text, prefix, protocolMode: step.protocolMode,
+      candidates, packetIndices: sources, transactionId: response ? response.packet.transactionId : null,
+      replacementStart: response ? response.packet.start : text.lastIndexOf(' ') + 1,
+      replacementLength: response ? response.packet.length : prefix.length,
+      localTime: new Date().toString(), synthetic: SELFTEST,
+    });
+  };
+}
+
 function createJavaTransport(onChatLine) {
   const mineflayer = requireBotLib('mineflayer');
   let closed = false;
@@ -599,6 +708,7 @@ function createJavaTransport(onChatLine) {
     version: MC_VERSION,
     hideErrors: false,
   });
+  const complete = createJavaCompletionObserver(bot);
 
   // -- capture channel -------------------------------------------------------
   // The kind stays `messagestr` (the orchestrator's duplicate-render guard counts
@@ -722,6 +832,7 @@ function createJavaTransport(onChatLine) {
     rejectEvent: 'kicked',
     isClosed: () => closed,
     bot,
+    complete,
     sendChat: (text) => { sent.push({ atMs: now(), text }); console.log(`\n>>> ${text}`); bot.chat(text); },
     sendCommand: (text) => {
       const cmd = text.startsWith('/') ? text : `/${text}`;
@@ -818,7 +929,7 @@ function createBedrockTransport(onChatLine) {
     skinData: makeLegacySkinFields(),
   });
 
-  if (typeof client.sendLogin === 'function') {
+  if (PLATFORM !== 'pnx' && typeof client.sendLogin === 'function') {
     const origSendLogin = client.sendLogin.bind(client);
     client.sendLogin = (...args) => {
       try {
@@ -1086,6 +1197,29 @@ async function runPlan(activeTransport, factory = buildTransport) {
       case 'cmd':
         activeTransport.sendCommand(render(step.text));
         break;
+      case 'query': {
+        const text = render(step.text);
+        if (!/^\/nc (?:who|list)$/.test(text)) throw new Error('query requires read-only /nc who or /nc list');
+        const ok = await expectText({ ...step, pattern: render(step.pattern),
+          sinceCheckpoint: render(step.sinceCheckpoint) }, () => activeTransport.sendCommand(text));
+        if (!ok && step.required === true) throw new Error(`required query failed: ${step.id}`);
+        break;
+      }
+      case 'complete': {
+        let row = null;
+        let error = null;
+        try {
+          if (!activeTransport.complete) throw new Error('transport does not support Java chat completion');
+          row = await activeTransport.complete(step);
+        } catch (e) {
+          error = e;
+        }
+        const pass = row != null && completionMatches(step, row.candidates);
+        assertions.push({ id: step.id, kind: 'completion', pass, token: render(step.text),
+          evidence: error ? error.message : JSON.stringify(row), waitedMs: row ? row.atMs - row.inputAtMs : 0 });
+        if (!pass && step.required === true) throw new Error(`required completion failed: ${step.id}: ${error ? error.message : row.text}`);
+        break;
+      }
       case 'wait':
         await sleep(parseInt(step.ms || 1000, 10));
         break;
@@ -1317,6 +1451,79 @@ const SELFTEST_CASES = [
   },
 ];
 
+async function runCompletionSelftest() {
+  const assert = require('assert');
+  const { EventEmitter } = require('events');
+  const protocol = requireBotLib('minecraft-protocol');
+  const nativePacketsIndex = process.argv.indexOf('--completion-native-packets');
+  if (nativePacketsIndex >= 0) {
+    const fixture = JSON.parse(fs.readFileSync(process.argv[nativePacketsIndex + 1], 'utf8'));
+    assert.strictEqual(fixture.synthetic, true);
+    assert.strictEqual(fixture.packets.length, 2);
+    const decoder = protocol.createDeserializer({ state: 'play', isServer: false, version: MC_VERSION });
+    for (const packet of fixture.packets) {
+      const decoded = decoder.parsePacketBuffer(Buffer.from(packet.packetHex, 'hex'));
+      assert.deepStrictEqual(decoded.data, { name: 'chat_suggestions', params: { action: packet.action, entries: packet.entries } });
+    }
+    console.log('[OFFLINE PASS] Minecraft protocol decoder accepts the actual Waterfall adapter ADD/REMOVE packets');
+  }
+  const serializer = protocol.createSerializer({ state: 'play', isServer: false, version: MC_VERSION });
+  const client = new EventEmitter();
+  const bot = new EventEmitter();
+  bot._client = client;
+  const complete = createJavaCompletionObserver(bot);
+  let writes = 0;
+  client.write = (name, packet) => {
+    writes++;
+    const bytes = serializer.createPacketBuffer({ name, params: packet });
+    assert(bytes.length > 0, 'actual protocol schema accepts the request');
+    client.emit('tab_complete', { transactionId: packet.transactionId - 1, start: 0, length: 4,
+      matches: [{ match: '@Stale' }] });
+    client.emit('tab_complete', { transactionId: packet.transactionId, start: 0, length: packet.text.length,
+      matches: [{ match: '@E2ETarget' }] });
+  };
+  const base = { id: 'wire', action: 'complete', text: '@E2E', minCandidates: 1,
+    mustInclude: ['@E2ETarget'], mustExclude: ['@SelfTestBot'], timeoutMs: 50, required: true };
+  plan.steps = [Object.assign({}, base, { protocolMode: 'tab_complete' })];
+  await runPlan({ complete });
+  assert.strictEqual(assertions.at(-1).pass, true);
+  assert.strictEqual(writes, 1);
+  assert.deepStrictEqual(received.at(-1).candidates, ['@E2ETarget']);
+  client.emit('chat_suggestions', { action: 2, entries: ['@E2ETarget', '@Other'] });
+  const push = Object.assign({}, base, { protocolMode: 'chat_suggestions', settleMs: 0 });
+  plan.steps = [push, Object.assign({}, push, { id: 'inline', text: 'hello @E2E' })];
+  await runPlan({ complete });
+  assert.strictEqual(assertions.at(-1).pass, true);
+  assert.strictEqual(received.at(-1).prefix, '@E2E');
+  assert.strictEqual(writes, 1, 'ordinary chat must not send a request');
+  record('checkpoint', 'removal', 'removal', { key: 'removal' });
+  const absent = Object.assign({}, push, { id: 'absent', minCandidates: 0, mustInclude: [],
+    mustExclude: ['@E2ETarget'], sinceCheckpoint: 'removal', required: false });
+  plan.steps = [absent];
+  await runPlan({ complete });
+  assert.strictEqual(assertions.at(-1).pass, false, 'stale cache cannot prove exclusion');
+  client.emit('chat_suggestions', { action: 1, entries: ['@E2ETarget'] });
+  await runPlan({ complete });
+  assert.strictEqual(assertions.at(-1).pass, true);
+  client.emit('chat_suggestions', { action: 0, entries: ['@E2ETarget'] });
+  plan.steps = [push];
+  await runPlan({ complete });
+  assert.strictEqual(assertions.at(-1).pass, true);
+  client.emit('chat_suggestions', { action: 2, entries: ['@SelfTestBot'] });
+  await assert.rejects(runPlan({ complete }), /required completion failed/);
+  client.write = () => {};
+  plan.steps = [Object.assign({}, base, { protocolMode: 'tab_complete' })];
+  await assert.rejects(runPlan({ complete }), /response timed out/);
+  plan.steps = [Object.assign({}, base, { protocolMode: 'tab_complete', required: false })];
+  await runPlan({});
+  assert.strictEqual(assertions.at(-1).pass, false, 'unsupported transport is a failure');
+  bot.emit('end');
+  assert.strictEqual(client.listenerCount('chat_suggestions'), 0);
+  assert.strictEqual(client.listenerCount('tab_complete'), 0);
+  console.log(`[SYNTHETIC] completion: ${MC_VERSION} request encoding, transaction correlation, push ADD/REMOVE/SET, inline prefix, stale exclusion, self-only, timeout and unsupported transport checked; no server evidence`);
+  return true;
+}
+
 async function runTextSelftest() {
   const assert = require('assert');
   const cases = [
@@ -1344,6 +1551,19 @@ async function runTextSelftest() {
   let commands = 0;
   await assert.rejects(runPlan({ sendCommand() { commands++; } }), /required chat pattern failed/);
   assert.strictEqual(commands, 0);
+  received.length = 0;
+  assertions.length = 0;
+  plan.steps = [{ action: 'checkpoint', key: 'query-start' },
+    { id: 'current-channel', action: 'query', text: '/nc who', pattern: '^Channel Local online members',
+      sinceCheckpoint: 'query-start', timeoutMs: 100, intervalMs: 1, required: true }];
+  let queries = 0;
+  await runPlan({ sendCommand(text) {
+    assert.strictEqual(text, '/nc who');
+    record('messagestr', '', ++queries === 1 ? 'You are not in any channel' : 'Channel Local online members (2):');
+  } });
+  assert.strictEqual(queries, 2);
+  plan.steps = [{ action: 'query', text: '/nc join local', pattern: 'Joined', timeoutMs: 1 }];
+  await assert.rejects(runPlan({ sendCommand() { assert.fail('query must not repair membership'); } }), /read-only/);
   console.log('[SYNTHETIC] localized chat, phase boundaries, raw-only rejection and required-step abort checked');
   return true;
 }
@@ -1523,7 +1743,7 @@ const hardTimer = setTimeout(() => {
 
 if (SELFTEST) {
   clearTimeout(hardTimer);
-  (TEXT_SELFTEST ? runTextSelftest() : RECOVERY_SELFTEST ? runLifecycleSelftest().then(() => true) : runSelftest()).then((ok) => {
+  (COMPLETION_SELFTEST ? runCompletionSelftest() : TEXT_SELFTEST ? runTextSelftest() : RECOVERY_SELFTEST ? runLifecycleSelftest().then(() => true) : runSelftest()).then((ok) => {
     finished = true;
     console.log(ok ? '[SELFTEST] OK' : '[SELFTEST] FAILED');
     process.exit(ok ? 0 : 1);

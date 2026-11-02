@@ -1,0 +1,25 @@
+gradle.beforeProject { p ->
+    if (p.path == ':StarLink:storage') {
+        def outputRoot = gradle.startParameter.projectProperties['environmentBuildRoot'] ?: '.e2e-artifacts/environment-probe-build'
+        p.layout.buildDirectory.set(new File(p.rootDir, outputRoot).toPath().resolve('storage').toFile())
+    }
+}
+
+gradle.afterProject { p ->
+    if (p.path == ':StarLink:storage') {
+        def probe = p.sourceSets.create('environmentProbe') {
+            java.srcDir(new File(p.rootDir, 'test/environment/java'))
+            compileClasspath += p.sourceSets.main.output + p.configurations.runtimeClasspath
+            runtimeClasspath += output + compileClasspath
+        }
+        p.tasks.register('environmentStorageProbeClasspath') {
+            dependsOn p.tasks.named(probe.classesTaskName)
+            doLast {
+                def destination = p.layout.buildDirectory.file('environment-probe.classpath.txt').get().asFile
+                destination.parentFile.mkdirs()
+                destination.setText(probe.runtimeClasspath.asPath, 'UTF-8')
+                println "ENVIRONMENT_PROBE_CLASSPATH=${destination.absolutePath}"
+            }
+        }
+    }
+}

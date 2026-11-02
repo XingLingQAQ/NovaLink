@@ -6,7 +6,9 @@ function prepareIdentity(client) {
   const leguuid = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
   client.multiplayerToken = JWT.sign({
     cpk: client.clientX509, leguuid, xname: client.username,
-    mid: crypto.createHash('md5').update(client.username).digest('hex').slice(0, 16), xid: '0',
+    mid: crypto.createHash('md5').update(client.username).digest('hex').slice(0, 16),
+    // PNX 3 derives its UUID from XUID, including offline logins.
+    xid: (BigInt(`0x${hash.slice(0, 15)}`) + 1n).toString(),
   }, client.ecdhKeyPair.privateKey, {
     algorithm: 'ES384', notBefore: 0, issuer: 'self', expiresIn: 3600,
     audience: 'api://auth-minecraft-services/multiplayer',

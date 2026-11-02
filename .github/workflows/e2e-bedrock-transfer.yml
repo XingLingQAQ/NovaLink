@@ -1,0 +1,99 @@
+name: Native Bedrock Transfer (manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-bedrock-transfer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-transfer:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    env:
+      BT_RUN_ROOT: ${{ github.workspace }}/.e2e-artifacts/bedrock-transfer-ci/${{ github.run_id }}-${{ github.run_attempt }}
+      JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8 -Dconsole.encoding=UTF-8
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dfile.encoding=UTF-8
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            25
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: test/bot/package-lock.json
+
+      - uses: actions/cache@v4
+        with:
+          path: .e2e-artifacts/dist
+          key: bedrock-transfer-dist-${{ runner.os }}-${{ hashFiles('test/versions.lock.ps1') }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper/dists
+          key: bedrock-transfer-gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle', '**/gradle.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            bedrock-transfer-gradle-${{ runner.os }}-
+
+      - name: Install locked bot dependencies
+        shell: pwsh
+        run: npx --yes npm@10 ci --prefix test/bot --no-audit --no-fund
+
+      - name: Fetch and verify the pinned native PNX runtime
+        shell: powershell
+        run: ./test/bin/fetch-server.ps1 -Name powernukkitx
+
+      - name: Check the protocol contract and compile the thin native fixture
+        shell: powershell
+        run: ./test/bedrock-transfer/verify-contract.ps1 -Jdk21 $env:JAVA_HOME_21_X64
+
+      - name: Check native loopback config and held console without servers
+        shell: powershell
+        run: |
+          ./test/bedrock-transfer/verify-native-runtime.ps1
+          ./test/bedrock-transfer/verify-public-errors.ps1
+
+      - name: Run two native PNX servers and one NovaLink backend
+        shell: powershell
+        run: |
+          ./test/bedrock-transfer/run-bedrock-transfer.ps1 -Jdk21 $env:JAVA_HOME_21_X64 -BuildJdk $env:JAVA_HOME_25_X64 -RunRoot $env:BT_RUN_ROOT
+
+      - name: Require raw transfer and receiver evidence
+        shell: powershell
+        run: node ./test/bedrock-transfer/assert-evidence.js $env:BT_RUN_ROOT
+
+      - name: Upload transfer evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-bedrock-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.BT_RUN_ROOT }}/plan.json
+            ${{ env.BT_RUN_ROOT }}/summary.json
+            ${{ env.BT_RUN_ROOT }}/failure.json
+            ${{ env.BT_RUN_ROOT }}/events.jsonl
+            ${{ env.BT_RUN_ROOT }}/bot.results.json
+            ${{ env.BT_RUN_ROOT }}/*.log
+            ${{ env.BT_RUN_ROOT }}/backend/*.log
+            ${{ env.BT_RUN_ROOT }}/a/launcher.log
+            ${{ env.BT_RUN_ROOT }}/a/readiness.json
+            ${{ env.BT_RUN_ROOT }}/a/pnx/*.log
+            ${{ env.BT_RUN_ROOT }}/b/launcher.log
+            ${{ env.BT_RUN_ROOT }}/b/readiness.json
+            ${{ env.BT_RUN_ROOT }}/b/pnx/*.log
+            ${{ env.BT_RUN_ROOT }}/console/*.json
+          if-no-files-found: warn
+          retention-days: 7

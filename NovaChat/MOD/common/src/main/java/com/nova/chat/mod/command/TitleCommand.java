@@ -1,5 +1,6 @@
 package com.nova.chat.mod.command;
 
+import com.nova.chat.client.command.TitleCommandArguments;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.common.NovaConstants;
 import com.nova.chat.common.protocol.AdminAction;
@@ -48,11 +49,15 @@ public class TitleCommand extends AbstractModerationCommand implements ConsoleCa
             return false;
         }
 
-        String channelId = args[0];
-        String title = args[1];
-        String subtitle = args.length > 2
-                ? String.join(" ", java.util.Arrays.copyOfRange(args, 2, args.length))
-                : "";
+        TitleCommandArguments arguments;
+        try {
+            arguments = TitleCommandArguments.parse(args);
+        } catch (IllegalArgumentException error) {
+            context.sendMessage(I18n.tr(context.getPlayerId(), "chat.title.invalid_arguments"));
+            sendUsage(context);
+            return false;
+        }
+        String channelId = arguments.channelId();
 
         AdminActionPacket packet = new AdminActionPacket();
         packet.setAction(AdminAction.STATUS); // Backend distinguishes via the "type" extra
@@ -65,8 +70,11 @@ public class TitleCommand extends AbstractModerationCommand implements ConsoleCa
         packet.setTarget(channelId);
         packet.addExtra("type", "TITLE");
         packet.addExtra("operatorName", context.getPlayerName());
-        packet.addExtra("title", title);
-        packet.addExtra("subtitle", subtitle);
+        packet.addExtra("title", arguments.title());
+        packet.addExtra("subtitle", arguments.subtitle());
+        packet.addExtra("fadeIn", Integer.toString(arguments.fadeIn()));
+        packet.addExtra("stay", Integer.toString(arguments.stay()));
+        packet.addExtra("fadeOut", Integer.toString(arguments.fadeOut()));
 
         if (!sendPacket(context, packet)) {
             sendRequestFailed(context);
@@ -83,7 +91,7 @@ public class TitleCommand extends AbstractModerationCommand implements ConsoleCa
 
     @Override
     public String getUsage() {
-        return "/nc title <channel> <title> [subtitle]";
+        return "/nc title <channel> <title> [subtitle...] [--fadeIn <ticks>] [--stay <ticks>] [--fadeOut <ticks>]";
     }
 
     @Override

@@ -216,7 +216,7 @@ dispatch; topology validation must reject them before servers start.
 
 | Group | Topology and prerequisites | Required evidence |
 |---|---|---|
-| `core` | Velocity or Bungee; relay with Bedrock, or Lite | Receiver-recorded chat, channel isolation with positive controls, Java reconnect followed by fresh membership and bidirectional chat |
+| `core` | Velocity or Bungee; relay with Bedrock, or Lite | Receiver chat, isolation controls and Java reconnect to the previously selected `local` channel, with no post-spawn JOIN and fresh current-channel membership/delivery |
 | `business` | Either mode; Java downstream, three ordinary bots, `global`/`local`, real operator callback | DM and `/nc r` delivery, sender confirmation, third-party exclusion, offline refusal, channel-scoped mute and unmute restoration |
 | `lite-moderation` | Lite only; Velocity or Bungee console stdin, ordinary target/observer bots | Permission denial, mute/unmute, channel kick without Minecraft disconnect, ban/rejoin refusal, unban and channel scope |
 | `recovery` | Relay only; real Java + Bedrock clients, non-default `local` channel and backend stop/start callbacks | New backend PID, fresh membership and active-channel delivery after restart and one bounded Bedrock reconnect, without another player JOIN |
@@ -224,6 +224,7 @@ dispatch; topology validation must reject them before servers start.
 | `channel-lifecycle` | Relay only; Bukkit + `bukkit2`, bots connected directly to the two Bukkit servers, backend console cleanup | Created channel ID, cross-server invite/accept, exact membership, bidirectional delivery, outsider refusal/isolation and deletion |
 | `social-contract` | Either mode; three ordinary Java bots through the proxy, `global`/`local` | Ignore/unignore with a live observer, exact who sets/counts and list IDs/scopes before leave, after leave and after rejoin |
 | `custom-effects` | Relay only; Bukkit operator and actual receiver/outsider recordings | Custom title/subtitle and exact non-default timings, with delivery and exclusion controls |
+| `completion` | Relay or Lite; two proxy players, native chat suggestions and the scoped live permission fixture | Actual candidate packets, same-channel positive controls, other-channel/ignore/permission exclusion and restoration |
 
 `-SecondaryJavaPlatform` / `secondary_java_platform` defaults to `none`.
 `bukkit` creates a second Bukkit process with a distinct port, RCON port and
@@ -238,27 +239,38 @@ module before the proxy starts. Both proxies use `player-command`; a failed
 Earlier Bungee acceptance used that fixture and does not validate the new
 command path.
 
-The three new groups, non-default recovery and upstream Bungee command path
+The new groups, non-default recovery and upstream Bungee command path
 need fresh real-server recordings. Earlier passing run counts apply only to
 the selections and source revisions recorded in the coverage manifest.
 
-`custom-effects` issues the existing production AUTH/TITLE packet APIs through
-a console-only Bukkit driver. The password is inherited only by the primary
-Bukkit process; plans and bot recordings contain no password. This group
-checks protocol timing fields, not additional `/nc title` command arguments.
+`custom-effects` authenticates the sender through a console-only Bukkit
+driver, then has the game bot issue `/nc title` itself. The command accepts
+`--fadeIn`, `--stay` and `--fadeOut` in ticks; omitted values retain 10/70/20.
+Existing multiword subtitles remain supported. The password is inherited
+only by the primary Bukkit process; plans and recordings contain no password.
+
+```text
+/nc title global Welcome Back --fadeIn 3 --stay 37 --fadeOut 9
+```
 
 PNX recovery installs a test permission driver that grants only
 `novachat.channel.local` to `E2ERecoverBed` before the production join listener
 runs. It keeps the production jar and its permission checks intact.
 
-Nukkit/PNX retain recent channel selections for up to two minutes, capped at
-1024 entries. A successful backend JOIN restores the selection; refusal or
-timeout falls back to the default channel. Logout removes online state and
-channel memberships, including repeated cleanup after a plain leave.
+Nukkit/PNX and the Java proxy retain recent channel selections for up to two
+minutes, capped at 1024 entries. A successful authority JOIN restores the
+selection; refusal or timeout falls back to the default channel. Logout
+removes online state and channel memberships, including repeated cleanup
+after a plain leave.
 
 Recipient-bound invitations add SQL schema 16. The historical external SQL
 acceptance results predate that migration; new environment runs are required
 to extend those results.
+
+The [native storage probe](environment/STORAGE.md) validates schema upgrades
+and recipient binding separately from game delivery. The
+[native Bedrock transfer entry](bedrock-transfer/README.md) uses two PNX
+servers and real TransferPackets; it is a separate manual workflow.
 
 Manual interface examples:
 

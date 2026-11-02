@@ -15,7 +15,7 @@ const workflow = yaml.load(source);
 assert.deepEqual(Object.keys(workflow.on), ['workflow_dispatch']);
 assert.equal(workflow.on.workflow_dispatch.inputs.cases.required, true);
 assert.deepEqual(workflow.on.workflow_dispatch.inputs.cases.default.split(','), [
-  'tls-trusted', 'tls-untrusted', 'mysql', 'postgresql',
+  'tls-trusted', 'tls-untrusted', 'mysql', 'postgresql', 'redis',
 ]);
 assert.deepEqual(workflow.permissions, { contents: 'read' });
 const job = workflow.jobs.environment;
@@ -32,16 +32,17 @@ assert.equal(upload.with['include-hidden-files'], true);
 assert.equal(upload.if, 'always()');
 const build = job.steps.find((step) => step.name === 'Build required runtime artifacts');
 assert.equal(build.shell, 'bash');
-for (const task of [':StarLink:core:shadowJar', ':NovaChat:Plugin:bukkit:shadowJar', ':NovaChat:MOD:fabric:fabricE2eJar']) {
+for (const task of [':StarLink:core:shadowJar', ':NovaChat:Plugin:bukkit:shadowJar', ':NovaChat:MOD:fabric:fabricE2eJar', ':StarLink:storage:environmentStorageProbeClasspath']) {
   assert.ok(build.run.includes(task), `missing build task ${task}`);
 }
 assert.ok(!build.run.includes('writeRuntimeClasspath'), 'standalone workflow must build the backend fat jar');
 assert.ok(build.run.includes('--init-script test/bin/fabric-fatjar.init.gradle'));
+assert.ok(build.run.includes('--init-script test/bin/environment-storage.init.gradle'));
 for (const module of ['StarLink/core', 'NovaChat/Plugin/bukkit']) {
   assert.match(fs.readFileSync(path.join(root, module, 'build.gradle'), 'utf8'), /shadowJar\s*\{/);
 }
 assert.match(fs.readFileSync(path.join(root, 'test/bin/fabric-fatjar.init.gradle'), 'utf8'), /tasks\.register\('fabricE2eJar'/);
-const run = job.steps.find((step) => step.name === 'Run actual game TLS and SQL paths');
+const run = job.steps.find((step) => step.name === 'Run actual game TLS and storage paths');
 assert.ok(run.run.includes('-ProvisionDatabases'));
 assert.ok(run.run.includes('-Jdk21 $env:JAVA_HOME'));
 assert.ok(job.steps.some((step) => step.run?.includes('PSVersionTable.PSVersion') && step.run.includes("[version]'7.4'")));
@@ -51,6 +52,8 @@ assert.ok(!scenarios.includes('insecure-allow-plaintext: true'));
 assert.ok(scenarios.includes("{ 'REQUIRED' } else { 'require' }"));
 assert.ok(scenarios.includes('--require-secure-transport=ON'));
 assert.ok(scenarios.includes('hostssl all all'));
+assert.ok(scenarios.includes('Invoke-EnvironmentStorageProbe $context $db $StorageProbeClassPathFile'));
+assert.ok(scenarios.includes("'redis:7.4'"));
 process.stdout.write(JSON.stringify({
   powershell: job.steps.filter((step) => step.run && (step.shell || job.defaults.run.shell) === 'pwsh')
     .map((step) => ({ name: step.name, script: step.run })),

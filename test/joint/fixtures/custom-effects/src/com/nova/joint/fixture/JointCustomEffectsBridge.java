@@ -2,7 +2,6 @@ package com.nova.joint.fixture;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.bukkit.network.NetworkClient;
-import com.nova.chat.common.protocol.AdminAction;
 import com.nova.chat.common.protocol.packets.AdminActionPacket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -45,24 +44,6 @@ public final class JointCustomEffectsBridge extends JavaPlugin {
                     String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(password.getBytes(StandardCharsets.UTF_8)));
                     AdminActionPacket packet = AdminActionPacket.createAuthPacket(player.getUniqueId(), hash);
                     packet.addExtra("playerName", player.getName());
-                    client.sendPacket(packet);
-                    break;
-                }
-                case "title": {
-                    if (args.length != 9 || !player.hasPermission("novachat.title")) throw new IllegalArgumentException();
-                    AdminActionPacket packet = new AdminActionPacket(UUID.fromString(args[2]));
-                    packet.setAction(AdminAction.STATUS);
-                    packet.setPlayerId(player.getUniqueId());
-                    packet.setTarget(args[3]);
-                    packet.addExtra("type", "TITLE");
-                    packet.addExtra("operatorName", player.getName());
-                    packet.addExtra("title", args[4]);
-                    packet.addExtra("subtitle", args[5]);
-                    String[] names = {"fadeIn", "stay", "fadeOut"};
-                    for (int i = 0; i < names.length; i++) {
-                        if (Integer.parseInt(args[i + 6]) < 0) throw new IllegalArgumentException();
-                        packet.addExtra(names[i], args[i + 6]);
-                    }
                     client.sendPacket(packet);
                     break;
                 }

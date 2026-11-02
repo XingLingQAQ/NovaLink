@@ -1,6 +1,7 @@
 package com.nova.chat.bukkit.command;
 
 import com.nova.chat.bukkit.NovaChatBukkit;
+import com.nova.chat.client.command.TitleCommandArguments;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.common.NovaConstants;
 import com.nova.chat.common.protocol.AdminAction;
@@ -35,7 +36,7 @@ public class TitleCommand extends AbstractSubCommand {
 
     @Override
     public String getUsage() {
-        return "/nc title <频道ID> <标题> [副标题]";
+        return "/nc title <频道ID> <标题> [副标题...] [--fadeIn <ticks>] [--stay <ticks>] [--fadeOut <ticks>]";
     }
 
     @Override
@@ -68,9 +69,15 @@ public class TitleCommand extends AbstractSubCommand {
             return true;
         }
 
-        String channelId = args[0];
-        String title = args[1];
-        String subtitle = args.length > 2 ? String.join(" ", Arrays.copyOfRange(args, 2, args.length)) : "";
+        TitleCommandArguments arguments;
+        try {
+            arguments = TitleCommandArguments.parse(args);
+        } catch (IllegalArgumentException error) {
+            messageHelper.sendError(sender, I18n.tr(playerIdOf(sender), "chat.title.invalid_arguments"));
+            messageHelper.sendUsage(sender, getUsage());
+            return true;
+        }
+        String channelId = arguments.channelId();
 
         // Create admin action packet for title
         AdminActionPacket packet = new AdminActionPacket();
@@ -85,8 +92,11 @@ public class TitleCommand extends AbstractSubCommand {
         packet.setTarget(channelId);
         packet.addExtra("type", "TITLE");
         packet.addExtra("operatorName", sender.getName());
-        packet.addExtra("title", title);
-        packet.addExtra("subtitle", subtitle);
+        packet.addExtra("title", arguments.title());
+        packet.addExtra("subtitle", arguments.subtitle());
+        packet.addExtra("fadeIn", Integer.toString(arguments.fadeIn()));
+        packet.addExtra("stay", Integer.toString(arguments.stay()));
+        packet.addExtra("fadeOut", Integer.toString(arguments.fadeOut()));
 
         if (sendPacket(packet)) {
             messageHelper.sendMessage(sender, I18n.tr(playerIdOf(sender), "chat.title.progress", channelId));

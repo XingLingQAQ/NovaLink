@@ -1,0 +1,32 @@
+import org.gradle.api.tasks.bundling.Jar
+import org.gradle.api.tasks.compile.JavaCompile
+
+gradle.projectsLoaded {
+    gradle.afterProject { project ->
+        def platform = [':NovaChat:Proxy:bungee': 'bungee', ':NovaChat:Proxy:velocity': 'velocity'][project.path]
+        if (platform == null) {
+            return
+        }
+        def fixture = project.rootProject.file('test/joint/fixtures/completion')
+        def productionCompile = project.tasks.named('compileJava', JavaCompile)
+        def compileFixture = project.tasks.register('compileCompletionFixtureJava', JavaCompile) {
+            source project.fileTree(new File(fixture, 'common/src')) { include '**/*.java' }
+            source project.fileTree(new File(fixture, platform + '/src')) { include '**/*.java' }
+            classpath = project.sourceSets.main.compileClasspath
+            destinationDirectory = project.layout.buildDirectory.dir('classes/java/completionFixture')
+            javaCompiler.set(productionCompile.flatMap { it.javaCompiler })
+            options.release.set(platform == 'velocity' ? 25 : 17)
+            options.encoding = 'UTF-8'
+            options.compilerArgs.add('-proc:none')
+        }
+        project.tasks.register('completionFixtureJar', Jar) {
+            group = 'e2e'
+            description = 'Builds the two-player, single-node live completion permission fixture.'
+            dependsOn compileFixture
+            archiveFileName.set('joint-completion-' + platform + '-fixture.jar')
+            destinationDirectory = project.layout.buildDirectory.dir('libs')
+            from compileFixture.flatMap { it.destinationDirectory }
+            from new File(fixture, platform == 'velocity' ? 'velocity/velocity-plugin.json' : 'bungee/bungee.yml')
+        }
+    }
+}

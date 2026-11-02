@@ -1,9 +1,9 @@
 ﻿#requires -Version 7.4
 [CmdletBinding()]
 param(
-    [string[]]$Cases = @('tls-trusted', 'tls-untrusted', 'mysql', 'postgresql'),
+    [string[]]$Cases = @('tls-trusted', 'tls-untrusted', 'mysql', 'postgresql', 'redis'),
     [string]$RepoRoot = '', [string]$DistDir = '', [string]$OutputRoot = '', [string]$ClassPathFile = '', [string]$BackendJar = '',
-    [string]$Jdk21 = $env:JAVA_HOME,
+    [string]$Jdk21 = $env:JAVA_HOME, [string]$StorageProbeClassPathFile = '',
     [int]$BackendPort = 27820, [int]$RestPort = 27830, [int]$BukkitPort = 27800, [int]$FabricPort = 27801,
     [int]$ServerReadySec = 480, [switch]$ProvisionDatabases, [switch]$PlanOnly
 )

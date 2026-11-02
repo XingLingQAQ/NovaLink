@@ -27,7 +27,7 @@ foreach ($definition in $scenarioAst.FindAll({ param($node) $node -is [Managemen
     if ($definition.Name -in $pureFunctions) { . ([scriptblock]::Create($definition.Extent.Text)) }
 }
 $definitions = @(Get-EnvironmentCaseDefinitions -SpecificationPath (Join-Path $PSScriptRoot 'cases.psd1'))
-if ($definitions.Count -ne 4) { throw 'Expected four environment cases' }
+if ($definitions.Count -ne 5) { throw 'Expected five environment cases' }
 $ids = @($definitions | ForEach-Object RequiredAssertionIds)
 if (@($ids | Select-Object -Unique).Count -ne $ids.Count) { throw 'Assertion IDs must be unique' }
 $missing = @(Complete-EnvironmentAssertions @() $ids)

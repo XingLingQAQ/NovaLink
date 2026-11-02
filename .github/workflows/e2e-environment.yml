@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       cases:
-        description: Comma-separated cases (tls-trusted,tls-untrusted,mysql,postgresql)
-        default: tls-trusted,tls-untrusted,mysql,postgresql
+        description: Comma-separated cases (tls-trusted,tls-untrusted,mysql,postgresql,redis)
+        default: tls-trusted,tls-untrusted,mysql,postgresql,redis
         required: true
         type: string
 
@@ -74,10 +74,12 @@ jobs:
         run: >-
           bash ./gradlew :StarLink:core:shadowJar :NovaChat:Plugin:bukkit:shadowJar
           :NovaChat:MOD:fabric:fabricE2eJar
+          :StarLink:storage:environmentStorageProbeClasspath
           --init-script test/bin/fabric-fatjar.init.gradle
+          --init-script test/bin/environment-storage.init.gradle
           -Porg.gradle.java.installations.paths= -Dorg.gradle.java.installations.paths=
           -x test --console=plain --no-daemon
-      - name: Run actual game TLS and SQL paths
+      - name: Run actual game TLS and storage paths
         run: |
           $selected = @($env:ENVIRONMENT_CASES.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
           ./test/environment/run-environment.ps1 -Cases $selected -RepoRoot $env:GITHUB_WORKSPACE -OutputRoot $env:ENVIRONMENT_ROOT -Jdk21 $env:JAVA_HOME -ProvisionDatabases

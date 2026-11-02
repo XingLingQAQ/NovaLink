@@ -180,8 +180,10 @@ $jointBotScript = Join-Path $jointBinDir "joint-bot.js"
 . (Join-Path $PSScriptRoot "scenarios/channel-lifecycle.ps1")
 . (Join-Path $PSScriptRoot "scenarios/social-contract.ps1")
 . (Join-Path $PSScriptRoot "scenarios/custom-effects.ps1")
+. (Join-Path $PSScriptRoot "scenarios/completion.ps1")
 . (Join-Path $PSScriptRoot "fixtures/bungee-switch/installer.ps1")
 . (Join-Path $PSScriptRoot "fixtures/custom-effects/installer.ps1")
+. (Join-Path $PSScriptRoot "fixtures/completion/fixture.ps1")
 try {
   $script:SelectedScenarioGroups = @(Resolve-JointScenarioGroups -Value $ScenarioGroups)
 } catch {
@@ -436,10 +438,8 @@ $script:PidLabels = @{}
 # Backends are launched through System.Diagnostics.Process with a kept-open
 # stdin pipe (see Start-JvmProcess) so this map lets teardown close it.
 $script:BackendProcesses = @{}
-# One entry per Start-JvmProcess call: the StreamWriter pair draining that
-# process's stdout/stderr. They stay open for the process's whole life (see the
-# note in Start-JvmProcess) and are closed in Teardown-All.
-$script:DrainWriters = @{}
+$script:DrainStreams = @{}
+$script:DrainPumps = @{}
 # Strong references to every Process object this script launches. Without them
 # the GC can finalize a Process whose redirected stdin pipe is still load
 # bearing -- see the note in Start-JvmProcess.
@@ -478,10 +478,6 @@ function Teardown-All {
     }
     Remove-Item (Join-Path "Env:" "NovaLinkDrain_$key") -ErrorAction SilentlyContinue
   }
-  Get-EventSubscriber -ErrorAction SilentlyContinue |
-    Where-Object { $_.SourceIdentifier -like 'NovaLinkJoint*' } |
-    ForEach-Object { Unregister-Event -SubscriptionId $_.SubscriptionId -ErrorAction SilentlyContinue }
-
   for ($i = $script:Pids.Count - 1; $i -ge 0; $i--) {
     $procId = $script:Pids[$i]
     Stop-TrackedPid $procId $script:PidLabels[$procId]
@@ -490,14 +486,18 @@ function Teardown-All {
   # Flush + close the log writers LAST, after the processes are gone: closing
   # them earlier would drop whatever the process wrote in its final moments
   # (the shutdown lines a failure diagnosis depends on).
-  foreach ($key in @($script:DrainWriters.Keys)) {
-    foreach ($w in $script:DrainWriters[$key]) {
+  foreach ($key in @($script:DrainStreams.Keys)) {
+    foreach ($pump in $script:DrainPumps[$key]) {
+      try { $null = $pump.Wait(3000) } catch { }
+    }
+    foreach ($w in $script:DrainStreams[$key]) {
       if ($w) {
         try { $w.Flush(); $w.Dispose() } catch { }
       }
     }
   }
-  $script:DrainWriters = @{}
+  $script:DrainStreams = @{}
+  $script:DrainPumps = @{}
   $script:LiveProcesses = @{}
 
   $script:Pids.Clear()
@@ -550,19 +550,7 @@ function Start-JvmProcess {
     [Console]::InputEncoding = $savedInputEncoding
   }
 
-  # Drain the redirected pipes into files on background events. Reading
-  # synchronously (ReadToEnd) would block until exit and starve the readiness
-  # loop; not draining at all would eventually block the JVM once the OS pipe
-  # buffer filled.
-  #
-  # The writer is a StreamWriter held OPEN for the life of the process, NOT
-  # Add-Content inside the event action. A Bukkit server with NovaChat's debug
-  # logging on emits thousands of lines per minute, and Add-Content reopens the
-  # file for every single line: under that rate PowerShell 5.1's event queue
-  # drops events and the handler races other writers, which produced a 3.9 MB
-  # log containing only KeepAlive lines and NO `Done (…)` line at all -- so the
-  # readiness poll timed out on a server that had in fact booted. One open
-  # writer with AutoFlush keeps every line and makes it visible immediately.
+  # Drain independently of PowerShell's event queue and dynamic modules.
   $tag = "NovaLinkJoint$($proc.Id)"
   Remove-Item -LiteralPath $StdoutPath, $StderrPath -Force -ErrorAction SilentlyContinue
   # New-Object with a multi-argument ctor is ambiguous here (PowerShell may bind
@@ -573,27 +561,19 @@ function Start-JvmProcess {
   # "backend did not become ready" with no backend log at all.
   $outDir = Split-Path -Parent $StdoutPath
   if ($outDir) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
-  # FileShare.ReadWrite is REQUIRED, not cosmetic. StreamWriter's constructor
-  # opens the file with FileShare.Read at best (and no sharing on some
-  # runtimes), so the readiness poll's ReadAllText could not open the log at all
-  # and `Read-LogText` swallowed the IOException into "" -- the loop then waited
-  # out its full 60s on a backend that had logged "started successfully" eight
-  # seconds in. Sharing read+write lets the poll read a file that is being
-  # appended to.
+  # Readiness and receipt readers share these continuously written files.
   $share = [System.IO.FileShare]::ReadWrite
   try {
-    $outStream = [System.IO.FileStream]::new($StdoutPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, $share)
-    $errStream = [System.IO.FileStream]::new($StderrPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, $share)
-    $outWriter = [System.IO.StreamWriter]::new($outStream, [System.Text.UTF8Encoding]::new($false))
-    $errWriter = [System.IO.StreamWriter]::new($errStream, [System.Text.UTF8Encoding]::new($false))
-    $outWriter.AutoFlush = $true
-    $errWriter.AutoFlush = $true
+    $outStream = [System.IO.FileStream]::new($StdoutPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, $share, 1, [IO.FileOptions]::Asynchronous)
+    $errStream = [System.IO.FileStream]::new($StderrPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, $share, 1, [IO.FileOptions]::Asynchronous)
   } catch {
     Log "  ERROR: could not open log writers for $tag ($StdoutPath): $($_.Exception.Message)"
     try { $proc.Kill() } catch { }
+    try { $outStream.Dispose() } catch { }
+    try { $errStream.Dispose() } catch { }
     return $null
   }
-  $script:DrainWriters[$tag] = @($outWriter, $errWriter)
+  $script:DrainStreams[$tag] = @($outStream, $errStream)
   # Hold a strong reference to the Process object itself. Its finalizer closes
   # the redirected stdin handle, which the backend reads as Ctrl+D and shuts
   # down cleanly (`Console loop exited; NovaLink main thread returning.`) about
@@ -603,18 +583,8 @@ function Start-JvmProcess {
   # pipe open, which is the whole reason this launcher exists.
   $script:LiveProcesses[$tag] = $proc
 
-  $null = Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -SourceIdentifier "$tag-out" -Action {
-    if ($EventArgs.Data -ne $null) {
-      try { $Event.MessageData.WriteLine($EventArgs.Data) } catch { }
-    }
-  } -MessageData $outWriter
-  $null = Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -SourceIdentifier "$tag-err" -Action {
-    if ($EventArgs.Data -ne $null) {
-      try { $Event.MessageData.WriteLine($EventArgs.Data) } catch { }
-    }
-  } -MessageData $errWriter
-  $proc.BeginOutputReadLine()
-  $proc.BeginErrorReadLine()
+  $script:DrainPumps[$tag] = @($proc.StandardOutput.BaseStream.CopyToAsync($outStream),
+    $proc.StandardError.BaseStream.CopyToAsync($errStream))
   return $proc
 }
 
@@ -919,6 +889,12 @@ function Invoke-GradleBuild($roundList, [string[]]$requestedPlatforms) {
   if ('recovery' -in $script:SelectedScenarioGroups -and @($roundList | Where-Object { $_.Bedrock -eq 'pnx' }).Count) {
     $tasks.Add(':NovaChat:Bedrock:pnx:recoveryPermissionsFixtureJar')
     $initScripts.Add((Join-Path $binDir 'pnx-recovery-fixture.init.gradle'))
+  }
+  if ('completion' -in $script:SelectedScenarioGroups) {
+    foreach ($proxy in @($roundList | ForEach-Object { $_.Proxy } | Sort-Object -Unique)) {
+      $tasks.Add(":NovaChat:Proxy:${proxy}:completionFixtureJar")
+    }
+    $initScripts.Add((Join-Path $binDir 'completion-fixture.init.gradle'))
   }
 
   foreach ($pf in $requestedPlatforms) {
@@ -1564,6 +1540,7 @@ allow-the-end=off
       [System.IO.File]::WriteAllText((Join-Path $serverDir "server.properties"), $props,
         (New-Object System.Text.UTF8Encoding $false))
       $pnxChunkSettings = if ($platform -eq 'pnx') { "chunk-settings:`r`n  spawnThreshold: 16" } else { '' }
+      $pnxBaseSettings = if ($platform -eq 'pnx') { '  installSpark: false' } else { '' }
       $nukkitYml = @"
 aliases:
   showtheversion:
@@ -1574,6 +1551,7 @@ worlds:
     generator: flat
 settings:
   language: "eng"
+$pnxBaseSettings
   force-language: false
   shutdown-message: "Server closed"
   async-workers: auto
@@ -2711,6 +2689,10 @@ function Invoke-LiteRound($round, [string]$roundDir) {
       return $result
     }
     $null = Install-Plugin $round.Proxy $dir
+    if ('completion' -in $script:SelectedScenarioGroups) {
+      $null = Install-JointCompletionFixture -Proxy $round.Proxy -PluginsDir (Join-Path $dir 'plugins') `
+        -RunId "$($script:RunId)-r$($round.Index)-completion"
+    }
     if ($round.Proxy -eq 'velocity') {
       Write-VelocityToml -path (Join-Path $dir "velocity.toml") -downstreams $downstreams -PrimaryServer $round.Java
       $plugCfgDir = Join-Path $dir "plugins/novachat"
@@ -3322,7 +3304,8 @@ function Invoke-ModerationDrive {
   $null = & $release 'ackcontrol'
 
   # 3. KICK (console -> bukkit plugin -> backend authority).
-  $kickResponse = & $rcon "nc kick $TargetName global" 'Forwarded KICK response to target' 2
+  $kickApplied = 'Pushed KICK notice to target ' + [regex]::Escape((Get-OfflineUuid $TargetName)) + ' on client '
+  $kickResponse = & $rcon "nc kick $TargetName global" $kickApplied 2
   Start-Sleep -Seconds 3
   Set-Handoff $HandoffDir $RunId 'kicked' 'go'
   $null = & $release 'ackkicked'
@@ -3802,6 +3785,10 @@ function Invoke-Round($round, [string]$roundDir) {
       # round silently test a bare proxy -- the downstream legs connect to the
       # backend themselves, so all cross-server assertions still passed.
       $null = Install-Plugin $round.Proxy $dir
+      if ('completion' -in $script:SelectedScenarioGroups) {
+        $null = Install-JointCompletionFixture -Proxy $round.Proxy -PluginsDir (Join-Path $dir 'plugins') `
+          -RunId "$($script:RunId)-r$($round.Index)-completion"
+      }
       if ($round.Proxy -eq 'velocity') {
         Write-VelocityToml -path (Join-Path $dir "velocity.toml") -downstreams $downstreams -PrimaryServer $round.Java
         $plugCfgDir = Join-Path $dir "plugins/novachat"
@@ -4434,6 +4421,22 @@ function Invoke-JointOptionalScenarios {
     Invoke-JointLiteModerationScenarios -Round $Round -RoundDir $RoundDir -McVersion $McVersion `
       -Mode $ProxyMode -Port $ProxyPort -AdminCommand $proxyConsole
   }
+  if ('completion' -in $script:SelectedScenarioGroups) {
+    $completionProxy = $ServerProcesses[$Round.Proxy]
+    $completionLog = Join-Path (Join-Path $RoundDir $Round.Proxy) 'proxy.stdout.log'
+    if (-not (Wait-LogMarker $completionLog "JOINT_COMPLETION_READY $($Round.Proxy)" 20 'completion fixture')) {
+      throw 'The selected proxy completion permission fixture did not become ready.'
+    }
+    $completionConsole = {
+      param([string]$Command)
+      if (-not $completionProxy -or $completionProxy.HasExited) { throw 'Proxy console is unavailable.' }
+      $completionProxy.StandardInput.WriteLine($Command)
+      $completionProxy.StandardInput.Flush()
+    }.GetNewClosure()
+    $permissionSetter = New-JointCompletionPermissionSetter -ConsoleCommand $completionConsole -ProxyLogPath $completionLog
+    Invoke-JointCompletionScenarios -Round $Round -RoundDir $RoundDir -McVersion $McVersion -Port $ProxyPort `
+      -RunId "$($script:RunId)-r$($Round.Index)-completion" -SetMentionPermission $permissionSetter
+  }
   if ('social-contract' -in $script:SelectedScenarioGroups) {
     $forbiddenChannels = @()
     if ('proxy-switch' -in $script:SelectedScenarioGroups) { $forbiddenChannels += 'joint-switch-owned' }
@@ -4446,7 +4449,7 @@ function Invoke-JointOptionalScenarios {
       -RunId "$($script:RunId)-r$($Round.Index)-custom-effects" -WorkDir (Join-Path $RoundDir 'bots/custom-effects') `
       -JavaPort $Ports.Java -ProxyPort $ProxyPort -McVersion $McVersion `
       -GrantSenderPermissions $callbacks.GrantSenderPermissions -AuthenticateSender $callbacks.AuthenticateSender `
-      -SendTitle $callbacks.SendTitle -ReleaseSender $callbacks.ReleaseSender
+      -ReleaseSender $callbacks.ReleaseSender
   }
   if ('channel-lifecycle' -in $script:SelectedScenarioGroups) {
     $backendCommand = {

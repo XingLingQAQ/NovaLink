@@ -283,7 +283,7 @@ function makeClient() {
   // to the identity chain right before bedrock-protocol signs + sends it.
   // sendLogin() calls this.createClientChain() which populates
   // clientIdentityChain + multiplayerToken; our applyLoginPatch re-signs them.
-  if (LOGIN_PATCH && typeof c.sendLogin === 'function') {
+  if (PLATFORM !== 'pnx' && LOGIN_PATCH && typeof c.sendLogin === 'function') {
     const origSendLogin = c.sendLogin.bind(c);
     c.sendLogin = (...args) => {
       try { applyLoginPatch(c); } catch (e) { console.log('[LOGIN_PATCH warn]', e && e.message); }

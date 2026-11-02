@@ -51,13 +51,16 @@ function New-Results {
     received = @(
       (New-Row 'Joined channel global' 1),
       (New-Row 'selftest-iso-control' 2),
+      [PSCustomObject]@{ kind = 'checkpoint'; key = 'recovery-selecting'; atMs = 50 },
+      (New-Row 'Joined channel local' 52),
       [PSCustomObject]@{ kind = 'reconnect'; phase = 'spawned'; atMs = 100 },
-      (New-Row 'Channel Global online members (2):' 200),
+      (New-Row 'Channel Local online members (2):' 200),
       (New-Row 'E2EBizAlice, E2EBizBob' 201),
       (New-Row 'selftest-reconnect-inbound' 210)
     )
-    sent = @([PSCustomObject]@{ text = '/nc who global'; atMs = 190 })
-    assertions = @([PSCustomObject]@{ id = 'recovery-reconnect'; pass = $true; evidence = 'spawned'; kind = 'reconnect' })
+    sent = @([PSCustomObject]@{ text = '/nc join local'; atMs = 51 }, [PSCustomObject]@{ text = '/nc who'; atMs = 190 })
+    assertions = @([PSCustomObject]@{ id = 'recovery-reconnect'; pass = $true; evidence = 'spawned'; kind = 'reconnect' },
+      [PSCustomObject]@{ id = 'recovery-selected'; pass = $true; evidence = 'fresh local selection' })
     absentChecks = @(); timedOut = $false
   }
   $bob = [PSCustomObject]@{
@@ -97,17 +100,27 @@ $verdicts = Get-Verdicts $results
 Assert-Check (@($verdicts | Where-Object { $_.id -eq 'round1/business/bob-completed' -and -not $_.pass -and $_.kind -ne 'diagnostic' }).Count -eq 1) 'missing observer fails gating'
 
 $results = New-Results
-$results.Alice.sent[0].atMs = 90
+$results.Alice.sent[1].atMs = 90
 $verdicts = Get-Verdicts $results
 Assert-Check (@($verdicts | Where-Object { $_.id -eq 'round1/business/reconnect-membership' -and -not $_.pass }).Count -eq 1) 'pre-reconnect who cannot prove restored membership'
 
 $results = New-Results
-$results.Alice.received[4].text = '[NovaChat] E2EBizAlice, E2EBizBob'
+$results.Alice.received[5].text = 'Channel Global online members (2):'
+$verdicts = Get-Verdicts $results
+Assert-Check (@($verdicts | Where-Object { $_.id -eq 'round1/business/reconnect-membership' -and -not $_.pass }).Count -eq 1) 'fallback to global cannot prove non-default recovery'
+
+$results = New-Results
+$results.Alice.sent += [PSCustomObject]@{ text = '/nc join local'; atMs = 150 }
+$verdicts = Get-Verdicts $results
+Assert-Check (@($verdicts | Where-Object { $_.id -eq 'round1/business/reconnect-no-rejoin' -and -not $_.pass }).Count -eq 1) 'explicit post-reconnect join cannot repair the recovery evidence'
+
+$results = New-Results
+$results.Alice.received[6].text = '[NovaChat] E2EBizAlice, E2EBizBob'
 $verdicts = Get-Verdicts $results
 Assert-Check (@($verdicts | Where-Object { $_.id -eq 'round1/business/reconnect-membership' -and $_.pass }).Count -eq 1) 'Bungee prefixed member list accepted'
 
 $results = New-Results
-$results.Alice.received[4].text = '<E2EBizAlice> unrelated chat'
+$results.Alice.received[6].text = '<E2EBizAlice> unrelated chat'
 $verdicts = Get-Verdicts $results
 Assert-Check (@($verdicts | Where-Object { $_.id -eq 'round1/business/reconnect-membership' -and -not $_.pass }).Count -eq 1) 'name in unrelated chat cannot prove membership'
 
@@ -265,7 +278,8 @@ try {
     @{ Group = 'proxy-switch'; Mode = 'relay'; Proxy = 'bungee'; Secondary = 'bukkit'; Id = 'round1/proxy-switch/wrong-link-denied' },
     @{ Group = 'social-contract'; Mode = 'lite'; Proxy = 'bungee'; Secondary = 'none'; Id = 'round1/social-contract/ignore-suppressed' },
     @{ Group = 'channel-lifecycle'; Mode = 'relay'; Proxy = 'velocity'; Secondary = 'bukkit'; Id = 'round1/channel-lifecycle/created-unique-id' },
-    @{ Group = 'custom-effects'; Mode = 'relay'; Proxy = 'velocity'; Secondary = 'none'; Id = 'round1/custom-effects/target-timings' }
+    @{ Group = 'custom-effects'; Mode = 'relay'; Proxy = 'velocity'; Secondary = 'none'; Id = 'round1/custom-effects/target-timings' },
+    @{ Group = 'completion'; Mode = 'lite'; Proxy = 'velocity'; Secondary = 'none'; Id = 'round1/completion/baseline-peer' }
   )) {
     $leg = if ($case.Secondary -eq 'bukkit') { 'bukkit2' } else { '' }
     $fixture = New-ContractSummary $case.Group $case.Mode $case.Proxy $leg

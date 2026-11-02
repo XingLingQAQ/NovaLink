@@ -1,7 +1,7 @@
 function Resolve-JointScenarioGroups {
   param([AllowNull()][AllowEmptyString()][string]$Value = 'core')
 
-  $allowed = @('core', 'business', 'lite-moderation', 'recovery', 'proxy-switch', 'channel-lifecycle', 'social-contract', 'custom-effects')
+  $allowed = @('core', 'business', 'lite-moderation', 'recovery', 'proxy-switch', 'channel-lifecycle', 'social-contract', 'custom-effects', 'completion')
   $groups = New-Object System.Collections.Generic.List[string]
   $groups.Add('core')
   if ([string]::IsNullOrWhiteSpace($Value)) { return $groups.ToArray() }
@@ -48,6 +48,7 @@ function Get-JointScenarioAssertionIds {
     "$prefix/iso/join-a-ack-after-phase2",
     "$prefix/business/alice-completed", "$prefix/business/bob-completed",
     "$prefix/business/reconnect-spawned", "$prefix/business/reconnect-membership",
+    "$prefix/business/reconnect-selected-nondefault", "$prefix/business/reconnect-no-rejoin",
     "$prefix/business/reconnect-outbound", "$prefix/business/reconnect-inbound"
   )
   if ($Mode -eq 'relay') {
@@ -87,6 +88,10 @@ function Get-JointScenarioAssertionIds {
       'custom-effects' {
         . (Join-Path $PSScriptRoot 'custom-effects.ps1')
         $ids += @(Get-CustomEffectsRequiredAssertionIds -RoundIndex $RoundIndex)
+      }
+      'completion' {
+        . (Join-Path $PSScriptRoot 'completion.ps1')
+        $ids += @(Get-CompletionRequiredAssertionIds -RoundIndex $RoundIndex)
       }
     }
   }

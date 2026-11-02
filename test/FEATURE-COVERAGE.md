@@ -1,6 +1,6 @@
 # NovaChat Real-Server E2E Feature Coverage Manifest
 
-**Integration review**: 2026-11-01. The selected joint and environment cases have real passing evidence.
+**Integration review**: 2026-11-02. The selected joint and environment cases have real passing evidence.
 **Historical evidence date**: 2026-08-08. The original seven-platform matrix
 and `.e2e/` evidence below are retained as a dated snapshot. `TESTED` there
 means the old script exercised a path, sometimes only its refusal response;
@@ -15,7 +15,7 @@ latest observed results are recorded separately below.
 
 | Entry | Selected coverage | Required evidence |
 |---|---|---|
-| `core` | Receiver chat, channel-isolation controls and Java reconnect; Velocity/Bungee relay or Lite | Fresh plans, receiver recordings and every required registry ID |
+| `core` | Receiver chat, isolation controls and Java reconnect with non-default `local` selected | Fresh current-channel query and bidirectional delivery without a repair JOIN, plus every required registry ID |
 | `business` | Three-bot DM/reply privacy, offline refusal and channel-scoped mute/unmute | Receiver delivery and exclusion with live positive controls; sender confirmation alone is insufficient |
 | `lite-moderation` | Real Velocity/Bungee Lite console commands; ordinary player permission denial, mute/kick/ban and inverse actions | Both bot recordings, channel scope, kick keeps Minecraft connected and ban blocks rejoin |
 | `recovery` | Relay backend process restart and bounded Bedrock reconnect with `local` selected | Changed PID, fresh membership/active channel and bidirectional delivery, without another player JOIN |
@@ -23,20 +23,48 @@ latest observed results are recorded separately below.
 | `channel-lifecycle` | Relay; direct Bukkit + `bukkit2` clients | Actual created channel ID, cross-server invite/accept, exact membership, delivery, outsider exclusion and cleanup |
 | `social-contract` | Relay or Lite; three ordinary proxy players | Ignore/unignore controls, exact who members/counts and list IDs/scopes across leave/rejoin |
 | `custom-effects` | Relay; Bukkit admin action and receiver/outsider controls | Actual title/subtitle and exact configured timings, with non-target exclusion |
+| `completion` | Relay or Lite; native Java chat candidates, two proxy players and live permission provider | Recorded protocol candidate updates, channel/ignore/permission controls and restoration |
 | Native PNX | Official PowerNukkitX 3.0.6, `org.powernukkitx` API 3.x, Bedrock 1.26.60 | Actual native server/plugin enable and receiver-recorded game traffic; old Nukkit-hosted runs do not qualify |
-| Independent `e2e-environment` | Manual TLS trusted/untrusted and MySQL/PostgreSQL cases using actual Bukkit + Fabric | Certificate-chain rejection controls, game messages, SQL row identity across backend restart and fresh post-restart delivery |
+| Native Bedrock transfer | Two native PNX 3.0.6 servers, no proxy | Exact TransferPacket before every new connection, destination spawn/probe, stable player identity, source removal, backend ownership migration and bidirectional delivery |
+| Independent `e2e-environment` | Manual TLS trusted/untrusted and MySQL/PostgreSQL/Redis cases using actual Bukkit + Fabric | Certificate-chain rejection controls, game messages, stored row identity across backend restart and fresh post-restart delivery |
 
 ### Recorded results
 
-The runs below predate the three follow-up groups, non-default recovery and
+Local native Bedrock transfer passed **22/22** required IDs on 2026-11-02,
+including the independent verifier. Evidence is under
+`.e2e-artifacts/bedrock-transfer/acceptance-final-baaa0b02/` (`summary.json`,
+raw events, bot recordings and both PNX logs). This does not cover a remote
+workflow run or other native Bedrock implementations.
+
+The current standard Fabric production package also passed local TLS game
+acceptance on 2026-11-02: trusted CA **3/3**, unrelated CA **4/4**, with actual
+Bukkit/Fabric clients. Evidence: `nl-env-tls-final-20261102/` under the task's
+system temporary directory, runs `20261102-202056-42b240ad-tls-trusted` and
+`20261102-203435-4fcc604b-tls-untrusted`, each with a public
+`environment-summary.json`. The second case reused the first case's runtime
+and world cache; its configuration, plans and verdicts were fresh. These TLS
+cases use memory storage and do not validate SQL/Redis game persistence.
+
+Bungee Lite `core,completion` passed **81/81** local gating assertions in run
+`20261102-205413`, including all 31 required registry IDs. This proves automatic
+non-default Java reconnect and all 13 native chat completion controls on the
+pinned Java protocol. The earlier `20261102-204320` run remains FAIL; its early
+channel query race was fixed with bounded read-only polling, without a repair
+JOIN. Evidence: `novalink-joint-acceptance-20261102/20261102-205413/` under the
+task's system temporary directory.
+
+The external game runs below predate the three follow-up groups, non-default recovery and
 upstream Bungee command integration. Those changes need fresh game evidence;
 offline contracts and successful packaging do not extend these run results.
 
 Directed invitations now persist their recipient UUID and authorize that
 recipient's PRIVATE membership across client links. SQL backends add schema
 16; migrations 1-15 retain their original contents and checksums. Targeted
-tests include SQLite reopen and atomic invitation claims. The earlier external
-MySQL/PostgreSQL results do not validate the new migration.
+checks include SQLite reopen and the 41 local real-provider assertions recorded
+below. The SQL probes verify v15-to-v16 upgrade, retained migration metadata
+and data, and recipient binding; Redis verifies its DTO and atomic claims
+without SQL migrations. The earlier external MySQL/PostgreSQL results do not
+validate schema 16 or the new Redis game case.
 
 | Run / commit | Selection | Observed result |
 |---|---|---|
@@ -51,6 +79,16 @@ MySQL/PostgreSQL results do not validate the new migration.
 | [41274536675](https://github.com/XingLingQAQ/NovaLink/actions/runs/41274536675) / `6e5a2c7` | MySQL after migration repair | PASS, 5/5; the same game-message row survived a graceful backend restart, then bidirectional game delivery resumed |
 | [41274540721](https://github.com/XingLingQAQ/NovaLink/actions/runs/41274540721) / `6e5a2c7` | Both Relay proxies, native PNX + two Bukkit servers, `core,business,recovery,proxy-switch` | PASS: 174/174 gating assertions per proxy, including 13 recovery and 23 switch assertions each; fresh backend logs and JWT refresh recorded |
 | [41275523518](https://github.com/XingLingQAQ/NovaLink/actions/runs/41275523518) / `2016984` | Normal Build & Test | PASS: all-platform Gradle build/tests, orchestration contract and Panel lint/production build |
+| [Local 2026-11-02, original native summary](../.e2e-artifacts/environment-native/19bcd51611aa48d1bed944bb6156d3bc/public/native-storage-summary.json) | MariaDB 12.3.3 via MySQLProvider, PostgreSQL 18.6 and Redis 8.10.1 | PASS: 11 + 11 + 8 = 30 real-provider assertions, including SQL v15-to-v16 upgrade, recipient binding and Redis DTO compatibility; preserved unchanged after the separate Oracle run |
+| [Local 2026-11-02, Oracle native summary](../.e2e-artifacts/environment-native/8c7ef98ec0224683bba9d5e7a94cd878/public/native-storage-summary.json) | Oracle MySQL 8.4.13 LTS via MySQLProvider | PASS: 11/11 real-provider assertions, including v15-to-v16 upgrade, old checksums/data retention, recipient persistence, wrong-target rejection, single-winner concurrent claim, reconnect and unbound compatibility; [official source, checksums and execution command](../.e2e-artifacts/environment-native/8c7ef98ec0224683bba9d5e7a94cd878/public/oracle-source-manifest.json) |
+
+Local native database acceptance totals **41/41 passing assertions**:
+Oracle MySQL 11 + MariaDB 11 + PostgreSQL 11 + Redis 8. These runs use real
+database servers and production providers. They do not exercise TLS or actual
+game traffic. Schema 16 and the new Redis game case still need current TLS
+and game-path acceptance; the historical game runs above do not cover them.
+Per-engine artifacts and validation boundaries are listed in
+[the storage probe record](environment/STORAGE.md#recorded-native-results-2026-11-02).
 
 Lite management has a real console-driven entry in
 `joint/scenarios/lite-moderation.ps1`, including Bungee Lite; it is no longer

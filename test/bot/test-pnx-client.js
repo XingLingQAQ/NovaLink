@@ -18,6 +18,25 @@ function fixture() {
 const offer = { type: 'CONNECTREQUEST', connectionId: 7n, data: 'offer SDP' };
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
+test('PNX offline players retain distinct XUIDs across reconnects', () => {
+  const crypto = require('node:crypto');
+  const JWT = require('jsonwebtoken');
+  const identity = username => {
+    const ecdhKeyPair = crypto.generateKeyPairSync('ec', { namedCurve: 'secp384r1' });
+    const client = { username, ecdhKeyPair,
+      clientX509: ecdhKeyPair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64'),
+      createClientChain() {} };
+    patchIdentity(client);
+    client.createClientChain(null, true);
+    return JWT.verify(client.multiplayerToken, ecdhKeyPair.publicKey, { algorithms: ['ES384'] });
+  };
+  const traveler = identity('BTTraveler');
+  const witness = identity('BTWitnessA');
+  assert.match(traveler.xid, /^[1-9][0-9]*$/);
+  assert.notEqual(traveler.xid, witness.xid);
+  assert.equal(traveler.xid, identity('BTTraveler').xid);
+});
+
 test('PNX identity survives SDK chain regeneration at login', () => {
   const calls = [];
   const client = { createClientChain: (key, offline) => {

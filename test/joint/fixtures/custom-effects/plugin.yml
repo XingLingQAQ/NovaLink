@@ -5,4 +5,4 @@ api-version: '1.21'
 depend: [NovaChat]
 commands:
   jointcustomeffects:
-    description: Joint production API driver
+    description: Joint sender permission and backend session driver

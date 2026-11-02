@@ -1,5 +1,7 @@
 ﻿#requires -Version 7.4
 
+. (Join-Path $PSScriptRoot 'storage-probe.ps1')
+
 function Get-EnvironmentCaseDefinitions {
     param([string]$SpecificationPath = (Join-Path $PSScriptRoot 'cases.psd1'))
     $spec = Import-PowerShellDataFile $SpecificationPath
@@ -9,7 +11,8 @@ function Get-EnvironmentCaseDefinitions {
             RequiredAssertionIds = $spec.RequiredAssertions[$name]
             Preconditions = @('PowerShell >= 7.4', 'JDK21', 'Node24 + locked bot dependencies', 'prebuilt backend fat jar or classpath, Bukkit/Fabric fat jars',
                 'locked Purpur + Fabric launcher + Fabric API in DistDir', 'OpenSSL', 'curl with CA verification') +
-                $(if ($name -in @('mysql', 'postgresql')) { 'dedicated SQL database with TLS or -ProvisionDatabases' })
+                $(if ($name -in @('mysql', 'postgresql')) { 'empty dedicated SQL database with TLS or -ProvisionDatabases; prebuilt storage probe classpath' }) +
+                $(if ($name -eq 'redis') { 'dedicated Redis server (database 0) or -ProvisionDatabases; prebuilt storage probe classpath' })
         }
     }
 }
@@ -184,6 +187,7 @@ function Copy-EnvironmentBackendClasspath($Context) {
 
 function New-EnvironmentDatabase($Context, [string]$Engine, [switch]$Provision) {
     if ($Engine -eq 'memory') { return @{ Type = 'memory' } }
+    if ($Engine -eq 'redis') { return New-EnvironmentRedis $Context -Provision:$Provision }
     $prefix = if ($Engine -eq 'mysql') { 'NOVALINK_ENV_MYSQL_' } else { 'NOVALINK_ENV_POSTGRES_' }
     if ($Provision) {
         $password = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(24))
@@ -250,6 +254,43 @@ exec docker-entrypoint.sh "$@"
     return $db
 }
 
+function New-EnvironmentRedis($Context, [switch]$Provision) {
+    $db = @{ Type = 'redis'; Host = '127.0.0.1'; Port = 0; Database = 0; Password = '' }
+    if (-not $Provision) {
+        foreach ($pair in @(@('Host', 'HOST'), @('Port', 'PORT'))) {
+            $value = [Environment]::GetEnvironmentVariable('NOVALINK_ENV_REDIS_' + $pair[1])
+            if ([string]::IsNullOrWhiteSpace($value)) { throw "Required dedicated Redis setting: NOVALINK_ENV_REDIS_$($pair[1])" }
+            $db[$pair[0]] = $value
+        }
+        $db.Password = [string]$env:NOVALINK_ENV_REDIS_PASSWORD
+        if ($db.Password) { $Context.Secrets.Add($db.Password) }
+        return $db
+    }
+    $db.Password = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(24))
+    $Context.Secrets.Add($db.Password)
+    $name = "novalink-env-redis-$($Context.RunId.ToLowerInvariant())"
+    $Context.Containers.Add($name)
+    $configPath = Join-Path $Context.Private 'redis-container/redis.conf'
+    Write-EnvironmentText $configPath "bind 0.0.0.0`nport 6379`nprotected-mode yes`nrequirepass $($db.Password)`nsave `"`"`nappendonly no`n"
+    $null = Invoke-EnvironmentNative $Context 'docker-run-redis' 'docker' @(
+        'run', '--detach', '--rm', '--name', $name, '--publish', '127.0.0.1::6379',
+        '--mount', "type=bind,source=$configPath,target=/usr/local/etc/redis/redis.conf,readonly",
+        'redis:7.4', 'redis-server', '/usr/local/etc/redis/redis.conf') 180
+    $mapping = Invoke-EnvironmentNative $Context 'docker-port-redis' 'docker' @('port', $name, '6379/tcp')
+    if ($mapping.Trim() -notmatch '^127\.0\.0\.1:(\d+)$') { throw 'Unexpected Redis port mapping' }
+    $db.Port = [int]$Matches[1]
+    $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    do {
+        try {
+            $pong = Invoke-EnvironmentNative $Context "docker-redis-ready-$([guid]::NewGuid().ToString('N'))" 'docker' @(
+                'exec', $name, 'redis-cli', '--no-auth-warning', '-a', $db.Password, 'ping') 10
+            if ($pong.Trim() -ceq 'PONG') { return $db }
+        } catch { }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'Redis never accepted an authenticated PING'
+}
+
 function Write-EnvironmentBackendConfig($Context, $Database) {
     $yaml = @"
 server:
@@ -266,7 +307,10 @@ server:
 database:
   type: $($Database.Type)
 "@
-    if ($Database.Type -ne 'memory') {
+    if ($Database.Type -eq 'redis') {
+        $yaml += "`n  redis:`n    enabled: true`n    host: '$(([string]$Database.Host).Replace("'", "''"))'`n"
+        $yaml += "    port: $([int]$Database.Port)`n    password: '$(([string]$Database.Password).Replace("'", "''"))'`n"
+    } elseif ($Database.Type -ne 'memory') {
         $sslMode = if ($Database.Type -eq 'mysql') { 'REQUIRED' } else { 'require' }
         $yaml += "`n  $($Database.Type):`n"
         foreach ($pair in @(@('host', 'Host'), @('database', 'Database'), @('username', 'Username'), @('password', 'Password'))) {
@@ -386,6 +430,8 @@ function Invoke-EnvironmentRest($Context, [string]$Path, [string]$Jwt = '', $Bod
     $headersFile = Join-Path $Context.Private "requests/$name.headers"
     $arguments = @('--silent', '--show-error', '--fail', '--noproxy', '*', '--max-time', '15',
         '--cacert', (Join-Path $Context.Certificates 'trusted.pem'), "https://127.0.0.1:$($Context.RestPort)$Path")
+    # Disposable CAs do not publish CRLs; keep chain and hostname verification.
+    if ($IsWindows) { $arguments += '--ssl-revoke-best-effort' }
     if ($Jwt) {
         Write-EnvironmentText $headersFile "Authorization: Bearer $Jwt`n"
         $arguments += @('--header', "@$headersFile")
@@ -513,10 +559,10 @@ function Publish-EnvironmentEvidence($Context) {
 function Invoke-EnvironmentScenarios {
     [CmdletBinding()]
     param(
-        [string[]]$Cases = @('tls-trusted', 'tls-untrusted', 'mysql', 'postgresql'),
+        [string[]]$Cases = @('tls-trusted', 'tls-untrusted', 'mysql', 'postgresql', 'redis'),
         [string]$RepoRoot = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)),
         [string]$DistDir = '', [string]$OutputRoot = '', [string]$ClassPathFile = '', [string]$BackendJar = '',
-        [string]$Jdk21 = $env:JAVA_HOME, [hashtable]$FabricRuntime = @{},
+        [string]$Jdk21 = $env:JAVA_HOME, [hashtable]$FabricRuntime = @{}, [string]$StorageProbeClassPathFile = '',
         [int]$BackendPort = 27820, [int]$RestPort = 27830, [int]$BukkitPort = 27800, [int]$FabricPort = 27801,
         [int]$ServerReadySec = 480, [switch]$ProvisionDatabases
     )
@@ -527,11 +573,12 @@ function Invoke-EnvironmentScenarios {
     $RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
     if (-not $DistDir) { $DistDir = Join-Path $RepoRoot '.e2e-artifacts/dist' }
     if (-not $OutputRoot) { $OutputRoot = Join-Path $RepoRoot '.e2e-artifacts/environment' }
+    if (-not $StorageProbeClassPathFile) { $StorageProbeClassPathFile = Join-Path $RepoRoot '.e2e-artifacts/environment-probe-build/storage/environment-probe.classpath.txt' }
     if ($BackendJar -and $ClassPathFile) { throw 'Select either BackendJar or ClassPathFile' }
     if (-not $BackendJar -and -not $ClassPathFile) {
         $BackendJar = Resolve-EnvironmentArtifact $RepoRoot 'StarLink/core/build/libs/*-all.jar'
     }
-    foreach ($pathName in @('DistDir', 'OutputRoot', 'ClassPathFile', 'BackendJar')) {
+    foreach ($pathName in @('DistDir', 'OutputRoot', 'ClassPathFile', 'BackendJar', 'StorageProbeClassPathFile')) {
         $value = Get-Variable -Name $pathName -ValueOnly
         if ($value) {
             if (-not [IO.Path]::IsPathRooted($value)) { $value = Join-Path $RepoRoot $value }
@@ -549,7 +596,7 @@ function Invoke-EnvironmentScenarios {
     $node = Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1
     $nodeVersion = & $node.Source --version
     if ($LASTEXITCODE -ne 0 -or $nodeVersion -notmatch '^v24\.') { throw 'The environment runner requires Node 24' }
-    if ($ProvisionDatabases -and @($Cases | Where-Object { $_ -in @('mysql', 'postgresql') }).Count -gt 0) {
+    if ($ProvisionDatabases -and @($Cases | Where-Object { $_ -in @('mysql', 'postgresql', 'redis') }).Count -gt 0) {
         $null = Get-Command docker -CommandType Application -ErrorAction Stop
     }
     if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'test/bot/node_modules/mineflayer'))) { throw 'Install locked test/bot dependencies before running' }
@@ -595,8 +642,11 @@ function Invoke-EnvironmentScenarios {
             Copy-Item -LiteralPath $fabricPlugin -Destination $context.FabricPlugin
             $context.BackendClasspath = Copy-EnvironmentBackendClasspath $context
             $context.Certificates = New-EnvironmentCertificates $context
-            $engine = if ($case -in @('mysql', 'postgresql')) { $case } else { 'memory' }
+            $engine = if ($case -in @('mysql', 'postgresql', 'redis')) { $case } else { 'memory' }
             $db = New-EnvironmentDatabase $context $engine -Provision:$ProvisionDatabases
+            if ($engine -ne 'memory') {
+                foreach ($assertion in Invoke-EnvironmentStorageProbe $context $db $StorageProbeClassPathFile) { $assertions.Add($assertion) }
+            }
             $context.BackendConfig = Write-EnvironmentBackendConfig $context $db
             $backend = Start-EnvironmentBackend $context 'initial'
             $jwt = Connect-EnvironmentRest $context
@@ -633,7 +683,7 @@ function Invoke-EnvironmentScenarios {
                 $assertions.Add((New-EnvironmentAssertion 'ENV-TLS-UNTRUSTED-NO-AUTH' (-not $newAuth) 'No new Fabric authentication after restart with unrelated CA'))
                 $assertions.Add((New-EnvironmentAssertion 'ENV-TLS-UNTRUSTED-NO-DELIVERY' ($absent -and $observed -and $null -ne $senderRow) 'Receiver observed a full 12-second window after the actual game sender published its send; game row persisted' $negative.Token))
             } else {
-                $prefix = if ($case -eq 'mysql') { 'ENV-MYSQL' } else { 'ENV-POSTGRES' }
+                $prefix = switch ($case) { 'mysql' { 'ENV-MYSQL' }; 'postgresql' { 'ENV-POSTGRES' }; 'redis' { 'ENV-REDIS' } }
                 $assertions.Add((New-EnvironmentAssertion "$prefix-GAME-DELIVERY" ($toFabric -and $fromFabric) 'Actual Bukkit/Fabric bots exchanged game messages before backend restart'))
                 $before = Get-EnvironmentMessage $context $jwt $control.Token
                 $assertions.Add((New-EnvironmentAssertion "$prefix-STORED" ($null -ne $before -and [long]$before.id -gt 0) 'Read actual game sender row via authenticated HTTPS message history' $control.Token))
@@ -642,11 +692,11 @@ function Invoke-EnvironmentScenarios {
                 $oldBackend = $backend
                 $oldStart = $backend.Process.StartTime.ToUniversalTime()
                 Stop-EnvironmentProcess $backend
-                if ($oldBackend.Forced) { throw 'Backend shutdown required a forced kill before the SQL restart check' }
+                if ($oldBackend.Forced) { throw 'Backend shutdown required a forced kill before the database restart check' }
                 $backend = Start-EnvironmentBackend $context 'restarted'
                 $jwt = Connect-EnvironmentRest $context
                 $newProcess = $oldBackend.Process.HasExited -and $backend.Process.StartTime.ToUniversalTime() -gt $oldStart
-                $assertions.Add((New-EnvironmentAssertion "$prefix-RESTARTED" $newProcess 'Old backend exited after graceful shutdown; a new process serves the unchanged SQL database'))
+                $assertions.Add((New-EnvironmentAssertion "$prefix-RESTARTED" $newProcess 'Old backend exited after graceful shutdown; a new process serves the unchanged database'))
                 $after = Get-EnvironmentMessage $context $jwt $control.Token
                 $same = $null -ne $after
                 foreach ($field in @('id', 'channelId', 'senderId', 'senderName', 'clientId', 'content', 'timestamp')) {

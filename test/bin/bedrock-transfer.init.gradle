@@ -1,0 +1,53 @@
+import org.gradle.api.tasks.bundling.Jar
+import org.gradle.api.tasks.compile.JavaCompile
+import groovy.json.JsonOutput
+
+def output = gradle.startParameter.projectProperties['bedrockTransferBuildRoot']
+if (!output) {
+    throw new GradleException('Pass -PbedrockTransferBuildRoot=<isolated .e2e-artifacts directory>')
+}
+
+gradle.beforeProject { project ->
+    project.layout.buildDirectory.set(new File(output, project.path.replace(':', '/').replaceAll('^/', '')))
+}
+
+gradle.afterProject { project ->
+    if (project.path == ':NovaChat:Bedrock:pnx') {
+        def fixture = project.rootProject.file('test/bedrock-transfer/fixture')
+        def pinnedJar = project.rootProject.file('.e2e-artifacts/dist/powernukkitx-3.0.6.jar')
+        def compileFixture = project.tasks.register('compileBedrockTransferFixtureJava', JavaCompile) {
+            source project.fileTree(new File(fixture, 'src')) { include '**/*.java' }
+            classpath = project.files(pinnedJar)
+            destinationDirectory = project.layout.buildDirectory.dir('classes/java/bedrockTransferFixture')
+            javaCompiler.set(project.tasks.named('compileJava', JavaCompile).flatMap { it.javaCompiler })
+            options.release.set(21)
+            options.encoding = 'UTF-8'
+            options.compilerArgs.add('-proc:none')
+        }
+        project.tasks.register('bedrockTransferFixtureJar', Jar) {
+            dependsOn compileFixture
+            archiveFileName.set('bedrock-transfer-fixture.jar')
+            destinationDirectory = project.layout.buildDirectory.dir('libs')
+            from compileFixture.flatMap { it.destinationDirectory }
+            from new File(fixture, 'plugin.yml')
+        }
+    }
+    if (project.path == ':StarLink:core') {
+        project.tasks.register('writeBedrockTransferArtifacts') {
+            dependsOn project.tasks.named('jar')
+            dependsOn ':NovaChat:Bedrock:pnx:shadowJar', ':NovaChat:Bedrock:pnx:bedrockTransferFixtureJar'
+            doLast {
+                def pnx = project.project(':NovaChat:Bedrock:pnx')
+                def core = project.tasks.named('jar', Jar).get().archiveFile.get().asFile
+                def cp = ([core] + project.configurations.runtimeClasspath.files).collect { it.absolutePath }.join(File.pathSeparator)
+                def manifest = new File(output, 'artifacts.json')
+                manifest.parentFile.mkdirs()
+                manifest.text = JsonOutput.prettyPrint(JsonOutput.toJson([
+                    classpath: cp,
+                    pluginJar: pnx.tasks.named('shadowJar', Jar).get().archiveFile.get().asFile.absolutePath,
+                    fixtureJar: pnx.tasks.named('bedrockTransferFixtureJar', Jar).get().archiveFile.get().asFile.absolutePath
+                ]))
+            }
+        }
+    }
+}

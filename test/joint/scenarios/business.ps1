@@ -9,11 +9,19 @@ function Get-JointBusinessPlans {
   $inbound = "$RunId-reconnect-inbound"
   $plans.Alice += @(
     @{ id = 'recovery-wait-peer'; action = 'handoffGet'; key = 'recovery-peer-ready'; timeoutMs = 60000 },
+    @{ action = 'wait'; ms = 1500 },
+    @{ action = 'checkpoint'; key = 'recovery-selecting' },
+    @{ action = 'arm'; token = 'Joined channel local'; reset = $true },
+    @{ action = 'cmd'; text = '/nc join local' },
+    @{ id = 'recovery-selected'; action = 'expect'; token = 'Joined channel local'; timeoutMs = 20000; required = $true },
     @{ id = 'recovery-reconnect'; action = 'reconnect'; timeoutMs = 45000; delayMs = 2000 },
-    @{ id = 'recovery-arm-header'; action = 'arm'; token = 'online members (' },
+    @{ action = 'checkpoint'; key = 'recovery-query-start' },
+    @{ id = 'recovery-arm-header'; action = 'arm'; token = 'Channel Local online members (' },
     @{ id = 'recovery-arm-member'; action = 'arm'; token = 'E2EBizAlice' },
-    @{ id = 'recovery-who'; action = 'cmd'; text = '/nc who global' },
-    @{ id = 'recovery-header'; action = 'expect'; token = 'online members ('; timeoutMs = 20000 },
+    @{ id = 'recovery-who'; action = 'query'; text = '/nc who';
+      pattern = 'Channel Local online members \([1-9][0-9]*\):'; sinceCheckpoint = 'recovery-query-start';
+      timeoutMs = 20000; intervalMs = 1000; required = $true },
+    @{ id = 'recovery-header'; action = 'expect'; token = 'Channel Local online members ('; timeoutMs = 20000 },
     @{ id = 'recovery-member'; action = 'expect'; token = 'E2EBizAlice'; timeoutMs = 20000 },
     @{ id = 'recovery-arm-inbound'; action = 'arm'; token = $inbound },
     @{ id = 'recovery-send'; action = 'chat'; text = "reconnected $outbound" },
@@ -22,6 +30,10 @@ function Get-JointBusinessPlans {
     @{ id = 'quit'; action = 'quit' }
   )
   $plans.Bob += @(
+    @{ action = 'wait'; ms = 1500 },
+    @{ action = 'arm'; token = 'Joined channel local'; reset = $true },
+    @{ action = 'cmd'; text = '/nc join local' },
+    @{ id = 'recovery-peer-selected'; action = 'expect'; token = 'Joined channel local'; timeoutMs = 20000; required = $true },
     @{ id = 'recovery-arm-outbound'; action = 'arm'; token = $outbound },
     @{ id = 'recovery-peer-ready'; action = 'handoffSet'; key = 'recovery-peer-ready'; pattern = [regex]::Escape($plans.Tokens.Shared) },
     @{ id = 'recovery-receive'; action = 'expect'; token = $outbound; timeoutMs = 90000 },
@@ -53,12 +65,35 @@ function Assert-JointBusinessResults {
     -Pass ($null -ne $reconnect -and $reconnect.pass) -Evidence "$($reconnect.evidence)" -Kind 'recovery'
 
   $spawn = @($AliceRes.received | Where-Object { $_.kind -eq 'reconnect' -and $_.phase -eq 'spawned' }) | Select-Object -Last 1
-  $query = @($AliceRes.sent | Where-Object { $_.text -eq '/nc who global' }) | Select-Object -Last 1
+  $query = @($AliceRes.sent | Where-Object { $_.text -eq '/nc who' -and $spawn -and $_.atMs -ge $spawn.atMs }) | Select-Object -First 1
+  $selectionStart = @(Get-JointBotRows $AliceRes -Kind 'checkpoint' | Where-Object { $_.key -ceq 'recovery-selecting' })
+  $selectionRequest = @($AliceRes.sent | Where-Object {
+    $_.text -ceq '/nc join local' -and $selectionStart.Count -eq 1 -and
+      $_.atMs -ge $selectionStart[0].atMs -and $spawn -and $_.atMs -lt $spawn.atMs
+  })
+  $selected = Find-JointBotVerdict $AliceRes 'recovery-selected'
+  $selectedRows = @()
+  if ($selectionRequest.Count -eq 1) {
+    $selectedRows = @(Get-JointBotRows $AliceRes -Kind 'messagestr' `
+      -SinceMs $selectionRequest[0].atMs -UntilMs $spawn.atMs | Where-Object {
+        [regex]::Replace([string]$_.text, ([string][char]0x00A7 + '.|&[0-9a-fk-or]'), '') -match '(?:^|\s)Joined channel local$'
+      })
+  }
+  New-JointAssertion -Id "$prefix/reconnect-selected-nondefault" -Token 'local before disconnect' `
+    -Pass ($selectionRequest.Count -eq 1 -and $selectedRows.Count -eq 1 -and $null -ne $selected -and $selected.pass) `
+    -Evidence 'A fresh local JOIN acknowledgement precedes the controlled reconnect.' -Kind 'recovery'
+  $repairCommands = @($AliceRes.sent | Where-Object {
+    $spawn -and $_.atMs -ge $spawn.atMs -and $_.text -match '^/nc\s+(?:join|accept|create|channel)(?:\s|$)'
+  })
+  New-JointAssertion -Id "$prefix/reconnect-no-rejoin" -Token 'automatic recovery' `
+    -Pass ($null -ne $spawn -and $repairCommands.Count -eq 0) `
+    -Evidence "Post-spawn membership repair commands=$($repairCommands.Count)" -Kind 'recovery'
   $body = ''
   if ($spawn -and $query -and $query.atMs -ge $spawn.atMs) {
     $lines = @(Get-JointBotRows -BotResult $AliceRes -Kind 'messagestr' -SinceMs $query.atMs)
     for ($i = 0; $i -lt $lines.Count - 1; $i++) {
-      if ($lines[$i].text -match 'online members \([1-9][0-9]*\):') {
+      $header = [regex]::Replace([string]$lines[$i].text, ([string][char]0x00A7 + '.|&[0-9a-fk-or]'), '')
+      if ($header -match 'Channel Local online members \([1-9][0-9]*\):') {
         $body = [string]$lines[$i + 1].text
         $body = [regex]::Replace($body, ([string][char]0x00A7 + '.|&[0-9a-fk-or]'), '')
         $body = ($body -replace '^\[NovaChat\]\s*', '').Trim()

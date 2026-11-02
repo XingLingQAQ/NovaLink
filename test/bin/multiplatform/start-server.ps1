@@ -50,7 +50,9 @@ param(
     [int]$McPort       = 25565,
     [int]$MemoryMb     = 1024,
     [int]$RconPort     = 0,      # 0 = don't enable RCON in server.properties
-    [string]$RconPassword = ""
+    [string]$RconPassword = "",
+    [switch]$PrepareOnly,
+    [string]$LaunchSpec = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -176,9 +178,11 @@ allow-the-end=off
     # for anything absent (level-settings.default-format defaults to leveldb).
     $nukkitYmlFile = Join-Path $serverDir "nukkit.yml"
     $pnxChunkSettings = if ($Platform -eq 'pnx') { "chunk-settings:`r`n  spawnThreshold: 16" } else { "" }
+    $pnxBaseSettings = if ($Platform -eq 'pnx') { '  installSpark: false' } else { '' }
     @"
 settings:
   language: "eng"
+$pnxBaseSettings
   force-language: false
 $pnxChunkSettings
 "@ | Set-Content -Path $nukkitYmlFile -NoNewline
@@ -215,12 +219,41 @@ $rconBlock
 $stdout = Join-Path $serverDir "$Platform.stdout.log"
 $stderr = Join-Path $serverDir "$Platform.stderr.log"
 $pidFile = Join-Path $serverDir "$Platform.pid"
-Remove-Item $stdout, $stderr, $pidFile -ErrorAction SilentlyContinue
-
 $jvmArgs = @("-Xms${MemoryMb}M", "-Xmx${MemoryMb}M", "-jar", $jarPath, "nogui")
 if ($Platform -eq 'pnx') {
     $jvmArgs = @('--add-opens=java.base/java.lang=ALL-UNNAMED') + $jvmArgs + @('--skip-setup', '--accept-license')
+    if ($PrepareOnly) {
+        $jvmArgs = @('-Dterminal.jline=false', '-Dterminal.ansi=false') + $jvmArgs + @('--disable-ansi')
+    }
 }
+if ($PrepareOnly -or $LaunchSpec) {
+    $launchArguments = @($jvmArgs)
+    $launchArguments[[Array]::IndexOf($launchArguments, '-jar') + 1] = [IO.Path]::GetFullPath($jarPath)
+    $spec = [ordered]@{
+        schemaVersion = 1
+        platform = $Platform
+        java = [IO.Path]::GetFullPath($java)
+        arguments = $launchArguments
+        workingDirectory = [IO.Path]::GetFullPath($serverDir)
+        stdout = [IO.Path]::GetFullPath($stdout)
+        stderr = [IO.Path]::GetFullPath($stderr)
+        pidFile = [IO.Path]::GetFullPath($pidFile)
+        readyPattern = $pm.ReadyPattern
+        serverJar = [IO.Path]::GetFullPath($jarPath)
+        serverSha256 = $lock.Sha256
+    }
+    if ($LaunchSpec) {
+        $specPath = [IO.Path]::GetFullPath($LaunchSpec)
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $specPath) | Out-Null
+        [IO.File]::WriteAllText($specPath, ($spec | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    }
+    if ($PrepareOnly) {
+        Log "$Platform launch prepared; no server process started"
+        if (-not $LaunchSpec) { Write-Output ([pscustomobject]$spec) }
+        return
+    }
+}
+Remove-Item $stdout, $stderr, $pidFile -ErrorAction SilentlyContinue
 $proc = Start-Process -FilePath $java -ArgumentList $jvmArgs -WorkingDirectory $serverDir `
     -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
 $proc.Id | Set-Content -Encoding ascii $pidFile

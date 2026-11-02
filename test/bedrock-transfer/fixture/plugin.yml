@@ -1,0 +1,12 @@
+name: BedrockTransferFixture
+version: 1.0
+main: com.nova.bedrock.fixture.BedrockTransferFixture
+api: ["3.0.6"]
+depend: [NovaChat]
+commands:
+  bttransfer:
+    description: Invoke native Player.transfer from console
+  btprobe:
+    description: Send a node-specific probe to an online player
+  btstate:
+    description: Inspect an online player from console

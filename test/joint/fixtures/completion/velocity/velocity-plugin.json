@@ -1,0 +1,6 @@
+{
+  "id": "joint-completion-fixture",
+  "name": "Joint Completion Fixture",
+  "version": "1.0",
+  "main": "com.nova.joint.fixture.CompletionVelocity"
+}

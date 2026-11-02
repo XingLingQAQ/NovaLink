@@ -5,6 +5,8 @@ import com.nova.chat.client.channel.KnownChannelRegistry;
 import com.nova.chat.client.command.PlayerMessages;
 import com.nova.chat.client.command.WelcomeMessageService;
 import com.nova.chat.client.command.WhoCommandService;
+import com.nova.chat.client.error.ErrorCode;
+import com.nova.chat.client.error.ErrorMessageFormatter;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.ignore.IgnoreListService;
 import com.nova.chat.client.itemdisplay.ItemDisplayMessages;
@@ -58,6 +60,7 @@ public class ProxyChatCore {
 
     private final ProxyPlatform platform;
     private final ProxyPlayerStateStore states;
+    private final ProxyChannelRecovery channelRecovery;
     private final ProxyMessageFormatter messageFormatter;
 
     /** Per-player ignore lists (/nc ignore); consulted by every render path. */
@@ -138,6 +141,7 @@ public class ProxyChatCore {
         this.platform = platform;
         this.clientSupplier = clientSupplier;
         this.states = new ProxyPlayerStateStore(config);
+        this.channelRecovery = new ProxyChannelRecovery(platform, states, this::getNetworkClientFor);
         this.messageFormatter = new ProxyMessageFormatter(config);
         this.ignoreListService = ignoreListService;
         this.privateMessageService = privateMessageService;
@@ -208,6 +212,7 @@ public class ProxyChatCore {
             if (getNetworkClientFor(server) != client) {
                 continue;
             }
+            if (channelRecovery.authenticated(player, client)) { continue; }
             com.nova.chat.client.channel.ChannelMembershipRestorer.restore(
                     getPlayerState(player.getUniqueId()), player.getName(), platform.getPlatformType(),
                     null, server, client::sendPacket);
@@ -572,6 +577,7 @@ public class ProxyChatCore {
     public void handleChannelActionResponse(ChannelActionResponsePacket packet,
                                             ChannelResponseDispatcher dispatcher) {
         platform.logDebug("Received channel action response: " + packet);
+        if (channelRecovery.handles(packet)) { return; }
         if (privateMessageService != null
                 && PrivateMessageService.isPrivateMessageError(packet)) {
             privateMessageService
@@ -620,6 +626,9 @@ public class ProxyChatCore {
         if (!isBackendReadyFor(player)) {
             return ChatDecision.reply(messageFormatter.formatError(
                     I18n.tr(playerId, "chat.network.not_connected_retry")));
+        }
+        if (state.getActiveChannel() == null) {
+            return ChatDecision.reply(messageFormatter.formatError(ErrorMessageFormatter.format(ErrorCode.NOT_IN_CHANNEL)));
         }
 
         // Channel-prefix routing (e.g. "!hi" -> global) before the active-channel
@@ -824,6 +833,7 @@ public class ProxyChatCore {
      */
     public void onPlayerDisconnect(UUID playerId) {
         PlayerChannelState state = states.getState(playerId);
+        channelRecovery.disconnected(playerId, state);
         notifyBackendDisconnect(playerId, state);
         states.removeState(playerId);
         welcomedPlayers.remove(playerId);
@@ -831,6 +841,10 @@ public class ProxyChatCore {
         if (privateMessageService != null) {
             privateMessageService.onPlayerQuit(playerId);
         }
+    }
+
+    public boolean restoreChannelAfterConnect(ProxyPlayer player, PlayerChannelState state, String server) {
+        return channelRecovery.connected(player, state, server);
     }
 
     /**

@@ -29,7 +29,7 @@ if ($summary.scenarioGroups -is [string] -or $reportedGroups.Count -eq 0) {
   throw 'summary.scenarioGroups must be a non-empty array including core and every requested group'
 }
 foreach ($group in $reportedGroups) {
-  if ($group -isnot [string] -or $group -cnotin @('core', 'business', 'lite-moderation', 'recovery', 'proxy-switch', 'channel-lifecycle', 'social-contract', 'custom-effects')) {
+  if ($group -isnot [string] -or $group -cnotin @('core', 'business', 'lite-moderation', 'recovery', 'proxy-switch', 'channel-lifecycle', 'social-contract', 'custom-effects', 'completion')) {
     throw "Invalid group in summary.scenarioGroups: '$group'"
   }
 }

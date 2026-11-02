@@ -5,8 +5,8 @@ if (-not (Get-Command New-JointAssertion -ErrorAction SilentlyContinue)) {
 function Get-CustomEffectsRequiredAssertionIds {
   param([int]$RoundIndex)
   foreach ($id in @('drive', 'sender-authenticated', 'sender-completed', 'target-completed', 'observer-completed',
-    'target-title', 'target-subtitle', 'target-timings', 'target-absent-observer', 'target-absent-sender',
-    'control-title', 'control-subtitle', 'control-timings', 'control-absent-target')) {
+    'target-command', 'target-title', 'target-subtitle', 'target-timings', 'target-absent-observer', 'target-absent-sender',
+    'control-command', 'control-title', 'control-subtitle', 'control-timings', 'control-absent-target')) {
     "round$RoundIndex/custom-effects/$id"
   }
 }
@@ -20,11 +20,10 @@ function Get-CustomEffectsPrerequisites {
     SecretEnvironment = 'NOVALINK_JOINT_CUSTOM_EFFECTS_ADMIN_PASSWORD'
     SecretEnvironmentProcess = 'Primary Bukkit server at launch; not bots or handoff files'
     Authentication = 'Existing backend super-admin UUID for E2EJointJava; password = BackendState.AdminPassword'
-    TitleApi = 'NovaChatBukkit.getNetworkClient().sendPacket(AdminActionPacket): STATUS, type=TITLE'
+    TitleCommand = '/nc title <channel> <title> [subtitle...] --fadeIn <ticks> --stay <ticks> --fadeOut <ticks>'
     TimingExtras = @{ fadeIn = '3'; stay = '37'; fadeOut = '9' }
     ControlTimingExtras = @{ fadeIn = '7'; stay = '43'; fadeOut = '11' }
-    RequiredCallbacks = @('GrantSenderPermissions(username)', 'AuthenticateSender(username)', 'SendTitle(request)')
-    OptionalCallbacks = @('ReleaseSender(username)')
+    RequiredCallbacks = @('GrantSenderPermissions(username)', 'AuthenticateSender(username)', 'ReleaseSender(username)')
     HarnessFunctions = @('New-CrossServerPlan', 'Start-Bot', 'Wait-Bots', 'Read-BotResult', 'Set-Handoff', 'Wait-Handoff')
   }
 }
@@ -41,6 +40,14 @@ function Get-CustomEffectsPhases {
     Id = 'control'; ChannelId = $ControlChannel; Title = "$RunId-ce-control-title"; Subtitle = "$RunId-ce-control-subtitle"
     FadeIn = 7; Stay = 43; FadeOut = 11; Recipient = 'Observer'
   }
+}
+
+function Get-CustomEffectsTitleCommand {
+  param($Phase)
+  foreach ($part in @($Phase.ChannelId, $Phase.Title, $Phase.Subtitle)) {
+    if ([string]$part -cnotmatch '^[A-Za-z0-9_.-]+$') { throw 'Custom effects command arguments must be single safe tokens.' }
+  }
+  "/nc title $($Phase.ChannelId) $($Phase.Title) $($Phase.Subtitle) --fadeIn $($Phase.FadeIn) --stay $($Phase.Stay) --fadeOut $($Phase.FadeOut)"
 }
 
 function Get-CustomEffectsPlans {
@@ -84,6 +91,17 @@ function Get-CustomEffectsPlans {
         @{ action = 'signal'; key = "ce-$id-$lower-ready" },
         @{ action = 'handoffGet'; key = "ce-$id-issued"; timeoutMs = 45000 }
       )
+      if ($role -eq 'Sender') {
+        $steps += @(
+          @{ action = 'wait'; ms = $CommandIntervalMs },
+          @{ action = 'checkpoint'; key = "ce-$id-command-start" },
+          @{ action = 'cmd'; text = (Get-CustomEffectsTitleCommand $phase) },
+          @{ id = "ce-$id-command-success"; action = 'expectText'; pattern = '(?:^|\s)Title sent$';
+            sinceCheckpoint = "ce-$id-command-start"; timeoutMs = 15000; required = $true },
+          @{ action = 'checkpoint'; key = "ce-$id-command-end" },
+          @{ action = 'signal'; key = "ce-$id-command-sent" }
+        )
+      }
       if ($role -eq $phase.Recipient) {
         $steps += @(
           @{ id = "ce-$id-title"; action = 'expectEvent'; kind = 'title'; match = "title: $($phase.Title)";
@@ -169,6 +187,29 @@ function Test-CustomEffectsTitleTransaction {
     Evidence = "$($Window.Evidence); title=$($titles.Count); subtitle=$($subtitles.Count); titleTimes=$($times.Count); expected ticks=$($Phase.FadeIn)/$($Phase.Stay)/$($Phase.FadeOut)" }
 }
 
+function Test-CustomEffectsCommandReceipt {
+  param($Result, $Phase)
+  $rows = @($Result.received)
+  $start = @($rows | Where-Object { $_.kind -eq 'checkpoint' -and $_.key -ceq "ce-$($Phase.Id)-command-start" })
+  $end = @($rows | Where-Object { $_.kind -eq 'checkpoint' -and $_.key -ceq "ce-$($Phase.Id)-command-end" })
+  if ($start.Count -ne 1 -or $end.Count -ne 1) { return $false }
+  $first = [array]::IndexOf($rows, $start[0]); $last = [array]::IndexOf($rows, $end[0])
+  if ($first -ge $last) { return $false }
+  $firstMs = Get-JointBotRowAtMs $start[0]; $lastMs = Get-JointBotRowAtMs $end[0]
+  if ($null -eq $firstMs -or $null -eq $lastMs -or $lastMs -lt $firstMs) { return $false }
+  $command = Get-CustomEffectsTitleCommand $Phase
+  $sent = @($Result.sent | Where-Object { $_.text -ceq $command })
+  if ($sent.Count -ne 1) { return $false }
+  $sentMs = Get-JointBotRowAtMs $sent[0]
+  if ($null -eq $sentMs -or $sentMs -lt $firstMs -or $sentMs -gt $lastMs) { return $false }
+  $acks = @()
+  for ($i = $first + 1; $i -lt $last; $i++) {
+    if ($rows[$i].kind -eq 'messagestr' -and [string]$rows[$i].text -cmatch '(?:^|\s)Title sent$') { $acks += $rows[$i] }
+  }
+  $verdict = Find-JointBotVerdict $Result "ce-$($Phase.Id)-command-success"
+  $acks.Count -eq 1 -and (Get-JointBotRowAtMs $acks[0]) -ge $sentMs -and $verdict.pass -eq $true
+}
+
 function Assert-CustomEffectsResults {
   param([int]$RoundIndex, [string]$RunId, $SenderRes, $TargetRes, $ObserverRes,
     [string]$Channel = 'global', [string]$ControlChannel = 'local', [int]$ObservationMs = 2000)
@@ -218,9 +259,13 @@ function Assert-CustomEffectsResults {
   }
   New-JointAssertion -Id "$prefix/sender-authenticated" -Token 'production AUTH response' -Pass $auth `
     -Evidence "E2EJointJava received backend AUTH success between its local authentication checkpoints=$auth" -Kind 'custom-effects'
-  $windows = @{}; $transactions = @{}
+  $windows = @{}; $transactions = @{}; $commands = @{}
   $phases = @(Get-CustomEffectsPhases $RunId $Channel $ControlChannel)
   foreach ($phase in $phases) {
+    $commandOk = $auth -and $usable.Sender -and (Test-CustomEffectsCommandReceipt $SenderRes $phase)
+    $commands[$phase.Id] = [bool]$commandOk
+    New-JointAssertion -Id "$prefix/$($phase.Id)-command" -Token (Get-CustomEffectsTitleCommand $phase) -Pass $commandOk `
+      -Evidence "E2EJointJava sent the exact title command once and received fresh backend Title sent=$commandOk" -Kind 'custom-effects'
     foreach ($role in @('Sender', 'Target', 'Observer')) {
       $key = "$($phase.Id)/$role"
       $windows[$key] = Get-CustomEffectsWindow $results[$role] $RunId $role.ToLowerInvariant() $phase.Id $ObservationMs
@@ -229,9 +274,9 @@ function Assert-CustomEffectsResults {
     $recipient = $phase.Recipient
     $transaction = $transactions["$($phase.Id)/$recipient"]
     foreach ($field in @('Title', 'Subtitle', 'Timings')) {
-      $pass = $auth -and $usable[$recipient] -and $transaction[$field]
+      $pass = $commandOk -and $usable[$recipient] -and $transaction[$field]
       New-JointAssertion -Id "$prefix/$($phase.Id)-$($field.ToLowerInvariant())" -Token $phase.Title -Pass $pass `
-        -Evidence "$recipient receiver: $($transaction.Evidence); same-run completed=$($usable[$recipient]); authenticated=$auth" -Kind 'custom-effects'
+        -Evidence "$recipient receiver: $($transaction.Evidence); same-run completed=$($usable[$recipient]); command accepted=$commandOk" -Kind 'custom-effects'
     }
   }
   foreach ($negative in @(
@@ -245,7 +290,7 @@ function Assert-CustomEffectsResults {
     $leaks = @($results[$negative.Role].received | Where-Object {
       $_.kind -eq 'title' -and ($_.data.text -ceq $phase.Title -or $_.data.text -ceq $phase.Subtitle)
     })
-    $pass = $auth -and $complete -and $window.Valid -and $window.Rows.Count -eq 0 -and $leaks.Count -eq 0 -and
+    $pass = $commands.target -and $commands.control -and $complete -and $window.Valid -and $window.Rows.Count -eq 0 -and $leaks.Count -eq 0 -and
       $transactions[$negative.Control].Timings -and $transactions[$negative.Positive].Timings
     New-JointAssertion -Id "$prefix/$($negative.Phase)-absent-$($negative.Role.ToLowerInvariant())" -Token $phase.Title -Pass $pass `
       -Evidence "$($negative.Role): $($window.Evidence); run-token leaks=$($leaks.Count); own positive control=$($transactions[$negative.Control].Timings); intended receiver=$($transactions[$negative.Positive].Timings)" -Kind 'custom-effects'
@@ -255,16 +300,16 @@ function Assert-CustomEffectsResults {
 function Invoke-CustomEffectsScenarios {
   param([int]$RoundIndex, [string]$RunId, [string]$WorkDir, [int]$JavaPort, [int]$ProxyPort,
     [string]$McVersion, [scriptblock]$GrantSenderPermissions, [scriptblock]$AuthenticateSender,
-    [scriptblock]$SendTitle, [scriptblock]$ReleaseSender,
+    [scriptblock]$ReleaseSender,
     [string]$Channel = 'global', [string]$ControlChannel = 'local',
     [ValidateRange(1500, 10000)][int]$CommandIntervalMs = 1500,
     [ValidateRange(2000, 10000)][int]$ObservationMs = 2000)
   $prefix = "round$RoundIndex/custom-effects"
   $bots = @(); $driveOk = $false; $evidence = ''; $work = $null; $senderPrepared = $false
   try {
-    if (-not $GrantSenderPermissions -or -not $AuthenticateSender -or -not $SendTitle -or
+    if (-not $GrantSenderPermissions -or -not $AuthenticateSender -or -not $ReleaseSender -or
       -not $WorkDir -or $JavaPort -le 0 -or $ProxyPort -le 0 -or -not $McVersion) {
-      throw 'Requires relay, direct Bukkit JavaPort, ProxyPort, MC version, and GrantSenderPermissions/AuthenticateSender/SendTitle callbacks.'
+      throw 'Requires relay, direct Bukkit JavaPort, ProxyPort, MC version, and GrantSenderPermissions/AuthenticateSender/ReleaseSender callbacks.'
     }
     $plans = Get-CustomEffectsPlans $RunId $Channel $ControlChannel $CommandIntervalMs $ObservationMs
     $work = Join-Path $WorkDir ([guid]::NewGuid().ToString('N'))
@@ -291,14 +336,8 @@ function Invoke-CustomEffectsScenarios {
       foreach ($role in @('sender', 'target', 'observer')) {
         if (-not (Wait-Handoff $handoffs $RunId "ce-$id-$role-ready" 35)) { throw "$id/${role}: no receiver-local before marker." }
       }
-      $request = [PSCustomObject]@{
-        RunId = $RunId; Phase = $id; RequestId = [guid]::NewGuid().ToString(); SenderName = 'E2EJointJava'
-        ChannelId = $phase.ChannelId; Title = $phase.Title; Subtitle = $phase.Subtitle
-        FadeIn = $phase.FadeIn; Stay = $phase.Stay; FadeOut = $phase.FadeOut
-      }
-      [IO.File]::WriteAllText((Join-Path $work "request-$id.json"), ($request | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
-      $null = & $SendTitle $request
       Set-Handoff $handoffs $RunId "ce-$id-issued" 'go'
+      if (-not (Wait-Handoff $handoffs $RunId "ce-$id-command-sent" 25)) { throw "${id}: sender did not complete the real title command with backend acceptance." }
       if (-not (Wait-Handoff $handoffs $RunId "ce-$id-positive-recorded" 35)) { throw "${id}: intended receiver did not finish effect observations." }
       Set-Handoff $handoffs $RunId "ce-$id-observe" 'go'
       foreach ($role in @('sender', 'target', 'observer')) {
@@ -315,7 +354,7 @@ function Invoke-CustomEffectsScenarios {
       if (-not $bot.Process.HasExited -or $bot.Process.ExitCode -ne 0) { throw "$($bot.Role) bot process did not complete successfully." }
     }
     $driveOk = $true
-    $evidence = "Three bot processes completed two production title API requests; receiver assertions below determine delivery. Artifacts: $work"
+    $evidence = "Three bot processes completed two authenticated /nc title commands; receiver assertions below determine delivery. Artifacts: $work"
   } catch {
     $evidence = $_.Exception.Message
   } finally {
@@ -349,9 +388,10 @@ function Get-CustomEffectsBukkitBridge {
 function New-CustomEffectsRconCallbacks {
   param([int]$RconPort, [string]$RconPassword)
   if ($RconPort -le 0 -or -not $RconPassword) { throw 'Custom effects requires primary Bukkit RCON credentials.' }
+  $sendRcon = (Get-Command Send-Rcon -CommandType Function -ErrorAction Stop).ScriptBlock
   $send = {
     param([string]$Operation, [string]$Arguments)
-    $response = Send-Rcon -Port $RconPort -Password $RconPassword -Command "jointcustomeffects $Operation $Arguments"
+    $response = & $sendRcon -Port $RconPort -Password $RconPassword -Command "jointcustomeffects $Operation $Arguments"
     if (-not $response -or -not $response.Contains("JointCustomEffectsBridge queued $Operation")) {
       throw "Custom effects bridge rejected $Operation; check primary Bukkit bridge, permissions and launch environment."
     }
@@ -359,15 +399,6 @@ function New-CustomEffectsRconCallbacks {
   @{
     GrantSenderPermissions = { param([string]$Username) & $send 'grant' $Username }.GetNewClosure()
     AuthenticateSender = { param([string]$Username) & $send 'auth' $Username }.GetNewClosure()
-    SendTitle = {
-      param($Request)
-      $parts = @($Request.SenderName, $Request.RequestId, $Request.ChannelId, $Request.Title, $Request.Subtitle,
-        $Request.FadeIn, $Request.Stay, $Request.FadeOut)
-      foreach ($part in $parts) {
-        if ([string]$part -cnotmatch '^[A-Za-z0-9_.-]+$') { throw 'Custom effects bridge arguments must be single safe tokens.' }
-      }
-      & $send 'title' ($parts -join ' ')
-    }.GetNewClosure()
     ReleaseSender = { param([string]$Username) & $send 'release' $Username }.GetNewClosure()
   }
 }

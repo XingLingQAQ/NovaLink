@@ -67,7 +67,11 @@ public class ProxyServerSwitchCore {
         chatCore.recordServer(player, serverName);
 
         PlayerChannelState state = chatCore.getOrCreateState(player);
-        if (chatCore.claimFirstConnection(player.getUniqueId())) {
+        boolean firstConnection = chatCore.claimFirstConnection(player.getUniqueId());
+        if (chatCore.restoreChannelAfterConnect(player, state, serverName)) {
+            return firstConnection;
+        }
+        if (firstConnection) {
             joinDefaultChannel(player, state, serverName);
             return true;
         }

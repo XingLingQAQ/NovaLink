@@ -17,7 +17,7 @@ missing required IDs and diagnostic-only evidence cannot satisfy acceptance.
 
 | Group | Required topology | Required ID families and observations |
 |---|---|---|
-| `core` | Velocity/Bungee relay with Bedrock, or Velocity/Bungee Lite + Bukkit | `round<N>/iso/*`, `round<N>/business/reconnect-*`, plus mode-specific delivery, link and attribution IDs |
+| `core` | Velocity/Bungee relay with Bedrock, or Velocity/Bungee Lite + Bukkit | `round<N>/iso/*`, non-default selection/current-channel/no-rejoin `round<N>/business/reconnect-*`, plus mode-specific delivery, link and attribution IDs |
 | `business` | Relay or Lite; three ordinary Java bots, two channels, real operator callback | `round<N>/extended-business/*`, `round<N>/pm/*`, `round<N>/channel-mute/*`: DM/reply privacy, offline refusal, mute scope and restoration |
 | `lite-moderation` | Lite only; actual Velocity or Bungee proxy console stdin; target + observer bots | `round<N>/lite-moderation/*`: permission denial, mute/unmute, kick/rejoin, ban/unban, channel scope, Minecraft connection retained after channel kick |
 | `recovery` | Relay only; real Java + Bedrock clients, selected `local` channel and backend restart callbacks | `round<N>/recovery/*`: changed PID, fresh membership and active-channel delivery after restart/reconnect, with no new player JOIN |
@@ -25,6 +25,7 @@ missing required IDs and diagnostic-only evidence cannot satisfy acceptance.
 | `channel-lifecycle` | Relay only; Bukkit primary + `bukkit2`, distinct direct client ports | `round<N>/channel-lifecycle/*`: generated ID, invite/accept, exact membership, cross-server delivery, outsider refusal and cleanup |
 | `social-contract` | Relay or Lite; sender, target and observer through the proxy | `round<N>/social-contract/*`: ignore/unignore, live exclusion controls, exact who sets/counts and list IDs/scopes |
 | `custom-effects` | Relay only; Bukkit operator plus real target/outsider recordings | `round<N>/custom-effects/*`: non-default title timings, title/subtitle delivery and target isolation |
+| `completion` | Relay or Lite; two proxy players and scoped real permission fixture | `round<N>/completion/*`: real protocol candidates, prefix matching and channel/ignore/permission exclusion/restoration |
 
 The `business` group extends the basic `business/reconnect-*` assertions that
 are already required by `core`; the similar names do not mean the extended
@@ -198,10 +199,12 @@ this change's scope).
    uses three bot roles; switch uses mover + two anchored observers.
 2. A second Java server requires explicit `SecondaryJavaPlatform bukkit`.
    The normal single-Java round cannot establish destination switching.
-3. Mention tab-complete remains outside these bot plans.
+3. Mention completion requires the explicit `completion` group and actual
+   native suggestion packets; a synthetic or request-only client is separate evidence.
 4. Backend restart is explicit `recovery`, distinct from core Java reconnect.
-5. Proxy downstreams are Java servers; Bedrock connects directly. The switch
-   group does not establish Bedrock server switching.
+5. Proxy downstreams are Java servers; Bedrock connects directly. The separate
+   `test/bedrock-transfer` entry tests native PNX transfer; the Java switch
+   group does not establish Bedrock transfer results.
 6. Lifecycle, ignore, exact list semantics and custom title timings require
    their separate explicit groups and fresh recordings; `business` alone
    does not establish them.
@@ -227,6 +230,13 @@ this change's scope).
 ```
 
 ## Recorded results and coverage limits
+
+Local Bungee Lite run `20261102-205413` on 2026-11-02 passed the complete
+`core,completion` selection: **81/81** gating assertions, all 31 registry IDs,
+non-default Java reconnect and all 13 native completion controls. Evidence is
+under the task's temporary `novalink-joint-acceptance-20261102/20261102-205413/`.
+Earlier failed local attempts remain failures. The reconnect query now polls
+read-only `/nc who` within a fixed deadline; it never repairs membership.
 
 Runs 41274531514 and 41274540721 at `6e5a2c7` passed the complete selected
 groups. Earlier failed runs remain failures; passing rows inside them do not
@@ -254,6 +264,13 @@ revision. Fabric also now ships its runtime dependencies in the standard
 production jar, with the invalid duplicate entrypoint removed. The E2E task
 copies that unchanged jar instead of rewriting it; previous Fabric game
 evidence used the older patched test package.
+
+Local TLS acceptance on 2026-11-02 used the unchanged standard Fabric package:
+trusted CA 3/3 and unrelated CA 4/4 passed with real Bukkit/Fabric clients.
+Evidence is in the task's temporary `nl-env-tls-final-20261102` directory,
+runs `20261102-202056-42b240ad-tls-trusted` and
+`20261102-203435-4fcc604b-tls-untrusted`. This replaces the package-validation
+gap above; it does not extend the older SQL game results to schema 16 or Redis.
 
 For joint runs retain `.e2e-artifacts/joint/<runId>/` (or the explicit
 `JointRoot`), `joint-summary.json`, the selected group list, assertion IDs,

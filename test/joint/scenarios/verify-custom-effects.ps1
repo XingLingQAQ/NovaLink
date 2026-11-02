@@ -49,6 +49,15 @@ function New-CustomContractResults {
         (New-CustomContractRow 'messagestr' ($at + 100) "<$($names[$role])> $before")
       )
       $sent += [PSCustomObject]@{ text = "/nc $channel $before"; atMs = $at + 1 }
+      if ($role -eq 'Sender') {
+        $rows += @(
+          (New-CustomContractRow 'checkpoint' ($at + 150) "ce-$id-command-start"),
+          (New-CustomContractRow 'messagestr' ($at + 190) '[NovaChat] Title sent'),
+          (New-CustomContractRow 'checkpoint' ($at + 195) "ce-$id-command-end")
+        )
+        $sent += [PSCustomObject]@{ text = (Get-CustomEffectsTitleCommand $phase); atMs = $at + 160 }
+        $verdicts += [PSCustomObject]@{ id = "ce-$id-command-success"; pass = $true }
+      }
       if ($role -eq $phase.Recipient -or ($role -eq 'Sender' -and $id -eq 'control')) {
         $rows += @(
           (New-CustomContractRow 'titleTimes' ($at + 200) 'durations' @{ fadeIn = $phase.FadeIn; stay = $phase.Stay; fadeOut = $phase.FadeOut }),
@@ -85,8 +94,8 @@ function Assert-CustomContractRejected($Results, [string]$Id) {
 $required = @(Get-CustomEffectsRequiredAssertionIds -RoundIndex 4)
 $results = New-CustomContractResults
 $verdicts = @(Get-CustomContractVerdicts $results)
-Assert-CustomContract ($required.Count -eq 14 -and @($required | Select-Object -Unique).Count -eq 14) '14 distinct required IDs'
-Assert-CustomContract ($verdicts.Count -eq 13 -and @($verdicts | Where-Object { -not $_.pass }).Count -eq 0) 'complete synthetic packets with independent receiver clocks'
+Assert-CustomContract ($required.Count -eq 16 -and @($required | Select-Object -Unique).Count -eq 16) '16 distinct required IDs'
+Assert-CustomContract ($verdicts.Count -eq 15 -and @($verdicts | Where-Object { -not $_.pass }).Count -eq 0) 'complete synthetic commands and packets with independent receiver clocks'
 Assert-CustomContract (@($verdicts | Where-Object { $_.id -notin $required }).Count -eq 0) 'required IDs match producer'
 
 $plans = Get-CustomEffectsPlans -RunId 'contract'
@@ -100,14 +109,42 @@ foreach ($role in @('Sender', 'Target', 'Observer')) {
       $commands++; $waited = 0
     }
   }
-  Assert-CustomContract ($commands -eq 5) "$role uses one join and four scoped chat markers"
+  $expectedCommands = if ($role -eq 'Sender') { 7 } else { 5 }
+  Assert-CustomContract ($commands -eq $expectedCommands) "$role command count"
+  $titles = @($plans[$role] | Where-Object { $_.action -eq 'cmd' -and $_.text -like '/nc title *' })
+  $expectedTitles = if ($role -eq 'Sender') { 2 } else { 0 }
+  Assert-CustomContract ($titles.Count -eq $expectedTitles) "$role real title command count"
+  if ($role -eq 'Sender') {
+    $phases = @(Get-CustomEffectsPhases 'contract')
+    for ($i = 0; $i -lt $phases.Count; $i++) {
+      Assert-CustomContract ($titles[$i].text -ceq (Get-CustomEffectsTitleCommand $phases[$i])) 'exact command channel, text and named timing flags'
+    }
+  }
   foreach ($step in @($plans[$role] | Where-Object { $_.action -eq 'expectText' })) {
     Assert-CustomContract ([bool]$step.sinceCheckpoint -and $step.required -eq $true) 'fresh required chat receipts'
   }
 }
 $bridge = Get-CustomEffectsBukkitBridge
 Assert-CustomContract ($bridge.Source.Contains('client.sendPacket(packet)') -and $bridge.Source.Contains('System.getenv(') -and
-  -not $bridge.Source.Contains('.sendTitle(') -and -not $bridge.Source.Contains('dispatchCommand(')) 'bridge drives existing production packets without local rendering or a password command'
+  $bridge.Source.Contains('createAuthPacket(') -and $bridge.Source.Contains('createLogoutPacket(') -and
+  -not $bridge.Source.Contains('case "title"') -and -not $bridge.Source.Contains('"TITLE"') -and
+  -not $bridge.Source.Contains('.sendTitle(') -and -not $bridge.Source.Contains('dispatchCommand(')) 'bridge only grants, authenticates and releases; title comes from the bot command'
+
+$results = New-CustomContractResults
+$results.Sender.sent = @($results.Sender.sent | Where-Object { $_.text -notlike '/nc title *' })
+Assert-CustomContractRejected $results 'target-command'
+Assert-CustomContractRejected $results 'control-command'
+Assert-CustomContractRejected $results 'target-timings'
+Assert-CustomContractRejected $results 'target-absent-observer'
+
+$results = New-CustomContractResults
+$results.Sender.sent[2].text = $results.Sender.sent[2].text -replace '--stay 37', '--stay 70'
+Assert-CustomContractRejected $results 'target-command'
+
+$results = New-CustomContractResults
+$results.Sender.received = @($results.Sender.received | Where-Object { $_.text -ne '[NovaChat] Title sent' })
+Assert-CustomContractRejected $results 'target-command'
+Assert-CustomContractRejected $results 'target-title'
 
 $results = New-CustomContractResults
 $times = @($results.Target.received | Where-Object { $_.kind -eq 'titleTimes' })[0]
@@ -169,8 +206,6 @@ function Send-Rcon([int]$Port, [string]$Password, [string]$Command) {
 function Invoke-CustomContractCallbackConsumer($Callbacks) {
   & $Callbacks.GrantSenderPermissions 'E2EJointJava'
   & $Callbacks.AuthenticateSender 'E2EJointJava'
-  & $Callbacks.SendTitle ([PSCustomObject]@{ SenderName = 'E2EJointJava'; RequestId = [guid]::NewGuid().ToString();
-    ChannelId = 'global'; Title = 'contract-ce-target-title'; Subtitle = 'contract-ce-target-subtitle'; FadeIn = 3; Stay = 37; FadeOut = 9 })
   & $Callbacks.ReleaseSender 'E2EJointJava'
 }
 function Invoke-CustomContractCallbackFactory {
@@ -178,6 +213,7 @@ function Invoke-CustomContractCallbackFactory {
   Invoke-CustomContractCallbackConsumer $callbacks
 }
 Invoke-CustomContractCallbackFactory
-Assert-CustomContract ($script:CustomEffectsRconCalls.Count -eq 4 -and
-  $script:CustomEffectsRconCalls[1] -ceq 'jointcustomeffects auth E2EJointJava') 'RCON adapter carries no auth credential'
-Write-Host '[SYNTHETIC PASS] Plans, 14 gating IDs, local packet windows, exact timings, live negative controls and four closures reaching script-scope Send-Rcon through nested function calls.'
+Assert-CustomContract ($script:CustomEffectsRconCalls.Count -eq 3 -and
+  $script:CustomEffectsRconCalls[1] -ceq 'jointcustomeffects auth E2EJointJava' -and
+  $script:CustomEffectsRconCalls[2] -ceq 'jointcustomeffects release E2EJointJava') 'RCON adapter carries no auth credential or title operation'
+Write-Host '[SYNTHETIC PASS] Plans, 16 gating IDs, real command provenance and backend receipts, local packet windows, exact timings, negative controls and three RCON session closures.'
