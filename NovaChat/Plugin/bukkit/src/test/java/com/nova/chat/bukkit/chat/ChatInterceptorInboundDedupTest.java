@@ -4,6 +4,7 @@ import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.bukkit.config.NovaChatConfig;
 import com.nova.chat.client.channel.KnownChannelRegistry;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.TitlePacket;
 import org.bukkit.Server;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.PluginManager;
@@ -183,6 +184,32 @@ class ChatInterceptorInboundDedupTest {
                 .sendMessage(any(String.class));
         org.mockito.Mockito.verify(direct, org.mockito.Mockito.times(1))
                 .sendMessage(any(String.class));
+    }
+
+    @Test
+    void anEmptyRosterRestoresLocalRendering() {
+        when(server.getOnlinePlayers()).thenReturn((Collection) List.of(proxied, direct));
+        interceptor.updateProxyRenderedPlayers(Set.of(PROXIED_ID));
+        interceptor.handleIncomingMessage(chat("before", null));
+        drain();
+        org.mockito.Mockito.verify(proxied, org.mockito.Mockito.never()).sendMessage(any(String.class));
+
+        interceptor.updateProxyRenderedPlayers(Set.of());
+        interceptor.handleIncomingMessage(chat("after", null));
+        drain();
+        org.mockito.Mockito.verify(proxied).sendMessage(any(String.class));
+        org.mockito.Mockito.verify(direct, org.mockito.Mockito.times(2)).sendMessage(any(String.class));
+    }
+
+    @Test
+    void associatedPacketsOfDifferentTypesAreNotCollapsed() {
+        ChatMessagePacket chat = chat("chat", null);
+        TitlePacket title = new TitlePacket(chat.getRequestId());
+
+        assertThat(interceptor.isDuplicateRecipient(chat, DIRECT_ID)).isFalse();
+        assertThat(interceptor.isDuplicateRecipient(title, DIRECT_ID)).isFalse();
+        assertThat(interceptor.isDuplicateRecipient(chat, DIRECT_ID)).isTrue();
+        assertThat(interceptor.isDuplicateRecipient(title, DIRECT_ID)).isTrue();
     }
 
     @Test

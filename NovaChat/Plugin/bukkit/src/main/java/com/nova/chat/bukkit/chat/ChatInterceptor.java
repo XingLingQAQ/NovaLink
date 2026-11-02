@@ -9,6 +9,7 @@ import com.nova.chat.client.itemdisplay.ItemDisplayTokens;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.common.chat.MentionNotifier;
+import com.nova.chat.common.protocol.Packet;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -44,7 +45,7 @@ public class ChatInterceptor implements Listener {
     private final MessageFormatter messageFormatter;
 
     /**
-     * How many inbound chat requestIds are remembered for duplicate suppression.
+     * How many inbound packets are remembered for duplicate suppression.
      *
      * <p>Bounded on purpose: the set is touched by every inbound line for the
      * life of the server, so an unbounded map would be a slow leak. A few
@@ -54,33 +55,10 @@ public class ChatInterceptor implements Listener {
      */
     static final int RECENT_INBOUND_LIMIT = 512;
 
-    /**
-     * Per-line record of which local players have already been served.
-     *
-     * <p>Both delivery paths can carry the same line to this server: the proxy
-     * relays it over plugin messaging, and the server's own backend link
-     * receives it directly. The backend fans one {@link ChatMessagePacket}
-     * instance out to every authenticated connection and NovaProtocol writes
-     * that packet's requestId into every frame, so the two copies share a
-     * requestId.
-     *
-     * <p>Suppression is per <em>recipient</em>, not per packet, because the two
-     * copies are not interchangeable: the plugin-messaging copy carries the
-     * proxy's "already rendered" list and the backend copy carries none. Which
-     * copy arrives first is a race between the Netty event loop and the server
-     * main thread, and it genuinely varies run to run. Dropping the second
-     * packet outright would therefore sometimes keep the backend copy — and
-     * that copy renders to proxied players too, which is exactly the duplicate
-     * this is meant to prevent. Tracking the players each line has reached
-     * makes the outcome independent of arrival order: every local player is
-     * served exactly once, whichever copy gets there first.
-     *
-     * <p>Bounded by {@link #RECENT_INBOUND_LIMIT} with oldest-first eviction,
-     * because a line is only ever duplicated within the same couple of
-     * milliseconds and this map would otherwise grow for the life of the
-     * server.
-     */
-    private final Map<UUID, Set<UUID>> servedByLine = new java.util.LinkedHashMap<>();
+    /** Recipients served by either transport, with oldest-first packet eviction. */
+    private final Map<InboundPacketKey, Set<UUID>> servedByLine = new java.util.LinkedHashMap<>();
+
+    private record InboundPacketKey(int packetId, UUID requestId) { }
 
     /**
      * The proxy's players on this server, as of the most recent downstream
@@ -101,40 +79,49 @@ public class ChatInterceptor implements Listener {
      */
     private volatile Set<UUID> proxyRenderedPlayers = Set.of();
 
-    /**
-     * Claims one player for one inbound line, so a second copy of the same line
-     * cannot serve them again.
-     *
-     * <p>A packet with no usable requestId cannot be identified, so every claim
-     * succeeds: collapsing unidentifiable lines into one bucket would silently
-     * drop everything after the first. {@link com.nova.chat.common.protocol.Packet}
-     * assigns a random requestId in its constructor, so this only guards against
-     * a hand-built or decoded packet that carries the zero UUID.
-     *
-     * @param packet the inbound chat packet
-     * @param playerId the local player the line is about to be rendered to
-     * @return {@code true} when this call is the one that serves that player
-     */
-    private boolean claimRecipient(ChatMessagePacket packet, UUID playerId) {
+    public synchronized void updateProxyRenderedPlayers(Set<UUID> playerIds) {
+        if (playerIds != null) {
+            proxyRenderedPlayers = Set.copyOf(playerIds);
+        }
+    }
+
+    public boolean isProxyRenderedPlayer(UUID playerId) {
+        return playerId != null && proxyRenderedPlayers.contains(playerId);
+    }
+
+    private synchronized void forgetInboundPlayer(UUID playerId) {
+        if (proxyRenderedPlayers.contains(playerId)) {
+            Set<UUID> remaining = new java.util.HashSet<>(proxyRenderedPlayers);
+            remaining.remove(playerId);
+            proxyRenderedPlayers = Set.copyOf(remaining);
+        }
+        synchronized (servedByLine) {
+            servedByLine.values().forEach(recipients -> recipients.remove(playerId));
+        }
+    }
+
+    /** Records the delivery and returns whether either transport already served it. */
+    public boolean isDuplicateRecipient(Packet packet, UUID playerId) {
         UUID requestId = packet.getRequestId();
         if (requestId == null || (requestId.getMostSignificantBits() == 0L
                 && requestId.getLeastSignificantBits() == 0L) || playerId == null) {
-            return true;
+            return false;
         }
+        InboundPacketKey key = new InboundPacketKey(packet.getPacketId(), requestId);
         synchronized (servedByLine) {
-            Set<UUID> served = servedByLine.get(requestId);
+            Set<UUID> served = servedByLine.get(key);
             if (served == null) {
                 served = new java.util.HashSet<>();
-                servedByLine.put(requestId, served);
+                servedByLine.put(key, served);
                 if (servedByLine.size() > RECENT_INBOUND_LIMIT) {
-                    java.util.Iterator<UUID> oldest = servedByLine.keySet().iterator();
+                    var oldest = servedByLine.keySet().iterator();
                     if (oldest.hasNext()) {
                         oldest.next();
                         oldest.remove();
                     }
                 }
             }
-            return served.add(playerId);
+            return !served.add(playerId);
         }
     }
 
@@ -232,16 +219,7 @@ public class ChatInterceptor implements Listener {
                                       java.util.Set<UUID> excludedRecipients) {
         plugin.debug("Received chat message from backend: " + packet);
 
-        // A non-null list means this copy came from the proxy, which states
-        // exactly whom it rendered to. That statement is authoritative and
-        // replaces the snapshot even when empty, so a player who stops being
-        // proxied stops being skipped. The backend copy passes null and keeps
-        // the current snapshot, which is what lets it skip proxied players when
-        // it happens to win the race.
-        if (excludedRecipients != null) {
-            proxyRenderedPlayers = excludedRecipients.isEmpty()
-                    ? Set.of() : Set.copyOf(excludedRecipients);
-        }
+        updateProxyRenderedPlayers(excludedRecipients);
 
         // The event is async-only. The backend link already calls us on Netty,
         // but the plugin-message callback lands on the main thread, so hop off
@@ -291,15 +269,8 @@ public class ChatInterceptor implements Listener {
         // Run on main thread for Bukkit API calls
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             for (Player player : plugin.getServer().getOnlinePlayers()) {
-                // The proxy rendered this line, or an earlier line, to this
-                // player: it is proxy-connected and already has it.
                 if (excludedRecipients.contains(player.getUniqueId())
-                        || proxyRenderedPlayers.contains(player.getUniqueId())) {
-                    continue;
-                }
-                // The other transport may already have served this player for
-                // this line; whichever copy got here first, they see it once.
-                if (!claimRecipient(packet, player.getUniqueId())) {
+                        || isProxyRenderedPlayer(player.getUniqueId())) {
                     continue;
                 }
                 // Skip senders the recipient has ignored (/nc ignore)
@@ -309,7 +280,8 @@ public class ChatInterceptor implements Listener {
                 }
                 // Check if player is in this channel
                 PlayerChannelState state = getState(player.getUniqueId());
-                if (state != null && channelId.equals(state.getActiveChannel())) {
+                if (state != null && channelId.equals(state.getActiveChannel())
+                        && !isDuplicateRecipient(packet, player.getUniqueId())) {
                     // Highlight @name mentions for this recipient (UX-DESIGN §4.2).
                     String displayContent = MentionNotifier.highlightMentions(finalContent, MENTION_HIGHLIGHT_COLOR);
                     String formattedMessage = messageFormatter.formatChatMessage(
@@ -391,6 +363,7 @@ public class ChatInterceptor implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
+        forgetInboundPlayer(player.getUniqueId());
         getOrCreateState(player);
         plugin.debug("Initialized chat state for " + player.getName());
     }
@@ -403,6 +376,7 @@ public class ChatInterceptor implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID playerId = event.getPlayer().getUniqueId();
+        forgetInboundPlayer(playerId);
         playerStates.remove(playerId);
         // Reply-target cleanup for /nc r (private messages).
         if (plugin.getPrivateMessageService() != null) {

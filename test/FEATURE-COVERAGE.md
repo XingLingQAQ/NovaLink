@@ -53,9 +53,31 @@ channel query race was fixed with bounded read-only polling, without a repair
 JOIN. Evidence: `novalink-joint-acceptance-20261102/20261102-205413/` under the
 task's system temporary directory.
 
-The external game runs below predate the three follow-up groups, non-default recovery and
-upstream Bungee command integration. Those changes need fresh game evidence;
-offline contracts and successful packaging do not extend these run results.
+PNX backend recovery passed a separate complete `core,recovery` selection,
+**98/98** local gating assertions and all 39 required IDs, in run
+`20261102-215039`. The PNX client now waits for restored membership responses
+before selecting the active channel, rather than relying on JOIN reply order.
+Both backend restart and native Bedrock reconnect retained `local` and delivered
+plain chat in both directions. The earlier failed `20261102-211749` run is
+retained; its reversed JOIN responses are the regression evidence.
+
+Bungee Relay `core,custom-effects` then passed **93/93** gating assertions and
+all 34 required IDs in run `20261102-220041`. Real authenticated `/nc title`
+commands produced exactly one title, subtitle and timing packet per intended
+receiver; non-targets received none. Bukkit now shares proxy ownership and
+per-recipient deduplication across both incoming transports. The real RCON
+boundary check returned complete replies in 0.7-1.1 seconds.
+
+Run `20261102-210038` separately recorded all required `business` (8/8),
+`completion` (13/13), `social-contract` (23/23), `channel-lifecycle` (20/20)
+and real player-command `proxy-switch` (26/26) IDs as passing. That combined
+run remains **FAIL** because of its title and colored-banner failures; the
+later targeted passes do not rewrite it. A fresh combined remote workflow,
+Velocity's new completion game path, and schema-16 SQL/Redis game/TLS cases
+remain unverified. Push/remote CI is currently blocked by the GitHub connection.
+
+The external game runs below predate these changes. Their results do not
+extend automatically to new packages or scenario selections.
 
 Directed invitations now persist their recipient UUID and authorize that
 recipient's PRIVATE membership across client links. SQL backends add schema
@@ -104,9 +126,7 @@ API-supplied hashes and fixed-entry fallback remain strict.
 
 See [the harness README](README.md#joint-manual-e2e-coverage) for selection
 and prerequisites, and [joint coverage](joint/JOINT-SCENARIO-COVERAGE.md) for
-the pending evidence record. The new lifecycle, social and custom-effects
-groups provide explicit execution paths and required IDs. Their current
-real-server acceptance remains pending.
+the current acceptance record, retained failures and remaining coverage limits.
 
 ## Historical evidence legend (2026-08-08)
 

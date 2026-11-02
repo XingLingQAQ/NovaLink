@@ -8,26 +8,36 @@ import com.nova.chat.client.channel.KnownChannelRegistry;
 import com.nova.chat.client.i18n.I18n;
 import com.nova.chat.client.ignore.IgnoreListService;
 import com.nova.chat.client.network.ClientConnectionConfig;
+import com.nova.chat.client.network.AbstractPlatformNetworkClient;
+import com.nova.chat.client.network.CoreNetworkClient;
 import com.nova.chat.client.privatemsg.PrivateMessageService;
-import com.nova.chat.client.state.ChatMode;
-import com.nova.chat.client.state.PlayerChannelState;
+import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
+import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
 import com.nova.chat.common.protocol.packets.PrivateMessagePacket;
 import com.nova.chat.common.protocol.packets.TitlePacket;
 import org.bukkit.Server;
 import org.bukkit.entity.Player;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.plugin.PluginManager;
 import org.bukkit.scheduler.BukkitScheduler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
+import java.lang.reflect.Field;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -37,9 +47,12 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -67,25 +80,34 @@ class NetworkClientChannelExclusionTest {
     @Mock private NovaChatConfig config;
     @Mock private Server server;
     @Mock private BukkitScheduler scheduler;
-    @Mock private ChatInterceptor chatInterceptor;
+    @Mock private PluginManager pluginManager;
+    @Mock private org.bukkit.World world;
     @Mock private MessageFormatter formatter;
     @Mock private Player proxied;
     @Mock private Player direct;
     @Mock private IgnoreListService ignoreListService;
 
     private NetworkClient client;
+    private ChatInterceptor chatInterceptor;
+    private CoreNetworkClient core;
+    private final Deque<Runnable> mainTasks = new ArrayDeque<>();
     private Locale previousLocale;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         previousLocale = I18n.getDefaultLocale();
         I18n.setDefaultLocale(Locale.SIMPLIFIED_CHINESE);
 
         when(plugin.getServer()).thenReturn(server);
         when(server.getVersion()).thenReturn("test-server");
         when(server.getScheduler()).thenReturn(scheduler);
+        when(server.getPluginManager()).thenReturn(pluginManager);
+        when(plugin.getNovaChatConfig()).thenReturn(config);
+        when(config.getDefaultChannel()).thenReturn("global");
+        when(config.getChannelFormat(anyString())).thenReturn("[{channel}] {player}: {message}");
         when(config.toClientConnectionConfig())
                 .thenReturn(ClientConnectionConfig.builder().build());
+        chatInterceptor = spy(new ChatInterceptor(plugin));
         when(plugin.getChatInterceptor()).thenReturn(chatInterceptor);
         when(plugin.getIgnoreListService()).thenReturn(ignoreListService);
         when(plugin.getPrivateMessageService()).thenReturn(new PrivateMessageService());
@@ -94,12 +116,13 @@ class NetworkClientChannelExclusionTest {
                 .thenAnswer(inv -> ((String) inv.getArgument(0)).replace('&', '§'));
         doReturn(List.of(proxied, direct)).when(server).getOnlinePlayers();
 
-        PlayerChannelState state = new PlayerChannelState(DIRECT_ID, "global", ChatMode.HYBRID);
-        when(chatInterceptor.getOrCreateState(proxied)).thenReturn(state);
-        when(chatInterceptor.getOrCreateState(direct)).thenReturn(state);
-
         when(proxied.getUniqueId()).thenReturn(PROXIED_ID);
         when(direct.getUniqueId()).thenReturn(DIRECT_ID);
+        when(proxied.getWorld()).thenReturn(world);
+        when(direct.getWorld()).thenReturn(world);
+        when(world.getName()).thenReturn("world");
+        chatInterceptor.getOrCreateState(proxied);
+        chatInterceptor.getOrCreateState(direct);
 
         // Neither player is reachable by the sub-server's own lookup when it is
         // excluded, so the DM handler's "is local online" test is the filter.
@@ -107,6 +130,15 @@ class NetworkClientChannelExclusionTest {
         when(server.getPlayer(DIRECT_ID)).thenReturn(direct);
 
         client = new NetworkClient(plugin, config, new KnownChannelRegistry());
+        when(plugin.getNetworkClient()).thenReturn(client);
+        chatInterceptor.rebindIncomingHandlers();
+        Field coreField = AbstractPlatformNetworkClient.class.getDeclaredField("core");
+        coreField.setAccessible(true);
+        core = (CoreNetworkClient) coreField.get(client);
+        doAnswer(invocation -> {
+            mainTasks.add(invocation.getArgument(1));
+            return null;
+        }).when(scheduler).runTask(eq(plugin), any(Runnable.class));
     }
 
     @AfterEach
@@ -176,9 +208,94 @@ class NetworkClientChannelExclusionTest {
         verify(direct).sendTitle("Hello", "World", 10, 70, 20);
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void titleCopiesRenderDirectOnceWithoutLeakingToProxy(boolean backendFirst) {
+        learnRoster(Set.of(PROXIED_ID));
+        TitlePacket backend = title();
+        TitlePacket downstream = title();
+        downstream.setRequestId(backend.getRequestId());
+
+        if (backendFirst) {
+            core.handlePacket(backend);
+        } else {
+            client.dispatchChannelPacket(downstream, Set.of(PROXIED_ID));
+        }
+        runMainThreadTask();
+        if (backendFirst) {
+            client.dispatchChannelPacket(downstream, Set.of(PROXIED_ID));
+        } else {
+            core.handlePacket(backend);
+        }
+        runMainThreadTask();
+
+        verify(proxied, never()).sendTitle(anyString(), anyString(), anyInt(), anyInt(), anyInt());
+        verify(direct, times(1)).sendTitle("Hello", "World", 3, 37, 9);
+    }
+
+    @Test
+    void missingProxyCopyStillRendersDirectWithoutLeakingToProxy() {
+        learnRoster(Set.of(PROXIED_ID));
+        core.handlePacket(title());
+        runMainThreadTask();
+
+        verify(proxied, never()).sendTitle(anyString(), anyString(), anyInt(), anyInt(), anyInt());
+        verify(direct).sendTitle("Hello", "World", 3, 37, 9);
+    }
+
+    @Test
+    void titleRosterAlsoProtectsQueuedBackendChat() {
+        core.handlePacket(new ChatMessagePacket(SENDER_ID, "Alice", "survival-01", "global", "hello"));
+        client.dispatchChannelPacket(title(), Set.of(PROXIED_ID));
+        runMainThreadTask();
+
+        verify(proxied, never()).sendMessage(anyString());
+        verify(direct).sendMessage(anyString());
+        verify(proxied, never()).sendTitle(anyString(), anyString(), anyInt(), anyInt(), anyInt());
+        verify(direct).sendTitle("Hello", "World", 3, 37, 9);
+    }
+
+    @Test
+    void reconnectingDirectlyClearsProxyOwnershipWithoutAnotherRoster() {
+        learnRoster(Set.of(PROXIED_ID));
+        PlayerQuitEvent quit = mock(PlayerQuitEvent.class);
+        when(quit.getPlayer()).thenReturn(proxied);
+        chatInterceptor.onPlayerQuit(quit);
+        Player reconnected = mock(Player.class);
+        when(reconnected.getUniqueId()).thenReturn(PROXIED_ID);
+        PlayerJoinEvent join = mock(PlayerJoinEvent.class);
+        when(join.getPlayer()).thenReturn(reconnected);
+        chatInterceptor.onPlayerJoin(join);
+        doReturn(List.of(reconnected, direct)).when(server).getOnlinePlayers();
+
+        core.handlePacket(title());
+        runMainThreadTask();
+        verify(reconnected).sendTitle("Hello", "World", 3, 37, 9);
+    }
+
+    @Test
+    void anEmptyAuthoritativeRosterReleasesPreviousOwnership() {
+        learnRoster(Set.of(PROXIED_ID));
+        learnRoster(Set.of());
+        core.handlePacket(title());
+        runMainThreadTask();
+
+        verify(proxied).sendTitle("Hello", "World", 3, 37, 9);
+        verify(direct).sendTitle("Hello", "World", 3, 37, 9);
+    }
+
+    private void learnRoster(Set<UUID> playerIds) {
+        client.dispatchChannelPacket(new ChannelActionResponsePacket(
+                true, ChannelAction.WHO, "global", "", ""), playerIds);
+    }
+
+    private TitlePacket title() {
+        return new TitlePacket("global", "Hello", "World", SENDER_ID, 3, 37, 9);
+    }
+
     private void runMainThreadTask() {
-        ArgumentCaptor<Runnable> task = ArgumentCaptor.forClass(Runnable.class);
-        verify(scheduler, atLeastOnce()).runTask(eq(plugin), task.capture());
-        task.getValue().run();
+        while (!mainTasks.isEmpty()) {
+            mainTasks.removeFirst().run();
+        }
     }
 }

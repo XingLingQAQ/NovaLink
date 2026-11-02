@@ -238,6 +238,26 @@ under the task's temporary `novalink-joint-acceptance-20261102/20261102-205413/`
 Earlier failed local attempts remain failures. The reconnect query now polls
 read-only `/nc who` within a fixed deadline; it never repairs membership.
 
+Local Relay run `20261102-215039` passed its complete `core,recovery` selection:
+**98/98** gating assertions and all 39 required IDs. PNX backend reauthentication
+now restores the other memberships before selecting the current channel. The
+test observed `local` after backend restart and Bedrock reconnect, with fresh
+member replies and bidirectional plain chat. The prior `20261102-211749` run
+remains FAIL and retains the reversed JOIN replies that exposed the race.
+
+Local Relay run `20261102-220041` passed its complete `core,custom-effects`
+selection: **93/93** gating assertions and all 34 required IDs. Both real title
+commands preserved their custom timings (3/37/9 and 7/43/11); each intended
+receiver recorded one title, subtitle and duration packet, while non-targets
+recorded no effect. This exposed and then verified the Bukkit fix for duplicate
+backend/plugin-messaging rendering and stale downstream channel leakage.
+
+The earlier combined local run `20261102-210038` has passing required IDs for
+`business` (8/8), `completion` (13/13), `social-contract` (23/23),
+`channel-lifecycle` (20/20), and `proxy-switch` (26/26). Its switch driver is
+`player-command`, using the pinned upstream Bungee module. The overall run
+remains FAIL; title and native-banner follow-ups were validated separately.
+
 Runs 41274531514 and 41274540721 at `6e5a2c7` passed the complete selected
 groups. Earlier failed runs remain failures; passing rows inside them do not
 turn those workflows into passes.
@@ -252,18 +272,17 @@ turn those workflows into passes.
 | Dual-Bukkit `proxy-switch` | Same run: 23/23 required rows per proxy, including destination probes, movement/return, exact delivery and SERVER-channel link isolation |
 | Independent TLS/SQL environment suite | Run 41272492807 recorded 3/3 trusted TLS, 4/4 untrusted-CA rejection and 5/5 PostgreSQL; run 41274536675 recorded 5/5 MySQL after migration repair |
 
-The recorded Bungee run used `fixtureNativeAPI`, through the console-only
+The historical Bungee run used `fixtureNativeAPI`, through the console-only
 fixture and the proxy's real connect API; it did not validate `/server`.
 The current driver is `player-command` on both proxies. Bungee now installs
 the matching pinned upstream `cmd_server` module. Its three command receipt
 IDs are required in addition to destination probes and link isolation.
 
-The new lifecycle, social and custom-effects groups, non-default recovery
-and Bungee command path have not yet had real-server acceptance in this
-revision. Fabric also now ships its runtime dependencies in the standard
-production jar, with the invalid duplicate entrypoint removed. The E2E task
-copies that unchanged jar instead of rewriting it; previous Fabric game
-evidence used the older patched test package.
+The local records above cover these follow-ups on Bungee's pinned protocol;
+they are not a passing combined remote matrix or new Velocity game evidence.
+Fabric ships its runtime dependencies in the standard production jar, with the
+duplicate entrypoint removed. The E2E task copies that unchanged jar; the older
+external Fabric game evidence used a patched test package.
 
 Local TLS acceptance on 2026-11-02 used the unchanged standard Fabric package:
 trusted CA 3/3 and unrelated CA 4/4 passed with real Bukkit/Fabric clients.

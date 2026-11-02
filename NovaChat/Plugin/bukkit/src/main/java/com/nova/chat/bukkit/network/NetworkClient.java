@@ -207,9 +207,12 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
     public void dispatchChannelPacket(Packet packet,
                                       java.util.Set<java.util.UUID> excludedRecipients) {
         java.util.Set<java.util.UUID> excluded = excludedRecipients != null
-                ? excludedRecipients : java.util.Set.of();
+                ? java.util.Set.copyOf(excludedRecipients) : java.util.Set.of();
+        var interceptor = plugin.getChatInterceptor();
+        if (interceptor != null) {
+            interceptor.updateProxyRenderedPlayers(excluded);
+        }
         if (packet instanceof com.nova.chat.common.protocol.packets.ChatMessagePacket chat) {
-            com.nova.chat.bukkit.chat.ChatInterceptor interceptor = plugin.getChatInterceptor();
             if (interceptor == null) {
                 plugin.debug("Dropped plugin-message chat: interceptor not initialized");
                 return;
@@ -253,16 +256,18 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 String subtitle = packet.getSubtitle();
 
                 // Translate color codes (& and hex)
-                var formatter = plugin.getChatInterceptor().getMessageFormatter();
+                var interceptor = plugin.getChatInterceptor();
+                var formatter = interceptor.getMessageFormatter();
                 String renderedTitle = formatter.translateColorCodes(title != null ? title : "");
                 String renderedSubtitle = formatter.translateColorCodes(subtitle != null ? subtitle : "");
 
                 for (org.bukkit.entity.Player player : plugin.getServer().getOnlinePlayers()) {
-                    if (excluded.contains(player.getUniqueId())) {
+                    if (excluded.contains(player.getUniqueId()) || interceptor.isProxyRenderedPlayer(player.getUniqueId())) {
                         continue;
                     }
-                    var state = plugin.getChatInterceptor().getOrCreateState(player);
-                    if (state != null && channelId != null && channelId.equals(state.getActiveChannel())) {
+                    var state = interceptor.getOrCreateState(player);
+                    if (state != null && channelId != null && channelId.equals(state.getActiveChannel())
+                            && !interceptor.isDuplicateRecipient(packet, player.getUniqueId())) {
                         player.sendTitle(renderedTitle, renderedSubtitle,
                                 packet.getFadeIn(), packet.getStay(), packet.getFadeOut());
                     }
@@ -301,13 +306,14 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             try {
                 String channelId = packet.getChannelId();
-                var formatter = plugin.getChatInterceptor().getMessageFormatter();
+                var interceptor = plugin.getChatInterceptor();
+                var formatter = interceptor.getMessageFormatter();
 
                 for (org.bukkit.entity.Player player : plugin.getServer().getOnlinePlayers()) {
-                    if (excluded.contains(player.getUniqueId())) {
+                    if (excluded.contains(player.getUniqueId()) || interceptor.isProxyRenderedPlayer(player.getUniqueId())) {
                         continue;
                     }
-                    var state = plugin.getChatInterceptor().getOrCreateState(player);
+                    var state = interceptor.getOrCreateState(player);
                     if (state == null || channelId == null || !channelId.equals(state.getActiveChannel())) {
                         continue;
                     }
@@ -325,7 +331,9 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                     TextComponent component = new TextComponent(TextComponent.fromLegacyText(line));
                     component.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
                             new Text(TextComponent.fromLegacyText(hover))));
-                    player.spigot().sendMessage(component);
+                    if (!interceptor.isDuplicateRecipient(packet, viewerId)) {
+                        player.spigot().sendMessage(component);
+                    }
                 }
             } catch (Exception e) {
                 plugin.debug("Failed to handle ItemDisplayPacket: " + e.getMessage(), e);
@@ -357,7 +365,8 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 if (mentionedId == null || mentionerId == null) {
                     return;
                 }
-                if (excluded.contains(mentionedId)) {
+                var interceptor = plugin.getChatInterceptor();
+                if (excluded.contains(mentionedId) || interceptor.isProxyRenderedPlayer(mentionedId)) {
                     return; // the proxy already showed this notification
                 }
                 org.bukkit.entity.Player player = plugin.getServer().getPlayer(mentionedId);
@@ -369,6 +378,9 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 var ignoreService = plugin.getIgnoreListService();
                 if (ignoreService != null
                         && ignoreService.isIgnored(mentionedId, packet.getMentionerName())) {
+                    return;
+                }
+                if (interceptor.isDuplicateRecipient(packet, mentionedId)) {
                     return;
                 }
 
@@ -424,18 +436,20 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         // Must run on main thread for Bukkit API
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             try {
+                var interceptor = plugin.getChatInterceptor();
                 // The proxy rendered its own copy to the players it can see, so
                 // treat those as "not local" here: otherwise a proxied player
                 // reads the same DM twice.
                 var deliveries = plugin.getPrivateMessageService().handleIncoming(
                         packet,
                         id -> !excluded.contains(id)
+                                && !interceptor.isProxyRenderedPlayer(id)
                                 && plugin.getServer().getPlayer(id) != null,
                         plugin.getIgnoreListService());
                 var formatter = plugin.getChatInterceptor().getMessageFormatter();
                 for (PrivateMessageService.Delivery delivery : deliveries) {
                     org.bukkit.entity.Player player = plugin.getServer().getPlayer(delivery.getPlayerId());
-                    if (player != null) {
+                    if (player != null && !interceptor.isDuplicateRecipient(packet, delivery.getPlayerId())) {
                         player.sendMessage(formatter.translateColorCodes(delivery.getLine()));
                     }
                 }
