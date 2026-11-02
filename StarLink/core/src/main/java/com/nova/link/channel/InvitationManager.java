@@ -69,6 +69,11 @@ public class InvitationManager {
         return createInvitation(channelId, inviterId, DEFAULT_TTL_MILLIS);
     }
 
+    public Invitation createInvitation(String channelId, UUID inviterId, UUID targetPlayerId) throws DatabaseException {
+        Objects.requireNonNull(targetPlayerId, "Target player ID cannot be null");
+        return createInvitation(channelId, inviterId, DEFAULT_TTL_MILLIS, 1, targetPlayerId);
+    }
+
     /**
      * Creates a new invitation for a channel with custom TTL.
      *
@@ -98,6 +103,11 @@ public class InvitationManager {
      * @throws DatabaseException if saving fails
      */
     public Invitation createInvitation(String channelId, UUID inviterId, long ttlMillis, int maxUses) throws DatabaseException {
+        return createInvitation(channelId, inviterId, ttlMillis, maxUses, null);
+    }
+
+    private Invitation createInvitation(String channelId, UUID inviterId, long ttlMillis, int maxUses,
+                                        UUID targetPlayerId) throws DatabaseException {
         Objects.requireNonNull(channelId, "Channel ID cannot be null");
         Objects.requireNonNull(inviterId, "Inviter ID cannot be null");
         if (maxUses < 1) {
@@ -121,7 +131,7 @@ public class InvitationManager {
         // front; usedCount starts at 0 and revokedAt is null.
         Invitation invitation = new Invitation(code, channelId, inviterId, expireTime,
                 now, false, null, 0L,
-                maxUses, 0, null);
+                maxUses, 0, null, targetPlayerId);
         databaseProvider.saveInvitation(invitation);
 
         logger.info("Created invitation {} for channel {} by {} (maxUses={})", code, channelId, inviterId, maxUses);
@@ -211,10 +221,17 @@ public class InvitationManager {
             return InvitationResult.invalid(NovaConstants.ERROR_NOT_FOUND, "Channel no longer exists");
         }
 
-        // For private channels, verify client isolation
-        if (channel.getScope() == ChannelScope.PRIVATE) {
-            if (playerClientId == null || !playerClientId.equals(channel.getClientId())) {
-                return InvitationResult.invalid(NovaConstants.ERROR_FORBIDDEN, "Cannot join private channel from different client");
+        UUID targetPlayerId = invitation.getTargetPlayerId();
+        if (targetPlayerId != null && !targetPlayerId.equals(playerId)) {
+            return InvitationResult.invalid(NovaConstants.ERROR_FORBIDDEN, "Invitation is addressed to another player");
+        }
+        if (channel.getScope() != ChannelScope.GLOBAL) {
+            if (playerClientId == null || playerClientId.isBlank()) {
+                return InvitationResult.invalid(NovaConstants.ERROR_BAD_REQUEST, "Player client ID is required");
+            }
+            if (!playerClientId.equals(channel.getClientId())
+                    && (channel.getScope() == ChannelScope.SERVER || targetPlayerId == null)) {
+                return InvitationResult.invalid(NovaConstants.ERROR_FORBIDDEN, "Invitation does not authorize cross-client access");
             }
         }
 

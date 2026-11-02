@@ -49,6 +49,7 @@ public class Invitation {
 
     /** Timestamp when the invitation was revoked, or null if not revoked */
     private Long revokedAt = null;
+    private final UUID targetPlayerId;
 
     public Invitation(String code, String channelId, UUID inviterId, long expireTime) {
         this.code = Objects.requireNonNull(code, "Code cannot be null");
@@ -57,11 +58,19 @@ public class Invitation {
         this.expireTime = expireTime;
         this.createdAt = System.currentTimeMillis();
         this.used = false;
+        this.targetPlayerId = null;
     }
 
     public Invitation(String code, String channelId, UUID inviterId, long expireTime,
                       long createdAt, boolean used, UUID usedBy, long usedAt,
                       int maxUses, int usedCount, Long revokedAt) {
+        this(code, channelId, inviterId, expireTime, createdAt, used, usedBy, usedAt,
+                maxUses, usedCount, revokedAt, null);
+    }
+
+    public Invitation(String code, String channelId, UUID inviterId, long expireTime,
+                      long createdAt, boolean used, UUID usedBy, long usedAt,
+                      int maxUses, int usedCount, Long revokedAt, UUID targetPlayerId) {
         this.code = code;
         this.channelId = channelId;
         this.inviterId = inviterId;
@@ -73,6 +82,11 @@ public class Invitation {
         this.maxUses = maxUses;
         this.usedCount = usedCount;
         this.revokedAt = revokedAt;
+        this.targetPlayerId = targetPlayerId;
+    }
+
+    public UUID getTargetPlayerId() {
+        return targetPlayerId;
     }
 
     public String getCode() {

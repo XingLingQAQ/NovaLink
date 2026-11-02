@@ -23,13 +23,13 @@ class SchemaV5DialectTest {
     private final SQLiteDialect sqlite = new SQLiteDialect();
 
     @Test
-    @DisplayName("all three dialects report current version 15 with a description")
-    void currentVersionIsThirteen() {
+    @DisplayName("all three dialects report current version 16 with a description")
+    void currentVersionIncludesTargetedInvitations() {
         for (MigrationDialect dialect : List.of(mysql, postgres, sqlite)) {
             assertThat(dialect.getCurrentVersion())
                     .as("%s current version", dialect.getClass().getSimpleName())
-                    .isEqualTo(15);
-            assertThat(dialect.getMigrationDescription(15)).doesNotContain("Unknown");
+                    .isEqualTo(16);
+            assertThat(dialect.getMigrationDescription(16)).doesNotContain("Unknown");
         }
     }
 

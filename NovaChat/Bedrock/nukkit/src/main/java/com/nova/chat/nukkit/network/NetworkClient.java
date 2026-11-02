@@ -77,9 +77,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
             return;
         }
         for (var player : plugin.getServer().getOnlinePlayers().values()) {
-            com.nova.chat.client.channel.ChannelMembershipRestorer.restore(
-                    plugin.getChatInterceptor().getPlayerState(player.getUniqueId()), player.getName(),
-                    PlatformType.NUKKIT, player.getLevel().getName(), null, this::sendPacket);
+            plugin.getChatInterceptor().restorePlayerChannels(player, false);
         }
     }
 

@@ -30,7 +30,7 @@ public class PostgreSQLDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
     private static final long MIGRATION_LOCK_KEY = 0x4E4F56414C494E4BL;
-    private static final int CURRENT_VERSION = 15;
+    private static final int CURRENT_VERSION = 16;
 
     @Override
     public int getCurrentVersion() {
@@ -527,6 +527,7 @@ public class PostgreSQLDialect implements MigrationDialect {
                 statements.add("CREATE INDEX IF NOT EXISTS idx_config_backups_created_at ON config_backups (created_at)");
             }
 
+            case 16 -> statements.add("ALTER TABLE invitations ADD COLUMN IF NOT EXISTS target_player_id VARCHAR(36)");
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -551,6 +552,7 @@ public class PostgreSQLDialect implements MigrationDialect {
             case 13 -> "Add social_relations and notification_preferences tables for ignore/favorite/mentions (PANEL proposal 08)";
             case 14 -> "Add campaigns table for persisted campaign orchestration (PANEL proposal 06)";
             case 15 -> "Add config_drafts and config_backups tables for staged draft/publish workflow and explicit backup/restore (PANEL proposal 10)";
+            case 16 -> "Bind invitations to an optional recipient UUID";
             default -> "Unknown migration";
         };
     }

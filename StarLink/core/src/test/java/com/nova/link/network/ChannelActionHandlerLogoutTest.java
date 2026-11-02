@@ -226,4 +226,43 @@ class ChannelActionHandlerLogoutTest {
         assertThat(channelManager.getChannel("global").isMember(playerId)).isFalse();
         assertThat(channelManager.getChannel("staff").isMember(playerId)).isFalse();
     }
+
+    @Test
+    void logoutAfterPlainLeaveIsIdempotent() {
+        assertThat(joinThenLeave(false, "global").isSuccess()).isTrue();
+        assertThat(playerStateManager.getCachedState(playerId)).isPresent();
+
+        assertThat(leave(true, "global").isSuccess()).isTrue();
+        assertThat(leave(true, "global").isSuccess()).isTrue();
+        assertPlayerEvicted();
+    }
+
+    @Test
+    void logoutWithMissingChannelRemovesRemainingMemberships() {
+        ChannelActionPacket join = new ChannelActionPacket(ChannelAction.JOIN, "global");
+        join.addExtra("playerId", playerId.toString());
+        join.addExtra("playerName", "Steve");
+        assertThat(handler.handle(connection, join).isSuccess()).isTrue();
+
+        assertThat(leave(true, "removed-channel").isSuccess()).isTrue();
+        assertPlayerEvicted();
+        assertThat(channelManager.getChannel("global").isMember(playerId)).isFalse();
+    }
+
+    @Test
+    void staleClientLogoutCannotEvictNewClient() {
+        ChannelActionPacket join = new ChannelActionPacket(ChannelAction.JOIN, "global");
+        join.addExtra("playerId", playerId.toString());
+        join.addExtra("playerName", "Steve");
+        assertThat(handler.handle(connection, join).isSuccess()).isTrue();
+        ClientConnection newConnection = mock(ClientConnection.class);
+        when(newConnection.isAuthenticated()).thenReturn(true);
+        when(newConnection.getClientId()).thenReturn("new-client");
+        assertThat(handler.handle(newConnection, join).isSuccess()).isTrue();
+
+        assertThat(leave(true, "global").isSuccess()).isFalse();
+        assertThat(playerStateManager.getCachedState(playerId)).isPresent();
+        assertThat(playerStateManager.getPlayerState(playerId).getClientId()).isEqualTo("new-client");
+        assertThat(channelManager.getChannel("global").isMember(playerId)).isTrue();
+    }
 }

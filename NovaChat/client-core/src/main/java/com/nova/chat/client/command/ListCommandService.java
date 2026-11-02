@@ -43,6 +43,20 @@ public final class ListCommandService {
      */
     public static List<String> formatChannelList(KnownChannelRegistry registry, Set<String> joinedChannels) {
         List<String> known = registry != null ? registry.getKnownChannelIds(null) : List.of();
+        return formatLines(known, joinedChannels);
+    }
+
+    public static List<String> formatChannelList(KnownChannelRegistry registry, Set<String> joinedChannels,
+                                                 String clientIdentity) {
+        List<String> known = registry != null ? registry.getKnownChannelIds(null, clientIdentity) : List.of();
+        Set<String> joined = joinedChannels != null ? new java.util.LinkedHashSet<>(joinedChannels) : Set.of();
+        if (registry != null && !joined.isEmpty()) {
+            joined.removeIf(channelId -> registry.isKnownForOtherClient(channelId, clientIdentity));
+        }
+        return formatLines(known, joined);
+    }
+
+    private static List<String> formatLines(List<String> known, Set<String> joinedChannels) {
         Set<String> joined = joinedChannels != null ? joinedChannels : Set.of();
 
         if (known.isEmpty() && joined.isEmpty()) {

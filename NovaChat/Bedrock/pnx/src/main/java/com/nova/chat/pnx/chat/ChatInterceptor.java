@@ -11,11 +11,18 @@ import com.nova.chat.client.itemdisplay.ItemDisplayTokens;
 import com.nova.chat.client.state.ChatMode;
 import com.nova.chat.client.state.PlayerChannelState;
 import com.nova.chat.client.state.PlayerStateStore;
+import com.nova.chat.client.network.ChannelResponseTracker;
+import com.nova.chat.common.NovaConstants;
+import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.PlatformType;
+import com.nova.chat.common.protocol.packets.ChannelActionPacket;
+import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.chat.MentionNotifier;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.pnx.NovaChatPNX;
 
 import java.util.Map;
+import java.util.HashSet;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -43,6 +50,11 @@ public class ChatInterceptor implements Listener {
 
     /** Player chat states indexed by UUID (shared store). */
     private final PlayerStateStore playerStates = new PlayerStateStore();
+    private final RecentChannelSelections recentSelections = new RecentChannelSelections();
+    private final Map<UUID, PendingChannelRestore> channelRestores = new ConcurrentHashMap<>();
+
+    private record PendingChannelRestore(UUID playerId, PlayerChannelState session, String channel,
+                                         String previousChannel, ChannelResponseTracker tracker) { }
 
     /** Single dedup state shared by all inbound mention notifications on this client. */
     private final MentionNotifier mentionNotifier = new MentionNotifier();
@@ -127,6 +139,7 @@ public class ChatInterceptor implements Listener {
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
         getOrCreateState(player);
+        restorePlayerChannels(player, true);
         if (welcomedPlayers.add(player.getUniqueId())) {
             player.sendMessage(plugin.getMessageFormatter().colorize(
                     com.nova.chat.client.command.WelcomeMessageService.getWelcomeLine()));
@@ -325,8 +338,141 @@ public class ChatInterceptor implements Listener {
      * @param player the player
      */
     public void removeState(Player player) {
-        playerStates.remove(player.getUniqueId());
-        welcomedPlayers.remove(player.getUniqueId());
+        UUID playerId = player.getUniqueId();
+        PlayerChannelState removed = playerStates.remove(playerId);
+        if (removed != null) {
+            recentSelections.remember(playerId, removed.getActiveChannel());
+            var channels = new HashSet<>(removed.getJoinedChannels());
+            channelRestores.entrySet().removeIf(entry -> {
+                PendingChannelRestore pending = entry.getValue();
+                if (!playerId.equals(pending.playerId())) {
+                    return false;
+                }
+                channels.add(pending.channel());
+                pending.tracker().consume(entry.getKey());
+                return true;
+            });
+            for (String channel : channels) {
+                sendChannelLeave(player, channel, true);
+            }
+        }
+        welcomedPlayers.remove(playerId);
+    }
+
+    public void restorePlayerChannels(Player player, boolean joining) {
+        var client = plugin.getNetworkClient();
+        if (client == null || !client.isAuthenticated()) {
+            return;
+        }
+        UUID playerId = player.getUniqueId();
+        PlayerChannelState state = getState(playerId);
+        if (state == null) {
+            return;
+        }
+        String selected = recentSelections.take(playerId);
+        for (var entry : channelRestores.entrySet()) {
+            if (playerId.equals(entry.getValue().playerId()) && channelRestores.remove(entry.getKey(), entry.getValue())) {
+                selected = entry.getValue().channel();
+                entry.getValue().tracker().consume(entry.getKey());
+            }
+        }
+        if (selected != null || joining) {
+            String channel = selected != null && canRestoreChannel(player, selected)
+                    ? selected : plugin.getNovaChatConfig().getDefaultChannel();
+            requestChannelRestore(player, state, channel);
+        } else {
+            com.nova.chat.client.channel.ChannelMembershipRestorer.restore(
+                    state, player.getName(), PlatformType.POWERNUKKITX, player.getLevel().getName(), null, client::sendPacket);
+        }
+    }
+
+    private boolean canRestoreChannel(Player player, String channel) {
+        return player.hasPermission("novachat.use") && (player.hasPermission("novachat.channel." + channel)
+                || player.hasPermission("novachat.channel.*"));
+    }
+
+    private void requestChannelRestore(Player player, PlayerChannelState state, String channel) {
+        var client = plugin.getNetworkClient();
+        if (client == null || !client.isAuthenticated()) {
+            return;
+        }
+        ChannelActionPacket request = new ChannelActionPacket(ChannelAction.JOIN, channel);
+        request.addExtra("playerId", player.getUniqueId().toString());
+        request.addExtra("playerName", player.getName());
+        request.addExtra("platform", PlatformType.POWERNUKKITX.name());
+        request.addExtra("world", player.getLevel().getName());
+        PendingChannelRestore pending = new PendingChannelRestore(
+                player.getUniqueId(), state, channel, state.getActiveChannel(), client.getChannelResponseTracker());
+        UUID requestId = request.getRequestId();
+        channelRestores.put(requestId, pending);
+        client.sendPacket(request);
+        plugin.getServer().getScheduler().scheduleDelayedTask(plugin, () -> {
+            PendingChannelRestore expired = channelRestores.remove(requestId);
+            if (expired != null) {
+                expired.tracker().consume(requestId);
+                Player online = findOnlinePlayer(expired.playerId());
+                if (online != null && getState(expired.playerId()) == expired.session()) {
+                    sendChannelLeave(online, expired.channel(), false);
+                    restoreDefaultChannel(online, expired);
+                }
+            }
+        }, (int) (NovaConstants.PENDING_REQUEST_TIMEOUT_MS / 50));
+    }
+
+    public boolean handleChannelRestoreResponse(ChannelActionResponsePacket packet) {
+        if (!channelRestores.containsKey(packet.getRequestId())) {
+            return false;
+        }
+        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+            PendingChannelRestore pending = channelRestores.remove(packet.getRequestId());
+            if (pending == null) {
+                return;
+            }
+            pending.tracker().consume(packet.getRequestId());
+            Player player = findOnlinePlayer(pending.playerId());
+            if (player == null || getState(pending.playerId()) != pending.session()) {
+                return;
+            }
+            if (packet.isSuccess() && packet.getAction() == ChannelAction.JOIN
+                    && pending.channel().equals(packet.getChannelId()) && canRestoreChannel(player, pending.channel())) {
+                pending.session().joinChannel(pending.channel());
+                if (pending.previousChannel().equals(pending.session().getActiveChannel())) {
+                    pending.session().setActiveChannel(pending.channel());
+                }
+            } else {
+                if (packet.isSuccess()) {
+                    sendChannelLeave(player, pending.channel(), false);
+                }
+                restoreDefaultChannel(player, pending);
+            }
+        });
+        return true;
+    }
+
+    private void restoreDefaultChannel(Player player, PendingChannelRestore pending) {
+        if (!pending.channel().equals(plugin.getNovaChatConfig().getDefaultChannel())
+                && pending.previousChannel().equals(pending.session().getActiveChannel())) {
+            requestChannelRestore(player, pending.session(), plugin.getNovaChatConfig().getDefaultChannel());
+        }
+    }
+
+    private void sendChannelLeave(Player player, String channel, boolean logout) {
+        var client = plugin.getNetworkClient();
+        if (client == null || !client.isAuthenticated()) {
+            return;
+        }
+        ChannelActionPacket request = new ChannelActionPacket(ChannelAction.LEAVE, channel);
+        request.addExtra("playerId", player.getUniqueId().toString());
+        request.addExtra("playerName", player.getName());
+        request.addExtra("platform", PlatformType.POWERNUKKITX.name());
+        if (logout) {
+            request.addExtra("logout", "true");
+        }
+        client.sendPacket(request);
+    }
+
+    private Player findOnlinePlayer(UUID playerId) {
+        return plugin.getServer().getPlayer(playerId).orElse(null);
     }
 
     /**

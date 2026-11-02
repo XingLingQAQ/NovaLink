@@ -136,6 +136,7 @@ function New-ContractSummary {
     proxyMode = $Mode; overallPass = $true; scenarioGroups = $selected
     rounds = @([PSCustomObject]@{
       status = 'PASS'; proxy = $Proxy; java = 'bukkit'; mod = $null; secondaryJava = $Secondary
+      proxySwitchDriver = $(if ('proxy-switch' -in $selected) { 'player-command' } else { $null })
       bedrock = $(if ($Mode -eq 'relay') { 'nukkit' } else { $null }); assertions = $rows
     })
   }
@@ -243,7 +244,9 @@ try {
   foreach ($case in @(
     @{ Groups = 'lite-moderation'; Mode = 'relay' },
     @{ Groups = 'recovery'; Mode = 'lite' },
-    @{ Groups = 'proxy-switch'; Mode = 'lite' }
+    @{ Groups = 'proxy-switch'; Mode = 'lite' },
+    @{ Groups = 'channel-lifecycle'; Mode = 'lite' },
+    @{ Groups = 'custom-effects'; Mode = 'lite' }
   )) {
     $rejected = $false
     try { $null = Get-JointScenarioAssertionIds -ScenarioGroups $case.Groups -RoundIndex 1 -Mode $case.Mode -Proxy 'bungee' } catch {
@@ -259,7 +262,10 @@ try {
     @{ Group = 'business'; Mode = 'lite'; Proxy = 'bungee'; Secondary = 'none'; Id = 'round1/pm/observer-positive-control' },
     @{ Group = 'lite-moderation'; Mode = 'lite'; Proxy = 'bungee'; Secondary = 'none'; Id = 'round1/lite-moderation/permission-unmute' },
     @{ Group = 'recovery'; Mode = 'relay'; Proxy = 'velocity'; Secondary = 'none'; Id = 'round1/recovery/backend-process-restarted' },
-    @{ Group = 'proxy-switch'; Mode = 'relay'; Proxy = 'bungee'; Secondary = 'bukkit'; Id = 'round1/proxy-switch/wrong-link-denied' }
+    @{ Group = 'proxy-switch'; Mode = 'relay'; Proxy = 'bungee'; Secondary = 'bukkit'; Id = 'round1/proxy-switch/wrong-link-denied' },
+    @{ Group = 'social-contract'; Mode = 'lite'; Proxy = 'bungee'; Secondary = 'none'; Id = 'round1/social-contract/ignore-suppressed' },
+    @{ Group = 'channel-lifecycle'; Mode = 'relay'; Proxy = 'velocity'; Secondary = 'bukkit'; Id = 'round1/channel-lifecycle/created-unique-id' },
+    @{ Group = 'custom-effects'; Mode = 'relay'; Proxy = 'velocity'; Secondary = 'none'; Id = 'round1/custom-effects/target-timings' }
   )) {
     $leg = if ($case.Secondary -eq 'bukkit') { 'bukkit2' } else { '' }
     $fixture = New-ContractSummary $case.Group $case.Mode $case.Proxy $leg
@@ -291,6 +297,12 @@ try {
   $fixture = New-ContractSummary 'proxy-switch' 'relay' 'bungee' 'bukkit2'
   $fixture.rounds[0].secondaryJava = 'bukkit'
   Assert-ContractRejected $fixture 'proxy-switch' 'relay' 'bungee' "Scenario group 'proxy-switch' requires" 'bukkit'
+  $fixture = New-ContractSummary 'proxy-switch' 'relay' 'bungee' 'bukkit2'
+  $fixture.rounds[0].proxySwitchDriver = 'fixtureNativeAPI'
+  Assert-ContractRejected $fixture 'proxy-switch' 'relay' 'bungee' 'recorded player-command evidence' 'bukkit'
+  $fixture = New-ContractSummary 'channel-lifecycle' 'relay' 'velocity' 'bukkit2'
+  $fixture.rounds[0].secondaryJava = $null
+  Assert-ContractRejected $fixture 'channel-lifecycle' 'relay' 'velocity' "Scenario group 'channel-lifecycle' requires" 'bukkit'
   $fixture = New-ContractSummary 'core' 'relay' 'bungee' 'bukkit2'
   Assert-ContractRejected $fixture 'core' 'relay' 'bungee' 'Unexpected secondary Java leg'
   $fixture = New-ContractSummary 'core' 'relay' 'bungee'

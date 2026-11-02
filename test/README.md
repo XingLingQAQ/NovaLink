@@ -4,8 +4,10 @@ This directory holds the **committed, portable** E2E harness that runs in GitHub
 Actions on manual dispatch. It is a trimmed, CI-friendly port of the richer
 local harness under `.e2e/` (gitignored, Windows-machine-specific).
 
-The 2026-11-01 scenario and environment integration has not had real-server
-acceptance. Historical logs, syntax checks and fixtures are separate evidence.
+The selected 2026-11-01 joint and environment cases passed real-server
+acceptance. The recorded selections and remaining coverage are listed in
+[the coverage manifest](FEATURE-COVERAGE.md#recorded-results). Historical logs,
+syntax checks and fixtures are separate evidence.
 
 ## Why a separate `test/` source tree?
 
@@ -217,8 +219,11 @@ dispatch; topology validation must reject them before servers start.
 | `core` | Velocity or Bungee; relay with Bedrock, or Lite | Receiver-recorded chat, channel isolation with positive controls, Java reconnect followed by fresh membership and bidirectional chat |
 | `business` | Either mode; Java downstream, three ordinary bots, `global`/`local`, real operator callback | DM and `/nc r` delivery, sender confirmation, third-party exclusion, offline refusal, channel-scoped mute and unmute restoration |
 | `lite-moderation` | Lite only; Velocity or Bungee console stdin, ordinary target/observer bots | Permission denial, mute/unmute, channel kick without Minecraft disconnect, ban/rejoin refusal, unban and channel scope |
-| `recovery` | Relay only; real Java + Bedrock clients and backend stop/start callbacks | New backend PID, authenticated links, fresh membership and bidirectional delivery after restart, one bounded Bedrock reconnect |
-| `proxy-switch` | Relay only; primary Bukkit plus `-SecondaryJavaPlatform bukkit` (`bukkit2`) | Real outbound/return switch, destination-only probes, fresh membership, exactly-once delivery and SERVER-channel cross-link refusal |
+| `recovery` | Relay only; real Java + Bedrock clients, non-default `local` channel and backend stop/start callbacks | New backend PID, fresh membership and active-channel delivery after restart and one bounded Bedrock reconnect, without another player JOIN |
+| `proxy-switch` | Relay only; primary Bukkit plus `-SecondaryJavaPlatform bukkit` (`bukkit2`) | Player `/server` commands, destination-only probes, fresh membership, exactly-once delivery and SERVER-channel cross-link refusal |
+| `channel-lifecycle` | Relay only; Bukkit + `bukkit2`, bots connected directly to the two Bukkit servers, backend console cleanup | Created channel ID, cross-server invite/accept, exact membership, bidirectional delivery, outsider refusal/isolation and deletion |
+| `social-contract` | Either mode; three ordinary Java bots through the proxy, `global`/`local` | Ignore/unignore with a live observer, exact who sets/counts and list IDs/scopes before leave, after leave and after rejoin |
+| `custom-effects` | Relay only; Bukkit operator and actual receiver/outsider recordings | Custom title/subtitle and exact non-default timings, with delivery and exclusion controls |
 
 `-SecondaryJavaPlatform` / `secondary_java_platform` defaults to `none`.
 `bukkit` creates a second Bukkit process with a distinct port, RCON port and
@@ -226,11 +231,34 @@ backend link identity. It requires exactly one Bukkit primary and no Mod
 leg; the secondary uses `ModPort` / `ModRconPort`. A proxy + two Bukkit
 servers + Bedrock needs four concurrent server slots.
 
-Bungee switching uses the console-only
-[native API fixture](joint/fixtures/bungee-switch/README.md), because the
-locked Waterfall distribution's command-module download returns 404. This
-verifies real player movement and destination-side evidence; it does not
-validate the upstream `/server` command.
+Bungee switching installs the matching, SHA-256-pinned upstream `cmd_server`
+module before the proxy starts. Both proxies use `player-command`; a failed
+`/server` command cannot fall back to the
+[historical native API fixture](joint/fixtures/bungee-switch/README.md).
+Earlier Bungee acceptance used that fixture and does not validate the new
+command path.
+
+The three new groups, non-default recovery and upstream Bungee command path
+need fresh real-server recordings. Earlier passing run counts apply only to
+the selections and source revisions recorded in the coverage manifest.
+
+`custom-effects` issues the existing production AUTH/TITLE packet APIs through
+a console-only Bukkit driver. The password is inherited only by the primary
+Bukkit process; plans and bot recordings contain no password. This group
+checks protocol timing fields, not additional `/nc title` command arguments.
+
+PNX recovery installs a test permission driver that grants only
+`novachat.channel.local` to `E2ERecoverBed` before the production join listener
+runs. It keeps the production jar and its permission checks intact.
+
+Nukkit/PNX retain recent channel selections for up to two minutes, capped at
+1024 entries. A successful backend JOIN restores the selection; refusal or
+timeout falls back to the default channel. Logout removes online state and
+channel memberships, including repeated cleanup after a plain leave.
+
+Recipient-bound invitations add SQL schema 16. The historical external SQL
+acceptance results predate that migration; new environment runs are required
+to extend those results.
 
 Manual interface examples:
 

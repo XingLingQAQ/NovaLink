@@ -20,8 +20,11 @@ missing required IDs and diagnostic-only evidence cannot satisfy acceptance.
 | `core` | Velocity/Bungee relay with Bedrock, or Velocity/Bungee Lite + Bukkit | `round<N>/iso/*`, `round<N>/business/reconnect-*`, plus mode-specific delivery, link and attribution IDs |
 | `business` | Relay or Lite; three ordinary Java bots, two channels, real operator callback | `round<N>/extended-business/*`, `round<N>/pm/*`, `round<N>/channel-mute/*`: DM/reply privacy, offline refusal, mute scope and restoration |
 | `lite-moderation` | Lite only; actual Velocity or Bungee proxy console stdin; target + observer bots | `round<N>/lite-moderation/*`: permission denial, mute/unmute, kick/rejoin, ban/unban, channel scope, Minecraft connection retained after channel kick |
-| `recovery` | Relay only; real Java + Bedrock clients and backend restart callbacks | `round<N>/recovery/*`: changed backend PID, reauthenticated links, membership and bidirectional game traffic after restart and one bounded Bedrock reconnect |
-| `proxy-switch` | Relay only; Bukkit primary + real `bukkit2`, `SecondaryJavaPlatform bukkit` | `round<N>/proxy-switch/*`: destination probes, switch and return, fresh who body, exactly-once deliveries and SERVER-channel link isolation |
+| `recovery` | Relay only; real Java + Bedrock clients, selected `local` channel and backend restart callbacks | `round<N>/recovery/*`: changed PID, fresh membership and active-channel delivery after restart/reconnect, with no new player JOIN |
+| `proxy-switch` | Relay only; Bukkit primary + real `bukkit2`, `SecondaryJavaPlatform bukkit` | `round<N>/proxy-switch/*`: player commands, destination probes, switch/return, fresh who, exactly-once deliveries and SERVER-channel link isolation |
+| `channel-lifecycle` | Relay only; Bukkit primary + `bukkit2`, distinct direct client ports | `round<N>/channel-lifecycle/*`: generated ID, invite/accept, exact membership, cross-server delivery, outsider refusal and cleanup |
+| `social-contract` | Relay or Lite; sender, target and observer through the proxy | `round<N>/social-contract/*`: ignore/unignore, live exclusion controls, exact who sets/counts and list IDs/scopes |
+| `custom-effects` | Relay only; Bukkit operator plus real target/outsider recordings | `round<N>/custom-effects/*`: non-default title timings, title/subtitle delivery and target isolation |
 
 The `business` group extends the basic `business/reconnect-*` assertions that
 are already required by `core`; the similar names do not mean the extended
@@ -78,7 +81,8 @@ results file:
 
 Both directions and every other required assertion for the selected groups
 must be observed. A bot's own belief that it sent something is insufficient
-evidence. No real run of this round's integration has established that result.
+evidence. Run 41274540721 established both directions for the recorded
+native-PNX Relay selections.
 
 ## Historical scenario matrix (2026-10-18/21)
 
@@ -198,8 +202,9 @@ this change's scope).
 4. Backend restart is explicit `recovery`, distinct from core Java reconnect.
 5. Proxy downstreams are Java servers; Bedrock connects directly. The switch
    group does not establish Bedrock server switching.
-6. Full create/invite/accept lifecycle, ignore, exact list semantics and
-   custom title timings are not established merely by selecting `business`.
+6. Lifecycle, ignore, exact list semantics and custom title timings require
+   their separate explicit groups and fresh recordings; `business` alone
+   does not establish them.
 7. Fixtures, `PlanOnly` output and diagnostic assertions are separate from
    real acceptance evidence, including fetch integrity diagnostics.
 
@@ -232,15 +237,23 @@ turn those workflows into passes.
 | Native-PNX Relay with two Bukkit servers | Run 41274540721: 174/174 gating rows per proxy; native PNX marker and every selected required group ID verified. Nukkit was not selected in this run |
 | Velocity Lite and Bungee Lite `core` | Run 41274531514 at `6e5a2c7`: complete `core,business,lite-moderation` selections passed, Velocity 148/148 and Bungee 147/147 |
 | `business` in both modes/proxies | Runs 41274531514 and 41274540721 passed three-recorder DM/reply controls, permission denial and channel-scoped mute/unmute |
-| Velocity/Bungee `lite-moderation` | Run 41271531739 at `e23cb70`: 18/18 required rows passed on each proxy; combined business selection failed and needs a fresh run |
+| Velocity/Bungee `lite-moderation` | Run 41274531514 at `6e5a2c7`: the complete `core,business,lite-moderation` selections passed on both proxies, including all 18 required moderation rows each |
 | `recovery` | Run 41274540721: 13/13 required rows per proxy; new backend PID, fresh authentication/JWT, member lists and post-restart/reconnect bidirectional delivery |
 | Dual-Bukkit `proxy-switch` | Same run: 23/23 required rows per proxy, including destination probes, movement/return, exact delivery and SERVER-channel link isolation |
 | Independent TLS/SQL environment suite | Run 41272492807 recorded 3/3 trusted TLS, 4/4 untrusted-CA rejection and 5/5 PostgreSQL; run 41274536675 recorded 5/5 MySQL after migration repair |
 
-Bungee's switch driver is `fixtureNativeAPI`, through the console-only
-fixture and the proxy's real connect API. Velocity uses `/server`. Both
-drivers require receiver-side destination probes and link isolation; the
-Bungee fixture does not validate Waterfall's unavailable command module.
+The recorded Bungee run used `fixtureNativeAPI`, through the console-only
+fixture and the proxy's real connect API; it did not validate `/server`.
+The current driver is `player-command` on both proxies. Bungee now installs
+the matching pinned upstream `cmd_server` module. Its three command receipt
+IDs are required in addition to destination probes and link isolation.
+
+The new lifecycle, social and custom-effects groups, non-default recovery
+and Bungee command path have not yet had real-server acceptance in this
+revision. Fabric also now ships its runtime dependencies in the standard
+production jar, with the invalid duplicate entrypoint removed. The E2E task
+copies that unchanged jar instead of rewriting it; previous Fabric game
+evidence used the older patched test package.
 
 For joint runs retain `.e2e-artifacts/joint/<runId>/` (or the explicit
 `JointRoot`), `joint-summary.json`, the selected group list, assertion IDs,

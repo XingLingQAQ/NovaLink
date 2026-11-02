@@ -177,7 +177,11 @@ $jointBotScript = Join-Path $jointBinDir "joint-bot.js"
 . (Join-Path $PSScriptRoot "scenarios/lite-moderation.ps1")
 . (Join-Path $PSScriptRoot "scenarios/recovery.ps1")
 . (Join-Path $PSScriptRoot "scenarios/proxy-switch.ps1")
+. (Join-Path $PSScriptRoot "scenarios/channel-lifecycle.ps1")
+. (Join-Path $PSScriptRoot "scenarios/social-contract.ps1")
+. (Join-Path $PSScriptRoot "scenarios/custom-effects.ps1")
 . (Join-Path $PSScriptRoot "fixtures/bungee-switch/installer.ps1")
+. (Join-Path $PSScriptRoot "fixtures/custom-effects/installer.ps1")
 try {
   $script:SelectedScenarioGroups = @(Resolve-JointScenarioGroups -Value $ScenarioGroups)
 } catch {
@@ -907,6 +911,14 @@ function Invoke-GradleBuild($roundList, [string[]]$requestedPlatforms) {
     $tasks.Add(':StarLink:core:jar')
     $tasks.Add(':StarLink:core:writeRuntimeClasspath')
     $initScripts.Add((Join-Path $binDir 'write-classpath.init.gradle'))
+  }
+  if ('custom-effects' -in $script:SelectedScenarioGroups) {
+    $tasks.Add(':NovaChat:Plugin:bukkit:customEffectsFixtureJar')
+    $initScripts.Add((Join-Path $binDir 'custom-effects-fixture.init.gradle'))
+  }
+  if ('recovery' -in $script:SelectedScenarioGroups -and @($roundList | Where-Object { $_.Bedrock -eq 'pnx' }).Count) {
+    $tasks.Add(':NovaChat:Bedrock:pnx:recoveryPermissionsFixtureJar')
+    $initScripts.Add((Join-Path $binDir 'pnx-recovery-fixture.init.gradle'))
   }
 
   foreach ($pf in $requestedPlatforms) {
@@ -3581,7 +3593,7 @@ function Invoke-Round($round, [string]$roundDir) {
     secondaryJava = $round.SecondaryJava
     scenarioGroups = @($script:SelectedScenarioGroups)
     proxySwitchDriver = $(if ('proxy-switch' -in $script:SelectedScenarioGroups) {
-      if ($round.Proxy -eq 'bungee') { 'fixtureNativeAPI' } else { 'player-command' }
+      'player-command'
     } else { $null })
     backendRestarts = @()
     mod = $round.Mod
@@ -3727,10 +3739,22 @@ function Invoke-Round($round, [string]$roundDir) {
 
     if ($round.Java) {
       $dir = Join-Path $roundDir $round.Java
-      $p = Start-PlatformServer -platform $round.Java -serverDir $dir `
-        -port $ports.Java -rconPort $ports.JavaRcon `
-        -clientId $clientSecrets[$round.Java].Username -clientPassword $clientSecrets[$round.Java].Password `
-        -stdoutPath (Join-Path $dir "server.stdout.log") -stderrPath (Join-Path $dir "server.stderr.log")
+      $customEffects = 'custom-effects' -in $script:SelectedScenarioGroups
+      if ($customEffects) {
+        $null = Install-CustomEffectsBukkitBridge `
+          -FixtureJar (Join-Path $RepoRoot 'NovaChat/Plugin/bukkit/build/libs/joint-custom-effects-fixture.jar') `
+          -ServerDirectory $dir
+      }
+      $savedEffectsPassword = $env:NOVALINK_JOINT_CUSTOM_EFFECTS_ADMIN_PASSWORD
+      try {
+        if ($customEffects) { $env:NOVALINK_JOINT_CUSTOM_EFFECTS_ADMIN_PASSWORD = $superAdminPassword }
+        $p = Start-PlatformServer -platform $round.Java -serverDir $dir `
+          -port $ports.Java -rconPort $ports.JavaRcon `
+          -clientId $clientSecrets[$round.Java].Username -clientPassword $clientSecrets[$round.Java].Password `
+          -stdoutPath (Join-Path $dir "server.stdout.log") -stderrPath (Join-Path $dir "server.stderr.log")
+      } finally {
+        $env:NOVALINK_JOINT_CUSTOM_EFFECTS_ADMIN_PASSWORD = $savedEffectsPassword
+      }
       if ($p) { $serverProcs[$round.Java] = $p; $downstreams[$round.Java] = $ports.Java }
     }
     if ($round.SecondaryJava) {
@@ -3751,6 +3775,12 @@ function Invoke-Round($round, [string]$roundDir) {
     }
     if ($round.Bedrock) {
       $dir = Join-Path $roundDir $round.Bedrock
+      if ($round.Bedrock -eq 'pnx' -and 'recovery' -in $script:SelectedScenarioGroups) {
+        $fixtureDir = Join-Path $dir 'plugins'
+        New-Item -ItemType Directory -Force -Path $fixtureDir | Out-Null
+        Copy-Item -LiteralPath (Join-Path $RepoRoot 'NovaChat/Bedrock/pnx/build/libs/joint-recovery-permissions.jar') `
+          -Destination (Join-Path $fixtureDir 'JointRecoveryPermissions.jar') -Force
+      }
       $p = Start-PlatformServer -platform $round.Bedrock -serverDir $dir `
         -port $ports.Bedrock -rconPort $ports.BedrockRcon `
         -clientId $clientSecrets[$round.Bedrock].Username -clientPassword $clientSecrets[$round.Bedrock].Password `
@@ -3789,8 +3819,11 @@ function Invoke-Round($round, [string]$roundDir) {
       }
       $jarPath = Join-Path $DistDir $script:DefJarName[$round.Proxy]
       if ($round.Proxy -eq 'bungee' -and 'proxy-switch' -in $script:SelectedScenarioGroups) {
-        $fixtureJar = Install-JointBungeeSwitchFixture -ServerJar $jarPath -JdkHome $jdkPath -ServerDirectory $dir
-        Log "  installed native Bungee switch fixture: $fixtureJar"
+        $moduleEntry = Get-LockedServer -Name 'waterfall-cmd-server'
+        if (-not $moduleEntry) { throw 'Bungee player-command requires the waterfall-cmd-server lock entry.' }
+        $moduleJar = Install-JointBungeeServerCommand -ServerJar $jarPath `
+          -ModuleJar (Join-Path $DistDir $moduleEntry.File) -ServerDirectory $dir
+        Log "  installed pinned upstream Bungee server command: $moduleJar"
       }
       $java = Join-Path $jdkPath "bin/java.exe"
       if (-not (Test-Path -LiteralPath $java)) { $java = Join-Path $jdkPath "bin/java" }
@@ -4323,6 +4356,13 @@ function Assert-JointRoundTopology {
       ($Round.Java -ne 'bukkit' -or $Round.SecondaryJava -ne 'bukkit2')) {
     throw 'proxy-switch requires Bukkit primary and -SecondaryJavaPlatform bukkit.'
   }
+  if ('channel-lifecycle' -in $script:SelectedScenarioGroups -and
+      ($Round.Java -ne 'bukkit' -or $Round.SecondaryJava -ne 'bukkit2')) {
+    throw 'channel-lifecycle requires Bukkit primary and -SecondaryJavaPlatform bukkit.'
+  }
+  if ('custom-effects' -in $script:SelectedScenarioGroups -and $Round.Java -ne 'bukkit') {
+    throw 'custom-effects requires a Bukkit primary.'
+  }
   $null = Get-JointScenarioAssertionIds -ScenarioGroups $script:SelectedScenarioGroups `
     -RoundIndex $Round.Index -Mode $ProxyMode -Proxy $Round.Proxy
   $portsUsed = @($ProxyPort, $JavaPort, $JavaRconPort)
@@ -4394,33 +4434,35 @@ function Invoke-JointOptionalScenarios {
     Invoke-JointLiteModerationScenarios -Round $Round -RoundDir $RoundDir -McVersion $McVersion `
       -Mode $ProxyMode -Port $ProxyPort -AdminCommand $proxyConsole
   }
-  if ('proxy-switch' -in $script:SelectedScenarioGroups) {
-    $switchMode = 'player-command'
-    $switchPlayer = $null
-    if ($Round.Proxy -eq 'bungee') {
-      $switchMode = 'callback'
-      $switchPlayer = {
-        param([string]$Username, [string]$Server)
-        $proxyProcess = $ServerProcesses[$Round.Proxy]
-        $proxyLog = Join-Path (Join-Path $RoundDir $Round.Proxy) 'proxy.stdout.log'
-        $before = (Read-LogText $proxyLog).Length
-        if ((Read-LogText $proxyLog) -notmatch 'JointSwitchFixture ready') { throw 'Native Bungee switch fixture did not load.' }
-        if (-not $proxyProcess -or $proxyProcess.HasExited) { throw 'Bungee process is unavailable.' }
-        $proxyProcess.StandardInput.WriteLine("jointswitch $Username $Server")
-        $proxyProcess.StandardInput.Flush()
-        $marker = 'JointSwitchFixture switched ' + $Username + ' -> ' + $Server
-        $deadline = (Get-Date).AddSeconds(30)
-        do {
-          if ($proxyProcess.HasExited) { throw 'Bungee exited during the native switch.' }
-          $text = Read-LogText $proxyLog
-          $fresh = $text.Substring([Math]::Min($before, $text.Length))
-          if ($fresh.Contains($marker)) { return }
-          if ($fresh -match 'JointSwitchFixture error') { throw $Matches[0] }
-          Start-Sleep -Milliseconds 100
-        } while ((Get-Date) -lt $deadline)
-        throw "Native Bungee switch did not complete: $Username -> $Server"
+  if ('social-contract' -in $script:SelectedScenarioGroups) {
+    $forbiddenChannels = @()
+    if ('proxy-switch' -in $script:SelectedScenarioGroups) { $forbiddenChannels += 'joint-switch-owned' }
+    Invoke-JointSocialContractScenarios -Round $Round -RoundDir $RoundDir -McVersion $McVersion `
+      -Port $ProxyPort -ChannelScopes @{ global = 'GLOBAL'; local = 'GLOBAL' } -ForbiddenChannelIds $forbiddenChannels
+  }
+  if ('custom-effects' -in $script:SelectedScenarioGroups) {
+    $callbacks = New-CustomEffectsRconCallbacks -RconPort $Ports.JavaRcon -RconPassword 'joint-e2e-rcon'
+    Invoke-CustomEffectsScenarios -RoundIndex $Round.Index `
+      -RunId "$($script:RunId)-r$($Round.Index)-custom-effects" -WorkDir (Join-Path $RoundDir 'bots/custom-effects') `
+      -JavaPort $Ports.Java -ProxyPort $ProxyPort -McVersion $McVersion `
+      -GrantSenderPermissions $callbacks.GrantSenderPermissions -AuthenticateSender $callbacks.AuthenticateSender `
+      -SendTitle $callbacks.SendTitle -ReleaseSender $callbacks.ReleaseSender
+  }
+  if ('channel-lifecycle' -in $script:SelectedScenarioGroups) {
+    $backendCommand = {
+      param([string]$Command)
+      if (-not $BackendState -or -not $BackendState.Process -or $BackendState.Process.HasExited) {
+        throw 'Channel lifecycle requires a live backend console.'
       }
+      Log "    backend-console> $Command"
+      $BackendState.Process.StandardInput.WriteLine($Command)
+      $BackendState.Process.StandardInput.Flush()
     }
+    Invoke-JointChannelLifecycleScenarios -Round $Round -RoundDir $RoundDir `
+      -RunId "$($script:RunId)-r$($Round.Index)-channel-lifecycle" -McVersion $McVersion `
+      -PrimaryPort $Ports.Java -SecondaryPort $Ports.SecondaryJava -BackendCommand $backendCommand
+  }
+  if ('proxy-switch' -in $script:SelectedScenarioGroups) {
     $sendLegProbe = {
       param([string]$Server, [string]$Username, [string]$Token)
       $serverProcess = $ServerProcesses[$Server]
@@ -4437,7 +4479,7 @@ function Invoke-JointOptionalScenarios {
       -RunId "$($script:RunId)-r$($Round.Index)-proxy-switch" -WorkDir (Join-Path $RoundDir 'bots/proxy-switch') `
       -ProxyPort $ProxyPort -McVersion $McVersion -PrimaryServer $Round.Java -SecondaryServer $Round.SecondaryJava `
       -PrimaryIdentity "E2E_Relay_$($Round.Java)" -SecondaryIdentity 'E2E_Relay_bukkit2' `
-      -SendLegProbe $sendLegProbe -SwitchMode $switchMode -SwitchPlayer $switchPlayer
+      -SendLegProbe $sendLegProbe -SwitchMode 'player-command'
   }
   if ('recovery' -in $script:SelectedScenarioGroups) {
     if (-not $BackendState) { throw 'Recovery requires the live backend process and its generated configuration.' }
@@ -4502,7 +4544,7 @@ function Invoke-JointOptionalScenarios {
       McVersion = $BedrockMcVersion; Platform = $Round.Bedrock }
     Invoke-JointRecoveryScenarios -RoundIndex $Round.Index -RunId "$($script:RunId)-r$($Round.Index)-recovery" `
       -WorkDir (Join-Path $RoundDir 'bots/recovery') -JavaClient $javaClient -BedrockClient $bedrockClient `
-      -StopBackend $stopBackend -StartBackend $startBackend -WaitBackendLinks $waitBackendLinks
+      -StopBackend $stopBackend -StartBackend $startBackend -WaitBackendLinks $waitBackendLinks -Channel 'local'
   }
 }
 
@@ -4770,8 +4812,6 @@ if (-not $SkipBuild) {
   Log "=== building platform artifacts ==="
   if (-not (Invoke-GradleBuild $roundList (@($plannedPlatforms | Where-Object { $_ -ne 'bukkit2' })))) { Log "FATAL: build failed"; exit 2 }
 
-  # Fabric's E2E jar is produced through an init script, so it needs its own
-  # invocation with the extra properties the script reads.
   if ($legs.Mod -contains 'fabric') {
     Log "  building fabric E2E mod jar"
     $fabInit = Join-Path $binDir "fabric-fatjar.init.gradle"
@@ -4826,6 +4866,10 @@ foreach ($r in $roundList) {
     $lockName = $PlatformDefs[$pf].LockName
     if ($lockName -and ($fetchTargets -notcontains $lockName)) { $fetchTargets += $lockName }
   }
+}
+if ('proxy-switch' -in $script:SelectedScenarioGroups -and
+    @($roundList | Where-Object { $_.Proxy -eq 'bungee' }).Count -gt 0) {
+  $fetchTargets += 'waterfall-cmd-server'
 }
 foreach ($lockName in $fetchTargets) {
   if (-not (Invoke-FetchServer $lockName)) { Log "FATAL: could not provision '$lockName'"; exit 2 }

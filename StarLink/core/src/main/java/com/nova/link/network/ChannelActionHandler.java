@@ -257,8 +257,8 @@ public class ChannelActionHandler {
             return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
-        // Enforce client boundary for SERVER/PRIVATE channels
-        if (channel.getScope() != ChannelScope.GLOBAL) {
+        if (channel.getScope() != ChannelScope.GLOBAL
+                && !(channel.getScope() == ChannelScope.PRIVATE && channel.isMember(playerId))) {
             String clientId = connection.getClientId();
             if (clientId == null || !clientId.equals(channel.getClientId())) {
                 return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, NovaConstants.ERROR_FORBIDDEN, "Cross-client channel access denied");
@@ -334,14 +334,17 @@ public class ChannelActionHandler {
         if (channelId == null || channelId.isBlank()) {
             return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
+        if (isLogout(packet)) {
+            return handleLogout(connection, packet, playerId, playerName, channelId);
+        }
 
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
-        // Enforce client boundary for SERVER/PRIVATE channels
-        if (channel.getScope() != ChannelScope.GLOBAL) {
+        if (channel.getScope() != ChannelScope.GLOBAL
+                && !(channel.getScope() == ChannelScope.PRIVATE && channel.isMember(playerId))) {
             String clientId = connection.getClientId();
             if (clientId == null || !clientId.equals(channel.getClientId())) {
                 return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, channelId, NovaConstants.ERROR_FORBIDDEN, "Cross-client channel access denied");
@@ -362,23 +365,39 @@ public class ChannelActionHandler {
         }
         playerStateManager.leaveChannel(playerId, channelId);
 
-        // A logout LEAVE (proxy/game server reporting that the player left the
-        // network) must also drop the network-wide cache entry: leaving only the
-        // channel keeps the player resolvable by name, so DMs and mentions still
-        // target someone who is gone. A plain /nc leave keeps the entry — the
-        // player is still online, just not in this channel. Evict after the
-        // state update so the snapshot saved on the way out reflects the leave.
-        if (isLogout(packet)) {
-            playerStateManager.removeFromCache(playerId, true);
-            logger.debug("Evicted player {} from the cache on logout (client {})",
-                    playerId, connection.getClientId());
-        }
-
         notifyPlayerUpdate();
         firePresenceWebhook("player.leave", playerId, playerName,
                 connection.getClientId(), channelId);
 
         return new ChannelActionResponsePacket(true, ChannelAction.LEAVE, channelId, "", "Left channel");
+    }
+
+    private ChannelActionResponsePacket handleLogout(ClientConnection connection, ChannelActionPacket packet,
+                                                      UUID playerId, String playerName, String channelId) {
+        String clientId = connection.getClientId();
+        PlayerState state = playerStateManager.getPlayerState(playerId);
+        if (clientId == null || clientId.isBlank()
+                || (state != null && !clientId.equals(state.getClientId()))) {
+            return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, channelId,
+                    NovaConstants.ERROR_FORBIDDEN, "Player does not belong to this client");
+        }
+        if (state != null) {
+            for (Channel channel : channelManager.getAllChannels()) {
+                channelManager.removeMember(channel.getId(), playerId);
+            }
+            for (String joinedChannel : new TreeSet<>(state.getJoinedChannels())) {
+                playerStateManager.leaveChannel(playerId, joinedChannel);
+            }
+            state.setActiveChannel(null);
+            String platform = packet.getExtra("platform");
+            if (platform != null && !platform.isBlank()) {
+                state.setPlatform(platform);
+            }
+            playerStateManager.removeFromCache(playerId, true);
+            notifyPlayerUpdate();
+            firePresenceWebhook("player.leave", playerId, playerName, clientId, channelId);
+        }
+        return new ChannelActionResponsePacket(true, ChannelAction.LEAVE, channelId, "", "Logged out");
     }
 
     private ChannelActionResponsePacket handleCreate(ClientConnection connection, ChannelActionPacket packet) {
@@ -457,8 +476,20 @@ public class ChannelActionHandler {
             return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId, NovaConstants.ERROR_FORBIDDEN, "Channel admin permission required");
         }
 
+        UUID targetId = resolveTargetId(packet);
+        PlayerState target = targetId != null ? playerStateManager.getPlayerState(targetId) : null;
+        if (target == null || target.getClientId() == null || target.getClientId().isBlank()) {
+            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId,
+                    NovaConstants.ERROR_NOT_FOUND, "Invitation recipient is not online");
+        }
+        String targetName = firstNonBlank(packet.getExtra("targetName"), packet.getExtra("target_name"));
+        if (targetName != null && !targetName.isBlank() && !targetName.equalsIgnoreCase(target.getPlayerName())) {
+            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId,
+                    NovaConstants.ERROR_BAD_REQUEST, "Invitation recipient ID and name do not match");
+        }
+
         try {
-            var invitation = invitationManager.createInvitation(channelId, inviterId);
+            var invitation = invitationManager.createInvitation(channelId, inviterId, targetId);
             ChannelActionResponsePacket response = new ChannelActionResponsePacket(true, ChannelAction.INVITE, channelId, "", "Invitation created");
             response.addExtra("code", invitation.getCode());
             response.addExtra("expireTime", String.valueOf(invitation.getExpireTime()));
@@ -889,9 +920,12 @@ public class ChannelActionHandler {
             return new ChannelActionResponsePacket(false, ChannelAction.WHO, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
-        // Enforce client boundary for SERVER/PRIVATE channels — WHO is a read on
-        // channel membership, so the same cross-client rule as JOIN applies.
-        if (channel.getScope() != ChannelScope.GLOBAL) {
+        UUID requesterId = getUuid(packet.getExtra("requesterId"), packet.getExtra("requester_id"));
+        if (requesterId == null) {
+            requesterId = resolveOperatorId(packet);
+        }
+        if (channel.getScope() != ChannelScope.GLOBAL
+                && !(channel.getScope() == ChannelScope.PRIVATE && channel.isMember(requesterId))) {
             String clientId = connection.getClientId();
             if (clientId == null || !clientId.equals(channel.getClientId())) {
                 return new ChannelActionResponsePacket(false, ChannelAction.WHO, channelId, NovaConstants.ERROR_FORBIDDEN,
@@ -928,9 +962,8 @@ public class ChannelActionHandler {
         // Echo requester identity so the client can deliver the async response
         // to the player who ran /nc who (the response travels over a server-
         // scoped connection, not a per-player channel).
-        String requesterId = firstNonBlank(packet.getExtra("requesterId"), packet.getExtra("requester_id"));
-        if (requesterId != null && !requesterId.isBlank()) {
-            response.addExtra("requesterId", requesterId);
+        if (requesterId != null) {
+            response.addExtra("requesterId", requesterId.toString());
         }
         String requesterName = firstNonBlank(packet.getExtra("requesterName"), packet.getExtra("requester_name"));
         if (requesterName != null && !requesterName.isBlank()) {

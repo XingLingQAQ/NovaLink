@@ -1,0 +1,290 @@
+package com.nova.chat.nukkit.chat;
+
+import cn.nukkit.Player;
+import cn.nukkit.Server;
+import cn.nukkit.event.player.PlayerQuitEvent;
+import cn.nukkit.level.Level;
+import cn.nukkit.scheduler.ServerScheduler;
+import com.nova.chat.nukkit.NovaChatNukkit;
+import com.nova.chat.nukkit.config.NovaChatConfig;
+import com.nova.chat.nukkit.network.NetworkClient;
+import com.nova.chat.client.network.ChannelResponseTracker;
+import com.nova.chat.common.protocol.ChannelAction;
+import com.nova.chat.common.protocol.Packet;
+import com.nova.chat.common.protocol.packets.ChannelActionPacket;
+import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+
+import java.lang.reflect.Method;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+@TestInstance(TestInstance.Lifecycle.PER_METHOD)
+class ChannelReconnectTest {
+    private final UUID playerId = UUID.randomUUID();
+    private final NovaChatNukkit plugin = mock(NovaChatNukkit.class);
+    private final NovaChatConfig config = mock(NovaChatConfig.class);
+    private final NetworkClient client = mock(NetworkClient.class);
+    private final Server server = mock(Server.class);
+    private final ServerScheduler scheduler = mock(ServerScheduler.class);
+    private final Player player = mock(Player.class);
+    private final Level level = mock(Level.class);
+    private final ChannelResponseTracker tracker = new ChannelResponseTracker();
+    private final Map<UUID, Player> online = new HashMap<>();
+    private final List<ChannelActionPacket> wire = new ArrayList<>();
+    private final ArrayDeque<Runnable> deadlines = new ArrayDeque<>();
+    private boolean allowUse = true;
+    private boolean allowChannel = true;
+    private ChatInterceptor interceptor;
+
+    @BeforeEach
+    void setUp() {
+        when(plugin.getNovaChatConfig()).thenReturn(config);
+        when(config.getDefaultChannel()).thenReturn("global");
+        when(plugin.getNetworkClient()).thenReturn(client);
+        when(plugin.getServer()).thenReturn(server);
+        when(server.getScheduler()).thenReturn(scheduler);
+        when(server.getOnlinePlayers()).thenReturn(online);
+        when(server.getPlayer(playerId)).thenAnswer(invocation -> Optional.ofNullable(online.get(playerId)));
+        when(client.isAuthenticated()).thenReturn(true);
+        when(client.getChannelResponseTracker()).thenReturn(tracker);
+        when(player.getUniqueId()).thenReturn(playerId);
+        when(player.getName()).thenReturn("RecoverPlayer");
+        when(player.getLevel()).thenReturn(level);
+        when(level.getName()).thenReturn("world");
+        when(player.hasPermission(anyString())).thenAnswer(invocation -> {
+            String permission = invocation.getArgument(0);
+            return permission.equals("novachat.use") ? allowUse
+                    : permission.equals("novachat.channel.global")
+                    || permission.equals("novachat.channel.local") && allowChannel;
+        });
+        doAnswer(invocation -> {
+            ((Runnable) invocation.getArgument(1)).run();
+            return null;
+        }).when(scheduler).scheduleTask(eq(plugin), any(Runnable.class));
+        doAnswer(invocation -> {
+            deadlines.add(invocation.getArgument(1));
+            return null;
+        }).when(scheduler).scheduleDelayedTask(eq(plugin), any(Runnable.class), anyInt());
+        doAnswer(invocation -> {
+            Packet packet = invocation.getArgument(0);
+            if (packet instanceof ChannelActionPacket action) {
+                wire.add(action);
+                tracker.track(action);
+            }
+            return null;
+        }).when(client).sendPacket(any(Packet.class));
+        online.put(playerId, player);
+        interceptor = new ChatInterceptor(plugin);
+    }
+
+    @Test
+    void restoresSelectionOnlyAfterFreshJoinSuccess() throws Exception {
+        disconnectWithLocalSelection();
+        assertThat(interceptor.getState(playerId)).isNull();
+        assertThat(wire).extracting(ChannelActionPacket::getChannelId).contains("local", "global");
+        assertThat(wire).allSatisfy(packet -> {
+            assertThat(packet.getAction()).isEqualTo(ChannelAction.LEAVE);
+            assertThat(packet.getExtra("logout")).isEqualTo("true");
+        });
+
+        reconnect();
+        ChannelActionPacket request = joinRequests().get(0);
+        assertThat(request.getChannelId()).isEqualTo("local");
+        assertThat(request.getExtra("world")).isEqualTo("world");
+        assertThat(request.getExtra("playerId")).isEqualTo(playerId.toString());
+        assertThat(interceptor.getState(playerId).getActiveChannel()).isEqualTo("global");
+        assertThat(interceptor.getState(playerId).getJoinedChannels()).doesNotContain("local");
+
+        respond(request, true, "");
+        assertThat(interceptor.getState(playerId).getActiveChannel()).isEqualTo("local");
+        assertThat(interceptor.getState(playerId).getJoinedChannels()).contains("local");
+    }
+
+    @Test
+    void backendRejectionFallsBackWithoutRestoringMembership() throws Exception {
+        disconnectWithLocalSelection();
+        reconnect();
+        respond(joinRequests().get(0), false, "NC-403");
+        assertThat(interceptor.getState(playerId).getActiveChannel()).isEqualTo("global");
+        assertThat(interceptor.getState(playerId).getJoinedChannels()).doesNotContain("local");
+        assertThat(joinRequests()).extracting(ChannelActionPacket::getChannelId).containsExactly("local", "global");
+        respond(joinRequests().get(1), true, "");
+        assertThat(interceptor.getState(playerId).getActiveChannel()).isEqualTo("global");
+    }
+
+    @Test
+    void revokedUsePermissionDoesNotRejoinSelection() {
+        disconnectWithLocalSelection();
+        allowUse = false;
+        reconnect();
+        assertThat(joinRequests()).extracting(ChannelActionPacket::getChannelId).containsExactly("global");
+        assertThat(interceptor.getState(playerId).getJoinedChannels()).doesNotContain("local");
+    }
+
+    @Test
+    void timeoutWithdrawsUnconfirmedJoinAndIgnoresLateSuccess() throws Exception {
+        disconnectWithLocalSelection();
+        reconnect();
+        ChannelActionPacket request = joinRequests().get(0);
+        deadlines.removeFirst().run();
+        assertThat(wire).anySatisfy(packet -> {
+            assertThat(packet.getAction()).isEqualTo(ChannelAction.LEAVE);
+            assertThat(packet.getChannelId()).isEqualTo("local");
+            assertThat(packet.getExtra("logout")).isNull();
+        });
+        assertThat(joinRequests()).extracting(ChannelActionPacket::getChannelId).containsExactly("local", "global");
+        assertThat(tracker.consume(request.getRequestId())).isNull();
+        respond(request, true, "");
+        assertThat(interceptor.getState(playerId).getActiveChannel()).isEqualTo("global");
+        assertThat(interceptor.getState(playerId).getJoinedChannels()).doesNotContain("local");
+    }
+
+    @Test
+    void disconnectCancelsPendingRestoreAndCannotReviveNextSession() throws Exception {
+        disconnectWithLocalSelection();
+        reconnect();
+        ChannelActionPacket request = joinRequests().get(0);
+        disconnect();
+        assertThat(interceptor.getState(playerId)).isNull();
+        assertThat(tracker.consume(request.getRequestId())).isNull();
+        assertThat(wire).anySatisfy(packet -> {
+            assertThat(packet.getAction()).isEqualTo(ChannelAction.LEAVE);
+            assertThat(packet.getChannelId()).isEqualTo("local");
+            assertThat(packet.getExtra("logout")).isEqualTo("true");
+        });
+        online.put(playerId, player);
+        interceptor.getOrCreateState(player);
+        respond(request, true, "");
+        deadlines.removeFirst().run();
+        assertThat(interceptor.getState(playerId).getActiveChannel()).isEqualTo("global");
+        assertThat(interceptor.getState(playerId).getJoinedChannels()).doesNotContain("local");
+    }
+
+    @Test
+    void newerSelectionWinsAndConfirmedMembershipStillGetsLogoutCleanup() throws Exception {
+        disconnectWithLocalSelection();
+        reconnect();
+        ChannelActionPacket request = joinRequests().get(0);
+        interceptor.getState(playerId).setActiveChannel("other");
+        respond(request, true, "");
+        assertThat(interceptor.getState(playerId).getActiveChannel()).isEqualTo("other");
+        wire.clear();
+        disconnect();
+        assertThat(wire).anySatisfy(packet -> {
+            assertThat(packet.getAction()).isEqualTo(ChannelAction.LEAVE);
+            assertThat(packet.getChannelId()).isEqualTo("local");
+            assertThat(packet.getExtra("logout")).isEqualTo("true");
+        });
+    }
+
+    @Test
+    void waitsForBackendAuthenticationWithoutConsumingSelection() {
+        disconnectWithLocalSelection();
+        when(client.isAuthenticated()).thenReturn(false);
+        reconnect();
+        assertThat(joinRequests()).isEmpty();
+        when(client.isAuthenticated()).thenReturn(true);
+        interceptor.restorePlayerChannels(player, false);
+        assertThat(joinRequests()).extracting(ChannelActionPacket::getChannelId).containsExactly("local");
+    }
+
+    @Test
+    void newAuthenticationRetriesPendingSelectionWithANewRequest() throws Exception {
+        disconnectWithLocalSelection();
+        reconnect();
+        ChannelActionPacket old = joinRequests().get(0);
+        interceptor.restorePlayerChannels(player, false);
+        assertThat(joinRequests()).extracting(ChannelActionPacket::getChannelId).containsExactly("local", "local");
+        assertThat(tracker.consume(old.getRequestId())).isNull();
+        respond(old, true, "");
+        assertThat(interceptor.getState(playerId).getActiveChannel()).isEqualTo("global");
+        respond(joinRequests().get(1), true, "");
+        assertThat(interceptor.getState(playerId).getActiveChannel()).isEqualTo("local");
+    }
+
+    @Test
+    void backendAuthenticationCannotRecreateQuitPlayer() {
+        disconnectWithLocalSelection();
+        wire.clear();
+        interceptor.restorePlayerChannels(player, false);
+        assertThat(interceptor.getState(playerId)).isNull();
+        assertThat(wire).isEmpty();
+        reconnect();
+        assertThat(joinRequests()).extracting(ChannelActionPacket::getChannelId).containsExactly("local");
+    }
+
+    @Test
+    void selectionExpiresAndIsConsumedOnlyOnce() {
+        AtomicLong now = new AtomicLong();
+        RecentChannelSelections selections = new RecentChannelSelections(now::get);
+        selections.remember(playerId, "local");
+        assertThat(selections.take(playerId)).isEqualTo("local");
+        assertThat(selections.take(playerId)).isNull();
+        selections.remember(playerId, "local");
+        now.set(RecentChannelSelections.TTL_NANOS);
+        assertThat(selections.take(playerId)).isNull();
+    }
+
+    @Test
+    void selectionCacheEvictsOldestAtItsFixedCapacity() {
+        RecentChannelSelections selections = new RecentChannelSelections(() -> 0);
+        selections.remember(playerId, "local");
+        UUID newest = null;
+        for (int i = 0; i < RecentChannelSelections.MAX_ENTRIES; i++) {
+            newest = UUID.randomUUID();
+            selections.remember(newest, "local");
+        }
+        assertThat(selections.take(playerId)).isNull();
+        assertThat(selections.take(newest)).isEqualTo("local");
+    }
+
+    private void disconnectWithLocalSelection() {
+        interceptor.getOrCreateState(player).setActiveChannel("local");
+        disconnect();
+    }
+
+    private void disconnect() {
+        online.remove(playerId);
+        PlayerQuitEvent event = mock(PlayerQuitEvent.class);
+        when(event.getPlayer()).thenReturn(player);
+        interceptor.onPlayerQuit(event);
+    }
+
+    private void reconnect() {
+        online.put(playerId, player);
+        wire.clear();
+        interceptor.getOrCreateState(player);
+        interceptor.restorePlayerChannels(player, true);
+    }
+
+    private List<ChannelActionPacket> joinRequests() {
+        return wire.stream().filter(packet -> packet.getAction() == ChannelAction.JOIN).toList();
+    }
+
+    private void respond(ChannelActionPacket request, boolean success, String errorCode) throws Exception {
+        ChannelActionResponsePacket response = new ChannelActionResponsePacket(
+                success, ChannelAction.JOIN, request.getChannelId(), errorCode, "");
+        response.setRequestId(request.getRequestId());
+        Method handler = ChatInterceptor.class.getDeclaredMethod("handleChannelActionResponse", ChannelActionResponsePacket.class);
+        handler.setAccessible(true);
+        handler.invoke(interceptor, response);
+    }
+}

@@ -15,6 +15,9 @@ $required = @(Get-JointScenarioAssertionIds -ScenarioGroups $requestedGroups -Ro
 if ('proxy-switch' -in $requestedGroups -and $SecondaryJavaPlatform -ne 'bukkit') {
   throw "Scenario group 'proxy-switch' requires -SecondaryJavaPlatform bukkit (bukkit2)"
 }
+if ('channel-lifecycle' -in $requestedGroups -and $SecondaryJavaPlatform -ne 'bukkit') {
+  throw "Scenario group 'channel-lifecycle' requires -SecondaryJavaPlatform bukkit (bukkit2)"
+}
 $files = @(Get-ChildItem -LiteralPath $JointRoot -Recurse -Filter joint-summary.json -File)
 if ($files.Count -ne 1) { throw "Expected one joint summary, found $($files.Count)" }
 $summary = [System.IO.File]::ReadAllText($files[0].FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
@@ -26,7 +29,7 @@ if ($summary.scenarioGroups -is [string] -or $reportedGroups.Count -eq 0) {
   throw 'summary.scenarioGroups must be a non-empty array including core and every requested group'
 }
 foreach ($group in $reportedGroups) {
-  if ($group -isnot [string] -or $group -cnotin @('core', 'business', 'lite-moderation', 'recovery', 'proxy-switch')) {
+  if ($group -isnot [string] -or $group -cnotin @('core', 'business', 'lite-moderation', 'recovery', 'proxy-switch', 'channel-lifecycle', 'social-contract', 'custom-effects')) {
     throw "Invalid group in summary.scenarioGroups: '$group'"
   }
 }
@@ -42,6 +45,12 @@ if ('recovery' -in $requestedGroups -and -not $round.bedrock) {
 }
 if ('proxy-switch' -in $requestedGroups -and ($round.java -ne 'bukkit' -or $round.secondaryJava -ne 'bukkit2')) {
   throw "Scenario group 'proxy-switch' requires relay mode, Bukkit primary and bukkit2 secondary"
+}
+if ('proxy-switch' -in $requestedGroups -and $round.proxySwitchDriver -cne 'player-command') {
+  throw "Scenario group 'proxy-switch' requires recorded player-command evidence"
+}
+if ('channel-lifecycle' -in $requestedGroups -and ($round.java -ne 'bukkit' -or $round.secondaryJava -ne 'bukkit2')) {
+  throw "Scenario group 'channel-lifecycle' requires relay mode, Bukkit primary and bukkit2 secondary"
 }
 if ($SecondaryJavaPlatform -eq 'bukkit') {
   if ($round.secondaryJava -ne 'bukkit2' -or $round.mod) { throw 'Requested secondary Bukkit requires round.secondaryJava=bukkit2 and no mod leg' }

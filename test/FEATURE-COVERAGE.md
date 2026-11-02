@@ -18,12 +18,25 @@ latest observed results are recorded separately below.
 | `core` | Receiver chat, channel-isolation controls and Java reconnect; Velocity/Bungee relay or Lite | Fresh plans, receiver recordings and every required registry ID |
 | `business` | Three-bot DM/reply privacy, offline refusal and channel-scoped mute/unmute | Receiver delivery and exclusion with live positive controls; sender confirmation alone is insufficient |
 | `lite-moderation` | Real Velocity/Bungee Lite console commands; ordinary player permission denial, mute/kick/ban and inverse actions | Both bot recordings, channel scope, kick keeps Minecraft connected and ban blocks rejoin |
-| `recovery` | Relay backend process restart and bounded Bedrock reconnect | Changed PID, fresh membership and bidirectional delivery after both events |
-| `proxy-switch` | Relay with real Bukkit + `bukkit2`, selected by `SecondaryJavaPlatform bukkit` | Destination-only probes, outbound/return switch, exactly-once chat, membership and SERVER-channel cross-link refusal |
+| `recovery` | Relay backend process restart and bounded Bedrock reconnect with `local` selected | Changed PID, fresh membership/active channel and bidirectional delivery, without another player JOIN |
+| `proxy-switch` | Relay with real Bukkit + `bukkit2`, selected by `SecondaryJavaPlatform bukkit` | Player `/server`, destination probes, switch/return, exactly-once chat, membership and SERVER-channel isolation |
+| `channel-lifecycle` | Relay; direct Bukkit + `bukkit2` clients | Actual created channel ID, cross-server invite/accept, exact membership, delivery, outsider exclusion and cleanup |
+| `social-contract` | Relay or Lite; three ordinary proxy players | Ignore/unignore controls, exact who members/counts and list IDs/scopes across leave/rejoin |
+| `custom-effects` | Relay; Bukkit admin action and receiver/outsider controls | Actual title/subtitle and exact configured timings, with non-target exclusion |
 | Native PNX | Official PowerNukkitX 3.0.6, `org.powernukkitx` API 3.x, Bedrock 1.26.60 | Actual native server/plugin enable and receiver-recorded game traffic; old Nukkit-hosted runs do not qualify |
 | Independent `e2e-environment` | Manual TLS trusted/untrusted and MySQL/PostgreSQL cases using actual Bukkit + Fabric | Certificate-chain rejection controls, game messages, SQL row identity across backend restart and fresh post-restart delivery |
 
 ### Recorded results
+
+The runs below predate the three follow-up groups, non-default recovery and
+upstream Bungee command integration. Those changes need fresh game evidence;
+offline contracts and successful packaging do not extend these run results.
+
+Directed invitations now persist their recipient UUID and authorize that
+recipient's PRIVATE membership across client links. SQL backends add schema
+16; migrations 1-15 retain their original contents and checksums. Targeted
+tests include SQLite reopen and atomic invitation claims. The earlier external
+MySQL/PostgreSQL results do not validate the new migration.
 
 | Run / commit | Selection | Observed result |
 |---|---|---|
@@ -53,9 +66,9 @@ API-supplied hashes and fixed-entry fallback remain strict.
 
 See [the harness README](README.md#joint-manual-e2e-coverage) for selection
 and prerequisites, and [joint coverage](joint/JOINT-SCENARIO-COVERAGE.md) for
-the pending evidence record. Create/invite/accept lifecycle, ignore, full
-who/list semantics and custom effects remain gaps unless an explicit current
-required ID and real recording cover them.
+the pending evidence record. The new lifecycle, social and custom-effects
+groups provide explicit execution paths and required IDs. Their current
+real-server acceptance remains pending.
 
 ## Historical evidence legend (2026-08-08)
 

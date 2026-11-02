@@ -19,11 +19,11 @@ on:
         default: nukkit,pnx
         options: ["nukkit,pnx", nukkit, pnx]
       scenario_groups:
-        description: "CSV: core,business,lite-moderation,recovery,proxy-switch (core is always included)"
+        description: "CSV: core,business,lite-moderation,recovery,proxy-switch,channel-lifecycle,social-contract,custom-effects (core is always included)"
         type: string
         default: core
       secondary_java_platform:
-        description: Second Bukkit downstream (required for proxy-switch)
+        description: Second Bukkit downstream (required for proxy-switch or channel-lifecycle)
         type: choice
         default: none
         options: [none, bukkit]
@@ -74,6 +74,9 @@ jobs:
           if ('proxy-switch' -in $groups -and $env:JOINT_SECONDARY_JAVA -ne 'bukkit') {
             throw 'proxy-switch requires secondary_java_platform=bukkit'
           }
+          if ('channel-lifecycle' -in $groups -and $env:JOINT_SECONDARY_JAVA -ne 'bukkit') {
+            throw 'channel-lifecycle requires secondary_java_platform=bukkit'
+          }
 
       - name: Set up Java 21 and 25
         uses: actions/setup-java@v5
@@ -98,6 +101,13 @@ jobs:
           ./test/joint/run-joint.ps1 -SelfTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./test/joint/verify-joint-scenarios.ps1
+          . ./test/joint/scenarios/registry.ps1
+          $groups = @(Resolve-JointScenarioGroups -Value $env:JOINT_SCENARIO_GROUPS)
+          foreach ($group in @('channel-lifecycle', 'social-contract', 'custom-effects')) {
+            if ($group -in $groups) {
+              & "./test/joint/scenarios/verify-$group.ps1"
+            }
+          }
 
       - name: Install locked bot dependencies
         shell: pwsh

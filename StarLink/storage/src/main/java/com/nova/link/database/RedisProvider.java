@@ -1210,7 +1210,8 @@ public class RedisProvider implements DatabaseProvider {
                 }
                 InvitationDto dto = gson.fromJson(json, InvitationDto.class);
                 int maxUses = dto.maxUses > 0 ? dto.maxUses : 1;
-                if (dto.used || dto.revokedAt != null || dto.usedCount >= maxUses) {
+                if (dto.used || dto.revokedAt != null || dto.usedCount >= maxUses || dto.expireTime <= now
+                        || (dto.targetPlayerId != null && !dto.targetPlayerId.equals(playerId != null ? playerId.toString() : null))) {
                     // Exhausted, revoked, or raced past the quota — do not
                     // overwrite; another caller already holds the slot.
                     jedis.unwatch();
@@ -1771,6 +1772,7 @@ public class RedisProvider implements DatabaseProvider {
         String code;
         String channelId;
         String inviterId;
+        String targetPlayerId;
         long expireTime;
         long createdAt;
         boolean used;
@@ -1785,6 +1787,7 @@ public class RedisProvider implements DatabaseProvider {
             this.code = invitation.getCode();
             this.channelId = invitation.getChannelId();
             this.inviterId = invitation.getInviterId().toString();
+            this.targetPlayerId = invitation.getTargetPlayerId() != null ? invitation.getTargetPlayerId().toString() : null;
             this.expireTime = invitation.getExpireTime();
             this.createdAt = invitation.getCreatedAt();
             this.used = invitation.isUsed();
@@ -1800,7 +1803,7 @@ public class RedisProvider implements DatabaseProvider {
             int resolvedMaxUses = maxUses > 0 ? maxUses : 1;
             return new Invitation(code, channelId, UUID.fromString(inviterId), expireTime,
                     createdAt, used, usedById, usedAt,
-                    resolvedMaxUses, usedCount, revokedAt);
+                    resolvedMaxUses, usedCount, revokedAt, targetPlayerId != null ? UUID.fromString(targetPlayerId) : null);
         }
     }
 }

@@ -1,0 +1,30 @@
+import org.gradle.api.tasks.bundling.Jar
+import org.gradle.api.tasks.compile.JavaCompile
+
+gradle.projectsLoaded {
+    gradle.afterProject { project ->
+        if (project.path != ':NovaChat:Bedrock:pnx') {
+            return
+        }
+        def fixture = project.rootProject.file('test/joint/fixtures/recovery-permissions')
+        def productionCompile = project.tasks.named('compileJava', JavaCompile)
+        def compileFixture = project.tasks.register('compileRecoveryPermissionsFixtureJava', JavaCompile) {
+            source project.fileTree(new File(fixture, 'src')) { include '**/*.java' }
+            classpath = project.sourceSets.main.compileClasspath
+            destinationDirectory = project.layout.buildDirectory.dir('classes/java/recoveryPermissionsFixture')
+            javaCompiler.set(productionCompile.flatMap { it.javaCompiler })
+            options.release.set(21)
+            options.encoding = 'UTF-8'
+            options.compilerArgs.add('-proc:none')
+        }
+        project.tasks.register('recoveryPermissionsFixtureJar', Jar) {
+            group = 'e2e'
+            description = 'Grants the recovery bot access to the selected non-default PNX channel.'
+            dependsOn compileFixture
+            archiveFileName.set('joint-recovery-permissions.jar')
+            destinationDirectory = project.layout.buildDirectory.dir('libs')
+            from compileFixture.flatMap { it.destinationDirectory }
+            from new File(fixture, 'plugin.yml')
+        }
+    }
+}

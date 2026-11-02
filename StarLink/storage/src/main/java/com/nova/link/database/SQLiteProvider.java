@@ -1063,8 +1063,8 @@ public class SQLiteProvider extends AbstractJdbcProvider {
 
         String sql = """
             INSERT INTO invitations (code, channel_id, inviter_id, expire_time, created_at, used, used_by, used_at,
-                                    max_uses, used_count, revoked_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    max_uses, used_count, revoked_at, target_player_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(code) DO UPDATE SET
                 channel_id = excluded.channel_id,
                 inviter_id = excluded.inviter_id,
@@ -1075,7 +1075,8 @@ public class SQLiteProvider extends AbstractJdbcProvider {
                 used_at = excluded.used_at,
                 max_uses = excluded.max_uses,
                 used_count = excluded.used_count,
-                revoked_at = excluded.revoked_at
+                revoked_at = excluded.revoked_at,
+                target_player_id = excluded.target_player_id
             """;
 
         try (Connection conn = dataSource.getConnection();
@@ -1096,6 +1097,8 @@ public class SQLiteProvider extends AbstractJdbcProvider {
             } else {
                 stmt.setNull(11, java.sql.Types.INTEGER);
             }
+
+            stmt.setString(12, invitation.getTargetPlayerId() != null ? invitation.getTargetPlayerId().toString() : null);
 
             stmt.executeUpdate();
             logger.debug("Saved invitation: {}", invitation.getCode());
@@ -1130,7 +1133,8 @@ public class SQLiteProvider extends AbstractJdbcProvider {
                             rs.getLong("used_at"),
                             rs.getInt("max_uses"),
                             rs.getInt("used_count"),
-                            rs.getObject("revoked_at") != null ? rs.getLong("revoked_at") : null
+                            rs.getObject("revoked_at") != null ? rs.getLong("revoked_at") : null,
+                            parseUuid(rs.getString("target_player_id"))
                     );
                     return Optional.of(invitation);
                 }
@@ -1191,7 +1195,8 @@ public class SQLiteProvider extends AbstractJdbcProvider {
         // correctly onto the INTEGER column.
         String sql = "UPDATE invitations SET used_count = used_count + 1, used_by = ?, used_at = ?, "
                 + "used = (used_count + 1 >= max_uses) "
-                + "WHERE code = ? AND used = 0 AND revoked_at IS NULL AND used_count < max_uses";
+                + "WHERE code = ? AND used = 0 AND revoked_at IS NULL AND used_count < max_uses "
+                + "AND expire_time > ? AND (target_player_id IS NULL OR target_player_id = ?)";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -1199,6 +1204,8 @@ public class SQLiteProvider extends AbstractJdbcProvider {
             stmt.setString(1, playerId != null ? playerId.toString() : null);
             stmt.setLong(2, now);
             stmt.setString(3, code);
+            stmt.setLong(4, now);
+            stmt.setString(5, playerId != null ? playerId.toString() : null);
 
             int affected = stmt.executeUpdate();
             if (affected == 0) {

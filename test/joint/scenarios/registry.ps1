@@ -1,7 +1,7 @@
 function Resolve-JointScenarioGroups {
   param([AllowNull()][AllowEmptyString()][string]$Value = 'core')
 
-  $allowed = @('core', 'business', 'lite-moderation', 'recovery', 'proxy-switch')
+  $allowed = @('core', 'business', 'lite-moderation', 'recovery', 'proxy-switch', 'channel-lifecycle', 'social-contract', 'custom-effects')
   $groups = New-Object System.Collections.Generic.List[string]
   $groups.Add('core')
   if ([string]::IsNullOrWhiteSpace($Value)) { return $groups.ToArray() }
@@ -32,6 +32,12 @@ function Get-JointScenarioAssertionIds {
   }
   if ('proxy-switch' -in $groups -and $Mode -ne 'relay') {
     throw "Scenario group 'proxy-switch' requires relay mode, Bukkit primary and bukkit2 secondary; requested $Mode"
+  }
+  if ('channel-lifecycle' -in $groups -and $Mode -ne 'relay') {
+    throw "Scenario group 'channel-lifecycle' requires relay mode; requested $Mode"
+  }
+  if ('custom-effects' -in $groups -and $Mode -ne 'relay') {
+    throw "Scenario group 'custom-effects' requires relay mode; requested $Mode"
   }
 
   $prefix = "round$RoundIndex"
@@ -64,11 +70,23 @@ function Get-JointScenarioAssertionIds {
       }
       'recovery' {
         . (Join-Path $PSScriptRoot 'recovery.ps1')
-        $ids += @(Get-RecoveryRequiredAssertionIds -RoundIndex $RoundIndex)
+        $ids += @(Get-RecoveryRequiredAssertionIds -RoundIndex $RoundIndex -Channel 'local')
       }
       'proxy-switch' {
         . (Join-Path $PSScriptRoot 'proxy-switch.ps1')
-        $ids += @(Get-ProxySwitchRequiredAssertionIds -RoundIndex $RoundIndex)
+        $ids += @(Get-ProxySwitchRequiredAssertionIds -RoundIndex $RoundIndex -SwitchMode 'player-command')
+      }
+      'channel-lifecycle' {
+        . (Join-Path $PSScriptRoot 'channel-lifecycle.ps1')
+        $ids += @(Get-ChannelLifecycleRequiredAssertionIds -RoundIndex $RoundIndex)
+      }
+      'social-contract' {
+        . (Join-Path $PSScriptRoot 'social-contract.ps1')
+        $ids += @(Get-SocialContractRequiredAssertionIds -RoundIndex $RoundIndex)
+      }
+      'custom-effects' {
+        . (Join-Path $PSScriptRoot 'custom-effects.ps1')
+        $ids += @(Get-CustomEffectsRequiredAssertionIds -RoundIndex $RoundIndex)
       }
     }
   }

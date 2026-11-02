@@ -1058,6 +1058,8 @@ public class MemoryProvider implements DatabaseProvider {
         // used_at values against MemoryProvider.
         synchronized (invitation) {
             if (invitation.isUsed() || invitation.isRevoked()
+                    || invitation.getExpireTime() <= now
+                    || (invitation.getTargetPlayerId() != null && !invitation.getTargetPlayerId().equals(playerId))
                     || invitation.getUsedCount() >= invitation.getMaxUses()) {
                 logger.debug("claimInvitationUse({}) rejected — exhausted/revoked/raced", code);
                 return 0;

@@ -1,7 +1,8 @@
 . (Join-Path $PSScriptRoot 'recovery.ps1')
 
 function Get-ProxySwitchRequiredAssertionIds {
-  param([int]$RoundIndex)
+  param([int]$RoundIndex,
+    [ValidateSet('player-command', 'callback')][string]$SwitchMode = 'callback')
   $prefix = "round$RoundIndex/proxy-switch"
   foreach ($name in @('mover', 'left', 'right')) {
     "$prefix/$name-completed"
@@ -16,6 +17,9 @@ function Get-ProxySwitchRequiredAssertionIds {
   }
   foreach ($name in @('owned-channel-bidirectional', 'wrong-link-denied', 'no-cross-link-secret', 'no-cross-link-reply')) {
     "$prefix/$name"
+  }
+  if ($SwitchMode -eq 'player-command') {
+    foreach ($phase in @('right', 'move', 'return')) { "$prefix/player-command-$phase" }
   }
 }
 
@@ -37,7 +41,7 @@ function Get-JointProxySwitchFixture {
     Locale = 'en_US'; PlayerPermissions = @('novachat.use', 'novachat.channel.global')
     OptionalPlayerSwitchPermission = @{ velocity = 'velocity.command.server'; bungee = 'bungeecord.command.server' }
     RequiredCallbacks = @('SendLegProbe(server, username, token)')
-    CallbackSwitchMode = 'SwitchPlayer(username, server); optional when bots use /server'
+    CallbackSwitchMode = 'SwitchPlayer(username, server); only for explicit callback mode, never a player-command fallback'
   }
 }
 
@@ -74,7 +78,7 @@ function Invoke-JointProxyLegProbe {
 }
 
 function Invoke-JointProxyPlayerSwitch {
-  param([string]$Mode, [string]$Phase, [string]$Username, [string]$Server,
+  param([ValidateSet('player-command', 'callback')][string]$Mode, [string]$Phase, [string]$Username, [string]$Server,
     [string]$HandoffDir, [string]$RunId, [scriptblock]$Callback)
   if ($Mode -eq 'callback') {
     if (-not $Callback) { throw 'SwitchMode=callback requires SwitchPlayer(username, server).' }
@@ -222,9 +226,50 @@ function Get-JointProxySwitchPlans {
   return $plans
 }
 
+function Test-JointProxyPlayerCommandReceipt {
+  param($Result, [string]$RunId, [string]$Phase, [string]$Server)
+  if ($null -eq $Result -or $Result.kind -cne 'java' -or $Result.runId -cne $RunId -or -not $Server) { return $false }
+  $since = Get-JointRecoveryCheckpoint $Result "switch-$Phase-command"
+  if ($null -eq $since) { return $false }
+  $until = [double]::PositiveInfinity
+  $nextBoundary = @(Get-JointBotRows $Result -Kind 'checkpoint' -SinceMs $since | Where-Object {
+    (Get-JointBotRowAtMs $_) -gt $since
+  }) | Select-Object -First 1
+  if ($nextBoundary) { $until = Get-JointBotRowAtMs $nextBoundary }
+  $commands = @($Result.sent | Where-Object {
+    $_.text -cmatch '^/server(?:\s|$)' -and $null -ne $_.atMs -and $_.atMs -ge $since -and $_.atMs -le $until
+  })
+  if ($commands.Count -ne 1 -or $commands[0].text -cne "/server $Server") { return $false }
+  $verdict = Find-JointBotVerdict $Result "switch-$Phase-server-confirmed"
+  if ($null -eq $verdict -or -not $verdict.pass -or $verdict.kind -cne 'chat-pattern') { return $false }
+  $token = switch ($Phase) {
+    'right' { "$RunId-placed-right" }
+    'move' { "$RunId-leg-moved" }
+    'return' { "$RunId-leg-return" }
+    default { return $false }
+  }
+  $receipts = @(Get-JointRecoveryChatRows $Result -SinceMs $commands[0].atMs -UntilMs ([Math]::Min($until, $commands[0].atMs + 30000)) | Where-Object {
+    (ConvertTo-JointRecoveryText ([string]$_.text)) -ceq $token
+  })
+  return $receipts.Count -gt 0
+}
+
 function Assert-JointProxySwitchResults {
-  param([int]$RoundIndex, [string]$RunId, $MoverRes, $LeftRes, $RightRes, [string]$Channel = 'global', [string]$ScopedChannel = 'joint-switch-owned')
+  param([int]$RoundIndex, [string]$RunId, $MoverRes, $LeftRes, $RightRes, [string]$Channel = 'global', [string]$ScopedChannel = 'joint-switch-owned',
+    [ValidateSet('player-command', 'callback')][string]$SwitchMode = 'callback',
+    [string]$PrimaryServer = 'primary', [string]$SecondaryServer = 'secondary')
   $prefix = "round$RoundIndex/proxy-switch"
+  if ($SwitchMode -eq 'player-command') {
+    foreach ($leg in @(
+      @{ Phase = 'right'; Result = $RightRes; Server = $SecondaryServer },
+      @{ Phase = 'move'; Result = $MoverRes; Server = $SecondaryServer },
+      @{ Phase = 'return'; Result = $MoverRes; Server = $PrimaryServer }
+    )) {
+      $ok = Test-JointProxyPlayerCommandReceipt $leg.Result $RunId $leg.Phase $leg.Server
+      New-JointAssertion "$prefix/player-command-$($leg.Phase)" "/server $($leg.Server)" $ok `
+        'A player must send the exact /server command once after its checkpoint, then receive the destination-only probe within 30s; API callback results cannot satisfy this row.' 'proxy-switch'
+    }
+  }
   foreach ($pair in @(@{ Name = 'mover'; Result = $MoverRes }, @{ Name = 'left'; Result = $LeftRes }, @{ Name = 'right'; Result = $RightRes })) {
     $res = $pair.Result
     $ok = $null -ne $res -and $res.runId -ceq $RunId -and $res.kind -ceq 'java' -and -not $res.error -and -not $res.timedOut -and (Test-JointBotRecording $res) -and @($res.assertions | Where-Object { -not $_.pass -and -not $_.diagnostic }).Count -eq 0
@@ -336,5 +381,6 @@ function Invoke-JointProxySwitchScenarios {
   $mover = Read-BotResult (Join-Path $WorkDir 'Mover.results.json')
   $left = Read-BotResult (Join-Path $WorkDir 'Left.results.json')
   $right = Read-BotResult (Join-Path $WorkDir 'Right.results.json')
-  Assert-JointProxySwitchResults $RoundIndex $RunId $mover $left $right $Channel $ScopedChannel
+  Assert-JointProxySwitchResults $RoundIndex $RunId $mover $left $right $Channel $ScopedChannel `
+    -SwitchMode $SwitchMode -PrimaryServer $PrimaryServer -SecondaryServer $SecondaryServer
 }

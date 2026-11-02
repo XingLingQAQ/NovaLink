@@ -1,0 +1,5 @@
+name: JointRecoveryPermissions
+version: 1.0
+main: com.nova.joint.fixture.RecoveryPermissions
+api: ["3.0.6"]
+depend: [NovaChat]

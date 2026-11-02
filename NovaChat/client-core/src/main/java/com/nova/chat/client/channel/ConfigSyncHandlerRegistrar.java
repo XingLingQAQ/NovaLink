@@ -50,7 +50,9 @@ public final class ConfigSyncHandlerRegistrar {
                     if (json == null || json.isBlank()) {
                         return;
                     }
-                    registry.replaceAll(ConfigSyncChannels.extract(json, thisClientUsername));
+                    registry.replaceForClient(thisClientUsername,
+                            ConfigSyncChannels.extract(json, null),
+                            ConfigSyncChannels.extract(json, thisClientUsername));
                 });
     }
 }

@@ -718,6 +718,22 @@ class NetworkClient {
             if ($packet->message !== "") {
                 $this->plugin->debug("Handshake message: " . $packet->message);
             }
+            $chatHandler = $this->plugin->getChatHandler();
+            if ($chatHandler !== null) {
+                foreach ($this->plugin->getServer()->getOnlinePlayers() as $player) {
+                    $this->sendChannelAction(
+                        ChannelActionPacket::ACTION_JOIN,
+                        $chatHandler->getPlayerChannel($player),
+                        "",
+                        [
+                            "playerId" => $player->getUniqueId()->toString(),
+                            "playerName" => $player->getName(),
+                            "platform" => "pmmp",
+                            "world" => $player->getWorld()->getFolderName(),
+                        ]
+                    );
+                }
+            }
         } else {
             $this->plugin->getLogger()->error("Authentication failed: " . $packet->errorCode .
                 ($packet->message !== "" ? " - " . $packet->message : ""));

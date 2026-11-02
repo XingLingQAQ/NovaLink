@@ -22,7 +22,7 @@ public class MySQLDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
     private static final String MIGRATION_LOCK_NAME = "novalink_schema_migration";
-    private static final int CURRENT_VERSION = 15;
+    private static final int CURRENT_VERSION = 16;
 
     @Override
     public int getCurrentVersion() {
@@ -630,6 +630,24 @@ public class MySQLDialect implements MigrationDialect {
                     """);
             }
 
+            case 16 -> {
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_invitation_target");
+                statements.add("""
+                    CREATE PROCEDURE novalink_add_invitation_target()
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = DATABASE()
+                              AND table_name = 'invitations'
+                              AND column_name = 'target_player_id'
+                        ) THEN
+                            ALTER TABLE invitations ADD COLUMN target_player_id VARCHAR(36) NULL;
+                        END IF;
+                    END
+                    """);
+                statements.add("CALL novalink_add_invitation_target()");
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_invitation_target");
+            }
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -654,6 +672,7 @@ public class MySQLDialect implements MigrationDialect {
             case 13 -> "Add social_relations and notification_preferences tables for ignore/favorite/mentions (PANEL proposal 08)";
             case 14 -> "Add campaigns table for persisted campaign orchestration (PANEL proposal 06)";
             case 15 -> "Add config_drafts and config_backups tables for staged draft/publish workflow and explicit backup/restore (PANEL proposal 10)";
+            case 16 -> "Bind invitations to an optional recipient UUID";
             default -> "Unknown migration";
         };
     }

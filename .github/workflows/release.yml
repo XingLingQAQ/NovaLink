@@ -269,6 +269,7 @@ jobs:
             ':NovaChat:Bedrock:nukkit:jar' `
             ':NovaChat:Bedrock:pnx:shadowJar' `
             ':NovaChat:Sponge:sponge:shadowJar' `
+            ':NovaChat:MOD:fabric:remapJar' `
             '-Pversion=${{ steps.version.outputs.version }}' `
             '-Porg.gradle.java.installations.paths=' `
             '-Dorg.gradle.java.installations.paths='
@@ -318,6 +319,7 @@ jobs:
           Copy-Item "NovaChat/Bedrock/nukkit/build/libs/nukkit-$ver.jar" "dist-assets/NovaChat-Nukkit-$ver.jar"
           Copy-Item "NovaChat/Bedrock/pnx/build/libs/NovaChat-PNX-$ver.jar" "dist-assets/NovaChat-PowerNukkitX-$ver.jar"
           Copy-Item "NovaChat/Sponge/sponge/build/libs/NovaChat-Sponge-$ver.jar" "dist-assets/NovaChat-Sponge-$ver.jar"
+          Copy-Item "NovaChat/MOD/fabric/build/libs/fabric-$ver.jar" "dist-assets/NovaChat-Fabric-$ver.jar"
 
           # LeviLamina ships a folder (dll + manifest + resources), not a jar.
           # Zip it so the release has one downloadable unit per platform.

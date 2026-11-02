@@ -35,6 +35,84 @@ $fixture.received[2].text = 'Alice, Bob'
 $fixture.received[1].atMs = 99
 Assert-CiRecoveryCheck (-not (Test-JointRecoveryMembership $fixture 'phase' @('Alice', 'Bob'))) 'stale localized header rejected'
 
+$localPlans = Get-JointRecoveryPlans 'offline' -Channel local
+foreach ($role in @('Java', 'Bedrock')) {
+  $steps = $localPlans[$role]
+  Assert-CiRecoveryCheck (@($steps | Where-Object { $_.action -eq 'cmd' -and $_.text -match '^/nc join\s' }).Count -eq 1) "$role has one initial JOIN only"
+  Assert-CiRecoveryCheck (@($steps | Where-Object { $_.id -eq 'recovery-join' -and $_.required }).Count -eq 1) "$role requires the initial JOIN receipt"
+  Assert-CiRecoveryCheck (@($steps | Where-Object { $_.action -eq 'cmd' -and $_.text -ceq '/nc who' }).Count -eq 3) "$role reads its active channel before and after both events"
+  Assert-CiRecoveryCheck (@($steps | Where-Object { $_.action -eq 'chat' -and $_.text -match '^offline-(?:pre|restart|reconnect)-(?:java|bedrock)$' }).Count -eq 3) "$role sends plain chat in all three phases"
+  Assert-CiRecoveryCheck (@($steps | Where-Object { $_.action -eq 'signal' -and $_.key -eq "recovery-$($role.ToLowerInvariant())-selected" }).Count -eq 1) "$role confirms initial selection before traffic"
+}
+Assert-CiRecoveryCheck (@($localPlans.Bedrock | Where-Object { $_.action -eq 'reconnect' }).Count -eq 1) 'non-default path still has one bounded Bedrock reconnect'
+Assert-CiRecoveryCheck (@(Get-RecoveryRequiredAssertionIds 1 -Channel local).Count -eq (@(Get-RecoveryRequiredAssertionIds 1).Count + 8)) 'global IDs remain compatible; non-default mode adds eight mandatory IDs'
+
+function New-CiRecoveryResult {
+  param([string]$Kind)
+  $chatKind = if ($Kind -eq 'bedrock') { 'text:raw' } else { 'messagestr' }
+  [PSCustomObject]@{
+    runId = 'offline'; kind = $Kind; error = $null; timedOut = $false; assertions = @(); absentChecks = @()
+    received = @(
+      [PSCustomObject]@{ kind = 'checkpoint'; key = 'recovery-joining'; atMs = 10 },
+      [PSCustomObject]@{ kind = $chatKind; text = 'Joined channel: local'; atMs = 12 }
+    )
+    sent = @([PSCustomObject]@{ text = '/nc join local'; atMs = 11 })
+  }
+}
+function Add-CiRecoveryMembers {
+  param($Result, [string]$Phase, [double]$AtMs, [switch]$Current)
+  $chatKind = if ($Result.kind -eq 'bedrock') { 'text:raw' } else { 'messagestr' }
+  $Result.received += [PSCustomObject]@{ kind = 'checkpoint'; key = $Phase; atMs = $AtMs }
+  $command = if ($Current) { '/nc who' } else { '/nc who local' }
+  $Result.sent += [PSCustomObject]@{ text = $command; atMs = ($AtMs + 1) }
+  $Result.received += [PSCustomObject]@{ kind = $chatKind; text = 'Channel Local online members (2):'; atMs = ($AtMs + 2) }
+  $Result.received += [PSCustomObject]@{ kind = $chatKind; text = 'E2ERecoverJava, E2ERecoverBed'; atMs = ($AtMs + 3) }
+}
+
+$localJava = New-CiRecoveryResult java
+$localBedrock = New-CiRecoveryResult bedrock
+foreach ($result in @($localJava, $localBedrock)) {
+  Add-CiRecoveryMembers $result 'recovery-selected' 20 -Current
+  Add-CiRecoveryMembers $result 'backend-restored' 100
+  Add-CiRecoveryMembers $result 'backend-active' 110 -Current
+}
+Add-CiRecoveryMembers $localJava 'bedrock-peer-active' 310 -Current
+Add-CiRecoveryMembers $localBedrock 'bedrock-restored' 300
+Add-CiRecoveryMembers $localBedrock 'bedrock-active' 310 -Current
+$localBedrock.received += [PSCustomObject]@{ kind = 'reconnect'; phase = 'spawned'; protocol = 'bedrock'; attempts = 1; atMs = 299 }
+$localBedrock.assertions += [PSCustomObject]@{ id = 'bedrock-reconnect'; pass = $true; evidence = 'synthetic transport' }
+foreach ($phase in @('pre', 'restart', 'reconnect')) {
+  $at = if ($phase -eq 'pre') { 50 } elseif ($phase -eq 'restart') { 150 } else { 350 }
+  $localJava.sent += [PSCustomObject]@{ text = "offline-$phase-java"; atMs = $at }
+  $localBedrock.sent += [PSCustomObject]@{ text = "offline-$phase-bedrock"; atMs = $at }
+  $localJava.received += [PSCustomObject]@{ kind = 'messagestr'; text = "offline-$phase-bedrock"; atMs = ($at + 1) }
+  $localBedrock.received += [PSCustomObject]@{ kind = 'text:chat'; text = "offline-$phase-java"; atMs = ($at + 1) }
+}
+foreach ($result in @($localJava, $localBedrock)) { $result.received = @($result.received | Sort-Object atMs) }
+$localVerdicts = @(Assert-JointRecoveryResults 1 'offline' $localJava $localBedrock -Channel local)
+Assert-CiRecoveryCheck (@($localVerdicts | Where-Object { -not $_.pass }).Count -eq 0) 'complete non-default synthetic recording accepted'
+foreach ($id in @(Get-RecoveryRequiredAssertionIds 1 -Channel local | Where-Object { $_ -notlike '*/backend-process-restarted' })) {
+  Assert-CiRecoveryCheck (@($localVerdicts | Where-Object { $_.id -ceq $id -and $_.pass -and $_.kind -eq 'recovery' }).Count -eq 1) "non-default required assertion emitted: $id"
+}
+$localBedrock.received | Where-Object { $_.atMs -eq 312 } | ForEach-Object { $_.text = 'Channel Global online members (2):' }
+$resetVerdicts = @(Assert-JointRecoveryResults 1 'offline' $localJava $localBedrock -Channel local)
+Assert-CiRecoveryCheck (@($resetVerdicts | Where-Object { $_.id -ceq 'round1/recovery/reconnect-active-bedrock' -and -not $_.pass }).Count -eq 1) 'game reconnect resetting to global fails even with valid membership and all receiver tokens'
+Assert-CiRecoveryCheck (@($resetVerdicts | Where-Object { $_.id -ceq 'round1/recovery/restart-active-bedrock' -and $_.pass }).Count -eq 1) 'game reconnect reset is distinct from backend reauthentication'
+$localBedrock.received | Where-Object { $_.atMs -eq 312 } | ForEach-Object { $_.text = 'Channel Local online members (2):' }
+$localBedrock.sent += [PSCustomObject]@{ text = '/novachat join local'; atMs = 305 }
+Assert-CiRecoveryCheck (-not (Test-JointRecoveryNoRejoin $localBedrock local)) 'second JOIN through a command alias cannot hide a recovery gap'
+$localBedrock.sent = @($localBedrock.sent | Where-Object { $_.atMs -ne 305 })
+$localJava.sent | Where-Object { $_.text -ceq 'offline-restart-java' } | ForEach-Object { $_.text = '/nc local offline-restart-java' }
+$overrideVerdicts = @(Assert-JointRecoveryResults 1 'offline' $localJava $localBedrock -Channel local)
+Assert-CiRecoveryCheck (@($overrideVerdicts | Where-Object { $_.id -ceq 'round1/recovery/restart-java-to-bedrock' -and -not $_.pass }).Count -eq 1) 'explicit channel send cannot prove active-channel delivery'
+$missingVerdicts = @(Assert-JointRecoveryResults 1 'offline' $null $null -Channel local)
+Assert-CiRecoveryCheck (@($missingVerdicts | Where-Object { $_.pass }).Count -eq 0) 'missing clients fail every non-default recording assertion'
+$fixture.received[1].atMs = 102
+Assert-CiRecoveryCheck (-not (Test-JointRecoveryMembership $fixture 'phase' @('Alice', 'Bob') local)) 'global query and response cannot prove local membership'
+$fixture.sent[0].text = '/nc who local'
+Assert-CiRecoveryCheck (-not (Test-JointRecoveryMembership $fixture 'phase' @('Alice', 'Bob') local)) 'wrong-channel header cannot satisfy an explicit local query'
+Write-Host '[SYNTHETIC] Non-default recovery contract and rejection cases checked; no game or backend process started.'
+
 $plans = Get-JointProxySwitchPlans 'offline' -PrimaryServer 'bukkit' -SecondaryServer 'bukkit2'
 foreach ($phase in @('right', 'move', 'return')) {
   $steps = if ($phase -eq 'right') { $plans.Right } else { $plans.Mover }

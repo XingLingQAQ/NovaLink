@@ -2,7 +2,9 @@ package com.nova.chat.client.channel;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -28,11 +30,10 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class KnownChannelRegistry {
 
-    // Volatile so reference swaps are visible across threads; readers snapshot
-    // the reference once and iterate it. The set itself is a concurrent key set
-    // so addAll's copy-then-publish is safe even if a stale reader still holds
-    // the previous reference.
-    private volatile Set<String> channelIds = Set.of();
+    private record Snapshot(Set<String> channelIds, Set<String> globals,
+                            Map<String, Set<String>> clients) { }
+
+    private volatile Snapshot snapshot = new Snapshot(Set.of(), Set.of(), Map.of());
 
     private static Set<String> newSet() {
         return ConcurrentHashMap.newKeySet();
@@ -58,8 +59,20 @@ public final class KnownChannelRegistry {
      *
      * @param channels the new channel IDs (may be null / empty to clear)
      */
-    public void replaceAll(Set<String> channels) {
-        channelIds = copyInto(channels);
+    public synchronized void replaceAll(Set<String> channels) {
+        snapshot = new Snapshot(Set.copyOf(copyInto(channels)), Set.of(), Map.of());
+    }
+
+    synchronized void replaceForClient(String clientIdentity, Set<String> globals, Set<String> channels) {
+        Map<String, Set<String>> clients = new HashMap<>(snapshot.clients());
+        Set<String> globalIds = Set.copyOf(copyInto(globals));
+        Set<String> channelIds = Set.copyOf(copyInto(channels));
+        if (clientIdentity != null && !clientIdentity.isBlank()) {
+            Set<String> owned = copyInto(channelIds);
+            owned.removeAll(globalIds);
+            clients.put(clientIdentity, Set.copyOf(owned));
+        }
+        snapshot = new Snapshot(channelIds, globalIds, Map.copyOf(clients));
     }
 
     /**
@@ -70,17 +83,18 @@ public final class KnownChannelRegistry {
      *
      * @param channels the channel IDs to add (may be null / empty)
      */
-    public void addAll(Set<String> channels) {
+    public synchronized void addAll(Set<String> channels) {
         if (channels == null || channels.isEmpty()) {
             return;
         }
-        Set<String> base = copyInto(channelIds);
+        Snapshot current = snapshot;
+        Set<String> base = copyInto(current.channelIds());
         for (String id : channels) {
             if (id != null && !id.isBlank()) {
                 base.add(id);
             }
         }
-        channelIds = base;
+        snapshot = new Snapshot(Set.copyOf(base), current.globals(), current.clients());
     }
 
     /**
@@ -91,17 +105,24 @@ public final class KnownChannelRegistry {
      * @return a new sorted list of matching channel IDs
      */
     public List<String> getKnownChannelIds(String prefix) {
-        Set<String> snapshot = channelIds;
-        if (snapshot.isEmpty()) {
+        return matchingIds(getAll(), prefix);
+    }
+
+    public List<String> getKnownChannelIds(String prefix, String clientIdentity) {
+        return matchingIds(getAll(clientIdentity), prefix);
+    }
+
+    private List<String> matchingIds(Set<String> channels, String prefix) {
+        if (channels.isEmpty()) {
             return Collections.emptyList();
         }
         List<String> filtered;
         if (prefix == null || prefix.isEmpty()) {
-            filtered = new ArrayList<>(snapshot);
+            filtered = new ArrayList<>(channels);
         } else {
             String lower = prefix.toLowerCase();
             filtered = new ArrayList<>();
-            for (String id : snapshot) {
+            for (String id : channels) {
                 if (id != null && id.toLowerCase().startsWith(lower)) {
                     filtered.add(id);
                 }
@@ -120,6 +141,27 @@ public final class KnownChannelRegistry {
      * @return unmodifiable view of all known channel IDs
      */
     public Set<String> getAll() {
-        return Collections.unmodifiableSet(channelIds);
+        return snapshot.channelIds();
+    }
+
+    public Set<String> getAll(String clientIdentity) {
+        Snapshot current = snapshot;
+        if (current.clients().isEmpty()) {
+            return current.channelIds();
+        }
+        Set<String> visible = copyInto(current.globals());
+        if (clientIdentity != null) {
+            visible.addAll(current.clients().getOrDefault(clientIdentity, Set.of()));
+        }
+        return Collections.unmodifiableSet(visible);
+    }
+
+    public boolean isKnownForOtherClient(String channelId, String clientIdentity) {
+        Snapshot current = snapshot;
+        if (current.globals().contains(channelId)
+                || (clientIdentity != null && current.clients().getOrDefault(clientIdentity, Set.of()).contains(channelId))) {
+            return false;
+        }
+        return current.clients().values().stream().anyMatch(channels -> channels.contains(channelId));
     }
 }

@@ -1,0 +1,8 @@
+name: JointCustomEffectsBridge
+version: 1.0
+main: com.nova.joint.fixture.JointCustomEffectsBridge
+api-version: '1.21'
+depend: [NovaChat]
+commands:
+  jointcustomeffects:
+    description: Joint production API driver

@@ -350,6 +350,12 @@ public class PrivateChannelManager {
         if (playerId == null) {
             return PrivateChannelAccessResult.denied("Player ID is required", NovaConstants.ERROR_BAD_REQUEST);
         }
+
+        Channel existing = channelId != null ? channelManager.getChannel(channelId) : null;
+        if (existing != null && existing.getScope() == ChannelScope.PRIVATE && existing.isMember(playerId)
+                && playerClientId != null && !playerClientId.isBlank()) {
+            return PrivateChannelAccessResult.granted(existing);
+        }
         
         // Validate access first
         PrivateChannelAccessResult accessResult = validateAccess(channelId, playerClientId, providedPassword);

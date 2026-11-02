@@ -148,8 +148,10 @@ public class ProxyCommandCore {
         String prefix = args[1] == null ? "" : args[1].toLowerCase();
         switch (sub) {
             case "join": {
+                UUID playerId = sender.getPlayerId();
                 List<String> known = knownChannelRegistry != null
-                        ? knownChannelRegistry.getKnownChannelIds(prefix) : List.of();
+                        ? knownChannelRegistry.getKnownChannelIds(prefix,
+                                playerId != null ? chatCore.getIdentityForPlayer(playerId) : null) : List.of();
                 return known.isEmpty()
                         ? new ArrayList<>(Arrays.asList("global", "local")) : known;
             }
@@ -387,7 +389,8 @@ public class ProxyCommandCore {
         PlayerChannelState state = chatCore.getState(player.getUniqueId());
         Set<String> joined = state != null ? state.getJoinedChannels() : Set.of();
 
-        List<String> lines = ListCommandService.formatChannelList(knownChannelRegistry, joined);
+        List<String> lines = ListCommandService.formatChannelList(knownChannelRegistry, joined,
+                chatCore.getIdentityForPlayer(player.getUniqueId()));
 
         sender.sendMessage(chatCore.getFormatter().parseColors(
                 I18n.tr(player.getUniqueId(), "chat.command.list.title")));

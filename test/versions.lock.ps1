@@ -169,6 +169,24 @@ $LockedServers = @(
         Auto    = $true
     }
 
+    @{
+        Name    = 'waterfall-cmd-server'
+        MC      = '1.21'
+        Build   = '615'
+        Engine  = 'waterfall-module'
+        Url     = 'https://fill-data.papermc.io/v1/objects/d1c68f7c0469e61c83939a37abae08f8ad231fc5bb4c7f455065af42f7950710/cmd_server-1.21-615.jar'
+        Sha256  = 'D1C68F7C0469E61C83939A37ABAE08F8AD231FC5BB4C7F455065AF42F7950710'
+        File    = 'cmd_server-1.21-615.jar'
+        Kind    = 'jar'
+        Auto    = $false
+        Jdk     = 21
+        Eula    = $false
+        Proxy   = 'waterfall'
+        ProxyVersion = 'git:Waterfall-Bootstrap:26.1-R0.1-SNAPSHOT:4bc2b02:615'
+        ModuleVersion = 'git:cmd_server:26.1-R0.1-SNAPSHOT:4bc2b02:615'
+        MetadataUrl = 'https://fill.papermc.io/v3/projects/waterfall/versions/1.21/builds/615'
+    }
+
     # Nukkit (Cloudburst): 1.0-SNAPSHOT build 1242 (2026-08-09). JDK 21.
     # Plugin declares api "1.0.0" (NovaChat/Bedrock/nukkit/.../nukkit.yml).
     # Auto-detect: repo.opencollab.dev/maven-snapshots/cn/nukkit/nukkit/

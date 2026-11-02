@@ -1,8 +1,8 @@
 # JOINT E2E — Coverage Plan and Manual Integration Status
 
-**Integration review**: 2026-11-01. Main-thread wiring is in progress.
-**Real acceptance this round**: NOT RUN. The entries below describe code and
-selected execution paths; no new real-server result is established.
+**Integration review**: 2026-11-01. The original selected joint and environment
+cases have passing real-server evidence. Follow-up scenario changes require
+new acceptance; the earlier run counts do not validate added assertions.
 
 ## Current entry points
 
@@ -13,13 +13,16 @@ selection. `scenarios/registry.ps1` supplies required IDs; the runner and
 `assert-joint-ci.ps1` must use the same group and secondary Java selection.
 Unknown or incompatible selections must fail before servers start.
 
-| Selection | Current implementation/integration scope | Real acceptance still needed |
+| Selection | Current implementation/integration scope | Required real evidence |
 |---|---|---|
 | `core` | Velocity/Bungee relay or Lite; receiver chat, isolation controls and Java reconnect | Complete required IDs, real receiver recordings and fresh membership/bidirectional delivery |
 | `business` | `extended-business.ps1`: three-bot DM/reply privacy, offline refusal and channel-scoped mute/unmute | Sender/target/observer recordings and live positive controls in each selected mode/proxy |
 | `lite-moderation` | Actual Velocity or Bungee Lite console stdin; ordinary target/observer bots; permission denial, mute/kick/ban and inverse actions | Channel-scoped enforcement/restoration, refused rejoin under ban and Minecraft connection retained after channel kick |
 | `recovery` | Relay Java + Bedrock; real backend stop/start and bounded Bedrock reconnect | Changed backend PID, authenticated links, fresh membership and bidirectional game delivery after each event |
 | `proxy-switch` | Relay Bukkit primary plus a real `bukkit2`, selected with `SecondaryJavaPlatform bukkit` | Destination-only probes, switch and return, fresh who body, exactly-once chat and SERVER-channel cross-link refusal |
+| `channel-lifecycle` | Relay Bukkit + `bukkit2`; ordinary clients connect directly to different Bukkit processes | Created ID, cross-server invite/accept, complete membership, delivery, outsider refusal and backend deletion |
+| `social-contract` | Relay or Lite; sender, target and observer on the proxy | Ignore/unignore with live controls, exact who sets/counts and list IDs/scopes across leave/rejoin |
+| `custom-effects` | Relay; Bukkit admin action and target/outsider recordings | Custom title/subtitle, exact non-default timings and non-target exclusion |
 | Independent `e2e-environment` | Manual TLS trusted/untrusted + MySQL/PostgreSQL with actual Bukkit + Fabric; outside joint groups | Trusted control, explicit certificate-chain rejection, real messages, unchanged SQL row across backend restart and fresh post-restart delivery |
 
 `SecondaryJavaPlatform` / `secondary_java_platform` defaults to `none`.
@@ -45,8 +48,14 @@ placeholder hashes; successful AUTO resolution without an upstream hash
 retains the explicit smoke contract. Artifact integrity is not game-path
 acceptance evidence.
 
+Follow-up code uses `local` for `recovery`, requiring active-channel checks
+without a player rejoin after either event. Bungee `proxy-switch` uses the
+pinned upstream `cmd_server` module and requires player-command receipts.
+These paths and the three new groups need fresh real-server acceptance;
+the previously recorded run counts describe the earlier contract only.
+
 See [manual commands](../README.md#joint-manual-e2e-coverage) and
-[the pending result record](JOINT-SCENARIO-COVERAGE.md#real-results-still-to-record).
+[recorded results and coverage limits](JOINT-SCENARIO-COVERAGE.md#recorded-results-and-coverage-limits).
 
 ## Historical design baseline
 
@@ -109,8 +118,8 @@ and `20261021-111749/joint-summary.json` (relay); neither accepts this round.
 
 Current integration: `business` now supplies sender, target and third-party
 observer plans for DM, replies, offline refusal and privacy controls. This
-supersedes the old "not covered anywhere" observation below; real receiver
-results are still pending.
+supersedes the old "not covered anywhere" observation below. Runs 41274531514
+and 41274540721 contain the selected Lite and Relay receiver results.
 
 ### What to assert
 
@@ -899,7 +908,8 @@ a later positive delivery on that excluded receiver.
 Current integration separates core Java client reconnect from optional
 `recovery` (actual backend restart plus one bounded Bedrock reconnect). Both
 require fresh membership and bidirectional receiver evidence; real acceptance
-for this round remains pending.
+for the selected default-channel paths is recorded in runs 41274531514 and
+41274540721. Restoring an arbitrary active channel requires separate evidence.
 
 ### What to assert
 
@@ -951,8 +961,9 @@ loop or process-ready marker can substitute for those observations.
 
 ### Gating vs diagnostic
 
-* 1, 2: **required** by the selected reconnect/recovery path; fresh real
-  membership and receiver recordings are still pending.
+* 1, 2: **required** by the selected reconnect/recovery path; runs 41274531514
+  and 41274540721 contain fresh membership and receiver recordings for their
+  selected default-channel paths.
 * 3: **diagnostic until the non-default-channel contract is explicit**. A
   reconnect to `global` does not prove restoration of an arbitrary previously
   active channel. Record the observed behavior separately.
@@ -1214,10 +1225,10 @@ and recordings before carrying one forward as an unresolved current defect.
   certificate rejection controls and SQL row identity before/after a real
   backend restart. Socket probes, fixtures and embedded storage tests are
   separate evidence.
-* Full create/invite/accept lifecycle, ignore, custom title timings and an
-  arbitrary active-channel restoration contract remain gaps unless current
-  required IDs and real observations explicitly cover them. Source modules
-  existing on disk do not establish that they were selected or executed.
+* The explicit lifecycle, social and custom-effects groups require fresh
+  game acceptance. Non-default recovery and the upstream Bungee command path
+  also need new recordings. Existing modules, offline contracts and earlier
+  passing runs do not establish these added requirements.
 * Prerequisite failures and missing artifacts must remain failures/blockers.
   A diagnostic-only row or an unavailable environment cannot become a
   successful acceptance result. Fixed artifact hash verification establishes

@@ -35,6 +35,11 @@ dependencies {
     // AbstractPlatformNetworkClient / KnownChannelRegistry / ChannelCommandService.
     implementation project(':NovaChat:client-core')
     implementation project(':NovaChat:common')
+
+    include project(':NovaChat:MOD:mod-common')
+    include project(':NovaChat:client-core')
+    include project(':NovaChat:common')
+    include "org.yaml:snakeyaml:${snakeYamlVersion}"
 }
 
 processResources {

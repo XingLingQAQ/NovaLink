@@ -8,6 +8,8 @@ import com.nova.link.ban.BanManager;
 import com.nova.link.chat.MentionResolver;
 import com.nova.link.console.ConsoleSentinel;
 import com.nova.link.database.ChatMessageRecord;
+import com.nova.link.database.PlayerState;
+import com.nova.link.database.PlayerStateManager;
 import com.nova.link.filter.FilterResult;
 import com.nova.link.filter.SensitiveWordFilter;
 import com.nova.link.log.ChatLogger;
@@ -66,6 +68,7 @@ public class MessagePipeline {
     private ChatLogger chatLogger;
     private MessageLogService messageLogService;
     private MentionResolver mentionResolver;
+    private PlayerStateManager playerStateManager;
 
     // Feature switches (FeatureConfig §3.5) — volatile for hot-reload visibility.
     private volatile boolean crossServerChatEnabled = true;
@@ -92,6 +95,10 @@ public class MessagePipeline {
 
     public void setPermissionChecker(BiPredicate<String, String> permissionChecker) {
         this.permissionChecker = permissionChecker != null ? permissionChecker : (c, p) -> true;
+    }
+
+    public void setPlayerStateManager(PlayerStateManager playerStateManager) {
+        this.playerStateManager = Objects.requireNonNull(playerStateManager, "playerStateManager");
     }
 
     public void setMuteManager(MuteManager muteManager) {
@@ -262,7 +269,11 @@ public class MessagePipeline {
         if (enforceSenderClientBoundary
                 && (channel.getScope() == ChannelScope.SERVER || channel.getScope() == ChannelScope.PRIVATE)) {
             String senderClient = message.getClientId();
-            if (channel.getClientId() == null || !channel.getClientId().equals(senderClient)) {
+            boolean privateMember = channel.getScope() == ChannelScope.PRIVATE
+                    && channel.isMember(message.getSenderId()) && playerStateManager != null;
+            PlayerState sender = privateMember ? playerStateManager.getPlayerState(message.getSenderId()) : null;
+            boolean memberLink = sender != null && senderClient != null && senderClient.equals(sender.getClientId());
+            if (!memberLink && (channel.getClientId() == null || !channel.getClientId().equals(senderClient))) {
                 logger.warn("Pipeline drop CROSS_CLIENT_DENIED senderClient={} channel={} owner={}",
                         senderClient, channel.getId(), channel.getClientId());
                 return MessagePipelineResult.dropped(
@@ -423,8 +434,19 @@ public class MessagePipeline {
             case GLOBAL:
                 return fanOutGlobal(channel, message);
             case SERVER:
-            case PRIVATE:
                 return fanOutBoundClient(channel, message);
+            case PRIVATE:
+                if (playerStateManager == null) {
+                    return fanOutBoundClient(channel, message);
+                }
+                Set<String> recipients = calculatePrivateRecipients(channel);
+                for (String clientId : recipients) {
+                    ClientConnection connection = networkHandler.findByClientId(clientId);
+                    if (connection != null && connection.isAuthenticated() && connection.isActive()) {
+                        connection.sendPacket(message);
+                    }
+                }
+                return recipients;
             default:
                 return Collections.emptySet();
         }
@@ -477,6 +499,30 @@ public class MessagePipeline {
         return recipients;
     }
 
+    private Set<String> calculatePrivateRecipients(Channel channel) {
+        Set<String> recipients = new HashSet<>();
+        if (playerStateManager == null) {
+            String clientId = channel.getClientId();
+            ClientConnection connection = clientId != null ? networkHandler.findByClientId(clientId) : null;
+            if (connection != null && connection.isAuthenticated()) {
+                recipients.add(clientId);
+            }
+            return recipients;
+        }
+        for (UUID member : channel.getMembers()) {
+            PlayerState state = playerStateManager.getPlayerState(member);
+            if (state == null || !state.getJoinedChannels().contains(channel.getId()) || state.getClientId() == null) {
+                continue;
+            }
+            String clientId = state.getClientId();
+            ClientConnection connection = networkHandler.findByClientId(clientId);
+            if (connection != null && connection.isAuthenticated() && connection.isActive()) {
+                recipients.add(clientId);
+            }
+        }
+        return recipients;
+    }
+
     private void forwardToWebSocket(ChatMessagePacket message) {
         if (webSocketBroadcaster != null) {
             webSocketBroadcaster.broadcastChatMessage(
@@ -517,7 +563,6 @@ public class MessagePipeline {
                 }
                 break;
             case SERVER:
-            case PRIVATE:
                 String channelClientId = channel.getClientId();
                 if (channelClientId != null) {
                     ClientConnection connection = networkHandler.findByClientId(channelClientId);
@@ -525,6 +570,9 @@ public class MessagePipeline {
                         recipients.add(channelClientId);
                     }
                 }
+                break;
+            case PRIVATE:
+                recipients.addAll(calculatePrivateRecipients(channel));
                 break;
             default:
                 break;

@@ -1,0 +1,31 @@
+import org.gradle.api.tasks.bundling.Jar
+import org.gradle.api.tasks.compile.JavaCompile
+
+gradle.projectsLoaded {
+    gradle.afterProject { project ->
+        if (project.path != ':NovaChat:Plugin:bukkit') {
+            return
+        }
+
+        def fixture = project.rootProject.file('test/joint/fixtures/custom-effects')
+        def productionCompile = project.tasks.named('compileJava', JavaCompile)
+        def compileFixture = project.tasks.register('compileCustomEffectsFixtureJava', JavaCompile) {
+            source project.fileTree(new File(fixture, 'src')) { include '**/*.java' }
+            classpath = project.sourceSets.main.compileClasspath + project.sourceSets.main.output
+            destinationDirectory = project.layout.buildDirectory.dir('classes/java/customEffectsFixture')
+            javaCompiler.set(productionCompile.flatMap { it.javaCompiler })
+            options.release.set(17)
+            options.encoding = 'UTF-8'
+            options.compilerArgs.add('-proc:none')
+        }
+        project.tasks.register('customEffectsFixtureJar', Jar) {
+            group = 'e2e'
+            description = 'Builds the joint driver for production AUTH and TITLE packet APIs.'
+            dependsOn compileFixture
+            archiveFileName.set('joint-custom-effects-fixture.jar')
+            destinationDirectory = project.layout.buildDirectory.dir('libs')
+            from compileFixture.flatMap { it.destinationDirectory }
+            from new File(fixture, 'plugin.yml')
+        }
+    }
+}

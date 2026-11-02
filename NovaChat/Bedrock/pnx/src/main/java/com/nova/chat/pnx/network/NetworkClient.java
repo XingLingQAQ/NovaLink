@@ -103,9 +103,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
             return;
         }
         for (var player : plugin.getServer().getOnlinePlayers().values()) {
-            com.nova.chat.client.channel.ChannelMembershipRestorer.restore(
-                    plugin.getChatInterceptor().getPlayerState(player.getUniqueId()), player.getName(),
-                    PlatformType.POWERNUKKITX, player.getLevel().getName(), null, this::sendPacket);
+            plugin.getChatInterceptor().restorePlayerChannels(player, false);
         }
     }
 
@@ -405,6 +403,9 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * PNX main-thread hops, rendering and the §7 action-bar flash.
      */
     private void handleChannelActionResponse(ChannelActionResponsePacket packet) {
+        if (plugin.getChatInterceptor() != null && plugin.getChatInterceptor().handleChannelRestoreResponse(packet)) {
+            return;
+        }
         // Private-message rejections are unsolicited (no pending context in the
         // shared tracker); the dispatcher would drop them, so route them to the
         // PrivateMessageService for player-locale rendering instead.

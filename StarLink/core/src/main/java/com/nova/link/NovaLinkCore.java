@@ -401,6 +401,7 @@ public final class NovaLinkCore implements AutoCloseable {
         // per-connection flood budget.
         keepAliveHandler = new KeepAliveHandler();
         MessageRouter messageRouter = new MessageRouter(channelManager, networkHandler);
+        messageRouter.getPipeline().setPlayerStateManager(playerStateManager);
         messageRouter.setMuteManager(muteManager);
         messageRouter.setBanManager(banManager);
         messageRouter.setSensitiveWordFilter(sensitiveWordFilter);

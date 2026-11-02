@@ -1,7 +1,7 @@
 . (Join-Path $PSScriptRoot 'helpers.ps1')
 
 function Get-RecoveryRequiredAssertionIds {
-  param([int]$RoundIndex)
+  param([int]$RoundIndex, [string]$Channel = 'global')
   $prefix = "round$RoundIndex/recovery"
   foreach ($name in @(
     'backend-process-restarted', 'java-completed', 'bedrock-completed',
@@ -11,6 +11,11 @@ function Get-RecoveryRequiredAssertionIds {
     'reconnect-java-to-bedrock', 'reconnect-bedrock-to-java',
     'bedrock-single-reconnect', 'bedrock-membership'
   )) { "$prefix/$name" }
+  if ($Channel -ne 'global') {
+    foreach ($role in @('java', 'bedrock')) {
+      foreach ($name in @('pre-selected', 'restart-active', 'reconnect-active', 'no-rejoin')) { "$prefix/$name-$role" }
+    }
+  }
 }
 
 function ConvertTo-JointRecoveryText {
@@ -20,20 +25,31 @@ function ConvertTo-JointRecoveryText {
 
 function Get-JointRecoveryJoinPattern {
   param([string]$Channel)
-  '(?:^|\s)(?:Joined channel|\u5df2\u52a0\u5165\u9891\u9053)\s+' + [regex]::Escape($Channel) + '\s*$'
+  '(?:^|\s)(?:Joined channel|\u5df2\u52a0\u5165\u9891\u9053)(?:\s*[:\uff1a]\s*|\s+)' + [regex]::Escape($Channel) + '\s*$'
 }
 
 function Get-JointRecoveryWhoPattern {
+  param([string]$Channel = '')
+  if ($Channel -and $Channel -ne 'global') {
+    $displayName = if ($Channel -eq 'local') { 'Local' } else { $Channel }
+    $name = [regex]::Escape($displayName)
+    return '(?:^|\s)(?:Channel\s+' + $name + '\s+online members\s*\(([1-9][0-9]*)\):|\u9891\u9053\s+' + $name + '\s+\u5728\u7ebf\u6210\u5458\s*\uff08([1-9][0-9]*)\s*\u4eba\uff09\uff1a)\s*$'
+  }
   '(?:online members\s*\(([1-9][0-9]*)\):|\u5728\u7ebf\u6210\u5458\s*\uff08([1-9][0-9]*)\s*\u4eba\uff09\uff1a)\s*$'
 }
 
 function Get-JointRecoveryWhoSteps {
-  param([string]$Phase, [string]$Channel = 'global')
-  @(
+  param([string]$Phase, [string]$Channel = 'global', [switch]$Current)
+  $query = if ($Current) { '/nc who' } else { "/nc who $Channel" }
+  $steps = @(
     @{ action = 'checkpoint'; key = $Phase },
-    @{ action = 'cmd'; text = "/nc who $Channel" },
-    @{ id = "$Phase-who"; action = 'expectText'; pattern = (Get-JointRecoveryWhoPattern); sinceCheckpoint = $Phase; timeoutMs = 20000 }
+    @{ action = 'cmd'; text = $query },
+    @{ id = "$Phase-who"; action = 'expectText'; pattern = (Get-JointRecoveryWhoPattern $Channel); sinceCheckpoint = $Phase; timeoutMs = 20000 }
   )
+  if ($Channel -ne 'global') {
+    $steps += @{ id = "$Phase-who-body"; action = 'expectText'; pattern = '^(?:\[NovaChat\]\s*)?[A-Za-z0-9_ ]+(?:,\s*[A-Za-z0-9_ ]+)*$'; sinceCheckpoint = $Phase; timeoutMs = 5000 }
+  }
+  $steps
 }
 
 function Get-JointRecoveryFailureDetails {
@@ -48,15 +64,25 @@ function Get-JointRecoveryPlans {
     @{ action = 'arm'; token = "$RunId-pre-bedrock" },
     @{ action = 'checkpoint'; key = 'recovery-joining' },
     @{ action = 'cmd'; text = "/nc join $Channel" },
-    @{ id = 'recovery-join'; action = 'expectText'; pattern = (Get-JointRecoveryJoinPattern $Channel); sinceCheckpoint = 'recovery-joining'; timeoutMs = 20000 },
+    @{ id = 'recovery-join'; action = 'expectText'; pattern = (Get-JointRecoveryJoinPattern $Channel); sinceCheckpoint = 'recovery-joining'; timeoutMs = 20000; required = $true },
     @{ action = 'signal'; key = 'recovery-java-ready' },
-    @{ action = 'handoffGet'; key = 'recovery-bedrock-ready'; timeoutMs = 60000 },
+    @{ action = 'handoffGet'; key = 'recovery-bedrock-ready'; timeoutMs = 60000 }
+  )
+  if ($Channel -ne 'global') {
+    $java += Get-JointRecoveryWhoSteps -Phase 'recovery-selected' -Channel $Channel -Current
+    $java += @(
+      @{ action = 'signal'; key = 'recovery-java-selected' },
+      @{ action = 'handoffGet'; key = 'recovery-bedrock-selected'; timeoutMs = 30000 }
+    )
+  }
+  $java += @(
     @{ action = 'chat'; text = "$RunId-pre-java" },
     @{ id = 'recovery-pre-bedrock'; action = 'expect'; token = "$RunId-pre-bedrock"; timeoutMs = 30000 },
     @{ action = 'signal'; key = 'recovery-ready' },
     @{ action = 'handoffGet'; key = 'recovery-backend-ready'; timeoutMs = 180000 }
   )
   $java += Get-JointRecoveryWhoSteps -Phase 'backend-restored' -Channel $Channel
+  if ($Channel -ne 'global') { $java += Get-JointRecoveryWhoSteps -Phase 'backend-active' -Channel $Channel -Current }
   $java += @(
     @{ action = 'arm'; token = "$RunId-restart-bedrock" },
     @{ action = 'signal'; key = 'recovery-java-restored' },
@@ -65,7 +91,10 @@ function Get-JointRecoveryPlans {
     @{ id = 'restart-from-bedrock'; action = 'expect'; token = "$RunId-restart-bedrock"; timeoutMs = 30000 },
     @{ action = 'signal'; key = 'recovery-restart-complete' },
     @{ action = 'handoffGet'; key = 'recovery-bedrock-reconnected'; timeoutMs = 90000 },
-    @{ action = 'checkpoint'; key = 'bedrock-peer-restored' },
+    @{ action = 'checkpoint'; key = 'bedrock-peer-restored' }
+  )
+  if ($Channel -ne 'global') { $java += Get-JointRecoveryWhoSteps -Phase 'bedrock-peer-active' -Channel $Channel -Current }
+  $java += @(
     @{ action = 'arm'; token = "$RunId-reconnect-bedrock" },
     @{ action = 'chat'; text = "$RunId-reconnect-java" },
     @{ id = 'reconnect-from-bedrock'; action = 'expect'; token = "$RunId-reconnect-bedrock"; timeoutMs = 30000 },
@@ -77,14 +106,24 @@ function Get-JointRecoveryPlans {
     @{ action = 'arm'; token = "$RunId-pre-java" },
     @{ action = 'checkpoint'; key = 'recovery-joining' },
     @{ action = 'cmd'; text = "/nc join $Channel" },
-    @{ id = 'recovery-join'; action = 'expectText'; pattern = (Get-JointRecoveryJoinPattern $Channel); sinceCheckpoint = 'recovery-joining'; timeoutMs = 20000 },
+    @{ id = 'recovery-join'; action = 'expectText'; pattern = (Get-JointRecoveryJoinPattern $Channel); sinceCheckpoint = 'recovery-joining'; timeoutMs = 20000; required = $true },
     @{ action = 'signal'; key = 'recovery-bedrock-ready' },
-    @{ action = 'handoffGet'; key = 'recovery-java-ready'; timeoutMs = 60000 },
+    @{ action = 'handoffGet'; key = 'recovery-java-ready'; timeoutMs = 60000 }
+  )
+  if ($Channel -ne 'global') {
+    $bedrock += Get-JointRecoveryWhoSteps -Phase 'recovery-selected' -Channel $Channel -Current
+    $bedrock += @(
+      @{ action = 'signal'; key = 'recovery-bedrock-selected' },
+      @{ action = 'handoffGet'; key = 'recovery-java-selected'; timeoutMs = 30000 }
+    )
+  }
+  $bedrock += @(
     @{ id = 'recovery-pre-java'; action = 'expect'; token = "$RunId-pre-java"; timeoutMs = 30000 },
     @{ action = 'chat'; text = "$RunId-pre-bedrock" },
     @{ action = 'handoffGet'; key = 'recovery-backend-ready'; timeoutMs = 180000 }
   )
   $bedrock += Get-JointRecoveryWhoSteps -Phase 'backend-restored' -Channel $Channel
+  if ($Channel -ne 'global') { $bedrock += Get-JointRecoveryWhoSteps -Phase 'backend-active' -Channel $Channel -Current }
   $bedrock += @(
     @{ action = 'arm'; token = "$RunId-restart-java" },
     @{ action = 'signal'; key = 'recovery-bedrock-restored' },
@@ -95,6 +134,7 @@ function Get-JointRecoveryPlans {
     @{ id = 'bedrock-reconnect'; action = 'reconnect'; timeoutMs = 45000; delayMs = 1000 }
   )
   $bedrock += Get-JointRecoveryWhoSteps -Phase 'bedrock-restored' -Channel $Channel
+  if ($Channel -ne 'global') { $bedrock += Get-JointRecoveryWhoSteps -Phase 'bedrock-active' -Channel $Channel -Current }
   $bedrock += @(
     @{ action = 'arm'; token = "$RunId-reconnect-java" },
     @{ action = 'signal'; key = 'recovery-bedrock-reconnected' },
@@ -122,17 +162,18 @@ function Get-JointRecoveryCheckpoint {
 }
 
 function Test-JointRecoveryMembership {
-  param($Result, [string]$Phase, [string[]]$Members, [string]$Channel = 'global')
+  param($Result, [string]$Phase, [string[]]$Members, [string]$Channel = 'global', [switch]$Current)
   $since = Get-JointRecoveryCheckpoint $Result $Phase
   if ($null -eq $since) { return $false }
-  $query = @($Result.sent | Where-Object { $_.text -ceq "/nc who $Channel" -and $_.atMs -ge $since }) | Select-Object -First 1
+  $command = if ($Current) { '/nc who' } else { "/nc who $Channel" }
+  $query = @($Result.sent | Where-Object { $_.text -ceq $command -and $_.atMs -ge $since }) | Select-Object -First 1
   if (-not $query) { return $false }
   $until = [double]$query.atMs + 20000
   $nextBoundary = @(Get-JointBotRows -BotResult $Result -Kind 'checkpoint' -SinceMs ($since + 1)) | Select-Object -First 1
   if ($nextBoundary) { $until = [Math]::Min($until, (Get-JointBotRowAtMs $nextBoundary)) }
   $lines = @(Get-JointRecoveryChatRows $Result -SinceMs $query.atMs -UntilMs $until)
   for ($i = 0; $i -lt $lines.Count - 1; $i++) {
-    if ((ConvertTo-JointRecoveryText ([string]$lines[$i].text)) -notmatch (Get-JointRecoveryWhoPattern)) { continue }
+    if ((ConvertTo-JointRecoveryText ([string]$lines[$i].text)) -cnotmatch (Get-JointRecoveryWhoPattern $Channel)) { continue }
     $count = if ($Matches[1]) { [int]$Matches[1] } else { [int]$Matches[2] }
     $body = ConvertTo-JointRecoveryText ([string]$lines[$i + 1].text)
     $body = ($body -replace '^\[NovaChat\]\s*', '').Trim()
@@ -155,6 +196,22 @@ function Test-JointRecoveryJoin {
     (ConvertTo-JointRecoveryText ([string]$_.text)) -match $pattern
   })
   return $hits.Count -gt 0
+}
+
+function Test-JointRecoveryNoRejoin {
+  param($Result, [string]$Channel)
+  $selected = Get-JointRecoveryCheckpoint $Result 'recovery-selected'
+  if ($null -eq $selected) { return $false }
+  $joins = @($Result.sent | Where-Object { $_.text -match '^/(?:[a-z0-9_-]+:)?(?:nc|novachat)\s+join(?:\s|$)' })
+  return $joins.Count -eq 1 -and $joins[0].text -ceq "/nc join $Channel" -and
+    $null -ne $joins[0].atMs -and $joins[0].atMs -le $selected
+}
+
+function Test-JointRecoveryPlainSend {
+  param($Result, [string]$Token, [string]$Phase)
+  $since = Get-JointRecoveryCheckpoint $Result $Phase
+  if ($null -eq $since) { return $false }
+  return @($Result.sent | Where-Object { $_.text -ceq $Token -and $null -ne $_.atMs -and $_.atMs -ge $since }).Count -eq 1
 }
 
 function Test-JointRecoveryReceipt {
@@ -181,17 +238,31 @@ function Assert-JointRecoveryResults {
     New-JointAssertion "$prefix/$($role.Name)-completed" 'recording' $complete ("kind=$($res.kind); " + (Get-JointRecoveryFailureDetails $res)) 'recovery'
     $members = Test-JointRecoveryMembership $res 'backend-restored' @($JavaUsername, $BedrockUsername) $Channel
     New-JointAssertion "$prefix/restart-membership-$($role.Name)" 'post-restart /nc who' $members 'Both member names must occur in a fresh receiver-side member list, without a new JOIN.' 'recovery'
+    if ($Channel -ne 'global') {
+      $selected = (Test-JointRecoveryJoin $res 'recovery-joining' $Channel) -and
+        (Test-JointRecoveryMembership $res 'recovery-selected' @($JavaUsername, $BedrockUsername) $Channel -Current)
+      New-JointAssertion "$prefix/pre-selected-$($role.Name)" $Channel $selected 'Initial JOIN acknowledgement and argument-free /nc who must name the selected channel and both members.' 'recovery'
+      $active = Test-JointRecoveryMembership $res 'backend-active' @($JavaUsername, $BedrockUsername) $Channel -Current
+      New-JointAssertion "$prefix/restart-active-$($role.Name)" $Channel $active 'After backend reauthentication, argument-free /nc who must still name the selected channel and both members.' 'recovery'
+      $phase = if ($role.Name -eq 'java') { 'bedrock-peer-active' } else { 'bedrock-active' }
+      $active = Test-JointRecoveryMembership $res $phase @($JavaUsername, $BedrockUsername) $Channel -Current
+      New-JointAssertion "$prefix/reconnect-active-$($role.Name)" $Channel $active 'Game reconnect contract: retain the selected channel without a player JOIN; resetting to the default is a failure, separate from backend reauthentication.' 'recovery'
+      $noRejoin = Test-JointRecoveryNoRejoin $res $Channel
+      New-JointAssertion "$prefix/no-rejoin-$($role.Name)" 'one initial player JOIN' $noRejoin 'The complete command recording must contain exactly one JOIN, before initial selection; backend replay is product behavior.' 'recovery'
+    }
   }
   foreach ($pair in @(
-    @{ Name = 'pre-java-to-bedrock'; Result = $BedrockRes; Token = "$RunId-pre-java"; Phase = '' },
-    @{ Name = 'pre-bedrock-to-java'; Result = $JavaRes; Token = "$RunId-pre-bedrock"; Phase = '' },
-    @{ Name = 'restart-java-to-bedrock'; Result = $BedrockRes; Token = "$RunId-restart-java"; Phase = 'backend-restored' },
-    @{ Name = 'restart-bedrock-to-java'; Result = $JavaRes; Token = "$RunId-restart-bedrock"; Phase = 'backend-restored' },
-    @{ Name = 'reconnect-java-to-bedrock'; Result = $BedrockRes; Token = "$RunId-reconnect-java"; Phase = 'bedrock-restored' },
-    @{ Name = 'reconnect-bedrock-to-java'; Result = $JavaRes; Token = "$RunId-reconnect-bedrock"; Phase = 'bedrock-peer-restored' }
+    @{ Name = 'pre-java-to-bedrock'; Result = $BedrockRes; Sender = $JavaRes; Token = "$RunId-pre-java"; Phase = ''; SendPhase = 'recovery-selected'; ReceivePhase = 'recovery-selected' },
+    @{ Name = 'pre-bedrock-to-java'; Result = $JavaRes; Sender = $BedrockRes; Token = "$RunId-pre-bedrock"; Phase = ''; SendPhase = 'recovery-selected'; ReceivePhase = 'recovery-selected' },
+    @{ Name = 'restart-java-to-bedrock'; Result = $BedrockRes; Sender = $JavaRes; Token = "$RunId-restart-java"; Phase = 'backend-restored'; SendPhase = 'backend-active'; ReceivePhase = 'backend-active' },
+    @{ Name = 'restart-bedrock-to-java'; Result = $JavaRes; Sender = $BedrockRes; Token = "$RunId-restart-bedrock"; Phase = 'backend-restored'; SendPhase = 'backend-active'; ReceivePhase = 'backend-active' },
+    @{ Name = 'reconnect-java-to-bedrock'; Result = $BedrockRes; Sender = $JavaRes; Token = "$RunId-reconnect-java"; Phase = 'bedrock-restored'; SendPhase = 'bedrock-peer-active'; ReceivePhase = 'bedrock-active' },
+    @{ Name = 'reconnect-bedrock-to-java'; Result = $JavaRes; Sender = $BedrockRes; Token = "$RunId-reconnect-bedrock"; Phase = 'bedrock-peer-restored'; SendPhase = 'bedrock-active'; ReceivePhase = 'bedrock-peer-active' }
   )) {
-    $ok = Test-JointRecoveryReceipt $pair.Result $pair.Token $pair.Phase
-    New-JointAssertion "$prefix/$($pair.Name)" $pair.Token $ok 'Actual destination chat recording, after its local phase boundary.' 'recovery'
+    $phase = if ($Channel -eq 'global') { $pair.Phase } else { $pair.ReceivePhase }
+    $ok = Test-JointRecoveryReceipt $pair.Result $pair.Token $phase
+    if ($Channel -ne 'global') { $ok = $ok -and (Test-JointRecoveryPlainSend $pair.Sender $pair.Token $pair.SendPhase) }
+    New-JointAssertion "$prefix/$($pair.Name)" $pair.Token $ok 'Actual destination chat after its local phase boundary; non-default mode also requires the sender to use plain chat, without a channel override.' 'recovery'
   }
   $reconnect = Find-JointBotVerdict $BedrockRes 'bedrock-reconnect'
   $events = @($BedrockRes.received | Where-Object { $_.kind -ceq 'reconnect' -and $_.phase -ceq 'spawned' -and $_.protocol -ceq 'bedrock' -and $_.attempts -eq 1 })
