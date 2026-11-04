@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -97,6 +98,20 @@ class ProxyChannelClientCarrierTest {
         verify(proxiedPlayer).sendPluginMessage(eq(plugin),
                 eq(ProxyChannelProtocol.CHANNEL_ID), any(byte[].class));
         verify(directPlayer, never()).sendPluginMessage(any(), any(), any());
+    }
+
+    @Test
+    void verificationDoesNotSurviveReconnect() throws Exception {
+        UUID playerId = proxiedPlayer.getUniqueId();
+        Player reconnected = mock(Player.class);
+        when(reconnected.getUniqueId()).thenReturn(playerId);
+        when(reconnected.getName()).thenReturn("Reconnected");
+        client.onPluginMessageReceived(ProxyChannelProtocol.CHANNEL_ID, proxiedPlayer,
+                ProxyChannelProtocol.encode("proxy-1", chat("old session")));
+        client.onPluginMessageReceived(ProxyChannelProtocol.CHANNEL_ID, directPlayer,
+                ProxyChannelProtocol.encode("proxy-1", chat("current carrier")));
+
+        assertThat(client.selectCarrier(List.of(reconnected, directPlayer))).isSameAs(directPlayer);
     }
 
     @Test

@@ -8,11 +8,13 @@ import com.nova.chat.common.protocol.Packet;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 
+import java.lang.ref.WeakReference;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -79,12 +81,8 @@ public class ProxyChannelClient implements PluginMessageListener {
     /** Set once registration succeeded; guards double registration on reload. */
     private volatile boolean registered;
 
-    /**
-     * Players proven to be connected through the proxy: they carried at least
-     * one downstream payload. Written from the main thread in
-     * {@link #onPluginMessageReceived}, read from the async chat thread.
-     */
-    private final Set<UUID> verifiedCarriers = ConcurrentHashMap.newKeySet();
+    /** Carrier evidence belongs to the Player session, not just its UUID. */
+    private final Map<UUID, WeakReference<Player>> verifiedCarriers = new ConcurrentHashMap<>();
 
     /** Whether the unverified-carrier warning was already emitted. */
     private final AtomicBoolean warnedUnverifiedCarrier = new AtomicBoolean();
@@ -254,7 +252,8 @@ public class ProxyChannelClient implements PluginMessageListener {
     Player selectCarrier(List<Player> online) {
         for (Player player : online) {
             UUID id = player.getUniqueId();
-            if (id != null && verifiedCarriers.contains(id)) {
+            WeakReference<Player> verified = id != null ? verifiedCarriers.get(id) : null;
+            if (verified != null && verified.get() == player) {
                 plugin.debug("Using verified proxy-connected carrier " + player.getName());
                 return player;
             }
@@ -267,7 +266,7 @@ public class ProxyChannelClient implements PluginMessageListener {
                         + " (" + remoteAddress(player) + ")");
                 UUID id = player.getUniqueId();
                 if (id != null) {
-                    verifiedCarriers.add(id);
+                    verifiedCarriers.put(id, new WeakReference<>(player));
                 }
                 return player;
             }
@@ -364,9 +363,11 @@ public class ProxyChannelClient implements PluginMessageListener {
         // This connection demonstrably reaches the proxy: only a proxied
         // connection can deliver a proxy-originated payload. Remember it so
         // upstream sends stop guessing.
-        if (player != null && player.getUniqueId() != null
-                && verifiedCarriers.add(player.getUniqueId())) {
-            plugin.debug("Learned proxy-connected carrier " + player.getName());
+        if (player != null && player.getUniqueId() != null) {
+            WeakReference<Player> previous = verifiedCarriers.put(player.getUniqueId(), new WeakReference<>(player));
+            if (previous == null || previous.get() != player) {
+                plugin.debug("Learned proxy-connected carrier " + player.getName());
+            }
         }
 
         PacketSink target = sink;
