@@ -40,8 +40,8 @@ command are retained in the
 [source manifest](../../.e2e-artifacts/environment-native/8c7ef98ec0224683bba9d5e7a94cd878/public/oracle-source-manifest.json).
 
 These native runs do not exercise TLS or actual Bukkit/Fabric game traffic.
-Current schema 16 and Redis game-path/TLS acceptance remains pending. Redis
-reconnect evidence covers new provider pools against the same live server;
+The SQL game-path evidence below uses the current schema 16. Redis game-path
+acceptance remains pending. Redis reconnect evidence covers new provider pools against the same live server;
 it does not establish disk recovery after a Redis restart or crash.
 
 ## Native Windows run
@@ -110,6 +110,37 @@ or disk durability guarantee.
 
 ## Manual game workflow
 
+### CI run at schema 16 (2026-11-04)
+
+The manual run [41852328574](https://github.com/XingLingQAQ/NovaLink/actions/runs/41852328574)
+checked out `93fd79f7acddfb297d73448170533767e87dbf90` and selected only
+`mysql,postgresql,redis`. The workflow failed overall. Its public artifact is
+`environment-game-evidence-41852328574-1` (retained for seven days); its
+downloaded contents are under `.e2e-artifacts/environment-ci/41852328574/`.
+
+| Engine | Result | Evidence |
+| --- | --- | --- |
+| Oracle MySQL 8.4.13 | 16/16 required IDs passed | v15-to-v16 migration, actual game delivery and the same seven message fields across a backend restart |
+| PostgreSQL 17.11 | 16/16 required IDs passed | v15-to-v16 migration, actual game delivery and the same seven message fields across a backend restart |
+| Redis 7.4.12 | 8/13 required IDs passed | All provider assertions passed; backend startup failed before the five game assertions because Redis lacked campaign persistence |
+
+Each case's `public/environment-summary.json` preserves the IDs and their
+verification type; `public/storage-probe.json` records provider and server
+identity. SQL `public/row-before.json`, `public/row-after.json` and bot
+recordings supply the row and game evidence. The SQL fixture is generated from
+production migrations, not a historical database backup.
+
+In the two passing SQL cases, Bukkit/Fabric plugins connected to the backend
+with TLS and a trusted CA; the history client used HTTPS with CA and hostname
+verification. Redis did not reach those connections.
+The SQL backend and probe connections used MySQL `REQUIRED` or PostgreSQL
+`require`, with server-side TLS required: these modes encrypt but do not verify
+the database server's certificate identity. Redis connections were plaintext on
+loopback with a password. Game bots connected to the game servers on loopback;
+this is not a TLS assertion for the Minecraft connections. Only the NovaLink
+backend restarted; database servers stayed running, and Redis was configured
+without disk persistence.
+
 `.github/workflows/e2e-environment.yml` is manual only. Its `cases` input accepts
 `tls-trusted,tls-untrusted,mysql,postgresql,redis` (all five by default).
 `-ProvisionDatabases` creates dedicated MySQL 8.4, PostgreSQL 17 and Redis 7.4
@@ -141,6 +172,8 @@ per storage engine: `GAME-DELIVERY`, `STORED`, `RESTARTED`, `SAME-ROW` and
 `TARGET-DTO`. All require `TARGET-PERSISTED`, `WRONG-TARGET`, `RECONNECT`,
 `ATOMIC-CLAIM`, `UNBOUND-COMPAT` and `CLAIM-PERSISTED`, with the engine prefix
 `ENV-MYSQL`, `ENV-POSTGRES` or `ENV-REDIS`.
+Redis also requires `ENV-REDIS-CAMPAIGN-PERSISTENCE`, covering campaign CRUD,
+field round-tripping, status updates and provider reconnects on real Redis.
 
 Missing evidence fails the case. Provider assertions retain
 `verification=real-database-provider`; actual game assertions retain

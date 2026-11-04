@@ -893,8 +893,7 @@ public interface DatabaseProvider {
     // ==================== Campaign Operations (提案 06) ====================
     // §11.6 item-19 slice B / PANEL proposal 06 — persisted campaign
     // orchestration. All five methods share the DatabaseProvider optional-method
-    // convention: JDBC + Memory providers override them; RedisProvider inherits
-    // the UnsupportedOperationException default (safe stub). The authoritative
+    // convention: JDBC, Memory and Redis providers override them. The authoritative
     // copy of campaign state lives in the in-memory CampaignManager map; these
     // methods mirror non-terminal and recently-revoked campaigns so that
     // restarts can rehydrate scheduled/active campaigns and keep an audit trail

@@ -108,6 +108,9 @@ public final class StorageEnvironmentProbe {
         try {
             provider.initialize();
             if (engine.equals("redis")) {
+                RedisCampaignProbe.verify(config);
+                require("CAMPAIGN-PERSISTENCE", true,
+                        "Redis campaign CRUD, ordering, status updates and complete fields survived provider reconnects");
                 provider.saveInvitation(invitation(legacyCode, null));
                 try (Jedis redis = redisConnection()) {
                     evidence.put("server", redis.info("server").lines()

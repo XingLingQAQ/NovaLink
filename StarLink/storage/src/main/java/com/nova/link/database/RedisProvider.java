@@ -2,6 +2,9 @@ package com.nova.link.database;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.nova.link.announcement.Campaign;
+import com.nova.link.announcement.CampaignStatus;
+import com.nova.link.announcement.DeliveryPolicy;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelScope;
 import org.slf4j.Logger;
@@ -42,6 +45,7 @@ public class RedisProvider implements DatabaseProvider {
     private static final String MESSAGE_SEQ = KEY_PREFIX + "message:seq";
     private static final String ANNOUNCEMENT_PREFIX = KEY_PREFIX + "announcement:";
     private static final String ANNOUNCEMENT_INDEX = KEY_PREFIX + "announcements";
+    private static final String CAMPAIGNS = KEY_PREFIX + "campaigns";
     private static final String WEBHOOK_PREFIX = KEY_PREFIX + "webhook:";
     private static final String WEBHOOK_INDEX = KEY_PREFIX + "webhooks";
     private static final String AUDIT_PREFIX = KEY_PREFIX + "audit:";
@@ -1418,6 +1422,77 @@ public class RedisProvider implements DatabaseProvider {
         }
     }
 
+    @Override
+    public void saveCampaign(Campaign campaign) throws DatabaseException {
+        if (campaign == null) throw new DatabaseException("Cannot save a null campaign");
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.hset(CAMPAIGNS, campaign.getId(), gson.toJson(campaign));
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to save campaign to Redis", e);
+        }
+    }
+
+    @Override
+    public Optional<Campaign> getCampaign(String id) throws DatabaseException {
+        if (id == null) return Optional.empty();
+        try (Jedis jedis = jedisPool.getResource()) {
+            String json = jedis.hget(CAMPAIGNS, id);
+            return json == null ? Optional.empty() : Optional.of(gson.fromJson(json, CampaignDto.class).toCampaign());
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to load campaign from Redis", e);
+        }
+    }
+
+    @Override
+    public List<Campaign> getAllPersistedCampaigns() throws DatabaseException {
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<Campaign> campaigns = new ArrayList<>();
+            for (String json : jedis.hvals(CAMPAIGNS)) {
+                campaigns.add(gson.fromJson(json, CampaignDto.class).toCampaign());
+            }
+            campaigns.sort(Comparator.comparingLong(Campaign::getCreatedAt));
+            return campaigns;
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to list campaigns from Redis", e);
+        }
+    }
+
+    @Override
+    public void deleteCampaign(String id) throws DatabaseException {
+        if (id == null) return;
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.hdel(CAMPAIGNS, id);
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to delete campaign from Redis", e);
+        }
+    }
+
+    @Override
+    public void updateCampaignStatus(String id, CampaignStatus status, long revokedAt, UUID revokedBy)
+            throws DatabaseException {
+        if (id == null || status == null) return;
+        try (Jedis jedis = jedisPool.getResource()) {
+            for (int attempt = 0; attempt < 100; attempt++) {
+                jedis.watch(CAMPAIGNS);
+                String json = jedis.hget(CAMPAIGNS, id);
+                if (json == null) {
+                    jedis.unwatch();
+                    return;
+                }
+                CampaignDto campaign = gson.fromJson(json, CampaignDto.class);
+                campaign.status = status;
+                campaign.revokedAt = revokedAt;
+                campaign.revokedBy = revokedBy;
+                Transaction tx = jedis.multi();
+                tx.hset(CAMPAIGNS, id, gson.toJson(campaign));
+                if (tx.exec() != null) return;
+            }
+            throw new DatabaseException("Campaign status update conflicted repeatedly");
+        } catch (Exception e) {
+            throw new DatabaseException("Failed to update campaign status in Redis", e);
+        }
+    }
+
     // ==================== Webhook Operations (schema v5) ====================
 
     @Override
@@ -1471,6 +1546,30 @@ public class RedisProvider implements DatabaseProvider {
     }
 
     // ==================== DTO Classes for JSON Serialization ====================
+
+    private static class CampaignDto {
+        String id;
+        String channelId;
+        Set<String> platforms;
+        String content;
+        CampaignStatus status;
+        long scheduleRevision;
+        DeliveryPolicy deliveryPolicy;
+        long startAt;
+        long endAt;
+        int rateLimitPerChannelPerHour;
+        UUID creatorId;
+        String creatorClientId;
+        long createdAt;
+        long revokedAt;
+        UUID revokedBy;
+
+        Campaign toCampaign() {
+            return new Campaign(id, channelId, platforms, content, status, scheduleRevision, deliveryPolicy,
+                    startAt, endAt, rateLimitPerChannelPerHour, creatorId, creatorClientId, createdAt,
+                    revokedAt, revokedBy);
+        }
+    }
 
     private static class PlayerStateDto {
         String playerId;
