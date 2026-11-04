@@ -1,6 +1,7 @@
 package com.nova.chat.velocity.listener;
 
 import com.nova.chat.channel.ProxyChannelProtocol;
+import com.nova.chat.channel.RenderCoordinationProtocol;
 import com.nova.chat.proxy.channel.ProxyChannelHandler;
 import com.nova.chat.velocity.NovaChatVelocity;
 import com.velocitypowered.api.event.Subscribe;
@@ -43,13 +44,22 @@ public class PluginMessageListener {
      */
     @Subscribe
     public void onPluginMessage(PluginMessageEvent event) {
-        if (!ProxyChannelProtocol.CHANNEL_ID.equals(event.getIdentifier().getId())) {
+        String channel = event.getIdentifier().getId();
+        if (!ProxyChannelProtocol.CHANNEL_ID.equals(channel) && !RenderCoordinationProtocol.CHANNEL_ID.equals(channel)) {
             return;
         }
         // Consume first: this is the only way to stop a client-originated
         // payload from reaching the downstream server and a server-originated
         // one from reaching the player's client.
         event.setResult(PluginMessageEvent.ForwardResult.handled());
+
+        if (RenderCoordinationProtocol.CHANNEL_ID.equals(channel)) {
+            if (event.getSource() instanceof ServerConnection source && plugin.getChatCore() != null) {
+                plugin.getChatCore().handleRenderControl(source.getServerInfo().getName(),
+                        source.getPlayer().getUniqueId(), source, event.getData());
+            }
+            return;
+        }
 
         ProxyChannelHandler target = handler;
         if (target == null) {

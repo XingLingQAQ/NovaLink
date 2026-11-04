@@ -38,6 +38,15 @@ import java.util.UUID;
  */
 public interface ProxyPlatform {
 
+    default Object getPlayerConnectionIdentity(UUID playerId) {
+        return null;
+    }
+
+    default boolean sendPlayerPluginMessage(UUID playerId, Object expectedConnection,
+                                            String channel, byte[] payload) {
+        return false;
+    }
+
     /**
      * Scheduler used by the shared client-core network layer. Defaults to this
      * platform's own {@link #runAsync} / {@link #runLater}, so shells implement

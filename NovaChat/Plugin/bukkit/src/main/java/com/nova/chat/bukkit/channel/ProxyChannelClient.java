@@ -4,6 +4,7 @@ import com.nova.chat.bukkit.NovaChatBukkit;
 import com.nova.chat.bukkit.config.NovaChatConfig;
 import com.nova.chat.channel.ProxyChannelException;
 import com.nova.chat.channel.ProxyChannelProtocol;
+import com.nova.chat.channel.RenderCoordinationProtocol;
 import com.nova.chat.common.protocol.Packet;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.messaging.PluginMessageListener;
@@ -77,6 +78,7 @@ public class ProxyChannelClient implements PluginMessageListener {
 
     private final NovaChatBukkit plugin;
     private final PacketSink sink;
+    private final RenderCoordinationServer renderCoordination;
 
     /** Set once registration succeeded; guards double registration on reload. */
     private volatile boolean registered;
@@ -95,6 +97,7 @@ public class ProxyChannelClient implements PluginMessageListener {
     public ProxyChannelClient(NovaChatBukkit plugin, PacketSink sink) {
         this.plugin = plugin;
         this.sink = sink;
+        this.renderCoordination = plugin.getRenderCoordinationServer();
     }
 
     // ------------------------------------------------------------ registration
@@ -113,6 +116,10 @@ public class ProxyChannelClient implements PluginMessageListener {
                     plugin, ProxyChannelProtocol.CHANNEL_ID);
             plugin.getServer().getMessenger().registerIncomingPluginChannel(
                     plugin, ProxyChannelProtocol.CHANNEL_ID, this);
+            plugin.getServer().getMessenger().registerOutgoingPluginChannel(
+                    plugin, RenderCoordinationProtocol.CHANNEL_ID);
+            plugin.getServer().getMessenger().registerIncomingPluginChannel(
+                    plugin, RenderCoordinationProtocol.CHANNEL_ID, this);
             registered = true;
             plugin.debug("Registered plugin-messaging channel "
                     + ProxyChannelProtocol.CHANNEL_ID);
@@ -135,6 +142,10 @@ public class ProxyChannelClient implements PluginMessageListener {
                     plugin, ProxyChannelProtocol.CHANNEL_ID, this);
             plugin.getServer().getMessenger().unregisterOutgoingPluginChannel(
                     plugin, ProxyChannelProtocol.CHANNEL_ID);
+            plugin.getServer().getMessenger().unregisterIncomingPluginChannel(
+                    plugin, RenderCoordinationProtocol.CHANNEL_ID, this);
+            plugin.getServer().getMessenger().unregisterOutgoingPluginChannel(
+                    plugin, RenderCoordinationProtocol.CHANNEL_ID);
         } catch (RuntimeException e) {
             plugin.debug("Failed to unregister the plugin-messaging channel: "
                     + e.getMessage());
@@ -349,9 +360,14 @@ public class ProxyChannelClient implements PluginMessageListener {
      */
     @Override
     public void onPluginMessageReceived(String channel, Player player, byte[] message) {
+        if (RenderCoordinationProtocol.CHANNEL_ID.equals(channel)) {
+            renderCoordination.receive(player, message);
+            return;
+        }
         if (!ProxyChannelProtocol.CHANNEL_ID.equals(channel)) {
             return;
         }
+        if (renderCoordination.enabled() && !renderCoordination.authenticated(player)) return;
         ProxyChannelProtocol.Decoded decoded;
         try {
             decoded = ProxyChannelProtocol.decode(message);
@@ -377,5 +393,9 @@ public class ProxyChannelClient implements PluginMessageListener {
         }
         target.accept(decoded.getSenderId(), decoded.getPacket(),
                 decoded.getExcludedRecipients());
+    }
+
+    public RenderCoordinationServer getRenderCoordination() {
+        return renderCoordination;
     }
 }

@@ -241,6 +241,8 @@ public class NovaChatVelocity {
         if (channelIdentifier != null) {
             try {
                 server.getChannelRegistrar().unregister(channelIdentifier);
+                server.getChannelRegistrar().unregister(com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier
+                        .from(com.nova.chat.channel.RenderCoordinationProtocol.CHANNEL_ID));
             } catch (RuntimeException e) {
                 logger.warn("Failed to unregister the plugin-messaging channel", e);
             }
@@ -627,6 +629,8 @@ public class NovaChatVelocity {
             channelIdentifier = com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier
                     .from(com.nova.chat.channel.ProxyChannelProtocol.CHANNEL_ID);
             server.getChannelRegistrar().register(channelIdentifier);
+            server.getChannelRegistrar().register(com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier
+                    .from(com.nova.chat.channel.RenderCoordinationProtocol.CHANNEL_ID));
             logger.info("Registered plugin-messaging channel "
                     + com.nova.chat.channel.ProxyChannelProtocol.CHANNEL_ID);
         } catch (RuntimeException e) {

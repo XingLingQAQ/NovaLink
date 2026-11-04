@@ -82,6 +82,8 @@ plugin-messaging:
   # 玩家时，用这里的地址匹配（留空即只把回环地址视为代理）。都不匹配时仍会发送，
   # 但会打一次 warn，提示投递无法保证。
   proxy-addresses: []
+  # 双端升级后设置与代理相同的随机密钥（至少 32 UTF-8 字节）；留空保持旧协议。
+  render-coordination-secret: ""
 
 # 调试模式
 debug: false

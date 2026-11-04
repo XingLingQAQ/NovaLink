@@ -5,6 +5,7 @@ param(
   [ValidateSet('velocity', 'bungee')][string]$ProxyPlatform = 'velocity',
   [ValidateSet('nukkit', 'pnx')][string]$BedrockPlatform = 'nukkit',
   [string]$ScenarioGroups = 'core',
+  [switch]$RequireRenderCoordination,
   [ValidateSet('none', 'bukkit')][string]$SecondaryJavaPlatform = 'none'
 )
 
@@ -21,6 +22,13 @@ if ('channel-lifecycle' -in $requestedGroups -and $SecondaryJavaPlatform -ne 'bu
 $files = @(Get-ChildItem -LiteralPath $JointRoot -Recurse -Filter joint-summary.json -File)
 if ($files.Count -ne 1) { throw "Expected one joint summary, found $($files.Count)" }
 $summary = [System.IO.File]::ReadAllText($files[0].FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+if ($summary.PSObject.Properties['renderCoordinationRequired'] -and $summary.renderCoordinationRequired -isnot [bool]) { throw 'renderCoordinationRequired must be boolean' }
+if ([bool]$summary.renderCoordinationRequired -ne [bool]$RequireRenderCoordination) { throw 'Render coordination selection mismatch' }
+if ($RequireRenderCoordination) {
+  if ($ProxyMode -ne 'relay' -or 'custom-effects' -notin $requestedGroups) { throw 'Render coordination requires relay custom-effects' }
+  . (Join-Path $PSScriptRoot 'scenarios/render-coordination.ps1')
+  $required += @(Get-JointRenderCoordinationAssertionIds -RoundIndex 1)
+}
 if ($summary.proxyMode -ne $ProxyMode -or $summary.overallPass -isnot [bool] -or -not $summary.overallPass) {
   throw 'Joint run did not pass in the requested mode'
 }
@@ -70,6 +78,13 @@ foreach ($id in $required) {
   $matches = @($round.assertions | Where-Object { $_.id -ceq $id })
   if ($matches.Count -ne 1 -or $matches[0].kind -eq 'diagnostic' -or $matches[0].pass -isnot [bool] -or -not $matches[0].pass) {
     throw "Required gating assertion missing, diagnostic, duplicated or failed: $id"
+  }
+}
+if ($RequireRenderCoordination) {
+  $roundDir = Join-Path $files[0].DirectoryName 'round-1'
+  $peerEvidence = @(Get-JointRenderCoordinationAssertions -RoundDir $roundDir -RunId $summary.runId -ProxyPlatform $ProxyPlatform)
+  if ($peerEvidence.Count -ne 6 -or @($peerEvidence | Where-Object { -not $_.pass }).Count) {
+    throw 'Raw proxy/Bukkit/bot evidence does not establish current render coordination'
   }
 }
 $failed = @($round.assertions | Where-Object { $_.kind -ne 'diagnostic' -and ($_.pass -isnot [bool] -or -not $_.pass) })

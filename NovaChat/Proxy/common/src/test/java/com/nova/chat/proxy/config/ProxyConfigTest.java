@@ -674,6 +674,31 @@ class ProxyConfigTest {
         assertThat(config.getMode()).isEqualTo(ProxyMode.LITE);
     }
 
+    @Test
+    void legacyConfigurationsDoNotRequireRenderCoordination() throws Exception {
+        assertThat(ProxyConfig.from(new MapSource().templateDefaults()).getRenderCoordinationSecrets()).isEmpty();
+    }
+
+    @Test
+    void renderCoordinationIsSelectedPerServer() throws Exception {
+        String secret = "render-coordination-test-only-key-12345";
+        ProxyConfig config = ProxyConfig.from(new MapSource().templateDefaults()
+                .put("render-coordination.secrets", Map.of("Bukkit", secret)));
+        assertThat(config.getRenderCoordinationSecrets()).containsExactly(Map.entry("bukkit", secret));
+        assertThatThrownBy(() -> config.getRenderCoordinationSecrets().put("other", secret))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void renderCoordinationRejectsWeakKeysAndAmbiguousServerNames() {
+        assertThatThrownBy(() -> ProxyConfig.from(new MapSource().templateDefaults()
+                .put("render-coordination.secrets", Map.of("bukkit", "too-short"))))
+                .isInstanceOf(ConfigSource.ConfigException.class).hasMessageNotContaining("too-short");
+        assertThatThrownBy(() -> ProxyConfig.from(new MapSource().templateDefaults()
+                .put("render-coordination.secrets", Map.of("Bukkit", "a".repeat(32), "bukkit", "b".repeat(32)))))
+                .isInstanceOf(ConfigSource.ConfigException.class);
+    }
+
     /** @return a mysql storage map with the given values */
     private static Map<String, Object> mysqlStorage(String host, long port,
                                                     String database, long poolSize) {

@@ -27,6 +27,10 @@ on:
         type: choice
         default: none
         options: [none, bukkit]
+      require_render_coordination:
+        description: Require authenticated proxy/Bukkit rendering (relay + custom-effects)
+        type: boolean
+        default: false
 permissions:
   contents: read
 
@@ -51,6 +55,7 @@ jobs:
       GRADLE_OPTS: -Dorg.gradle.daemon=false -Dfile.encoding=UTF-8
       JOINT_SCENARIO_GROUPS: ${{ inputs.scenario_groups }}
       JOINT_SECONDARY_JAVA: ${{ inputs.secondary_java_platform }}
+      JOINT_REQUIRE_RENDER_COORDINATION: ${{ inputs.require_render_coordination }}
       JOINT_ROOT: ${{ github.workspace }}/.e2e-artifacts/joint-ci/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.proxy }}-${{ matrix.mode }}-${{ matrix.mode == 'relay' && matrix.bedrock || 'none' }}
       JOINT_EVIDENCE: ${{ github.workspace }}/.e2e-artifacts/joint-evidence/${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.proxy }}-${{ matrix.mode }}-${{ matrix.mode == 'relay' && matrix.bedrock || 'none' }}
 
@@ -71,6 +76,10 @@ jobs:
           . ./test/joint/scenarios/registry.ps1
           $groups = @(Resolve-JointScenarioGroups -Value $env:JOINT_SCENARIO_GROUPS)
           $null = Get-JointScenarioAssertionIds -ScenarioGroups $groups -RoundIndex 1 -Mode $env:JOINT_MODE -Proxy $env:JOINT_PROXY
+          if ($env:JOINT_REQUIRE_RENDER_COORDINATION -eq 'true' -and
+              ($env:JOINT_MODE -ne 'relay' -or 'custom-effects' -notin $groups)) {
+            throw 'require_render_coordination requires relay mode and custom-effects'
+          }
           if ('proxy-switch' -in $groups -and $env:JOINT_SECONDARY_JAVA -ne 'bukkit') {
             throw 'proxy-switch requires secondary_java_platform=bukkit'
           }
@@ -112,6 +121,9 @@ jobs:
               & "./test/joint/scenarios/verify-$group.ps1"
             }
           }
+          if ($env:JOINT_REQUIRE_RENDER_COORDINATION -eq 'true') {
+            ./test/joint/scenarios/verify-render-coordination.ps1
+          }
 
       - name: Cache server distributions
         uses: actions/cache@v4
@@ -138,9 +150,10 @@ jobs:
         run: |
           $platforms = if ($env:JOINT_MODE -eq 'relay') { "$env:JOINT_PROXY,bukkit,$env:JOINT_BEDROCK" } else { "$env:JOINT_PROXY,bukkit" }
           $serverLimit = if ($env:JOINT_SECONDARY_JAVA -eq 'bukkit') { 4 } else { 3 }
-          ./test/joint/run-joint.ps1 -Platforms $platforms -Rounds 1 -MaxConcurrentServers $serverLimit -ProxyMode $env:JOINT_MODE -JointRoot $env:JOINT_ROOT -ScenarioGroups $env:JOINT_SCENARIO_GROUPS -SecondaryJavaPlatform $env:JOINT_SECONDARY_JAVA -KeepArtifacts
+          $coordination = $env:JOINT_REQUIRE_RENDER_COORDINATION -eq 'true'
+          ./test/joint/run-joint.ps1 -Platforms $platforms -Rounds 1 -MaxConcurrentServers $serverLimit -ProxyMode $env:JOINT_MODE -JointRoot $env:JOINT_ROOT -ScenarioGroups $env:JOINT_SCENARIO_GROUPS -SecondaryJavaPlatform $env:JOINT_SECONDARY_JAVA -RequireRenderCoordination:$coordination -KeepArtifacts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./test/joint/assert-joint-ci.ps1 -JointRoot $env:JOINT_ROOT -ProxyMode $env:JOINT_MODE -ProxyPlatform $env:JOINT_PROXY -BedrockPlatform $env:JOINT_BEDROCK -ScenarioGroups $env:JOINT_SCENARIO_GROUPS -SecondaryJavaPlatform $env:JOINT_SECONDARY_JAVA
+          ./test/joint/assert-joint-ci.ps1 -JointRoot $env:JOINT_ROOT -ProxyMode $env:JOINT_MODE -ProxyPlatform $env:JOINT_PROXY -BedrockPlatform $env:JOINT_BEDROCK -ScenarioGroups $env:JOINT_SCENARIO_GROUPS -SecondaryJavaPlatform $env:JOINT_SECONDARY_JAVA -RequireRenderCoordination:$coordination
 
       - name: Collect joint evidence
         if: always()

@@ -15,6 +15,10 @@ import java.util.Map;
  */
 public interface ProxyConfigView {
 
+    default Map<String, String> getRenderCoordinationSecrets() {
+        return Map.of();
+    }
+
     /**
      * @return the operating mode, never null
      */

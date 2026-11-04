@@ -117,6 +117,7 @@ param(
   # moderation is driven through the proxy console.
   [ValidateSet("relay", "lite")]
   [string]$ProxyMode = "relay",
+  [switch]$RequireRenderCoordination,
 
   # Build the platform plugin/mod jars with Gradle before starting servers.
   # Off is useful when re-running against jars built moments ago.
@@ -181,17 +182,28 @@ $jointBotScript = Join-Path $jointBinDir "joint-bot.js"
 . (Join-Path $PSScriptRoot "scenarios/social-contract.ps1")
 . (Join-Path $PSScriptRoot "scenarios/custom-effects.ps1")
 . (Join-Path $PSScriptRoot "scenarios/completion.ps1")
+. (Join-Path $PSScriptRoot "scenarios/render-coordination.ps1")
 . (Join-Path $PSScriptRoot "fixtures/bungee-switch/installer.ps1")
 . (Join-Path $PSScriptRoot "fixtures/custom-effects/installer.ps1")
 . (Join-Path $PSScriptRoot "fixtures/completion/fixture.ps1")
 try {
   $script:SelectedScenarioGroups = @(Resolve-JointScenarioGroups -Value $ScenarioGroups)
+  if ($RequireRenderCoordination -and ($ProxyMode -ne 'relay' -or 'custom-effects' -notin $script:SelectedScenarioGroups)) {
+    throw 'RequireRenderCoordination requires relay mode and the custom-effects group'
+  }
 } catch {
   Write-Error -Message "Scenario prerequisite validation failed: $($_.Exception.Message)" -ErrorAction Continue
   exit 2
 }
 
 # --- logging -----------------------------------------------------------------
+$script:RenderCoordinationSecret = ''
+if ($RequireRenderCoordination) {
+  $bytes = New-Object byte[] 32
+  $random = [Security.Cryptography.RandomNumberGenerator]::Create()
+  try { $random.GetBytes($bytes) } finally { $random.Dispose() }
+  $script:RenderCoordinationSecret = [Convert]::ToBase64String($bytes)
+}
 $script:RunId = (Get-Date -Format "yyyyMMdd-HHmmss")
 $script:LogPath = Join-Path $JointRoot "joint-$($script:RunId).log"
 New-Item -ItemType Directory -Force -Path $JointRoot | Out-Null
@@ -1336,7 +1348,7 @@ function Start-PlatformServer {
   # In lite there is no backend process at all, so the reconnect loop's WARN
   # lines are pure noise -- but debug = true is what surfaces the
   # plugin-messaging transport decisions, which is what this run needs.
-  $debugFlag = if ($ProxyMode -eq 'lite') { 'true' } else { 'false' }
+  $debugFlag = if ($ProxyMode -eq 'lite' -or ($RequireRenderCoordination -and $platform -eq 'bukkit')) { 'true' } else { 'false' }
   $pluginConfig = @"
 backend:
   host: "127.0.0.1"
@@ -1399,6 +1411,9 @@ plugin-messaging:
   enabled: true
   server-id: "$platform"
 "@
+    if ($RequireRenderCoordination -and $platform -eq 'bukkit') {
+      $pluginConfig += "`r`n  render-coordination-secret: `"$script:RenderCoordinationSecret`"`r`n"
+    }
   }
 
   switch ($platform) {
@@ -1770,6 +1785,9 @@ format:
     global: "[Global] {player}: {message}"
     local: "[Local] {player}: {message}"
 "@
+  if ($RequireRenderCoordination) {
+    $body += "`r`nrender-coordination:`r`n  secrets:`r`n    bukkit: `"$script:RenderCoordinationSecret`"`r`n"
+  }
   [IO.File]::WriteAllText($path, $body, (New-Object Text.UTF8Encoding $false))
 }
 
@@ -1868,6 +1886,9 @@ default = "&7[{channel_color}{channel_name}] {player}&f: {message}"
 global = "&c[Global] &7{player}&f: {message}"
 local = "&e[Local] &7{player}&f: {message}"
 "@
+  if ($RequireRenderCoordination) {
+    $toml += "`r`n[render-coordination.secrets]`r`nbukkit = `"$script:RenderCoordinationSecret`"`r`n"
+  }
   [System.IO.File]::WriteAllText($path, $toml, (New-Object System.Text.UTF8Encoding $false))
 }
 
@@ -4254,6 +4275,9 @@ function Invoke-Round($round, [string]$roundDir) {
     $assertions += @(Invoke-JointOptionalScenarios -Round $round -RoundDir $roundDir -McVersion $javaMc `
       -Ports $ports -ServerProcesses $serverProcs -BackendState $backendState -BedrockMcVersion $bedrockMc)
     $result.backendRestarts = @($backendState.Restarts)
+    if ($RequireRenderCoordination) {
+      $assertions += @(Get-JointRenderCoordinationAssertions -RoundDir $roundDir -RunId $script:RunId -ProxyPlatform $round.Proxy -RoundIndex $round.Index)
+    }
 
     # `diagnostic` observations are recorded, never gated -- same rule as the
     # lite round. Without the kind filter an intentionally-failed diagnostic
@@ -4324,6 +4348,7 @@ function Invoke-Round($round, [string]$roundDir) {
 
 function Assert-JointRoundTopology {
   param($Round)
+  if ($RequireRenderCoordination -and $Round.Java -ne 'bukkit') { throw 'Render coordination requires Bukkit primary' }
   if ($Round.Proxy -notin @('velocity', 'bungee') -or -not $Round.Java) {
     throw 'Core scenarios require Velocity/Bungee and a primary Java downstream.'
   }
@@ -4928,6 +4953,7 @@ $summary = [PSCustomObject]@{
   proxyMode = $ProxyMode
   scenarioGroups = @($script:SelectedScenarioGroups)
   secondaryJava = $(if ($SecondaryJavaPlatform -eq 'bukkit') { 'bukkit2' } else { $null })
+  renderCoordinationRequired = [bool]$RequireRenderCoordination
   rounds = $roundResults
   overallPass = $overallPass
 }

@@ -78,6 +78,7 @@ public final class ProxyConfig implements ProxyConfigView {
     private final String defaultFormat;
     private final Map<String, String> channelFormats;
     private final boolean debug;
+    private final Map<String, String> renderCoordinationSecrets;
     private final String serverId;
     private final Map<String, LiteChannelConfig> liteChannels;
     private final LiteStorageConfig liteStorage;
@@ -110,6 +111,7 @@ public final class ProxyConfig implements ProxyConfigView {
         this.defaultFormat = builder.defaultFormat;
         this.channelFormats = Collections.unmodifiableMap(new LinkedHashMap<>(builder.channelFormats));
         this.debug = builder.debug;
+        this.renderCoordinationSecrets = Map.copyOf(builder.renderCoordinationSecrets);
         this.serverId = builder.serverId;
         this.liteChannels = Collections.unmodifiableMap(new LinkedHashMap<>(builder.liteChannels));
         this.liteStorage = builder.liteStorage;
@@ -183,6 +185,17 @@ public final class ProxyConfig implements ProxyConfigView {
         }
 
         builder.debug = source.requiredBoolean("debug");
+        Map<String, Object> coordination = source.optionalTable("render-coordination.secrets");
+        for (var entry : (coordination == null ? Map.<String, Object>of() : coordination).entrySet()) {
+            if (!(entry.getValue() instanceof String secret) || entry.getKey().isBlank()
+                    || secret.getBytes(java.nio.charset.StandardCharsets.UTF_8).length < 32
+                    || secret.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 4096) {
+                throw new ConfigSource.ConfigException("render-coordination.secrets requires server names and 32-4096 byte secrets");
+            }
+            if (builder.renderCoordinationSecrets.putIfAbsent(entry.getKey().toLowerCase(java.util.Locale.ROOT), secret) != null) {
+                throw new ConfigSource.ConfigException("render-coordination.secrets contains duplicate server names");
+            }
+        }
 
         if (builder.mode == ProxyMode.LITE) {
             parseLite(source, builder);
@@ -652,6 +665,11 @@ public final class ProxyConfig implements ProxyConfigView {
                 .build();
     }
 
+    @Override
+    public Map<String, String> getRenderCoordinationSecrets() {
+        return renderCoordinationSecrets;
+    }
+
     /** Programmatic builder used by {@link #from(ConfigSource)} and by tests. */
     public static final class Builder {
         private ProxyMode mode = ProxyMode.RELAY;
@@ -671,12 +689,24 @@ public final class ProxyConfig implements ProxyConfigView {
         private String defaultFormat = "{message}";
         private final Map<String, String> channelFormats = new LinkedHashMap<>();
         private boolean debug;
+        private final Map<String, String> renderCoordinationSecrets = new LinkedHashMap<>();
+
         private String serverId;
         private final Map<String, LiteChannelConfig> liteChannels = new LinkedHashMap<>();
         private LiteStorageConfig liteStorage;
         private boolean wordFilterEnabled;
         private List<String> wordFilterWords = new ArrayList<>();
         private List<String> wordFilterPatterns = new ArrayList<>();
+
+        public Builder renderCoordinationSecret(String server, String secret) {
+            if (server == null || server.isBlank() || secret == null
+                    || secret.getBytes(java.nio.charset.StandardCharsets.UTF_8).length < 32
+                    || secret.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 4096) {
+                throw new IllegalArgumentException("Render coordination requires a server name and a 32-4096 byte secret");
+            }
+            renderCoordinationSecrets.put(server.toLowerCase(java.util.Locale.ROOT), secret);
+            return this;
+        }
 
         /**
          * @param value the operating mode (null means {@link ProxyMode#RELAY})

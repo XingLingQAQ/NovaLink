@@ -248,12 +248,19 @@ game summaries passed: Lite Velocity 189/189, Lite Bungee 188/188, and Relay
 with native PNX and a second Bukkit server. The parent independently ran
 `assert-joint-ci.ps1` on all four artifacts and checked native completion
 recordings. Evidence is under
-`.e2e-artifacts/review-20261104/{lite-remote,relay-remote}/`. The run-status API
-still reported Lite `in_progress` and Relay `queued` despite their completed
-game artifacts; it returned no final workflow conclusion.
+`.e2e-artifacts/review-20261104/{lite-remote,relay-remote}/`. The 2026-11-05 status
+refresh confirmed both workflows completed successfully; the earlier pending
+API states were not their final conclusions.
 Even a passing warmed-up title group would not close the separate first-snapshot
 ownership defect. Its three ordered reproductions remain failures; the current
 carrier-session fix is not a render ownership protocol.
+The user approved a negotiated upgraded-peer path on 2026-11-05, retaining
+legacy connectivity and its existing cold-start limits. That new guarantee
+has passing ordered production-path regressions (35 Bukkit render, 17 codec,
+18 existing bridge/carrier and 5 backend authentication checks). Fresh game
+acceptance must explicitly select `RequireRenderCoordination`; six additional
+session/title/chat gates re-read actual proxy/Bukkit/bot evidence. The older
+matrix alone does not establish this new guarantee.
 
 Local Bungee Lite run `20261102-205413` on 2026-11-02 passed the complete
 `core,completion` selection: **81/81** gating assertions, all 31 registry IDs,

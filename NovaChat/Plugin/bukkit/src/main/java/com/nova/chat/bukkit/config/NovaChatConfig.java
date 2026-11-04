@@ -37,6 +37,7 @@ public class NovaChatConfig {
     // Plugin-messaging bridge to the proxy (novachat:main)
     private final boolean pluginMessagingEnabled;
     private final String pluginMessagingServerId;
+    private final String renderCoordinationSecret;
     private final java.util.List<String> pluginMessagingProxyAddresses;
 
     // Debug mode
@@ -94,6 +95,18 @@ public class NovaChatConfig {
                 : this.username;
         this.pluginMessagingProxyAddresses = optionalStringList(
                 config, "plugin-messaging.proxy-addresses");
+        if (config.contains("plugin-messaging.render-coordination-secret")
+                && !config.isString("plugin-messaging.render-coordination-secret")) {
+            throw new IllegalArgumentException("plugin-messaging.render-coordination-secret must be a string");
+        }
+        this.renderCoordinationSecret = optionalString(config, "plugin-messaging.render-coordination-secret", "");
+        int secretBytes = renderCoordinationSecret.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        if (secretBytes != 0 && (secretBytes < 32 || secretBytes > 4096)) {
+            throw new IllegalArgumentException("plugin-messaging.render-coordination-secret must contain 32-4096 UTF-8 bytes");
+        }
+        if (secretBytes != 0 && !pluginMessagingEnabled) {
+            throw new IllegalArgumentException("Render coordination requires plugin-messaging.enabled");
+        }
 
         // Debug mode
         this.debug = requiredBoolean(config, "debug");
@@ -216,6 +229,10 @@ public class NovaChatConfig {
      */
     public boolean isPluginMessagingEnabled() {
         return pluginMessagingEnabled;
+    }
+
+    public String getRenderCoordinationSecret() {
+        return renderCoordinationSecret;
     }
 
     /**

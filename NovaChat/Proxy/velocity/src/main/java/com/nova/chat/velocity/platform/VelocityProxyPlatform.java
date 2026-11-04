@@ -425,6 +425,22 @@ public final class VelocityProxyPlatform implements ProxyPlatform {
         return false;
     }
 
+    @Override
+    public Object getPlayerConnectionIdentity(UUID playerId) {
+        Player player = plugin.getServer().getPlayer(playerId).orElse(null);
+        return player == null ? null : player.getCurrentServer().orElse(null);
+    }
+
+    @Override
+    public boolean sendPlayerPluginMessage(UUID playerId, Object expectedConnection,
+                                           String channel, byte[] payload) {
+        if (!(expectedConnection instanceof ServerConnection connection)
+                || getPlayerConnectionIdentity(playerId) != connection) {
+            return false;
+        }
+        return connection.sendPluginMessage(MinecraftChannelIdentifier.from(channel), payload);
+    }
+
     /**
      * Unwraps a player handle to its Velocity player.
      *

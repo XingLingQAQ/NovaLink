@@ -62,6 +62,7 @@ public class ProxyChatCore {
     private final ProxyPlayerStateStore states;
     private final ProxyChannelRecovery channelRecovery;
     private final ProxyMessageFormatter messageFormatter;
+    private final com.nova.chat.proxy.channel.ProxyRenderCoordinator renderCoordination;
 
     /** Per-player ignore lists (/nc ignore); consulted by every render path. */
     private final IgnoreListService ignoreListService;
@@ -141,6 +142,7 @@ public class ProxyChatCore {
         this.platform = platform;
         this.clientSupplier = clientSupplier;
         this.states = new ProxyPlayerStateStore(config);
+        this.renderCoordination = new com.nova.chat.proxy.channel.ProxyRenderCoordinator(platform, states::getConfig, this::renderOffered);
         this.channelRecovery = new ProxyChannelRecovery(platform, states, this::getNetworkClientFor);
         this.messageFormatter = new ProxyMessageFormatter(config);
         this.ignoreListService = ignoreListService;
@@ -302,6 +304,10 @@ public class ProxyChatCore {
      *                     renders to every proxy player
      */
     public void handleIncomingMessage(ChatMessagePacket packet, Set<String> scopeServers) {
+        handleIncomingMessage(packet, scopeServers, null);
+    }
+
+    private void handleIncomingMessage(ChatMessagePacket packet, Set<String> scopeServers, UUID onlyRecipient) {
         platform.logDebug("Received chat message from backend: " + packet);
 
         String channelId = packet.getChannelId();
@@ -314,7 +320,7 @@ public class ProxyChatCore {
         String highlighted = MentionNotifier.highlightMentions(content, MENTION_HIGHLIGHT_COLOR);
 
         for (ProxyPlayer player : platform.getOnlinePlayers()) {
-            if (!inScope(player, scopeServers)) {
+            if (!inScope(player, scopeServers, onlyRecipient)) {
                 continue;
             }
             // Skip senders the recipient has ignored (/nc ignore)
@@ -324,8 +330,12 @@ public class ProxyChatCore {
             }
             PlayerChannelState state = states.getState(player.getUniqueId());
             if (state != null && channelId.equals(state.getActiveChannel())) {
-                platform.sendMessage(player, messageFormatter.formatChatMessage(
-                        channelId, channelName, senderName, highlighted, placeholders));
+                renderCoordination.deliver(packet, player, channelId, () -> {
+                    if (canReceive(player, channelId, senderName)) {
+                        platform.sendMessage(player, messageFormatter.formatChatMessage(
+                                channelId, channelName, senderName, highlighted, placeholders));
+                    }
+                });
             }
         }
     }
@@ -348,18 +358,26 @@ public class ProxyChatCore {
      *                     renders to every proxy player
      */
     public void handleTitle(TitlePacket packet, Set<String> scopeServers) {
+        handleTitle(packet, scopeServers, null);
+    }
+
+    private void handleTitle(TitlePacket packet, Set<String> scopeServers, UUID onlyRecipient) {
         String channelId = packet.getChannelId();
         String title = packet.getTitle() != null ? packet.getTitle() : "";
         String subtitle = packet.getSubtitle() != null ? packet.getSubtitle() : "";
 
         for (ProxyPlayer player : platform.getOnlinePlayers()) {
-            if (!inScope(player, scopeServers)) {
+            if (!inScope(player, scopeServers, onlyRecipient)) {
                 continue;
             }
             PlayerChannelState state = states.getState(player.getUniqueId());
             if (state != null && channelId != null && channelId.equals(state.getActiveChannel())) {
-                platform.showTitle(player, title, subtitle,
-                        packet.getFadeIn(), packet.getStay(), packet.getFadeOut());
+                renderCoordination.deliver(packet, player, channelId, () -> {
+                    if (canReceive(player, channelId, null)) {
+                        platform.showTitle(player, title, subtitle,
+                                packet.getFadeIn(), packet.getStay(), packet.getFadeOut());
+                    }
+                });
             }
         }
     }
@@ -388,9 +406,13 @@ public class ProxyChatCore {
      *                     renders to every proxy player
      */
     public void handleItemDisplay(ItemDisplayPacket packet, Set<String> scopeServers) {
+        handleItemDisplay(packet, scopeServers, null);
+    }
+
+    private void handleItemDisplay(ItemDisplayPacket packet, Set<String> scopeServers, UUID onlyRecipient) {
         String channelId = packet.getChannelId();
         for (ProxyPlayer player : platform.getOnlinePlayers()) {
-            if (!inScope(player, scopeServers)) {
+            if (!inScope(player, scopeServers, onlyRecipient)) {
                 continue;
             }
             PlayerChannelState state = states.getState(player.getUniqueId());
@@ -403,10 +425,13 @@ public class ProxyChatCore {
                     && ignoreListService.isIgnored(viewerId, packet.getSenderName())) {
                 continue;
             }
-            platform.sendHoverableMessage(player,
-                    ItemDisplayMessages.formatLine(
-                            viewerId, packet.getSenderName(), packet.getItemJson()),
-                    ItemDisplayMessages.formatHoverDetail(viewerId, packet.getItemJson()));
+            renderCoordination.deliver(packet, player, channelId, () -> {
+                if (canReceive(player, channelId, packet.getSenderName())) {
+                    platform.sendHoverableMessage(player,
+                            ItemDisplayMessages.formatLine(viewerId, packet.getSenderName(), packet.getItemJson()),
+                            ItemDisplayMessages.formatHoverDetail(viewerId, packet.getItemJson()));
+                }
+            });
         }
     }
 
@@ -431,13 +456,17 @@ public class ProxyChatCore {
      *                     renders to every proxy player
      */
     public void handleMention(MentionPacket packet, Set<String> scopeServers) {
+        handleMention(packet, scopeServers, null);
+    }
+
+    private void handleMention(MentionPacket packet, Set<String> scopeServers, UUID onlyRecipient) {
         UUID mentionedId = packet.getMentionedId();
         UUID mentionerId = packet.getMentionerId();
         if (mentionedId == null || mentionerId == null) {
             return;
         }
         ProxyPlayer player = platform.getPlayer(mentionedId);
-        if (player == null || !inScope(player, scopeServers)) {
+        if (player == null || !inScope(player, scopeServers, onlyRecipient)) {
             return;
         }
         // Only the players whose active channel is the message channel ever saw
@@ -453,11 +482,16 @@ public class ProxyChatCore {
                 && ignoreListService.isIgnored(mentionedId, packet.getMentionerName())) {
             return;
         }
-        mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
-            String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
-            String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
-            platform.notifyMention(player, "&e" + mentioner,
-                    I18n.tr(mentionedId, "chat.mention.subtitle", channelId));
+        renderCoordination.deliver(packet, player, packet.getChannelId(), () -> {
+            PlayerChannelState fresh = states.getState(mentionedId);
+            if (fresh != null && !isInChannel(fresh, packet.getChannelId())) return;
+            if (ignoreListService != null && ignoreListService.isIgnored(mentionedId, packet.getMentionerName())) return;
+            mentionNotifier.notifyOrSkip(mentionedId, mentionerId, () -> {
+                String mentioner = packet.getMentionerName() != null ? packet.getMentionerName() : "";
+                String channelId = packet.getChannelId() != null ? packet.getChannelId() : "";
+                platform.notifyMention(player, "&e" + mentioner,
+                        I18n.tr(mentionedId, "chat.mention.subtitle", channelId));
+            });
         });
     }
 
@@ -481,6 +515,10 @@ public class ProxyChatCore {
      *                     renders to every proxy player
      */
     public void handlePrivateMessage(PrivateMessagePacket packet, Set<String> scopeServers) {
+        handlePrivateMessage(packet, scopeServers, null);
+    }
+
+    private void handlePrivateMessage(PrivateMessagePacket packet, Set<String> scopeServers, UUID onlyRecipient) {
         if (privateMessageService == null) {
             return;
         }
@@ -488,13 +526,17 @@ public class ProxyChatCore {
                 packet,
                 id -> {
                     ProxyPlayer candidate = platform.getPlayer(id);
-                    return candidate != null && inScope(candidate, scopeServers);
+                    return candidate != null && inScope(candidate, scopeServers, onlyRecipient);
                 },
                 ignoreListService);
         for (PrivateMessageService.Delivery delivery : deliveries) {
             ProxyPlayer player = platform.getPlayer(delivery.getPlayerId());
-            if (player != null && inScope(player, scopeServers)) {
-                platform.sendMessage(player, delivery.getLine());
+            if (player != null && inScope(player, scopeServers, onlyRecipient)) {
+                renderCoordination.deliver(packet, player, "", () -> {
+                    if (delivery.getPlayerId().equals(packet.getTargetId()) && ignoreListService != null
+                            && ignoreListService.isIgnored(delivery.getPlayerId(), packet.getSenderName())) return;
+                    platform.sendMessage(player, delivery.getLine());
+                });
             }
         }
     }
@@ -520,6 +562,28 @@ public class ProxyChatCore {
         }
         String active = state.getActiveChannel();
         return active == null || active.isBlank() || active.equals(channelId);
+    }
+
+    private boolean canReceive(ProxyPlayer player, String channelId, String sender) {
+        PlayerChannelState state = states.getState(player.getUniqueId());
+        return state != null && channelId.equals(state.getActiveChannel())
+                && (sender == null || ignoreListService == null || !ignoreListService.isIgnored(player.getUniqueId(), sender));
+    }
+
+    public void handleRenderControl(String server, UUID carrier, Object source, byte[] payload) {
+        renderCoordination.receive(server, carrier, source, payload);
+    }
+
+    private void renderOffered(Packet packet, UUID recipient) {
+        if (packet instanceof ChatMessagePacket chat) handleIncomingMessage(chat, null, recipient);
+        else if (packet instanceof TitlePacket title) handleTitle(title, null, recipient);
+        else if (packet instanceof ItemDisplayPacket item) handleItemDisplay(item, null, recipient);
+        else if (packet instanceof MentionPacket mention) handleMention(mention, null, recipient);
+        else if (packet instanceof PrivateMessagePacket message) handlePrivateMessage(message, null, recipient);
+    }
+
+    private static boolean inScope(ProxyPlayer player, Set<String> servers, UUID recipient) {
+        return (recipient == null || recipient.equals(player.getUniqueId())) && inScope(player, servers);
     }
 
     /**
@@ -797,6 +861,7 @@ public class ProxyChatCore {
     public void recordServer(ProxyPlayer player, String serverName) {
         PlayerChannelState state = states.getOrCreateState(player.getUniqueId());
         state.setCurrentServer(serverName);
+        renderCoordination.connected(player);
         platform.logDebug("Player " + player.getName() + " connected to server: " + serverName);
     }
 
@@ -832,6 +897,7 @@ public class ProxyChatCore {
      * @param playerId the disconnecting player's UUID
      */
     public void onPlayerDisconnect(UUID playerId) {
+        renderCoordination.forget(playerId);
         PlayerChannelState state = states.getState(playerId);
         channelRecovery.disconnected(playerId, state);
         notifyBackendDisconnect(playerId, state);
@@ -1000,6 +1066,7 @@ public class ProxyChatCore {
      */
     public void setConfig(ProxyConfigView config) {
         states.setConfig(config);
+        renderCoordination.refresh();
         platform.logDebug("Chat core reloaded, global mode: " + states.getGlobalMode());
     }
 

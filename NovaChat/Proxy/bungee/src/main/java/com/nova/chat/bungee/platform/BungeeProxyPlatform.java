@@ -19,6 +19,7 @@ import net.md_5.bungee.api.chat.HoverEvent;
 import net.md_5.bungee.api.chat.TextComponent;
 import net.md_5.bungee.api.chat.hover.content.Text;
 import net.md_5.bungee.api.connection.ProxiedPlayer;
+import net.md_5.bungee.api.connection.Server;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -330,6 +331,23 @@ public final class BungeeProxyPlatform implements ProxyPlatform {
                     + e.getMessage());
             return false;
         }
+    }
+
+    @Override
+    public Object getPlayerConnectionIdentity(UUID playerId) {
+        ProxiedPlayer player = plugin.getProxy().getPlayer(playerId);
+        return player == null ? null : player.getServer();
+    }
+
+    @Override
+    public boolean sendPlayerPluginMessage(UUID playerId, Object expectedConnection,
+                                           String channel, byte[] payload) {
+        if (!(expectedConnection instanceof Server connection)
+                || getPlayerConnectionIdentity(playerId) != connection) {
+            return false;
+        }
+        connection.sendData(channel, payload);
+        return true;
     }
 
     /**

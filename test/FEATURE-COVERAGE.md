@@ -83,10 +83,9 @@ Lite selected `core,business,lite-moderation,social-contract,completion`; Relay
 selected `core,business,recovery,proxy-switch,channel-lifecycle,social-contract,custom-effects,completion`
 with a second Bukkit server. Evidence is under
 `.e2e-artifacts/review-20261104/{lite-remote,relay-remote}/`.
-The run-status API still reported Lite `in_progress` and Relay `queued` despite
-the completed game artifacts; no final workflow conclusion was returned.
-Build & Test 41861019274 also recorded its all-platform build/test step as
-successful while its overall run status remained `in_progress`.
+On the 2026-11-05 status refresh, both workflows and Build & Test 41861019274
+reported completed **success**. The earlier pending API statuses were not
+final results.
 
 The cold-start ownership window remains a known product defect. Three ordered
 adapter-level regressions, with simulated proxy delivery, reproduce duplicate
@@ -94,8 +93,16 @@ initial chat/title rendering and a stale proxy snapshot suppressing a reconnecte
 direct player. A carrier-session fix does
 not close this window. Reproduction code and failures are retained under
 `.e2e-artifacts/review-20261104/unresolved-ownership-regressions.patch` and
-`.gradle-ownership-bukkit/cold-start-failures.xml`. A coordinated render protocol
-is a separate follow-up; no such protocol is implemented in this revision.
+`.gradle-ownership-bukkit/cold-start-failures.xml`. On 2026-11-05 the user approved
+a coordinated render protocol for upgraded proxy/Bukkit pairs. Legacy peers
+must remain connectable under their existing cold-start limits. The new path
+must confirm per-message ownership before proxy rendering, reject old-session
+decisions and preserve direct-player delivery. The opt-in authenticated protocol is implemented: 17 codec, 35 ordered
+Bukkit rendering, 18 existing bridge/carrier and 5 backend-authentication checks
+pass locally. Per-message signed offers cover missing proxy copies, large
+fragmented packets, bridge rebuilds and stale roster/session rejection. Fresh
+negotiated game acceptance is pending; the 901 earlier passing assertions do
+not establish this new guarantee. See [the activation and wire contract](../NovaChat/Proxy/channel/RENDER_COORDINATION.md).
 
 Local Velocity Lite run `20261104-230343` recorded all **13/13** native completion
 controls passing, with real `chat_suggestions` ADD/REMOVE traffic. The complete

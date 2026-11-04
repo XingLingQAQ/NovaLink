@@ -662,7 +662,7 @@ public final class CoreNetworkClient {
         handlePacket(null, packet);
     }
 
-    /** Dispatches a packet only when it belongs to the current channel generation. */
+    /** Applies generation and authentication checks to network-sourced packets. */
     void handlePacket(Channel source, Packet packet) {
         if (packet == null) {
             return;
@@ -671,6 +671,13 @@ public final class CoreNetworkClient {
         if (source != null && source != current) {
             logger.debug("Ignoring packet from a stale connection generation: "
                     + packet.getClass().getSimpleName());
+            return;
+        }
+        if (source != null && !authenticated.get()
+                && !(packet instanceof HandshakeChallengePacket)
+                && !(packet instanceof HandshakeResponsePacket)
+                && !(packet instanceof KeepAlivePacket)) {
+            logger.debug("Ignoring packet before authentication: " + packet.getClass().getSimpleName());
             return;
         }
         logger.debug("Received packet: " + packet.getClass().getSimpleName());

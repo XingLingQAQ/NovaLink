@@ -240,7 +240,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * Handles title packets by displaying them to players whose active channel matches the packet channel.
      */
     private void handleTitle(TitlePacket packet) {
-        handleTitle(packet, java.util.Set.of());
+        handleTitle(packet, plugin.getChatInterceptor().coordinateBackend(packet), false);
     }
 
     /**
@@ -248,6 +248,10 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * @param excluded players the proxy already showed it to
      */
     private void handleTitle(TitlePacket packet, java.util.Set<UUID> excluded) {
+        handleTitle(packet, excluded, true);
+    }
+
+    private void handleTitle(TitlePacket packet, java.util.Set<UUID> excluded, boolean downstream) {
         // Must run on main thread for Bukkit API
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             try {
@@ -262,7 +266,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 String renderedSubtitle = formatter.translateColorCodes(subtitle != null ? subtitle : "");
 
                 for (org.bukkit.entity.Player player : plugin.getServer().getOnlinePlayers()) {
-                    if (excluded.contains(player.getUniqueId()) || interceptor.isProxyRenderedPlayer(player.getUniqueId())) {
+                    if (excluded.contains(player.getUniqueId()) || interceptor.isProxyRenderedPlayer(player.getUniqueId(), downstream)) {
                         continue;
                     }
                     var state = interceptor.getOrCreateState(player);
@@ -294,7 +298,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * handler directly after reflecting the core dispatch.
      */
     void handleItemDisplay(ItemDisplayPacket packet) {
-        handleItemDisplay(packet, java.util.Set.of());
+        handleItemDisplay(packet, plugin.getChatInterceptor().coordinateBackend(packet), false);
     }
 
     /**
@@ -302,6 +306,10 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * @param excluded players the proxy already rendered it to
      */
     void handleItemDisplay(ItemDisplayPacket packet, java.util.Set<UUID> excluded) {
+        handleItemDisplay(packet, excluded, true);
+    }
+
+    private void handleItemDisplay(ItemDisplayPacket packet, java.util.Set<UUID> excluded, boolean downstream) {
         // Must run on main thread for Bukkit API
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             try {
@@ -310,7 +318,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 var formatter = interceptor.getMessageFormatter();
 
                 for (org.bukkit.entity.Player player : plugin.getServer().getOnlinePlayers()) {
-                    if (excluded.contains(player.getUniqueId()) || interceptor.isProxyRenderedPlayer(player.getUniqueId())) {
+                    if (excluded.contains(player.getUniqueId()) || interceptor.isProxyRenderedPlayer(player.getUniqueId(), downstream)) {
                         continue;
                     }
                     var state = interceptor.getOrCreateState(player);
@@ -349,7 +357,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * players on other servers are expected to be routed there by the backend.
      */
     private void handleMention(MentionPacket packet) {
-        handleMention(packet, java.util.Set.of());
+        handleMention(packet, plugin.getChatInterceptor().coordinateBackend(packet), false);
     }
 
     /**
@@ -357,6 +365,10 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * @param excluded players the proxy already notified
      */
     private void handleMention(MentionPacket packet, java.util.Set<UUID> excluded) {
+        handleMention(packet, excluded, true);
+    }
+
+    private void handleMention(MentionPacket packet, java.util.Set<UUID> excluded, boolean downstream) {
         // Must run on main thread for Bukkit API
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             try {
@@ -366,7 +378,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                     return;
                 }
                 var interceptor = plugin.getChatInterceptor();
-                if (excluded.contains(mentionedId) || interceptor.isProxyRenderedPlayer(mentionedId)) {
+                if (excluded.contains(mentionedId) || interceptor.isProxyRenderedPlayer(mentionedId, downstream)) {
                     return; // the proxy already showed this notification
                 }
                 org.bukkit.entity.Player player = plugin.getServer().getPlayer(mentionedId);
@@ -425,7 +437,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * handler directly after reflecting the core dispatch.
      */
     void handlePrivateMessage(PrivateMessagePacket packet) {
-        handlePrivateMessage(packet, java.util.Set.of());
+        handlePrivateMessage(packet, plugin.getChatInterceptor().coordinateBackend(packet), false);
     }
 
     /**
@@ -433,6 +445,10 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      * @param excluded players the proxy already rendered it to
      */
     void handlePrivateMessage(PrivateMessagePacket packet, java.util.Set<UUID> excluded) {
+        handlePrivateMessage(packet, excluded, true);
+    }
+
+    private void handlePrivateMessage(PrivateMessagePacket packet, java.util.Set<UUID> excluded, boolean downstream) {
         // Must run on main thread for Bukkit API
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             try {
@@ -443,7 +459,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
                 var deliveries = plugin.getPrivateMessageService().handleIncoming(
                         packet,
                         id -> !excluded.contains(id)
-                                && !interceptor.isProxyRenderedPlayer(id)
+                                && !interceptor.isProxyRenderedPlayer(id, downstream)
                                 && plugin.getServer().getPlayer(id) != null,
                         plugin.getIgnoreListService());
                 var formatter = plugin.getChatInterceptor().getMessageFormatter();

@@ -146,3 +146,7 @@ lite:
       username: "novachat"
       password: "change-me"
       pool-size: 10
+
+# 仅列入已升级且配置相同随机密钥的 Bukkit 子服；未列出的子服保持旧协议。
+render-coordination:
+  secrets: {}

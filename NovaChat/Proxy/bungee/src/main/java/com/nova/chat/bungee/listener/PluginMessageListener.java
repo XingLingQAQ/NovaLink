@@ -2,6 +2,7 @@ package com.nova.chat.bungee.listener;
 
 import com.nova.chat.bungee.NovaChatBungee;
 import com.nova.chat.channel.ProxyChannelProtocol;
+import com.nova.chat.channel.RenderCoordinationProtocol;
 import com.nova.chat.proxy.channel.ProxyChannelHandler;
 import net.md_5.bungee.api.connection.Server;
 import net.md_5.bungee.api.event.PluginMessageEvent;
@@ -42,12 +43,23 @@ public class PluginMessageListener implements Listener {
      */
     @EventHandler
     public void onPluginMessage(PluginMessageEvent event) {
-        if (!ProxyChannelProtocol.CHANNEL_ID.equals(event.getTag())) {
+        if (!ProxyChannelProtocol.CHANNEL_ID.equals(event.getTag())
+                && !RenderCoordinationProtocol.CHANNEL_ID.equals(event.getTag())) {
             return;
         }
         // Consume first: a player-sourced payload must never reach the backend
         // server, and a server-sourced payload must never reach a client.
         event.setCancelled(true);
+
+        if (RenderCoordinationProtocol.CHANNEL_ID.equals(event.getTag())) {
+            if (event.getSender() instanceof Server server
+                    && event.getReceiver() instanceof net.md_5.bungee.api.connection.ProxiedPlayer carrier
+                    && plugin.getChatCore() != null) {
+                plugin.getChatCore().handleRenderControl(server.getInfo().getName(),
+                        carrier.getUniqueId(), server, event.getData());
+            }
+            return;
+        }
 
         ProxyChannelHandler target = handler;
         if (target == null) {

@@ -105,6 +105,8 @@ public class NovaChatBukkit extends JavaPlugin {
      * is disabled or registration failed.
      */
     private com.nova.chat.bukkit.channel.ProxyChannelClient proxyChannelClient;
+    private final com.nova.chat.bukkit.channel.RenderCoordinationServer renderCoordination =
+            new com.nova.chat.bukkit.channel.RenderCoordinationServer(this);
 
     /** Debug mode flag */
     private boolean debugMode = false;
@@ -504,6 +506,10 @@ public class NovaChatBukkit extends JavaPlugin {
      */
     public NetworkClient getNetworkClient() {
         return networkClient;
+    }
+
+    public com.nova.chat.bukkit.channel.RenderCoordinationServer getRenderCoordinationServer() {
+        return renderCoordination;
     }
 
     /**

@@ -211,6 +211,7 @@ public class NovaChatBungee extends Plugin {
             try {
                 getProxy().unregisterChannel(
                         com.nova.chat.channel.ProxyChannelProtocol.CHANNEL_ID);
+                getProxy().unregisterChannel(com.nova.chat.channel.RenderCoordinationProtocol.CHANNEL_ID);
             } catch (RuntimeException e) {
                 getLogger().log(Level.WARNING,
                         "Failed to unregister the plugin-messaging channel", e);
@@ -607,6 +608,7 @@ public class NovaChatBungee extends Plugin {
         }
         try {
             getProxy().registerChannel(com.nova.chat.channel.ProxyChannelProtocol.CHANNEL_ID);
+            getProxy().registerChannel(com.nova.chat.channel.RenderCoordinationProtocol.CHANNEL_ID);
             pluginChannelRegistered = true;
             getLogger().info("Registered plugin-messaging channel "
                     + com.nova.chat.channel.ProxyChannelProtocol.CHANNEL_ID);

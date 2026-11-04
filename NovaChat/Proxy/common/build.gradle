@@ -38,6 +38,7 @@ dependencies {
     // dependency is still on this module's runtimeElements, which is what lets
     // the shells' shadowJar white-list pull it into the plugin jar.
     implementation project(':StarLink:storage')
+    implementation "com.google.code.gson:gson:${gsonVersion}"
 
     // Testing
     testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"

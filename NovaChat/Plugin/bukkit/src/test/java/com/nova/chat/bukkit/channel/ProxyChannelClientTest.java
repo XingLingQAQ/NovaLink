@@ -65,6 +65,7 @@ class ProxyChannelClientTest {
         // outlive one test method.
         received.clear();
         when(plugin.getServer()).thenReturn(server);
+        when(plugin.getRenderCoordinationServer()).thenReturn(new com.nova.chat.bukkit.channel.RenderCoordinationServer(plugin));
         when(plugin.getLogger()).thenReturn(Logger.getLogger("test"));
         when(plugin.getNovaChatConfig()).thenReturn(config);
         when(server.getMessenger()).thenReturn(messenger);

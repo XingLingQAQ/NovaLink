@@ -248,6 +248,11 @@ public class NovaChatConfig implements ProxyConfigView {
         return model.isDebug();
     }
 
+    @Override
+    public Map<String, String> getRenderCoordinationSecrets() {
+        return model.getRenderCoordinationSecrets();
+    }
+
     /**
      * Maps platform config to the shared {@link ClientConnectionConfig}.
      *

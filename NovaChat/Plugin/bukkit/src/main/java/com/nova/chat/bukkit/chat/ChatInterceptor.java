@@ -57,6 +57,7 @@ public class ChatInterceptor implements Listener {
 
     /** Recipients served by either transport, with oldest-first packet eviction. */
     private final Map<InboundPacketKey, Set<UUID>> servedByLine = new java.util.LinkedHashMap<>();
+    private final Map<InboundPacketKey, Map<UUID, Boolean>> proxyClaims = new java.util.LinkedHashMap<>();
 
     private record InboundPacketKey(int packetId, UUID requestId) { }
 
@@ -79,16 +80,30 @@ public class ChatInterceptor implements Listener {
     private volatile Set<UUID> proxyRenderedPlayers = Set.of();
 
     public synchronized void updateProxyRenderedPlayers(Set<UUID> playerIds) {
+        var bridge = plugin.getProxyChannelClient();
+        if (bridge != null && bridge.getRenderCoordination().enabled()) return;
         if (playerIds != null) {
             proxyRenderedPlayers = Set.copyOf(playerIds);
         }
     }
 
     public boolean isProxyRenderedPlayer(UUID playerId) {
+        var bridge = plugin.getProxyChannelClient();
+        if (bridge != null && bridge.getRenderCoordination().enabled()) {
+            return false;
+        }
         return playerId != null && proxyRenderedPlayers.contains(playerId);
     }
 
+    public boolean isProxyRenderedPlayer(UUID playerId, boolean downstream) {
+        var bridge = plugin.getProxyChannelClient();
+        return isProxyRenderedPlayer(playerId) || (downstream && bridge != null
+                && bridge.getRenderCoordination().owns(playerId));
+    }
+
     private synchronized void forgetInboundPlayer(UUID playerId) {
+        var bridge = plugin.getProxyChannelClient();
+        if (bridge != null) bridge.getRenderCoordination().forget(playerId);
         if (proxyRenderedPlayers.contains(playerId)) {
             Set<UUID> remaining = new java.util.HashSet<>(proxyRenderedPlayers);
             remaining.remove(playerId);
@@ -96,17 +111,21 @@ public class ChatInterceptor implements Listener {
         }
         synchronized (servedByLine) {
             servedByLine.values().forEach(recipients -> recipients.remove(playerId));
+            proxyClaims.values().forEach(decisions -> decisions.remove(playerId));
         }
     }
 
     /** Records the delivery and returns whether either transport already served it. */
     public boolean isDuplicateRecipient(Packet packet, UUID playerId) {
-        UUID requestId = packet.getRequestId();
+        return isDuplicateRecipient(packet.getPacketId(), packet.getRequestId(), playerId);
+    }
+
+    public boolean isDuplicateRecipient(int packetId, UUID requestId, UUID playerId) {
         if (requestId == null || (requestId.getMostSignificantBits() == 0L
                 && requestId.getLeastSignificantBits() == 0L) || playerId == null) {
             return false;
         }
-        InboundPacketKey key = new InboundPacketKey(packet.getPacketId(), requestId);
+        InboundPacketKey key = new InboundPacketKey(packetId, requestId);
         synchronized (servedByLine) {
             Set<UUID> served = servedByLine.get(key);
             if (served == null) {
@@ -115,13 +134,29 @@ public class ChatInterceptor implements Listener {
                 if (servedByLine.size() > RECENT_INBOUND_LIMIT) {
                     var oldest = servedByLine.keySet().iterator();
                     if (oldest.hasNext()) {
-                        oldest.next();
+                        proxyClaims.remove(oldest.next());
                         oldest.remove();
                     }
                 }
             }
             return !served.add(playerId);
         }
+    }
+
+    public boolean claimProxyRender(int packetId, UUID requestId, UUID playerId) {
+        synchronized (servedByLine) {
+            InboundPacketKey key = new InboundPacketKey(packetId, requestId);
+            Map<UUID, Boolean> decisions = proxyClaims.get(key);
+            if (decisions != null && decisions.containsKey(playerId)) return decisions.get(playerId);
+            boolean owner = !isDuplicateRecipient(packetId, requestId, playerId);
+            proxyClaims.computeIfAbsent(key, ignored -> new java.util.HashMap<>()).put(playerId, owner);
+            return owner;
+        }
+    }
+
+    public Set<UUID> coordinateBackend(Packet packet) {
+        var bridge = plugin.getProxyChannelClient();
+        return bridge == null ? Set.of() : bridge.getRenderCoordination().offer(packet);
     }
 
     /** Player chat states indexed by UUID (shared store). */
@@ -197,9 +232,10 @@ public class ChatInterceptor implements Listener {
      * @param packet the chat message packet
      */
     public void handleIncomingMessage(ChatMessagePacket packet) {
-        // Null marks the backend-link path: it carries no proxy roster, so the
-        // render loop falls back to the last one the proxy told us about.
-        handleIncomingMessage(packet, null);
+        // Legacy backend traffic must not replace the last proxy roster.
+        var bridge = plugin.getProxyChannelClient();
+        handleIncomingMessage(packet, bridge != null && bridge.getRenderCoordination().enabled()
+                ? coordinateBackend(packet) : null, false);
     }
 
     /**
@@ -216,6 +252,10 @@ public class ChatInterceptor implements Listener {
      */
     public void handleIncomingMessage(ChatMessagePacket packet,
                                       java.util.Set<UUID> excludedRecipients) {
+        handleIncomingMessage(packet, excludedRecipients, true);
+    }
+
+    private void handleIncomingMessage(ChatMessagePacket packet, Set<UUID> excludedRecipients, boolean downstream) {
         plugin.debug("Received chat message from backend: " + packet);
 
         updateProxyRenderedPlayers(excludedRecipients);
@@ -226,10 +266,10 @@ public class ChatInterceptor implements Listener {
         // in place: an extra hop would reorder them relative to each other.
         if (plugin.getServer().isPrimaryThread()) {
             Set<UUID> excluded = excludedRecipients != null ? excludedRecipients : Set.of();
-            asyncDispatcher.accept(() -> dispatchIncoming(packet, excluded));
+            asyncDispatcher.accept(() -> dispatchIncoming(packet, excluded, downstream));
             return;
         }
-        dispatchIncoming(packet, excludedRecipients != null ? excludedRecipients : Set.of());
+        dispatchIncoming(packet, excludedRecipients != null ? excludedRecipients : Set.of(), downstream);
     }
 
     /**
@@ -239,7 +279,7 @@ public class ChatInterceptor implements Listener {
      * <p>Must run off the main thread (the event is async-only); the render
      * loop hops back to the main thread for Bukkit API calls.
      */
-    private void dispatchIncoming(ChatMessagePacket packet, Set<UUID> excludedRecipients) {
+    private void dispatchIncoming(ChatMessagePacket packet, Set<UUID> excludedRecipients, boolean downstream) {
         String channelId = packet.getChannelId();
         String senderName = packet.getSenderName();
         String content = packet.getContent();
@@ -269,7 +309,7 @@ public class ChatInterceptor implements Listener {
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             for (Player player : plugin.getServer().getOnlinePlayers()) {
                 if (excludedRecipients.contains(player.getUniqueId())
-                        || isProxyRenderedPlayer(player.getUniqueId())) {
+                        || isProxyRenderedPlayer(player.getUniqueId(), downstream)) {
                     continue;
                 }
                 // Skip senders the recipient has ignored (/nc ignore)
