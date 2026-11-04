@@ -87,22 +87,35 @@ On the 2026-11-05 status refresh, both workflows and Build & Test 41861019274
 reported completed **success**. The earlier pending API statuses were not
 final results.
 
-The cold-start ownership window remains a known product defect. Three ordered
-adapter-level regressions, with simulated proxy delivery, reproduce duplicate
-initial chat/title rendering and a stale proxy snapshot suppressing a reconnected
-direct player. A carrier-session fix does
-not close this window. Reproduction code and failures are retained under
+The legacy profile retains its original cold-start ownership limits. Its
+pre-protocol reproductions remain available under
 `.e2e-artifacts/review-20261104/unresolved-ownership-regressions.patch` and
-`.gradle-ownership-bukkit/cold-start-failures.xml`. On 2026-11-05 the user approved
-a coordinated render protocol for upgraded proxy/Bukkit pairs. Legacy peers
-must remain connectable under their existing cold-start limits. The new path
-must confirm per-message ownership before proxy rendering, reject old-session
-decisions and preserve direct-player delivery. The opt-in authenticated protocol is implemented: 17 codec, 35 ordered
-Bukkit rendering, 18 existing bridge/carrier and 5 backend-authentication checks
-pass locally. Per-message signed offers cover missing proxy copies, large
-fragmented packets, bridge rebuilds and stale roster/session rejection. Fresh
-negotiated game acceptance is pending; the 901 earlier passing assertions do
-not establish this new guarantee. See [the activation and wire contract](../NovaChat/Proxy/channel/RENDER_COORDINATION.md).
+`.gradle-ownership-bukkit/cold-start-failures.xml`; they are historical failure
+evidence, not acceptance of the new opt-in profile.
+
+The user approved upgraded-pair coordination on 2026-11-05. Runtime
+`d89a80d8` adds authenticated per-message claims and full-packet signed offers;
+`e82145e3` also starts Velocity negotiation after its current-server assignment.
+The parent reviewed both ends and independently checked the raw game evidence.
+
+| Negotiated profile | Acceptance |
+|---|---|
+| Velocity + Bukkit + native PNX, `core,custom-effects` | Workflow [41886654188](https://github.com/XingLingQAQ/NovaLink/actions/runs/41886654188) at `e82145e3`: **99/99** gating rows; independent CLI, six protocol gates and all 15 raw custom-effect assertions passed |
+| Bungee + Bukkit + native PNX, same selection | Run 41883726555 at `d89a80d8`: **93/93** original game gates; corrected checker independently accepted **6/6** protocol gates and **15/15** raw custom effects. The original workflow remains FAIL because its checker used the wrong result-directory name. Bungee runtime is unchanged by `e82145e3`, so valid recordings were reused |
+
+The initial Velocity run 41883726555 also exposed a startup isolation leak;
+its failure is retained. The post-connect fix passed its targeted regression
+and the fresh complete 99-row selection above. Build & Test 41886651747 at
+`e82145e3` completed successfully. Local checks cover 17 codec, 35 ordered
+Bukkit rendering, 18 bridge/carrier, five backend-authentication and one
+Velocity post-connect case.
+
+Only a matching configured upgraded pair receives the new guarantee; old pairs
+remain usable with coordination disabled. See [activation, compatibility and
+retention limits](../NovaChat/Proxy/channel/RENDER_COORDINATION.md). This is
+bounded live-connection coordination, not process-crash durable delivery.
+The earlier 901 passing assertions remain separate evidence for the legacy
+matrix; they are not counted again as new-protocol acceptance.
 
 Local Velocity Lite run `20261104-230343` recorded all **13/13** native completion
 controls passing, with real `chat_suggestions` ADD/REMOVE traffic. The complete

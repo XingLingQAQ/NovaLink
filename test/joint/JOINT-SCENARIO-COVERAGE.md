@@ -251,16 +251,26 @@ recordings. Evidence is under
 `.e2e-artifacts/review-20261104/{lite-remote,relay-remote}/`. The 2026-11-05 status
 refresh confirmed both workflows completed successfully; the earlier pending
 API states were not their final conclusions.
-Even a passing warmed-up title group would not close the separate first-snapshot
-ownership defect. Its three ordered reproductions remain failures; the current
-carrier-session fix is not a render ownership protocol.
-The user approved a negotiated upgraded-peer path on 2026-11-05, retaining
-legacy connectivity and its existing cold-start limits. That new guarantee
-has passing ordered production-path regressions (35 Bukkit render, 17 codec,
-18 existing bridge/carrier and 5 backend authentication checks). Fresh game
-acceptance must explicitly select `RequireRenderCoordination`; six additional
-session/title/chat gates re-read actual proxy/Bukkit/bot evidence. The older
-matrix alone does not establish this new guarantee.
+The legacy profile still has the first-snapshot ownership limit. The user
+approved a coordinated upgraded-peer profile on 2026-11-05. It now has ordered
+production-path regressions and explicit `RequireRenderCoordination` game
+acceptance: Velocity workflow 41886654188 at `e82145e3` passed **99/99** rows,
+including six authenticated session/title/chat gates. The parent downloaded
+artifacts and independently reran the CLI and all 15 raw custom-effect checks.
+Build & Test 41886651747 also passed at that runtime.
+
+Bungee's unchanged runtime at `d89a80d8` recorded **93/93** original game gates
+in 41883726555. Independent recomputation with the corrected checker passed
+**6/6** protocol gates and **15/15** raw custom effects. That original workflow
+remains FAIL due to its GUID result-directory lookup bug; it was not relabelled
+or rerun merely to replace valid Bungee recordings. The same run's Velocity
+startup isolation failure was repaired and revalidated in the fresh run above.
+
+Local checks passed 35 ordered Bukkit render, 17 codec, 18 bridge/carrier,
+five backend authentication and one Velocity post-connect case. Activation
+requires matching secrets on both upgraded peers. Legacy defaults are
+unchanged; [the protocol contract](../../NovaChat/Proxy/channel/RENDER_COORDINATION.md)
+records queue, retention, fragmentation and restart boundaries.
 
 Local Bungee Lite run `20261102-205413` on 2026-11-02 passed the complete
 `core,completion` selection: **81/81** gating assertions, all 31 registry IDs,
