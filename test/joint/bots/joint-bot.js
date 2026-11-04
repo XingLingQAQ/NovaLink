@@ -184,6 +184,15 @@ function chatText(msg) {
   return plainText(msg);
 }
 
+function normalizeRecordedComponent(value) {
+  if (value == null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(normalizeRecordedComponent);
+  // Compact NBT text uses an empty key; PS 5.1 cannot deserialize that JSON.
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => key !== '' || !Object.hasOwn(value, 'text'))
+    .map(([key, child]) => [key === '' ? 'text' : key, normalizeRecordedComponent(child)]));
+}
+
 // Is this a decoded network-NBT chat component (1.20.3+ wire format)?
 function isNbtComponent(value) {
   return value != null && typeof value === 'object' && typeof value.type === 'string'
@@ -722,7 +731,7 @@ function createJavaTransport(onChatLine) {
   if (plan.captureMessageComponents === true) {
     bot.on('message', (message, position) => {
       recordEffect('messageComponent', chatText(message), {
-        component: message.json,
+        component: normalizeRecordedComponent(message.json),
         position: position || 'unknown',
       });
     });
@@ -1534,6 +1543,15 @@ async function runCompletionSelftest() {
 
 async function runTextSelftest() {
   const assert = require('assert');
+  const compact = { extra: [{ '': 'Type ' }, { text: 'name', hover_event: {
+    action: 'show_text', value: { '': 'minecraft:diamond_sword Count: 1' },
+  } }] };
+  assert.deepStrictEqual(normalizeRecordedComponent(compact), { extra: [{ text: 'Type ' }, { text: 'name', hover_event: {
+    action: 'show_text', value: { text: 'minecraft:diamond_sword Count: 1' },
+  } }] });
+  assert.strictEqual(compact.extra[0][''], 'Type ', 'recording must not mutate received components');
+  assert.deepStrictEqual(normalizeRecordedComponent({ text: 'visible', '': 'ignored' }), { text: 'visible' });
+  console.log('[REGRESSION PASS] compact component text canonicalized without losing hover or mutating the receipt');
   const cases = [
     { text: '[NovaChat] \u00a7aJoined channel \u00a7eglobal', pattern: '(?:Joined channel|\\u5df2\\u52a0\\u5165\\u9891\\u9053)\\s+global$', ok: true },
     { text: '[NovaChat] \u5df2\u52a0\u5165\u9891\u9053 \u00a7eglobal', pattern: '(?:Joined channel|\\u5df2\\u52a0\\u5165\\u9891\\u9053)\\s+global$', ok: true },
