@@ -68,8 +68,7 @@ public class ChatInterceptor implements Listener {
      * them in the envelope's exclusion set. The backend copy of the same line
      * carries no exclusion list at all, so when it wins the race to this server
      * it re-renders to those players. Retaining the latest snapshot lets the
-     * backend copy skip them too, which is what makes the outcome independent
-     * of arrival order.
+     * backend copy skip them once that snapshot has arrived.
      *
      * <p>Replaced (not accumulated) on every downstream payload, because the
      * exclusion list is the proxy's authoritative statement of who it serves

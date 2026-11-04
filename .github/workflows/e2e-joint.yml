@@ -93,6 +93,10 @@ jobs:
           cache: npm
           cache-dependency-path: test/bot/package-lock.json
 
+      - name: Install locked bot dependencies
+        shell: pwsh
+        run: npx --yes npm@10 ci --prefix test/bot --no-audit --no-fund
+
       - name: Check bot and scenario machinery without servers
         shell: powershell
         run: |
@@ -108,10 +112,6 @@ jobs:
               & "./test/joint/scenarios/verify-$group.ps1"
             }
           }
-
-      - name: Install locked bot dependencies
-        shell: pwsh
-        run: npx --yes npm@10 ci --prefix test/bot --no-audit --no-fund
 
       - name: Cache server distributions
         uses: actions/cache@v4
