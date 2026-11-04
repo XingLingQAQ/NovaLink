@@ -13,6 +13,11 @@ The default joint selection is `core`; other groups require explicit
 `ScenarioGroups` / `scenario_groups` selection. Required evidence and the
 latest observed results are recorded separately below.
 
+`RequireRenderCoordination` adds the six negotiated chat/title gates to Relay
+`custom-effects`. `RequireRenderEffects` adds 18 item, mention and private-message
+gates and requires the first flag. Both selections are explicit summary fields;
+old recordings keep their original acceptance contract.
+
 | Entry | Selected coverage | Required evidence |
 |---|---|---|
 | `core` | Receiver chat, isolation controls and Java reconnect with non-default `local` selected | Fresh current-channel query and bidirectional delivery without a repair JOIN, plus every required registry ID |
@@ -100,15 +105,33 @@ The parent reviewed both ends and independently checked the raw game evidence.
 
 | Negotiated profile | Acceptance |
 |---|---|
-| Velocity + Bukkit + native PNX, `core,custom-effects` | Workflow [41886654188](https://github.com/XingLingQAQ/NovaLink/actions/runs/41886654188) at `e82145e3`: **99/99** gating rows; independent CLI, six protocol gates and all 15 raw custom-effect assertions passed |
-| Bungee + Bukkit + native PNX, same selection | Run 41883726555 at `d89a80d8`: **93/93** original game gates; corrected checker independently accepted **6/6** protocol gates and **15/15** raw custom effects. The original workflow remains FAIL because its checker used the wrong result-directory name. Bungee runtime is unchanged by `e82145e3`, so valid recordings were reused |
+| Velocity + Bukkit + native PNX, `core,custom-effects`, both required-render flags | [41935643798](https://github.com/XingLingQAQ/NovaLink/actions/runs/41935643798) at `0e6cfb5e`: workflow SUCCESS, **117/117** gating rows |
+| Bungee + Bukkit + native PNX, same selection | [Job 126937663814](https://github.com/XingLingQAQ/NovaLink/actions/runs/41933971257/job/126937663814) at `aff4c206`: job SUCCESS, **117/117** gating rows. The combined workflow remains FAIL because its Velocity recording could not be parsed; that recorder was subsequently fixed |
 
-The initial Velocity run 41883726555 also exposed a startup isolation leak;
-its failure is retained. The post-connect fix passed its targeted regression
-and the fresh complete 99-row selection above. Build & Test 41886651747 at
-`e82145e3` completed successfully. Local checks cover 17 codec, 35 ordered
-Bukkit rendering, 18 bridge/carrier, five backend-authentication and one
-Velocity post-connect case.
+The parent independently accepted both artifact sets with the CLI and both
+flags. Each includes all 18 new render-family gates; all 17 recording/log-derived
+rows were recomputed. A real named diamond sword rendered once with its item
+ID/count hover, mentions produced one target notification (Velocity title and
+sound; Bungee title and action bar), and private delivery/echo each occurred
+once while a live same-channel outsider received none. Accepted decisions for
+packets 16, 18 and 20 match the action window and both peers' current epoch.
+Evidence: `.e2e-artifacts/render-effects-20261105/`.
+
+The first full-effects run 41933971257 failed Velocity's parser because compact
+Adventure text components can contain empty JSON property names, which Windows
+PowerShell 5.1 cannot deserialize. `0e6cfb5e` canonicalizes recorded component
+text without mutating receipts or dropping hover data. The new complete Velocity
+run above verifies the correction; the original failed recording remains intact.
+Build & Test 41935642013 at `0e6cfb5e` completed successfully.
+
+Earlier negotiated acceptance remains historical: Velocity 41886654188 at
+`e82145e3` passed 99/99 chat/title rows. Bungee 41883726555 recorded 93/93 game
+rows plus six independently accepted protocol rows, but its workflow remains
+FAIL due to a GUID result-directory lookup bug. That run also exposed the
+Velocity startup-isolation leak repaired at `e82145e3`. Those results are not
+relabeled as full-effects acceptance. Local protocol checks previously passed
+17 codec, 35 ordered Bukkit rendering, 18 bridge/carrier, five backend-authentication
+and one Velocity post-connect case.
 
 Only a matching configured upgraded pair receives the new guarantee; old pairs
 remain usable with coordination disabled. See [activation, compatibility and

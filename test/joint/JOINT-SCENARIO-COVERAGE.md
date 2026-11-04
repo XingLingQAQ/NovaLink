@@ -251,25 +251,33 @@ recordings. Evidence is under
 `.e2e-artifacts/review-20261104/{lite-remote,relay-remote}/`. The 2026-11-05 status
 refresh confirmed both workflows completed successfully; the earlier pending
 API states were not their final conclusions.
-The legacy profile still has the first-snapshot ownership limit. The user
-approved a coordinated upgraded-peer profile on 2026-11-05. It now has ordered
-production-path regressions and explicit `RequireRenderCoordination` game
-acceptance: Velocity workflow 41886654188 at `e82145e3` passed **99/99** rows,
-including six authenticated session/title/chat gates. The parent downloaded
-artifacts and independently reran the CLI and all 15 raw custom-effect checks.
-Build & Test 41886651747 also passed at that runtime.
+The legacy profile retains the first-snapshot ownership limit. The user
+approved upgraded-pair coordination on 2026-11-05. The complete render selection
+now uses `RequireRenderCoordination` plus `RequireRenderEffects`, with Relay
+`core,custom-effects` and a native PNX leg. It passed **117/117** gating rows on
+both proxies: Bungee job 126937663814 in run 41933971257 at `aff4c206`, and
+Velocity workflow 41935643798 at `0e6cfb5e`. The parent independently reran the
+CLI with both flags and recomputed all 17 raw effect rows per proxy.
 
-Bungee's unchanged runtime at `d89a80d8` recorded **93/93** original game gates
-in 41883726555. Independent recomputation with the corrected checker passed
-**6/6** protocol gates and **15/15** raw custom effects. That original workflow
-remains FAIL due to its GUID result-directory lookup bug; it was not relabelled
-or rerun merely to replace valid Bungee recordings. The same run's Velocity
-startup isolation failure was repaired and revalidated in the fresh run above.
+The 18 added gates require real `[item]`, mention and private-message actions,
+exactly-once receiver effects, live outsider controls, and authenticated
+packet-16/18/20 decisions in the current action/peer epoch. The item must retain
+its diamond-sword ID/count hover; the private-message outsider joins the same
+channel. Existing six-gate recordings remain valid for their original selection.
 
-Local checks passed 35 ordered Bukkit render, 17 codec, 18 bridge/carrier,
+Run 41933971257 remains an overall FAIL: Bungee's entire job passed, but
+Velocity's compact component JSON contained empty keys rejected by PowerShell
+5.1. The recorder normalization at `0e6cfb5e` preserved text and hover data and
+passed the fresh complete Velocity selection above. Build & Test 41935642013
+also passed. Evidence is in `.e2e-artifacts/render-effects-20261105/`.
+
+Earlier 41886654188 passed the 99-row chat/title selection; 41883726555 remains
+FAIL due to its old directory lookup and Velocity startup-isolation failures.
+These earlier results are retained, not counted as new full-effects passes.
+Local protocol checks passed 35 ordered Bukkit render, 17 codec, 18 bridge/carrier,
 five backend authentication and one Velocity post-connect case. Activation
-requires matching secrets on both upgraded peers. Legacy defaults are
-unchanged; [the protocol contract](../../NovaChat/Proxy/channel/RENDER_COORDINATION.md)
+requires matching secrets on both upgraded peers. Legacy defaults and bounded
+live-connection semantics remain unchanged; [the protocol contract](../../NovaChat/Proxy/channel/RENDER_COORDINATION.md)
 records queue, retention, fragmentation and restart boundaries.
 
 Local Bungee Lite run `20261102-205413` on 2026-11-02 passed the complete
