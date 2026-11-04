@@ -34,12 +34,28 @@ function Get-JointRenderCoordinationAssertions {
   $names = @{ target = 'E2ECustomTarget'; observer = 'E2ECustomWatch' }
   $channels = @{ target = 'global'; observer = 'local' }
   $customRun = "$RunId-r$RoundIndex-custom-effects"
-  $botDir = Join-Path $RoundDir "bots/custom-effects/$customRun"
+  $botRoot = Join-Path $RoundDir 'bots/custom-effects'
+  $matchesByRole = @{ target = @(); observer = @() }
+  if (Test-Path -LiteralPath $botRoot -PathType Container) {
+    foreach ($workDir in Get-ChildItem -LiteralPath $botRoot -Directory) {
+      foreach ($file in Get-ChildItem -LiteralPath $workDir.FullName -File -Filter '*.results.json') {
+        $recording = [IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json
+        foreach ($role in @('target', 'observer')) {
+          if ($recording.runId -ceq $customRun -and $recording.username -ceq $names[$role]) {
+            $matchesByRole[$role] += [PSCustomObject]@{ Bot = $recording; WorkDir = $workDir.FullName }
+          }
+        }
+      }
+    }
+  }
+  $pairOk = $matchesByRole.target.Count -eq 1 -and $matchesByRole.observer.Count -eq 1 -and
+    $matchesByRole.target[0].WorkDir -ceq $matchesByRole.observer[0].WorkDir
   foreach ($role in @('target', 'observer')) {
-    $bot = [IO.File]::ReadAllText((Join-Path $botDir "$role.results.json")) | ConvertFrom-Json
+    $bot = $null
+    if ($pairOk) { $bot = $matchesByRole[$role][0].Bot }
     $self = @($bot.received | Where-Object { $_.kind -ceq 'playerJoined' -and $_.data.player -ceq $names[$role] } |
       ForEach-Object { [string]$_.data.uuid } | Select-Object -Unique)
-    $complete = $bot.runId -ceq $customRun -and $bot.username -ceq $names[$role] -and $bot.kind -ceq 'java' -and
+    $complete = $pairOk -and $bot.runId -ceq $customRun -and $bot.username -ceq $names[$role] -and $bot.kind -ceq 'java' -and
       -not $bot.error -and $bot.timedOut -eq $false -and -not $bot.state.kicked -and $self.Count -eq 1 -and
       @($bot.received | Where-Object { $_.kind -ceq 'checkpoint' -and $_.key -ceq 'ce-completed' }).Count -eq 1
     $sessions = @()
@@ -52,7 +68,7 @@ function Get-JointRenderCoordinationAssertions {
     }
     $sessionOk = $complete -and $sessions.Count -gt 0
     New-JointAssertion -Id "round$RoundIndex/render-coordination/$role-session" -Token $names[$role] -Pass $sessionOk `
-      -Evidence "fresh named bot complete=$complete; common authenticated peer sessions=$($sessions.Count)" -Kind 'render-coordination'
+      -Evidence "unique same-workdir pair=$pairOk (target=$($matchesByRole.target.Count), observer=$($matchesByRole.observer.Count)); fresh named bot complete=$complete; common authenticated peer sessions=$($sessions.Count)" -Kind 'render-coordination'
     $playerDecisions = @()
     $latestSession = $null
     if ($complete) {

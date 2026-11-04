@@ -13,6 +13,7 @@ import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.player.PlayerChatEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
+import com.velocitypowered.api.event.player.ServerPostConnectEvent;
 import com.velocitypowered.api.proxy.Player;
 
 import java.util.UUID;
@@ -119,6 +120,13 @@ public class ChatListener {
         // queued off-thread, so this does not block the connect event. No-op in
         // relay mode.
         plugin.onLitePlayerConnect(event.getPlayer().getUniqueId());
+    }
+
+    @Subscribe
+    public void onServerPostConnect(ServerPostConnectEvent event) {
+        // ServerConnectedEvent precedes Velocity's current-server assignment.
+        event.getPlayer().getCurrentServer().ifPresent(connection -> core.recordServer(
+                new VelocityProxyPlayer(event.getPlayer()), connection.getServerInfo().getName()));
     }
 
     /**

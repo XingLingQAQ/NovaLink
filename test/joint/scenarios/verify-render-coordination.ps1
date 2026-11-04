@@ -3,7 +3,7 @@ param()
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'render-coordination.ps1')
 $root = Join-Path ([IO.Path]::GetTempPath()) ('novalink-render-contract-' + [guid]::NewGuid().ToString('N'))
-$bots = Join-Path $root 'bots/custom-effects/contract-r1-custom-effects'
+$bots = Join-Path $root ('bots/custom-effects/' + [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Force -Path $bots, (Join-Path $root 'bukkit'), (Join-Path $root 'velocity')
 $events = @()
 foreach ($role in @('target', 'observer')) {
@@ -32,6 +32,12 @@ function Write-RenderFixture($ProxyEvents, $ServerEvents) {
 function Read-RenderFixture {
   @(Get-JointRenderCoordinationAssertions -RoundDir $root -RunId 'contract' -ProxyPlatform 'velocity')
 }
+function Assert-RenderFixtureRejected([string]$Label) {
+  $rows = @(Read-RenderFixture)
+  if ($rows.Count -ne 6 -or @($rows | Where-Object { $_.pass -or $_.kind -cne 'render-coordination' }).Count) {
+    throw "$Label did not fail all six gates"
+  }
+}
 Write-RenderFixture $events $events
 $rows = @(Read-RenderFixture)
 $required = @(Get-JointRenderCoordinationAssertionIds -RoundIndex 1)
@@ -40,6 +46,37 @@ if ($required.Count -ne 6 -or @($required | Select-Object -Unique).Count -ne 6 -
     @($rows | Where-Object { -not $_.pass -or $_.kind -cne 'render-coordination' -or $_.id -cnotin $required }).Count) {
   throw 'Complete synthetic peer evidence or required gates rejected'
 }
+$targetPath = Join-Path $bots 'target.results.json'
+$observerPath = Join-Path $bots 'observer.results.json'
+$targetJson = [IO.File]::ReadAllText($targetPath)
+$observerJson = [IO.File]::ReadAllText($observerPath)
+$wrongRun = $targetJson | ConvertFrom-Json
+$wrongRun.runId = 'previous-r1-custom-effects'
+[IO.File]::WriteAllText($targetPath, ($wrongRun | ConvertTo-Json -Depth 7))
+Assert-RenderFixtureRejected 'Wrong runId'
+[IO.File]::WriteAllText($targetPath, $targetJson)
+$otherBots = Join-Path $root ('bots/custom-effects/' + [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $otherBots
+foreach ($role in @('target', 'observer')) {
+  $oldBot = [IO.File]::ReadAllText((Join-Path $bots "$role.results.json")) | ConvertFrom-Json
+  $oldBot.runId = 'previous-r1-custom-effects'
+  [IO.File]::WriteAllText((Join-Path $otherBots "$role.results.json"), ($oldBot | ConvertTo-Json -Depth 7))
+}
+if (@(Read-RenderFixture | Where-Object { -not $_.pass }).Count) { throw 'Unrelated run recordings confused metadata selection' }
+[IO.File]::WriteAllText((Join-Path $otherBots 'target.results.json'), $targetJson)
+Assert-RenderFixtureRejected 'Duplicate target match'
+[IO.File]::WriteAllText((Join-Path $otherBots 'observer.results.json'), $observerJson)
+Assert-RenderFixtureRejected 'Duplicate pair ambiguity'
+$wrongRunJson = $wrongRun | ConvertTo-Json -Depth 7
+[IO.File]::WriteAllText((Join-Path $otherBots 'target.results.json'), $wrongRunJson)
+$wrongObserver = $observerJson | ConvertFrom-Json
+$wrongObserver.runId = 'previous-r1-custom-effects'
+[IO.File]::WriteAllText((Join-Path $otherBots 'observer.results.json'), ($wrongObserver | ConvertTo-Json -Depth 7))
+$splitBots = Join-Path $root ('bots/custom-effects/' + [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $splitBots
+Move-Item -LiteralPath $observerPath -Destination $splitBots
+Assert-RenderFixtureRejected 'Split-workdir pair'
+Move-Item -LiteralPath (Join-Path $splitBots 'observer.results.json') -Destination $observerPath
 Write-RenderFixture @($events[0], $events[3], $events[1], $events[2], $events[4], $events[5]) $events
 if (@(Read-RenderFixture | Where-Object { -not $_.pass }).Count) { throw 'Interleaved player negotiations rejected' }
 $rotated = @($events)
@@ -100,4 +137,4 @@ $wrongChannel = @($events | ForEach-Object { @{} + $_ })
 foreach ($event in $wrongChannel | Where-Object event -eq decision) { $event.channelId = 'other' }
 Write-RenderFixture $wrongChannel $events
 if (@(Read-RenderFixture | Where-Object { $_.id -match '-(title|chat)$' -and $_.pass }).Count) { throw 'Wrong-channel decisions accepted' }
-Write-Host '[SYNTHETIC PASS] Six render-coordination gates; confirmed rotations accepted; stale, early, unconfirmed, duplicate, missing peer, claim and wrong-channel controls rejected. No game servers started.'
+Write-Host '[SYNTHETIC PASS] Six render-coordination gates; GUID workdirs and confirmed rotations accepted; wrong run, ambiguous or split-workdir pairs, stale, early, unconfirmed, duplicate, missing peer, claim and wrong-channel controls rejected. No game servers started.'
