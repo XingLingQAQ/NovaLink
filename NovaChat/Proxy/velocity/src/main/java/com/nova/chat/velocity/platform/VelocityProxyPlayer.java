@@ -1,6 +1,7 @@
 package com.nova.chat.velocity.platform;
 
 import com.nova.chat.proxy.platform.ProxyPlayer;
+import com.velocitypowered.api.permission.Tristate;
 import com.velocitypowered.api.proxy.Player;
 
 import java.util.UUID;
@@ -50,6 +51,9 @@ public final class VelocityProxyPlayer implements ProxyPlayer {
 
     @Override
     public boolean hasPermission(String permission) {
+        if ("novachat.use".equals(permission)) {
+            return player.getPermissionValue(permission) != Tristate.FALSE;
+        }
         return player.hasPermission(permission);
     }
 }
