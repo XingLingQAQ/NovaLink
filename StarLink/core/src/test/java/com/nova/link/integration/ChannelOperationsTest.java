@@ -239,6 +239,7 @@ class ChannelOperationsTest {
         IntegrationTestHelper.TestClient client = helper.createClient(PlatformType.BUKKIT);
         client.connect().get(5, TimeUnit.SECONDS);
         client.authenticate("InviteClient", "password").get(5, TimeUnit.SECONDS);
+        IntegrationTestHelper.TestClient recipient = connectRecipient("InviteRecipient");
 
         // INVITE only works on PRIVATE channels whose creator is channel-admin.
         // Spin one up so the invite has a valid scope + permission context.
@@ -252,6 +253,7 @@ class ChannelOperationsTest {
         assertThat(privateChannelId).isNotBlank();
 
         ChannelActionPacket inviteAction = client.channelAction(ChannelAction.INVITE, privateChannelId);
+        inviteAction.addExtra("targetId", recipient.getPlayerUuid().toString());
         client.sendPacket(inviteAction);
 
         ChannelActionResponsePacket response = client.waitForPacket(
@@ -263,6 +265,7 @@ class ChannelOperationsTest {
         // The invite code is what another player feeds into ACCEPT.
         assertThat(response.getExtra()).containsKey("code");
 
+        recipient.disconnect();
         client.disconnect();
     }
 
@@ -275,6 +278,7 @@ class ChannelOperationsTest {
         IntegrationTestHelper.TestClient client = helper.createClient(PlatformType.BUKKIT);
         client.connect().get(5, TimeUnit.SECONDS);
         client.authenticate("AcceptClient", "password").get(5, TimeUnit.SECONDS);
+        IntegrationTestHelper.TestClient recipient = connectRecipient("AcceptRecipient");
 
         // Spin up a private channel and mint an invitation code for it.
         ChannelActionPacket createAction = client.channelAction(ChannelAction.CREATE, "accept-base");
@@ -286,6 +290,7 @@ class ChannelOperationsTest {
         String privateChannelId = createResponse.getChannelId();
 
         ChannelActionPacket inviteAction = client.channelAction(ChannelAction.INVITE, privateChannelId);
+        inviteAction.addExtra("targetName", "AcceptRecipient");
         client.sendPacket(inviteAction);
         ChannelActionResponsePacket inviteResponse = client.waitForPacket(
             ChannelActionResponsePacket.class, 5, TimeUnit.SECONDS
@@ -294,19 +299,24 @@ class ChannelOperationsTest {
         String inviteCode = inviteResponse.getExtra("code");
         assertThat(inviteCode).isNotBlank();
 
-        // ACCEPT treats packet.channelId as the invite code. Use a *different*
-        // playerId than the channel owner so the flow models a real invitee.
-        ChannelActionPacket acceptAction = new ChannelActionPacket(ChannelAction.ACCEPT, inviteCode);
-        acceptAction.addExtra("playerId", java.util.UUID.randomUUID().toString());
-        client.sendPacket(acceptAction);
+        client.sendPacket(client.channelAction(ChannelAction.ACCEPT, inviteCode));
+        ChannelActionResponsePacket wrongRecipient = client.waitForPacket(
+            ChannelActionResponsePacket.class, 5, TimeUnit.SECONDS
+        );
+        assertThat(wrongRecipient.isSuccess()).isFalse();
+        assertThat(wrongRecipient.getErrorCode()).isEqualTo("NC-403");
 
-        ChannelActionResponsePacket response = client.waitForPacket(
+        recipient.sendPacket(recipient.channelAction(ChannelAction.ACCEPT, inviteCode));
+
+        ChannelActionResponsePacket response = recipient.waitForPacket(
             ChannelActionResponsePacket.class, 5, TimeUnit.SECONDS
         );
 
         assertThat(response.isSuccess()).isTrue();
         assertThat(response.getAction()).isEqualTo(ChannelAction.ACCEPT);
+        assertThat(response.getChannelId()).isEqualTo(privateChannelId);
 
+        recipient.disconnect();
         client.disconnect();
     }
 
@@ -339,5 +349,20 @@ class ChannelOperationsTest {
         assertThat(response.getExtra("displayName")).isEqualTo("Data Channel");
 
         client.disconnect();
+    }
+
+    private IntegrationTestHelper.TestClient connectRecipient(String username) throws Exception {
+        helper.registerClient(username, "password");
+        IntegrationTestHelper.TestClient recipient = helper.createClient(PlatformType.BUKKIT);
+        recipient.connect().get(5, TimeUnit.SECONDS);
+        recipient.authenticate(username, "password").get(5, TimeUnit.SECONDS);
+        ChannelActionPacket join = recipient.channelAction(ChannelAction.JOIN, "global");
+        join.addExtra("playerName", username);
+        recipient.sendPacket(join);
+        ChannelActionResponsePacket joined = recipient.waitForPacket(
+            ChannelActionResponsePacket.class, 5, TimeUnit.SECONDS
+        );
+        assertThat(joined.isSuccess()).isTrue();
+        return recipient;
     }
 }

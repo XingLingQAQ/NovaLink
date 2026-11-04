@@ -32,10 +32,11 @@ class ConfigHistoryMigrationTest {
     @Test
     void migrationCreatesConfigHistoryTable() throws Exception {
         try (HikariDataSource dataSource = sqliteDataSource(tempDir.resolve("config-history.db"))) {
-            DatabaseMigration migration = new DatabaseMigration(dataSource, new SQLiteDialect());
+            SQLiteDialect dialect = new SQLiteDialect();
+            DatabaseMigration migration = new DatabaseMigration(dataSource, dialect);
             migration.migrate();
 
-            assertThat(migration.getVersion()).isEqualTo(15);
+            assertThat(migration.getVersion()).isEqualTo(dialect.getCurrentVersion());
             assertThat(tableExists(dataSource, "config_history")).isTrue();
             assertThat(indexExists(dataSource, "idx_config_history_created_at")).isTrue();
             // Column shape sanity-check: the snapshot payload column is TEXT and
@@ -53,10 +54,11 @@ class ConfigHistoryMigrationTest {
     @Test
     void rerunIsIdempotent() throws Exception {
         try (HikariDataSource dataSource = sqliteDataSource(tempDir.resolve("config-history-rerun.db"))) {
-            DatabaseMigration migration = new DatabaseMigration(dataSource, new SQLiteDialect());
+            SQLiteDialect dialect = new SQLiteDialect();
+            DatabaseMigration migration = new DatabaseMigration(dataSource, dialect);
             migration.migrate();
             int firstCompleted = completedMigrationCount(dataSource);
-            assertThat(firstCompleted).isEqualTo(15);
+            assertThat(firstCompleted).isEqualTo(dialect.getCurrentVersion());
 
             // A second migrate() must not apply any new versions.
             migration.migrate();
