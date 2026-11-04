@@ -231,6 +231,30 @@ this change's scope).
 
 ## Recorded results and coverage limits
 
+Local Velocity Lite run `20261104-230343` on 2026-11-04 passed all **13/13**
+native completion controls with actual `chat_suggestions` ADD/REMOVE packets.
+The full `core,completion` selection remains **FAIL**, **58/67** gating assertions:
+the reconnect probe observed `global` instead of its previously selected `local`.
+The Velocity package was freshly built; Bukkit used an older cached package.
+Evidence is under the task's temporary `novalink-velocity-completion-20261104/`.
+This accepts the completion subcase, not a complete current-source topology.
+The permission-default repair at `9dbdcbb` passed five targeted recovery tests.
+Remote Lite run 41861024831 and native-PNX Relay run 41861042028 at `dbfce105`
+select both proxies and all groups valid for each mode. All four downloaded
+game summaries passed: Lite Velocity 189/189, Lite Bungee 188/188, and Relay
+262/262 per proxy. Lite selected
+`core,business,lite-moderation,social-contract,completion`; Relay selected
+`core,business,recovery,proxy-switch,channel-lifecycle,social-contract,custom-effects,completion`
+with native PNX and a second Bukkit server. The parent independently ran
+`assert-joint-ci.ps1` on all four artifacts and checked native completion
+recordings. Evidence is under
+`.e2e-artifacts/review-20261104/{lite-remote,relay-remote}/`. The run-status API
+still reported Lite `in_progress` and Relay `queued` despite their completed
+game artifacts; it returned no final workflow conclusion.
+Even a passing warmed-up title group would not close the separate first-snapshot
+ownership defect. Its three ordered reproductions remain failures; the current
+carrier-session fix is not a render ownership protocol.
+
 Local Bungee Lite run `20261102-205413` on 2026-11-02 passed the complete
 `core,completion` selection: **81/81** gating assertions, all 31 registry IDs,
 non-default Java reconnect and all 13 native completion controls. Evidence is
@@ -278,8 +302,9 @@ The current driver is `player-command` on both proxies. Bungee now installs
 the matching pinned upstream `cmd_server` module. Its three command receipt
 IDs are required in addition to destination probes and link isolation.
 
-The local records above cover these follow-ups on Bungee's pinned protocol;
-they are not a passing combined remote matrix or new Velocity game evidence.
+The local Bungee records above cover its pinned protocol; the separate Velocity
+completion record covers that subcase only. Fresh complete remote Lite and
+native-PNX Relay selections are recorded separately above.
 Fabric ships its runtime dependencies in the standard production jar, with the
 duplicate entrypoint removed. The E2E task copies that unchanged jar; the older
 external Fabric game evidence used a patched test package.
@@ -289,7 +314,13 @@ trusted CA 3/3 and unrelated CA 4/4 passed with real Bukkit/Fabric clients.
 Evidence is in the task's temporary `nl-env-tls-final-20261102` directory,
 runs `20261102-202056-42b240ad-tls-trusted` and
 `20261102-203435-4fcc604b-tls-untrusted`. This replaces the package-validation
-gap above; it does not extend the older SQL game results to schema 16 or Redis.
+gap above. Environment workflow 41852328574 at `93fd79f7` subsequently passed
+the schema-16 Oracle MySQL and PostgreSQL game selections, 16/16 required IDs
+each. That workflow remains FAIL because Redis failed backend startup before
+its game controls. After the campaign persistence fix, Redis-only workflow
+41855733387 at `19b045b8` passed all 14 required IDs, including five real-game
+checks across backend restart. See [the storage record](../environment/STORAGE.md#ci-run-at-schema-16-2026-11-04)
+for its retained evidence and TLS boundaries.
 
 For joint runs retain `.e2e-artifacts/joint/<runId>/` (or the explicit
 `JointRoot`), `joint-summary.json`, the selected group list, assertion IDs,

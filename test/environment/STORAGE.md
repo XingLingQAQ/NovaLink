@@ -40,9 +40,9 @@ command are retained in the
 [source manifest](../../.e2e-artifacts/environment-native/8c7ef98ec0224683bba9d5e7a94cd878/public/oracle-source-manifest.json).
 
 These native runs do not exercise TLS or actual Bukkit/Fabric game traffic.
-The SQL game-path evidence below uses the current schema 16. Redis game-path
-acceptance remains pending. Redis reconnect evidence covers new provider pools against the same live server;
-it does not establish disk recovery after a Redis restart or crash.
+The later CI game paths are recorded below. Redis reconnect evidence covers new
+provider pools against the same live server; it does not establish disk recovery
+after a Redis restart or crash.
 
 ## Native Windows run
 
@@ -140,6 +140,30 @@ loopback with a password. Game bots connected to the game servers on loopback;
 this is not a TLS assertion for the Minecraft connections. Only the NovaLink
 backend restarted; database servers stayed running, and Redis was configured
 without disk persistence.
+
+### Redis-only rerun after campaign persistence fix (2026-11-04)
+
+[Run 41855733387](https://github.com/XingLingQAQ/NovaLink/actions/runs/41855733387)
+checked out `19b045b81a0a1effcfd4b57f30f6a947cca63c41` and selected only
+`redis`. Redis 7.4.12 passed **14/14 required IDs**: nine
+`real-database-provider` assertions, including campaign persistence, and five
+`real-game` assertions. This rerun follows, rather than replaces, the Redis
+startup failure recorded above.
+
+The public artifact `environment-game-evidence-41855733387-1` is retained for
+seven days; its downloaded contents are under
+`.e2e-artifacts/environment-ci/41855733387/20261104-151849-f69f51e4-redis/public/`.
+The bot recordings show both directions before and after backend restart; both
+clients authenticated in each backend log. The two row JSON files match on
+`id`, `channelId`, `senderId`, `senderName`, `clientId`, `content` and
+`timestamp` (message ID 1).
+
+The Bukkit/Fabric-to-backend connections used TLS with the trusted CA, and the
+history client used HTTPS with CA and hostname verification. Redis used
+password-authenticated plaintext on loopback; the database server stayed
+running with disk persistence disabled. This establishes backend restart and
+live-Redis retention, not Redis server restart or disk recovery. Minecraft bot
+connections to the game servers are not part of the TLS evidence.
 
 `.github/workflows/e2e-environment.yml` is manual only. Its `cases` input accepts
 `tls-trusted,tls-untrusted,mysql,postgresql,redis` (all five by default).

@@ -1,6 +1,6 @@
 # NovaChat Real-Server E2E Feature Coverage Manifest
 
-**Integration review**: 2026-11-02. The selected joint and environment cases have real passing evidence.
+**Integration review**: 2026-11-05. Selected joint and environment cases have real passing evidence; failed combined runs remain failures.
 **Historical evidence date**: 2026-08-08. The original seven-platform matrix
 and `.e2e/` evidence below are retained as a dated snapshot. `TESTED` there
 means the old script exercised a path, sometimes only its refusal response;
@@ -72,9 +72,58 @@ Run `20261102-210038` separately recorded all required `business` (8/8),
 `completion` (13/13), `social-contract` (23/23), `channel-lifecycle` (20/20)
 and real player-command `proxy-switch` (26/26) IDs as passing. That combined
 run remains **FAIL** because of its title and colored-banner failures; the
-later targeted passes do not rewrite it. A fresh combined remote workflow,
-Velocity's new completion game path, and schema-16 SQL/Redis game/TLS cases
-remain unverified. Push/remote CI is currently blocked by the GitHub connection.
+later targeted passes do not rewrite it. GitHub push and manual workflow dispatch
+were restored on 2026-11-04. Combined remote joint runs 41861024831 (Lite) and
+41861042028 (native-PNX Relay) were dispatched at `dbfce105`. Each selects both
+proxies and all groups valid for its mode. The four game summaries passed
+**901/901** gating assertions: Lite Velocity **189**, Lite Bungee **188**, and
+native-PNX Relay **262 per proxy**. The parent independently accepted all four
+downloaded summaries with `assert-joint-ci.ps1` and the exact requested groups.
+Lite selected `core,business,lite-moderation,social-contract,completion`; Relay
+selected `core,business,recovery,proxy-switch,channel-lifecycle,social-contract,custom-effects,completion`
+with a second Bukkit server. Evidence is under
+`.e2e-artifacts/review-20261104/{lite-remote,relay-remote}/`.
+The run-status API still reported Lite `in_progress` and Relay `queued` despite
+the completed game artifacts; no final workflow conclusion was returned.
+Build & Test 41861019274 also recorded its all-platform build/test step as
+successful while its overall run status remained `in_progress`.
+
+The cold-start ownership window remains a known product defect. Three ordered
+adapter-level regressions, with simulated proxy delivery, reproduce duplicate
+initial chat/title rendering and a stale proxy snapshot suppressing a reconnected
+direct player. A carrier-session fix does
+not close this window. Reproduction code and failures are retained under
+`.e2e-artifacts/review-20261104/unresolved-ownership-regressions.patch` and
+`.gradle-ownership-bukkit/cold-start-failures.xml`. A coordinated render protocol
+is a separate follow-up; no such protocol is implemented in this revision.
+
+Local Velocity Lite run `20261104-230343` recorded all **13/13** native completion
+controls passing, with real `chat_suggestions` ADD/REMOVE traffic. The complete
+`core,completion` selection remains **FAIL**, **58/67** gating assertions:
+reconnect selected `global` instead of the previously selected `local`.
+Evidence is under the task's temporary `novalink-velocity-completion-20261104/`.
+The run used a newly built Velocity package and an older cached Bukkit package;
+it does not accept the complete current topology.
+The adapter repair at `9dbdcbb` aligns undefined `novachat.use` with the basic
+command default, while preserving explicit denial. Its five targeted recovery
+tests passed. The current remote Lite selection above also passed its complete
+game recovery and completion controls; the earlier local failure is retained.
+
+Environment run [41852328574](https://github.com/XingLingQAQ/NovaLink/actions/runs/41852328574)
+at `93fd79f7` recorded schema-16 Oracle MySQL and PostgreSQL game paths passing
+**16/16 each**, including row identity and bidirectional delivery across a backend
+restart. Redis passed its eight provider controls but failed backend startup
+because campaign persistence was unsupported; its five game controls did not run.
+The overall workflow remains **FAIL**. After the Redis provider repair at
+`19b045b8`, the Redis-only rerun
+[41855733387](https://github.com/XingLingQAQ/NovaLink/actions/runs/41855733387)
+passed **14/14** required IDs: nine provider controls and five actual game
+controls, including the same stored row and bidirectional delivery across a
+backend restart. Build & Test
+[41855646339](https://github.com/XingLingQAQ/NovaLink/actions/runs/41855646339)
+also passed on that revision, including all-platform builds/tests.
+See [the storage record](environment/STORAGE.md#ci-run-at-schema-16-2026-11-04)
+for artifact paths and the exact TLS boundaries.
 
 The external game runs below predate these changes. Their results do not
 extend automatically to new packages or scenario selections.
@@ -107,8 +156,10 @@ validate schema 16 or the new Redis game case.
 Local native database acceptance totals **41/41 passing assertions**:
 Oracle MySQL 11 + MariaDB 11 + PostgreSQL 11 + Redis 8. These runs use real
 database servers and production providers. They do not exercise TLS or actual
-game traffic. Schema 16 and the new Redis game case still need current TLS
-and game-path acceptance; the historical game runs above do not cover them.
+game traffic. The new remote SQL game results above cover schema 16 with
+plugin/backend TLS. The separate Redis game rerun also used plugin/backend
+TLS; its database connection was authenticated plaintext on loopback and its
+server did not restart.
 Per-engine artifacts and validation boundaries are listed in
 [the storage probe record](environment/STORAGE.md#recorded-native-results-2026-11-02).
 
