@@ -118,6 +118,7 @@ param(
   [ValidateSet("relay", "lite")]
   [string]$ProxyMode = "relay",
   [switch]$RequireRenderCoordination,
+  [switch]$RequireRenderEffects,
 
   # Build the platform plugin/mod jars with Gradle before starting servers.
   # Off is useful when re-running against jars built moments ago.
@@ -183,11 +184,13 @@ $jointBotScript = Join-Path $jointBinDir "joint-bot.js"
 . (Join-Path $PSScriptRoot "scenarios/custom-effects.ps1")
 . (Join-Path $PSScriptRoot "scenarios/completion.ps1")
 . (Join-Path $PSScriptRoot "scenarios/render-coordination.ps1")
+. (Join-Path $PSScriptRoot "scenarios/render-effects.ps1")
 . (Join-Path $PSScriptRoot "fixtures/bungee-switch/installer.ps1")
 . (Join-Path $PSScriptRoot "fixtures/custom-effects/installer.ps1")
 . (Join-Path $PSScriptRoot "fixtures/completion/fixture.ps1")
 try {
   $script:SelectedScenarioGroups = @(Resolve-JointScenarioGroups -Value $ScenarioGroups)
+  if ($RequireRenderEffects -and -not $RequireRenderCoordination) { throw 'RequireRenderEffects requires RequireRenderCoordination' }
   if ($RequireRenderCoordination -and ($ProxyMode -ne 'relay' -or 'custom-effects' -notin $script:SelectedScenarioGroups)) {
     throw 'RequireRenderCoordination requires relay mode and the custom-effects group'
   }
@@ -4278,6 +4281,9 @@ function Invoke-Round($round, [string]$roundDir) {
     if ($RequireRenderCoordination) {
       $assertions += @(Get-JointRenderCoordinationAssertions -RoundDir $roundDir -RunId $script:RunId -ProxyPlatform $round.Proxy -RoundIndex $round.Index)
     }
+    if ($RequireRenderEffects) {
+      $assertions += @(Get-JointRenderEffectsAssertions -RoundDir $roundDir -RunId $script:RunId -ProxyPlatform $round.Proxy -RoundIndex $round.Index)
+    }
 
     # `diagnostic` observations are recorded, never gated -- same rule as the
     # lite round. Without the kind filter an intentionally-failed diagnostic
@@ -4469,6 +4475,12 @@ function Invoke-JointOptionalScenarios {
       -JavaPort $Ports.Java -ProxyPort $ProxyPort -McVersion $McVersion `
       -GrantSenderPermissions $callbacks.GrantSenderPermissions -AuthenticateSender $callbacks.AuthenticateSender `
       -ReleaseSender $callbacks.ReleaseSender
+  }
+  if ($RequireRenderEffects) {
+    $prepare = New-RenderEffectsRconCallback -RconPort $Ports.JavaRcon -RconPassword 'joint-e2e-rcon'
+    Invoke-JointRenderEffectsScenarios -RoundIndex $Round.Index `
+      -RunId "$($script:RunId)-r$($Round.Index)-render-effects" -WorkDir (Join-Path $RoundDir 'bots/render-effects') `
+      -JavaPort $Ports.Java -ProxyPort $ProxyPort -McVersion $McVersion -ProxyPlatform $Round.Proxy -PrepareSender $prepare
   }
   if ('channel-lifecycle' -in $script:SelectedScenarioGroups) {
     $backendCommand = {
@@ -4954,6 +4966,7 @@ $summary = [PSCustomObject]@{
   scenarioGroups = @($script:SelectedScenarioGroups)
   secondaryJava = $(if ($SecondaryJavaPlatform -eq 'bukkit') { 'bukkit2' } else { $null })
   renderCoordinationRequired = [bool]$RequireRenderCoordination
+  renderEffectsRequired = [bool]$RequireRenderEffects
   rounds = $roundResults
   overallPass = $overallPass
 }

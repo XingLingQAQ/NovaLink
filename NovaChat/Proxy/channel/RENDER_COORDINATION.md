@@ -134,7 +134,22 @@ in proxy/Bukkit logs, plus current-session title and chat decisions. Existing
 bot recordings still require exactly-once titles, exact timings, intended
 delivery and non-target exclusion.
 
-Debug logs expose `NOVA_RENDER_EVENT` JSON records with public generation and
-request IDs, never shared secrets or message contents. Logs prove that the new
+Add `-RequireRenderEffects` to both commands (or set the workflow's
+`require_render_effects=true` alongside `require_render_coordination=true`)
+to require the remaining render families. Three additional real Java players
+exercise a named held-item `[item]` showcase, a targeted mention and a private
+message. The receiver recordings must show exactly one item with its hover
+details, the proxy-specific notification and the private delivery/echo;
+live outsiders must see none. Corresponding authenticated decisions for packet
+IDs 16, 18 and 20 are required. The private-message outsider joins the same
+channel, so channel isolation alone cannot satisfy the privacy check.
+
+The extra selection has its own `renderEffectsRequired` summary field. Existing
+`RequireRenderCoordination` recordings keep their original six-gate contract.
+
+Debug logs expose `NOVA_RENDER_EVENT` JSON records with public generation,
+request IDs and epoch-millisecond `atMs`, never shared secrets or message
+contents. The full-effects checker uses the runner's shared host clock to bind
+each decision to its send/receive phase and both peers' current epoch. Logs prove that the new
 path was active; deterministic codec/coordinator/renderer integration tests
 separately exercise both cold-start arrival orders and stale-session rejection.

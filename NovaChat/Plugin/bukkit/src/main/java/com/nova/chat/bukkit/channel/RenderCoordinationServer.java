@@ -143,6 +143,7 @@ public final class RenderCoordinationServer {
                 session.confirmed = true;
                 session.ownsRendering = true;
                 plugin.debug("NOVA_RENDER_EVENT " + JSON.toJson(Map.of("event", "negotiated", "version", 1,
+                        "atMs", System.currentTimeMillis(),
                         "server", plugin.getNovaChatConfig().getPluginMessagingServerId(),
                         "playerId", frame.playerId(), "session", session.proxyNonce)));
             }

@@ -6,6 +6,7 @@ param(
   [ValidateSet('nukkit', 'pnx')][string]$BedrockPlatform = 'nukkit',
   [string]$ScenarioGroups = 'core',
   [switch]$RequireRenderCoordination,
+  [switch]$RequireRenderEffects,
   [ValidateSet('none', 'bukkit')][string]$SecondaryJavaPlatform = 'none'
 )
 
@@ -24,6 +25,13 @@ if ($files.Count -ne 1) { throw "Expected one joint summary, found $($files.Coun
 $summary = [System.IO.File]::ReadAllText($files[0].FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 if ($summary.PSObject.Properties['renderCoordinationRequired'] -and $summary.renderCoordinationRequired -isnot [bool]) { throw 'renderCoordinationRequired must be boolean' }
 if ([bool]$summary.renderCoordinationRequired -ne [bool]$RequireRenderCoordination) { throw 'Render coordination selection mismatch' }
+if ($summary.PSObject.Properties['renderEffectsRequired'] -and $summary.renderEffectsRequired -isnot [bool]) { throw 'renderEffectsRequired must be boolean' }
+if ([bool]$summary.renderEffectsRequired -ne [bool]$RequireRenderEffects) { throw 'Render effects selection mismatch' }
+if ($RequireRenderEffects) {
+  if (-not $RequireRenderCoordination) { throw 'Render effects requires render coordination' }
+  . (Join-Path $PSScriptRoot 'scenarios/render-effects.ps1')
+  $required += @(Get-JointRenderEffectsAssertionIds -RoundIndex 1)
+}
 if ($RequireRenderCoordination) {
   if ($ProxyMode -ne 'relay' -or 'custom-effects' -notin $requestedGroups) { throw 'Render coordination requires relay custom-effects' }
   . (Join-Path $PSScriptRoot 'scenarios/render-coordination.ps1')
@@ -85,6 +93,14 @@ if ($RequireRenderCoordination) {
   $peerEvidence = @(Get-JointRenderCoordinationAssertions -RoundDir $roundDir -RunId $summary.runId -ProxyPlatform $ProxyPlatform)
   if ($peerEvidence.Count -ne 6 -or @($peerEvidence | Where-Object { -not $_.pass }).Count) {
     throw 'Raw proxy/Bukkit/bot evidence does not establish current render coordination'
+  }
+}
+if ($RequireRenderEffects) {
+  $effectsEvidence = @(Get-JointRenderEffectsAssertions -RoundDir $roundDir -RunId $summary.runId -ProxyPlatform $ProxyPlatform)
+  $expectedEffects = @(Get-JointRenderEffectsAssertionIds -RoundIndex 1 | Where-Object { $_ -cnotmatch '/drive$' })
+  if ($effectsEvidence.Count -ne $expectedEffects.Count -or @($effectsEvidence.id | Select-Object -Unique).Count -ne $expectedEffects.Count -or
+      @($effectsEvidence | Where-Object { -not $_.pass -or $_.id -cnotin $expectedEffects }).Count) {
+    throw 'Raw bot and peer evidence does not establish item, mention and private-message coordination'
   }
 }
 $failed = @($round.assertions | Where-Object { $_.kind -ne 'diagnostic' -and ($_.pass -isnot [bool] -or -not $_.pass) })

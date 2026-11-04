@@ -24,6 +24,26 @@ public final class JointCustomEffectsBridge extends JavaPlugin {
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (!(sender instanceof ConsoleCommandSender) && !(sender instanceof RemoteConsoleCommandSender)) return true;
         try {
+            if (args.length == 3 && args[0].equals("equip")) {
+                if (!args[1].equals("E2ERenderSource") || !args[2].matches("[A-Za-z0-9_.-]{1,160}")) {
+                    throw new IllegalArgumentException();
+                }
+                Player source = getServer().getPlayerExact(args[1]);
+                if (source == null) throw new IllegalStateException();
+                PermissionAttachment grant = grants.computeIfAbsent(source.getUniqueId(), id -> source.addAttachment(this));
+                for (String node : new String[]{"novachat.use", "novachat.feature.item", "novachat.channel.global", "novachat.channel.local"}) {
+                    grant.setPermission(node, true);
+                }
+                org.bukkit.inventory.ItemStack item = new org.bukkit.inventory.ItemStack(org.bukkit.Material.DIAMOND_SWORD);
+                org.bukkit.inventory.meta.ItemMeta meta = item.getItemMeta();
+                meta.setDisplayName(args[2]);
+                item.setItemMeta(meta);
+                source.getInventory().setHeldItemSlot(0);
+                source.getInventory().setItemInMainHand(item);
+                source.updateInventory();
+                sender.sendMessage("JointCustomEffectsBridge queued equip");
+                return true;
+            }
             if (args.length < 2 || !args[1].equals("E2EJointJava")) throw new IllegalArgumentException();
             Player player = getServer().getPlayerExact(args[1]);
             if (player == null) throw new IllegalStateException();

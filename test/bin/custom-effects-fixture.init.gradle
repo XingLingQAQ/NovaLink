@@ -20,7 +20,7 @@ gradle.projectsLoaded {
         }
         project.tasks.register('customEffectsFixtureJar', Jar) {
             group = 'e2e'
-            description = 'Builds the joint driver for production AUTH and TITLE packet APIs.'
+            description = 'Builds the joint AUTH/TITLE driver and held-item setup fixture.'
             dependsOn compileFixture
             archiveFileName.set('joint-custom-effects-fixture.jar')
             destinationDirectory = project.layout.buildDirectory.dir('libs')

@@ -333,6 +333,7 @@ public final class ProxyRenderCoordinator {
     private void event(String kind, Session session, Pending pending, String owner) {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("event", kind);
+        data.put("atMs", System.currentTimeMillis());
         data.put("version", 1);
         data.put("server", session.server);
         data.put("playerId", session.player);

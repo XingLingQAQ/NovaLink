@@ -719,6 +719,14 @@ function createJavaTransport(onChatLine) {
   // Note: mineflayer does NOT emit a `systemChat` event on the bot. The old
   // `bot.on('systemChat', ...)` handler here never fired, so its
   // `record('systemChat', ...)` rows never existed in any results file.
+  if (plan.captureMessageComponents === true) {
+    bot.on('message', (message, position) => {
+      recordEffect('messageComponent', chatText(message), {
+        component: message.json,
+        position: position || 'unknown',
+      });
+    });
+  }
   bot.on('messagestr', (msg, position) => {
     const pos = position || 'unknown';
     const txt = chatText(msg);
