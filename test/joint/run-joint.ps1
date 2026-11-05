@@ -1937,6 +1937,9 @@ function Start-Bot([string]$role, [string]$planPath, [string]$workDir, [string]$
     -WorkingDirectory $workDir -StdoutPath $stdoutPath -StderrPath $stderrPath
   $null = $proc.Handle
   Track-Pid $proc.Id "bot-$role"
+  if (-not $script:JointBotProcesses) { $script:JointBotProcesses = @{} }
+  $plan = [IO.File]::ReadAllText($planPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+  $script:JointBotProcesses[[string]$proc.Id] = @{ Plan = $planPath; RunId = $plan.runId; Role = $plan.role }
   Log "  bot $role pid=$($proc.Id)"
   return $proc
 }
@@ -1951,6 +1954,12 @@ function Wait-Bots([object[]]$bots, [int]$timeoutSec) {
     } else {
       $b.Process.WaitForExit()
       Log "  bot $($b.Role) exited (code=$($b.Process.ExitCode))"
+      $entry = $script:JointBotProcesses[[string]$b.Process.Id]
+      if ($entry) {
+        $receipt = @{ runId = $entry.RunId; role = $entry.Role; processId = $b.Process.Id; exitCode = $b.Process.ExitCode }
+        $path = Join-Path (Split-Path -Parent $entry.Plan) (([IO.Path]::GetFileNameWithoutExtension($entry.Plan)) + '.process.json')
+        [IO.File]::WriteAllText($path, ($receipt | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding $false))
+      }
     }
   }
 }
@@ -2389,8 +2398,12 @@ function Get-BackendMessagesForToken([string]$token, [string]$jwt) {
 # receiver never recorded the line.
 function Assert-RelayAttributionAndDelivery([string]$assertionId, [string]$token,
                                             [string]$expectedClientId, [string]$jwt,
-                                            $receiverResult) {
+                                            $receiverResult, [string]$evidencePath = '') {
   $match = @(Get-BackendMessagesForToken $token $jwt)
+  if ($evidencePath) {
+    $ledger = @{ runId = $script:RunId; token = $token; messages = @($match | Select-Object clientId, content) }
+    [IO.File]::WriteAllText($evidencePath, ($ledger | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding $false))
+  }
   $ids = @($match | ForEach-Object { $_.clientId } | Sort-Object -Unique)
   $attributed = ($match.Count -gt 0) -and ($ids.Count -eq 1) -and ($ids[0] -eq $expectedClientId)
 
@@ -3724,7 +3737,7 @@ function Invoke-Round($round, [string]$roundDir) {
     $backendState = [PSCustomObject]@{
       Process = $bk; Config = $backendConfig; WorkDir = $backendWork
       Stdout = (Join-Path $backendDir 'stdout.log'); Stderr = (Join-Path $backendDir 'stderr.log')
-      Generation = 0; AdminPassword = $superAdminPassword; Restarts = @()
+      Generation = 0; AdminPassword = $superAdminPassword; Restarts = @(); StoppedProcessId = 0
       Identities = @($backendClients | ForEach-Object { $_.Username } | Sort-Object -Unique)
     }
 
@@ -4252,7 +4265,7 @@ function Invoke-Round($round, [string]$roundDir) {
         $chatSourceServer = if ($round.Java) { $round.Java } elseif ($round.Mod) { $round.Mod } else { $null }
         if ($chatSourceServer) {
           $assertions += Assert-RelayAttributionAndDelivery "round$($round.Index)/relay-chat-attribution-and-delivery" `
-            $chatToken $relayIdentities[$chatSourceServer] $script:RelayPanelJwt $bedRes
+            $chatToken $relayIdentities[$chatSourceServer] $script:RelayPanelJwt $bedRes (Join-Path $roundDir 'backend/relay-attribution.results.json')
           # Proxy-log corroboration (diagnostic: relay debug is off in relay,
           # so the decoded-packet line that prints clientId is not emitted).
           $assertions += Assert-RelayAttribution "round$($round.Index)/relay-chat-attribution-proxy-log" `
@@ -4443,8 +4456,19 @@ function Invoke-JointOptionalScenarios {
       -Port $ProxyPort -AdminCommand $adminCommand
   }
   if ('lite-moderation' -in $script:SelectedScenarioGroups) {
+    $liteRequests = New-Object System.Collections.Generic.List[object]
+    $liteAdminCommand = {
+      param([string]$Command)
+      $null = & $proxyConsole $Command
+      $liteRequests.Add([PSCustomObject]@{
+        runId = "$($script:RunId)-r$($Round.Index)-lite-moderation"; command = $Command
+        processId = $ServerProcesses[$Round.Proxy].Id; writtenAt = (Get-Date).ToUniversalTime().ToString('o')
+      })
+      [IO.File]::WriteAllText((Join-Path $RoundDir 'bots/lite-moderation/admin-requests.json'),
+        ($liteRequests.ToArray() | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding $false))
+    }
     Invoke-JointLiteModerationScenarios -Round $Round -RoundDir $RoundDir -McVersion $McVersion `
-      -Mode $ProxyMode -Port $ProxyPort -AdminCommand $proxyConsole
+      -Mode $ProxyMode -Port $ProxyPort -AdminCommand $liteAdminCommand
   }
   if ('completion' -in $script:SelectedScenarioGroups) {
     $completionProxy = $ServerProcesses[$Round.Proxy]
@@ -4536,6 +4560,7 @@ function Invoke-JointOptionalScenarios {
         Start-Sleep -Milliseconds 200
       }
       Log "    backend stopped: pid=$oldId; both ports released"
+      $BackendState.StoppedProcessId = $oldId
       @{ Stopped = $true; ProcessId = $oldId }
     }
     $startBackend = {
@@ -4553,6 +4578,8 @@ function Invoke-JointOptionalScenarios {
       $BackendState.Restarts += [PSCustomObject]@{
         processId = $newBackend.Id; stdout = $BackendState.Stdout; stderr = $BackendState.Stderr; jwtRefreshed = $true
       }
+      $restartReceipt = @{ runId = "$($script:RunId)-r$($Round.Index)-recovery"; stoppedProcessId = $BackendState.StoppedProcessId; startedProcessId = $newBackend.Id }
+      [IO.File]::WriteAllText((Join-Path $RoundDir 'backend/restart-process.results.json'), ($restartReceipt | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
       Log "    backend restarted: pid=$($newBackend.Id); fresh stdout=$($BackendState.Stdout); REST login refreshed"
       @{ Ready = $true; ProcessId = $newBackend.Id }
     }

@@ -189,9 +189,9 @@ For existing dedicated services, omit `-ProvisionDatabases` and set:
 Each SQL database must be empty before the probe runs. Redis must be a dedicated
 server: the game backend currently selects database 0. No `FLUSHDB` is used.
 
-`cases.psd1` requires the provider assertion IDs plus five actual game assertions
-per storage engine: `GAME-DELIVERY`, `STORED`, `RESTARTED`, `SAME-ROW` and
-`POST-RESTART-GAME`. SQL provider IDs include `V15-FIXTURE`, `SCHEMA16`,
+`cases.psd1` requires the provider assertion IDs plus six actual game assertions
+per storage engine: `GAME-DELIVERY`, `STORED`, `RESTARTED`, `SAME-ROW`,
+`POST-RESTART-GAME` and `POST-RESTART-STORED`. SQL provider IDs include `V15-FIXTURE`, `SCHEMA16`,
 `OLD-CHECKSUMS`, `OLD-DATA` and `LEGACY-LOAD`; Redis includes `LEGACY-DTO` and
 `TARGET-DTO`. All require `TARGET-PERSISTED`, `WRONG-TARGET`, `RECONNECT`,
 `ATOMIC-CLAIM`, `UNBOUND-COMPAT` and `CLAIM-PERSISTED`, with the engine prefix
@@ -203,6 +203,34 @@ Missing evidence fails the case. Provider assertions retain
 `verification=real-database-provider`; actual game assertions retain
 `verification=real-game`. `storage-probe.json` includes server identity and SQL
 migration snapshots. `row-before.json` and `row-after.json` retain the actual game
-message across backend restart. Only `**/public/**` is uploaded; credentials,
+message across backend restart. `row-post-restart.json` records a different
+message sent after restart; its fields and token are checked against the Bukkit
+bot recording. The historical CI artifacts above predate this last check and
+the operation snapshots, so they cannot satisfy the current acceptance gate.
+Only `**/public/**` is uploaded; credentials,
 private keys and database files remain private. `-PlanOnly` proves none of these
 runtime assertions.
+
+
+### Verify downloaded evidence
+
+The manual workflow packages an independent verifier under `ci/public/verifier`
+and runs it before upload. After extracting the artifact, run from its root:
+
+```powershell
+./ci/public/verifier/assert-artifacts.ps1 -EvidenceRoot . -Cases mysql,postgresql,redis
+```
+
+Select exactly the cases requested in that run. The verifier requires a single
+passing summary per case and checks the public bot recordings, authentication
+logs, message rows and storage evidence rather than trusting summary IDs alone.
+Storage evidence includes database product/version, the eight claim results,
+provider reconnect snapshots and direct SQL/Redis reads of invitation state.
+SQL invitation snapshots come from direct queries before and after migration and
+are compared field by field. A process ledger records PIDs, start, stop request
+and exit times; the verifier also requires the old backend shutdown log. Bot
+recordings must show a completion handoff before disconnect, and received game
+messages must match the sender envelope after the send. For the untrusted-CA case,
+the verifier checks the certificate failure, the absence verdict, the recorded
+sender row and handoff timestamps spanning at least 12 seconds. Missing files
+or inconsistent evidence fail validation.

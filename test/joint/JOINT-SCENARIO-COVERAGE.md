@@ -1,9 +1,14 @@
 # NovaChat JOINT Cross-Platform E2E — Scenario Coverage
 
-**Integration review**: 2026-11-01. Main-thread wiring is implemented.
-**Real acceptance this round**: the corrected Lite and native-PNX Relay
-selections passed on both proxies. Historical runs, unit tests, syntax
-checks, fixtures and diagnostics do not substitute for current game evidence.
+**Integration review**: the raw-evidence gate and its new driver ledgers have
+not yet been exercised by a fresh Joint live run. Earlier Lite, Relay and
+render passes below remain historical results under their original contracts;
+the 117/117 and 262/262 summary results do not establish this new gate.
+When a selected assertion requires a ledger or driver receipt that an older
+run did not retain, that run cannot satisfy current Joint acceptance.
+**Real acceptance this round**: Bukkit and PNX single-platform routes passed
+in new live runs, as reported by the integration owner. These are not Joint
+cross-platform acceptance. No new Joint live run was performed this round.
 **Historical snapshots retained below**: 2026-08-08 and 2026-10-18/21.
 
 ## Current selection and evidence contract
@@ -14,6 +19,9 @@ always includes it. The other groups require explicit selection. Required
 IDs come from `scenarios/registry.ps1`; the runner and `assert-joint-ci.ps1`
 must receive matching selections. Unknown groups, incompatible topologies,
 missing required IDs and diagnostic-only evidence cannot satisfy acceptance.
+Current acceptance also requires the selected raw scorer and driver evidence.
+Older passing summaries without the newly required ledgers or process receipts
+remain historical results, not passes under this contract.
 
 | Group | Required topology | Required ID families and observations |
 |---|---|---|
@@ -228,6 +236,22 @@ this change's scope).
       <selected-group>/         plans, per-role results and driver evidence
   joint-summary.json              per-round status + every assertion with its token
 ```
+
+CI acceptance recomputes the selected scenario IDs from the recordings and
+process logs. A passing summary alone is not acceptance evidence. New runs also
+retain `backend/relay-attribution.results.json` for the backend REST message records,
+`backend/restart-process.results.json` for recovery process IDs, and
+`plan-*.process.json` for bot exit receipts. Lite moderation also retains
+ordered proxy-console writes in `bots/lite-moderation/admin-requests.json`.
+Completion permission changes are checked against the proxy's provider
+receipts. The render selections retain
+their six coordination and 17 effect checks.
+
+Older artifacts remain historical results, but an independent replay requires
+the evidence for each selected assertion. For example, the 2026-11-04 Relay
+artifacts lack the retained REST attribution response; their summary text does
+not replace it. Older extended runs may also lack bot process-exit receipts.
+The guard reports the missing file or role instead of accepting those claims.
 
 ## Recorded results and coverage limits
 

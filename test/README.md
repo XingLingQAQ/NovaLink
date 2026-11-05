@@ -167,11 +167,18 @@ These are 10 matrix entries, not 10 verified passes. The committed harness skips
 bungee/velocity before running assertions because it lacks their downstream
 Purpur topology. Earlier local `.e2e/` records do not establish current CI L1.
 
-PMMP and Folia's final L1 contract requires authenticated plugin/backend
-connectivity, plugin command evidence, and an inbound
-plugin-formatted `[channel] <bot>: <original phrase>` message after the bot
-sends chat. Sent rows, vanilla echoes, command-only success, and `PARTIAL`
-do not satisfy it. PMMP now sets `replace_vanilla: true`, keeps forwarding
+Every runnable L1 entry requires an independent game receiver and a separate
+authenticated NovaProtocol peer. The sender publishes a unique run token;
+the peer must receive its actual `ChatMessagePacket` through the backend,
+then return a reply containing that packet's request ID. The second game bot
+must receive both messages exactly once in the plugin's channel envelope.
+`assert-l1-route.js` independently decodes the peer's wire captures and binds
+them to the sender and receiver recordings. A local echo, `/nc who` progress
+prompt, or summary boolean alone cannot satisfy this route gate. The peer is
+a real backend protocol client, not a second game server; cross-server game
+topologies remain the joint suite's responsibility.
+
+PMMP sets `replace_vanilla: true`, keeps forwarding
 enabled before the first chat, and includes the main `chatOk` in `pass`.
 Its JOIN/LEAVE packets carry `playerId`, `playerName`, and `platform`.
 Folia now receives backend config at `plugins/NovaChat-Folia/config.yml`.
@@ -183,6 +190,21 @@ logs without a fatal marker. A previous result file is removed before launch.
 `PARTIAL` and `UNKNOWN` are failures. Normal client shutdown after the sequence
 is allowed; a connection lost before the bot requests shutdown is a failure.
 Verify all runnable platforms in one unfiltered workflow before claiming full-matrix coverage.
+
+Backend builds use Gradle's current-input incremental checks, not classpath
+existence or jar timestamps. Java plugins are installed from the exact archive
+identified by the Gradle task. LeviLamina builds its DLL unless `-SkipDllBuild`
+explicitly selects an externally supplied package.
+
+Retain `bot-results.json` and its adjacent
+`bot-results.json.route-peer.jsonl` together. Recheck the route without starting
+servers:
+
+```powershell
+node test/bot/assert-l1-route.js <run-directory>/bot-results.json
+```
+
+This replays captured evidence; it does not constitute a new server run.
 
 PNX uses the official [3.0.6 release](https://github.com/PowerNukkitX/PowerNukkitX/releases/tag/3.0.6),
 with its SHA-256 pinned separately from Nukkit. The plugin targets the

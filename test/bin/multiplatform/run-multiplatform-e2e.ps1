@@ -16,12 +16,8 @@
 #                         the right lock entry, EULA policy, server.properties
 #                         format, and ready pattern.
 #
-# It does NOT build the backend jars itself -- run-e2e-orchestrator.ps1 performs
-# `:StarLink:core:jar :StarLink:core:writeRuntimeClasspath --init-script
-# test/bin/write-classpath.init.gradle` before dispatching here, producing the
-# classpath file at <RepoRoot>/.e2e-artifacts/novalink-core.classpath.txt. When
-# this script is run STANDALONE (not via the orchestrator), run that Gradle
-# command first or Test-Prereqs will report the classpath file as missing.
+# Current backend inputs are checked by Gradle before any runnable platform.
+# Proxy-only selections remain explicit by-design skips.
 #
 # Exit codes:
 #   0 = all REQUESTED platforms passed (some may have been SKIPPED-BY-DESIGN)
@@ -161,7 +157,7 @@ $Jdk25 = Resolve-Jdk -Explicit $Jdk25 -EnvName 'JAVA_HOME_25_X64' -Major 25 `
   -LocalCandidates @("$env:USERPROFILE\scoop\apps\temurin25-jdk\current")
 
 
-$RequestedPlatforms = $Platforms -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+$RequestedPlatforms = @($Platforms -split ',' | ForEach-Object { $_.Trim().ToLowerInvariant() })
 
 # Track every PID we start so we can guarantee teardown.
 $global:Pids = [System.Collections.Generic.List[int]]::new()
@@ -503,6 +499,25 @@ $PlatformDefs = @{
     BotName = "E2E_Bot_Alpha"
     # TCP port the server binds AND the bot dials (see the McPort note on nukkit).
     McPort = 25565
+    GradleTask = ':NovaChat:Plugin:bukkit:build'
+    BuildJdk = 'Jdk21'
+    PluginsSubdir = 'paper/plugins'
+    PluginConfig = @{
+      RelativePath = 'plugins/NovaChat/config.yml'
+      Body = @'
+backend:
+  host: "{{HOST}}"
+  port: {{PORT}}
+  username: "{{USERNAME}}"
+  password: "{{PASSWORD}}"
+  reconnect-delay: 5
+chat:
+  replace_vanilla: false
+  default_channel: "global"
+  locale: "en_US"
+debug: true
+'@
+    }
   }
   bungee = @{
     LockName = 'waterfall'; BotScript = 'run-e2e.js';    BotKind = 'java'
@@ -980,14 +995,7 @@ function Invoke-Platform([string]$pf) {
   New-Item -ItemType Directory -Force -Path $runsDir, $serverDir, $novaDir | Out-Null
 
   try {
-    # 0. build + install the per-platform plugin (if GradleTask is defined).
-    #    bukkit has no GradleTask here because its self-contained run-bukkit-e2e.ps1
-    #    already builds + installs the plugin; the other 6 Java platforms build
-    #    their plugin fat/thin jar here and drop it into the server's plugins/ dir
-    #    BEFORE start-server.ps1 lays down the run directory (so the jar is in
-    #    place when the server boots). The plugins dir lives under <runsDir>/<SubDir>/plugins
-    #    (or /mods for Sponge). start-server.ps1 creates <runsDir>/<SubDir> but NOT
-    #    its plugins/ subdir, so we create it here.
+    # Build and install the exact Gradle output before starting the host.
     if ($def.GradleTask) {
       $buildJdkVar = $def.BuildJdk
       $buildJdkPath = switch ($buildJdkVar) {
@@ -1001,7 +1009,7 @@ function Invoke-Platform([string]$pf) {
         return $result
       }
       Log "  building plugin: gradlew $($def.GradleTask) (JDK=$buildJdkVar)..."
-      $isWin = $IsWindows -or $env:OS -eq "Windows_NT"
+      $isWin = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
       $gradleW = if ($isWin) { ".\gradlew.bat" } else { "./gradlew" }
       $buildLog = Join-Path $runsDir "plugin-build.out.log"
       $buildErr = Join-Path $runsDir "plugin-build.err.log"
@@ -1030,7 +1038,13 @@ function Invoke-Platform([string]$pf) {
         # InitScript/InitProps let a platform build a SELF-CONTAINED jar from a
         # module whose own `build` only emits a thin one (nukkit). Same shape as
         # run-joint.ps1 so the two harnesses cannot drift on the jar contents.
-        $gradleArgList = @($def.GradleTask, "-x", "test", "--console=plain")
+        $artifactFile = Join-Path $runsDir 'plugin-artifact.txt'
+        $artifactProject = $def.GradleTask.Substring(0, $def.GradleTask.LastIndexOf(':'))
+        $artifactTask = if ($pf -eq 'nukkit') { 'nukkitE2eJar' } else { 'shadowJar' }
+        $gradleArgList = @($def.GradleTask, "-x", "test", "--console=plain", '--init-script',
+          (Join-Path (Split-Path -Parent $BinDir) 'write-classpath.init.gradle'),
+          "-Pe2eArtifactProject=$artifactProject", "-Pe2eArtifactTask=$artifactTask",
+          "-Pe2eArtifactOutput=$artifactFile", ':writeE2ePluginArtifact')
         if ($def.InitScript) {
           # Init scripts live in test/bin (the PARENT of $BinDir, which is
           # test/bin/multiplatform here but test/bin in run-joint.ps1).
@@ -1062,16 +1076,16 @@ function Invoke-Platform([string]$pf) {
         return $result
       }
       # Locate the built jar and copy it into the server's plugins/ dir.
-      $jarGlobPath = Join-Path $RepoRoot $def.JarGlob
-      $pluginJar = Get-ChildItem $jarGlobPath -ErrorAction SilentlyContinue | Select-Object -First 1
-      if (-not $pluginJar) {
-        $result.status = "FAIL"; $result.notes = "plugin jar not found at $jarGlobPath"
+      if (-not (Test-Path -LiteralPath $artifactFile -PathType Leaf)) {
+        $result.status = "FAIL"; $result.notes = "Gradle did not identify its plugin artifact"
         return $result
       }
+      $pluginJar = Get-Item -LiteralPath ([IO.File]::ReadAllText($artifactFile).Trim()) -ErrorAction Stop
       # The plugins dir is <runsDir>/<PluginsSubdir> (e.g. folia/plugins, sponge/mods).
       $pluginsDir = Join-Path $runsDir $def.PluginsSubdir
       New-Item -ItemType Directory -Force -Path $pluginsDir | Out-Null
-      Copy-Item $pluginJar.FullName -Destination $pluginsDir -Force
+      $pluginPattern = if ($def.JarGlob) { Split-Path -Leaf $def.JarGlob } else { 'bukkit-*.jar' }
+      Install-L1PluginArtifact -Artifact $pluginJar -PluginsDir $pluginsDir -Pattern $pluginPattern
       Log "  plugin installed: $($pluginJar.Name) -> $pluginsDir"
     }
 
@@ -1155,8 +1169,9 @@ function Invoke-Platform([string]$pf) {
     Start-Sleep -Seconds 3
 
     # 4. run bot (foreground, with timeout)
+    Enable-L1RouteEvidence -BackendPort $NovaBackendPort -ClientPassword $clientPw -ClassPathFile $ClassPathFile -Java (Join-Path $jdkPath 'bin/java.exe')
     Log "  starting bot (foreground, timeout ${BotWaitSec}s)..."
-    if (-not (Test-Path (Join-Path $botDir "node_modules"))) {
+    if (-not (Test-BotDepsCurrent $botDir)) {
       Push-Location $botDir
       try {
         $npmLog = Join-Path $runsDir "npm-install.log"
@@ -1261,6 +1276,7 @@ function Invoke-Platform([string]$pf) {
           -TimedOut $botTimedOut -ExpectedRunId $botRunId `
           -ServerLogPaths @((Join-Path $serverDir "$pf.stdout.log"), (Join-Path $serverDir "$pf.stderr.log"),
             (Join-Path $novaDir "stdout.log"), (Join-Path $novaDir "stderr.log"))
+        if (-not $runFailure) { $runFailure = Get-L1RouteFailure -ResultsFile $resultsFile }
         if ($runFailure) {
           $result.status = "FAIL"; $result.notes = $runFailure
           return $result
@@ -1398,6 +1414,20 @@ Log "Timeout per platform: ${TimeoutSec}s (server ready ${ServerReadySec}s, bot 
 Log "BinDir: $BinDir"
 Log "BotDir: $BotDir"
 Log "ClassPathFile: $ClassPathFile"
+
+$invalidPlatforms = @($RequestedPlatforms | Where-Object { -not $_ -or -not $PlatformDefs.ContainsKey($_) })
+if ($invalidPlatforms.Count -gt 0) { Log "ERROR: invalid platform selection: '$Platforms'"; exit 2 }
+$RequestedPlatforms = @($RequestedPlatforms | Select-Object -Unique)
+$runnablePlatforms = @($RequestedPlatforms | Where-Object { $PlatformDefs[$_] -and -not $PlatformDefs[$_].Note })
+if ($runnablePlatforms.Count -gt 0) {
+  $buildDir = Join-Path $RepoRoot '.e2e-artifacts/runs/l1-backend-build'
+  New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+  $savedJavaHome = $env:JAVA_HOME
+  try {
+    if ($Jdk21) { $env:JAVA_HOME = $Jdk21 }
+    $ClassPathFile = Export-L1BackendClasspath -RepoRoot $RepoRoot -RunsDir $buildDir -OutputFile $ClassPathFile
+  } finally { $env:JAVA_HOME = $savedJavaHome }
+}
 
 $prereqIssues = Test-Prereqs $RequestedPlatforms
 if ($prereqIssues.Count -gt 0) {

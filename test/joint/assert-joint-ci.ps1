@@ -23,6 +23,8 @@ if ('channel-lifecycle' -in $requestedGroups -and $SecondaryJavaPlatform -ne 'bu
 $files = @(Get-ChildItem -LiteralPath $JointRoot -Recurse -Filter joint-summary.json -File)
 if ($files.Count -ne 1) { throw "Expected one joint summary, found $($files.Count)" }
 $summary = [System.IO.File]::ReadAllText($files[0].FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+if ($summary.PSObject.Properties['synthetic'] -and $summary.synthetic -isnot [bool]) { throw 'summary.synthetic must be boolean' }
+if ($summary.synthetic -eq $true) { throw 'Synthetic summaries are not CI evidence' }
 if ($summary.PSObject.Properties['renderCoordinationRequired'] -and $summary.renderCoordinationRequired -isnot [bool]) { throw 'renderCoordinationRequired must be boolean' }
 if ([bool]$summary.renderCoordinationRequired -ne [bool]$RequireRenderCoordination) { throw 'Render coordination selection mismatch' }
 if ($summary.PSObject.Properties['renderEffectsRequired'] -and $summary.renderEffectsRequired -isnot [bool]) { throw 'renderEffectsRequired must be boolean' }
@@ -88,8 +90,12 @@ foreach ($id in $required) {
     throw "Required gating assertion missing, diagnostic, duplicated or failed: $id"
   }
 }
+$roundDir = Join-Path $files[0].DirectoryName 'round-1'
+if ([string]::IsNullOrWhiteSpace([string]$summary.runId)) { throw 'Missing summary.runId for raw evidence' }
+& (Join-Path $PSScriptRoot 'assert-joint-raw-evidence.ps1') -RoundDir $roundDir -RunId $summary.runId `
+  -Mode $ProxyMode -Proxy $ProxyPlatform -Bedrock $BedrockPlatform -Groups $requestedGroups -Secondary $SecondaryJavaPlatform `
+  -RequireRenderEffects:$RequireRenderEffects
 if ($RequireRenderCoordination) {
-  $roundDir = Join-Path $files[0].DirectoryName 'round-1'
   $peerEvidence = @(Get-JointRenderCoordinationAssertions -RoundDir $roundDir -RunId $summary.runId -ProxyPlatform $ProxyPlatform)
   if ($peerEvidence.Count -ne 6 -or @($peerEvidence | Where-Object { -not $_.pass }).Count) {
     throw 'Raw proxy/Bukkit/bot evidence does not establish current render coordination'

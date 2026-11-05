@@ -130,9 +130,8 @@ $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action { Tear
 # 1. Build bukkit plugin + export backend classpath.
 # ---------------------------------------------------------------------------
 Log "step 1: building NovaChat bukkit plugin + exporting StarLink:core classpath"
-# Use gradlew.bat on Windows, gradlew on Unix. $IsWindows exists in PowerShell 7;
-# fall back to $env:OS for Windows PowerShell 5.1.
-$isWin = $IsWindows -or $env:OS -eq "Windows_NT"
+# Detect the host even when a minimal process environment omits OS.
+$isWin = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $gradleW = if ($isWin) { ".\gradlew.bat" } else { "./gradlew" }
 # Build only the bukkit fat jar + StarLink:core jar (skip tests, skip the rest).
 $buildErr = Join-Path $RunsDir "build.err.log"
@@ -151,6 +150,8 @@ $ErrorActionPreference = "Continue"
 & $gradleW ":NovaChat:Plugin:bukkit:build" ":StarLink:core:jar" "-x" "test" "--console=plain" `
     "-Porg.gradle.java.installations.paths=" "-Dorg.gradle.java.installations.paths=" `
     "--init-script" (Join-Path $binDir "write-classpath.init.gradle") `
+    "-Pe2eArtifactProject=:NovaChat:Plugin:bukkit" "-Pe2eArtifactTask=shadowJar" `
+    "-Pe2eArtifactOutput=$RunsDir/plugin-artifact.txt" ":writeE2ePluginArtifact" `
     ":StarLink:core:writeRuntimeClasspath" `
     1>$buildOut 2>$buildErr
 $gradleExit = $LASTEXITCODE
@@ -166,11 +167,9 @@ if (-not (Test-Path $classpathFile)) {
     Log "ERROR: classpath file not written: $classpathFile"
     exit 2
 }
-$bukkitJar = Get-ChildItem (Join-Path $RepoRoot "NovaChat/Plugin/bukkit/build/libs/*.jar") -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $bukkitJar) {
-    Log "ERROR: bukkit fat jar not found under NovaChat/Plugin/bukkit/build/libs/"
-    exit 2
-}
+$artifactFile = Join-Path $RunsDir 'plugin-artifact.txt'
+if (-not (Test-Path -LiteralPath $artifactFile)) { throw "Gradle did not identify its Bukkit artifact" }
+$bukkitJar = Get-Item -LiteralPath ([IO.File]::ReadAllText($artifactFile).Trim()) -ErrorAction Stop
 Log "  bukkit jar: $($bukkitJar.FullName)"
 
 # ---------------------------------------------------------------------------
@@ -215,7 +214,7 @@ $secretKey = New-RandomHex 32
 $clientPw  = New-RandomHex 16
 
 # Install the NovaChat bukkit plugin.
-Copy-Item $bukkitJar.FullName -Destination (Join-Path $serverDir "plugins") -Force
+Install-L1PluginArtifact -Artifact $bukkitJar -PluginsDir (Join-Path $serverDir 'plugins') -Pattern 'bukkit-*.jar'
 
 # The plugin's bundled resources/config.yml is a user-facing template: backend
 # port 8888 and username "Survival_Server". With no config.yml in the data
@@ -397,6 +396,7 @@ if (-not (Test-BotDepsCurrent $botDir)) {
 }
 $resultsFile = Join-Path $RunsDir "bot-results.json"
 $botRunId = Initialize-BotRun $resultsFile
+Enable-L1RouteEvidence -BackendPort $NovaPort -ClientPassword $clientPw -ClassPathFile $classpathFile -Java $java
 $env:E2E_MC_HOST = "127.0.0.1"
 $env:E2E_MC_PORT = "$McPort"
 $env:E2E_MC_VERSION = $mcVersion
@@ -439,6 +439,7 @@ if (Test-Path $resultsFile) {
     $results = $resultsJson | ConvertFrom-Json
     $runFailure = Get-BotRunFailure -Results $results -ExitCode $botProc.ExitCode `
         -TimedOut $botTimedOut -ExpectedRunId $botRunId -ServerLogPaths @($purpStdout,$purpStderr,$novaStdout,$novaStderr)
+    if (-not $runFailure) { $runFailure = Get-L1RouteFailure -ResultsFile $resultsFile }
     if ($runFailure) { Log "  RUN FAILED: $runFailure" }
     # Get-BotReceivedRows drops the bot's own outgoing lines. run-e2e.js records
     # every sendCmd() into the SAME received[] list with kind='sent', so the old

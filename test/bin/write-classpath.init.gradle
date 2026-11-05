@@ -11,16 +11,38 @@ allprojects {
     afterEvaluate { p ->
         if (p.path == ':StarLink:core') {
             def cpTask = p.tasks.register('writeRuntimeClasspath') {
+                dependsOn p.tasks.named('jar')
+                dependsOn p.configurations.runtimeClasspath
                 doLast {
                     def cfg = p.configurations.findByName('runtimeClasspath')
                     def files = cfg.resolve()
                     def coreJar = p.tasks.named('jar', Jar).get().archiveFile.get().asFile
                     def cp = ([coreJar] + files).collect { it.absolutePath }.join(File.pathSeparator)
-                    def out = new File(rootProject.projectDir, '.e2e-artifacts/novalink-core.classpath.txt')
+                    def output = gradle.startParameter.projectProperties['e2eClasspathOutput']
+                    def out = output ? new File(output) : new File(rootProject.projectDir, '.e2e-artifacts/novalink-core.classpath.txt')
                     out.parentFile.mkdirs()
                     out.text = cp
                     println "WROTE_CLASSPATH:" + out.absolutePath
                 }
+            }
+        }
+    }
+}
+
+gradle.projectsEvaluated {
+    def props = gradle.startParameter.projectProperties
+    if (props['e2eArtifactProject']) {
+        def target = gradle.rootProject.project(props['e2eArtifactProject'])
+        def archiveTask = props['e2eArtifactTask'] ?: 'shadowJar'
+        gradle.rootProject.tasks.register('writeE2ePluginArtifact') {
+            dependsOn "${target.path}:${archiveTask}"
+            doLast {
+                def file = target.tasks.named(archiveTask, Jar).get().archiveFile.get().asFile
+                if (!file.isFile()) throw new GradleException("Missing E2E plugin artifact: ${file}")
+                def output = new File(props['e2eArtifactOutput'])
+                output.parentFile.mkdirs()
+                output.setText(file.absolutePath, 'UTF-8')
+                logger.lifecycle("E2E_PLUGIN_ARTIFACT:${file.absolutePath}")
             }
         }
     }

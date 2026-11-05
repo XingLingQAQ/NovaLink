@@ -73,7 +73,12 @@ jobs:
 
       - name: Require raw transfer and receiver evidence
         shell: powershell
-        run: node ./test/bedrock-transfer/assert-evidence.js $env:BT_RUN_ROOT
+        run: |
+          node ./test/bedrock-transfer/assert-evidence.js $env:BT_RUN_ROOT (Join-Path $env:GITHUB_WORKSPACE '.e2e-artifacts/dist/powernukkitx-3.0.6.jar')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:BT_ACCEPTANCE = $env:BT_RUN_ROOT
+          node --test ./test/bedrock-transfer/assert-evidence.test.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload transfer evidence
         if: always()
@@ -86,12 +91,15 @@ jobs:
             ${{ env.BT_RUN_ROOT }}/failure.json
             ${{ env.BT_RUN_ROOT }}/events.jsonl
             ${{ env.BT_RUN_ROOT }}/bot.results.json
+            ${{ env.BT_RUN_ROOT }}/build.log
             ${{ env.BT_RUN_ROOT }}/*.log
             ${{ env.BT_RUN_ROOT }}/backend/*.log
             ${{ env.BT_RUN_ROOT }}/a/launcher.log
+            ${{ env.BT_RUN_ROOT }}/a/launch-spec.json
             ${{ env.BT_RUN_ROOT }}/a/readiness.json
             ${{ env.BT_RUN_ROOT }}/a/pnx/*.log
             ${{ env.BT_RUN_ROOT }}/b/launcher.log
+            ${{ env.BT_RUN_ROOT }}/b/launch-spec.json
             ${{ env.BT_RUN_ROOT }}/b/readiness.json
             ${{ env.BT_RUN_ROOT }}/b/pnx/*.log
             ${{ env.BT_RUN_ROOT }}/console/*.json

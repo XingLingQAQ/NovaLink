@@ -32,6 +32,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const JWT = require('jsonwebtoken');
+const { L1Route } = require('./l1-route');
 
 const HOST = process.env.SERVER_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.SERVER_PORT || '19132', 10);
@@ -42,6 +43,7 @@ const MC_VERSION = process.env.MC_VERSION || '1.26.40';
 const RESULTS = process.env.RESULTS_FILE || path.join(__dirname, 'results.json');
 const TIMEOUT_MS = parseInt(process.env.TIMEOUT_MS || '360000', 10);
 const RUN_ID = process.env.E2E_RUN_ID || crypto.randomUUID();
+const route = new L1Route(RUN_ID, USERNAME, RESULTS);
 let sequenceComplete = false;
 let intentionalQuit = false;
 
@@ -85,13 +87,14 @@ function applyLoginPatch(client) {
     // payload fields. We can only do this if the ECDH key pair is set up.
     if (offline && client.ecdhKeyPair && client.ecdhKeyPair.privateKey) {
       const algorithm = 'ES384';
-      const botUuid = crypto.createHash('sha1').update(USERNAME).digest('hex');
+      const name = client.username || client.options.username;
+      const botUuid = crypto.createHash('sha1').update(name).digest('hex');
       const leguuid = `${botUuid.slice(0,8)}-${botUuid.slice(8,12)}-${botUuid.slice(12,16)}-${botUuid.slice(16,20)}-${botUuid.slice(20,32)}`;
-      const mid = crypto.createHash('md5').update(USERNAME).digest('hex').slice(0, 16);
+      const mid = crypto.createHash('md5').update(name).digest('hex').slice(0, 16);
       const token = JWT.sign({
         cpk: client.clientX509,
         leguuid,
-        xname: USERNAME,
+        xname: name,
         mid,
         xid: '0',
       }, client.ecdhKeyPair.privateKey, {
@@ -128,6 +131,7 @@ function writeResults(extra) {
     username: USERNAME,
     chatPhrase: CHAT_PHRASE,
     received,
+    route: route.evidence(),
   }, extra || {});
   fs.writeFileSync(RESULTS, JSON.stringify(payload, null, 2));
   console.log('results.json written:', RESULTS);
@@ -262,7 +266,7 @@ function makeLegacySkinFields() {
 
 const SKIN_FIELDS = makeLegacySkinFields();
 
-function makeClient() {
+function makeClient(username = USERNAME) {
   // skinData is spread into the ClientData JWT payload AFTER minecraft-data's
   // defaultSkin (login.js:51 then :87-88), so it overrides the 256x256 persona
   // defaultSkin that PMMP rejects. Merge the legacy skin fields (SkinData/
@@ -272,7 +276,7 @@ function makeClient() {
   const c = createClient({
     host: HOST,
     port: PORT,
-    username: USERNAME,
+    username,
     offline: true,
     version: MC_VERSION,
     skipPing: false,
@@ -363,6 +367,20 @@ function sendCommand(command) {
 }
 
 async function runSequence() {
+  await route.start((username, recordReceiver) => {
+    const receiver = makeClient(username);
+    receiver.on('spawn', () => recordReceiver('spawn', 'spawned', 'spawned'));
+    receiver.on('text', packet => recordReceiver(`text:${packet.type}`, packet.message, packet.message));
+    receiver.on('kick', reason => recordReceiver('kicked', JSON.stringify(reason), JSON.stringify(reason)));
+    receiver.on('error', error => recordReceiver('error', error.message, error.message));
+    receiver.on('close', () => recordReceiver('close', 'closed', 'closed'));
+    return {
+      send: command => receiver.queue('command_request', {
+        command, origin: { type: 'player', uuid: crypto.randomUUID(), request_id: crypto.randomUUID(), player_entity_id: 0n }, internal: false, version: 'latest',
+      }),
+      close: () => receiver.close(),
+    };
+  });
   const toggleControlsMode = PLATFORM !== 'pmmp';
   console.log('=== waiting for spawn ===');
   await sleep(15000);
@@ -376,6 +394,8 @@ async function runSequence() {
   // PMMP's toggle disables forwarding; its harness configures REPLACE directly.
   if (toggleControlsMode) sendCommand('/nc toggle');
   await sleep(2500);
+  await route.exchange(sendChat);
+  await sleep(1500);
   // The round-trip assertion target: bot sends CHAT_PHRASE -> plugin intercepts
   // -> backend routes -> plugin receives -> bot renders the formatted message
   // containing CHAT_PHRASE.
@@ -411,6 +431,7 @@ async function runSequence() {
   writeResults();
   await sleep(1500);
   intentionalQuit = true;
+  route.close();
   try { client.close(); } catch {}
   await sleep(1000);
   writeResults();

@@ -84,6 +84,16 @@ jobs:
           $selected = @($env:ENVIRONMENT_CASES.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
           ./test/environment/run-environment.ps1 -Cases $selected -RepoRoot $env:GITHUB_WORKSPACE -OutputRoot $env:ENVIRONMENT_ROOT -Jdk21 $env:JAVA_HOME -ProvisionDatabases
           exit $LASTEXITCODE
+      - name: Package and independently verify evidence
+        if: always()
+        run: |
+          $verifier = Join-Path $env:ENVIRONMENT_ROOT 'ci/public/verifier'
+          New-Item -ItemType Directory -Path $verifier -Force | Out-Null
+          foreach ($file in @('assert-artifacts.ps1', 'storage-probe.ps1', 'evidence-checks.ps1', 'cases.psd1')) {
+            Copy-Item -LiteralPath (Join-Path 'test/environment' $file) -Destination $verifier
+          }
+          $selected = @($env:ENVIRONMENT_CASES.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          & (Join-Path $verifier 'assert-artifacts.ps1') -EvidenceRoot $env:ENVIRONMENT_ROOT -Cases $selected
       - name: Record workflow outcome
         if: always()
         env:
@@ -100,5 +110,5 @@ jobs:
           name: environment-game-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: .e2e-artifacts/environment/**/public/**
           include-hidden-files: true
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7

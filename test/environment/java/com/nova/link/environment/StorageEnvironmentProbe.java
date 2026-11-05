@@ -47,6 +47,7 @@ public final class StorageEnvironmentProbe {
     private final long expiresAt = createdAt + TimeUnit.HOURS.toMillis(1);
     private final List<Map<String, Object>> assertions = new ArrayList<>();
     private final Map<String, Object> evidence = new LinkedHashMap<>();
+    private final Map<String, Object> operations = new LinkedHashMap<>();
 
     private StorageEnvironmentProbe(JsonObject config) {
         this.config = config;
@@ -60,6 +61,9 @@ public final class StorageEnvironmentProbe {
         evidence.put("engine", engine);
         evidence.put("verification", "real-database-provider");
         evidence.put("assertions", assertions);
+        evidence.put("operations", operations);
+        operations.put("target", target.toString());
+        operations.put("wrong", wrong.toString());
     }
 
     public static void main(String[] args) throws Exception {
@@ -96,7 +100,7 @@ public final class StorageEnvironmentProbe {
                         "Production DatabaseMigration stopped at v15; recipient column absent");
                 seedLegacySql(source);
                 oldMigrations = migrationRows(source);
-                oldInvitations = rows(source, "SELECT * FROM invitations ORDER BY code");
+                oldInvitations = invitationRows(source);
                 oldMessages = rows(source, "SELECT * FROM messages ORDER BY id");
                 evidence.put("v15Migrations", oldMigrations);
                 evidence.put("v15Invitations", oldInvitations);
@@ -132,9 +136,9 @@ public final class StorageEnvironmentProbe {
                     retained.remove(16);
                     require("OLD-CHECKSUMS", oldMigrations.size() == 15 && oldMigrations.equals(retained),
                             "All 15 migration rows, checksums and timestamps unchanged");
-                    require("OLD-DATA", oldInvitations.equals(rows(source, "SELECT code, channel_id, inviter_id, "
-                                    + "expire_time, created_at, used, used_by, used_at, max_uses, used_count, revoked_at "
-                                    + "FROM invitations ORDER BY code"))
+                    List<List<String>> upgradedInvitations = invitationRows(source);
+                    evidence.put("v16Invitations", upgradedInvitations);
+                    require("OLD-DATA", oldInvitations.equals(upgradedInvitations)
                                     && oldMessages.equals(rows(source, "SELECT * FROM messages ORDER BY id")),
                             "v15 unbound invitation and message row survived the upgrade unchanged");
                     evidence.put("v16Migrations", upgraded);
@@ -146,6 +150,8 @@ public final class StorageEnvironmentProbe {
                         "Production APIs read the migrated unbound invitation and legacy message");
             }
             provider.saveInvitation(invitation(boundCode, target));
+            operations.put("saved", snapshot(provider.loadInvitation(boundCode).orElseThrow()));
+            operations.put("databaseSaved", databaseSnapshot());
             require("TARGET-PERSISTED", target.equals(provider.loadInvitation(boundCode).orElseThrow().getTargetPlayerId()),
                     "Recipient UUID round-tripped through the production provider");
             if (engine.equals("redis")) {
@@ -155,7 +161,10 @@ public final class StorageEnvironmentProbe {
                             "Real Redis server stores the targetPlayerId DTO field");
                 }
             }
-            require("WRONG-TARGET", provider.claimInvitationUse(boundCode, wrong, System.currentTimeMillis()) == 0
+            int wrongResult = provider.claimInvitationUse(boundCode, wrong, System.currentTimeMillis());
+            operations.put("wrongResult", wrongResult);
+            operations.put("afterWrong", snapshot(provider.loadInvitation(boundCode).orElseThrow()));
+            require("WRONG-TARGET", wrongResult == 0
                             && untouched(provider.loadInvitation(boundCode).orElseThrow()),
                     "Wrong recipient atomically rejected; usedCount, used, usedBy and usedAt unchanged");
         } finally {
@@ -165,6 +174,7 @@ public final class StorageEnvironmentProbe {
         provider = provider();
         try {
             provider.initialize();
+            operations.put("reconnected", snapshot(provider.loadInvitation(boundCode).orElseThrow()));
             require("RECONNECT", target.equals(provider.loadInvitation(boundCode).orElseThrow().getTargetPlayerId())
                             && untouched(provider.loadInvitation(boundCode).orElseThrow()),
                     "A new provider and connection pool retained the recipient and unconsumed state");
@@ -184,13 +194,20 @@ public final class StorageEnvironmentProbe {
                 }
                 if (!ready.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("Claim workers timed out");
                 start.countDown();
-                for (Future<Integer> claim : claims) accepted += claim.get(15, TimeUnit.SECONDS);
+                List<Integer> results = new ArrayList<>();
+                for (Future<Integer> claim : claims) {
+                    int result = claim.get(15, TimeUnit.SECONDS);
+                    results.add(result);
+                    accepted += result;
+                }
+                operations.put("claims", results);
             } finally {
                 start.countDown();
                 workers.shutdownNow();
                 workers.awaitTermination(5, TimeUnit.SECONDS);
             }
             Invitation consumed = provider.loadInvitation(boundCode).orElseThrow();
+            operations.put("consumed", snapshot(consumed));
             require("ATOMIC-CLAIM", accepted == 1 && consumed.getUsedCount() == 1 && consumed.isUsed()
                             && target.equals(consumed.getUsedBy()) && consumed.getUsedAt() > 0
                             && target.equals(consumed.getTargetPlayerId())
@@ -207,6 +224,8 @@ public final class StorageEnvironmentProbe {
         try {
             provider.initialize();
             Invitation consumed = provider.loadInvitation(boundCode).orElseThrow();
+            operations.put("reconnectedConsumed", snapshot(consumed));
+            operations.put("databaseConsumed", databaseSnapshot());
             require("CLAIM-PERSISTED", consumed.isUsed() && consumed.getUsedCount() == 1
                             && target.equals(consumed.getTargetPlayerId()) && target.equals(consumed.getUsedBy())
                             && provider.claimInvitationUse(boundCode, target, System.currentTimeMillis()) == 0,
@@ -303,6 +322,11 @@ public final class StorageEnvironmentProbe {
         return result;
     }
 
+    private static List<List<String>> invitationRows(HikariDataSource source) throws Exception {
+        return rows(source, "SELECT code, channel_id, inviter_id, expire_time, created_at, used, "
+                + "used_by, used_at, max_uses, used_count, revoked_at FROM invitations ORDER BY code");
+    }
+
     private static List<List<String>> rows(HikariDataSource source, String sql) throws Exception {
         List<List<String>> rows = new ArrayList<>();
         try (Connection connection = source.getConnection(); var statement = connection.createStatement();
@@ -325,6 +349,45 @@ public final class StorageEnvironmentProbe {
 
     private Invitation invitation(String code, UUID recipient) {
         return new Invitation(code, channel, inviter, expiresAt, createdAt, false, null, 0, 1, 0, null, recipient);
+    }
+
+    private Map<String, Object> databaseSnapshot() throws Exception {
+        Map<String, Object> result = new LinkedHashMap<>();
+        if (engine.equals("redis")) {
+            try (Jedis redis = redisConnection()) {
+                JsonObject dto = JSON.fromJson(redis.get("novalink:invitation:" + boundCode), JsonObject.class);
+                result.put("target", dto.get("targetPlayerId").getAsString());
+                result.put("used", dto.get("used").getAsBoolean());
+                result.put("usedCount", dto.get("usedCount").getAsInt());
+                result.put("usedBy", dto.has("usedBy") && !dto.get("usedBy").isJsonNull() ? dto.get("usedBy").getAsString() : null);
+                result.put("usedAt", dto.get("usedAt").getAsLong());
+            }
+        } else {
+            try (HikariDataSource source = sqlSource(); Connection connection = source.getConnection();
+                 PreparedStatement query = connection.prepareStatement("SELECT target_player_id, used, used_count, used_by, used_at FROM invitations WHERE code = ?")) {
+                query.setString(1, boundCode);
+                try (ResultSet row = query.executeQuery()) {
+                    if (!row.next()) throw new IllegalStateException("Invitation missing from database");
+                    result.put("target", row.getString(1));
+                    result.put("used", row.getBoolean(2));
+                    result.put("usedCount", row.getInt(3));
+                    result.put("usedBy", row.getString(4));
+                    result.put("usedAt", row.getLong(5));
+                    if (row.next()) throw new IllegalStateException("Duplicate invitation in database");
+                }
+            }
+        }
+        return result;
+    }
+
+    private static Map<String, Object> snapshot(Invitation invitation) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("target", invitation.getTargetPlayerId() == null ? null : invitation.getTargetPlayerId().toString());
+        result.put("used", invitation.isUsed());
+        result.put("usedCount", invitation.getUsedCount());
+        result.put("usedBy", invitation.getUsedBy() == null ? null : invitation.getUsedBy().toString());
+        result.put("usedAt", invitation.getUsedAt());
+        return result;
     }
 
     private static boolean untouched(Invitation invitation) {

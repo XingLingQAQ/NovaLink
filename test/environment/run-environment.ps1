@@ -1,4 +1,4 @@
-﻿#requires -Version 7.4
+#requires -Version 7.4
 [CmdletBinding()]
 param(
     [string[]]$Cases = @('tls-trusted', 'tls-untrusted', 'mysql', 'postgresql', 'redis'),
@@ -24,7 +24,7 @@ $arguments.RepoRoot = $RepoRoot
 try {
     $assertions = @(Invoke-EnvironmentScenarios @arguments)
     $assertions | ConvertTo-Json -Depth 7
-    if ($assertions.Count -eq 0 -or @($assertions | Where-Object { -not $_.pass }).Count -gt 0) { exit 1 }
+    if ($assertions.Count -eq 0 -or @($assertions | Where-Object { $_.pass -isnot [bool] -or -not $_.pass }).Count -gt 0) { exit 1 }
     exit 0
 } catch {
     $failure = $_.Exception.Message

@@ -30,6 +30,8 @@ const upload = job.steps.find((step) => step.uses?.startsWith('actions/upload-ar
 assert.equal(upload.with.path, '.e2e-artifacts/environment/**/public/**');
 assert.equal(upload.with['include-hidden-files'], true);
 assert.equal(upload.if, 'always()');
+assert.equal(upload.with['if-no-files-found'], 'error');
+assert.ok(job.steps.some((step) => step.name === 'Package and independently verify evidence' && step.if === 'always()'));
 const build = job.steps.find((step) => step.name === 'Build required runtime artifacts');
 assert.equal(build.shell, 'bash');
 for (const task of [':StarLink:core:shadowJar', ':NovaChat:Plugin:bukkit:shadowJar', ':NovaChat:MOD:fabric:fabricE2eJar', ':StarLink:storage:environmentStorageProbeClasspath']) {

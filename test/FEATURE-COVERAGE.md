@@ -20,6 +20,7 @@ old recordings keep their original acceptance contract.
 
 | Entry | Selected coverage | Required evidence |
 |---|---|---|
+| Single-platform L1 | Plugin command smoke plus a real backend-protocol peer and independent game receiver | Current-run game send, decoded backend receive/reply packets and exactly-once plugin-formatted delivery to the second game bot; prior single-bot passes do not establish this new route gate |
 | `core` | Receiver chat, isolation controls and Java reconnect with non-default `local` selected | Fresh current-channel query and bidirectional delivery without a repair JOIN, plus every required registry ID |
 | `business` | Three-bot DM/reply privacy, offline refusal and channel-scoped mute/unmute | Receiver delivery and exclusion with live positive controls; sender confirmation alone is insufficient |
 | `lite-moderation` | Real Velocity/Bungee Lite console commands; ordinary player permission denial, mute/kick/ban and inverse actions | Both bot recordings, channel scope, kick keeps Minecraft connected and ban blocks rejoin |
@@ -34,6 +35,19 @@ old recordings keep their original acceptance contract.
 | Independent `e2e-environment` | Manual TLS trusted/untrusted and MySQL/PostgreSQL/Redis cases using actual Bukkit + Fabric | Certificate-chain rejection controls, game messages, stored row identity across backend restart and fresh post-restart delivery |
 
 ### Recorded results
+
+The 2026-11-05 authenticity repair adds stricter raw-evidence acceptance.
+Targeted local L1 runs passed on Purpur 1.21.11-2568 and native PNX
+3.0.6-SNAPSHOT / Bedrock 1.26.60: each used a real backend, two game clients
+and an authenticated protocol peer. Their captured packets also passed the
+independent route verifier. Evidence and the exact run IDs are in
+`.e2e-artifacts/e2e-authenticity-fix/task-record.json`.
+
+The historical counts below retain their original acceptance contract. They
+do not establish newly required joint driver/attribution receipts or the
+environment suite's post-restart new-message storage check. Missing new
+evidence fails current verification; a new complete matrix and environment
+game run have not been performed for this repair.
 
 Local native Bedrock transfer passed **22/22** required IDs on 2026-11-02,
 including the independent verifier. Evidence is under

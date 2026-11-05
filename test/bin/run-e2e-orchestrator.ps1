@@ -87,9 +87,18 @@ if (-not $RepoRoot) {
 }
 $binDir = Join-Path $RepoRoot "test/bin"
 $multiplatformDir = Join-Path $binDir "multiplatform"
-$RequestedPlatforms = $Platforms -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+$RequestedPlatforms = @($Platforms -split ',' | ForEach-Object { $_.Trim().ToLowerInvariant() })
+$knownPlatforms = @('bukkit', 'endstone', 'levilamina', 'pmmp',
+                    'folia', 'velocity', 'bungee', 'nukkit', 'pnx', 'sponge')
 
 function Log([string]$m) { Write-Host ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $m) }
+
+$invalidPlatforms = @($RequestedPlatforms | Where-Object { -not $_ -or $knownPlatforms -notcontains $_ })
+if ($invalidPlatforms.Count -gt 0) {
+    Log "ERROR: invalid platform selection: '$Platforms'. Known: $($knownPlatforms -join ', ')"
+    exit 2
+}
+$RequestedPlatforms = @($RequestedPlatforms | Select-Object -Unique)
 
 $pathContract = Join-Path $binDir "verify-orchestration-paths.ps1"
 if (-not (Test-Path -LiteralPath $pathContract -PathType Leaf)) {
@@ -100,65 +109,6 @@ if (-not (Test-Path -LiteralPath $pathContract -PathType Leaf)) {
 if ($LASTEXITCODE -ne 0) {
     Log "ERROR: committed E2E harness preflight failed."
     exit 2
-}
-
-# --- generate the backend classpath the Java platforms need ------------------
-# start-backend.ps1 launches the NovaLink backend with
-# `java -cp <classpath> com.nova.link.NovaLinkMain`, reading that classpath from
-# .e2e-artifacts/novalink-core.classpath.txt. Nothing produced that file on this
-# path: the self-contained platform scripts (run-bukkit/endstone/levilamina/
-# pmmp-e2e.ps1) each build it, but the shared multiplatform orchestrator
-# deliberately does not ("It does NOT build the backend jars itself"), and
-# run-e2e-orchestrator.ps1 -- which is what the Gradle realE2E task invokes --
-# never did either. Every Java platform therefore failed prereq with
-# "classpath file missing" once the earlier launcher bug was fixed.
-#
-# Produce it here, once, for the same reason bukkit does it inline: the
-# multiplatform path has no other opportunity to run the build. Skipped when
-# the file already exists so a re-run (or the bukkit script, which builds it
-# itself) does not pay for it twice.
-$classPathFile = Join-Path $RepoRoot ".e2e-artifacts/novalink-core.classpath.txt"
-# The Java platforms are exactly those the multiplatform dispatcher handles:
-# every known platform that is NOT served by a self-contained script. Checked
-# against a literal list rather than $PlatformDefs because that table is defined
-# further down this file; keep the two in sync when adding a platform. An
-# unknown name is deliberately not treated as a Java platform -- it has no
-# dispatch, so building the classpath for it would be pointless work.
-$selfContained = @('bukkit', 'endstone', 'levilamina', 'pmmp')
-$knownPlatforms = @('bukkit', 'endstone', 'levilamina', 'pmmp',
-                    'folia', 'velocity', 'bungee', 'nukkit', 'pnx', 'sponge')
-$javaPlatforms = $RequestedPlatforms | Where-Object {
-    ($knownPlatforms -contains $_) -and ($selfContained -notcontains $_)
-}
-if ($javaPlatforms.Count -gt 0 -and -not (Test-Path $classPathFile)) {
-    Log "=== building backend classpath (required by: $($javaPlatforms -join ', ')) ==="
-    $gradlew = if ($env:OS -eq 'Windows_NT') { 'gradlew.bat' } else { './gradlew' }
-    $buildLog = Join-Path $RepoRoot ".e2e-artifacts/classpath-build.log"
-    New-Item -ItemType Directory -Force -Path (Split-Path $buildLog -Parent) | Out-Null
-    $initScript = Join-Path $binDir "write-classpath.init.gradle"
-    # Gradle writes "Picked up JAVA_TOOL_OPTIONS: ..." to stderr on every run.
-    # Under $ErrorActionPreference = 'Stop' PowerShell turns a native command's
-    # stderr into a terminating NativeCommandError, so the classpath build died
-    # before gradle ever compiled anything (folia/velocity/bungee/nukkit/pnx/
-    # sponge all failed here, 53s in). Relax it for the duration of the call and
-    # judge the outcome by the exit code, which is what actually reports failure.
-    $prevEap = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        & (Join-Path $RepoRoot $gradlew) ":StarLink:core:jar" ":StarLink:core:writeRuntimeClasspath" `
-            "--init-script" $initScript `
-            "-Porg.gradle.java.installations.paths=" "-Dorg.gradle.java.installations.paths=" `
-            "--console=plain" 1>$buildLog 2>&1
-    } finally {
-        $ErrorActionPreference = $prevEap
-    }
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $classPathFile)) {
-        Log "ERROR: backend classpath build failed (exit $LASTEXITCODE); see $buildLog"
-        Get-Content $buildLog -ErrorAction SilentlyContinue |
-            Select-Object -Last 20 | ForEach-Object { Log "  $_" }
-    } else {
-        Log "  classpath written: $classPathFile"
-    }
 }
 
 # Platform definitions table. Each entry maps a platform name to its run script
@@ -426,6 +376,7 @@ foreach ($p in $SelfPlatforms) {
 }
 
 # --- dispatch the Java platforms via the shared multiplatform orchestrator ----
+$batchFailure = $false
 if ($MultiPlatforms.Count -gt 0) {
     $mpScript = Join-Path $multiplatformDir "run-multiplatform-e2e.ps1"
     if (-not (Test-Path $mpScript)) {
@@ -454,6 +405,8 @@ if ($MultiPlatforms.Count -gt 0) {
             -Platforms $mpPlatforms -RepoRoot $RepoRoot `
             -TimeoutSec $TimeoutSec -BotWaitSec $BotWaitSec @mpStrictArgs
         $mpExit = $LASTEXITCODE
+        $batchFailure = $mpExit -notin @(0, 3, 4)
+        if ($batchFailure) { Log "ERROR: multiplatform batch failed (exit $mpExit)" }
         # The batch reports one exit code for N platforms, but the platforms do
         # not share a fate: velocity/bungee SKIP by design while a sibling FAILs.
         # Read the batch's per-platform summary JSON so each row keeps its own
@@ -472,8 +425,9 @@ if ($MultiPlatforms.Count -gt 0) {
             }
         }
         foreach ($p in $MultiPlatforms) {
-            $row = $mpRows | Where-Object { $_.platform -eq $p } | Select-Object -First 1
-            if ($row) {
+            $matchingRows = @($mpRows | Where-Object { $_.platform -eq $p })
+            if ($matchingRows.Count -eq 1) {
+                $row = $matchingRows[0]
                 # The batch writes its own status strings. Accept BOTH skip
                 # classes here: 'SKIPPED-BY-DESIGN' for the proxy-only entries
                 # (velocity/bungee, from a $PlatformDefs Note) and 'SKIPPED' for
@@ -489,11 +443,14 @@ if ($MultiPlatforms.Count -gt 0) {
                     'SKIPPED-BY-DESIGN' { 4 }
                     default             { 1 }
                 }
+                if ($batchFailure -and $mpStatus -eq 'PASS') {
+                    $mpStatus = 'BATCH-FAILED'
+                    $mpRowExit = $mpExit
+                }
                 $results += [pscustomobject]@{ platform = $p; exitCode = $mpRowExit; status = $mpStatus; skippedReason = $mpReason }
             } else {
-                # No per-platform row: fall back to the batch exit code.
-                $mpStatus = Convert-ExitCodeToStatus $mpExit
-                $results += [pscustomobject]@{ platform = $p; exitCode = $mpExit; status = $mpStatus; skippedReason = '' }
+                Log "ERROR: expected one summary row for $p; found $($matchingRows.Count) (batch exit $mpExit)"
+                $results += [pscustomobject]@{ platform = $p; exitCode = 1; status = 'FAIL'; skippedReason = '' }
             }
         }
     }
@@ -514,7 +471,7 @@ $results | ForEach-Object {
 # scalar PSCustomObject rather than an array, and .Count on a scalar is $null --
 # so `$null -gt 0` is False and the orchestrator would exit 0 (a silently green
 # E2E run) for the single-failure case. Wrapping in @() guarantees an array.
-$failures = @($results | Where-Object { $_.status -eq 'FAIL' -or $_.status -eq 'UNKNOWN' -or $_.status -eq 'MISSING-HARNESS' })
+$failures = @($results | Where-Object { $_.status -notin @('PASS', 'SKIPPED', 'SKIPPED-BY-DESIGN') })
 # The two skip classes are counted separately. Only $skipped (environment) can
 # fail the run under strict mode; $skippedByDesign is reported but never fatal.
 $skipped         = @($results | Where-Object { $_.status -eq 'SKIPPED' })
@@ -560,4 +517,4 @@ Log "Summary written to: $summaryFile"
 # counting it here would red the nightly forever for a condition no commit can
 # fix -- the exact noise that made the old signal unreadable.
 $strictFailure = $RequireAllPlatforms -and $skipped.Count -gt 0
-if ($failures.Count -gt 0 -or $strictFailure) { exit 1 } else { exit 0 }
+if ($failures.Count -gt 0 -or $strictFailure -or $batchFailure) { exit 1 } else { exit 0 }

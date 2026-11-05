@@ -15,6 +15,7 @@ const mineflayer = require('mineflayer');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { L1Route } = require('./l1-route');
 
 const HOST = process.env.E2E_MC_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.E2E_MC_PORT || '25565', 10);
@@ -23,6 +24,7 @@ const USERNAME = process.env.E2E_BOT_USERNAME || 'E2E_Bot_Alpha';
 const RESULTS = process.env.E2E_RESULTS_FILE || path.join(__dirname, 'results.json');
 const TIMEOUT_MS = parseInt(process.env.E2E_TIMEOUT_MS || '360000', 10);
 const RUN_ID = process.env.E2E_RUN_ID || crypto.randomUUID();
+const route = new L1Route(RUN_ID, USERNAME, RESULTS);
 let sequenceComplete = false;
 let intentionalQuit = false;
 
@@ -81,6 +83,7 @@ function writeResults(extra) {
     host: HOST,
     port: PORT,
     received,
+    route: route.evidence(),
   }, extra || {});
   fs.writeFileSync(RESULTS, JSON.stringify(payload, null, 2));
   console.log('results.json written:', RESULTS);
@@ -92,6 +95,15 @@ function failRun(error) {
 }
 
 async function runSequence() {
+  await route.start((username, recordReceiver) => {
+    const receiver = mineflayer.createBot({ host: HOST, port: PORT, username, auth: 'offline', version: MC_VERSION });
+    receiver.on('spawn', () => recordReceiver('spawn', 'spawned', 'spawned'));
+    receiver.on('messagestr', message => recordReceiver('messagestr', message, message));
+    receiver.on('kicked', reason => recordReceiver('kicked', reason, plainText(reason)));
+    receiver.on('error', error => recordReceiver('error', error.message, error.message));
+    receiver.on('end', () => recordReceiver('end', 'ended', 'ended'));
+    return { send: command => receiver.chat(command), close: () => receiver.quit('e2e route done') };
+  });
   console.log('=== waiting for spawn ===');
   await sleep(15000);
   console.log('=== starting L1 command sequence ===');
@@ -109,6 +121,8 @@ async function runSequence() {
   // follows still runs in the mode it names.
   sendCmd('/nc toggle');
   await sleep(2500);
+  await route.exchange(sendCmd);
+  await sleep(1500);
   sendCmd('hello from e2e bot (replace mode)');
   await sleep(3000);
   sendCmd('/nc toggle');
@@ -157,6 +171,7 @@ async function runSequence() {
   writeResults();
   await sleep(1500);
   intentionalQuit = true;
+  route.close();
   try { bot.quit('e2e done'); } catch {}
   await sleep(1000);
   writeResults();

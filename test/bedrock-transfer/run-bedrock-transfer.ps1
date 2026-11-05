@@ -5,6 +5,7 @@ param(
     [string]$RunRoot = '',
     [string]$ArtifactsFile = '',
     [switch]$SkipBuild,
+    [string]$ExternalBuildSource = '',
     [ValidateRange(1024, 65535)][int]$PortA = 19362,
     [ValidateRange(1024, 65535)][int]$PortB = 19363,
     [ValidateRange(1024, 65535)][int]$RconA = 26362,
@@ -16,6 +17,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+if ($SkipBuild -and (-not $ArtifactsFile -or [string]::IsNullOrWhiteSpace($ExternalBuildSource))) {
+    throw '-SkipBuild requires -ArtifactsFile and -ExternalBuildSource describing the supplied build and revision.'
+}
+if (-not $SkipBuild -and ($ArtifactsFile -or $ExternalBuildSource)) { throw 'External artifact options require -SkipBuild.' }
 . (Join-Path $repo 'test/versions.lock.ps1')
 . (Join-Path $repo 'test/bin/e2e-assertions.ps1')
 . (Join-Path $PSScriptRoot 'native-runtime.ps1')
@@ -84,6 +89,18 @@ try {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'test/bin/fetch-server.ps1') -Name powernukkitx -DistDir $dist
     if ($LASTEXITCODE -ne 0) { throw 'Pinned PNX download/hash verification failed.' }
     if ((Get-FileHash -LiteralPath $serverJar -Algorithm SHA256).Hash -ine $pin.Sha256) { throw 'PNX server SHA-256 differs from versions.lock.ps1.' }
+    Push-Location $repo
+    try {
+        $revision = (& git rev-parse HEAD | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $revision -notmatch '^[0-9a-f]{40}$') { throw 'Cannot record source revision.' }
+        $workingTree = @(& git status --porcelain --untracked-files=normal)
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot record working tree status.' }
+    } finally { Pop-Location }
+    $buildSource = if ($SkipBuild) {
+        @{ kind = 'externally-supplied'; description = $ExternalBuildSource; runnerRevision = $revision; runnerWorkingTree = $workingTree }
+    } else {
+        @{ kind = 'isolated-local-build'; revision = $revision; workingTree = $workingTree }
+    }
     if (-not $SkipBuild) {
         $env:JAVA_HOME = $BuildJdk
         $buildRoot = Join-Path $RunRoot 'build'
@@ -94,6 +111,10 @@ try {
                 "-PbedrockTransferBuildRoot=$buildRoot" '--configure-on-demand' '--no-daemon' '--max-workers=2' `
                 '-x' 'test' '--console=plain' *> (Join-Path $RunRoot 'build.log')
             if ($LASTEXITCODE -ne 0) { throw "Isolated transfer build failed; inspect $RunRoot/build.log" }
+            if ((& git rev-parse HEAD | Out-String).Trim() -cne $revision -or
+                (($workingTree -join "`n") -cne ((@(& git status --porcelain --untracked-files=normal)) -join "`n"))) {
+                throw 'Source revision or working tree status changed during the build.'
+            }
         } finally { Pop-Location }
         $ArtifactsFile = Join-Path $buildRoot 'artifacts.json'
     }
@@ -116,7 +137,7 @@ try {
     $names = @{ traveler = 'BTTraveler'; observerA = 'BTWitnessA'; observerB = 'BTWitnessB' }
     $plan = [ordered]@{
         runId = $runId; kind = 'pnx-native-transfer'; serverVersion = $pin.Build
-        minecraftVersion = $pin.BotMcVersion; serverJar = $serverJar; serverSha256 = $pin.Sha256
+        minecraftVersion = $pin.BotMcVersion; serverSha256 = $pin.Sha256; buildSource = $buildSource
         transport = 'native-pnx-nethernet-http'; backendUrl = "http://127.0.0.1:$BackendWsPort"
         controlTransport = 'held-stdin'; controlDirectory = $controlDirectory
         nodes = $nodes; names = $names; timeoutMs = $BotTimeoutSeconds * 1000
@@ -185,7 +206,8 @@ debug: false
         if ($LASTEXITCODE -ne 0) { throw "PNX $id preparation failed; inspect $runs/launcher.log" }
         $launch = Get-Content -LiteralPath $launchSpecPath -Raw | ConvertFrom-Json
         if ($launch.schemaVersion -ne 1 -or $launch.platform -cne 'pnx' -or
-            $launch.serverSha256 -ine $pin.Sha256 -or $launch.workingDirectory -ine $pnxDir) {
+            $launch.serverSha256 -ine $pin.Sha256 -or $launch.serverJar -ine $serverJar -or
+            $launch.workingDirectory -ine $pnxDir) {
             throw "PNX $id launch spec does not match this run."
         }
         Write-Utf8 (Join-Path $launch.workingDirectory 'pnx.yml') (Get-PnxLoopbackConfig -Port $node.port -Node $id)
@@ -226,7 +248,7 @@ debug: false
     }
     $fatal = Test-ServerLogFatal -Paths $logs
     if ($fatal) { throw "Server fatal: $fatal" }
-    & node (Join-Path $PSScriptRoot 'assert-evidence.js') $RunRoot
+    & node (Join-Path $PSScriptRoot 'assert-evidence.js') $RunRoot $serverJar
     if ($LASTEXITCODE -ne 0) { throw 'Native transfer evidence assertions failed.' }
 } catch {
     $failure = Protect-BedrockErrorText -Text $_.Exception.ToString() -Secrets $publicSecrets

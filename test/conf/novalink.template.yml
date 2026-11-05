@@ -33,6 +33,9 @@ global_channels:
     max_capacity: 1000
 
 clients:
+  - username: "E2E_RoutePeer"
+    password: "{{CLIENT_PASSWORD}}"
+    display_name: "L1 protocol route peer"
   - username: "E2E_Client"
     password: "{{CLIENT_PASSWORD}}"
     display_name: "E2E"

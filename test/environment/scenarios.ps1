@@ -1,6 +1,7 @@
-﻿#requires -Version 7.4
+#requires -Version 7.4
 
 . (Join-Path $PSScriptRoot 'storage-probe.ps1')
+. (Join-Path $PSScriptRoot 'evidence-checks.ps1')
 
 function Get-EnvironmentCaseDefinitions {
     param([string]$SpecificationPath = (Join-Path $PSScriptRoot 'cases.psd1'))
@@ -501,8 +502,8 @@ function Invoke-EnvironmentBotPair($Context, [string]$Phase, [switch]$RejectFabr
             @{ action = 'chat'; text = $reply }, @{ action = 'wait'; ms = 2000 }
         )
     }
-    $senderSteps += @{ action = 'quit' }
-    $receiverSteps += @{ action = 'quit' }
+    $senderSteps += @(@{ action = 'handoffSet'; key = 'bukkit-complete'; pattern = '^spawned$' }, @{ action = 'quit' })
+    $receiverSteps += @(@{ action = 'handoffSet'; key = 'fabric-complete'; pattern = '^spawned$' }, @{ action = 'quit' })
     $records = @()
     foreach ($role in @('bukkit', 'fabric')) {
         $plan = @{
@@ -528,11 +529,7 @@ function Invoke-EnvironmentBotPair($Context, [string]$Phase, [switch]$RejectFabr
         if ($records[$i].Process.ExitCode -ne 0) { throw 'Real game bot failed; see private logs' }
         $role = @('bukkit', 'fabric')[$i]
         $result = (Read-EnvironmentText (Join-Path $dir "$role.results.json")) | ConvertFrom-Json
-        $expectedName = if ($role -eq 'bukkit') { 'EnvBukkit' } else { 'EnvFabric' }
-        if (-not $result -or $result.runId -cne "$($Context.RunId)-$Phase" -or $result.role -cne $role -or
-            $result.username -cne $expectedName -or $result.timedOut -or $result.error -or
-            @($result.received | Where-Object { $_.kind -eq 'spawn' -and $_.raw -eq 'spawned' }).Count -eq 0 -or
-            @(@($result.assertions) + @($result.absentChecks) | Where-Object { $null -ne $_ -and $_.pass -ne $true }).Count -gt 0) {
+        if (-not (Test-EnvironmentBotRecording $result $Context.RunId $Phase $role $handoff)) {
             throw "Invalid or failed real bot recording for $role"
         }
         $results[$role] = $result
@@ -540,14 +537,10 @@ function Invoke-EnvironmentBotPair($Context, [string]$Phase, [switch]$RejectFabr
     return @{ Bukkit = $results.bukkit; Fabric = $results.fabric; Token = $token; Reply = $reply }
 }
 
-function Test-EnvironmentDelivery($Result, [string]$Token) {
-    return @($Result.received | Where-Object { $_.kind -eq 'messagestr' -and ([string]$_.text).Contains($Token) }).Count -gt 0
-}
-
 function Publish-EnvironmentEvidence($Context) {
     foreach ($file in Get-ChildItem -LiteralPath $Context.Private -Recurse -File) {
         $relative = [IO.Path]::GetRelativePath($Context.Private, $file.FullName).Replace('\', '/')
-        if ($relative -notmatch '^(bots/[^/]+/[^/]+\.(results|plan)\.json|(?:backend/[^/]+|bukkit-[^/]+|fabric-[^/]+)/[^/]+\.(stdout|stderr)\.log|tools/[^/]+/[^/]+\.stderr\.log)$') { continue }
+        if ($relative -notmatch '^(bots/[^/]+/[^/]+\.(results|plan)\.json|bots/[^/]+/handoff/[^/]+\.json|(?:backend/[^/]+|bukkit-[^/]+|fabric-[^/]+)/[^/]+\.(stdout|stderr)\.log|tools/[^/]+/[^/]+\.stderr\.log)$') { continue }
         $body = Read-EnvironmentText $file.FullName
         foreach ($secret in $Context.Secrets) { if ($secret) { $body = $body.Replace($secret, '[REDACTED]') } }
         $body = [regex]::Replace($body, '(?im)(password|secret-key|authorization|bearer)(\s*[:=]\s*|\s+)[^\r\n]+', '$1=[REDACTED]')
@@ -655,8 +648,8 @@ function Invoke-EnvironmentScenarios {
             Wait-EnvironmentMarker $backend 'Client authenticated:\s*ENV_Fabric\s+from' 45
             Wait-EnvironmentMarker $backend 'Client authenticated:\s*ENV_Bukkit\s+from' 45
             $control = Invoke-EnvironmentBotPair $context 'control'
-            $toFabric = Test-EnvironmentDelivery $control.Fabric $control.Token
-            $fromFabric = Test-EnvironmentDelivery $control.Bukkit $control.Reply
+            $toFabric = Test-EnvironmentDelivery $control.Bukkit $control.Fabric $control.Token
+            $fromFabric = Test-EnvironmentDelivery $control.Fabric $control.Bukkit $control.Reply
             if ($case -eq 'tls-trusted') {
                 $assertions.Add((New-EnvironmentAssertion 'ENV-TLS-TRUSTED-AUTH' $true 'Both actual game plugins authenticated against the TLS backend'))
                 $assertions.Add((New-EnvironmentAssertion 'ENV-TLS-TRUSTED-TO-FABRIC' $toFabric 'Fabric bot recording contains the Bukkit game message' $control.Token))
@@ -670,18 +663,22 @@ function Invoke-EnvironmentScenarios {
                 $rejected = Start-EnvironmentGame $context 'fabric' 'rejected' 'untrusted'
                 $negative = Invoke-EnvironmentBotPair $context 'rejected' -RejectFabric
                 $senderRow = Get-EnvironmentMessage $context $jwt $negative.Token
+                if (Test-EnvironmentGameRow $senderRow $negative.Bukkit $negative.Token) {
+                    Write-EnvironmentText (Join-Path $context.Public 'row-rejected.json') ($senderRow | ConvertTo-Json -Depth 5)
+                }
                 $failureText = (Read-EnvironmentText $rejected.Stdout) + (Read-EnvironmentText $rejected.Stderr)
                 $certificateFailure = $failureText -match 'PKIX path building failed|unable to find valid certification path|certificate_unknown|CERTIFICATE_VERIFY_FAILED|unable to get local issuer certificate'
                 $backendOut = Read-EnvironmentText $backend.Stdout
                 $backendErr = Read-EnvironmentText $backend.Stderr
                 $newBackendText = $backendOut.Substring([Math]::Min($outOffset, $backendOut.Length)) +
                     $backendErr.Substring([Math]::Min($errOffset, $backendErr.Length))
+                Write-EnvironmentText (Join-Path $context.Private 'backend/rejection-window/window.stdout.log') $newBackendText
                 $newAuth = $newBackendText -match 'Client authenticated:\s*ENV_Fabric\s+from'
-                $absent = -not (Test-EnvironmentDelivery $negative.Fabric $negative.Token)
+                $absent = Test-EnvironmentNegativeEvidence $negative.Bukkit $negative.Fabric $negative.Token (Join-Path $context.Private 'bots/rejected/handoff') "$($context.RunId)-rejected"
                 $observed = $negative.Fabric.handoff.'bukkit-sent' -eq 'spawned' -and $negative.Bukkit.handoff.'fabric-observed' -eq 'spawned'
                 $assertions.Add((New-EnvironmentAssertion 'ENV-TLS-UNTRUSTED-CERTIFICATE' $certificateFailure 'Fabric log must contain an explicit certificate-chain validation error'))
                 $assertions.Add((New-EnvironmentAssertion 'ENV-TLS-UNTRUSTED-NO-AUTH' (-not $newAuth) 'No new Fabric authentication after restart with unrelated CA'))
-                $assertions.Add((New-EnvironmentAssertion 'ENV-TLS-UNTRUSTED-NO-DELIVERY' ($absent -and $observed -and $null -ne $senderRow) 'Receiver observed a full 12-second window after the actual game sender published its send; game row persisted' $negative.Token))
+                $assertions.Add((New-EnvironmentAssertion 'ENV-TLS-UNTRUSTED-NO-DELIVERY' ($absent -and $observed -and (Test-EnvironmentGameRow $senderRow $negative.Bukkit $negative.Token)) 'Receiver observed a full 12-second window after the actual game sender published its send; game row persisted' $negative.Token))
             } else {
                 $prefix = switch ($case) { 'mysql' { 'ENV-MYSQL' }; 'postgresql' { 'ENV-POSTGRES' }; 'redis' { 'ENV-REDIS' } }
                 $assertions.Add((New-EnvironmentAssertion "$prefix-GAME-DELIVERY" ($toFabric -and $fromFabric) 'Actual Bukkit/Fabric bots exchanged game messages before backend restart'))
@@ -691,11 +688,21 @@ function Invoke-EnvironmentScenarios {
                 Write-EnvironmentText (Join-Path $context.Public 'row-before.json') ($before | ConvertTo-Json -Depth 5)
                 $oldBackend = $backend
                 $oldStart = $backend.Process.StartTime.ToUniversalTime()
+                $oldPid = $backend.Process.Id
+                if ($oldBackend.Process.HasExited) { throw 'Backend exited before graceful shutdown was requested' }
+                $stopRequested = [DateTime]::UtcNow
                 Stop-EnvironmentProcess $backend
                 if ($oldBackend.Forced) { throw 'Backend shutdown required a forced kill before the database restart check' }
+                $oldExit = $oldBackend.Process.ExitTime.ToUniversalTime()
+                $oldExitCode = $oldBackend.Process.ExitCode
                 $backend = Start-EnvironmentBackend $context 'restarted'
                 $jwt = Connect-EnvironmentRest $context
-                $newProcess = $oldBackend.Process.HasExited -and $backend.Process.StartTime.ToUniversalTime() -gt $oldStart
+                $ledger = @{ runId = $context.RunId; old = @{ pid = $oldPid; startedAt = $oldStart.ToString('o'); stopRequestedAt = $stopRequested.ToString('o')
+                        exitedAt = $oldExit.ToString('o'); exitCode = $oldExitCode; stopMode = $oldBackend.StopMode
+                        wasRunning = $true; forced = $oldBackend.Forced }
+                    new = @{ pid = $backend.Process.Id; startedAt = $backend.Process.StartTime.ToUniversalTime().ToString('o') } }
+                Write-EnvironmentText (Join-Path $context.Public 'backend-restart.json') ($ledger | ConvertTo-Json -Depth 5)
+                $newProcess = Test-EnvironmentRestartLedger $ledger $context.RunId (Read-EnvironmentText $oldBackend.Stdout) (Read-EnvironmentText $backend.Stdout)
                 $assertions.Add((New-EnvironmentAssertion "$prefix-RESTARTED" $newProcess 'Old backend exited after graceful shutdown; a new process serves the unchanged database'))
                 $after = Get-EnvironmentMessage $context $jwt $control.Token
                 $same = $null -ne $after
@@ -707,8 +714,12 @@ function Invoke-EnvironmentScenarios {
                 Wait-EnvironmentMarker $backend 'Client authenticated:\s*ENV_Fabric\s+from' 60
                 Wait-EnvironmentMarker $backend 'Client authenticated:\s*ENV_Bukkit\s+from' 60
                 $post = Invoke-EnvironmentBotPair $context 'restarted'
-                $reconnected = (Test-EnvironmentDelivery $post.Fabric $post.Token) -and (Test-EnvironmentDelivery $post.Bukkit $post.Reply)
+                $reconnected = (Test-EnvironmentDelivery $post.Bukkit $post.Fabric $post.Token) -and (Test-EnvironmentDelivery $post.Fabric $post.Bukkit $post.Reply)
                 $assertions.Add((New-EnvironmentAssertion "$prefix-POST-RESTART-GAME" $reconnected 'Both actual game plugins reauthenticated and exchanged new game messages after restart'))
+                $postRow = Get-EnvironmentMessage $context $jwt $post.Token
+                $postStored = Test-EnvironmentGameRow $postRow $post.Bukkit $post.Token
+                $assertions.Add((New-EnvironmentAssertion "$prefix-POST-RESTART-STORED" $postStored 'New game send persisted and was read through authenticated history after restart' $post.Token))
+                if ($postStored) { Write-EnvironmentText (Join-Path $context.Public 'row-post-restart.json') ($postRow | ConvertTo-Json -Depth 5) }
             }
         } catch {
             $assertions.Add((New-EnvironmentAssertion "ENV-$($case.ToUpperInvariant())-EXECUTION" $false $_.Exception.Message))
@@ -726,7 +737,7 @@ function Invoke-EnvironmentScenarios {
         }
         $completed = @(Complete-EnvironmentAssertions $assertions.ToArray() $spec.RequiredAssertions[$case])
         $summary = @{ schemaVersion = 1; case = $case; runId = $runId; verification = 'real-game'; assertions = $completed
-            status = $(if (@($completed | Where-Object { -not $_.pass }).Count -eq 0) { 'PASS' } else { 'FAIL' }) }
+            status = $(if (@($completed | Where-Object { $_.pass -isnot [bool] -or -not $_.pass }).Count -eq 0) { 'PASS' } else { 'FAIL' }) }
         Write-EnvironmentText (Join-Path $context.Public 'environment-summary.json') ($summary | ConvertTo-Json -Depth 10)
         foreach ($assertion in $completed) { $all.Add($assertion) }
     }

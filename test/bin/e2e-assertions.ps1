@@ -4,7 +4,7 @@
 # Dot-source this file next to versions.lock.ps1:
 #     . (Join-Path $binDir 'e2e-assertions.ps1')
 #
-# It defines functions only; it starts nothing and touches no files.
+# Helpers run only when explicitly called by a harness.
 #
 # Each function here exists because the assertion it replaces could not fail:
 #
@@ -148,6 +148,66 @@ function Initialize-BotRun {
     }
     $env:E2E_RUN_ID = [guid]::NewGuid().ToString('N')
     return $env:E2E_RUN_ID
+}
+
+function Enable-L1RouteEvidence {
+    param([int]$BackendPort, [string]$ClientPassword, [string]$ClassPathFile, [string]$Java = 'java')
+    if (-not (Test-Path -LiteralPath $ClassPathFile -PathType Leaf)) { throw "Missing route peer classpath: $ClassPathFile" }
+    $env:E2E_ROUTE_REQUIRED = '1'
+    $env:E2E_ROUTE_PORT = [string]$BackendPort
+    $env:E2E_ROUTE_PASSWORD = $ClientPassword
+    $env:E2E_ROUTE_CLASSPATH = [IO.File]::ReadAllText($ClassPathFile).Trim()
+    $env:E2E_ROUTE_JAVA = $Java
+}
+
+function Export-L1BackendClasspath {
+    param([string]$RepoRoot, [string]$RunsDir, [string]$OutputFile = '')
+    if (-not $OutputFile) { $OutputFile = Join-Path $RepoRoot '.e2e-artifacts/novalink-core.classpath.txt' }
+    $wrapper = Join-Path $RepoRoot 'gradlew.bat'
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { $wrapper = Join-Path $RepoRoot 'gradlew' }
+    $saved = $ErrorActionPreference
+    Push-Location $RepoRoot
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $wrapper ':StarLink:core:writeRuntimeClasspath' '-x' 'test' '--console=plain' '--configure-on-demand' `
+            '-Porg.gradle.java.installations.paths=' '-Dorg.gradle.java.installations.paths=' `
+            '--init-script' (Join-Path $PSScriptRoot 'write-classpath.init.gradle') `
+            "-Pe2eClasspathOutput=$OutputFile" `
+            1>(Join-Path $RunsDir 'build.out.log') 2>(Join-Path $RunsDir 'build.err.log')
+        if ($LASTEXITCODE -ne 0) { throw "Current backend build failed; see $RunsDir/build.err.log" }
+    } finally { $ErrorActionPreference = $saved; Pop-Location }
+    $file = $OutputFile
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing backend classpath: $file" }
+    return $file
+}
+
+function Get-L1RouteFailure {
+    param([string]$ResultsFile)
+    $validator = Join-Path $PSScriptRoot '../bot/assert-l1-route.js'
+    $saved = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & node $validator $ResultsFile 2>&1
+        if ($LASTEXITCODE -ne 0) { return "real backend route/independent receiver failed: $($output -join ' ')" }
+    } finally { $ErrorActionPreference = $saved }
+    return $null
+}
+
+function Install-L1PluginArtifact {
+    param([IO.FileInfo]$Artifact, [string]$PluginsDir, [string]$Pattern)
+    New-Item -ItemType Directory -Force -Path $PluginsDir | Out-Null
+    $destination = Join-Path $PluginsDir $Artifact.Name
+    $previous = @(Get-ChildItem -LiteralPath $PluginsDir -File -Filter $Pattern |
+        Where-Object { $_.FullName -ne $destination })
+    if ($previous.Count) {
+        $archive = Join-Path (Split-Path -Parent $PluginsDir) 'previous-e2e-plugin-artifacts'
+        New-Item -ItemType Directory -Force -Path $archive | Out-Null
+        foreach ($file in $previous) {
+            $target = Join-Path $archive (([guid]::NewGuid().ToString('N')) + '-' + $file.Name)
+            Move-Item -LiteralPath $file.FullName -Destination $target -ErrorAction Stop
+        }
+    }
+    Copy-Item -LiteralPath $Artifact.FullName -Destination $destination -Force -ErrorAction Stop
 }
 
 function Get-BotRunFailure {

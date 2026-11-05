@@ -34,6 +34,37 @@ function New-Row([string]$Text, [double]$AtMs) {
   [PSCustomObject]@{ kind = 'messagestr'; text = $Text; atMs = $AtMs }
 }
 
+$rawAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'assert-joint-raw-evidence.ps1'), [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'Raw evidence script did not parse' }
+$recordingCheck = $rawAst.Find({ param($node)
+  $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-JointAcceptanceRecording'
+}, $true)
+if (-not $recordingCheck) { throw 'Missing recording acceptance check' }
+. ([scriptblock]::Create($recordingCheck.Extent.Text))
+function New-AcceptanceRecording {
+  [PSCustomObject]@{
+    received = @([PSCustomObject]@{ kind = 'spawn'; raw = 'spawned'; text = 'spawned'; atMs = 1 }, (New-Row 'chat' 2))
+    sent = @([PSCustomObject]@{ text = 'chat'; atMs = 2 })
+  }
+}
+$recording = New-AcceptanceRecording
+Assert-Check (Test-JointAcceptanceRecording $recording) 'recording requires a real spawn and traffic'
+$recording.received = @($recording.received | Where-Object { $_.kind -ne 'spawn' })
+Assert-Check (-not (Test-JointAcceptanceRecording $recording)) 'recording without spawn rejected'
+$recording = New-AcceptanceRecording
+$recording.received += [PSCustomObject]@{ kind = 'spawn'; raw = 'spawned'; text = 'spawned'; atMs = 3 }
+Assert-Check (Test-JointAcceptanceRecording $recording) 'multiple spawn events accepted'
+foreach ($kind in @('error', 'planError', 'kicked')) {
+  $recording = New-AcceptanceRecording
+  $recording.received += [PSCustomObject]@{ kind = $kind }
+  Assert-Check (-not (Test-JointAcceptanceRecording $recording)) "raw $kind event rejected"
+}
+foreach ($field in @('received', 'sent')) {
+  $recording = New-AcceptanceRecording
+  $recording.$field += [PSCustomObject]@{ synthetic = $true }
+  Assert-Check (-not (Test-JointAcceptanceRecording $recording)) "synthetic $field row rejected"
+}
+
 $proxyLog = [System.IO.Path]::GetTempFileName()
 try {
   [System.IO.File]::WriteAllText($proxyLog, 'Loaded plugin NovaChat version 1.0')
@@ -155,10 +186,22 @@ function New-ContractSummary {
   }
 }
 
+function Invoke-SyntheticContract {
+  param([string]$JointRoot, [string]$ProxyMode, [string]$ProxyPlatform, [string]$BedrockPlatform,
+    [string]$ScenarioGroups = 'core', [string]$SecondaryJavaPlatform = 'none')
+  $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'assert-joint-ci.ps1'))
+  $end = $source.IndexOf("`$roundDir = Join-Path `$files[0].DirectoryName 'round-1'")
+  if ($end -lt 0) { throw 'Cannot isolate the summary contract' }
+  $contract = $source.Substring(0, $end).Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
+  & ([scriptblock]::Create($contract)) -JointRoot $JointRoot -ProxyMode $ProxyMode `
+    -ProxyPlatform $ProxyPlatform -BedrockPlatform $BedrockPlatform -ScenarioGroups $ScenarioGroups `
+    -SecondaryJavaPlatform $SecondaryJavaPlatform
+}
+
 function Invoke-ContractGuard {
   param($Summary, [string]$Groups, [string]$Mode, [string]$Proxy, [string]$Secondary = 'none')
   [IO.File]::WriteAllText($summaryFile, ($Summary | ConvertTo-Json -Depth 12))
-  & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $Mode `
+  Invoke-SyntheticContract -JointRoot $summaryDir -ProxyMode $Mode `
     -ProxyPlatform $Proxy -BedrockPlatform 'nukkit' -ScenarioGroups $Groups -SecondaryJavaPlatform $Secondary
 }
 
@@ -170,6 +213,21 @@ function Assert-ContractRejected {
 }
 
 try {
+  $noRaw = New-ContractSummary 'core' 'lite' 'bungee'
+  $noRaw | Add-Member -NotePropertyName runId -NotePropertyValue 'synthetic-selftest'
+  [IO.File]::WriteAllText($summaryFile, ($noRaw | ConvertTo-Json -Depth 12))
+  $rejected = $false
+  try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode lite -ProxyPlatform bungee } catch {
+    $rejected = $_.Exception.Message -match 'Missing raw evidence'
+  }
+  Assert-Check $rejected 'CI rejects a passing summary without raw recordings'
+  $noRaw | Add-Member -NotePropertyName synthetic -NotePropertyValue $true
+  [IO.File]::WriteAllText($summaryFile, ($noRaw | ConvertTo-Json -Depth 12))
+  $rejected = $false
+  try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode lite -ProxyPlatform bungee } catch {
+    $rejected = $_.Exception.Message -match 'Synthetic summaries'
+  }
+  Assert-Check $rejected 'CI rejects explicitly synthetic summaries'
   foreach ($case in @(
     @{ Proxy = 'velocity'; Mode = 'relay'; Bedrock = 'nukkit' },
     @{ Proxy = 'velocity'; Mode = 'relay'; Bedrock = 'pnx' },
@@ -202,18 +260,18 @@ try {
         bedrock = $(if ($mode -eq 'relay') { $bedrock } else { $null }); secondaryJava = $null; assertions = $assertions })
     }
     [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
-    & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock
-    Assert-Check $true "CI $label accepts complete synthetic evidence"
+    Invoke-SyntheticContract -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock
+    Assert-Check $true "summary contract $label accepts complete synthetic fixture"
     $wrongProxy = if ($proxy -eq 'velocity') { 'bungee' } else { 'velocity' }
     $rejected = $false
-    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $wrongProxy -BedrockPlatform $bedrock } catch { $rejected = $true }
-    Assert-Check $rejected "CI $label rejects wrong proxy"
+    try { Invoke-SyntheticContract -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $wrongProxy -BedrockPlatform $bedrock } catch { $rejected = $true }
+    Assert-Check $rejected "summary contract $label rejects wrong proxy"
 
     if ($mode -eq 'relay') {
       $wrongBedrock = if ($bedrock -eq 'pnx') { 'nukkit' } else { 'pnx' }
       $rejected = $false
-      try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $wrongBedrock } catch { $rejected = $true }
-      Assert-Check $rejected "CI $label rejects a different Bedrock server"
+      try { Invoke-SyntheticContract -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $wrongBedrock } catch { $rejected = $true }
+      Assert-Check $rejected "summary contract $label rejects a different Bedrock server"
     }
 
     $required = $assertions | Where-Object { $_.id -eq 'round1/iso/phase1-isolated-from-bob' }
@@ -221,14 +279,14 @@ try {
     $required.kind = 'diagnostic'
     [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
     $rejected = $false
-    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock } catch { $rejected = $true }
-    Assert-Check $rejected "CI $label rejects diagnostic substitution"
+    try { Invoke-SyntheticContract -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock } catch { $rejected = $true }
+    Assert-Check $rejected "summary contract $label rejects diagnostic substitution"
 
     $summary.rounds[0].assertions = @($assertions | Where-Object { $_.id -ne $required.id })
     [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
     $rejected = $false
-    try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock } catch { $rejected = $true }
-    Assert-Check $rejected "CI $label rejects missing assertion"
+    try { Invoke-SyntheticContract -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock } catch { $rejected = $true }
+    Assert-Check $rejected "summary contract $label rejects missing assertion"
 
     if ($mode -eq 'relay' -and $bedrock -eq 'pnx') {
       $required.kind = $requiredKind
@@ -237,13 +295,13 @@ try {
       $native.kind = 'diagnostic'
       [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
       $rejected = $false
-      try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock } catch { $rejected = $_.Exception.Message -match 'native-pnx-runtime' }
-      Assert-Check $rejected "CI $label rejects diagnostic native-runtime evidence"
+      try { Invoke-SyntheticContract -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock } catch { $rejected = $_.Exception.Message -match 'native-pnx-runtime' }
+      Assert-Check $rejected "summary contract $label rejects diagnostic native-runtime evidence"
       $summary.rounds[0].assertions = @($assertions | Where-Object { $_.id -ne 'round1/native-pnx-runtime' })
       [System.IO.File]::WriteAllText($summaryFile, ($summary | ConvertTo-Json -Depth 12))
       $rejected = $false
-      try { & (Join-Path $PSScriptRoot 'assert-joint-ci.ps1') -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock } catch { $rejected = $_.Exception.Message -match 'native-pnx-runtime' }
-      Assert-Check $rejected "CI $label rejects missing native-runtime evidence"
+      try { Invoke-SyntheticContract -JointRoot $summaryDir -ProxyMode $mode -ProxyPlatform $proxy -BedrockPlatform $bedrock } catch { $rejected = $_.Exception.Message -match 'native-pnx-runtime' }
+      Assert-Check $rejected "summary contract $label rejects missing native-runtime evidence"
     }
   }
 
@@ -284,7 +342,7 @@ try {
     $leg = if ($case.Secondary -eq 'bukkit') { 'bukkit2' } else { '' }
     $fixture = New-ContractSummary $case.Group $case.Mode $case.Proxy $leg
     Invoke-ContractGuard $fixture $case.Group $case.Mode $case.Proxy $case.Secondary
-    Assert-Check $true "complete synthetic $($case.Group) summary accepted"
+    Assert-Check $true "synthetic $($case.Group) summary contract accepted"
     $requiredRow = @($fixture.rounds[0].assertions | Where-Object { $_.id -ceq $case.Id })[0]
     $requiredRow.kind = 'diagnostic'
     Assert-ContractRejected $fixture $case.Group $case.Mode $case.Proxy $case.Id $case.Secondary

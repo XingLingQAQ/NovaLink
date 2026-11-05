@@ -2,8 +2,7 @@
 # run-pmmp-e2e.ps1 -- portable PocketMine-MP L1 E2E orchestrator.
 #
 # Runs the full Layer-1 flow for the pmmp platform:
-#   1. Build the NovaLink backend (StarLink:core classpath via init-script, or
-#      a fat jar if shadow landed it) + export backend runtime classpath.
+#   1. Build the current NovaLink backend and export its runtime classpath.
 #   2. Lay down the NovaChat pmmp plugin source into a PocketMine plugins/ dir.
 #   3. Fetch PocketMine-MP phar + PHP runtime (fetch-server.ps1 -Name pocketmine).
 #   4. Generate backend config + start the NovaLink backend.
@@ -115,7 +114,7 @@ function Teardown-All {
 trap { Log "TRAP: $($_.Exception.Message)"; Teardown-All; break }
 $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action { Teardown-All }
 
-$isWin = $IsWindows -or $env:OS -eq "Windows_NT"
+$isWin = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $gradleW = if ($isWin) { ".\gradlew.bat" } else { "./gradlew" }
 $javaExe = if ($isWin) { "java.exe" } else { "java" }
 $java = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME "bin/$javaExe" } else { "java" }
@@ -283,88 +282,10 @@ if (Test-Path -LiteralPath $phpIni) {
 $env:PHP_INI_SCAN_DIR = ''
 
 # ---------------------------------------------------------------------------
-# 1. Locate the NovaLink backend artifact. Prefer the shadow fat jar (built by
-#    StarLink/core's com.gradleup.shadow plugin -> *-all.jar); only fall back
-#    to the gradle classpath export when NO fat jar exists. The fat jar path
-#    lets this E2E skip gradle entirely (the gradle classpath export hits the
-#    known multi-project configure hang under loom without --configure-on-demand).
-#    The pmmp plugin is pure PHP source -- no Java build step.
-#
-#    A fat jar is only usable when it is NOT STALE. Measured on this host
-#    (2026-10-23): core-1.0.0-SNAPSHOT-all.jar was dated 2026-10-17 18:51 while
-#    42 .java files under StarLink/core/src were newer. That jar's
-#    NovaLinkMain.class is 67,124 bytes with zero "daemon" strings and no
-#    NovaLinkCore class at all -- a pre-refactor build. Launching from it passes
-#    --daemon to a jar that ignores the flag, so the backend dies on stdin EOF
-#    and the run looks like the daemon fix had failed when the fix was fine.
-#
-#    CI never sees this: the workflow only runs `:StarLink:core:jar`, never
-#    shadowJar, so no *-all.jar exists on a runner and CI always takes the
-#    gradle branch. Only a local dev box (where shadowJar has been run before)
-#    hits it -- which is exactly why local and CI took different code paths.
-#
-#    So: compare the jar's LastWriteTimeUtc against the newest source file, and
-#    refuse a jar that is older. "No source files found" cannot prove freshness,
-#    so it also refuses. A refused jar falls through to gradle (the slow but
-#    always-correct path); a fresh jar keeps the fast path.
+# 1. Build the current backend and export its runtime classpath.
 # ---------------------------------------------------------------------------
-function Get-FreshFatJar([string]$RepoRoot) {
-    # Same selection order as before (shadow output first, then a plain -fat
-    # jar), but the chosen jar is then VALIDATED as a whole. Deliberately not a
-    # per-glob "reject then try the next glob" loop: that would quietly swap a
-    # stale shadow jar for some other stale artifact instead of falling through
-    # to gradle, which is the branch that is always correct.
-    $jar = Get-ChildItem (Join-Path $RepoRoot "StarLink/core/build/libs/*-all.jar") -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if (-not $jar) {
-        $jar = Get-ChildItem (Join-Path $RepoRoot "StarLink/core/build/libs/*-fat.jar") -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-    }
-    if (-not $jar) { return $null }
-
-    $srcDir = Join-Path $RepoRoot "StarLink/core/src"
-    $newestSource = Get-ChildItem -LiteralPath $srcDir -Recurse -File -Filter *.java -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-    if (-not $newestSource) {
-        Log "  rejecting fat jar $($jar.Name): no .java under $srcDir, so freshness cannot be proven -- using gradle"
-        return $null
-    }
-    if ($jar.LastWriteTimeUtc -lt $newestSource.LastWriteTimeUtc) {
-        Log ("  rejecting stale fat jar {0} (jar {1:yyyy-MM-dd HH:mm} UTC, newest source {2:yyyy-MM-dd HH:mm} UTC) -- using gradle" -f `
-            $jar.Name, $jar.LastWriteTimeUtc, $newestSource.LastWriteTimeUtc)
-        return $null
-    }
-    return $jar
-}
-$fatJar = Get-FreshFatJar $RepoRoot
-$classpathFile = Join-Path $RepoRoot ".e2e-artifacts/novalink-core.classpath.txt"
-if ($fatJar) {
-    Log "step 1: using pre-built fat jar: $($fatJar.FullName) (skipping gradle)"
-} else {
-    Log "step 1: no fat jar; exporting StarLink:core backend classpath via gradle"
-    $buildErr = Join-Path $RunsDir "build.err.log"
-    $buildOut = Join-Path $RunsDir "build.out.log"
-    # Use Start-Process (not the & call operator) so gradlew's stderr output is
-    # captured to the file instead of being wrapped as a NativeCommandError record.
-    # Under $ErrorActionPreference = "Stop", the & call operator + 2>$buildErr would
-    # turn each Fabric Loom stderr banner line into a terminating error.
-    $gradleArgs = @(":StarLink:core:jar", "-x", "test", "--console=plain", "--configure-on-demand", `
-        "-Porg.gradle.java.installations.paths=", "-Dorg.gradle.java.installations.paths=", `
-        "--init-script", (Join-Path $binDir "write-classpath.init.gradle"), `
-        ":StarLink:core:writeRuntimeClasspath")
-    $gradleProc = Start-Process -FilePath $gradleW -ArgumentList $gradleArgs -WorkingDirectory $RepoRoot `
-        -RedirectStandardOutput $buildOut -RedirectStandardError $buildErr -PassThru -NoNewWindow -Wait
-    if ($gradleProc.ExitCode -ne 0) {
-        Log "ERROR: gradle build failed (exit $($gradleProc.ExitCode), see $buildErr)"
-        Get-Content $buildErr -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Log "  $_" }
-        exit 2
-    }
-    if (-not (Test-Path $classpathFile)) {
-        Log "ERROR: classpath file not written: $classpathFile"
-        exit 2
-    }
-    Log "  using classpath: $classpathFile"
-}
+Log "step 1: building current backend via Gradle incremental tasks"
+$classpathFile = Export-L1BackendClasspath -RepoRoot $RepoRoot -RunsDir $RunsDir
 
 # ---------------------------------------------------------------------------
 # 2. Fetch PocketMine-MP phar + PHP (other agent owns fetch-server.ps1).
@@ -509,12 +430,8 @@ $novaPidFile = Join-Path $novaDir "backend.pid"
 # (Stop-Process -> terminate -> shutdown hook releases the latch). Flags are
 # order-independent in NovaLinkMain::hasFlag, so the positional yml path and
 # --daemon can sit in either order.
-if ($fatJar) {
-    $novaArgs = @("-Xmx512m", "-jar", $fatJar.FullName, $novaYml, "--daemon")
-} else {
-    $cp = (Get-Content $classpathFile -Raw).Trim()
-    $novaArgs = @("-Xmx512m", "-cp", $cp, "com.nova.link.NovaLinkMain", $novaYml, "--daemon")
-}
+$cp = [IO.File]::ReadAllText($classpathFile).Trim()
+$novaArgs = @("-Xmx512m", "-cp", $cp, "com.nova.link.NovaLinkMain", $novaYml, "--daemon")
 $novaProc = Start-Process -FilePath $java -ArgumentList $novaArgs `
     -WorkingDirectory $novaDir -RedirectStandardOutput $novaStdout -RedirectStandardError $novaStderr -PassThru -NoNewWindow
 Track-Pid $novaProc.Id
@@ -614,6 +531,7 @@ if (-not (Test-BotDepsCurrent $botDir)) {
 }
 $resultsFile = Join-Path $RunsDir "bot-results.json"
 $botRunId = Initialize-BotRun $resultsFile
+Enable-L1RouteEvidence -BackendPort $NovaPort -ClientPassword $clientPw -ClassPathFile $classpathFile -Java $java
 $env:SERVER_HOST = "127.0.0.1"
 $env:SERVER_PORT = "$McPort"
 $env:BOT_NAME = "E2E_Bot_PMMP"
@@ -656,6 +574,7 @@ if (Test-Path $resultsFile) {
     $results = $resultsJson | ConvertFrom-Json
     $runFailure = Get-BotRunFailure -Results $results -ExitCode $botProc.ExitCode `
         -TimedOut $botTimedOut -ExpectedRunId $botRunId -ServerLogPaths @($pmmpStdout,$pmmpStderr,$novaStdout,$novaStderr)
+    if (-not $runFailure) { $runFailure = Get-L1RouteFailure -ResultsFile $resultsFile }
     if ($runFailure) { Log "  RUN FAILED: $runFailure" }
     # Get-BotReceivedRows drops the bot's own outgoing lines. sendCommand() in
     # run-e2e-bedrock.js records every command into the SAME received[] list

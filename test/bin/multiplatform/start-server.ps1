@@ -89,7 +89,7 @@ if (-not $JdkHome) {
     Log "ERROR: -JdkHome not set and JAVA_HOME is empty"
     exit 1
 }
-$isWin = $IsWindows -or $env:OS -eq "Windows_NT"
+$isWin = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $javaExe = if ($isWin) { "java.exe" } else { "java" }
 $java = Join-Path $JdkHome "bin/$javaExe"
 if (-not (Test-Path $java)) {
