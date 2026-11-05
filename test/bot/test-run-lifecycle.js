@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
+const { setImmediate: nextTurn } = require('node:timers/promises');
 
 function createHarness(filename) {
   const client = new EventEmitter();
@@ -33,11 +34,11 @@ function createHarness(filename) {
   return {
     client, timers, writes, exits,
     async step() {
+      await nextTurn();
       const index = timers.findIndex(timer => timer.ms < 360000);
       assert.notEqual(index, -1, 'expected a sequence timer');
       timers.splice(index, 1)[0].fn();
-      await Promise.resolve();
-      await Promise.resolve();
+      await nextTurn();
     },
   };
 }
