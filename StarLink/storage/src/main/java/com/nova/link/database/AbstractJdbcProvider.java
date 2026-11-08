@@ -1090,6 +1090,20 @@ public abstract class AbstractJdbcProvider implements DatabaseProvider {
     }
 
     @Override
+    public boolean markInvitationRevoked(String code, long now) throws DatabaseException {
+        if (code == null) return false;
+        try (Connection connection = getDataSource().getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "UPDATE invitations SET revoked_at = COALESCE(revoked_at, ?) WHERE code = ?")) {
+            statement.setLong(1, now);
+            statement.setString(2, code);
+            return statement.executeUpdate() == 1;
+        } catch (SQLException error) {
+            throw new DatabaseException("Failed to revoke invitation", error);
+        }
+    }
+
+    @Override
     public boolean compareAndSetModerationCase(ModerationCase expected, ModerationCase updated)
             throws DatabaseException {
         return moderationTransaction(conn -> updateCaseWorkflow(conn, expected, updated));

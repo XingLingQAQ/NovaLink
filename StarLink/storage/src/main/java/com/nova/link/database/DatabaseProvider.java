@@ -1058,6 +1058,12 @@ public interface DatabaseProvider {
      */
     int claimInvitationUse(String code, UUID playerId, long now) throws DatabaseException;
 
+    /** Atomically revokes an existing invitation without changing its use history. */
+    default boolean markInvitationRevoked(String code, long now) throws DatabaseException {
+        throw new UnsupportedOperationException("Atomic invitation revocation not supported by this provider");
+    }
+
+
     /**
      * Deletes an invitation.
      *

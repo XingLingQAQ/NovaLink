@@ -43,6 +43,7 @@ NovaLink 管理网关在同一个 HTTP 服务中提供认证、REST 与 WebSocke
 | `DELETE /api/channels/{channelId}` | 删除频道 | 无 | 先移除成员；应先确认业务影响。 |
 | `GET /api/channels/{channelId}/members` | 查看成员 | 无 | 暴露玩家 UUID/名称，控制访问范围。 |
 | `POST /api/channels/{channelId}/invite` | 创建邀请 | `ttlMillis?` | 需要保护返回的邀请码。 |
+| `DELETE /api/channels/{channelId}/invitations/{code}` | 撤销频道邀请 | 无 | 保留使用次数、使用人和首次撤销时间；记录不存在时返回 `404`。 |
 | `POST /api/messages` | 以 API 身份向频道发送消息 | `channelId`、`content`、`senderName?` | 消息会进入路由；不要用于未审计批量推送。 |
 
 创建频道的 `scope` 使用 `GLOBAL`、`SERVER` 或 `PRIVATE` 枚举语义。REST 管理创建的私有频道会使用后台的管理客户端标识；对外部系统而言，应先明确频道边界，再自动化创建。[1]

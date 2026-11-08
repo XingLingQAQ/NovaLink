@@ -185,7 +185,11 @@ public class Invitation {
      *                signature symmetry with future {@code revokedBy} tracking)
      */
     public void markRevoked(UUID revoker) {
-        this.revokedAt = System.currentTimeMillis();
+        markRevoked(revoker, System.currentTimeMillis());
+    }
+
+    public void markRevoked(UUID revoker, long now) {
+        if (revokedAt == null) revokedAt = now;
     }
 
     /**

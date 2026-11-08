@@ -1119,6 +1119,18 @@ public class MemoryProvider implements DatabaseProvider {
     }
 
     @Override
+    public boolean markInvitationRevoked(String code, long now) throws DatabaseException {
+        checkConnection();
+        if (code == null) return false;
+        return invitations.computeIfPresent(code, (key, invitation) -> {
+            synchronized (invitation) {
+                invitation.markRevoked(null, now);
+            }
+            return invitation;
+        }) != null;
+    }
+
+    @Override
     public void deleteInvitation(String code) throws DatabaseException {
         checkConnection();
         if (code != null) {

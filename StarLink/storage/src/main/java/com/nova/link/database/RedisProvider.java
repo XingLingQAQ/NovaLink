@@ -1250,6 +1250,33 @@ public class RedisProvider implements DatabaseProvider {
     }
 
     @Override
+    public boolean markInvitationRevoked(String code, long now) throws DatabaseException {
+        if (code == null) return false;
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = INVITATION_PREFIX + code;
+            try {
+                for (int attempt = 0; attempt < 8; attempt++) {
+                    jedis.watch(key);
+                    String json = jedis.get(key);
+                    if (json == null) return false;
+                    InvitationDto current = gson.fromJson(json, InvitationDto.class);
+                    if (current.revokedAt != null) return true;
+                    current.revokedAt = now;
+                    Transaction transaction = jedis.multi();
+                    transaction.set(key, gson.toJson(current));
+                    transaction.pexpireAt(key, current.expireTime);
+                    if (transaction.exec() != null) return true;
+                }
+                throw new DatabaseException("Invitation changed during revocation; retry the operation");
+            } finally {
+                jedis.unwatch();
+            }
+        } catch (Exception error) {
+            throw new DatabaseException("Failed to revoke invitation in Redis", error);
+        }
+    }
+
+    @Override
     public void deleteInvitation(String code) throws DatabaseException {
         if (code == null) {
             return;

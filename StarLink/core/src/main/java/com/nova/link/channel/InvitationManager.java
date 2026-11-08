@@ -308,10 +308,9 @@ public class InvitationManager {
             return false;
         }
 
-        invitation.markRevoked(revokerId);
-        databaseProvider.saveInvitation(invitation);
-        logger.info("Invitation {} revoked by {}", code, revokerId);
-        return true;
+        boolean revoked = databaseProvider.markInvitationRevoked(code, System.currentTimeMillis());
+        if (revoked) logger.info("Invitation {} revoked by {}", code, revokerId);
+        return revoked;
     }
 
     /**
@@ -332,11 +331,9 @@ public class InvitationManager {
             return false;
         }
 
-        Invitation invitation = optInvitation.get();
-        invitation.markRevoked(null);
-        databaseProvider.saveInvitation(invitation);
-        logger.info("Invitation {} force revoked", code);
-        return true;
+        boolean revoked = databaseProvider.markInvitationRevoked(code, System.currentTimeMillis());
+        if (revoked) logger.info("Invitation {} force revoked", code);
+        return revoked;
     }
 
     /**
