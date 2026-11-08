@@ -83,6 +83,8 @@ curl --request POST "https://panel.example.invalid/api/messages" \
 
 REST 层将这些操作视作后台发起的管理动作。自动化系统应在调用前完成 UUID、频道 ID、持续时间和理由校验，并保存操作请求与响应记录。[1]
 
+频道级禁言或封禁过期后，仍检查有效的全局限制。查询即时忽略并淘汰过期缓存，数据库过期记录由每分钟清理任务回收；查询不会按已过期的旧快照删除刚续期的数据库记录。[14]
+
 ### 4.1 案件与申诉
 
 | 方法与路径 | 请求体 | 状态约束 |
@@ -192,3 +194,4 @@ Webhook REST 路由存在并操作运行时管理器，但示例 YAML 中的 `we
 [11]: ../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java "活动发送回调与路由结果"
 [12]: ../../StarLink/core/src/main/java/com/nova/link/channel/InvitationManager.java "邀请校验、扣额与入群"
 [13]: ../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java "频道修改同步与持久化失败处理"
+[14]: ../../StarLink/core/src/main/java/com/nova/link/moderation/AbstractModerationManager.java "禁言与封禁共享缓存、查询与过期处理"

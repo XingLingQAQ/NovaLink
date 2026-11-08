@@ -12,7 +12,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -165,43 +164,9 @@ public abstract class AbstractModerationManager<I> {
 
     // ============================ query templates ============================
 
-    /**
-     * True if the player has a non-expired entry for the channel (or global).
-     * Expired entries are evicted from the cache and DB on read (auto-unmute/
-     * auto-unban), matching the pre-refactor {@code isMuted}/{@code isBanned}.
-     */
+    /** Uses the same active-entry lookup as the notification/details path. */
     protected boolean isModerated(UUID playerId, String channelId) {
-        if (playerId == null) {
-            return false;
-        }
-
-        Map<String, I> playerInfos = cache.get(playerId);
-        if (playerInfos == null) {
-            return false;
-        }
-
-        String cacheKey = cacheKeyFor(channelId);
-        I channelEntry = playerInfos.get(cacheKey);
-        if (channelEntry != null) {
-            if (isExpired(channelEntry)) {
-                playerInfos.remove(cacheKey);
-                cleanupFromDatabase(playerId, channelId);
-                return false;
-            }
-            return true;
-        }
-
-        I globalEntry = playerInfos.get(GLOBAL_KEY);
-        if (globalEntry != null) {
-            if (isExpired(globalEntry)) {
-                playerInfos.remove(GLOBAL_KEY);
-                cleanupFromDatabase(playerId, null);
-                return false;
-            }
-            return true;
-        }
-
-        return false;
+        return getInfo(playerId, channelId) != null;
     }
 
     /** Returns the active info for the channel (or global), or null. */
@@ -216,17 +181,23 @@ public abstract class AbstractModerationManager<I> {
         }
 
         String cacheKey = cacheKeyFor(channelId);
-        I channelEntry = playerInfos.get(cacheKey);
-        if (channelEntry != null && !isExpired(channelEntry)) {
+        I channelEntry = activeEntry(playerInfos, cacheKey);
+        if (channelEntry != null) {
             return channelEntry;
         }
+        return GLOBAL_KEY.equals(cacheKey) ? null : activeEntry(playerInfos, GLOBAL_KEY);
+    }
 
-        I globalEntry = playerInfos.get(GLOBAL_KEY);
-        if (globalEntry != null && !isExpired(globalEntry)) {
-            return globalEntry;
+    private I activeEntry(Map<String, I> playerInfos, String key) {
+        while (true) {
+            I info = playerInfos.get(key);
+            if (info == null || !isExpired(info)) {
+                return info;
+            }
+            if (playerInfos.remove(key, info)) {
+                return null;
+            }
         }
-
-        return null;
     }
 
     /** Returns all active entries for a player. */
@@ -346,10 +317,7 @@ public abstract class AbstractModerationManager<I> {
         }
     }
 
-    /**
-     * Removes a single entry from the database (best-effort). Used by the
-     * auto-expire path in {@link #isModerated}; logs the "cleanup" message.
-     */
+    /** Explicit single-entry cleanup; expiry queries leave storage cleanup to the periodic task. */
     protected void cleanupFromDatabase(UUID playerId, String channelId) {
         if (databaseProvider == null) {
             return;
@@ -386,11 +354,10 @@ public abstract class AbstractModerationManager<I> {
         int cacheCleanup = 0;
 
         for (Map.Entry<UUID, Map<String, I>> entry : cache.entrySet()) {
-            Iterator<Map.Entry<String, I>> iterator = entry.getValue().entrySet().iterator();
-            while (iterator.hasNext()) {
-                I info = iterator.next().getValue();
-                if (isExpired(info)) {
-                    iterator.remove();
+            Map<String, I> playerInfos = entry.getValue();
+            for (Map.Entry<String, I> candidate : playerInfos.entrySet()) {
+                if (isExpired(candidate.getValue())
+                        && playerInfos.remove(candidate.getKey(), candidate.getValue())) {
                     cacheCleanup++;
                 }
             }
