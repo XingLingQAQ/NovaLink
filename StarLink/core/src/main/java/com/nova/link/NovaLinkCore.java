@@ -1475,6 +1475,7 @@ public final class NovaLinkCore implements AutoCloseable {
                             .allowedWorlds(ch.getAllowedWorlds())
                             .password(ch.getPassword())
                             .ownerId(ch.getOwnerId())
+                            .slowModeSeconds(ch.getSlowModeSeconds())
                             .build(), ChannelSource.DATABASE);
                 } catch (Exception e) {
                     logger.warn("Failed to load persisted channel '{}': {}", ch.getId(), e.getMessage());

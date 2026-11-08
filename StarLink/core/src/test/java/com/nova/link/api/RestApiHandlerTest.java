@@ -428,13 +428,15 @@ class RestApiHandlerTest {
 
     @Test
     @DisplayName("PUT /api/channels/{id} sets slowModeSeconds and GET echoes it")
-    void updateChannelSlowMode() {
+    void updateChannelSlowMode() throws Exception {
+        channelManager.setDatabaseProvider(db);
         Response resp = dispatch(HttpMethod.PUT, "/api/channels/staff",
                 "{\"slowModeSeconds\":15}");
         assertThat(resp.status).isEqualTo(HttpResponseStatus.OK);
         assertThat(resp.asJson().getAsJsonObject("channel").get("slowModeSeconds").getAsInt())
                 .isEqualTo(15);
         assertThat(channelManager.getChannel("staff").getSlowModeSeconds()).isEqualTo(15);
+        assertThat(db.loadChannel("staff").orElseThrow().getSlowModeSeconds()).isEqualTo(15);
 
         Response get = dispatch(HttpMethod.GET, "/api/channels/staff", null);
         assertThat(get.status).isEqualTo(HttpResponseStatus.OK);
@@ -445,6 +447,29 @@ class RestApiHandlerTest {
                 "{\"slowModeSeconds\":0}");
         assertThat(disable.status).isEqualTo(HttpResponseStatus.OK);
         assertThat(channelManager.getChannel("staff").getSlowModeSeconds()).isZero();
+        assertThat(db.loadChannel("staff").orElseThrow().getSlowModeSeconds()).isZero();
+    }
+
+    @Test
+    void channelPersistenceFailureReturns500AndRestoresAllFields() throws Exception {
+        Channel original = channelManager.getChannel("staff");
+        original.setSlowModeSeconds(7);
+        db.saveChannel(original);
+        long revision = original.getRevision();
+        String displayName = original.getDisplayName();
+        DatabaseProvider failing = spy(db);
+        doThrow(new com.nova.link.database.DatabaseException("simulated write failure"))
+                .when(failing).saveChannel(any(Channel.class));
+        channelManager.setDatabaseProvider(failing);
+
+        Response response = dispatch(HttpMethod.PUT, "/api/channels/staff",
+                "{\"displayName\":\"Changed\",\"slowModeSeconds\":15}");
+
+        assertThat(response.status).isEqualTo(HttpResponseStatus.INTERNAL_SERVER_ERROR);
+        assertThat(original.getDisplayName()).isEqualTo(displayName);
+        assertThat(original.getSlowModeSeconds()).isEqualTo(7);
+        assertThat(original.getRevision()).isEqualTo(revision);
+        assertThat(db.loadChannel("staff").orElseThrow().getSlowModeSeconds()).isEqualTo(7);
     }
 
     @Test

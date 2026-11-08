@@ -296,8 +296,7 @@ public class ChannelManager {
      * leave the existing value untouched. To explicitly <b>clear</b> the
      * permission (set it to null), use
      * {@link #updateChannel(String, String, Integer, String, boolean)} with
-     * {@code permissionPresent=true} and {@code permission=null}. Mirrors the
-     * field-by-field update in {@code NovaLinkMain.upsertConfiguredChannel}.
+     * {@code permissionPresent=true} and {@code permission=null}.
      *
      * <p>This overload treats a {@code null} permission as "leave untouched"
      * (backward compatible with the 4-arg contract). The revision is bumped
@@ -332,6 +331,13 @@ public class ChannelManager {
      */
     public Channel updateChannel(String channelId, String displayName,
                                  Integer maxCapacity, String permission, boolean permissionPresent) {
+        return updateChannel(channelId, displayName, maxCapacity, permission, permissionPresent, null);
+    }
+
+    /** Applies the supplied fields together; null slow mode leaves the current interval unchanged. */
+    public Channel updateChannel(String channelId, String displayName,
+                                 Integer maxCapacity, String permission, boolean permissionPresent,
+                                 Integer slowModeSeconds) {
         Channel channel = channels.get(channelId);
         if (channel == null) {
             return null;
@@ -341,9 +347,13 @@ public class ChannelManager {
             if (maxCapacity != null && maxCapacity <= 0) {
                 throw new IllegalArgumentException("maxCapacity must be a positive integer, got " + maxCapacity);
             }
+            if (slowModeSeconds != null && slowModeSeconds < 0) {
+                throw new IllegalArgumentException("slowModeSeconds must be >= 0");
+            }
             String prevDisplayName = channel.getDisplayName();
             int prevMaxCapacity = channel.getMaxCapacity();
             String prevPermission = channel.getPermission();
+            int prevSlowModeSeconds = channel.getSlowModeSeconds();
             long prevRevision = channel.getRevision();
             boolean changed = false;
             if (displayName != null) {
@@ -358,6 +368,10 @@ public class ChannelManager {
                 channel.setPermission(permission);
                 changed = true;
             }
+            if (slowModeSeconds != null) {
+                channel.setSlowModeSeconds(slowModeSeconds);
+                changed = true;
+            }
             if (changed) {
                 channel.bumpRevision();
             }
@@ -369,6 +383,7 @@ public class ChannelManager {
                 channel.setDisplayName(prevDisplayName);
                 channel.setMaxCapacity(prevMaxCapacity);
                 channel.setPermission(prevPermission);
+                channel.setSlowModeSeconds(prevSlowModeSeconds);
                 channel.setRevision(prevRevision);
                 logger.warn("Rolled back in-memory update of channel '{}' after persistence failure: {}",
                         channelId, e.getMessage());

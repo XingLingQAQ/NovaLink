@@ -1483,8 +1483,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     /**
      * PUT /api/channels/{id} - Update a channel's mutable properties.
      *
-     * <p>Only non-null body fields are applied. Mirrors
-     * {@code NovaLinkMain.upsertConfiguredChannel} field-by-field update.
+     * <p>Only non-null body fields are applied.
      * To explicitly clear the {@code permission} (set it to null), send a body
      * with {@code "permissionPresent": true} and either omit {@code permission}
      * or send it as null. When {@code permissionPresent} is absent, a null
@@ -1546,19 +1545,22 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             Channel updated;
             try {
                 updated = channelManager.updateChannel(channelId, displayName, maxCapacity,
-                        permission, permissionPresent);
+                        permission, permissionPresent, slowModeSeconds);
             } catch (IllegalArgumentException e) {
                 sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, e.getMessage());
+                return;
+            } catch (IllegalStateException e) {
+                logger.error("Failed to persist channel update '{}'", channelId, e);
+                sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                        "Channel changes could not be saved. Try again.");
+                recordAudit(ctx, request, claims, "channel.update", "channel:" + channelId,
+                        beforeHash, null, "channel persistence failed", "failure");
                 return;
             }
             if (updated == null) {
                 sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
                 return;
             }
-            if (slowModeSeconds != null) {
-                updated.setSlowModeSeconds(slowModeSeconds);
-            }
-
             JsonObject afterJson = channelToJson(updated, role);
             JsonObject response = new JsonObject();
             response.addProperty("success", true);

@@ -73,3 +73,13 @@ lite 频道的 `slow-mode` 接受非负整数秒，但原清理固定删除一�
 抽取到 `NovaChat/common` 的 `protocol/keepalive` 包，统一滑动窗口预算、容量淘汰、UUID 值匹配和 TTL 回收。原四个公开类保留构造器、常量与方法并委托共享实现；后端公开返回类型不变，客户端 `clear()` 入口不变。共享实现只使用 JDK，依赖沿用已有的 `core → common`、`client-core → common`，没有增加后端到客户端运行时的依赖。
 
 验证沿用已有 `KeepAliveHandlerTest`、`RecentKeepAlivesTest` 和 `CoreNetworkClientKeepAliveTest`，检查两端真实心跳处理、回声丢弃、发送上限、窗口恢复、容量与过期以及重连清理，共 28 项通过。未复制新测试集，结果见 `.e2e-artifacts/review5-heartbeat-shared.log`。
+
+## 8. R24：REST 慢速模式未保存，启动恢复又清零
+
+位置：[REST 频道更新](../../StarLink/core/src/main/java/com/nova/link/api/RestApiHandler.java)、[ChannelManager](../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java) 和 [核心启动恢复](../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java)。
+
+REST 原实现先调用频道更新并持久化，再单独设置 `slowModeSeconds`。接口与后续 GET 返回新值，存储仍是旧值。启动恢复构建频道时也漏传该字段，已经存好的值变为 0，并被初始化写入再次覆盖。另一个反例确认更新持久化失败被错误映射为 `400 Invalid request body`。
+
+修复把慢速模式纳入同一频道锁内的字段验证、应用、revision、持久化和失败回滚；原四参数、五参数更新入口保留。REST 直接调用这一入口，存储失败返回 `500` 并记录失败审计。启动恢复完整传递慢速值，避免重启时关闭限速。
+
+验证：三个反例在原实现均失败，分别观察到持久化值 0、恢复值 0 和错误的 HTTP 400。修复后运行相关频道 REST 更新、持久化及启动恢复测试；恢复反例使用单连接 SQLite，调用实际启动恢复入口，并检查运行时与数据库中的值。日志为 `.e2e-artifacts/review6-channel-before.log` 和 `review6-channel-final.log`。
