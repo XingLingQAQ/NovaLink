@@ -68,6 +68,7 @@ public class PrivateChannelManager {
      * @return the result containing the created channel and generated password
      * @throws IllegalArgumentException if required parameters are invalid
      * @throws IllegalStateException if unable to generate unique ID
+     * @throws NoSuchElementException if the channel is deleted before owner registration
      * 
      * Requirements: 7.1, 7.2, 7.3
      */
@@ -110,11 +111,13 @@ public class PrivateChannelManager {
         // Create the channel
         Channel channel = channelManager.createChannel(config);
         
-        // Add owner as first member
-        channel.addMember(ownerId);
-        
-        // Track the generated ID
-        generatedIds.add(channelId);
+        synchronized (channel) {
+            if (channelManager.getChannel(channelId) != channel) {
+                throw new NoSuchElementException("Channel no longer exists: " + channelId);
+            }
+            channel.addMember(ownerId);
+            generatedIds.add(channelId);
+        }
         
         logger.info("Created private channel: {} (owner={}, client={}, passwordGenerated={})", 
                 channelId, ownerId, clientId, passwordGenerated);

@@ -29,6 +29,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.TreeSet;
 import java.util.UUID;
@@ -422,29 +423,34 @@ public class ChannelActionHandler {
             return new ChannelActionResponsePacket(false, ChannelAction.CREATE, "", NovaConstants.ERROR_BAD_REQUEST, "Client ID is required");
         }
 
-        PrivateChannelManager.PrivateChannelCreationResult created = privateChannelManager.createPrivateChannel(
-                displayName,
-                clientId,
-                playerId,
-                packet.getPassword()
-        );
-
-        // Creator becomes ChannelAdmin (Req 2.5)
+        PrivateChannelManager.PrivateChannelCreationResult created;
         try {
-            permissionManager.grantChannelAdmin(created.getChannelId(), playerId);
-        } catch (Exception e) {
-            logger.debug("Failed to grant channel admin for {} to {}: {}", created.getChannelId(), playerId, e.getMessage());
+            created = privateChannelManager.createPrivateChannel(displayName, clientId, playerId, packet.getPassword());
+        } catch (NoSuchElementException e) {
+            return new ChannelActionResponsePacket(false, ChannelAction.CREATE, "",
+                    NovaConstants.ERROR_NOT_FOUND, "Channel no longer exists");
         }
 
-        if (!channelManager.isPersistenceEnabled()) {
-            try {
-                databaseProvider.saveChannel(created.getChannel());
-            } catch (DatabaseException e) {
-                logger.warn("Failed to persist private channel {}: {}", created.getChannelId(), e.getMessage());
+        synchronized (created.getChannel()) {
+            if (channelManager.getChannel(created.getChannelId()) != created.getChannel()) {
+                return new ChannelActionResponsePacket(false, ChannelAction.CREATE, created.getChannelId(),
+                        NovaConstants.ERROR_NOT_FOUND, "Channel no longer exists");
             }
-        }
+            try {
+                permissionManager.grantChannelAdmin(created.getChannelId(), playerId);
+            } catch (Exception e) {
+                logger.debug("Failed to grant channel admin for {} to {}: {}", created.getChannelId(), playerId, e.getMessage());
+            }
 
-        upsertPlayerState(connection, playerId, playerName, null, created.getChannelId(), platform);
+            if (!channelManager.isPersistenceEnabled()) {
+                try {
+                    databaseProvider.saveChannel(created.getChannel());
+                } catch (DatabaseException e) {
+                    logger.warn("Failed to persist private channel {}: {}", created.getChannelId(), e.getMessage());
+                }
+            }
+            upsertPlayerState(connection, playerId, playerName, null, created.getChannelId(), platform);
+        }
 
         ChannelActionResponsePacket response = new ChannelActionResponsePacket(true, ChannelAction.CREATE, created.getChannelId(), "", "Private channel created");
         response.addExtra("password", created.getPassword());
@@ -536,7 +542,8 @@ public class ChannelActionHandler {
 
         InvitationResult result;
         try {
-            result = invitationManager.acceptInvitation(inviteCode, playerId, connection.getClientId());
+            result = invitationManager.acceptInvitation(inviteCode, playerId, connection.getClientId(),
+                    channelId -> upsertPlayerState(connection, playerId, playerName, world, channelId, platform));
         } catch (DatabaseException e) {
             return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, inviteCode, NovaConstants.ERROR_DATABASE_ERROR, "Database error while accepting invitation");
         }
@@ -551,8 +558,6 @@ public class ChannelActionHandler {
         if (channelId == null || channelId.isBlank()) {
             return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, inviteCode, NovaConstants.ERROR_INTERNAL, "Invite accepted but channelId missing");
         }
-
-        upsertPlayerState(connection, playerId, playerName, world, channelId, platform);
 
         ChannelActionResponsePacket response = new ChannelActionResponsePacket(true, ChannelAction.ACCEPT, channelId, "", "Invitation accepted");
         response.addExtra("code", inviteCode.toUpperCase());

@@ -292,6 +292,16 @@ JOIN 与 ACCEPT 在修改成员前检查封禁，但检查和入群之间没有�
 
 修复将协议 JOIN 的对象身份复核、访问检查、成员加入及玩家状态更新放入同一个频道锁。普通与私有路径共用这一提交入口，通知和 webhook 放在频道锁外。私有管理器的公开入群入口也独立遵守同一锁与对象身份约束，覆盖直接调用和已有成员的快速返回。
 
-删除或替换先完成时，旧对象返回 `NC-404`；JOIN 先完成时，删除清理随后移除其成员和玩家状态。既有跨客户端私有成员恢复、新成员客户端及密码校验沿用原规则。本项覆盖 JOIN；CREATE 和 ACCEPT 返回后到协议玩家状态更新之间的边界仍待继续复核。
+删除或替换先完成时，旧对象返回 `NC-404`；JOIN 先完成时，删除清理随后移除其成员和玩家状态。既有跨客户端私有成员恢复、新成员客户端及密码校验沿用原规则。本项覆盖 JOIN；CREATE 和 ACCEPT 的后续复核见 R44。
 
 原实现的旧 GLOBAL 授权新 PRIVATE、直接私有加入已删除对象两项反例失败。普通 JOIN 并发用例首次被线程内 Mockito 初始化延迟影响；将连接初始化移到主线程后，确认普通 JOIN 同样可越过删除。首轮修复后的 31 项定向检查通过，覆盖上述三项回归、入群与封禁并发、原封禁行为、私有邀请及 webhook。保留私有入口原有空白客户端判定后，最终三项生命周期回归、密码直入拒绝和既有成员跨客户端恢复共 5 项通过，0 失败、0 跳过。日志为 `.e2e-artifacts/review13-channel-generation-before.log`、`review13-channel-generation-before-corrected.log`、`review13-channel-generation-final.log` 与 `review13-channel-generation-exact-final.log`。
+
+## 28. R44：CREATE、ACCEPT 在频道删除后补写权限、存储及玩家状态
+
+位置：[PrivateChannelManager.createPrivateChannel](../../StarLink/core/src/main/java/com/nova/link/channel/PrivateChannelManager.java)、[InvitationManager.acceptInvitation](../../StarLink/core/src/main/java/com/nova/link/channel/InvitationManager.java)、[ChannelActionHandler 的 CREATE 与 ACCEPT](../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java)。
+
+频道创建发布后，私有管理器无锁加入创建者并登记生成 ID；协议处理器再独立补写权限、兼容存储和玩家状态。频道在这些交接点被删除并同名重建时，旧创建结果仍返回成功，可把旧创建者登记为新频道管理员，并用旧定义覆盖新存储。CREATE、ACCEPT 的玩家状态更新也在成员处理返回之后，删除清理完成后仍能写回旧频道引用。
+
+修复让私有创建者及 ID 登记在频道锁内检查对象身份；协议 CREATE 在同一对象锁内再次复核，随后提交权限、兼容存储和玩家状态。旧对象已被删除时返回 `NC-404`，不会污染替代频道。ACCEPT 增加成功回调，在扣额、入群成功后且频道锁释放前发布调用方状态。原三参数接受接口委托到同一实现，存储和邀请层不依赖协议包或网络处理器。
+
+验证：四个受控反例在原实现全部失败，覆盖频道创建返回前、私有创建返回后的同名替换，以及 CREATE、ACCEPT 在玩家状态发布前与删除交错。修复后 37 项定向检查通过，0 失败、0 跳过，包括旧结果拒绝、旧成员/权限/生成 ID/玩家状态不残留、替代定义不被覆盖、原持久化路径、邀请使用和封禁并发。日志为 `.e2e-artifacts/review14-admission-before.log` 与 `review14-admission-final.log`。

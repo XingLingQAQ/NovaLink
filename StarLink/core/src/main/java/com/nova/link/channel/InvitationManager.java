@@ -12,6 +12,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * Manages channel invitations including code generation, validation, and acceptance.
@@ -216,7 +217,14 @@ public class InvitationManager {
      * @throws DatabaseException if database operations fail
      */
     public InvitationResult acceptInvitation(String code, UUID playerId, String playerClientId) throws DatabaseException {
+        return acceptInvitation(code, playerId, playerClientId, channelId -> {});
+    }
+
+    /** Runs onAccepted after successful admission, before releasing the channel lock. */
+    public InvitationResult acceptInvitation(String code, UUID playerId, String playerClientId,
+                                              Consumer<String> onAccepted) throws DatabaseException {
         Objects.requireNonNull(playerId, "Player ID cannot be null");
+        Objects.requireNonNull(onAccepted, "onAccepted");
 
         // First validate the invitation (empty / not found / used / revoked /
         // expired). This is a best-effort pre-check — even if it passes, the
@@ -278,6 +286,7 @@ public class InvitationManager {
             if (!added) {
                 return InvitationResult.invalid(NovaConstants.ERROR_INTERNAL, "Failed to add member to channel");
             }
+            onAccepted.accept(channelId);
         }
 
         logger.info("Player {} accepted invitation {} and joined channel {}", playerId, code, channelId);
