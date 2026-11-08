@@ -204,11 +204,10 @@ public class MemoryProvider implements DatabaseProvider {
         int count = 0;
         long now = System.currentTimeMillis();
         for (Map<String, MuteInfo> playerMutes : mutes.values()) {
-            Iterator<MuteInfo> iterator = playerMutes.values().iterator();
-            while (iterator.hasNext()) {
-                MuteInfo mute = iterator.next();
-                if (mute.getExpireTime() > 0 && now > mute.getExpireTime()) {
-                    iterator.remove();
+            for (Map.Entry<String, MuteInfo> entry : playerMutes.entrySet()) {
+                MuteInfo mute = entry.getValue();
+                long expireTime = mute.getExpireTime();
+                if (expireTime > 0 && now > expireTime && playerMutes.remove(entry.getKey(), mute)) {
                     count++;
                 }
             }
@@ -279,11 +278,10 @@ public class MemoryProvider implements DatabaseProvider {
         int count = 0;
         long now = System.currentTimeMillis();
         for (Map<String, BanInfo> playerBans : bans.values()) {
-            Iterator<BanInfo> iterator = playerBans.values().iterator();
-            while (iterator.hasNext()) {
-                BanInfo ban = iterator.next();
-                if (ban.getExpireTime() > 0 && now > ban.getExpireTime()) {
-                    iterator.remove();
+            for (Map.Entry<String, BanInfo> entry : playerBans.entrySet()) {
+                BanInfo ban = entry.getValue();
+                long expireTime = ban.getExpireTime();
+                if (expireTime > 0 && now > expireTime && playerBans.remove(entry.getKey(), ban)) {
                     count++;
                 }
             }

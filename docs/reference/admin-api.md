@@ -87,6 +87,8 @@ REST 层将这些操作视作后台发起的管理动作。自动化系统应在
 
 频道级禁言或封禁过期后，仍检查有效的全局限制。查询即时忽略并淘汰过期缓存，数据库过期记录由每分钟清理任务回收；查询不会按已过期的旧快照删除刚续期的数据库记录。[14]
 
+内存与 Redis 的定时清理只删除仍与扫描快照一致的过期条目，保留扫描后写入的续期记录。Redis 使用单键 Lua 脚本原子比对并删除，命令权限需允许 `EVAL`、`HGET` 和 `HDEL`。[16] [17]
+
 禁言、解除禁言、封禁和解封先提交存储，再发布缓存及成功副作用；同一玩家的写入按相同顺序执行。存储失败返回 `500`（`NC-510`），保留本次操作前的限制，不发送成功通知，也不因失败封禁移除成员。无数据库的独立管理器仍可仅在内存中操作。[14]
 
 ### 4.1 案件与申诉
@@ -200,3 +202,5 @@ Webhook REST 路由存在并操作运行时管理器，但示例 YAML 中的 `we
 [13]: ../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java "频道修改同步与持久化失败处理"
 [14]: ../../StarLink/core/src/main/java/com/nova/link/moderation/AbstractModerationManager.java "禁言与封禁共享缓存、查询与过期处理"
 [15]: ../../StarLink/core/src/main/java/com/nova/link/moderation/DurationUtils.java "时长与到期时间校验"
+[16]: ../../StarLink/storage/src/main/java/com/nova/link/database/RedisProvider.java "Redis 过期清理的条件删除"
+[17]: ../../StarLink/storage/src/main/java/com/nova/link/database/MemoryProvider.java "内存过期清理的条件删除"

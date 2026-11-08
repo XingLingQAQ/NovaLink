@@ -189,3 +189,13 @@ TCP 删除未清理缓存玩家的已加入频道和当前频道；直接调用�
 现有 `0` 和省略时长的永久语义保留，正常的正数时长、TCP 字段别名及控制台单位继续可用。本项未改变各权限等级对显式永久时长的既有约定。
 
 验证：管理器、REST、TCP、控制台四个入口的反例在原实现均失败。修复后相关测试 98 项通过，涵盖旧限制保留、成员保留、无成功通知、批量预览、原权限和成功路径；随后只补跑 TCP 两项，验证空白及非法首选字段拒绝、显式 0 和省略值仍为永久。日志为 `.e2e-artifacts/review9-duration-before.log`、`review9-duration-final.log` 和 `review9-duration-protocol.log`。
+
+## 19. R35：存储过期清理误删刚提交的续期
+
+位置：[MemoryProvider](../../StarLink/storage/src/main/java/com/nova/link/database/MemoryProvider.java) 与 [RedisProvider](../../StarLink/storage/src/main/java/com/nova/link/database/RedisProvider.java) 的禁言、封禁清理。
+
+R32 已修复管理器缓存的旧值删除，但提供者的定时清理仍读取旧记录后按键删除。内存迭代器删除和 Redis 的 `HGETALL` / `HDEL` 都会删除扫描之后刚写入的续期，导致本进程缓存仍有限制、存储却已丢失。四个受控交错反例在原实现均丢失 `renewed` 记录。
+
+内存清理改为按键和值条件删除。Redis 禁言与封禁共用同一条件删除函数，在单键 Lua 脚本内比对扫描时的原 JSON，再删除未变化的条目；写入已经变化时返回 0，不误计为已清理。Redis 命令权限需允许 `EVAL`、`HGET` 和 `HDEL`。JDBC 原本使用带过期时间条件的单条 DELETE，本项不改动。
+
+验证：内存、真实 Redis 的禁言与封禁共 4 项回归通过，同时验证普通过期记录仍删除、永久及未来记录保留、返回数量只计实际删除。交错由读取入口触发，无等待；Redis 仅替换测试连接池，仍执行真实网络读写与 Lua。另复核 R32 / R33 的 9 项治理回归，共 13 项通过，无跳过。临时 Redis 已关闭。日志为 `.e2e-artifacts/review9-storage-expiry-before.log` 和 `review9-storage-expiry-final.log`。

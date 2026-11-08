@@ -53,6 +53,13 @@ public class RedisProvider implements DatabaseProvider {
     private static final String AUDIT_INDEX = KEY_PREFIX + "audit_events";
     private static final String AUDIT_SEQ = KEY_PREFIX + "audit:seq";
 
+    private static final String DELETE_UNCHANGED_HASH_ENTRY = """
+            if redis.call('HGET', KEYS[1], ARGV[1]) == ARGV[2] then
+                return redis.call('HDEL', KEYS[1], ARGV[1])
+            end
+            return 0
+            """;
+
     private final String host;
     private final int port;
     private final String password;
@@ -301,6 +308,11 @@ public class RedisProvider implements DatabaseProvider {
         }
     }
 
+    private static int deleteHashEntryIfUnchanged(Jedis jedis, String key, Map.Entry<String, String> observed) {
+        return ((Long) jedis.eval(DELETE_UNCHANGED_HASH_ENTRY, List.of(key),
+                List.of(observed.getKey(), observed.getValue()))).intValue();
+    }
+
     // ==================== Mute Operations ====================
 
     @Override
@@ -387,8 +399,7 @@ public class RedisProvider implements DatabaseProvider {
                     for (Map.Entry<String, String> entry : mutes.entrySet()) {
                         MuteInfoDto dto = gson.fromJson(entry.getValue(), MuteInfoDto.class);
                         if (dto.expireTime > 0 && now > dto.expireTime) {
-                            jedis.hdel(key, entry.getKey());
-                            count++;
+                            count += deleteHashEntryIfUnchanged(jedis, key, entry);
                         }
                     }
                 }
@@ -514,8 +525,7 @@ public class RedisProvider implements DatabaseProvider {
                     for (Map.Entry<String, String> entry : bans.entrySet()) {
                         BanInfoDto dto = gson.fromJson(entry.getValue(), BanInfoDto.class);
                         if (dto.expireTime > 0 && now > dto.expireTime) {
-                            jedis.hdel(key, entry.getKey());
-                            count++;
+                            count += deleteHashEntryIfUnchanged(jedis, key, entry);
                         }
                     }
                 }
