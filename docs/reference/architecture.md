@@ -137,7 +137,7 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 | 配置与 revision | `ConfigManager` | 在同一提交锁内校验版本、保存候选配置，再发布运行时和广播。 |
 | 玩家连接归属 | `ServerNetworkHandler` | 连接代际约束网络包处理；私信处理还验证玩家归属。 |
 | 频道邀请与删除 | `ChannelManager` + `InvitationManager` | 频道锁内创建和接受邀请；删除先清理邀请，再释放 ID。 |
-| 禁言与封禁 | `AbstractModerationManager` | 同一玩家的应用和解除先提交存储，再发布缓存；失败保留旧限制，成功后才触发封禁移除成员。 |
+| 禁言与封禁 | `AbstractModerationManager` + `BanManager` | 同一玩家的应用和解除先提交存储，再发布缓存；失败保留旧限制，封禁成功后移除成员并清理在线玩家的已加入频道及当前频道。 |
 | 协议入群与封禁 | `BanManager` + `ChannelActionHandler` | JOIN、ACCEPT、CREATE 共用同一玩家的封禁写入边界，覆盖权限检查、邀请扣额、成员加入和玩家状态更新。 |
 | 案件与申诉 | `ModerationManager` + `DatabaseProvider` | 业务层校验身份与状态；存储层条件更新，申诉与案件在一次原子操作中提交。 |
 | 批量治理幂等 | `RestApiHandler` | 操作人与有效请求绑定 key；执行前登记，完成后发布原响应，进行中的记录不被淘汰。 |
@@ -149,6 +149,8 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 这些边界决定共享代码的位置。持久化事务放在提供者内；平台调度放在平台桥接内；前端快照采用规则放在实体状态入口。HTTP 处理器和组件调用这些入口，避免各自复制状态机。具体错误码和恢复操作见 [Admin REST API](admin-api.md)。
 
 `BanManager.withAdmission` 复用封禁缓存的逐玩家原子更新边界，不另建玩家锁表。封禁先提交时，后续入群拒绝；入群先执行时，后续封禁移除其成员资格。全局封禁还阻止通过 CREATE 自动加入新私有频道。回调内不能再修改封禁，避免重入同一缓存更新；频道容量与邀请扣额继续由频道锁协调。[21]
+
+核心将 `PlayerStateManager` 注入 `BanManager`，使 REST、TCP 和控制台封禁共享在线状态清理。频道封禁保留其他频道；全局封禁还清理已删除频道及仅存在于 `activeChannel` 的引用。状态通过 `leaveChannel` 标记待保存，存储失败不触发清理。原三参数构造保留只维护频道成员的独立使用方式。[11] [21]
 
 ## 6. 频道作用域与隔离
 

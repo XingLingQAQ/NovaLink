@@ -374,7 +374,7 @@ public final class NovaLinkCore implements AutoCloseable {
         MuteManager muteManager = new MuteManager(databaseProvider, permissionManager, channelManager);
         muteManager.initialize();
         started.push(closeable("mutes", budget -> muteManager.shutdown(budget)));
-        BanManager banManager = new BanManager(databaseProvider, permissionManager, channelManager);
+        BanManager banManager = new BanManager(databaseProvider, permissionManager, channelManager, playerStateManager);
         banManager.initialize();
         started.push(closeable("bans", budget -> banManager.shutdown(budget)));
         // Warm the moderation caches from the database so persisted mutes/bans

@@ -8,11 +8,13 @@ import com.nova.link.channel.ChannelScope;
 import com.nova.link.database.BanInfo;
 import com.nova.link.database.DatabaseException;
 import com.nova.link.database.DatabaseProvider;
+import com.nova.link.database.PlayerStateManager;
 import com.nova.link.moderation.AbstractModerationManager;
 import com.nova.link.moderation.DurationUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -42,10 +44,21 @@ public class BanManager extends AbstractModerationManager<BanInfo> {
     /** Maximum ban duration for client admins: 24 hours in milliseconds */
     public static final long CLIENT_ADMIN_MAX_DURATION_MS = 24 * 60 * 60 * 1000L;
 
+    private final PlayerStateManager playerStateManager;
+
     public BanManager(DatabaseProvider databaseProvider,
                       PermissionManager permissionManager,
                       ChannelManager channelManager) {
+        this(databaseProvider, permissionManager, channelManager, null);
+    }
+
+    /** Supplying player state also clears cached membership after committed bans. */
+    public BanManager(DatabaseProvider databaseProvider,
+                      PermissionManager permissionManager,
+                      ChannelManager channelManager,
+                      PlayerStateManager playerStateManager) {
         super(databaseProvider, permissionManager, channelManager);
+        this.playerStateManager = playerStateManager;
     }
 
     /**
@@ -352,6 +365,17 @@ public class BanManager extends AbstractModerationManager<BanInfo> {
                 if (channel.isMember(playerId)) {
                     channelManager.removeMember(channel.getId(), playerId);
                 }
+            }
+        }
+        if (playerStateManager == null) return;
+        if (!isGlobal) {
+            playerStateManager.leaveChannel(playerId, channelId);
+        } else {
+            var state = playerStateManager.getPlayerState(playerId);
+            if (state != null) {
+                var joined = new HashSet<>(state.getJoinedChannels());
+                if (state.getActiveChannel() != null) joined.add(state.getActiveChannel());
+                for (String id : joined) playerStateManager.leaveChannel(playerId, id);
             }
         }
     }

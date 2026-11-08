@@ -10,6 +10,7 @@ import com.nova.link.database.BanInfo;
 import com.nova.link.database.DatabaseException;
 import com.nova.link.database.MemoryProvider;
 import com.nova.link.database.MuteInfo;
+import com.nova.link.database.PlayerStateManager;
 import com.nova.link.mute.MuteManager;
 import com.nova.link.notification.NotificationStore;
 import org.junit.jupiter.api.Test;
@@ -39,7 +40,8 @@ class ModerationCommitTest {
         var channel = channels.createChannel(ChannelConfig.builder().id("local").scope(ChannelScope.GLOBAL).build());
         var permissions = new PermissionManager();
         var mutes = new MuteManager(provider, permissions, channels);
-        var bans = new BanManager(provider, permissions, channels);
+        var players = new PlayerStateManager(provider);
+        var bans = new BanManager(provider, permissions, channels, players);
         var notifications = mock(NotificationStore.class);
         UUID player = UUID.randomUUID();
         UUID operator = ConsoleSentinel.CONSOLE_SENTINEL;
@@ -47,6 +49,9 @@ class ModerationCommitTest {
             mutes.mutePlayer(operator, player, "local", 0L, "committed", null);
             bans.banPlayer(operator, player, "local", 0L, "committed", null);
             channel.addMember(player);
+            var state = players.getOrCreateState(player, "Player");
+            players.joinChannel(player, "local");
+            players.setActiveChannel(player, "local");
             mutes.setNotificationStore(notifications);
             bans.setNotificationStore(notifications);
             provider.fail = true;
@@ -79,6 +84,8 @@ class ModerationCommitTest {
             assertThat(provider.loadMutes(player)).extracting(MuteInfo::getReason).containsExactly("committed");
             assertThat(provider.loadBans(player)).extracting(BanInfo::getReason).containsExactly("committed");
             assertThat(channel.isMember(player)).isTrue();
+            assertThat(state.getJoinedChannels()).containsExactly("local");
+            assertThat(state.getActiveChannel()).isEqualTo("local");
             verifyNoInteractions(notifications);
         } finally {
             provider.shutdown();

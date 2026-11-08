@@ -5,6 +5,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -377,6 +379,53 @@ class NovaLinkCoreLifecycleTest {
             assertThat(started).isEmpty();
         } finally {
             executor.shutdownNow();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void committedBanClearsOnlineMembershipStateAndPersistsIt(boolean global) throws Exception {
+        writeBootableConfig(tempDir);
+        NovaLinkCore core = newCore();
+        core.start(tempDir, loopbackEphemeral());
+        try {
+            var context = core.getContext();
+            var channels = context.getChannelManager();
+            var players = context.getPlayerStateManager();
+            var player = java.util.UUID.randomUUID();
+            var otherPlayer = java.util.UUID.randomUUID();
+            for (String id : List.of("first", "second")) {
+                var channel = channels.createChannel(com.nova.link.channel.ChannelConfig.builder()
+                        .id(id).scope(com.nova.link.channel.ChannelScope.GLOBAL).build());
+                channel.addMember(player);
+                channel.addMember(otherPlayer);
+            }
+            var state = players.getOrCreateState(player, "Player");
+            var other = players.getOrCreateState(otherPlayer, "Other");
+            for (String id : List.of("first", "second", "retired")) players.joinChannel(player, id);
+            players.joinChannel(otherPlayer, "second");
+            players.setActiveChannel(player, global ? "retired-active" : "first");
+            players.setActiveChannel(otherPlayer, "second");
+            assertThat(players.saveState(state)).isTrue();
+            assertThat(players.saveState(other)).isTrue();
+
+            assertThat(context.getBanManager().banPlayer(com.nova.link.console.ConsoleSentinel.CONSOLE_SENTINEL,
+                    player, global ? null : "first", 0L, "review", null).isSuccess()).isTrue();
+
+            assertThat(channels.getChannel("first").isMember(player)).isFalse();
+            assertThat(channels.getChannel("second").isMember(player)).isEqualTo(!global);
+            assertThat(state.getActiveChannel()).isNull();
+            if (global) assertThat(state.getJoinedChannels()).isEmpty();
+            else assertThat(state.getJoinedChannels()).containsExactlyInAnyOrder("second", "retired");
+            players.saveAllDirty();
+            var stored = context.getDatabaseProvider().loadPlayerState(player).orElseThrow();
+            assertThat(stored.getJoinedChannels()).containsExactlyInAnyOrderElementsOf(state.getJoinedChannels());
+            assertThat(stored.getActiveChannel()).isNull();
+            assertThat(other.getJoinedChannels()).containsExactly("second");
+            assertThat(other.getActiveChannel()).isEqualTo("second");
+            assertThat(channels.getChannel("first").isMember(otherPlayer)).isTrue();
+        } finally {
+            core.stop();
         }
     }
 

@@ -48,7 +48,7 @@ class BanAdmissionConcurrencyTest {
         InvitationManager invitations = new InvitationManager(db, channels);
         CountDownLatch checked = new CountDownLatch(1);
         CountDownLatch continueAdmission = new CountDownLatch(1);
-        BanManager bans = new BanManager(db, permissions, channels) {
+        BanManager bans = new BanManager(db, permissions, channels, players) {
             @Override
             public boolean isBanned(UUID playerId, String target) {
                 boolean banned = super.isBanned(playerId, target);
@@ -120,6 +120,8 @@ class BanAdmissionConcurrencyTest {
             assertThat(channels.getAllChannels()).allSatisfy(channel ->
                     assertThat(channel.isMember(player))
                             .as("a completed ban must eject an overlapping admission").isFalse());
+            assertThat(players.getPlayerState(player).getJoinedChannels()).isEmpty();
+            assertThat(players.getPlayerState(player).getActiveChannel()).isNull();
             if (admission.equals("ACCEPT")) {
                 assertThat(invitations.getInvitation(target).orElseThrow().getUsedCount()).isEqualTo(1);
             }

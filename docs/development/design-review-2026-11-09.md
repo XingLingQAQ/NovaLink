@@ -263,3 +263,13 @@ JOIN 与 ACCEPT 在修改成员前检查封禁，但检查和入群之间没有�
 原实现四个有效并发反例失败，覆盖私有频道密码入群、邀请接受与频道/全局封禁。首次运行另两项普通 JOIN 夹具错误地给 GLOBAL 频道设置 clientId，未进入并发路径；已修正。日志为 `.e2e-artifacts/review12-admission-before.log`。
 
 修正夹具后，29 项定向回归通过，0 失败、0 跳过。七项受控并发用例覆盖普通 JOIN、私有 JOIN、ACCEPT 与频道/全局封禁，以及 CREATE 与全局封禁；其余检查覆盖既有封禁拒绝与到期、解封、邀请不扣额、跨客户端定向邀请、未装配封禁管理器时的创建及持久化。并发测试等到封禁完成或确认封禁线程正在等待入群线程持有的锁，再释放闸门，不使用休眠。同一生产实现下的五项治理提交及存储失败回归也已通过。日志为 `.e2e-artifacts/review12-admission-corrected.log` 与 `review12-admission-final.log`。
+
+## 25. R41：封禁清理成员后仍保留在线玩家的旧频道状态
+
+位置：[BanManager 的成功副作用](../../StarLink/core/src/main/java/com/nova/link/ban/BanManager.java)、[NovaLinkCore 的管理器装配](../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java)。
+
+原封禁只删除频道成员，不更新 `PlayerState.joinedChannels` 和 `activeChannel`。REST 玩家列表直接读取这些字段，封禁后仍可显示旧频道；后续保存还会把旧引用写回存储。全局封禁也遗留已删除频道及仅存在于当前频道字段中的引用。
+
+核心现在向共享 `BanManager` 注入 `PlayerStateManager`。封禁持久化成功后，在同一逐玩家串行边界内清理在线状态；频道封禁只移除指定频道，全局封禁清空全部频道引用。清理复用 `leaveChannel`，标记待保存，沿原有玩家状态保存流程落库。REST、TCP 和控制台无需分别实现状态同步；三参数构造仍支持独立装配。
+
+验证：两个真实后端启动反例在原实现中均失败，频道封禁后当前频道仍是 `first`，全局封禁后仍是已删除的 `retired-active`。修复后 13 项定向回归通过，0 失败、0 跳过：两项启动回归同时核对其他频道和其他玩家不受影响、脏状态保存后的持久化结果；七项受控并发回归补查成员及玩家状态都被清理；四项治理存储失败回归确认旧状态保留。日志为 `.e2e-artifacts/review12-ban-state-before.log` 与 `review12-ban-state-final.log`。
