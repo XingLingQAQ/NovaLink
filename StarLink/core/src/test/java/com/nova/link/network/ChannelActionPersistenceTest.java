@@ -29,7 +29,8 @@ class ChannelActionPersistenceTest {
         try {
             var channels = new ChannelManager(wired ? provider : null);
             var privateChannels = new PrivateChannelManager(channels);
-            var handler = handler(channels, privateChannels, provider);
+            var players = new PlayerStateManager(provider);
+            var handler = handler(channels, privateChannels, provider, players);
             var packet = new ChannelActionPacket(ChannelAction.CREATE, "Private");
             packet.addExtra("playerId", UUID.randomUUID().toString());
 
@@ -51,11 +52,15 @@ class ChannelActionPersistenceTest {
         try {
             var channels = new ChannelManager(wired ? provider : null);
             var privateChannels = new PrivateChannelManager(channels);
-            var handler = handler(channels, privateChannels, provider);
+            var players = new PlayerStateManager(provider);
+            var handler = handler(channels, privateChannels, provider, players);
             UUID owner = UUID.randomUUID();
             Channel channel = privateChannels.createPrivateChannel("Private", "primary", owner, "secret")
                     .getChannel();
             if (!wired) provider.saveChannel(channel);
+            var state = players.getOrCreateState(owner, "Owner");
+            players.joinChannel(owner, channel.getId());
+            players.setActiveChannel(owner, channel.getId());
             var packet = new ChannelActionPacket(ChannelAction.DELETE, channel.getId());
             packet.addExtra("operatorId", owner.toString());
 
@@ -64,14 +69,17 @@ class ChannelActionPersistenceTest {
             assertThat(response.isSuccess()).isTrue();
             assertThat(provider.deletes).isEqualTo(1);
             assertThat(provider.loadChannel(channel.getId())).isEmpty();
+            assertThat(state.hasJoinedChannel(channel.getId())).isFalse();
+            assertThat(state.getActiveChannel()).isNull();
+            assertThat(channel.getMembers()).isEmpty();
         } finally {
             provider.shutdown();
         }
     }
 
     private static ChannelActionHandler handler(ChannelManager channels, PrivateChannelManager privateChannels,
-                                                MemoryProvider provider) {
-        return new ChannelActionHandler(channels, new PlayerStateManager(provider), provider,
+                                                MemoryProvider provider, PlayerStateManager players) {
+        return new ChannelActionHandler(channels, players, provider,
                 privateChannels, new InvitationManager(provider, channels), new PermissionManager());
     }
 

@@ -22,6 +22,7 @@ import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
 import com.nova.link.channel.ChannelSource;
+import com.nova.link.channel.ChannelStateCleanup;
 import com.nova.link.channel.MessageRouter;
 import com.nova.link.channel.PrivateChannelManager;
 import com.nova.link.channel.InvitationManager;
@@ -494,6 +495,14 @@ public final class NovaLinkCore implements AutoCloseable {
 
         SpyManager spyManager = new SpyManager(permissionManager, channelManager, networkHandler);
         messageRouter.setSpyManager(spyManager);
+        channelManager.setDeletionCleanup(channel -> {
+            ChannelStateCleanup.clearMemberships(channel, playerStateManager);
+            permissionManager.clearChannelAdmins(channel.getId());
+            privateChannelManager.removeTrackedId(channel.getId());
+            for (UUID spyId : new java.util.HashSet<>(spyManager.getChannelSpies(channel.getId()))) {
+                spyManager.stopSpying(spyId, channel.getId());
+            }
+        });
 
         AdminActionHandler adminActionHandler = new AdminActionHandler(permissionManager);
         adminActionHandler.setSpyManager(spyManager);

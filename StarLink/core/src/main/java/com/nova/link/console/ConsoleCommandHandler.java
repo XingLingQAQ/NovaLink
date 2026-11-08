@@ -9,6 +9,7 @@ import com.nova.link.ban.BanResult;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
+import com.nova.link.channel.ChannelStateCleanup;
 import com.nova.link.channel.ChannelScope;
 import com.nova.link.channel.MessageRouter;
 import com.nova.link.channel.PrivateChannelManager;
@@ -802,15 +803,13 @@ public class ConsoleCommandHandler {
             return nl(I18n.tr("console.delete.not_found", id));
         }
         synchronized (ch) {
-            if (!ctx.getChannelManager().deleteChannelIfCurrent(ch)) {
+            if (!ctx.getChannelManager().deleteChannelIfCurrent(ch, removed -> {
+                ChannelStateCleanup.clearMemberships(removed, ctx.getPlayerStateManager());
+                if (removed.getScope() == ChannelScope.PRIVATE) {
+                    ctx.getPrivateChannelManager().removeTrackedId(removed.getId());
+                }
+            })) {
                 return nl(I18n.tr("console.delete.failed", id));
-            }
-            for (UUID member : new ArrayList<>(ch.getMembers())) {
-                ch.removeMember(member);
-                ctx.getPlayerStateManager().leaveChannel(member, id);
-            }
-            if (ch.getScope() == ChannelScope.PRIVATE) {
-                ctx.getPrivateChannelManager().removeTrackedId(id);
             }
             return nl(I18n.tr("console.delete.success", id));
         }

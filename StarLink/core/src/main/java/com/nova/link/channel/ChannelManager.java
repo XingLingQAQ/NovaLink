@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import java.security.SecureRandom;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -53,6 +54,7 @@ public class ChannelManager {
 
     /** Optional write-through persistence sink; null = memory-only (tests/legacy). */
     private volatile DatabaseProvider databaseProvider;
+    private volatile Consumer<Channel> deletionCleanup;
 
     public ChannelManager() {
         this.channels = new ConcurrentHashMap<>();
@@ -84,6 +86,11 @@ public class ChannelManager {
 
     public boolean isPersistenceEnabled() {
         return databaseProvider != null;
+    }
+
+    /** In-memory cleanup after storage commit, before the ID becomes reusable. */
+    public void setDeletionCleanup(Consumer<Channel> cleanup) {
+        deletionCleanup = Objects.requireNonNull(cleanup);
     }
 
     /**
@@ -178,7 +185,13 @@ public class ChannelManager {
 
     /** Deletes only the observed instance, preserving a replacement with the same ID. */
     public boolean deleteChannelIfCurrent(Channel channel) {
+        return deleteChannelIfCurrent(channel, ignored -> {});
+    }
+
+    /** Uses the caller's cleanup only when no core lifecycle cleanup is installed. */
+    public boolean deleteChannelIfCurrent(Channel channel, Consumer<Channel> fallbackCleanup) {
         if (channel == null) return false;
+        Objects.requireNonNull(fallbackCleanup);
         String channelId = channel.getId();
         synchronized (channel) {
             if (channels.get(channelId) != channel) return false;
@@ -188,6 +201,8 @@ public class ChannelManager {
                 throw new IllegalStateException(
                         "Failed to delete persisted channel '" + channelId + "': " + error.getMessage(), error);
             }
+            Consumer<Channel> cleanup = deletionCleanup;
+            (cleanup != null ? cleanup : fallbackCleanup).accept(channel);
             if (channel.getScope() == ChannelScope.GLOBAL) {
                 globalChannels.remove(channelId);
             } else {

@@ -123,3 +123,15 @@ REST 原实现先调用频道更新，再单独设置 `slowModeSeconds`。频道
 修复在原频道锁内先按对象身份删除，存储成功后才清理原对象的成员与玩家状态。失败不触发这些清理；对象已被替换时也不删除或清理新对象。REST 创建与删除的持久化失败返回 `500` 并记录失败审计；参数解析仍沿用原 `400` 路径。
 
 验证：原 REST 删除反例观察到成员丢失，创建反例观察到 HTTP 400。修复回归覆盖 REST 与控制台失败时保留成员、已加入频道与当前频道，并检查成功创建、正常删除和未知频道路径，共 11 项通过。日志为 `.e2e-artifacts/review6-delete-before.log` 与 `review6-delete-final.log`。
+
+## 13. R29：频道删除遗留玩家状态与管理员权限
+
+位置：[TCP 删除](../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java)、[核心装配](../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java) 和 [频道生命周期](../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java)。
+
+TCP 删除未清理缓存玩家的已加入频道和当前频道；直接调用频道管理器也没有清理关联权限、监控会话与私有 ID。原频道管理员记录以频道 ID 索引，同名频道重建后仍会给予旧管理员权限。带存储和独立内存两种 TCP 反例，以及实际核心的删除反例均失败。
+
+修复在数据库删除成功后、移除频道登记前执行同步清理。核心统一清理玩家状态、管理员、监控双向索引和私有 ID；所有删除入口及重载共享这一边界。未装配核心的独立调用可提供本地清理，只有一个清理入口会执行。失败的持久化不触发清理，旧对象身份不匹配也不会清理替换对象。
+
+抽取 `ChannelStateCleanup`，由核心、REST、控制台和 TCP 复用。它清除缓存中引用该频道的玩家状态和原频道成员，不加载离线数据库记录。清理在频道锁内、ID 仍被原对象占用时完成，避免事后清理影响同名新频道。
+
+验证覆盖实际核心删除后的玩家、权限、监控会话、私有 ID，以及同名重建后的权限等级；TCP 覆盖两种管理器模式，并复核 REST 与控制台的成功、失败和未知频道路径。日志为 `.e2e-artifacts/review7-removal-before.log` 与 `review7-removal-final.log`。

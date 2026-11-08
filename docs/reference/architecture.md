@@ -101,6 +101,8 @@ Bukkit 子服 ────────────► NovaChat/Proxy/channel
 
 频道启动加载完成后，核心把数据库提供者绑定到 `ChannelManager`，后续创建、更新、删除统一持久化。加载阶段不反写配置与原存储记录；TCP 在管理器已接入持久化时省去重复写入，独立内存模式仍保留原来的保存入口。[11]
 
+核心向 `ChannelManager` 装配同步删除清理：存储删除成功后，在释放频道 ID 前清除缓存玩家的频道记录、频道管理员、监控会话和私有 ID 跟踪。REST、控制台、TCP 和重载删除都经过这一边界。独立调用未装配核心清理时，由入口提供本地清理；成员清理复用 `ChannelStateCleanup`。[11] [16]
+
 `ShutdownBudget` 在同一次停止或启动回滚中共享等待截止时间。预算用尽后，剩余组件仍收到停止请求；线程池转为取消排队任务和中断工作，不再清空未执行的清理队列。各管理器原有无参数停止入口保留。[13]
 
 | 子系统 | 主要责任 | 关键边界 |
@@ -179,3 +181,4 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 [13]: ../../StarLink/core/src/main/java/com/nova/link/lifecycle/ShutdownBudget.java "共享停止预算与强制取消"
 [14]: ../../NovaChat/common/src/main/java/com/nova/chat/common/protocol/keepalive/KeepAliveBudget.java "共享心跳发送预算"
 [15]: ../../NovaChat/common/src/main/java/com/nova/chat/common/protocol/keepalive/RecentKeepAlives.java "共享请求 ID 记忆"
+[16]: ../../StarLink/core/src/main/java/com/nova/link/channel/ChannelStateCleanup.java "共享频道成员与缓存玩家状态清理"

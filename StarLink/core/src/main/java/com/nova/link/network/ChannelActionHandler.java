@@ -11,6 +11,7 @@ import com.nova.link.ban.BanResult;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
+import com.nova.link.channel.ChannelStateCleanup;
 import com.nova.link.channel.InvitationManager;
 import com.nova.link.channel.InvitationResult;
 import com.nova.link.channel.PrivateChannelManager;
@@ -879,12 +880,15 @@ public class ChannelActionHandler {
             }
         }
 
-        boolean deleted = channelManager.deleteChannelIfCurrent(channel);
+        boolean deleted = channelManager.deleteChannelIfCurrent(channel, removed -> {
+            ChannelStateCleanup.clearMemberships(removed, playerStateManager);
+            permissionManager.clearChannelAdmins(removed.getId());
+            privateChannelManager.removeTrackedId(removed.getId());
+        });
         if (!deleted) {
             return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
-        privateChannelManager.removeTrackedId(channelId);
         if (!channelManager.isPersistenceEnabled()) {
             try {
                 databaseProvider.deleteChannel(channelId);

@@ -273,6 +273,46 @@ class NovaLinkCoreLifecycleTest {
     }
 
     @Test
+    void channelDeletionClearsPlayersPermissionsSpiesAndPrivateIdTracking() throws Exception {
+        writeBootableConfig(tempDir);
+        NovaLinkCore core = newCore();
+        core.start(tempDir, loopbackEphemeral());
+        try {
+            var context = core.getContext();
+            var owner = java.util.UUID.randomUUID();
+            var spy = java.util.UUID.randomUUID();
+            var channel = context.getPrivateChannelManager()
+                    .createPrivateChannel("Private", "primary", owner, "secret").getChannel();
+            String id = channel.getId();
+            var state = context.getPlayerStateManager().getOrCreateState(owner, "Owner");
+            context.getPlayerStateManager().joinChannel(owner, id);
+            context.getPlayerStateManager().setActiveChannel(owner, id);
+            context.getPermissionManager().grantChannelAdmin(id, owner);
+            context.getPermissionManager().registerSuperAdmin(
+                    new com.nova.link.auth.SuperAdminCredentials(spy, "test-hash"));
+            context.getPermissionManager().authenticateSuperAdmin(spy, "test-hash");
+            assertThat(context.getSpyManager().startSpying(spy, id, null).isSuccess()).isTrue();
+
+            assertThat(context.getChannelManager().deleteChannel(id)).isTrue();
+
+            assertThat(state.hasJoinedChannel(id)).isFalse();
+            assertThat(state.getActiveChannel()).isNull();
+            assertThat(channel.getMembers()).isEmpty();
+            assertThat(context.getPermissionManager().isChannelAdmin(id, owner)).isFalse();
+            assertThat(context.getSpyManager().getChannelSpies(id)).isEmpty();
+            assertThat(context.getSpyManager().getSpySessions(spy)).isEmpty();
+            assertThat(context.getPrivateChannelManager().wasIdGenerated(id)).isFalse();
+            context.getChannelManager().createChannel(com.nova.link.channel.ChannelConfig.builder()
+                    .id(id).scope(com.nova.link.channel.ChannelScope.PRIVATE).clientId("primary")
+                    .ownerId(java.util.UUID.randomUUID()).build());
+            assertThat(context.getPermissionManager().getPermissionLevel(owner, id))
+                    .isEqualTo(com.nova.link.auth.PermissionLevel.PLAYER);
+        } finally {
+            core.stop();
+        }
+    }
+
+    @Test
     void expiredShutdownBudgetStillStopsEveryRegisteredComponent() throws Exception {
         NovaLinkCore core = newCore();
         var executor = Executors.newSingleThreadScheduledExecutor();

@@ -22,6 +22,7 @@ import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
 import com.nova.link.channel.ChannelSource;
+import com.nova.link.channel.ChannelStateCleanup;
 import com.nova.link.channel.InvitationManager;
 import com.nova.link.channel.MessageRouter;
 import com.nova.link.channel.RoutingResult;
@@ -1464,7 +1465,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         synchronized (channel) {
             boolean deleted;
             try {
-                deleted = channelManager.deleteChannelIfCurrent(channel);
+                deleted = channelManager.deleteChannelIfCurrent(channel,
+                        removed -> ChannelStateCleanup.clearMemberships(removed, playerStateManager));
             } catch (IllegalStateException e) {
                 logger.error("Failed to persist channel deletion '{}'", channelId, e);
                 sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
@@ -1476,10 +1478,6 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             if (!deleted) {
                 sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
                 return;
-            }
-            for (UUID member : new java.util.ArrayList<>(channel.getMembers())) {
-                channel.removeMember(member);
-                playerStateManager.leaveChannel(member, channelId);
             }
         }
 
