@@ -351,29 +351,29 @@ public class PrivateChannelManager {
             return PrivateChannelAccessResult.denied("Player ID is required", NovaConstants.ERROR_BAD_REQUEST);
         }
 
-        Channel existing = channelId != null ? channelManager.getChannel(channelId) : null;
-        if (existing != null && existing.getScope() == ChannelScope.PRIVATE && existing.isMember(playerId)
-                && playerClientId != null && !playerClientId.isBlank()) {
-            return PrivateChannelAccessResult.granted(existing);
+        if (channelId == null || channelId.trim().isEmpty()
+                || playerClientId == null || playerClientId.isBlank()) {
+            return validateAccess(channelId, playerClientId, providedPassword);
         }
-        
-        // Validate access first
-        PrivateChannelAccessResult accessResult = validateAccess(channelId, playerClientId, providedPassword);
-        if (!accessResult.isGranted()) {
-            return accessResult;
+        Channel channel = channelManager.getChannel(channelId);
+        if (channel == null) {
+            return PrivateChannelAccessResult.denied("Channel not found: " + channelId, NovaConstants.ERROR_NOT_FOUND);
         }
-        
-        // Add player to channel
-        Channel channel = accessResult.getChannel();
-        if (channel.isMember(playerId)) {
-            return PrivateChannelAccessResult.granted(channel); // Already a member
+
+        synchronized (channel) {
+            if (channelManager.getChannel(channelId) != channel) {
+                return PrivateChannelAccessResult.denied("Channel no longer exists", NovaConstants.ERROR_NOT_FOUND);
+            }
+            if (channel.getScope() == ChannelScope.PRIVATE && channel.isMember(playerId)) {
+                return PrivateChannelAccessResult.granted(channel);
+            }
+            PrivateChannelAccessResult accessResult = validateAccess(channelId, playerClientId, providedPassword);
+            if (!accessResult.isGranted()) return accessResult;
+            if (!channel.addMember(playerId)) {
+                return PrivateChannelAccessResult.denied("Channel is at maximum capacity", NovaConstants.ERROR_CHANNEL_FULL);
+            }
         }
-        
-        boolean added = channel.addMember(playerId);
-        if (!added) {
-            return PrivateChannelAccessResult.denied("Channel is at maximum capacity", NovaConstants.ERROR_CHANNEL_FULL);
-        }
-        
+
         logger.info("Player {} joined private channel {} (client={})", playerId, channelId, playerClientId);
         return PrivateChannelAccessResult.granted(channel);
     }

@@ -283,3 +283,15 @@ JOIN 与 ACCEPT 在修改成员前检查封禁，但检查和入群之间没有�
 修复在 REST 使用精确整数转换，在共享邀请管理器拒绝非正有效期，并用精确加法计算到期时间。校验发生在邀请码生成和存储访问之前；到期时间在获得频道锁后计算。`InvalidTtlException` 保留参数异常继承关系，供 REST 将无效有效期映射为 `400`，不改变频道不存在的 `404`。省略或 `null` 仍使用 24 小时，不套用治理时长中“0 表示永久”的约定。
 
 两个新增反例在原实现均失败。首轮 20 项邀请、REST 创建与撤销检查通过。将到期时间计算移到频道锁内、区分数值错误与无效 JSON 后，最终 5 项相关检查通过，0 失败、0 跳过。非法输入覆盖零、负数、long 两端、小数及可回绕为正常短时长的超大整数，并核对未访问邀请存储；正常自定义有效期、默认 24 小时及频道缺失也已验证。日志为 `.e2e-artifacts/review13-ttl-before.log`、`review13-ttl-final.log` 和 `review13-ttl-exact-final.log`。
+
+## 27. R43：旧频道 JOIN 授权同名新频道，删除后仍追加成员与状态
+
+位置：[ChannelActionHandler.handleJoin](../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java)、[PrivateChannelManager.joinPrivateChannel](../../StarLink/core/src/main/java/com/nova/link/channel/PrivateChannelManager.java)。
+
+普通 JOIN 对观察到的频道对象校验作用域，再按频道 ID 加入当前对象。GLOBAL 频道在中间删除并同名重建为 PRIVATE 时，旧检查能授权加入新私有频道。私有管理器则在检查后直接写旧对象，删除完成后仍可向旧成员表追加玩家；协议层随后还可写回已删除频道的玩家状态。
+
+修复将协议 JOIN 的对象身份复核、访问检查、成员加入及玩家状态更新放入同一个频道锁。普通与私有路径共用这一提交入口，通知和 webhook 放在频道锁外。私有管理器的公开入群入口也独立遵守同一锁与对象身份约束，覆盖直接调用和已有成员的快速返回。
+
+删除或替换先完成时，旧对象返回 `NC-404`；JOIN 先完成时，删除清理随后移除其成员和玩家状态。既有跨客户端私有成员恢复、新成员客户端及密码校验沿用原规则。本项覆盖 JOIN；CREATE 和 ACCEPT 返回后到协议玩家状态更新之间的边界仍待继续复核。
+
+原实现的旧 GLOBAL 授权新 PRIVATE、直接私有加入已删除对象两项反例失败。普通 JOIN 并发用例首次被线程内 Mockito 初始化延迟影响；将连接初始化移到主线程后，确认普通 JOIN 同样可越过删除。首轮修复后的 31 项定向检查通过，覆盖上述三项回归、入群与封禁并发、原封禁行为、私有邀请及 webhook。保留私有入口原有空白客户端判定后，最终三项生命周期回归、密码直入拒绝和既有成员跨客户端恢复共 5 项通过，0 失败、0 跳过。日志为 `.e2e-artifacts/review13-channel-generation-before.log`、`review13-channel-generation-before-corrected.log`、`review13-channel-generation-final.log` 与 `review13-channel-generation-exact-final.log`。

@@ -54,6 +54,8 @@ NovaLink 管理网关在同一个 HTTP 服务中提供认证、REST 与 WebSocke
 
 删除频道会同时删除该频道的旧邀请码；同名重建后应创建新邀请。邀请创建与频道删除共用频道锁，避免删除后才保存旧邀请。JDBC 在同一连接事务中删除邀请和动态频道，任一删除失败都回滚。CONFIG 重载移除只清理邀请，不删除被配置覆盖的同名动态记录。[12] [13] [9]
 
+协议 JOIN 也与频道删除协调：访问检查、成员加入和玩家频道状态更新绑定同一频道对象。删除后同名重建不会沿用旧 JOIN 的授权，旧对象返回 `NC-404`；JOIN 先完成时，删除再清理其成员与在线状态。[20]
+
 Redis 删除通过 `SCAN` 查找该频道的邀请码，再由 Lua 脚本核对归属并删除，动态频道定义和索引也在脚本中移除。需允许 `SCAN`、`GET`、`EVAL`、`DEL` 和 `SREM`；扫描范围为当前邀请键。[16]
 
 `slowModeSeconds` 为非负整数秒，0 表示关闭；省略时保留当前值。它与名称、容量、权限一起保存并更新 revision，启动恢复也保留该值。更新持久化失败返回 `500` 并恢复本次修改的字段；参数错误仍返回 `400`。[1] [11] [13]
@@ -232,3 +234,4 @@ Webhook REST 路由存在并操作运行时管理器，但示例 YAML 中的 `we
 [17]: ../../StarLink/storage/src/main/java/com/nova/link/database/MemoryProvider.java "内存过期清理的条件删除"
 [18]: ../../StarLink/core/src/main/java/com/nova/link/auth/PanelResourcePolicy.java "频道与治理资源可见性"
 [19]: ../../StarLink/core/src/main/java/com/nova/link/ban/BanManager.java "封禁与协议入群串行协调"
+[20]: ../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java "JOIN 与频道删除的对象身份校验"

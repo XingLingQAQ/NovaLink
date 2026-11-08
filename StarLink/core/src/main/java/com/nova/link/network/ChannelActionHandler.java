@@ -254,10 +254,6 @@ public class ChannelActionHandler {
      * code is introduced for this.
      */
     private ChannelActionResponsePacket handleJoin(ClientConnection connection, ChannelActionPacket packet, UUID playerId) {
-        String playerName = firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name"));
-        String world = packet.getExtra("world");
-        String platform = packet.getExtra("platform");
-
         String channelId = packet.getChannelId();
         if (channelId == null || channelId.isBlank()) {
             return new ChannelActionResponsePacket(false, ChannelAction.JOIN, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
@@ -268,6 +264,27 @@ public class ChannelActionHandler {
             return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
+        ChannelActionResponsePacket response;
+        synchronized (channel) {
+            if (channelManager.getChannel(channelId) != channel) {
+                return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId,
+                        NovaConstants.ERROR_NOT_FOUND, "Channel no longer exists");
+            }
+            response = joinCurrentChannel(connection, packet, playerId, channel);
+        }
+        if (response.isSuccess()) {
+            notifyPlayerUpdate();
+            firePresenceWebhook("player.join", playerId,
+                    firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name")),
+                    connection.getClientId(), channelId);
+        }
+        return response;
+    }
+
+    private ChannelActionResponsePacket joinCurrentChannel(ClientConnection connection, ChannelActionPacket packet,
+                                                           UUID playerId, Channel channel) {
+        String channelId = channel.getId();
+        String world = packet.getExtra("world");
         if (channel.getScope() != ChannelScope.GLOBAL
                 && !(channel.getScope() == ChannelScope.PRIVATE && channel.isMember(playerId))) {
             String clientId = connection.getClientId();
@@ -287,7 +304,6 @@ public class ChannelActionHandler {
                     NovaConstants.ERROR_FORBIDDEN, "You are banned from this channel");
         }
 
-        boolean joined;
         if (channel.getScope() == ChannelScope.PRIVATE) {
             var result = privateChannelManager.joinPrivateChannel(
                     channelId,
@@ -300,25 +316,14 @@ public class ChannelActionHandler {
                         result.getErrorCode() != null ? result.getErrorCode() : NovaConstants.ERROR_FORBIDDEN,
                         result.getErrorMessage() != null ? result.getErrorMessage() : "Join denied");
             }
-            joined = true;
-        } else {
-            if (channel.isMember(playerId)) {
-                // Idempotent success
-                joined = true;
-            } else {
-                joined = channelManager.addMember(channelId, playerId);
-                if (!joined) {
-                    return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, NovaConstants.ERROR_CHANNEL_FULL, "Channel is full");
-                }
-            }
+        } else if (!channel.isMember(playerId) && !channelManager.addMember(channelId, playerId)) {
+            return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, NovaConstants.ERROR_CHANNEL_FULL, "Channel is full");
         }
 
-        upsertPlayerState(connection, playerId, playerName, world, channelId, platform);
-        notifyPlayerUpdate();
-        firePresenceWebhook("player.join", playerId, playerName,
-                connection.getClientId(), channelId);
-        ChannelActionResponsePacket response = new ChannelActionResponsePacket(true, ChannelAction.JOIN, channelId, "", "Joined channel");
-        return response;
+        upsertPlayerState(connection, playerId,
+                firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name")),
+                world, channelId, packet.getExtra("platform"));
+        return new ChannelActionResponsePacket(true, ChannelAction.JOIN, channelId, "", "Joined channel");
     }
 
     private ChannelActionResponsePacket handleLeave(ClientConnection connection, ChannelActionPacket packet) {
