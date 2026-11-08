@@ -345,23 +345,6 @@ public class SQLiteProvider extends AbstractJdbcProvider {
     }
 
     @Override
-    public void deleteChannel(String channelId) throws DatabaseException {
-        if (channelId == null) {
-            return;
-        }
-
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement("DELETE FROM channels WHERE channel_id = ?")) {
-
-            stmt.setString(1, channelId);
-            stmt.executeUpdate();
-            logger.debug("Deleted channel: {}", channelId);
-        } catch (SQLException e) {
-            throw new DatabaseException("Failed to delete channel", e);
-        }
-    }
-
-    @Override
     public List<Channel> getAllChannels() throws DatabaseException {
         List<Channel> channels = new ArrayList<>();
 

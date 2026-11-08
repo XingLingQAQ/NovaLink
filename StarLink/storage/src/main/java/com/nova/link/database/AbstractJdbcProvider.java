@@ -110,6 +110,37 @@ public abstract class AbstractJdbcProvider implements DatabaseProvider {
         return dataSource;
     }
 
+    @Override
+    public void deleteChannel(String channelId) throws DatabaseException {
+        if (channelId == null) return;
+        executeTransaction("Failed to delete channel", conn -> {
+            deleteInvitationsForChannel(conn, channelId);
+            try (PreparedStatement statement = conn.prepareStatement("DELETE FROM channels WHERE channel_id = ?")) {
+                statement.setString(1, channelId);
+                statement.executeUpdate();
+            }
+            return true;
+        });
+        logger.debug("Deleted channel: {}", channelId);
+    }
+
+    @Override
+    public void deleteInvitationsForChannel(String channelId) throws DatabaseException {
+        if (channelId == null) return;
+        try (Connection conn = getDataSource().getConnection()) {
+            deleteInvitationsForChannel(conn, channelId);
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to delete channel invitations", e);
+        }
+    }
+
+    private static void deleteInvitationsForChannel(Connection conn, String channelId) throws SQLException {
+        try (PreparedStatement statement = conn.prepareStatement("DELETE FROM invitations WHERE channel_id = ?")) {
+            statement.setString(1, channelId);
+            statement.executeUpdate();
+        }
+    }
+
     // ==================== Shared helpers ====================
 
     /**
@@ -1106,13 +1137,13 @@ public abstract class AbstractJdbcProvider implements DatabaseProvider {
     @Override
     public boolean compareAndSetModerationCase(ModerationCase expected, ModerationCase updated)
             throws DatabaseException {
-        return moderationTransaction(conn -> updateCaseWorkflow(conn, expected, updated));
+        return executeTransaction("Failed to commit moderation transition", conn -> updateCaseWorkflow(conn, expected, updated));
     }
 
     @Override
     public boolean createAppealAndUpdateCase(Appeal appeal, ModerationCase expected, ModerationCase updated)
             throws DatabaseException {
-        return moderationTransaction(conn -> {
+        return executeTransaction("Failed to commit moderation transition", conn -> {
             if (!updateCaseWorkflow(conn, expected, updated)) return false;
             try (PreparedStatement check = conn.prepareStatement(
                     "SELECT COUNT(*) FROM appeals WHERE case_id = ? AND status IN ('PENDING', 'ESCALATED')")) {
@@ -1143,7 +1174,7 @@ public abstract class AbstractJdbcProvider implements DatabaseProvider {
     public boolean reviewAppealAndUpdateCase(Appeal expectedAppeal, Appeal reviewedAppeal,
                                              ModerationCase expected, ModerationCase updated)
             throws DatabaseException {
-        return moderationTransaction(conn -> {
+        return executeTransaction("Failed to commit moderation transition", conn -> {
             if (!updateCaseWorkflow(conn, expected, updated)) return false;
             try (PreparedStatement stmt = conn.prepareStatement("""
                     UPDATE appeals SET status = ?, reviewed_by = ?, review_note = ?, reviewed_at = ?
@@ -1186,11 +1217,11 @@ public abstract class AbstractJdbcProvider implements DatabaseProvider {
     }
 
     @FunctionalInterface
-    private interface ModerationWrite {
+    private interface TransactionalWrite {
         boolean execute(Connection connection) throws SQLException;
     }
 
-    private boolean moderationTransaction(ModerationWrite write) throws DatabaseException {
+    private boolean executeTransaction(String failureMessage, TransactionalWrite write) throws DatabaseException {
         try (Connection conn = getDataSource().getConnection()) {
             boolean previousAutoCommit = conn.getAutoCommit();
             conn.setAutoCommit(false);
@@ -1206,7 +1237,7 @@ public abstract class AbstractJdbcProvider implements DatabaseProvider {
                 conn.setAutoCommit(previousAutoCommit);
             }
         } catch (SQLException error) {
-            throw new DatabaseException("Failed to commit moderation transition", error);
+            throw new DatabaseException(failureMessage, error);
         }
     }
 

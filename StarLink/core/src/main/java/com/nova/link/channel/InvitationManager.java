@@ -38,6 +38,7 @@ public class InvitationManager {
     public InvitationManager(DatabaseProvider databaseProvider, ChannelManager channelManager) {
         this.databaseProvider = Objects.requireNonNull(databaseProvider, "Database provider cannot be null");
         this.channelManager = Objects.requireNonNull(channelManager, "Channel manager cannot be null");
+        this.channelManager.setInvitationProvider(this.databaseProvider);
         this.random = new SecureRandom();
     }
 
@@ -120,22 +121,21 @@ public class InvitationManager {
             throw new IllegalArgumentException("Channel not found: " + channelId);
         }
 
-        // Generate unique code
-        String code = generateUniqueCode();
+        synchronized (channel) {
+            if (channelManager.getChannel(channelId) != channel) {
+                throw new IllegalArgumentException("Channel no longer exists: " + channelId);
+            }
+            String code = generateUniqueCode();
+            long now = System.currentTimeMillis();
+            long expireTime = now + ttlMillis;
+            Invitation invitation = new Invitation(code, channelId, inviterId, expireTime,
+                    now, false, null, 0L,
+                    maxUses, 0, null, targetPlayerId);
+            databaseProvider.saveInvitation(invitation);
 
-        // Calculate expiration time
-        long now = System.currentTimeMillis();
-        long expireTime = now + ttlMillis;
-
-        // Create and save invitation. The full constructor fixes maxUses up
-        // front; usedCount starts at 0 and revokedAt is null.
-        Invitation invitation = new Invitation(code, channelId, inviterId, expireTime,
-                now, false, null, 0L,
-                maxUses, 0, null, targetPlayerId);
-        databaseProvider.saveInvitation(invitation);
-
-        logger.info("Created invitation {} for channel {} by {} (maxUses={})", code, channelId, inviterId, maxUses);
-        return invitation;
+            logger.info("Created invitation {} for channel {} by {} (maxUses={})", code, channelId, inviterId, maxUses);
+            return invitation;
+        }
     }
 
     /**

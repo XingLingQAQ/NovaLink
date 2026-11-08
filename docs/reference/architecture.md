@@ -103,6 +103,8 @@ Bukkit 子服 ────────────► NovaChat/Proxy/channel
 
 核心向 `ChannelManager` 装配同步删除清理：存储删除成功后，在释放频道 ID 前清除缓存玩家的频道记录、频道管理员、监控会话和私有 ID 跟踪。REST、控制台、TCP 和重载删除都经过这一边界。独立调用未装配核心清理时，由入口提供本地清理；成员清理复用 `ChannelStateCleanup`。[11] [16]
 
+邀请创建、接受和频道删除共用频道锁。删除先清除旧邀请，再释放频道 ID；同名新频道需创建新邀请。动态频道与邀请由同一提供者提交删除；JDBC 三种实现共用单连接事务。CONFIG 频道只清理邀请，保留被配置覆盖的同名动态记录。独立内存频道登记表也通过邀请管理器绑定的存储完成邀请清理。[17] [18]
+
 `ShutdownBudget` 在同一次停止或启动回滚中共享等待截止时间。预算用尽后，剩余组件仍收到停止请求；线程池转为取消排队任务和中断工作，不再清空未执行的清理队列。各管理器原有无参数停止入口保留。[13]
 
 | 子系统 | 主要责任 | 关键边界 |
@@ -132,6 +134,7 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 | --- | --- | --- |
 | 配置与 revision | `ConfigManager` | 在同一提交锁内校验版本、保存候选配置，再发布运行时和广播。 |
 | 玩家连接归属 | `ServerNetworkHandler` | 连接代际约束网络包处理；私信处理还验证玩家归属。 |
+| 频道邀请与删除 | `ChannelManager` + `InvitationManager` | 频道锁内创建和接受邀请；删除先清理邀请，再释放 ID。 |
 | 禁言与封禁 | `AbstractModerationManager` | 同一玩家的应用和解除先提交存储，再发布缓存；失败保留旧限制，成功后才触发封禁移除成员。 |
 | 案件与申诉 | `ModerationManager` + `DatabaseProvider` | 业务层校验身份与状态；存储层条件更新，申诉与案件在一次原子操作中提交。 |
 | 活动状态与任务 | `CampaignManager` | 每个活动串行转换；发送成功才进入 `ACTIVE`，恢复时先检查结束时间。 |
@@ -185,3 +188,5 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 [14]: ../../NovaChat/common/src/main/java/com/nova/chat/common/protocol/keepalive/KeepAliveBudget.java "共享心跳发送预算"
 [15]: ../../NovaChat/common/src/main/java/com/nova/chat/common/protocol/keepalive/RecentKeepAlives.java "共享请求 ID 记忆"
 [16]: ../../StarLink/core/src/main/java/com/nova/link/channel/ChannelStateCleanup.java "共享频道成员与缓存玩家状态清理"
+[17]: ../../StarLink/core/src/main/java/com/nova/link/channel/InvitationManager.java "邀请创建、接受与频道生命周期"
+[18]: ../../StarLink/storage/src/main/java/com/nova/link/database/AbstractJdbcProvider.java "频道与邀请共享事务删除"

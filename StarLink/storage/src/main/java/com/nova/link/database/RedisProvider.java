@@ -60,6 +60,24 @@ public class RedisProvider implements DatabaseProvider {
             return 0
             """;
 
+    private static final String DELETE_CHANNEL_INVITATIONS = """
+            local invitations = {}
+            for i = 3, #KEYS do
+                local json = redis.call('GET', KEYS[i])
+                if json and cjson.decode(json).channelId == ARGV[1] then
+                    table.insert(invitations, KEYS[i])
+                end
+            end
+            for _, key in ipairs(invitations) do
+                redis.call('DEL', key)
+            end
+            if ARGV[2] == '1' then
+                redis.call('DEL', KEYS[1])
+                redis.call('SREM', KEYS[2], ARGV[1])
+            end
+            return #invitations
+            """;
+
     private final String host;
     private final int port;
     private final String password;
@@ -270,17 +288,35 @@ public class RedisProvider implements DatabaseProvider {
 
     @Override
     public void deleteChannel(String channelId) throws DatabaseException {
-        if (channelId == null) {
-            return;
-        }
+        deleteChannelState(channelId, true);
+    }
 
+    @Override
+    public void deleteInvitationsForChannel(String channelId) throws DatabaseException {
+        deleteChannelState(channelId, false);
+    }
+
+    private void deleteChannelState(String channelId, boolean deleteDefinition) throws DatabaseException {
+        if (channelId == null) return;
         try (Jedis jedis = jedisPool.getResource()) {
-            String key = CHANNEL_PREFIX + channelId;
-            jedis.del(key);
-            jedis.srem(CHANNEL_INDEX, channelId);
-            logger.debug("Deleted channel: {}", channelId);
+            List<String> keys = new ArrayList<>(List.of(CHANNEL_PREFIX + channelId, CHANNEL_INDEX));
+            ScanParams params = new ScanParams().match(INVITATION_PREFIX + "*").count(100);
+            String cursor = ScanParams.SCAN_POINTER_START;
+            do {
+                ScanResult<String> scan = jedis.scan(cursor, params);
+                cursor = scan.getCursor();
+                for (String key : scan.getResult()) {
+                    String json = jedis.get(key);
+                    if (json != null && channelId.equals(gson.fromJson(json, InvitationDto.class).channelId)) {
+                        keys.add(key);
+                    }
+                }
+            } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
+            String deleteFlag = "0";
+            if (deleteDefinition) deleteFlag = "1";
+            jedis.eval(DELETE_CHANNEL_INVITATIONS, keys, List.of(channelId, deleteFlag));
         } catch (Exception e) {
-            throw new DatabaseException("Failed to delete channel from Redis", e);
+            throw new DatabaseException("Failed to delete channel state from Redis", e);
         }
     }
 

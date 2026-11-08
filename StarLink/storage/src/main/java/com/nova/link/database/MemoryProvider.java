@@ -146,8 +146,20 @@ public class MemoryProvider implements DatabaseProvider {
     public void deleteChannel(String channelId) throws DatabaseException {
         checkConnection();
         if (channelId != null) {
+            deleteInvitationsForChannel(channelId);
             channels.remove(channelId);
             logger.debug("Deleted channel: {}", channelId);
+        }
+    }
+
+    @Override
+    public void deleteInvitationsForChannel(String channelId) throws DatabaseException {
+        checkConnection();
+        if (channelId == null) return;
+        for (var entry : invitations.entrySet()) {
+            if (channelId.equals(entry.getValue().getChannelId())) {
+                invitations.remove(entry.getKey(), entry.getValue());
+            }
         }
     }
 

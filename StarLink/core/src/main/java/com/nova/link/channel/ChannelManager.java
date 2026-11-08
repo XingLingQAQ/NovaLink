@@ -22,7 +22,8 @@ import java.util.stream.Collectors;
  * channel monitor. Create/update roll back on persistence failure; delete keeps
  * the channel registered until persistence succeeds. Failures propagate as
  * {@link IllegalStateException}.
- * When no provider is wired the helpers early-return and behave memory-only.
+ * Without channel persistence, definitions remain memory-only; an invitation
+ * store still removes references when their channel is retired.
  *
  * Requirements: 3.1, 3.4
  */
@@ -53,6 +54,7 @@ public class ChannelManager {
 
     /** Optional write-through persistence sink; null = memory-only (tests/legacy). */
     private volatile DatabaseProvider databaseProvider;
+    private volatile DatabaseProvider invitationProvider;
     private volatile Consumer<Channel> deletionCleanup;
 
     public ChannelManager() {
@@ -85,6 +87,10 @@ public class ChannelManager {
 
     public boolean isPersistenceEnabled() {
         return databaseProvider != null;
+    }
+
+    void setInvitationProvider(DatabaseProvider provider) {
+        invitationProvider = provider;
     }
 
     /** In-memory cleanup after storage commit, before the ID becomes reusable. */
@@ -195,7 +201,7 @@ public class ChannelManager {
         synchronized (channel) {
             if (channels.get(channelId) != channel) return false;
             try {
-                deletePersistedChannel(channel);
+                deleteStoredChannelState(channel);
             } catch (RuntimeException | DatabaseException error) {
                 throw new IllegalStateException(
                         "Failed to delete persisted channel '" + channelId + "': " + error.getMessage(), error);
@@ -496,16 +502,15 @@ public class ChannelManager {
         db.saveChannel(channel);
     }
 
-    /**
-     * Write-through delete of a channel from the database, if a provider is wired.
-     * Propagates {@link DatabaseException} (and any runtime exception) so the
-     * caller can roll back the in-memory mutation (same rationale as {@link #persistChannel}).
-     */
-    private void deletePersistedChannel(Channel channel) throws DatabaseException {
+    /** Clears invitations before the channel ID is released; CONFIG definitions stay in YAML. */
+    private void deleteStoredChannelState(Channel channel) throws DatabaseException {
         DatabaseProvider db = this.databaseProvider;
-        if (db == null || channel.getSource() == ChannelSource.CONFIG) {
-            return;
+        DatabaseProvider invitations = invitationProvider;
+        if (invitations == null) invitations = db;
+        boolean deleteDefinition = db != null && channel.getSource() != ChannelSource.CONFIG;
+        if (invitations != null && (!deleteDefinition || invitations != db)) {
+            invitations.deleteInvitationsForChannel(channel.getId());
         }
-        db.deleteChannel(channel.getId());
+        if (deleteDefinition) db.deleteChannel(channel.getId());
     }
 }

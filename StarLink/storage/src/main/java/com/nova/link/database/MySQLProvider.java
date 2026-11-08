@@ -411,25 +411,6 @@ public class MySQLProvider extends AbstractJdbcProvider {
     }
 
     @Override
-    public void deleteChannel(String channelId) throws DatabaseException {
-        if (channelId == null) {
-            return;
-        }
-
-        String sql = "DELETE FROM channels WHERE channel_id = ?";
-
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-
-            stmt.setString(1, channelId);
-            stmt.executeUpdate();
-            logger.debug("Deleted channel: {}", channelId);
-        } catch (SQLException e) {
-            throw new DatabaseException("Failed to delete channel", e);
-        }
-    }
-
-    @Override
     public List<Channel> getAllChannels() throws DatabaseException {
         List<Channel> channels = new ArrayList<>();
 

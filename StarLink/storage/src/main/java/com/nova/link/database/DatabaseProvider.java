@@ -100,12 +100,17 @@ public interface DatabaseProvider {
     Optional<Channel> loadChannel(String channelId) throws DatabaseException;
 
     /**
-     * Deletes a channel from the database.
+     * Deletes a channel and its invitations from the database.
      *
      * @param channelId the channel ID
      * @throws DatabaseException if the delete operation fails
      */
     void deleteChannel(String channelId) throws DatabaseException;
+
+    /** Removes invitations without deleting a configuration-owned channel definition. */
+    default void deleteInvitationsForChannel(String channelId) throws DatabaseException {
+        throw new DatabaseException("This provider does not support deleting channel invitations");
+    }
 
     /**
      * Gets all channels from the database.

@@ -50,6 +50,10 @@ NovaLink 管理网关在同一个 HTTP 服务中提供认证、REST 与 WebSocke
 
 频道更新先验证容量，再修改字段；提供非正容量时不会留下部分改名。邀请接受流程在同一频道锁内完成成员、容量检查和扣额入群；已有成员或频道满员返回 `NC-409`，保留邀请码剩余次数。频道删除持久化失败时保留运行时登记、索引、成员与玩家当前频道；创建或删除的存储失败返回 `500`，参数错误仍返回 `400`。[1] [12] [13]
 
+删除频道会同时删除该频道的旧邀请码；同名重建后应创建新邀请。邀请创建与频道删除共用频道锁，避免删除后才保存旧邀请。JDBC 在同一连接事务中删除邀请和动态频道，任一删除失败都回滚。CONFIG 重载移除只清理邀请，不删除被配置覆盖的同名动态记录。[12] [13] [9]
+
+Redis 删除通过 `SCAN` 查找该频道的邀请码，再由 Lua 脚本核对归属并删除，动态频道定义和索引也在脚本中移除。需允许 `SCAN`、`GET`、`EVAL`、`DEL` 和 `SREM`；扫描范围为当前邀请键。[16]
+
 `slowModeSeconds` 为非负整数秒，0 表示关闭；省略时保留当前值。它与名称、容量、权限一起保存并更新 revision，启动恢复也保留该值。更新持久化失败返回 `500` 并恢复本次修改的字段；参数错误仍返回 `400`。[1] [11] [13]
 
 ### 示例：发送受控系统消息
@@ -195,7 +199,7 @@ Webhook REST 路由存在并操作运行时管理器，但示例 YAML 中的 `we
 [6]: ../../Panel/web/src/services/api.js "请求会话绑定与刷新重试"
 [7]: ../../Panel/web/src/services/auth.js "登录会话与 token 轮换"
 [8]: ../../StarLink/core/src/main/java/com/nova/link/moderation/ModerationManager.java "审核隔离、状态转换与冲突处理"
-[9]: ../../StarLink/storage/src/main/java/com/nova/link/database/AbstractJdbcProvider.java "案件与申诉事务"
+[9]: ../../StarLink/storage/src/main/java/com/nova/link/database/AbstractJdbcProvider.java "JDBC 频道删除与审核事务"
 [10]: ../../StarLink/core/src/main/java/com/nova/link/announcement/CampaignManager.java "活动投递、失败重试与恢复调度"
 [11]: ../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java "活动发送回调与路由结果"
 [12]: ../../StarLink/core/src/main/java/com/nova/link/channel/InvitationManager.java "邀请校验、扣额与入群"

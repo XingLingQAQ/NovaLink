@@ -199,3 +199,15 @@ R32 已修复管理器缓存的旧值删除，但提供者的定时清理仍读�
 内存清理改为按键和值条件删除。Redis 禁言与封禁共用同一条件删除函数，在单键 Lua 脚本内比对扫描时的原 JSON，再删除未变化的条目；写入已经变化时返回 0，不误计为已清理。Redis 命令权限需允许 `EVAL`、`HGET` 和 `HDEL`。JDBC 原本使用带过期时间条件的单条 DELETE，本项不改动。
 
 验证：内存、真实 Redis 的禁言与封禁共 4 项回归通过，同时验证普通过期记录仍删除、永久及未来记录保留、返回数量只计实际删除。交错由读取入口触发，无等待；Redis 仅替换测试连接池，仍执行真实网络读写与 Lua。另复核 R32 / R33 的 9 项治理回归，共 13 项通过，无跳过。临时 Redis 已关闭。日志为 `.e2e-artifacts/review9-storage-expiry-before.log` 和 `review9-storage-expiry-final.log`。
+
+## 20. R36：旧邀请码在频道删除后授权同名新频道
+
+位置：[频道删除](../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java)、[邀请创建](../../StarLink/core/src/main/java/com/nova/link/channel/InvitationManager.java) 和存储提供者。
+
+原删除只清除频道定义，不清理邀请表或 Redis 邀请键。原邀请码仅绑定频道 ID，同名重建后仍能入群；未接频道持久化和 CONFIG 移除也有同一问题。邀请创建在检查频道存在之后独立生成并保存，删除可在保存之前完成，随后留下旧频道的新邀请码。
+
+修复把邀请清理放在释放频道 ID 之前。动态频道与邀请由同一提供者删除；CONFIG 只清理邀请，保留同名动态存储记录。未启用频道持久化时，邀请管理器仍绑定其存储用于清理。邀请创建也在频道锁内重新检查对象身份，与接受、删除共享同一边界。
+
+JDBC 将三个重复删除实现合并到公共提供者，在单连接事务内删除邀请和频道，任一失败都回滚；原审核事务复用同一提交函数。Redis 先扫描当前邀请键，再以 Lua 核对归属并移除目标邀请、频道定义及索引；需允许 `SCAN`、`GET`、`EVAL`、`DEL` 和 `SREM`。内存只移除属于目标频道的记录。
+
+验证：原实现中，内存、SQLite、CONFIG、独立频道登记表的旧码入群，以及创建/删除交错均失败；邀请删除故障也未被执行。修复后 47 项定向检查通过，无跳过，包括真实 Redis、单连接 SQLite、两个 DELETE 故障回滚、其他频道邀请保留、新邀请码入群，以及 REST、控制台、TCP 和审核事务回归。MySQL / PostgreSQL 复用相同 SQL，本轮未运行外部数据库。临时 Redis 已关闭。日志为 `.e2e-artifacts/review10-invitation-before.log` 和 `review10-invitation-final.log`。
