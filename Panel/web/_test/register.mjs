@@ -9,4 +9,11 @@
 // load hook: transpiles .jsx (via vite's transformWithOxc) and rewrites the
 // one Vite-only `import.meta.glob` in src/i18n.js. Details in loader.mjs.
 import { register } from 'node:module';
+
+// Static component assertions use the Chinese locale on every host.
+Object.defineProperty(globalThis, 'navigator', {
+  configurable: true,
+  value: { language: 'zh-CN', languages: ['zh-CN'] },
+});
+
 register('./loader.mjs', import.meta.url);
