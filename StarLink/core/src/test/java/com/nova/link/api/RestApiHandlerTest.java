@@ -891,6 +891,23 @@ class RestApiHandlerTest {
     // ====================== invitation revoke ======================
 
     @Test
+    void inviteChannelRejectsInvalidTtlWithoutPersistingAnInvitation() throws Exception {
+        var invitationStorage = mock(DatabaseProvider.class);
+        var invitations = new InvitationManager(invitationStorage, channelManager);
+        var endpoint = new RestApiHandler(jwtService, new AuthManager(new IpBanManager(5, 60000)),
+                channelManager, playerStateManager, messageRouter, null, muteManager, banManager,
+                invitations, configManager, networkHandler, consoleCommandHandler, notificationStore);
+        for (String ttl : java.util.List.of("0", "-1", "-9223372036854775808", "9223372036854775807",
+                "60000.5", "18446744073709611616")) {
+            Response response = dispatch(endpoint, HttpMethod.POST, "/api/channels/staff/invite",
+                    "{\"ttlMillis\":" + ttl + "}");
+            assertThat(response.status).as("TTL %s", ttl).isEqualTo(HttpResponseStatus.BAD_REQUEST);
+            assertThat(response.asJson().has("code")).isFalse();
+        }
+        verifyNoInteractions(invitationStorage);
+    }
+
+    @Test
     @DisplayName("DELETE /api/channels/{id}/invitations/{code} revokes an invitation")
     void revokeInvitation() throws Exception {
         channelManager.createChannel(com.nova.link.channel.ChannelConfig.builder()

@@ -82,7 +82,7 @@ public class InvitationManager {
      * @param inviterId the UUID of the player creating the invitation
      * @param ttlMillis the time-to-live in milliseconds
      * @return the created invitation
-     * @throws IllegalArgumentException if the channel doesn't exist
+     * @throws IllegalArgumentException if the channel doesn't exist or TTL is not positive or overflows
      * @throws DatabaseException if saving fails
      */
     public Invitation createInvitation(String channelId, UUID inviterId, long ttlMillis) throws DatabaseException {
@@ -100,7 +100,7 @@ public class InvitationManager {
      * @param ttlMillis the time-to-live in milliseconds
      * @param maxUses   the maximum number of times this invitation can be used
      * @return the created invitation
-     * @throws IllegalArgumentException if the channel doesn't exist or maxUses &lt; 1
+     * @throws IllegalArgumentException if the channel doesn't exist, maxUses &lt; 1, or TTL is invalid
      * @throws DatabaseException if saving fails
      */
     public Invitation createInvitation(String channelId, UUID inviterId, long ttlMillis, int maxUses) throws DatabaseException {
@@ -114,6 +114,9 @@ public class InvitationManager {
         if (maxUses < 1) {
             throw new IllegalArgumentException("maxUses must be at least 1");
         }
+        if (ttlMillis <= 0) {
+            throw new InvalidTtlException("ttlMillis must be a positive number of milliseconds.", null);
+        }
 
         // Verify channel exists
         Channel channel = channelManager.getChannel(channelId);
@@ -125,9 +128,14 @@ public class InvitationManager {
             if (channelManager.getChannel(channelId) != channel) {
                 throw new IllegalArgumentException("Channel no longer exists: " + channelId);
             }
-            String code = generateUniqueCode();
             long now = System.currentTimeMillis();
-            long expireTime = now + ttlMillis;
+            long expireTime;
+            try {
+                expireTime = Math.addExact(now, ttlMillis);
+            } catch (ArithmeticException e) {
+                throw new InvalidTtlException("ttlMillis is too large. Choose a shorter validity period.", e);
+            }
+            String code = generateUniqueCode();
             Invitation invitation = new Invitation(code, channelId, inviterId, expireTime,
                     now, false, null, 0L,
                     maxUses, 0, null, targetPlayerId);
@@ -135,6 +143,12 @@ public class InvitationManager {
 
             logger.info("Created invitation {} for channel {} by {} (maxUses={})", code, channelId, inviterId, maxUses);
             return invitation;
+        }
+    }
+
+    public static final class InvalidTtlException extends IllegalArgumentException {
+        private InvalidTtlException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 

@@ -161,6 +161,17 @@ class InvitationManagerTest {
     }
 
     @Test
+    void invalidTtlIsRejectedBeforeGeneratingOrSavingACode() throws Exception {
+        var untouched = org.mockito.Mockito.mock(com.nova.link.database.DatabaseProvider.class);
+        var manager = new InvitationManager(untouched, channelManager);
+        for (long ttl : new long[] {0L, -1L, Long.MIN_VALUE, Long.MAX_VALUE}) {
+            assertThatThrownBy(() -> manager.createInvitation(CHANNEL_ID, UUID.randomUUID(), ttl))
+                    .as("TTL %s", ttl).isInstanceOf(IllegalArgumentException.class);
+        }
+        org.mockito.Mockito.verifyNoInteractions(untouched);
+    }
+
+    @Test
     @DisplayName("multi-use invitation: accept past maxUses returns NC-411 (not NC-410)")
     void multiUseExhaustionReturnsUsedNotRevoked() throws DatabaseException {
         UUID inviterId = UUID.randomUUID();

@@ -273,3 +273,13 @@ JOIN 与 ACCEPT 在修改成员前检查封禁，但检查和入群之间没有�
 核心现在向共享 `BanManager` 注入 `PlayerStateManager`。封禁持久化成功后，在同一逐玩家串行边界内清理在线状态；频道封禁只移除指定频道，全局封禁清空全部频道引用。清理复用 `leaveChannel`，标记待保存，沿原有玩家状态保存流程落库。REST、TCP 和控制台无需分别实现状态同步；三参数构造仍支持独立装配。
 
 验证：两个真实后端启动反例在原实现中均失败，频道封禁后当前频道仍是 `first`，全局封禁后仍是已删除的 `retired-active`。修复后 13 项定向回归通过，0 失败、0 跳过：两项启动回归同时核对其他频道和其他玩家不受影响、脏状态保存后的持久化结果；七项受控并发回归补查成员及玩家状态都被清理；四项治理存储失败回归确认旧状态保留。日志为 `.e2e-artifacts/review12-ban-state-before.log` 与 `review12-ban-state-final.log`。
+
+## 26. R42：邀请有效期截断、回绕及溢出后仍返回创建成功
+
+位置：[InvitationManager.createInvitation](../../StarLink/core/src/main/java/com/nova/link/channel/InvitationManager.java)、[REST 邀请入口](../../StarLink/core/src/main/java/com/nova/link/api/RestApiHandler.java)。
+
+原 REST 使用 `getAsLong` 解析有效期，小数会截断，超出 long 的整数会回绕。管理器直接把当前时间与有效期相加，负数、零和溢出均可生成邀请码并返回成功。Redis 会跳过已过期记录，导致成功响应中的码实际不存在；其他提供者会保存立即失效的记录。
+
+修复在 REST 使用精确整数转换，在共享邀请管理器拒绝非正有效期，并用精确加法计算到期时间。校验发生在邀请码生成和存储访问之前；到期时间在获得频道锁后计算。`InvalidTtlException` 保留参数异常继承关系，供 REST 将无效有效期映射为 `400`，不改变频道不存在的 `404`。省略或 `null` 仍使用 24 小时，不套用治理时长中“0 表示永久”的约定。
+
+两个新增反例在原实现均失败。首轮 20 项邀请、REST 创建与撤销检查通过。将到期时间计算移到频道锁内、区分数值错误与无效 JSON 后，最终 5 项相关检查通过，0 失败、0 跳过。非法输入覆盖零、负数、long 两端、小数及可回绕为正常短时长的超大整数，并核对未访问邀请存储；正常自定义有效期、默认 24 小时及频道缺失也已验证。日志为 `.e2e-artifacts/review13-ttl-before.log`、`review13-ttl-final.log` 和 `review13-ttl-exact-final.log`。

@@ -1624,9 +1624,13 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             if (!body.isBlank()) {
                 JsonObject json = JsonParser.parseString(body).getAsJsonObject();
                 if (json.has("ttlMillis") && !json.get("ttlMillis").isJsonNull()) {
-                    ttlMillis = json.get("ttlMillis").getAsLong();
+                    ttlMillis = json.get("ttlMillis").getAsBigDecimal().longValueExact();
                 }
             }
+        } catch (ArithmeticException | NumberFormatException e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
+                    "ttlMillis must be a whole number of milliseconds within range.");
+            return;
         } catch (Exception e) {
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
             return;
@@ -1640,6 +1644,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             response.addProperty("channelId", invitation.getChannelId());
             response.addProperty("expireTime", invitation.getExpireTime());
             sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+        } catch (InvitationManager.InvalidTtlException e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, e.getMessage());
         } catch (IllegalArgumentException e) {
             sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, e.getMessage());
         } catch (Exception e) {
