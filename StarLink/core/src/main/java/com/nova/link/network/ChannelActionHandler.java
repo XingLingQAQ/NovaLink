@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.TreeSet;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * Handles channel action packets (join/leave/create/invite/accept/kick/mute/unmute/delete).
@@ -190,15 +191,13 @@ public class ChannelActionHandler {
         try {
             switch (packet.getAction()) {
                 case JOIN:
-                    return handleJoin(connection, packet);
+                case CREATE:
+                case ACCEPT:
+                    return handleAdmission(connection, packet);
                 case LEAVE:
                     return handleLeave(connection, packet);
-                case CREATE:
-                    return handleCreate(connection, packet);
                 case INVITE:
                     return handleInvite(connection, packet);
-                case ACCEPT:
-                    return handleAccept(connection, packet);
                 case KICK:
                     return handleKick(connection, packet);
                 case MUTE:
@@ -224,6 +223,26 @@ public class ChannelActionHandler {
         }
     }
 
+    private ChannelActionResponsePacket handleAdmission(ClientConnection connection, ChannelActionPacket packet) {
+        UUID playerId = getUuid(packet.getExtra("playerId"), packet.getExtra("player_id"));
+        if (playerId == null) {
+            playerId = getUuid(packet.getExtra("player_uuid"), packet.getExtra("uuid"));
+        }
+        if (playerId == null) {
+            return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(),
+                    NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
+        }
+        UUID admittedPlayer = playerId;
+        Supplier<ChannelActionResponsePacket> admission = () -> switch (packet.getAction()) {
+            case JOIN -> handleJoin(connection, packet, admittedPlayer);
+            case CREATE -> handleCreate(connection, packet, admittedPlayer);
+            case ACCEPT -> handleAccept(connection, packet, admittedPlayer);
+            default -> throw new IllegalArgumentException("Unsupported admission action");
+        };
+        if (banManager == null) return admission.get();
+        return banManager.withAdmission(playerId, admission);
+    }
+
     /**
      * Handles {@link ChannelAction#JOIN}.
      *
@@ -234,18 +253,10 @@ public class ChannelActionHandler {
      * the lite authority returns when it refuses a banned rejoin — no new wire
      * code is introduced for this.
      */
-    private ChannelActionResponsePacket handleJoin(ClientConnection connection, ChannelActionPacket packet) {
-        UUID playerId = getUuid(packet.getExtra("playerId"), packet.getExtra("player_id"));
-        if (playerId == null) {
-            playerId = getUuid(packet.getExtra("player_uuid"), packet.getExtra("uuid"));
-        }
+    private ChannelActionResponsePacket handleJoin(ClientConnection connection, ChannelActionPacket packet, UUID playerId) {
         String playerName = firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name"));
         String world = packet.getExtra("world");
         String platform = packet.getExtra("platform");
-
-        if (playerId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.JOIN, packet.getChannelId(), NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
-        }
 
         String channelId = packet.getChannelId();
         if (channelId == null || channelId.isBlank()) {
@@ -270,14 +281,6 @@ public class ChannelActionHandler {
             return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, NovaConstants.ERROR_WORLD_RESTRICTED, "Channel is restricted to specific worlds");
         }
 
-        // A ban is stronger than a mute: it keeps the player out, it does not
-        // merely silence them (see BanInfo). BanManager.isBanned consults the
-        // channel entry and falls back to the global one, so a global ban
-        // refuses every channel, and it evicts an expired entry on read, so an
-        // expired ban never blocks here. Runs before the PRIVATE branch, which
-        // would otherwise re-admit a banned player who knows the password.
-        // Skipped when no BanManager is wired (partial wiring, tests), matching
-        // every other nullable-manager check in this class.
         if (banManager != null && banManager.isBanned(playerId, channelId)) {
             logger.debug("Join refused: player {} is banned from channel {}", playerId, channelId);
             return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId,
@@ -400,15 +403,12 @@ public class ChannelActionHandler {
         return new ChannelActionResponsePacket(true, ChannelAction.LEAVE, channelId, "", "Logged out");
     }
 
-    private ChannelActionResponsePacket handleCreate(ClientConnection connection, ChannelActionPacket packet) {
-        UUID playerId = getUuid(packet.getExtra("playerId"), packet.getExtra("player_id"));
-        if (playerId == null) {
-            playerId = getUuid(packet.getExtra("player_uuid"), packet.getExtra("uuid"));
-        }
+    private ChannelActionResponsePacket handleCreate(ClientConnection connection, ChannelActionPacket packet, UUID playerId) {
         String playerName = firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name"));
         String platform = packet.getExtra("platform");
-        if (playerId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.CREATE, packet.getChannelId(), NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
+        if (banManager != null && banManager.isBanned(playerId, null)) {
+            return new ChannelActionResponsePacket(false, ChannelAction.CREATE, packet.getChannelId(),
+                    NovaConstants.ERROR_FORBIDDEN, "You are banned from creating channels");
         }
 
         String displayName = firstNonBlank(packet.getExtra("displayName"), packet.getChannelId(), "Private Channel");
@@ -501,28 +501,16 @@ public class ChannelActionHandler {
         }
     }
 
-    private ChannelActionResponsePacket handleAccept(ClientConnection connection, ChannelActionPacket packet) {
-        UUID playerId = getUuid(packet.getExtra("playerId"), packet.getExtra("player_id"));
-        if (playerId == null) {
-            playerId = getUuid(packet.getExtra("player_uuid"), packet.getExtra("uuid"));
-        }
+    private ChannelActionResponsePacket handleAccept(ClientConnection connection, ChannelActionPacket packet, UUID playerId) {
         String playerName = firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name"));
         String world = packet.getExtra("world");
         String platform = packet.getExtra("platform");
-
-        if (playerId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, packet.getChannelId(), NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
-        }
 
         String inviteCode = packet.getChannelId();
         if (inviteCode == null || inviteCode.isBlank()) {
             return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, "", NovaConstants.ERROR_BAD_REQUEST, "Invite code is required");
         }
 
-        // An accepted invitation is another way into a channel's membership, so
-        // an active ban has to refuse it too — otherwise a banned player just
-        // needs any outstanding invite code to walk back in. Validated before
-        // acceptInvitation so a refusal never consumes one use of the invite.
         if (banManager != null) {
             try {
                 InvitationResult invitation = invitationManager.validateInvitation(inviteCode);

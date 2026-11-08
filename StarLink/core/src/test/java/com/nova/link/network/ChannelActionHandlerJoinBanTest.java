@@ -220,6 +220,20 @@ class ChannelActionHandlerJoinBanTest {
         assertThat(invitations.validateInvitation(code).isSuccess()).isTrue();
     }
 
+    @Test
+    void globallyBannedPlayerCannotCreateAMembershipThroughANewPrivateChannel() {
+        banManager.banPlayer(superAdminId, playerId, null, 0L, "global", CLIENT_ID);
+        int channelsBefore = channelManager.getChannelCount();
+        ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.CREATE, "New Private");
+        packet.addExtra("playerId", playerId.toString());
+
+        ChannelActionResponsePacket response = handler.handle(connection, packet);
+
+        assertThat(response.isSuccess()).isFalse();
+        assertThat(response.getErrorCode()).isEqualTo("NC-403");
+        assertThat(channelManager.getChannelCount()).isEqualTo(channelsBefore);
+    }
+
     private ChannelActionHandler newHandlerWith(BanManager bans) {
         return new ChannelActionHandler(
                 channelManager,

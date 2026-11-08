@@ -17,6 +17,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 /**
  * Manages ban operations for players in channels or globally.
@@ -257,6 +259,18 @@ public class BanManager extends AbstractModerationManager<BanInfo> {
      */
     public boolean isBanned(UUID playerId, String channelId) {
         return isModerated(playerId, channelId);
+    }
+
+    /** Serializes admission with ban writes; the callback must not modify bans. */
+    public <T> T withAdmission(UUID playerId, Supplier<T> admission) {
+        Objects.requireNonNull(playerId, "playerId");
+        Objects.requireNonNull(admission, "admission");
+        AtomicReference<T> result = new AtomicReference<>();
+        cache.compute(playerId, (id, entries) -> {
+            result.set(admission.get());
+            return entries;
+        });
+        return result.get();
     }
 
     /**

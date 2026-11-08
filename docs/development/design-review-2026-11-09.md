@@ -249,3 +249,17 @@ Redis 命令白名单需允许 `ZREVRANGEBYSCORE`（含分数）、`ZREVRANK` �
 SUPER_ADMIN 保留私有频道治理和已删除频道限制的单人解除入口；新增限制与批量操作仍检查频道存在。ADMIN 省略频道时的全局操作保持原有契约。测试调用方释放请求、响应及嵌入式通道。
 
 验证：新增四项 HTTP 回归在原实现中三项失败，分别暴露写入越权、列表泄漏和批量越权；超级管理员正向与恢复用例原本通过。修复后首轮 34 项定向检查通过，覆盖五种操作的存储、成员、当前频道及通知状态不变，三种角色的列表与数量，批量预览、执行及降权重放，以及原有批量、资源策略和单人治理行为。最终完整攻击矩阵、单人治理、资源策略及原有 ADMIN 写入、VIEWER 读取兼容性检查共 45 项通过，0 失败、0 跳过。日志为 `.e2e-artifacts/review11-moderation-scope-before.log`、`review11-moderation-scope-final.log` 和 `review11-moderation-scope-compatibility.log`。
+
+## 24. R40：并发入群越过已完成的封禁
+
+位置：[ChannelActionHandler 的 JOIN、ACCEPT 与 CREATE](../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java)、[BanManager](../../StarLink/core/src/main/java/com/nova/link/ban/BanManager.java)。
+
+JOIN 与 ACCEPT 在修改成员前检查封禁，但检查和入群之间没有协调。请求检查通过后停住，另一线程完成封禁并移除成员，请求再继续加入，最终留下已封禁成员。CREATE 还会自动加入创建者，原实现没有检查全局封禁。
+
+修复由 `BanManager.withAdmission` 复用封禁应用、解除所用的逐玩家缓存更新边界。三种入群路径共享玩家标识解析和执行入口，覆盖检查、邀请扣额、成员写入及玩家状态更新。入群先执行时，封禁随后移除成员；封禁先执行时，入群沿用 `NC-403` 拒绝，邀请不扣额。全局封禁拒绝 CREATE，不创建频道。未装配封禁管理器的既有调用仍沿用原流程。
+
+该入口不引入额外玩家锁表；回调不能再写封禁。频道容量与邀请扣额继续由既有频道锁负责，存储层不依赖协议响应类型。
+
+原实现四个有效并发反例失败，覆盖私有频道密码入群、邀请接受与频道/全局封禁。首次运行另两项普通 JOIN 夹具错误地给 GLOBAL 频道设置 clientId，未进入并发路径；已修正。日志为 `.e2e-artifacts/review12-admission-before.log`。
+
+修正夹具后，29 项定向回归通过，0 失败、0 跳过。七项受控并发用例覆盖普通 JOIN、私有 JOIN、ACCEPT 与频道/全局封禁，以及 CREATE 与全局封禁；其余检查覆盖既有封禁拒绝与到期、解封、邀请不扣额、跨客户端定向邀请、未装配封禁管理器时的创建及持久化。并发测试等到封禁完成或确认封禁线程正在等待入群线程持有的锁，再释放闸门，不使用休眠。同一生产实现下的五项治理提交及存储失败回归也已通过。日志为 `.e2e-artifacts/review12-admission-corrected.log` 与 `review12-admission-final.log`。

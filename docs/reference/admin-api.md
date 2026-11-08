@@ -99,6 +99,8 @@ REST 层将这些操作视作后台发起的管理动作。自动化系统应在
 
 禁言、解除禁言、封禁和解封先提交存储，再发布缓存及成功副作用；同一玩家的写入按相同顺序执行。存储失败返回 `500`（`NC-510`），保留本次操作前的限制，不发送成功通知，也不因失败封禁移除成员。无数据库的独立管理器仍可仅在内存中操作。[14]
 
+封禁写入与协议侧 JOIN、ACCEPT、CREATE 按玩家串行。封禁先完成时，后续入群返回 `NC-403`，邀请不会扣额；先入群的请求可成功，后续封禁会移除其成员资格。全局封禁还拒绝创建私有频道，避免通过创建者自动入群绕过限制。[19]
+
 ### 4.1 案件与申诉
 
 | 方法与路径 | 请求体 | 状态约束 |
@@ -225,3 +227,4 @@ Webhook REST 路由存在并操作运行时管理器，但示例 YAML 中的 `we
 [16]: ../../StarLink/storage/src/main/java/com/nova/link/database/RedisProvider.java "Redis 过期清理的条件删除"
 [17]: ../../StarLink/storage/src/main/java/com/nova/link/database/MemoryProvider.java "内存过期清理的条件删除"
 [18]: ../../StarLink/core/src/main/java/com/nova/link/auth/PanelResourcePolicy.java "频道与治理资源可见性"
+[19]: ../../StarLink/core/src/main/java/com/nova/link/ban/BanManager.java "封禁与协议入群串行协调"
