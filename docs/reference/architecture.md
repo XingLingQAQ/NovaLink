@@ -151,6 +151,8 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 
 后端的频道模型至少区分全局、服务端和私有边界。全局频道从 `global_channels` 创建，客户端频道绑定 `clientId`；当客户端配置把自己的频道写为 `GLOBAL` 时，后端会强制改为 `SERVER` 以保持跨客户端隔离。运行时私有频道不会被配置重载覆盖。[11]
 
+控制面通过 `PanelResourcePolicy` 共享频道资源授权。VIEWER 可见 `GLOBAL`，ADMIN 可见并管理 `GLOBAL` 与 `SERVER`，`PRIVATE` 仅向 SUPER_ADMIN 开放。频道级禁言、封禁、解除限制及踢出复用这一策略，限制列表在投影与计数前过滤；批量预览、执行和缓存重放在副作用或缓存读取前检查当前角色。没有频道 ID 的全局限制继续由 ADMIN 及以上管理；已删除频道的遗留限制仅向 SUPER_ADMIN 展示并提供单人解除入口。[20]
+
 这种模型意味着“名字相同”不等于“路由范围相同”。设计频道时应首先决定数据面边界、权限节点和世界条件，再决定客户端展示名称、格式或面板标签。
 
 重载中，CONFIG 频道的作用域或客户端绑定变化会替换原对象，清理旧成员和关联运行时状态，再建立新索引；普通属性修改保留对象与成员。动态频道继续跳过。频道 ID 在当前登记表中唯一，配置重复声明按启动时的顺序保留第一个定义，并记录警告。[11]
@@ -194,3 +196,4 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 [17]: ../../StarLink/core/src/main/java/com/nova/link/channel/InvitationManager.java "邀请创建、接受与频道生命周期"
 [18]: ../../StarLink/storage/src/main/java/com/nova/link/database/AbstractJdbcProvider.java "频道与邀请共享事务删除"
 [19]: ../../StarLink/storage/src/main/java/com/nova/link/database/RedisProvider.java "Redis 有序索引分批读取与筛选"
+[20]: ../../StarLink/core/src/main/java/com/nova/link/auth/PanelResourcePolicy.java "控制面共享资源授权"

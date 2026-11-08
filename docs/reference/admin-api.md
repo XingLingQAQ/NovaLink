@@ -36,7 +36,7 @@ NovaLink 管理网关在同一个 HTTP 服务中提供认证、REST 与 WebSocke
 
 | 方法与路径 | 作用 | 请求体或参数 | 风险提示 |
 | --- | --- | --- | --- |
-| `GET /api/channels` | 列出全部频道 | 无 | 返回频道数组与数量。 |
+| `GET /api/channels` | 列出可见频道 | 无 | 返回当前身份可见的频道数组与数量。 |
 | `GET /api/channels/{channelId}` | 获取频道详情 | 路径参数 | 频道不存在返回 `404`。 |
 | `POST /api/channels` | 创建频道 | `id?`、`displayName?`、`scope?`、`maxCapacity?`、`permission?` | 这是管理操作；未给 ID 时会生成 ID。 |
 | `PUT /api/channels/{channelId}` | 更新可变字段 | `displayName?`、`maxCapacity?`、`permission?`、`permissionPresent?`、`slowModeSeconds?` | 不应假设可修改所有频道结构或作用域。 |
@@ -82,10 +82,14 @@ curl --request POST "https://panel.example.invalid/api/messages" \
 | `POST /api/players/{uuid}/ban` | 封禁 | `channelId?`、`durationMs?`、`reason?` | 高影响治理操作，应记录依据。 |
 | `POST /api/players/{uuid}/unban` | 解除封禁 | `channelId?` | 避免误解除错误范围。 |
 | `POST /api/players/{uuid}/kick` | 从指定频道移除成员 | **必需** `channelId` | 不会把“踢出频道”理解为网络层断开。 |
-| `GET /api/mutes` | 查看活跃禁言 | 无 | 基于在线玩家状态聚合。 |
-| `GET /api/bans` | 查看封禁 | 无 | 结合后台持久化状态审阅。 |
+| `GET /api/mutes` | 查看活跃禁言 | 无 | 仅返回可见范围的记录，包含离线玩家；`total` 为过滤后的条数。 |
+| `GET /api/bans` | 查看封禁 | 无 | 按玩家聚合可见范围的封禁；没有可见封禁的玩家不会出现在列表中。 |
 
 REST 层将这些操作视作后台发起的管理动作。自动化系统应在调用前完成 UUID、频道 ID、持续时间和理由校验，并保存操作请求与响应记录。[1]
+
+频道级治理与频道访问共用 `PanelResourcePolicy`：VIEWER 只能读取全局限制及 `GLOBAL` 频道限制；ADMIN 可读取和管理全局、`GLOBAL`、`SERVER` 范围；`PRIVATE` 仅限 SUPER_ADMIN。单人禁言、解禁言、封禁、解封及踢出都检查目标频道，频道不可见与不存在统一返回 `404 Channel not found`。省略 `channelId` 仍表示全局禁言或封禁。[18]
+
+已删除频道遗留的限制仅向 SUPER_ADMIN 展示，可通过单人 `/unmute` 或 `/unban` 清理。新增频道限制和批量治理仍要求目标频道存在。[1] [18]
 
 禁言与封禁的 `durationMs` 使用非负整数毫秒，省略或传 `0` 表示永久。负数、非整数、超出整数范围或使到期时间溢出的值返回 `400`；批量接口（含 `dryRun`）执行相同校验。非法时长不会修改原限制、移除成员或发送成功通知。[1] [15]
 
@@ -118,6 +122,8 @@ REST 层将这些操作视作后台发起的管理动作。自动化系统应在
 `POST /api/moderation/batch` 需要 ADMIN 或以上身份。必需字段为 `action`（`mute/unmute/ban/unban`）、`targetIds`（最多 100 个、不重复的玩家 UUID）、`reason` 和 `idempotencyKey`；可选字段为 `channelId`、`durationMs`、`caseId` 和 `dryRun`。[1]
 
 `dryRun=true` 返回预览，不执行治理、写审计或占用幂等 key。实际执行按目标分别处理，响应为 `200`，由 `results`、`succeeded` 和 `failed` 表达逐项结果。部分失败不会撤销其他目标的成功操作。[1]
+
+预览、执行和幂等重放均在读取缓存结果前检查目标频道的资源权限，并使用账号当前角色。SUPER_ADMIN 降为 ADMIN 后，原私有频道批次的重放返回 `404`，不会返回旧结果中的受保护信息。[1] [18]
 
 幂等 key 属于当前操作人，并绑定动作、目标顺序、频道、有效时长、原因和案件 ID。相同操作人的相同请求在缓存保留期间返回原响应，不再次执行或写审计；token 刷新不改变这一归属。同一 key 携带不同有效内容返回 `409`，应为新的批次使用新 key。批次仍在执行时，重复请求返回 `409`，应等待后使用原 key 和原内容重试。[1]
 
@@ -191,7 +197,7 @@ Webhook REST 路由存在并操作运行时管理器，但示例 YAML 中的 `we
 | `400 Bad Request` | 缺少字段、UUID/枚举错误、无效 JSON 或被禁止的命令 | 修正请求，不要无条件重试。 |
 | `401 Unauthorized` | 缺少、过期或无效 token | 按认证流程刷新/重新登录；不要记录 token。 |
 | `403 Forbidden` | 角色不足、状态不允许操作或原处理人尝试审核申诉 | 按实际错误原因调整操作人或流程。 |
-| `404 Not Found` | 频道、玩家、客户端或 Webhook 不存在 | 先刷新本地缓存，检查是否为并发删除。 |
+| `404 Not Found` | 对象不存在或目标频道对当前身份不可见 | 刷新可见资源列表，核对目标与当前账号角色。 |
 | `409 Conflict` | 设置版本过期、案件或申诉并发变化、决定已经完成，或批次 key 冲突/仍在执行 | 按错误原因刷新快照、调整批次 key，或等待原批次完成后重试。 |
 | `429 Too Many Requests` | 活动当前小时发送配额用尽 | 等待配额恢复，并在结束时间前重试原活动。 |
 | `503 Service Unavailable` | 相关子系统未启用或不可用 | 进行健康检查与告警，而不是盲目重试。 |
@@ -218,3 +224,4 @@ Webhook REST 路由存在并操作运行时管理器，但示例 YAML 中的 `we
 [15]: ../../StarLink/core/src/main/java/com/nova/link/moderation/DurationUtils.java "时长与到期时间校验"
 [16]: ../../StarLink/storage/src/main/java/com/nova/link/database/RedisProvider.java "Redis 过期清理的条件删除"
 [17]: ../../StarLink/storage/src/main/java/com/nova/link/database/MemoryProvider.java "内存过期清理的条件删除"
+[18]: ../../StarLink/core/src/main/java/com/nova/link/auth/PanelResourcePolicy.java "频道与治理资源可见性"

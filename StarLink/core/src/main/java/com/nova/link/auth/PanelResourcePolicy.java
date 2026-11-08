@@ -76,6 +76,18 @@ public final class PanelResourcePolicy {
         return role != null && role.atLeast(PanelRole.ADMIN) && canViewScope(role, scope);
     }
 
+    public boolean canViewModeration(PanelRole role, String channelId) {
+        if (channelId == null) return canViewScope(role, ChannelScope.GLOBAL);
+        Channel channel = null;
+        if (channelManager != null) channel = channelManager.getChannel(channelId);
+        if (channel == null) return role == PanelRole.SUPER_ADMIN;
+        return canViewChannel(role, channel);
+    }
+
+    public boolean canManageModeration(PanelRole role, String channelId) {
+        return role != null && role.atLeast(PanelRole.ADMIN) && canViewModeration(role, channelId);
+    }
+
     /** Server/client source metadata is operational data and requires ADMIN or above. */
     public boolean canViewInfrastructureSource(PanelRole role) {
         return role != null && role.atLeast(PanelRole.ADMIN);

@@ -17,6 +17,7 @@ import com.nova.link.channel.MessageRouter;
 import com.nova.link.config.ConfigManager;
 import com.nova.link.console.BackendContext;
 import com.nova.link.console.ConsoleCommandHandler;
+import com.nova.link.console.ConsoleSentinel;
 import com.nova.link.database.ChatMessageRecord;
 import com.nova.link.database.DatabaseProvider;
 import com.nova.link.database.MemoryProvider;
@@ -247,9 +248,8 @@ class RestApiRbacAttackMatrixTest {
         }
 
         ChannelHandlerContext ctx = mock(ChannelHandlerContext.class);
-        // channelRead0 stores the per-request id as a channel attribute, so the
-        // mock must return a real channel that supports AttributeMap.
-        when(ctx.channel()).thenReturn(new EmbeddedChannel());
+        EmbeddedChannel channel = new EmbeddedChannel();
+        when(ctx.channel()).thenReturn(channel);
         AtomicReference<Object> captured = new AtomicReference<>();
         ChannelPromise promise = mock(ChannelPromise.class);
         doAnswer(inv -> {
@@ -259,16 +259,18 @@ class RestApiRbacAttackMatrixTest {
 
         try {
             targetHandler.channelRead0(ctx, request);
+            if (captured.get() instanceof FullHttpResponse response) {
+                return new Response(response.status(), response.content().toString(StandardCharsets.UTF_8),
+                        new DefaultHttpHeaders().set(response.headers()));
+            }
+            return new Response(null, "", null);
         } catch (Exception e) {
             throw new RuntimeException(e);
+        } finally {
+            request.release();
+            if (captured.get() instanceof FullHttpResponse response) response.release();
+            channel.finishAndReleaseAll();
         }
-
-        Object resp = captured.get();
-        if (resp instanceof FullHttpResponse response) {
-            return new Response(response.status(), response.content().toString(StandardCharsets.UTF_8),
-                    response.headers());
-        }
-        return new Response(null, "", null);
     }
 
     private record Response(HttpResponseStatus status, String body, HttpHeaders headers) {
@@ -353,6 +355,116 @@ class RestApiRbacAttackMatrixTest {
     }
 
     // ====================== attack vectors ======================
+
+    @Nested
+    class ModerationResourceScope {
+        @Test
+        void privateModerationCannotBypassTheSharedResourcePolicy() throws Exception {
+            muteManager.mutePlayer(ConsoleSentinel.CONSOLE_SENTINEL, targetId, "private-staff", 0L, "committed", null);
+            banManager.banPlayer(ConsoleSentinel.CONSOLE_SENTINEL, targetId, "private-staff", 0L, "committed", null);
+            channelManager.addMember("private-staff", targetId);
+            playerStateManager.joinChannel(targetId, "private-staff");
+            playerStateManager.setActiveChannel(targetId, "private-staff");
+            muteManager.setNotificationStore(notificationStore);
+            banManager.setNotificationStore(notificationStore);
+            int notifications = db.countNotifications(false);
+            for (String action : List.of("mute", "unmute", "ban", "unban", "kick")) {
+                String path = "/api/players/" + targetId + "/" + action;
+                Response hidden = dispatch(adminToken, HttpMethod.POST, path,
+                        "{\"channelId\":\"private-staff\",\"durationMs\":60000,\"reason\":\"forged\"}");
+                Response missing = dispatch(adminToken, HttpMethod.POST, path,
+                        "{\"channelId\":\"truly-missing\",\"durationMs\":60000,\"reason\":\"forged\"}");
+                assertNotFoundAndNoLeak(hidden, missing);
+            }
+            assertThat(muteManager.getMuteInfo(targetId, "private-staff").getReason()).isEqualTo("committed");
+            assertThat(banManager.getBanInfo(targetId, "private-staff").getReason()).isEqualTo("committed");
+            assertThat(db.loadMutes(targetId)).extracting(info -> info.getReason()).containsExactly("committed");
+            assertThat(db.loadBans(targetId)).extracting(info -> info.getReason()).containsExactly("committed");
+            assertThat(channelManager.getChannel("private-staff").isMember(targetId)).isTrue();
+            assertThat(playerStateManager.getPlayerState(targetId).getActiveChannel()).isEqualTo("private-staff");
+            assertThat(db.countNotifications(false)).isEqualTo(notifications);
+        }
+
+        @Test
+        void moderationListsAndCountsRespectChannelVisibility() {
+            for (String channel : new String[] {null, "staff", "survival", "private-staff", "retired-private"}) {
+                muteManager.mutePlayer(ConsoleSentinel.CONSOLE_SENTINEL, targetId, channel, 0L, "scope", null);
+                banManager.banPlayer(ConsoleSentinel.CONSOLE_SENTINEL, targetId, channel, 0L, "scope", null);
+            }
+            UUID hiddenPlayer = UUID.randomUUID();
+            muteManager.mutePlayer(ConsoleSentinel.CONSOLE_SENTINEL, hiddenPlayer, "private-staff", 0L, "hidden", null);
+            banManager.banPlayer(ConsoleSentinel.CONSOLE_SENTINEL, hiddenPlayer, "private-staff", 0L, "hidden", null);
+            var expectations = java.util.Map.of(
+                    viewerToken, Set.of("(global)", "staff"),
+                    adminToken, Set.of("(global)", "staff", "survival"),
+                    superAdminToken, Set.of("(global)", "staff", "survival", "private-staff", "retired-private"));
+            for (var expected : expectations.entrySet()) {
+                Response mutes = dispatch(expected.getKey(), HttpMethod.GET, "/api/mutes", null);
+                Response bans = dispatch(expected.getKey(), HttpMethod.GET, "/api/bans", null);
+                assertThat(moderationChannels(mutes, false)).isEqualTo(expected.getValue());
+                assertThat(moderationChannels(bans, true)).isEqualTo(expected.getValue());
+                if (!expected.getKey().equals(superAdminToken)) {
+                    assertThat(mutes.body()).doesNotContain(hiddenPlayer.toString(), "private-staff", "retired-private");
+                    assertThat(bans.body()).doesNotContain(hiddenPlayer.toString(), "private-staff", "retired-private");
+                    assertThat(mutes.asJson().get("total").getAsInt()).isEqualTo(expected.getValue().size());
+                }
+            }
+        }
+
+        @Test
+        void batchScopeIsCheckedForPreviewApplyAndCachedReplayAfterRoleChange() {
+            for (boolean preview : new boolean[] {false, true}) {
+                String body = "{\"action\":\"mute\",\"targetIds\":[\"" + targetId
+                        + "\"],\"channelId\":\"private-staff\",\"durationMs\":60000,\"reason\":\"forged\","
+                        + "\"idempotencyKey\":\"private-batch\",\"dryRun\":" + preview + "}";
+                assertThat(dispatch(adminToken, HttpMethod.POST, "/api/moderation/batch", body).status())
+                        .isEqualTo(HttpResponseStatus.NOT_FOUND);
+            }
+            assertThat(muteManager.isMuted(targetId, "private-staff")).isFalse();
+            String body = "{\"action\":\"mute\",\"targetIds\":[\"" + targetId
+                    + "\"],\"channelId\":\"private-staff\",\"reason\":\"authorized\",\"idempotencyKey\":\"root-batch\"}";
+            assertThat(dispatch(superAdminToken, HttpMethod.POST, "/api/moderation/batch", body).status())
+                    .isEqualTo(HttpResponseStatus.OK);
+            authManager.registerPanelUser(new PanelUserCredentials("root", "unused-test-hash", PanelRole.ADMIN));
+            Response replay = dispatch(superAdminToken, HttpMethod.POST, "/api/moderation/batch", body);
+            assertThat(replay.status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
+            assertThat(replay.body()).doesNotContain(targetId.toString(), "private-staff");
+        }
+
+        @Test
+        void superAdminKeepsPrivateModerationAndOrphanCleanup() {
+            for (String action : List.of("mute", "ban", "unmute", "unban", "kick")) {
+                if (action.equals("kick")) channelManager.addMember("private-staff", targetId);
+                assertThat(dispatch(superAdminToken, HttpMethod.POST, "/api/players/" + targetId + "/" + action,
+                        "{\"channelId\":\"private-staff\",\"durationMs\":60000,\"reason\":\"authorized\"}").status())
+                        .as(action).isEqualTo(HttpResponseStatus.OK);
+            }
+            muteManager.mutePlayer(ConsoleSentinel.CONSOLE_SENTINEL, targetId, "retired-private", 0L, "orphan", null);
+            banManager.banPlayer(ConsoleSentinel.CONSOLE_SENTINEL, targetId, "retired-private", 0L, "orphan", null);
+            for (String action : List.of("unmute", "unban")) {
+                assertThat(dispatch(superAdminToken, HttpMethod.POST, "/api/players/" + targetId + "/" + action,
+                        "{\"channelId\":\"retired-private\"}").status()).isEqualTo(HttpResponseStatus.OK);
+            }
+            assertThat(muteManager.isMuted(targetId, "retired-private")).isFalse();
+            assertThat(banManager.isBanned(targetId, "retired-private")).isFalse();
+        }
+    }
+
+    private static Set<String> moderationChannels(Response response, boolean bans) {
+        Set<String> channels = new LinkedHashSet<>();
+        JsonArray rows = bans ? JsonParser.parseString(response.body()).getAsJsonArray()
+                : response.asJson().getAsJsonArray("mutes");
+        for (var row : rows) {
+            JsonArray restrictions = new JsonArray();
+            if (bans) restrictions = row.getAsJsonObject().getAsJsonArray("bans");
+            else restrictions.add(row);
+            for (var restriction : restrictions) {
+                var id = restriction.getAsJsonObject().get("channelId");
+                channels.add(id == null || id.isJsonNull() ? "(global)" : id.getAsString());
+            }
+        }
+        return channels;
+    }
 
     @Nested
     @DisplayName("Vector 1 — forged channelId (VIEWER probes PRIVATE detail/member/history)")
@@ -441,54 +553,19 @@ class RestApiRbacAttackMatrixTest {
         }
 
         @Test
-        @DisplayName("ADMIN mute against a forged (missing) channelId is rejected and leaves no notification")
-        void adminMuteAgainstMissingChannelIsRejected() {
-            // Capture the notification count before the attack. The MemoryProvider
-            // exposes getNotifications for tests; a successful mute would append.
-            int before;
-            try {
-                before = db.getNotifications(0, 1000, false).size();
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-
-            Response mute = dispatch(adminToken, HttpMethod.POST,
+        @DisplayName("ADMIN private mute matches missing-channel denial and creates no restriction")
+        void adminMuteAgainstMissingChannelIsRejected() throws Exception {
+            int before = db.countNotifications(false);
+            Response hidden = dispatch(adminToken, HttpMethod.POST,
                     "/api/players/" + targetId + "/mute",
                     "{\"channelId\":\"private-staff\",\"durationMs\":60000,\"reason\":\"forged\"}");
-            // handleMutePlayer returns 404 when the channel does not exist.
-            // private-staff DOES exist but is out of the ADMIN's scope; the
-            // handler checks channelExists (true) then proceeds to mutePlayer
-            // with trustedOperator=true, which bypasses PermissionManager and
-            // therefore succeeds. So the attack surface here is a truly
-            // missing channel — the 404 must not leak existence.
-            Response missingMute = dispatch(adminToken, HttpMethod.POST,
+            Response missing = dispatch(adminToken, HttpMethod.POST,
                     "/api/players/" + targetId + "/mute",
                     "{\"channelId\":\"truly-missing\",\"durationMs\":60000,\"reason\":\"forged\"}");
-            assertThat(missingMute.status()).isEqualTo(HttpResponseStatus.NOT_FOUND);
-            assertThat(missingMute.asJson().get("error").getAsString())
-                    .contains("Channel not found");
-            // No mute cached, no notification created.
+            assertNotFoundAndNoLeak(hidden, missing);
+            assertThat(muteManager.isMuted(targetId, "private-staff")).isFalse();
             assertThat(muteManager.isMuted(targetId, "truly-missing")).isFalse();
-
-            int after;
-            try {
-                after = db.getNotifications(0, 1000, false).size();
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-            assertThat(after).as("no notification created for rejected mute").isEqualTo(before);
-
-            // The ADMIN mute against the out-of-scope private-staff channel does
-            // NOT leak a side-channel: handleMutePlayer's channelExists check is
-            // a pure existence check (not scope-gated), so it proceeds. That is
-            // a known RBAC property of the moderation path, not an overreach —
-            // the panel requiredRole gate already authorized ADMIN for /mute,
-            // and trustedOperator=true is the documented REST bypass. We assert
-            // the observable side effects stay within the channel's scope: the
-            // mute IS recorded (this is by-design behavior, not a leak) so the
-            // assertion documents it rather than denying it.
-            assertThat(mute.status()).isEqualTo(HttpResponseStatus.OK);
-            assertThat(muteManager.isMuted(targetId, "private-staff")).isTrue();
+            assertThat(db.countNotifications(false)).isEqualTo(before);
         }
 
         @Test

@@ -977,10 +977,10 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             handleMutePlayer(ctx, request, playerId, panelUsername(claims), claims);
         } else if (path.matches("/api/players/[^/]+/unmute") && method == HttpMethod.POST) {
             String playerId = path.substring("/api/players/".length(), path.lastIndexOf("/unmute"));
-            handleUnmutePlayer(ctx, request, playerId, panelUsername(claims));
+            handleUnmutePlayer(ctx, request, playerId, panelUsername(claims), claims);
         } else if (path.matches("/api/players/[^/]+/kick") && method == HttpMethod.POST) {
             String playerId = path.substring("/api/players/".length(), path.lastIndexOf("/kick"));
-            handleKickPlayer(ctx, request, playerId, panelUsername(claims));
+            handleKickPlayer(ctx, request, playerId, panelUsername(claims), claims);
         }
         // Ban endpoints
         else if (path.matches("/api/players/[^/]+/ban") && method == HttpMethod.POST) {
@@ -988,15 +988,15 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             handleBanPlayer(ctx, request, playerId, panelUsername(claims), claims);
         } else if (path.matches("/api/players/[^/]+/unban") && method == HttpMethod.POST) {
             String playerId = path.substring("/api/players/".length(), path.lastIndexOf("/unban"));
-            handleUnbanPlayer(ctx, request, playerId, panelUsername(claims));
+            handleUnbanPlayer(ctx, request, playerId, panelUsername(claims), claims);
         }
         // Mutes listing endpoint
         else if (path.equals("/api/mutes") && method == HttpMethod.GET) {
-            handleGetMutes(ctx, request);
+            handleGetMutes(ctx, request, claims);
         }
         // Bans listing endpoint
         else if (path.equals("/api/bans") && method == HttpMethod.GET) {
-            handleGetBans(ctx, request);
+            handleGetBans(ctx, request, claims);
         }
         // Webhook endpoints
         else if (path.equals("/api/webhooks") && method == HttpMethod.GET) {
@@ -1883,6 +1883,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
 
+        if (!requireModerationAccess(ctx, request, claims, channelId)) return;
+
         long durationMs = 0L;
         if (json.has("durationMs") && !json.get("durationMs").isJsonNull()) {
             try {
@@ -2135,6 +2137,13 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
     }
 
+    private boolean requireModerationAccess(ChannelHandlerContext ctx, FullHttpRequest request,
+                                            Claims claims, String channelId) {
+        if (resourcePolicy.canManageModeration(resourcePolicy.resolveRole(claims), channelId)) return true;
+        sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
+        return false;
+    }
+
     /**
      * POST /api/players/{uuid}/mute - Mute a player.
      *
@@ -2189,6 +2198,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
 
+        if (!requireModerationAccess(ctx, request, claims, channelId)) return;
+
         MuteResult result = muteManager.mutePlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, durationMs, reason, null, true);
         if (!result.isSuccess()) {
@@ -2240,7 +2251,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * Requirements: 25.4
      */
     private void handleUnmutePlayer(ChannelHandlerContext ctx, FullHttpRequest request, String playerId,
-                                    String operatorUsername) {
+                                    String operatorUsername, Claims claims) {
         if (muteManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Mute system not enabled");
             return;
@@ -2267,6 +2278,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
             return;
         }
+
+        if (!requireModerationAccess(ctx, request, claims, channelId)) return;
 
         MuteResult result = muteManager.unmutePlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, null, true);
@@ -2295,17 +2308,21 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * so mutes of offline players are visible and can be lifted from the panel.
      * Requirements: 25.4
      */
-    private void handleGetMutes(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private void handleGetMutes(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
         if (muteManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Mute system not enabled");
             return;
         }
 
+        PanelRole role = resourcePolicy.resolveRole(claims);
         JsonArray mutes = new JsonArray();
         for (Map.Entry<UUID, List<MuteInfo>> playerEntry : muteManager.getAllActiveMutes().entrySet()) {
+            List<MuteInfo> visible = playerEntry.getValue().stream()
+                    .filter(info -> resourcePolicy.canViewModeration(role, info.getChannelId())).toList();
+            if (visible.isEmpty()) continue;
             UUID playerId = playerEntry.getKey();
             String playerName = resolvePlayerName(playerId);
-            for (MuteInfo m : playerEntry.getValue()) {
+            for (MuteInfo m : visible) {
                 JsonObject entry = new JsonObject();
                 entry.addProperty("playerId", playerId.toString());
                 entry.addProperty("playerName", playerName != null ? playerName : playerId.toString());
@@ -2409,6 +2426,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
 
+        if (!requireModerationAccess(ctx, request, claims, channelId)) return;
+
         BanResult result = banManager.banPlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, durationMs, reason, null, true);
         if (!result.isSuccess()) {
@@ -2455,7 +2474,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * Body: {channelId?}
      */
     private void handleUnbanPlayer(ChannelHandlerContext ctx, FullHttpRequest request, String playerId,
-                                   String operatorUsername) {
+                                   String operatorUsername, Claims claims) {
         if (banManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Ban system not enabled");
             return;
@@ -2482,6 +2501,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
             return;
         }
+
+        if (!requireModerationAccess(ctx, request, claims, channelId)) return;
 
         BanResult result = banManager.unbanPlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, null, true);
@@ -2519,15 +2540,17 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * would render an empty list if this were wrapped. Each entry groups a
      * player's bans into a nested {@code bans} array.
      */
-    private void handleGetBans(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private void handleGetBans(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
         if (banManager == null) {
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Ban system not enabled");
             return;
         }
 
+        PanelRole role = resourcePolicy.resolveRole(claims);
         JsonArray bans = new JsonArray();
         for (Map.Entry<UUID, List<BanInfo>> playerEntry : banManager.getAllActiveBans().entrySet()) {
-            List<BanInfo> playerBans = playerEntry.getValue();
+            List<BanInfo> playerBans = playerEntry.getValue().stream()
+                    .filter(info -> resourcePolicy.canViewModeration(role, info.getChannelId())).toList();
             if (playerBans.isEmpty()) {
                 continue;
             }
@@ -2577,7 +2600,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * Requirements: 25.4
      */
     private void handleKickPlayer(ChannelHandlerContext ctx, FullHttpRequest request, String playerId,
-                                  String operatorUsername) {
+                                  String operatorUsername, Claims claims) {
         UUID targetUuid;
         try {
             targetUuid = UUID.fromString(playerId);
@@ -2614,6 +2637,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
             return;
         }
+
+        if (!requireModerationAccess(ctx, request, claims, channelId)) return;
 
         if (!channel.isMember(targetUuid)) {
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, NovaConstants.ERROR_NOT_IN_CHANNEL + ": Target is not in channel");

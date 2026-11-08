@@ -235,3 +235,17 @@ Redis 命令白名单需允许 `ZREVRANGEBYSCORE`（含分数）、`ZREVRANK` �
 首次响应、缓存响应和其他 JSON 响应复用同一发送入口，统一请求 ID、CORS 与连接处理。定向测试的请求、响应和嵌入式通道也由测试调用方释放，参与并发的线程在退出前回收。
 
 验证：四个原实现反例均失败。修复后 12 项定向测试通过，包含跨账号 key、六种有效内容变化、token 刷新后的相同请求、预览前后复用 key、进行中重试与完成重放、逐项审计、原批量角色检查、时长拒绝及排队请求 ID。并发反例由存储闸门控制，不使用休眠。日志为 `.e2e-artifacts/review11-batch-before.log` 和 `review11-batch-final.log`。
+
+## 23. R39：玩家治理与限制列表绕过频道资源权限
+
+位置：[RestApiHandler 的玩家治理与批量入口](../../StarLink/core/src/main/java/com/nova/link/api/RestApiHandler.java)、[PanelResourcePolicy](../../StarLink/core/src/main/java/com/nova/link/auth/PanelResourcePolicy.java)。
+
+共享策略明确规定 `PRIVATE` 仅供 SUPER_ADMIN 访问，但单人治理只校验 ADMIN 角色，再以受信任操作人调用管理器；ADMIN 能禁言、封禁、解除限制和踢出私有频道成员。限制列表还向 VIEWER、ADMIN 暴露私有及已删除频道的记录。批量预览、执行与缓存重放同样缺少频道资源检查。
+
+原攻击矩阵有一项把 ADMIN 对私有频道禁言成功视为预期，与共享策略及既有生产设计说明冲突。本项按共享策略修正该预期，同时保留真正需要的全局治理与超级管理员恢复入口。
+
+修复在 `PanelResourcePolicy` 增加限制读取与管理判断，REST 五种单人操作和批量入口共用资源校验。限制列表先过滤再解析名称、投影和计数，没有可见封禁的玩家不会出现在封禁列表。批量资源校验位于幂等缓存读取前，使用账号当前角色，降权后无法重放原私有频道结果。不可见与缺失频道统一返回 `404 Channel not found`。
+
+SUPER_ADMIN 保留私有频道治理和已删除频道限制的单人解除入口；新增限制与批量操作仍检查频道存在。ADMIN 省略频道时的全局操作保持原有契约。测试调用方释放请求、响应及嵌入式通道。
+
+验证：新增四项 HTTP 回归在原实现中三项失败，分别暴露写入越权、列表泄漏和批量越权；超级管理员正向与恢复用例原本通过。修复后首轮 34 项定向检查通过，覆盖五种操作的存储、成员、当前频道及通知状态不变，三种角色的列表与数量，批量预览、执行及降权重放，以及原有批量、资源策略和单人治理行为。最终完整攻击矩阵、单人治理、资源策略及原有 ADMIN 写入、VIEWER 读取兼容性检查共 45 项通过，0 失败、0 跳过。日志为 `.e2e-artifacts/review11-moderation-scope-before.log`、`review11-moderation-scope-final.log` 和 `review11-moderation-scope-compatibility.log`。
