@@ -93,3 +93,13 @@ REST 原实现先调用频道更新并持久化，再单独设置 `slowModeSecon
 新增 `deleteChannelIfCurrent()`，在频道锁内比较对象身份，再执行持久化删除、索引更新与移除登记。核心保留频道对象而非只有 ID；对象已被替换时跳过。原按 ID 删除入口保留并复用同一实现。旧版 `GlobalChannelLoader` 与 `ServerChannelLoader` 的快照清理也采用此入口。
 
 验证：原反例失败，修复后核心重载、频道管理与持久化共 32 项通过；随后只补跑重载的 4 个场景，覆盖核心保留替换频道、正常清理 CONFIG，以及两个旧版加载器保留同名替换对象。日志为 `.e2e-artifacts/review6-reload-before.log`、`review6-reload-final.log` 和 `review6-reload-entrypoints.log`。
+
+## 10. R26：Redis 邀请写入改变过期时间
+
+位置：[RedisProvider 的邀请写入](../../StarLink/storage/src/main/java/com/nova/link/database/RedisProvider.java)。
+
+保存先把剩余毫秒除以 1000，再分两条命令 SET / EXPIRE。有效期不足一秒时直接丢弃，其他情况下丢失精度。领取和旧版标记使用接口读取整秒 TTL，再重写 SET；TTL 为 0 时不再设置过期时间，键会永久保留。
+
+修复保存使用单条 `SET ... PXAT`，绝对截止时间与内容一起提交。领取、旧版标记在原 WATCH / MULTI / EXEC 内设置 `PEXPIREAT`，与撤销接口一致，保留记录自身的毫秒截止时间。
+
+验证：独立临时 Redis 中，保存、领取、旧标记三个原实现反例均改变了截止时间；修复后三种写入的 `PEXPIRETIME` 与邀请的 `expireTime` 完全相同。连同已有并发领取/撤销回归共 4 项通过，无跳过；临时 Redis 已关闭。日志为 `.e2e-artifacts/review6-expiry-before.log` 与 `review6-expiry-final.log`。

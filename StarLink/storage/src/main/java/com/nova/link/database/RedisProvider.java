@@ -14,6 +14,7 @@ import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.Transaction;
 import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.params.SetParams;
 import redis.clients.jedis.resps.ScanResult;
 
 import java.util.*;
@@ -1091,10 +1092,7 @@ public class RedisProvider implements DatabaseProvider {
             throw new DatabaseException("Invitation and code cannot be null");
         }
 
-        // Compute TTL up front. An already-expired invitation (ttl <= 0) must
-        // never be persisted as a non-expiring key — drop it instead.
-        long ttl = (invitation.getExpireTime() - System.currentTimeMillis()) / 1000;
-        if (ttl <= 0) {
+        if (invitation.getExpireTime() <= System.currentTimeMillis()) {
             try (Jedis jedis = jedisPool.getResource()) {
                 jedis.del(INVITATION_PREFIX + invitation.getCode());
             } catch (Exception e) {
@@ -1107,8 +1105,7 @@ public class RedisProvider implements DatabaseProvider {
         try (Jedis jedis = jedisPool.getResource()) {
             String key = INVITATION_PREFIX + invitation.getCode();
             String json = gson.toJson(new InvitationDto(invitation));
-            jedis.set(key, json);
-            jedis.expire(key, ttl);
+            jedis.set(key, json, SetParams.setParams().pxAt(invitation.getExpireTime()));
             logger.debug("Saved invitation: {}", invitation.getCode());
         } catch (Exception e) {
             throw new DatabaseException("Failed to save invitation to Redis", e);
@@ -1163,15 +1160,9 @@ public class RedisProvider implements DatabaseProvider {
                 dto.used = true;
                 dto.usedBy = usedBy != null ? usedBy.toString() : null;
                 dto.usedAt = System.currentTimeMillis();
-                // Read TTL before entering MULTI mode — commands issued directly
-                // on the connection during a transaction are not safely usable.
-                long ttl = jedis.ttl(key);
                 Transaction tx = jedis.multi();
                 tx.set(key, gson.toJson(dto));
-                // Preserve the remaining TTL across the rewrite.
-                if (ttl > 0) {
-                    tx.expire(key, ttl);
-                }
+                tx.pexpireAt(key, dto.expireTime);
                 java.util.List<Object> execResult = tx.exec();
                 if (execResult == null || execResult.isEmpty()) {
                     // EXEC aborted: the key changed underneath us — another
@@ -1226,12 +1217,9 @@ public class RedisProvider implements DatabaseProvider {
                 dto.usedBy = playerId != null ? playerId.toString() : null;
                 dto.usedAt = now;
                 dto.used = dto.usedCount >= maxUses;
-                long ttl = jedis.ttl(key);
                 Transaction tx = jedis.multi();
                 tx.set(key, gson.toJson(dto));
-                if (ttl > 0) {
-                    tx.expire(key, ttl);
-                }
+                tx.pexpireAt(key, dto.expireTime);
                 java.util.List<Object> execResult = tx.exec();
                 if (execResult == null || execResult.isEmpty()) {
                     // EXEC aborted: a concurrent writer claimed the slot first.
