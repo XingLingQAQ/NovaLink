@@ -55,3 +55,13 @@
 同时修复频道更新的相邻缺陷：原实现先修改名称，再验证容量；无效容量会留下未持久化的部分改名。现在所有参数校验在字段修改之前完成。
 
 验证：首轮频道管理、邀请与跨客户端访问测试 50 项通过。后续受影响测试 23 项通过，包含删除持久化失败时保留登记与索引，以及 SQLite 邀请持久化路径。新增回归覆盖已有成员不扣额、普通加入与邀请争用最后一个名额、无效容量不留下改名。结果见 `.e2e-artifacts/review4-admission-before.log`、`review4-admission-final.log` 和 `review4-admission-boundaries.log`。
+
+## 6. R22：代理慢速模式清理仍有效的长窗口
+
+位置：[代理 SlowModeTracker](../../NovaChat/Proxy/common/src/main/java/com/nova/chat/proxy/chat/SlowModeTracker.java)。
+
+lite 频道的 `slow-mode` 接受非负整数秒，但原清理固定删除一小时前的发送记录。两小时窗口在一小时后触发第 256 次检查时就被清理；原实现的确定性反例返回 0 秒、允许发送，预期仍需等待 3599 秒。
+
+修复将最后发送时间与保留截止时间一起保存，清理不得早于实际窗口结束。较短窗口继续保留至少一小时的历史，以维持原有间隔调整语义；拒绝请求不移动最后发送时间。若请求使用更长间隔，保留截止时间随之延长。断线仍可通过 `forgetPlayer()` 清除记录，过期长窗口仍会被回收。
+
+验证：注入毫秒时钟，不使用等待；覆盖长窗口跨清理、过期回收、间隔调整和断线清理，并运行 `LocalAuthorityTest` 检查真实 lite 聊天入口。结果见 `.e2e-artifacts/review5-slowmode-before.log` 与 `review5-slowmode-final.log`。

@@ -1,6 +1,7 @@
 package com.nova.chat.proxy.chat;
 
 import java.util.UUID;
+import java.util.function.LongSupplier;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -26,11 +27,22 @@ public final class SlowModeTracker {
     /** How many acquisitions between opportunistic stale-entry sweeps. */
     private static final int CLEANUP_INTERVAL = 256;
 
-    /** Entries older than this are dropped during a sweep (1 hour). */
-    private static final long STALE_AFTER_MS = 60L * 60L * 1000L;
+    // Retain recent timestamps for interval changes, and longer active windows until expiry.
+    private static final long MIN_RETENTION_MS = 60L * 60L * 1000L;
 
-    private final ConcurrentMap<String, Long> lastMessageAt = new ConcurrentHashMap<>();
+    private record Window(long sentAt, long retainUntil) {}
+
+    private final ConcurrentMap<String, Window> lastMessageAt = new ConcurrentHashMap<>();
     private final AtomicLong acquires = new AtomicLong();
+    private final LongSupplier clock;
+
+    public SlowModeTracker() {
+        this(System::currentTimeMillis);
+    }
+
+    SlowModeTracker(LongSupplier clock) {
+        this.clock = clock;
+    }
 
     /**
      * Attempts to claim the player's send slot in the channel.
@@ -46,19 +58,19 @@ public final class SlowModeTracker {
             return 0L;
         }
         long windowMs = slowModeSeconds * 1000L;
-        long now = System.currentTimeMillis();
+        long now = clock.getAsLong();
         long[] remainingSeconds = new long[1];
         String key = key(playerId, channelId);
 
         lastMessageAt.compute(key, (ignored, last) -> {
             if (last != null) {
-                long elapsed = now - last;
+                long elapsed = now - last.sentAt();
                 if (elapsed < windowMs) {
                     remainingSeconds[0] = (windowMs - elapsed + 999L) / 1000L;
-                    return last;
+                    return new Window(last.sentAt(), Math.max(last.retainUntil(), last.sentAt() + windowMs));
                 }
             }
-            return now;
+            return new Window(now, now + Math.max(MIN_RETENTION_MS, windowMs));
         });
 
         if (acquires.incrementAndGet() % CLEANUP_INTERVAL == 0) {
@@ -88,9 +100,8 @@ public final class SlowModeTracker {
         return lastMessageAt.size();
     }
 
-    /** Removes windows that have not been touched for {@link #STALE_AFTER_MS}. */
     private void cleanupStale(long now) {
-        lastMessageAt.entrySet().removeIf(entry -> now - entry.getValue() > STALE_AFTER_MS);
+        lastMessageAt.entrySet().removeIf(entry -> now > entry.getValue().retainUntil());
     }
 
     private static String key(UUID playerId, String channelId) {
