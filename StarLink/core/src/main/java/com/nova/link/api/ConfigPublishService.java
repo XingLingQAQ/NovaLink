@@ -28,11 +28,11 @@ import java.util.Optional;
  *   <li><b>Draft workflow</b> — an operator creates a draft (masked YAML
  *       payload), a different SUPER_ADMIN approver signs off, then a
  *       SUPER_ADMIN publishes the approved draft to the live config via
- *       {@link ConfigManager#save()}. The approver must differ from the
+ *       {@link ConfigManager#update}. The approver must differ from the
  *       creator (permission separation, 403 if same).</li>
  *   <li><b>Independent {@code /config/publish}</b> — publish is a first-class
  *       operation, not a side effect of {@code PUT /api/settings}; it goes
- *       through the same fail-closed {@link ConfigManager#save()} path as
+ *       through the same fail-closed {@link ConfigManager#update} path as
  *       rollback, and broadcasts the same {@code settings_update} WS event.</li>
  *   <li><b>Explicit backup / restore</b> — an operator takes a named backup
  *       before a risky change; restore reuses the shared
@@ -54,13 +54,10 @@ import java.util.Optional;
  * re-published). The approver must be a SUPER_ADMIN distinct from
  * {@code createdBy} (permission separation).
  *
- * <p><b>Fail-closed.</b> Publish and restore both merge the staged config onto
- * a private deep copy of the live config, swap the copy into the live slot via
- * {@link ConfigManager#swapConfigForSave}, then call {@link ConfigManager#save()}.
- * If save throws, the original live config is swapped back and the draft stays
- * APPROVED (publish failed before the state flip) / the backup is retained;
- * the caller surfaces 500/NC-510. This mirrors the rollback contract in
- * {@link ConfigHistoryService#rollback}.
+ * <p>Publish and restore merge into a private candidate under the config
+ * manager's commit lock. The candidate becomes live only after persistence
+ * succeeds. A failed write leaves the draft APPROVED and the current config
+ * unchanged.
  *
  * <p><b>Audit.</b> Every mutating operation records an audit event via
  * {@link AuditStore#record} (best-effort, never blocks), with the action
@@ -226,7 +223,7 @@ public final class ConfigPublishService {
      * Publishes an APPROVED draft to the live config. Reuses
      * {@link ConfigHistoryService#applySnapshot} so live secrets survive
      * (masked fields in the draft are skipped, the live secret is preserved).
-     * Calls {@link ConfigManager#save()} (fail-closed: a save failure throws
+     * Calls {@link ConfigManager#update} (fail-closed: a save failure throws
      * and leaves the live config untouched; the draft stays APPROVED).
      *
      * @return the new settings revision on success, or -1 if the draft was
@@ -261,26 +258,19 @@ public final class ConfigPublishService {
         if (draftConfig == null) {
             throw new IllegalStateException("Draft JSON parsed to null config");
         }
-        String beforeMasked = configHistoryService.maskSecrets(gson.toJson(liveSnapshot));
-        String beforeHash = AuditEvent.hashJson(beforeMasked);
-
-        // H4: merge the draft onto a private deep clone of the live config.
-        // If save() later fails we swap the original back in and the
-        // caller-visible live config never observed the merge.
-        NovaLinkConfig liveCopy = gson.fromJson(gson.toJson(liveSnapshot), NovaLinkConfig.class);
-        configHistoryService.applySnapshot(liveCopy, draftConfig);
-
-        // Swap the clone into the live slot, write, and on failure swap the
-        // original back so the live config is unchanged.
-        NovaLinkConfig swappedOut = configManager.swapConfigForSave(liveCopy);
+        String[] beforeHashRef = new String[1];
+        ConfigManager.CommittedConfig committed;
         try {
-            configManager.save();
+            committed = configManager.update(null, candidate -> {
+                beforeHashRef[0] = AuditEvent.hashJson(configHistoryService.maskSecrets(gson.toJson(candidate)));
+                configHistoryService.applySnapshot(candidate, draftConfig);
+            }, actor);
         } catch (Exception e) {
-            configManager.swapConfigForSave(swappedOut);
             throw new IllegalStateException("Publish save failed: " + e.getMessage(), e);
         }
-
-        long newRevision = configManager.getSettingsRevision();
+        String beforeHash = beforeHashRef[0];
+        NovaLinkConfig liveCopy = committed.config();
+        long newRevision = committed.revision();
         long now = System.currentTimeMillis();
         draft.markPublished(now);
         try {
@@ -393,7 +383,7 @@ public final class ConfigPublishService {
      * Restores the live config from a named backup. Reuses
      * {@link ConfigHistoryService#applySnapshot} so live secrets survive
      * (masked fields in the backup are skipped, the live secret is preserved).
-     * Calls {@link ConfigManager#save()} (fail-closed: a save failure throws
+     * Calls {@link ConfigManager#update} (fail-closed: a save failure throws
      * and leaves the live config untouched; the backup is retained).
      *
      * @return the new settings revision on success, or -1 if the backup was
@@ -425,26 +415,19 @@ public final class ConfigPublishService {
         if (backupConfig == null) {
             throw new IllegalStateException("Backup JSON parsed to null config");
         }
-        String beforeMasked = configHistoryService.maskSecrets(gson.toJson(liveSnapshot));
-        String beforeHash = AuditEvent.hashJson(beforeMasked);
-
-        // H4: merge the backup onto a private deep clone of the live config.
-        // If save() later fails we swap the original back in and the
-        // caller-visible live config never observed the merge.
-        NovaLinkConfig liveCopy = gson.fromJson(gson.toJson(liveSnapshot), NovaLinkConfig.class);
-        configHistoryService.applySnapshot(liveCopy, backupConfig);
-
-        // Swap the clone into the live slot, write, and on failure swap the
-        // original back so the live config is unchanged.
-        NovaLinkConfig swappedOut = configManager.swapConfigForSave(liveCopy);
+        String[] beforeHashRef = new String[1];
+        ConfigManager.CommittedConfig committed;
         try {
-            configManager.save();
+            committed = configManager.update(null, candidate -> {
+                beforeHashRef[0] = AuditEvent.hashJson(configHistoryService.maskSecrets(gson.toJson(candidate)));
+                configHistoryService.applySnapshot(candidate, backupConfig);
+            }, actor);
         } catch (Exception e) {
-            configManager.swapConfigForSave(swappedOut);
             throw new IllegalStateException("Restore save failed: " + e.getMessage(), e);
         }
-
-        long newRevision = configManager.getSettingsRevision();
+        String beforeHash = beforeHashRef[0];
+        NovaLinkConfig liveCopy = committed.config();
+        long newRevision = committed.revision();
         // liveCopy is the installed live config; serialise it directly.
         String afterMasked = configHistoryService.maskSecrets(gson.toJson(liveCopy));
         String afterHash = AuditEvent.hashJson(afterMasked);

@@ -15,6 +15,7 @@ NovaLink 管理网关在同一个 HTTP 服务中提供认证、REST 与 WebSocke
 | 成功响应 | 大多数操作返回 JSON 和 `2xx`；创建频道/Webhook 返回 `201 Created`。 |
 | 失败响应 | 常见为 `400`（参数）、`401`（认证）、`404`（对象不存在）、`503`（子系统不可用）或 `500`（内部错误）。 |
 | 跨域 | 后端处理 OPTIONS；实际跨域与前端部署仍须由安全策略控制。 |
+| 同连接请求顺序 | HTTP/1.1 在前一响应写出后处理下一请求；等候期间暂停继续读取，最多保留 32 个已解码的排队请求，超限关闭连接。 |
 
 所有 `POST`、`PUT` 和 `DELETE` 请求都可能改变运行时或持久化状态。调用前应核对目标环境、频道作用域、玩家 UUID 和回退条件。
 
@@ -79,11 +80,15 @@ REST 层将这些操作视作后台发起的管理动作。自动化系统应在
 | --- | --- | --- | --- |
 | `DELETE /api/clients/{clientId}` | 发起对游戏服务器 TCP 客户端的断开 | 路径参数 | 仅影响对应游戏服务器连接，不处理 WebSocket 面板会话。 |
 | `POST /api/reload` | 触发配置重载与客户端同步 | 无 | 应在受控窗口执行，并验证同步后的路由与权限。 |
-| `GET /api/settings` | 读取功能开关 | 无 | 返回 `filterEnabled`、`messageLogEnabled`、`crossServerChatEnabled`。 |
-| `PUT /api/settings` | 修改功能开关并尝试持久化 | 三个布尔字段均可选 | 会立即影响运行时；持久化失败需视为变更异常。 |
+| `GET /api/settings` | 读取功能开关与版本 | 无 | 返回 4 个功能开关、`messageLogRetentionDays` 和 `revision`。 |
+| `PUT /api/settings` | 保存功能设置并生效 | 功能字段、`messageLogRetentionDays` 和 `baseRevision` 均可选 | 显式提供旧 revision 时返回 `409`；保存失败时保持原配置与运行时。 |
 | `GET /api/status` | 获取后端状态摘要 | 无 | 返回在线状态、版本、频道数、玩家数和时间戳。 |
 
-`PUT /api/settings` 会先修改内存中的 FeatureConfig，再通过配置管理器触发运行时应用，并尝试保存到配置文件。若运行时已应用而落盘失败，接口会返回服务器错误；运维人员必须检查文件与运行时是否一致，而非只看面板开关状态。[1]
+功能开关为 `filterEnabled`、`messageLogEnabled`、`crossServerChatEnabled` 和 `privateMessagesEnabled`。`messageLogRetentionDays` 限制在 0—365；0 表示不按天数清理。[1]
+
+配置管理器在同一提交锁内校验版本、构造候选配置并保存。保存成功后，才更新内存配置、revision、运行时和广播。设置、过滤规则、草稿发布、备份恢复与历史回滚都使用此提交流程；局部设置更新不会重新应用频道配置。[1] [5]
+
+编辑器应把最近快照的 `revision` 放入 `baseRevision`，或使用 `If-Match: W/"<revision>"`。响应包含新的设置和 revision，下一次保存应使用该版本。`409` 响应包含当前快照与 `currentRevision`，供调用方恢复显示；不传版本仍保留旧客户端的调用约定。[1]
 
 ### 示例：读取或修改功能开关
 
@@ -94,10 +99,10 @@ curl --request GET "https://panel.example.invalid/api/settings" \
 curl --request PUT "https://panel.example.invalid/api/settings" \
   --header "Authorization: Bearer <access-token>" \
   --header "Content-Type: application/json" \
-  --data '{"crossServerChatEnabled": false}'
+  --data '{"crossServerChatEnabled": false, "baseRevision": 10}'
 ```
 
-第二个调用会改变跨服聊天分发的运行时行为。应在发布记录中说明预期范围，并准备恢复值。[1]
+将示例中的 10 替换为 GET 返回的 revision。第二个调用保存成功后会改变跨服聊天分发行为。[1]
 
 ## 6. 通知、Webhook 与远程控制台
 

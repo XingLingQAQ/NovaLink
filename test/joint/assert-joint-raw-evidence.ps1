@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)][string]$RoundDir,
   [Parameter(Mandatory = $true)][string]$RunId,
@@ -13,14 +13,7 @@ $ErrorActionPreference = 'Stop'
 foreach ($name in @('business','extended-business','lite-moderation','recovery','proxy-switch','channel-lifecycle','social-contract','custom-effects','completion','registry')) {
   . (Join-Path $PSScriptRoot "scenarios/$name.ps1")
 }
-$tokens = $null; $errors = $null
-$ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'run-joint.ps1'), [ref]$tokens, [ref]$errors)
-if ($errors.Count) { throw 'Cannot parse run-joint.ps1' }
-foreach ($name in @('Assert-BotExpectations','Assert-Delivered','Assert-ProxyPluginLoaded','Assert-LogContains','Get-BackendAuthIdentities','Assert-RelayDistinctIdentities','Assert-RelayLinksCreated')) {
-  $fn = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
-  if (-not $fn) { throw "Missing scorer $name" }
-  . ([scriptblock]::Create($fn.Extent.Text))
-}
+. (Join-Path $PSScriptRoot 'evidence-checks.ps1')
 function Read-LogText([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Missing raw log: $Path" }
   $text = [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8)
@@ -131,7 +124,7 @@ if ($Mode -eq 'lite') {
   Assert-ListeningPort $proxyLog 'Listening on' $alice.port
   Assert-ListeningPort (Join-Path $RoundDir 'bukkit/server.stdout.log') 'Starting Minecraft server on' $down.port
   $scores = @(
-    Assert-LogContains 'round1/lite-mode-active' 'local-authority' $proxyLog 'NovaChat running in lite mode \(local authority, no backend connection\)'
+    Assert-LogContains 'round1/lite-mode-active' 'local-authority' (Read-LogText $proxyLog) 'NovaChat running in lite mode \(local authority, no backend connection\)'
     Assert-Delivered 'round1/downstream-upstream-roundtrip' "$prefix-downstream-chat" $down
     Assert-Delivered 'round1/proxy-to-downstream-chat' "$prefix-lite-fanout" $down
   )
@@ -155,9 +148,9 @@ if ($Mode -eq 'lite') {
   $servers = @('bukkit'); if ($Secondary -eq 'bukkit') { $servers += 'bukkit2' }
   $identities = @($servers | ForEach-Object { "E2E_Relay_$_" })
   $scores = @(
-    Assert-ProxyPluginLoaded 'round1/proxy-plugin-loaded' $Proxy $proxyLog
-    Assert-RelayLinksCreated 'round1/relay-links-created' $proxyLog $servers
-    Assert-RelayDistinctIdentities 'round1/relay-distinct-backend-identities' $backendLog $identities @('E2E_JointProxy')
+    Assert-ProxyPluginLoaded 'round1/proxy-plugin-loaded' $Proxy (Read-LogText $proxyLog)
+    Assert-RelayLinksCreated 'round1/relay-links-created' (Read-LogText $proxyLog) $servers
+    Assert-RelayDistinctIdentities 'round1/relay-distinct-backend-identities' (Read-LogText $backendLog) $identities @('E2E_JointProxy')
     Assert-Delivered 'round1/java-to-bedrock' "$prefix-java-to-bedrock" $bed
     Assert-Delivered 'round1/bedrock-to-java' "$prefix-bedrock-to-java" $java
   )
@@ -215,8 +208,8 @@ foreach ($group in $Groups | Where-Object { $_ -ne 'core' }) {
       $scores = @(Assert-JointRecoveryResults 1 $rr $j $b 'E2ERecoverJava' 'E2ERecoverBed' 'local')
       $receipt = Read-Raw (Join-Path $RoundDir 'backend/restart-process.results.json')
       if ($receipt.runId -cne $rr -or [long]$receipt.stoppedProcessId -le 0 -or [long]$receipt.startedProcessId -le 0 -or $receipt.stoppedProcessId -eq $receipt.startedProcessId) { throw 'Missing raw recovery backend-process-restarted evidence' }
-      $before = Get-BackendAuthIdentities $backendLog
-      $after = Get-BackendAuthIdentities (Join-Path $RoundDir 'backend/restart-1/stdout.log')
+      $before = Get-BackendAuthIdentities (Read-LogText $backendLog)
+      $after = Get-BackendAuthIdentities (Read-LogText (Join-Path $RoundDir 'backend/restart-1/stdout.log'))
       $missing = @($before.Identities | Sort-Object -Unique | Where-Object { $_ -cnotin $after.Identities })
       if (@($before.Identities).Count -eq 0 -or $missing.Count) { throw "Recovery backend reauthentication missing: $($missing -join ', ')" }
       $roles = @('Java','Bedrock')

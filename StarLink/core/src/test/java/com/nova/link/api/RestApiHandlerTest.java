@@ -86,6 +86,63 @@ class RestApiHandlerTest {
     private ClientConnection capturedClient;
     private String validToken;
 
+    @Test
+    void persistenceFailureLeavesSettingsAndFilterAtCommittedState() throws Exception {
+        ConfigManager failing = new ConfigManager(tempDir.resolve("failing.yml")) {
+            @Override protected void persist(com.nova.link.config.NovaLinkConfig candidate)
+                    throws com.nova.link.config.ConfigException {
+                throw new com.nova.link.config.ConfigException("Disk full");
+            }
+        };
+        failing.load();
+        var endpoint = new RestApiHandler(jwtService, new AuthManager(new IpBanManager(5, 60000)),
+                channelManager, playerStateManager, messageRouter, null, muteManager, banManager,
+                invitationManager, failing, networkHandler, consoleCommandHandler, notificationStore);
+        EmbeddedChannel channel = new EmbeddedChannel(endpoint);
+        try {
+            for (String path : java.util.List.of("/api/settings", "/api/filter")) {
+                String body = path.endsWith("settings") ? "{\"filterEnabled\":false,\"baseRevision\":0}"
+                        : "{\"enabled\":false,\"words\":[\"unsaved\"]}";
+                var request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.PUT, path,
+                        Unpooled.copiedBuffer(body, CharsetUtil.UTF_8));
+                request.headers().set(HttpHeaderNames.AUTHORIZATION, "Bearer " + validToken);
+                channel.writeInbound(request);
+                FullHttpResponse response = channel.readOutbound();
+                try { assertThat(response.status()).isEqualTo(HttpResponseStatus.INTERNAL_SERVER_ERROR); }
+                finally { response.release(); }
+                assertThat(failing.getConfig().getFeatures().isFilterEnabled()).isTrue();
+                assertThat(failing.getConfig().getFilter().getWords()).doesNotContain("unsaved");
+                assertThat(failing.getSettingsRevision()).isZero();
+                assertThat(sensitiveWordFilter.isEnabled()).isTrue();
+            }
+        } finally { channel.finishAndReleaseAll(); }
+    }
+
+    @Test
+    void queuedRequestsKeepTheirOwnCorrelationIds() {
+        var queued = new java.util.ArrayList<Runnable>();
+        handler.setWorkerExecutor(queued::add);
+        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        try {
+            for (String id : java.util.List.of("request-a", "request-b")) {
+                var request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/api/settings");
+                request.headers().set("X-Request-Id", id);
+                channel.writeInbound(request);
+            }
+            assertThat(queued).hasSize(2);
+            queued.forEach(Runnable::run);
+            for (String id : java.util.List.of("request-a", "request-b")) {
+                FullHttpResponse response = channel.readOutbound();
+                try {
+                    assertThat(response.status()).isEqualTo(HttpResponseStatus.UNAUTHORIZED);
+                    assertThat(response.headers().get("X-Request-Id")).isEqualTo(id);
+                    assertThat(JsonParser.parseString(response.content().toString(CharsetUtil.UTF_8))
+                            .getAsJsonObject().get("requestId").getAsString()).isEqualTo(id);
+                } finally { response.release(); }
+            }
+        } finally { channel.finishAndReleaseAll(); }
+    }
+
     @BeforeEach
     void setUp() throws Exception {
         db = new MemoryProvider();

@@ -57,8 +57,10 @@ function MessageHistory({ theme, mode, channels = [], servers = [] }) {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const requestGeneration = useRef(0);
 
   const fetchPage = useCallback(async (pageToLoad, applied) => {
+    const generation = ++requestGeneration.current;
     setLoading(true);
     setError(null);
     try {
@@ -72,11 +74,13 @@ function MessageHistory({ theme, mode, channels = [], servers = [] }) {
         from: toMillis(applied.from),
         to: toMillis(applied.to),
       });
+      if (generation !== requestGeneration.current) return;
       const list = res && Array.isArray(res.items) ? res.items : [];
       setItems(list);
       setTotal(res && typeof res.total === 'number' ? res.total : list.length);
       setPage(pageToLoad);
     } catch (err) {
+      if (generation !== requestGeneration.current) return;
       // Endpoint missing (404) or network failure: empty state + one inline
       // error hint instead of a blank page.
       setItems([]);
@@ -84,19 +88,22 @@ function MessageHistory({ theme, mode, channels = [], servers = [] }) {
       setPage(pageToLoad);
       setError(err.message || String(err));
     } finally {
-      setLoading(false);
+      if (generation === requestGeneration.current) setLoading(false);
     }
   }, []);
 
   // Initial load.
   useEffect(() => {
+    const generation = requestGeneration;
     fetchPage(1, appliedRef.current);
+    return () => { generation.current++; };
   }, [fetchPage]);
 
   const handleSearch = useCallback(() => {
+    if (loading) return;
     appliedRef.current = filters;
     fetchPage(1, filters);
-  }, [filters, fetchPage]);
+  }, [filters, fetchPage, loading]);
 
   const handleReset = useCallback(() => {
     setFilters(EMPTY_FILTERS);

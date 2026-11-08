@@ -172,6 +172,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path $env:JOINT_EVIDENCE | Out-Null
+          ./test/joint/export-verifier.ps1 -Destination (Join-Path $env:JOINT_EVIDENCE 'verifier')
           $root = [IO.Path]::GetFullPath($env:JOINT_ROOT).TrimEnd([char[]]'\/')
           $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
           foreach ($file in @(Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue)) {

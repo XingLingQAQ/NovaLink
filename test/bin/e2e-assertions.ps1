@@ -30,6 +30,8 @@
 #
 # results.json holds a single object rather than an array when the bot only
 # recorded one row, so both shapes are normalised to an array.
+. (Join-Path $PSScriptRoot 'e2e-process.ps1')
+
 function Get-BotReceivedRows {
     param($Results)
     if ($null -eq $Results -or $null -eq $Results.received) { return @() }

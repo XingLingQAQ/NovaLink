@@ -7,7 +7,6 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 
 /**
@@ -138,11 +137,11 @@ public final class PendingRequestTracker<T> {
      */
     public int cleanupExpired() {
         long now = clock.getAsLong();
-        AtomicLong removed = new AtomicLong();
-        pending.entrySet().removeIf(mapEntry -> {
+        int removed = 0;
+        for (Map.Entry<UUID, Entry<T>> mapEntry : Map.copyOf(pending).entrySet()) {
             Entry<T> entry = mapEntry.getValue();
-            if (!entry.isExpired(now)) {
-                return false;
+            if (!entry.isExpired(now) || !pending.remove(mapEntry.getKey(), entry)) {
+                continue;
             }
             if (!entry.future.isDone()) {
                 entry.future.completeExceptionally(
@@ -150,10 +149,9 @@ public final class PendingRequestTracker<T> {
                                 "Request " + mapEntry.getKey() + " timed out after "
                                         + entry.timeoutMs + "ms"));
             }
-            removed.incrementAndGet();
-            return true;
-        });
-        return (int) removed.get();
+            removed++;
+        }
+        return removed;
     }
 
     /**
@@ -165,14 +163,16 @@ public final class PendingRequestTracker<T> {
     public int clearAll(Throwable cause) {
         Objects.requireNonNull(cause, "cause");
         int count = 0;
-        for (Map.Entry<UUID, Entry<T>> mapEntry : pending.entrySet()) {
+        for (Map.Entry<UUID, Entry<T>> mapEntry : Map.copyOf(pending).entrySet()) {
             Entry<T> entry = mapEntry.getValue();
+            if (!pending.remove(mapEntry.getKey(), entry)) {
+                continue;
+            }
             if (!entry.future.isDone()) {
                 entry.future.completeExceptionally(cause);
             }
             count++;
         }
-        pending.clear();
         return count;
     }
 

@@ -1227,26 +1227,15 @@ function Invoke-Platform([string]$pf) {
 
     $botOut = Join-Path $runsDir "bot.stdout.log"
     $botErr = Join-Path $runsDir "bot.stderr.log"
-    $botProc = Start-Process -FilePath "node" -ArgumentList @($def.BotScript) -WorkingDirectory $botDir `
-      -RedirectStandardOutput $botOut -RedirectStandardError $botErr -PassThru -NoNewWindow
-    # Keep the native process handle; PowerShell 5.1 otherwise loses ExitCode.
-    $null = $botProc.Handle
+    $botRun = Start-E2EProcess -FilePath "node" -ArgumentList @($def.BotScript) -WorkingDirectory $botDir `
+      -Stdout $botOut -Stderr $botErr
+    $botProc = $botRun.Process
     Track-Pid $botProc.Id "$pf-bot"
     $result.pids += $botProc.Id
-
-    $botDeadline = (Get-Date).AddSeconds($BotWaitSec)
-    while (-not $botProc.HasExited -and (Get-Date) -lt $botDeadline) {
-      Start-Sleep -Seconds 3
-    }
-    $botTimedOut = -not $botProc.HasExited
-    if ($botTimedOut) {
-      Log "  bot timed out after ${BotWaitSec}s -- killing"
-      Stop-Process -Id $botProc.Id -Force -ErrorAction SilentlyContinue
-      $result.status = "FAIL"; $result.notes = "bot timed out"
-    } else {
-      Log "  bot exited (code=$($botProc.ExitCode))"
-    }
-    $botProc.WaitForExit()
+    $botOutcome = Wait-E2EProcess -Execution $botRun -TimeoutSec $BotWaitSec
+    $botTimedOut = $botOutcome.TimedOut
+    Log "  bot exit code=$($botOutcome.ExitCode), timedOut=$botTimedOut"
+    if ($botTimedOut) { $result.status = "FAIL"; $result.notes = "bot timed out" }
     if (Test-Path $botOut) {
       $botLines = Get-Content $botOut -Tail 8 -ErrorAction SilentlyContinue
       if ($botLines) { $botLines | ForEach-Object { Log "    BOT: $_" } }
@@ -1272,7 +1261,7 @@ function Invoke-Platform([string]$pf) {
         Log "  WARN: $($result.notes)"
       }
       if ($results) {
-        $runFailure = Get-BotRunFailure -Results $results -ExitCode $botProc.ExitCode `
+        $runFailure = Get-BotRunFailure -Results $results -ExitCode $botOutcome.ExitCode `
           -TimedOut $botTimedOut -ExpectedRunId $botRunId `
           -ServerLogPaths @((Join-Path $serverDir "$pf.stdout.log"), (Join-Path $serverDir "$pf.stderr.log"),
             (Join-Path $novaDir "stdout.log"), (Join-Path $novaDir "stderr.log"))

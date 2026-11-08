@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # run-joint.ps1 -- NovaChat cross-platform JOINT E2E orchestrator (CI-capable).
 #
 # WHAT IT PROVES
@@ -142,6 +142,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'evidence-checks.ps1')
 
 # --- normalise the process environment ---------------------------------------
 # Windows treats environment names case-insensitively, but a process block can
@@ -1978,23 +1979,6 @@ function Read-BotResult([string]$path) {
   }
 }
 
-# Prove token delivery from the RECEIVER's recording.
-function Assert-Delivered([string]$assertionId, [string]$token, $receiverResult) {
-  $hit = $null
-  if ($receiverResult -and $receiverResult.received) {
-    foreach ($entry in $receiverResult.received) {
-      if ($entry.text -and $entry.text.Contains($token)) { $hit = $entry; break }
-    }
-  }
-  return [PSCustomObject]@{
-    id = $assertionId
-    token = $token
-    pass = ($null -ne $hit)
-    evidence = if ($hit) { $hit.text } else { '' }
-    kind = 'delivery'
-  }
-}
-
 function Assert-Absent([string]$assertionId, [string]$token, $receiverResult) {
   $hit = $null
   if ($receiverResult -and $receiverResult.received) {
@@ -2009,56 +1993,6 @@ function Assert-Absent([string]$assertionId, [string]$token, $receiverResult) {
     pass = ($null -eq $hit)
     evidence = if ($hit) { $hit.text } else { '' }
     kind = 'absence'
-  }
-}
-
-# Prove a proxy leg actually loaded the plugin. Without this the round can go
-# green while the proxy ran bare: the downstream servers talk to the backend on
-# their own, so every cross-server assertion passes without the proxy doing
-# anything. A proxy named in -Platforms is part of the topology under test, so
-# "it started" is not enough -- its log must carry the plugin's own init line.
-function Assert-ProxyPluginLoaded([string]$assertionId, [string]$proxyName, [string]$logPath) {
-  $pattern = 'NovaChat (Velocity|BungeeCord) plugin enabled|NovaChat plugin enabled'
-  $text = Read-LogText $logPath
-  $pass = [bool]($text -and ($text -match $pattern))
-  $evidence = ''
-  if ($pass) {
-    $line = ($text -split "`n" | Where-Object { $_ -match $pattern } | Select-Object -First 1)
-    $evidence = if ($line) { $line.Trim() } else { '' }
-  } else {
-    $evidence = "no plugin init line in $(Split-Path -Leaf $logPath)"
-  }
-  return [PSCustomObject]@{
-    id = $assertionId
-    token = $proxyName
-    pass = $pass
-    evidence = $evidence
-    kind = 'proxy-plugin'
-  }
-}
-
-# Prove a marker appears in a log. Used by the lite probe, where the evidence
-# that the LOCAL AUTHORITY (not merely the proxy) did the work is a debug line
-# the authority emits only on the path under test. "The proxy booted" is not
-# enough: relay mode boots the same way, and a bare proxy would pass every
-# substrate-level check.
-function Assert-LogContains([string]$assertionId, [string]$token, [string]$logPath,
-                            [string]$pattern) {
-  $text = [regex]::Replace((Read-LogText $logPath), ([string][char]27 + '\[[0-?]*[ -/]*[@-~]'), '')
-  $pass = [bool]($text -and ($text -match $pattern))
-  $evidence = ''
-  if ($pass) {
-    $line = ($text -split "`n" | Where-Object { $_ -match $pattern } | Select-Object -First 1)
-    $evidence = if ($line) { $line.Trim() } else { '' }
-  } else {
-    $evidence = "pattern not found in $(Split-Path -Leaf $logPath): $pattern"
-  }
-  return [PSCustomObject]@{
-    id = $assertionId
-    token = $token
-    pass = $pass
-    evidence = $evidence
-    kind = 'proxy-log'
   }
 }
 
@@ -2081,90 +2015,6 @@ function Assert-LogAbsent([string]$assertionId, [string]$token, [string]$logPath
     pass = (-not $hit)
     evidence = $evidence
     kind = 'proxy-log-absent'
-  }
-}
-
-# --- relay per-server identity assertions (proxy commit 95c9a85) -------------
-#
-# The relay round used to prove only that "the proxy accepts plugin messages and
-# the backend delivers them". It could not distinguish the OLD single-connection
-# model from the new per-server model, because both produce the same chat lines.
-# The helpers below assert the difference.
-#
-# Evidence chain, all from this run's own logs (never the sender's claim):
-#
-#   1. The proxy's own "Relay backend links: N connection(s) (<servers>)" line
-#      names the dedicated links it created. That is the PROXY's claim about
-#      configuration, so it is necessary but not sufficient.
-#   2. The backend's INFO "Client authenticated: <id> from <addr>" line is the
-#      authoritative record: one per accepted connection, naming the identity
-#      the connection authenticated as. Under the old model there is exactly one
-#      from the proxy; under the new model there is one per downstream server.
-#   3. Per-server attribution: the backend stamps ChatMessagePacket.clientId
-#      from the connection that carried it and forwards that same packet down.
-#      The proxy's debug line "Received chat message from backend: <packet>"
-#      prints the packet's toString, which includes clientId='...'. That line is
-#      therefore direct evidence of which link the backend attributed the
-#      message to.
-#
-# Kind assignment:
-#   'relay-identity' / 'relay-attribution' assertions GATE, and are emitted only
-#   in relay mode. 'diagnostic' ones report and never gate.
-function Get-BackendAuthIdentities([string]$logPath) {
-  $text = Read-LogText $logPath
-  $ids = @()
-  $lines = @()
-  if ($text) {
-    foreach ($line in ($text -split "`n")) {
-      # "HH:mm:ss.SSS [thread] INFO  c.n.l.NovaLinkCore - Client authenticated: <id> from <addr>"
-      $m = [regex]::Match($line, 'Client authenticated:\s*(\S+)\s+from\s+(\S+)')
-      if ($m.Success) {
-        $ids += $m.Groups[1].Value
-        $lines += $line.Trim()
-      }
-    }
-  }
-  return [PSCustomObject]@{ Identities = $ids; Lines = $lines }
-}
-
-# Prove the backend saw one distinct authenticated identity per downstream
-# server, and that the set is exactly the identities the harness configured.
-#
-# Fails when: an expected identity is missing, the count is short (the old
-# single-connection model authenticates ONCE, as one shared id), or a different
-# identity from the proxy appeared (the fallback link fired).
-function Assert-RelayDistinctIdentities([string]$assertionId, [string]$backendLogPath,
-                                        [string[]]$expectedIdentities,
-                                        [string[]]$proxyOwnedIdentities) {
-  $auth = Get-BackendAuthIdentities $backendLogPath
-  $unique = @($auth.Identities | Sort-Object -Unique)
-  $missing = @($expectedIdentities | Where-Object { $unique -notcontains $_ })
-  $unexpectedProxy = @($proxyOwnedIdentities | Where-Object { $unique -contains $_ })
-  $pass = ($missing.Count -eq 0) -and ($unexpectedProxy.Count -eq 0) -and
-          ($unique.Count -ge $expectedIdentities.Count)
-
-  # Evidence: the specific "Client authenticated" lines for the expected ids.
-  $evidenceLines = @()
-  foreach ($line in $auth.Lines) {
-    foreach ($id in $expectedIdentities) {
-      if ($line -match "Client authenticated:\s*$([regex]::Escape($id))\s") { $evidenceLines += $line }
-    }
-  }
-  $evidence = if ($pass) {
-    ($evidenceLines -join ' | ')
-  } else {
-    $parts = @()
-    if ($missing.Count -gt 0) { $parts += "missing identity(ies): $($missing -join ', ')" }
-    if ($unexpectedProxy.Count -gt 0) { $parts += "proxy fallback identity(ies) also authenticated: $($unexpectedProxy -join ', ')" }
-    $parts += "authenticated this run: $(if ($unique.Count -gt 0) { $unique -join ', ' } else { '<none>' })"
-    ($parts -join '; ')
-  }
-  return [PSCustomObject]@{
-    id = $assertionId
-    token = ($expectedIdentities -join ',')
-    pass = $pass
-    evidence = $evidence
-    kind = 'relay-identity'
   }
 }
 
@@ -2194,46 +2044,6 @@ function Assert-RelayIdentitiesCoverage([string]$assertionId, [string[]]$servers
     pass = $true
     evidence = $evidence
     kind = 'diagnostic'
-  }
-}
-
-# Prove the proxy actually opened a dedicated link per downstream server, rather
-# than one shared link with a populated identities table that never took effect.
-# The shell logs: "Relay backend links: N connection(s) (bukkit, fabric)".
-function Assert-RelayLinksCreated([string]$assertionId, [string]$proxyLogPath,
-                                  [string[]]$expectedServers) {
-  $text = Read-LogText $proxyLogPath
-  $line = ''
-  if ($text) {
-    $line = ($text -split "`n" | Where-Object { $_ -match 'Relay backend links:' } | Select-Object -First 1)
-  }
-  $line = if ($line) { $line.Trim() } else { '' }
-  $pass = $false
-  $detail = 'no "Relay backend links:" line in the proxy log'
-  if ($line) {
-    # Expected count is one per downstream server; the fallback link does not
-    # exist in this harness (backend.username is empty), so N == servers.
-    $m = [regex]::Match($line, 'Relay backend links:\s*(\d+)\s+connection\(s\)')
-    if ($m.Success) {
-      $count = [int]$m.Groups[1].Value
-      $missingServers = @($expectedServers | Where-Object { $line -notmatch [regex]::Escape($_) })
-      $mentionsShared = $line -match 'shared backend\.username link'
-      $pass = ($count -eq $expectedServers.Count) -and ($missingServers.Count -eq 0) -and (-not $mentionsShared)
-      $detail = if ($pass) { '' } else {
-        "expected $($expectedServers.Count) dedicated connection(s) for $($expectedServers -join ', '); " +
-        "line reports $count" + $(if ($mentionsShared) { ' and the shared fallback' } else { '' }) +
-        $(if ($missingServers.Count -gt 0) { "; not named: $($missingServers -join ', ')" } else { '' })
-      }
-    } else {
-      $detail = "could not parse a connection count from: $line"
-    }
-  }
-  return [PSCustomObject]@{
-    id = $assertionId
-    token = ($expectedServers -join ',')
-    pass = $pass
-    evidence = if ($pass) { $line } else { $detail }
-    kind = 'relay-identity'
   }
 }
 
@@ -2435,54 +2245,6 @@ function Assert-RelayAttributionAndDelivery([string]$assertionId, [string]$token
     evidence = $evidence
     kind = 'relay-attribution'
   }
-}
-
-function Assert-BotExpectations([string]$role, $result) {
-  $out = @()
-  if (-not $result -or $result.error -or $result.timedOut) {
-    $out += New-JointAssertion -Id "$role/completed" -Token 'results' -Pass $false `
-      -Evidence "recording=$([bool]$result); error=$($result.error); timedOut=$($result.timedOut)" -Kind 'bot-completion'
-  }
-  if (-not $result) { return $out }
-  if ($result.assertions) {
-    foreach ($a in $result.assertions) {
-      # The bot tags each verdict with its own kind so an effect assertion is
-      # never reported as a chat-token match. Older results carry no kind and
-      # keep reporting as 'in-bot-expect', exactly as before.
-      $botKind = if ($a.kind) { [string]$a.kind } else { 'expect' }
-      # A bot assertion the plan marked `diagnostic` reports but never gates,
-      # matching the harness's existing diagnostic convention.
-      $isDiagnostic = ($a.diagnostic -eq $true)
-      $out += [PSCustomObject]@{
-        id = "$role/$($a.id)"
-        token = $a.token
-        pass = [bool]$a.pass
-        evidence = $a.evidence
-        kind = if ($isDiagnostic) { 'diagnostic' } else {
-          switch ($botKind) {
-            'effect'         { 'in-bot-effect' }
-            'effect-absent'  { 'in-bot-effect-absent' }
-            'kicked'         { 'in-bot-kicked' }
-            'state'          { 'in-bot-state' }
-            'selftest'       { 'in-bot-selftest' }
-            default          { 'in-bot-expect' }
-          }
-        }
-      }
-    }
-  }
-  if ($result.absentChecks) {
-    foreach ($a in $result.absentChecks) {
-      $out += [PSCustomObject]@{
-        id = "$role/$($a.id)"
-        token = $a.token
-        pass = [bool]$a.pass
-        evidence = $a.evidence
-        kind = 'in-bot-absent'
-      }
-    }
-  }
-  return $out
 }
 
 # --- versions.lock.ps1 resolution -------------------------------------------
@@ -2759,7 +2521,7 @@ function Invoke-LiteRound($round, [string]$roundDir) {
     $ready = $false
     while ((Get-Date) -lt $deadline) {
       $text = Read-LogText $proxyLog
-      $pluginReady = Assert-ProxyPluginLoaded 'readiness/proxy' $round.Proxy $proxyLog
+      $pluginReady = Assert-ProxyPluginLoaded 'readiness/proxy' $round.Proxy (Read-LogText $proxyLog)
       if ($pluginReady.pass -and $text -match $PlatformDefs[$round.Proxy].ReadyPattern) { $ready = $true; break }
       Start-Sleep -Seconds 2
     }
@@ -3002,10 +2764,10 @@ function Invoke-LiteRound($round, [string]$roundDir) {
     }
 
     # 1. The plugin loaded at all (same guarantee the relay round makes).
-    $assertions += Assert-ProxyPluginLoaded "round$($round.Index)/proxy-plugin-loaded" $round.Proxy $proxyLog
+    $assertions += Assert-ProxyPluginLoaded "round$($round.Index)/proxy-plugin-loaded" $round.Proxy (Read-LogText $proxyLog)
     # 2. The LOCAL AUTHORITY is the running mode. This is the line the shell
     #    emits only after building the lite object graph.
-    $assertions += Assert-LogContains "round$($round.Index)/lite-mode-active" 'local-authority' $proxyLog `
+    $assertions += Assert-LogContains "round$($round.Index)/lite-mode-active" 'local-authority' (Read-LogText $proxyLog) `
       'NovaChat running in lite mode \(local authority, no backend connection\)'
     # 3. No backend dial. A relay client that fell back to the backend would
     #    log one of these; their absence is what distinguishes lite from relay.
@@ -3013,12 +2775,12 @@ function Invoke-LiteRound($round, [string]$roundDir) {
       'Connected to NovaLink backend|Reconnecting to NovaLink|Lost connection to NovaLink'
     # 4. The authority accepted the chat and joined the channel: its own debug
     #    lines name the channel. (The proxy is configured with debug = true.)
-    $assertions += Assert-LogContains "round$($round.Index)/lite-authority-joined" 'join' $proxyLog `
+    $assertions += Assert-LogContains "round$($round.Index)/lite-authority-joined" 'join' (Read-LogText $proxyLog) `
       'Lite authority joined E2ELiteAlice to channel global'
-    $assertions += Assert-LogContains "round$($round.Index)/lite-authority-fanout" 'chat' $proxyLog `
+    $assertions += Assert-LogContains "round$($round.Index)/lite-authority-fanout" 'chat' (Read-LogText $proxyLog) `
       'Lite send: ChatMessagePacket'
     # 5. Direct message went through the authority (packet type, no backend).
-    $assertions += Assert-LogContains "round$($round.Index)/lite-authority-dm" 'dm' $proxyLog `
+    $assertions += Assert-LogContains "round$($round.Index)/lite-authority-dm" 'dm' (Read-LogText $proxyLog) `
       'Lite send: PrivateMessagePacket'
     # 6. The receiver really saw the sender's token, and the DM echo reached
     #    the sender. Both are receiver-recorded evidence, never the sender's claim.
@@ -3048,11 +2810,11 @@ function Invoke-LiteRound($round, [string]$roundDir) {
     #    sub-server, and must have written at least one fan-out back down. The
     #    rejection patterns are asserted absent so a server-id mismatch fails
     #    loudly instead of silently dropping every packet.
-    $assertions += Assert-LogContains "round$($round.Index)/proxy-channel-registered" 'novachat:main' $proxyLog `
+    $assertions += Assert-LogContains "round$($round.Index)/proxy-channel-registered" 'novachat:main' (Read-LogText $proxyLog) `
       'Registered plugin-messaging channel novachat:main'
-    $assertions += Assert-LogContains "round$($round.Index)/proxy-channel-accepted" 'accepted' $proxyLog `
+    $assertions += Assert-LogContains "round$($round.Index)/proxy-channel-accepted" 'accepted' (Read-LogText $proxyLog) `
       'Lite send: ChatMessagePacket'
-    $assertions += Assert-LogContains "round$($round.Index)/proxy-channel-sent-downstream" 'downstream' $proxyLog `
+    $assertions += Assert-LogContains "round$($round.Index)/proxy-channel-sent-downstream" 'downstream' (Read-LogText $proxyLog) `
       'Sent downstream ChatMessagePacket'
     # The upstream write rides ONE player's connection (plugin messaging has no
     # server-addressed write): ProxyChannelClient picks
@@ -3062,12 +2824,12 @@ function Invoke-LiteRound($round, [string]$roundDir) {
     # the proxy-side receipt separately so each half is named.
     $javaLog = Join-Path (Join-Path $roundDir $round.Java) "server.stdout.log"
     if ($round.Java) {
-      $assertions += Assert-LogContains "round$($round.Index)/upstream-carrier-is-proxied" 'carrier' $javaLog `
+      $assertions += Assert-LogContains "round$($round.Index)/upstream-carrier-is-proxied" 'carrier' (Read-LogText $javaLog) `
         'Sent ChatMessagePacket to the proxy through E2ELite(Alice|Bob)'
       $assertions += Assert-LogAbsent "round$($round.Index)/upstream-carrier-not-direct" 'carrier-direct' $javaLog `
         'Sent ChatMessagePacket to the proxy through E2EDownstream'
     }
-    $assertions += Assert-LogContains "round$($round.Index)/proxy-received-downstream-chat" 'upstream-received' $proxyLog `
+    $assertions += Assert-LogContains "round$($round.Index)/proxy-received-downstream-chat" 'upstream-received' (Read-LogText $proxyLog) `
       "Received chat message from backend: .*$downToken"
     $assertions += Assert-LogAbsent "round$($round.Index)/proxy-channel-no-server-id-reject" 'REJECTED_SERVER_ID' $proxyLog `
       'Rejected novachat:main payload: claimed server id'
@@ -4217,7 +3979,7 @@ function Invoke-Round($round, [string]$roundDir) {
     }
     if ($round.Proxy) {
       $assertions += Assert-ProxyPluginLoaded "round$($round.Index)/proxy-plugin-loaded" $round.Proxy `
-        (Join-Path (Join-Path $roundDir $round.Proxy) "proxy.stdout.log")
+        (Read-LogText (Join-Path (Join-Path $roundDir $round.Proxy) "proxy.stdout.log"))
     }
 
     if ($round.Bedrock -eq 'pnx') {
@@ -4226,9 +3988,9 @@ function Invoke-Round($round, [string]$roundDir) {
       $pnxPattern = 'This server is running PowerNukkitX version ' + [regex]::Escape($pnxBuild) +
         '(?:-SNAPSHOT)?\s+[^\r\n]*\(API 3\.\d+(?:\.\d+)*\)'
       $nativePnx = Assert-LogContains "round$($round.Index)/native-pnx-runtime" `
-        "PowerNukkitX $pnxBuild; API 3.x" $pnxLog $pnxPattern
+        "PowerNukkitX $pnxBuild; API 3.x" (Read-LogText $pnxLog) $pnxPattern
       $pnxPlugin = Assert-LogContains "round$($round.Index)/pnx-plugin-loaded" `
-        'NovaChat-PNX' $pnxLog 'NovaChat-PNX enabled successfully!'
+        'NovaChat-PNX' (Read-LogText $pnxLog) 'NovaChat-PNX enabled successfully!'
       $nativePnx.kind = 'native-runtime'
       $nativePnx.pass = [bool]($nativePnx.pass -and $pnxPlugin.pass)
       $nativePnx.evidence = "$($nativePnx.evidence); $($pnxPlugin.evidence)"
@@ -4251,9 +4013,9 @@ function Invoke-Round($round, [string]$roundDir) {
         # must NOT authenticate in this run.
         $proxyOwnedIds = @('E2E_JointProxy')
         $assertions += Assert-RelayLinksCreated "round$($round.Index)/relay-links-created" `
-          $proxyLog $relayDownstreams
+          (Read-LogText $proxyLog) $relayDownstreams
         $assertions += Assert-RelayDistinctIdentities "round$($round.Index)/relay-distinct-backend-identities" `
-          $backendLog $expectedIds $proxyOwnedIds
+          (Read-LogText $backendLog) $expectedIds $proxyOwnedIds
         # Per-server attribution, from the backend's own persistence: the
         # message record the backend wrote for this run's token names the
         # clientId of the CONNECTION that carried it. That is the exact
@@ -4588,7 +4350,7 @@ function Invoke-JointOptionalScenarios {
       $deadline = (Get-Date).AddSeconds(60)
       do {
         if ($BackendState.Process.HasExited) { throw 'Restarted backend exited while waiting for authentication.' }
-        $auth = Get-BackendAuthIdentities $BackendState.Stdout
+        $auth = Get-BackendAuthIdentities (Read-LogText $BackendState.Stdout)
         $missing = @($BackendState.Identities | Where-Object { $auth.Identities -cnotcontains $_ })
         if ($missing.Count -eq 0) {
           Log "    fresh backend authenticated: $($BackendState.Identities -join ', ')"

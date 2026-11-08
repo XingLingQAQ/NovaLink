@@ -28,11 +28,13 @@ function createHarness(filename) {
     console: { log() {} },
     __dirname,
     Buffer,
-    setTimeout: (fn, ms) => { timers.push({ fn, ms }); },
+    module: { exports: {} },
+    setTimeout: (fn, ms) => { const timer = { fn, ms }; timers.push(timer); return timer; },
+    clearTimeout: timer => { const index = timers.indexOf(timer); if (index >= 0) timers.splice(index, 1); },
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, filename), 'utf8'), context, { filename });
   return {
-    client, timers, writes, exits,
+    client, timers, writes, exits, lifecycle: context.module.exports,
     async step() {
       await nextTurn();
       const index = timers.findIndex(timer => timer.ms < 360000);
@@ -75,6 +77,7 @@ for (const filename of ['run-e2e.js', 'run-e2e-bedrock.js']) {
   test(`${filename}: normal quit preserves successful completion`, async () => {
     const harness = createHarness(filename);
     harness.client.emit('spawn');
+    assert.equal(await harness.lifecycle.initialized, true);
     for (let i = 0; !harness.exits.length && i < 80; i++) await harness.step();
     assert.deepEqual(harness.exits, [0]);
     const result = harness.writes.at(-1);
@@ -87,6 +90,7 @@ for (const filename of ['run-e2e.js', 'run-e2e-bedrock.js']) {
   test(`${filename}: disconnect after sequence but before quit still fails`, async () => {
     const harness = createHarness(filename);
     harness.client.emit('spawn');
+    assert.equal(await harness.lifecycle.initialized, true);
     for (let i = 0; !harness.writes.length && i < 80; i++) await harness.step();
     assert.equal(harness.writes.at(-1).sequenceComplete, true);
     harness.client.emit(closeEvent);

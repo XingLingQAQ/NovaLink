@@ -35,7 +35,7 @@ public class ConfigLoader {
             "super-admins", "panel-users", "clients");
     
     private final Path configPath;
-    private NovaLinkConfig config;
+    private volatile NovaLinkConfig config;
     private String originalContent;
     private long lastModified;
 
@@ -131,8 +131,12 @@ public class ConfigLoader {
      * @throws ConfigException if saving fails
      */
     public void save() throws ConfigException {
+        save(config);
+    }
+
+    void save(NovaLinkConfig candidate) throws ConfigException {
         try {
-            if (config == null) {
+            if (candidate == null) {
                 throw new ConfigException("Cannot save before a configuration object is available");
             }
 
@@ -145,7 +149,7 @@ public class ConfigLoader {
                         ? readDefaultConfigTemplate()
                         : diskContent;
             }
-            String yamlContent = saveWithComments(baseContent, config);
+            String yamlContent = saveWithComments(baseContent, candidate);
             if (yamlContent == null) {
                 throw new ConfigException(
                         "Comment-preserving configuration save failed; live file was not changed");
@@ -249,21 +253,7 @@ public class ConfigLoader {
         return config;
     }
 
-    /**
-     * Atomically replaces the live config reference and returns the previous
-     * one. Used by rollback / publish / restore so the merge happens on a
-     * private clone and only becomes visible to {@link #getConfig()} callers
-     * when the clone is swapped in — if the subsequent {@link #save()} throws,
-     * the caller swaps the original back and the live config is unchanged.
-     *
-     * <p>Package-private: this is a power tool shared with
-     * {@link com.nova.link.config.ConfigManager#swapConfigForSave} and the
-     * rollback / publish paths. Public callers never swap.
-     *
-     * @param newConfig the config to install (must not be null)
-     * @return the previously-installed config; never null after a successful
-     *         {@link #load()}
-     */
+    /** Publishes a configuration whose persistence is owned by the manager. */
     NovaLinkConfig swapConfigForSave(NovaLinkConfig newConfig) {
         NovaLinkConfig old = this.config;
         this.config = newConfig;

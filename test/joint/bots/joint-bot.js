@@ -878,96 +878,12 @@ function createJavaTransport(onChatLine) {
 function createBedrockTransport(onChatLine) {
   let closed = false;
   const bedrock = requireBotLib('bedrock-protocol');
-  const crypto = require('crypto');
-  const JWT = requireBotLib('jsonwebtoken');
-
-  const botUuid = crypto.createHash('sha1').update(USERNAME).digest('hex');
-  const leguuid = `${botUuid.slice(0, 8)}-${botUuid.slice(8, 12)}-${botUuid.slice(12, 16)}-${botUuid.slice(16, 20)}-${botUuid.slice(20, 32)}`;
-  const mid = crypto.createHash('md5').update(USERNAME).digest('hex').slice(0, 16);
-
-  function makeLegacySkinFields() {
-    const W = 64, H = 64;
-    // 4 bytes RGBA per pixel, solid "Steve-ish" tan, full alpha.
-    const pixel = Buffer.from([0xb3, 0x7b, 0x62, 0xff]);
-    const skinPixels = Buffer.allocUnsafe(W * H * 4);
-    for (let i = 0; i < W * H; i++) pixel.copy(skinPixels, i * 4);
-
-    // Both the resource patch AND the geometry blob must be present and
-    // base64-encoded JSON: Nukkit validates the geometry JSON and kicks with
-    // `disconnectionScreen.invalidSkin` when SkinGeometryData is empty while
-    // the patch names a custom geometry (verified 2026-10-19 -- the bot died at
-    // login with Patch/SkinGeometryData present but GeometryData blank).
-    // BDS/PMMP accept the pair as well, so one shape serves every engine.
-    const patch = JSON.stringify({ geometry: { default: 'geometry.humanoid.custom' } });
-    const geometry = JSON.stringify({
-      format_version: '1.14.0',
-      'minecraft:geometry': [{
-        description: {
-          identifier: 'geometry.humanoid.custom', texture_width: W, texture_height: H,
-          visible_bounds_width: 2, visible_bounds_height: 2.5,
-          visible_bounds_offset: [0, 0.75, 0],
-        },
-        bones: [],
-      }],
-    });
-
-    return {
-      // SkinId must survive the server's int16 conversion; a stable ASCII id is
-      // safest. Do NOT include ':' or characters an engine may re-encode.
-      SkinId: 'bote2e',
-      SkinData: skinPixels.toString('base64'),
-      SkinImageWidth: W,
-      SkinImageHeight: H,
-      SkinResourcePatch: Buffer.from(patch, 'utf8').toString('base64'),
-      // SkinGeometryData: the geometry payload, base64 of a JSON document.
-      SkinGeometryData: Buffer.from(geometry, 'utf8').toString('base64'),
-      SkinAnimationData: '', CapeData: '',
-      CapeImageWidth: 0, CapeImageHeight: 0, CapeOnClassicSkin: false, CapeId: '',
-      ArmSize: 'wide', SkinColor: '#ffb37b62',
-      PersonaPieces: [], AnimatedImageData: [],
-      PersonaSkin: false, PremiumSkin: false, SkinGeometryDataEngineVersion: '',
-      // ClientData fields PMMP 5.44+ marks @required.
-      ClientEditorConnectionIntent: 0, ClientIsEditorCapable: false,
-      PartyId: '', IsPartyLeader: false, FilterProfanity: false, PieceTintColors: [],
-    };
-  }
-
-  const createClient = PLATFORM === 'pnx'
-    ? options => require('../../bot/pnx-client').createPnxClient(options, bedrock)
-    : bedrock.createClient;
-  const client = createClient({
-    host: HOST,
-    port: PORT,
-    username: USERNAME,
-    offline: true,
-    version: MC_VERSION,
-    skipPing: false,
-    conLog: console.log,
-    skinData: makeLegacySkinFields(),
-  });
-
-  if (PLATFORM !== 'pnx' && typeof client.sendLogin === 'function') {
-    const origSendLogin = client.sendLogin.bind(client);
-    client.sendLogin = (...args) => {
-      try {
-        if (client.ecdhKeyPair && client.ecdhKeyPair.privateKey) {
-          const token = JWT.sign(
-            { cpk: client.clientX509, leguuid, xname: USERNAME, mid, xid: '0' },
-            client.ecdhKeyPair.privateKey,
-            {
-              algorithm: 'ES384', notBefore: 0, issuer: 'self', expiresIn: 3600,
-              audience: 'api://auth-minecraft-services/multiplayer',
-              header: { x5u: client.clientX509, typ: undefined },
-            });
-          client.clientIdentityChain = token;
-          client.multiplayerToken = token;
-        }
-      } catch (e) {
-        console.log('[LOGIN_PATCH warn]', e && e.message);
-      }
-      return origSendLogin(...args);
-    };
-  }
+  const { createBedrockClient } = require('../../bot/bedrock-client');
+  const client = createBedrockClient({
+    platform: PLATFORM, skinId: 'bote2e', host: HOST, port: PORT,
+    username: USERNAME, offline: true, version: MC_VERSION,
+    skipPing: false, conLog: console.log,
+  }, { bedrock, jwt: requireBotLib('jsonwebtoken') });
 
   client.on('text', (packet) => {
     const source = packet.source_name || '';

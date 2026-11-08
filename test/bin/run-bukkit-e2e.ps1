@@ -407,19 +407,14 @@ $env:E2E_PLATFORM = "bukkit"
 $env:E2E_SERVER_ID = $serverId
 $botStdout = Join-Path $RunsDir "bot.stdout.log"
 $botStderr = Join-Path $RunsDir "bot.stderr.log"
-$botProc = Start-Process -FilePath "node" -ArgumentList @("run-e2e.js") -WorkingDirectory $botDir `
-    -RedirectStandardOutput $botStdout -RedirectStandardError $botStderr -PassThru -NoNewWindow
-# Keep the native process handle; PowerShell 5.1 otherwise loses ExitCode.
-$null = $botProc.Handle
+$botRun = Start-E2EProcess -FilePath "node" -ArgumentList @("run-e2e.js") -WorkingDirectory $botDir `
+    -Stdout $botStdout -Stderr $botStderr
+$botProc = $botRun.Process
 Track-Pid $botProc.Id
-$botTimedOut = -not $botProc.WaitForExit($BotTimeoutSec * 1000)
-if ($botTimedOut) { Stop-Pid $botProc.Id }
-# WaitForExit(timeout) returning false leaves the process object stale, so
-# ExitCode throws and the log line came out as "bot exit code=" with nothing
-# after it -- which hid the real reason the bot died (e.g. a missing module).
-$botProc.WaitForExit()
-Log "  bot exit code=$($botProc.ExitCode)"
-if ($botProc.ExitCode -ne 0) {
+$botOutcome = Wait-E2EProcess -Execution $botRun -TimeoutSec $BotTimeoutSec
+$botTimedOut = $botOutcome.TimedOut
+Log "  bot exit code=$($botOutcome.ExitCode), timedOut=$botTimedOut"
+if ($botOutcome.ExitCode -ne 0) {
     Log "  bot stderr:"
     Get-Content $botStderr -ErrorAction SilentlyContinue | Select-Object -Last 15 | ForEach-Object { Log "    $_" }
 }
@@ -437,7 +432,7 @@ if (Test-Path $resultsFile) {
     # and 7+, matching the producer.
     $resultsJson = [System.IO.File]::ReadAllText($resultsFile, [System.Text.Encoding]::UTF8)
     $results = $resultsJson | ConvertFrom-Json
-    $runFailure = Get-BotRunFailure -Results $results -ExitCode $botProc.ExitCode `
+    $runFailure = Get-BotRunFailure -Results $results -ExitCode $botOutcome.ExitCode `
         -TimedOut $botTimedOut -ExpectedRunId $botRunId -ServerLogPaths @($purpStdout,$purpStderr,$novaStdout,$novaStderr)
     if (-not $runFailure) { $runFailure = Get-L1RouteFailure -ResultsFile $resultsFile }
     if ($runFailure) { Log "  RUN FAILED: $runFailure" }

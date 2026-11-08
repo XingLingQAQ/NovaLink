@@ -33,6 +33,27 @@ class PendingRequestTrackerTest {
         tracker = new PendingRequestTracker<>(1_000L, clock::get);
     }
 
+    @Test
+    void clearKeepsRetryRegisteredByCompletionCallback() {
+        UUID id = UUID.randomUUID();
+        var retry = new java.util.concurrent.atomic.AtomicReference<CompletableFuture<String>>();
+        tracker.track(id).whenComplete((result, error) -> retry.set(tracker.track(id)));
+        tracker.clearAll(new IllegalStateException("Disconnected"));
+        assertThat(tracker.complete(id, "retry response")).isTrue();
+        assertThat(retry.get().join()).isEqualTo("retry response");
+    }
+
+    @Test
+    void expiryKeepsRetryRegisteredByCompletionCallback() {
+        UUID id = UUID.randomUUID();
+        var retry = new java.util.concurrent.atomic.AtomicReference<CompletableFuture<String>>();
+        tracker.track(id).whenComplete((result, error) -> retry.set(tracker.track(id)));
+        clock.addAndGet(1_001L);
+        assertThat(tracker.cleanupExpired()).isEqualTo(1);
+        assertThat(tracker.complete(id, "retry response")).isTrue();
+        assertThat(retry.get().join()).isEqualTo("retry response");
+    }
+
     @Nested
     @DisplayName("construction")
     class Construction {

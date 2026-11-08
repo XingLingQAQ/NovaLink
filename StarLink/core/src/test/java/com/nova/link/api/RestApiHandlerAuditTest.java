@@ -543,6 +543,33 @@ class RestApiHandlerAuditTest {
     // ====================== requestId correlation ======================
 
     @Test
+    void overlappingWorkerTasksKeepTheirAuditCorrelation() {
+        var tasks = new java.util.ArrayList<Runnable>();
+        handler.setWorkerExecutor(tasks::add);
+        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        try {
+            for (String id : List.of("settings-a", "settings-b")) {
+                var request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.PUT, "/api/settings",
+                        Unpooled.copiedBuffer("{\"filterEnabled\":false}", CharsetUtil.UTF_8));
+                request.headers().set(HttpHeaderNames.AUTHORIZATION, "Bearer " + superAdminToken);
+                request.headers().set("X-Request-Id", id);
+                channel.writeInbound(request);
+            }
+            tasks.get(1).run();
+            tasks.get(0).run();
+            for (String id : List.of("settings-b", "settings-a")) {
+                FullHttpResponse response = channel.readOutbound();
+                try {
+                    assertThat(response.status()).isEqualTo(HttpResponseStatus.OK);
+                    assertThat(response.headers().get("X-Request-Id")).isEqualTo(id);
+                } finally { response.release(); }
+            }
+            assertThat(auditEvents()).extracting(AuditEvent::getRequestId)
+                    .containsExactlyInAnyOrder("settings-a", "settings-b");
+        } finally { channel.finishAndReleaseAll(); }
+    }
+
+    @Test
     @DisplayName("X-Request-Id header threads through response and audit event")
     void requestIdThreadsThroughResponseAndAudit() {
         assertThat(auditEvents()).isEmpty();

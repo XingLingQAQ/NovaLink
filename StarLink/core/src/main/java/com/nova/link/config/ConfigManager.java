@@ -31,6 +31,7 @@ public class ConfigManager {
     
     private final ConfigLoader configLoader;
     private final Gson gson;
+    private final Gson snapshotGson = new GsonBuilder().serializeNulls().create();
     
     // File watcher
     private WatchService watchService;
@@ -60,7 +61,7 @@ public class ConfigManager {
     // PANEL-010: settings revision for optimistic-concurrency control.
     // Incremented atomically every time a settings mutation lands (save() or
     // a panel-driven update that changes the FeatureConfig). GET /api/settings
-    // exposes this as revision + ETag; PUT /api/settings requires the client
+    // exposes this as revision; PUT /api/settings allows the client
     // to echo it back via If-Match / baseRevision and rejects a stale write
     // with 409 Conflict + the current server values.
     private final java.util.concurrent.atomic.AtomicLong settingsRevision =
@@ -72,6 +73,7 @@ public class ConfigManager {
     private volatile String lastWrittenFileHash;
     private volatile long lastWrittenAt;
     private final Object fileOperationLock = new Object();
+    private final List<Consumer<CommittedConfig>> commitListeners = new CopyOnWriteArrayList<>();
     private static final long SELF_WRITE_EVENT_WINDOW_MS = 10_000;
 
     // §11.6 Project 20 / PANEL proposal 10 — config diff + atomic rollback.
@@ -137,7 +139,9 @@ public class ConfigManager {
      * @throws ConfigException if loading fails
      */
     public NovaLinkConfig load() throws ConfigException {
-        return configLoader.load();
+        synchronized (fileOperationLock) {
+            return configLoader.load();
+        }
     }
 
     /**
@@ -151,36 +155,103 @@ public class ConfigManager {
      */
     public void save() throws ConfigException {
         synchronized (fileOperationLock) {
-            configLoader.save();
-            try {
-                lastWrittenFileHash = sha256(
-                        Files.readString(configLoader.getConfigPath(), StandardCharsets.UTF_8));
-                lastWrittenAt = System.currentTimeMillis();
-            } catch (IOException e) {
-                // Non-fatal: worst case the watcher treats our own write as external.
-                logger.debug("Could not hash config file after save: {}", e.getMessage());
-            }
-            // PANEL-010: a successful save is a settings mutation; bump the
-            // revision so concurrent panel edits can detect staleness.
-            long revision = settingsRevision.incrementAndGet();
+            persist(configLoader.getConfig());
+            recordSave(null);
+        }
+    }
 
-            // §11.6 Project 20: record a masked snapshot of the just-written
-            // config so the panel can diff/rollback later. Best-effort — a
-            // failure here must NOT undo the save that just succeeded. The
-            // service masks secrets itself; the live config passed in is the
-            // unmasked in-memory form.
-            com.nova.link.api.ConfigHistoryService history = configHistoryService;
-            if (history != null) {
-                try {
-                    NovaLinkConfig live = configLoader.getConfig();
-                    if (live != null) {
-                        history.recordSnapshot(revision, gson.toJson(live), null);
-                    }
-                } catch (Exception e) {
-                    logger.debug("Config history snapshot recording failed: {}", e.getMessage());
+    protected void persist(NovaLinkConfig candidate) throws ConfigException {
+        configLoader.save(candidate);
+    }
+
+    public record CommittedConfig(NovaLinkConfig config, long revision) { }
+
+    public static final class RevisionConflict extends ConfigException {
+        private final CommittedConfig current;
+
+        private RevisionConflict(CommittedConfig current) {
+            super("Settings revision mismatch");
+            this.current = current;
+        }
+
+        public CommittedConfig current() { return current; }
+    }
+
+    public CommittedConfig snapshot() {
+        synchronized (fileOperationLock) {
+            return new CommittedConfig(copyConfig(), settingsRevision.get());
+        }
+    }
+
+    private NovaLinkConfig copyConfig() {
+        return snapshotGson.fromJson(snapshotGson.toJson(configLoader.getConfig()), NovaLinkConfig.class);
+    }
+
+    public void addCommitListener(Consumer<CommittedConfig> listener) {
+        commitListeners.add(Objects.requireNonNull(listener));
+    }
+
+    public CommittedConfig update(Long expectedRevision, Consumer<NovaLinkConfig> change,
+                                  String actor) throws ConfigException {
+        return update(expectedRevision, change, actor, true);
+    }
+
+    public CommittedConfig updateSettings(Long expectedRevision, Consumer<NovaLinkConfig> change,
+                                          String actor) throws ConfigException {
+        return update(expectedRevision, change, actor, false);
+    }
+
+    private CommittedConfig update(Long expectedRevision, Consumer<NovaLinkConfig> change,
+                                   String actor, boolean fullConfig) throws ConfigException {
+        synchronized (fileOperationLock) {
+            if (expectedRevision != null && expectedRevision != settingsRevision.get()) {
+                throw new RevisionConflict(snapshot());
+            }
+            NovaLinkConfig candidate = copyConfig();
+            if (candidate == null) { throw new ConfigException("Configuration not loaded"); }
+            change.accept(candidate);
+            persist(candidate);
+            configLoader.swapConfigForSave(candidate);
+            long revision = recordSave(actor);
+            CommittedConfig committed = new CommittedConfig(candidate, revision);
+            if (fullConfig) { notifyReloadListeners(candidate); }
+            notifyCommitListeners(committed);
+            try { broadcastConfigSync(candidate); }
+            catch (Exception error) { logger.error("Config committed but client sync failed", error); }
+            return committed;
+        }
+    }
+
+    private long recordSave(String actor) {
+        try {
+            lastWrittenFileHash = sha256(
+                    Files.readString(configLoader.getConfigPath(), StandardCharsets.UTF_8));
+            lastWrittenAt = System.currentTimeMillis();
+        } catch (IOException e) {
+            // Non-fatal: worst case the watcher treats our own write as external.
+            logger.debug("Could not hash config file after save: {}", e.getMessage());
+        }
+        // PANEL-010: a successful save is a settings mutation; bump the
+        // revision so concurrent panel edits can detect staleness.
+        long revision = settingsRevision.incrementAndGet();
+
+        // §11.6 Project 20: record a masked snapshot of the just-written
+        // config so the panel can diff/rollback later. Best-effort — a
+        // failure here must NOT undo the save that just succeeded. The
+        // service masks secrets itself; the live config passed in is the
+        // unmasked in-memory form.
+        com.nova.link.api.ConfigHistoryService history = configHistoryService;
+        if (history != null) {
+            try {
+                NovaLinkConfig live = configLoader.getConfig();
+                if (live != null) {
+                    history.recordSnapshot(revision, snapshotGson.toJson(live), actor);
                 }
+            } catch (Exception e) {
+                logger.debug("Config history snapshot recording failed: {}", e.getMessage());
             }
         }
+        return revision;
     }
 
     /**
@@ -201,22 +272,36 @@ public class ConfigManager {
      * @throws ConfigException if reloading fails
      */
     public NovaLinkConfig reload(boolean broadcast) throws ConfigException {
-        logger.info("Reloading configuration (broadcast={})...", broadcast);
-        
-        long startTime = System.currentTimeMillis();
-        NovaLinkConfig config = configLoader.reload();
-        lastReloadTime = System.currentTimeMillis();
+        synchronized (fileOperationLock) {
+            logger.info("Reloading configuration (broadcast={})...", broadcast);
 
-        // Update statistics
-        reloadCount++;
-        lastSuccessfulReload = System.currentTimeMillis();
+            long startTime = System.currentTimeMillis();
+            NovaLinkConfig config = configLoader.reload();
+            lastReloadTime = System.currentTimeMillis();
 
-        // PANEL-010: reload replaces the in-memory config, so any concurrent
-        // panel edit based on the pre-reload state must be rejected. Bump the
-        // revision so stale If-Match / baseRevision values conflict.
-        settingsRevision.incrementAndGet();
-        
-        // Notify listeners
+            // Update statistics
+            reloadCount++;
+            lastSuccessfulReload = System.currentTimeMillis();
+
+            // PANEL-010: reload replaces the in-memory config, so any concurrent
+            // panel edit based on the pre-reload state must be rejected. Bump the
+            // revision so stale If-Match / baseRevision values conflict.
+            settingsRevision.incrementAndGet();
+
+            // Notify listeners
+            int listenerErrors = notifyReloadListeners(config);
+            notifyCommitListeners(new CommittedConfig(config, settingsRevision.get()));
+
+            if (broadcast) { broadcastConfigSync(config); }
+
+            long duration = System.currentTimeMillis() - startTime;
+            logger.info("Configuration reloaded successfully in {}ms (reload #{}, listener errors: {})",
+                    duration, reloadCount, listenerErrors);
+            return config;
+        }
+    }
+
+    private int notifyReloadListeners(NovaLinkConfig config) {
         int listenerErrors = 0;
         for (Consumer<NovaLinkConfig> listener : reloadListeners) {
             try {
@@ -227,16 +312,14 @@ public class ConfigManager {
             }
         }
         
-        // Broadcast to all connected clients if requested
-        if (broadcast) {
-            broadcastConfigSync(config);
+        return listenerErrors;
+    }
+
+    private void notifyCommitListeners(CommittedConfig committed) {
+        for (Consumer<CommittedConfig> listener : commitListeners) {
+            try { listener.accept(committed); }
+            catch (Exception error) { logger.error("Error applying committed config", error); }
         }
-        
-        long duration = System.currentTimeMillis() - startTime;
-        logger.info("Configuration reloaded successfully in {}ms (reload #{}, listener errors: {})", 
-                duration, reloadCount, listenerErrors);
-        
-        return config;
     }
     
     /**
@@ -263,22 +346,13 @@ public class ConfigManager {
     }
 
     /**
-     * Atomically swaps the live config reference and returns the previous one.
-     * Used by rollback / publish / restore so the merge happens on a private
-     * clone and only becomes the visible live config via this swap; if the
-     * subsequent {@link #save()} throws, the caller swaps the previous config
-     * back and the live config remains untouched.
-     *
-     * <p><b>Power tool; only the api-layer config services should call this.</b>
-     * The swap is raw — the caller is responsible for restoring the previous
-     * config if the subsequent save fails. General callers should use
-     * {@link #getConfig()} and {@link #save()} instead.
-     *
-     * @param newConfig the merged config to install (must not be null)
-     * @return the previously-installed config
+     * Legacy reference replacement. New mutations should use {@link #update}
+     * so replacement and persistence share the same lock.
      */
     public NovaLinkConfig swapConfigForSave(NovaLinkConfig newConfig) {
-        return configLoader.swapConfigForSave(newConfig);
+        synchronized (fileOperationLock) {
+            return configLoader.swapConfigForSave(newConfig);
+        }
     }
 
     /**

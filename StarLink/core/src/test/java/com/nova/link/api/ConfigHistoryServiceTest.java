@@ -377,11 +377,8 @@ class ConfigHistoryServiceTest {
         long newRev = service.rollback(r1, "operator");
         assertThat(newRev).isGreaterThan(r2);
 
-        // Append-only: no row deleted, plus the rollback row added (the save()
-        // inside rollback bumps the revision and records a snapshot, then the
-        // rollback path appends a second row tagged with newRev).
         int afterCount = db.countConfigSnapshots();
-        assertThat(afterCount).isEqualTo(beforeCount + 2);
+        assertThat(afterCount).isEqualTo(beforeCount + 1);
         // Exactly one row is active, and it is the rollback row.
         List<ConfigSnapshot> history = service.getHistory(100);
         long activeCount = history.stream().filter(ConfigSnapshot::isActive).count();

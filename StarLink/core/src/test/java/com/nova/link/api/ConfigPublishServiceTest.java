@@ -450,7 +450,7 @@ class ConfigPublishServiceTest {
         ConfigManager throwingManager = new ConfigManager(
                 tempDir.resolve("failing-config.yml")) {
             @Override
-            public void save() throws com.nova.link.config.ConfigException {
+            protected void persist(com.nova.link.config.NovaLinkConfig candidate) throws com.nova.link.config.ConfigException {
                 throw new com.nova.link.config.ConfigException("simulated save failure");
             }
         };
@@ -480,7 +480,7 @@ class ConfigPublishServiceTest {
         ConfigManager throwingManager = new ConfigManager(
                 tempDir.resolve("failing-restore.yml")) {
             @Override
-            public void save() throws com.nova.link.config.ConfigException {
+            protected void persist(com.nova.link.config.NovaLinkConfig candidate) throws com.nova.link.config.ConfigException {
                 throw new com.nova.link.config.ConfigException("simulated restore save failure");
             }
         };

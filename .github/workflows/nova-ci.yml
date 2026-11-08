@@ -89,10 +89,31 @@ jobs:
         run: npx --yes npm@10 ci --prefix test/bot --no-audit --no-fund
 
       - name: Test E2E bot lifecycle and PNX signalling
-        run: node --test test/bot/test-run-lifecycle.js test/bot/test-pnx-client.js test/joint/bots/sound-observer.test.js
+        run: node --test test/bot/test-run-lifecycle.js test/bot/l1-lifecycle.test.js test/bot/test-pnx-client.js test/bot/bedrock-client.test.js test/bot/l1-route-fixtures.test.js test/joint/bots/sound-observer.test.js
+
+  orchestration-windows:
+    name: Test Windows orchestration contracts offline
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test verdicts, build inputs and artifact whitelist
+        shell: powershell
+        run: |
+          foreach ($test in @(
+            'test/bin/test-orchestrator-verdicts.ps1',
+            'test/bin/test-l1-build-inputs.ps1',
+            'test/bin/test-e2e-artifact-whitelist.ps1',
+            'test/bin/test-e2e-process.ps1',
+            'test/joint/verify-joint-scenarios.ps1',
+            'test/joint/test-verifier-export.ps1'
+          )) {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $test
+            if ($LASTEXITCODE -ne 0) { throw "$test failed (exit=$LASTEXITCODE)" }
+          }
 
   panel:
-    name: Panel lint + production build
+    name: Panel lint + tests + production build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -115,6 +136,9 @@ jobs:
 
       - name: Lint Panel
         run: npm run lint
+
+      - name: Test Panel contracts and interactions
+        run: npm test
 
       - name: Build Panel
         run: npm run build

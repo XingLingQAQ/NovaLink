@@ -224,6 +224,7 @@ public class WebSocketServer {
                             
                             // HTTP aggregator for full HTTP requests
                             pipeline.addLast("httpAggregator", new HttpObjectAggregator(MAX_CONTENT_LENGTH));
+                            pipeline.addLast("httpRequestOrder", new HttpRequestSequencer());
                             
                             // REST API handler (for /api/* endpoints)
                             if (restApiHandler != null) {

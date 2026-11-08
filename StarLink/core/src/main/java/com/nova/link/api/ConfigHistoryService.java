@@ -436,12 +436,10 @@ public final class ConfigHistoryService {
      *       onto the clone, skipping any field whose snapshot value is the
      *       {@link #MASK} sentinel — the current live secret is preserved for
      *       those.</li>
-     *   <li>Swap the clone into the live slot, then {@link ConfigManager#save()}
-     *       writes the merged config to disk and bumps the settings revision
-     *       atomically. A failure swaps the original back and propagates, so
-     *       the caller-visible live config is unchanged.</li>
-     *   <li>Append a new active rollback snapshot row and flip every prior row
-     *       inactive — append-only, no history deleted.</li>
+     *   <li>Commit through {@link ConfigManager#update}. Persistence succeeds
+     *       before the candidate is published or the runtime is notified.</li>
+     *   <li>The manager records one new active snapshot under the same commit
+     *       lock; existing history remains available.</li>
      *   <li>Audit the rollback via {@link AuditStore#record} (best-effort;
      *       never blocks).</li>
      * </ol>
@@ -467,11 +465,6 @@ public final class ConfigHistoryService {
         if (target.isActive()) {
             return -1L;
         }
-        // beforeHash for audit: hash of the current live config (masked).
-        // Computed against the live singleton BEFORE any swap takes place.
-        String beforeMasked = maskSecrets(gson.toJson(configManager.getConfig()));
-        String beforeHash = AuditEvent.hashJson(beforeMasked);
-
         NovaLinkConfig targetConfig;
         try {
             targetConfig = gson.fromJson(target.getSnapshotJson(), NovaLinkConfig.class);
@@ -482,55 +475,23 @@ public final class ConfigHistoryService {
             throw new IllegalStateException("Target snapshot parsed to null config");
         }
 
-        // H4: merge onto a private deep clone of the live config, NOT onto the
-        // live singleton. If save() later fails we swap the original back in
-        // and the caller-visible live config never observed the merge — the
-        // merge itself is invisible until the swap commits.
-        NovaLinkConfig liveCopy = gson.fromJson(
-                gson.toJson(configManager.getConfig()), NovaLinkConfig.class);
-
-        // Merge non-secret fields onto the clone. Secret fields carry the MASK
-        // sentinel in the snapshot, so they are skipped and the clone's copied
-        // live secret is preserved.
-        applySnapshot(liveCopy, targetConfig);
-
-        // Swap the clone into the live slot, write, and on failure swap the
-        // original back. The swap-and-save is intentionally outside any
-        // synchronized block: the existing fileOperationLock inside save()
-        // serialises the write itself, and the swap is a single-assignment
-        // reference flip so a concurrent reader sees either the old or the
-        // new config, never a torn merge.
-        NovaLinkConfig swappedOut = configManager.swapConfigForSave(liveCopy);
+        configManager.setConfigHistoryService(this);
+        String[] beforeHashRef = new String[1];
+        ConfigManager.CommittedConfig committed;
         try {
-            configManager.save();
+            committed = configManager.update(null, candidate -> {
+                beforeHashRef[0] = AuditEvent.hashJson(maskSecrets(gson.toJson(candidate)));
+                applySnapshot(candidate, targetConfig);
+            }, actor);
         } catch (Exception e) {
-            // Fail-closed: restore the previous live reference so callers see
-            // an unchanged config. The disk file was never rewritten (save()
-            // is atomic inside fileOperationLock), but the in-memory merge on
-            // liveCopy must not leak into the caller-visible singleton.
-            configManager.swapConfigForSave(swappedOut);
             throw new IllegalStateException("Rollback save failed: " + e.getMessage(), e);
         }
-
-        // Append a new active rollback snapshot + flip prior rows inactive.
-        // Use liveCopy (now the installed live config) — no need to re-fetch.
-        String afterMasked = maskSecrets(gson.toJson(liveCopy));
-        long newRevision = configManager.getSettingsRevision();
-        ConfigSnapshot rollbackRecord = new ConfigSnapshot(
-                newRevision, afterMasked, System.currentTimeMillis(), actor);
-        try {
-            databaseProvider.saveConfigSnapshot(rollbackRecord);
-            databaseProvider.deactivateOtherSnapshots(newRevision);
-        } catch (DatabaseException e) {
-            // The live config was rolled back successfully; only the history
-            // row failed. Log and continue — the audit record below still
-            // captures the rollback.
-            logger.warn("Rollback persisted live config but failed to record history row: {}",
-                    e.getMessage());
-        }
+        String beforeHash = beforeHashRef[0];
+        String afterMasked = maskSecrets(gson.toJson(committed.config()));
+        String afterHash = AuditEvent.hashJson(afterMasked);
+        long newRevision = committed.revision();
 
         // Audit (best-effort; never blocks).
-        String afterHash = AuditEvent.hashJson(afterMasked);
         if (auditStore != null) {
             try {
                 AuditEvent event = new AuditEvent(

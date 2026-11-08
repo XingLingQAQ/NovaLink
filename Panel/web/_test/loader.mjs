@@ -1,6 +1,6 @@
 // Test-only ESM hooks (resolve + load) for `node --import ./_test/register.mjs --test`.
 //
-// The project runs `node --test` (not vitest) and has no jsdom. Two constructs
+// The project runs `node --test` with optional jsdom interaction tests. Two constructs
 // in src/ are unparseable by plain Node, so we minimally rewrite only the
 // files that need it; every other file falls through to Node's default loader
 // UNCHANGED (the existing baseline tests must stay unaffected):
@@ -11,7 +11,7 @@
 //
 //   2. .jsx files are not parseable by plain Node. We transpile them with
 //      @babel/core (a transitive devDependency already installed) using an
-//      inline JSX->React.createElement plugin, and stub `createPortal` so
+//      inline JSX->React.createElement plugin, and guard `createPortal` so
 //      Modal.jsx can render to static markup with no document.body.
 //
 //      We deliberately do NOT use vite's transformWithOxc here: its native
@@ -151,25 +151,11 @@ function patchI18nGlob(source, srcRoot) {
   );
 }
 
-// Stub createPortal so Modal.jsx renders inline under SSR (no document.body).
-// Replaces the 2-arg `createPortal(node, document.body)` call with just `node`.
+// SSR has no portal target; DOM interaction tests use the real portal.
 function stubCreatePortal(source) {
-  // Remove createPortal from react-dom import lists.
-  source = source.replace(
-    /(import\s*\{)([^}]*)(\}\s*from\s*['"]react-dom['"])/g,
-    (m, head, names, tail) => {
-      const cleaned = names
-        .split(',')
-        .map((s) => s.trim())
-        .filter((s) => s && s !== 'createPortal')
-        .join(', ');
-      return cleaned ? `${head} ${cleaned} ${tail}` : '';
-    }
-  );
-  // Replace createPortal(X, document.body) -> (X). Matches call spans with
-  // balanced parens so nested JSX/createElement calls survive.
-  source = source.replace(/createPortal\s*\(([\s\S]*?),\s*document\.body\s*\)/g, '($1)');
-  return source;
+  return "const createPortal = (node, target) => typeof document === 'undefined' ? node : createDomPortal(node, target);\n" + source
+    .replace(/\bimport\s*\{\s*createPortal\s*\}\s*from\s*(['"])react-dom\1/, "import { createPortal as createDomPortal } from 'react-dom'")
+    .replace(/document\.body/g, 'globalThis.document?.body');
 }
 
 // Transpile JSX in a .jsx/.tsx source string to React.createElement calls.

@@ -122,6 +122,27 @@ class PrivateMessageHandlerTest {
     }
 
     @Test
+    void authenticatedNodeCannotBorrowAnotherNodesPlayerName() {
+        ClientConnection attacker = mockConn("ThirdNode", true, true);
+        handler(null).handle(attacker, packet("Alex"));
+        verify(creativeConn, never()).sendPacket(any());
+        verify(survivalConn, never()).sendPacket(any());
+        verify(chatLogger, never()).logPrivateMessage(anyString(), anyString(),
+                anyString(), anyString(), anyString());
+        verify(attacker, never()).sendPacket(any());
+    }
+
+    @Test
+    void oldNodeCannotSendAfterPlayerTransfer() {
+        steveState.setClientId("TransferredNode");
+        handler(null).handle(survivalConn, packet("Alex"));
+        verify(creativeConn, never()).sendPacket(any());
+        verify(chatLogger, never()).logPrivateMessage(anyString(), anyString(),
+                anyString(), anyString(), anyString());
+        verify(survivalConn, never()).sendPacket(any());
+    }
+
+    @Test
     @DisplayName("unauthenticated sender is dropped silently")
     void unauthenticatedDropped() {
         ClientConnection unauth = mockConn(null, false, true);

@@ -118,17 +118,6 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     private final Gson gson;
 
     /**
-     * Channel attribute key holding the per-request correlation id
-     * (PANEL-006). The id is generated (or honored from the incoming
-     * {@code X-Request-Id} header) at the top of {@link #channelRead0} and
-     * read by {@link #currentRequestId} for response stamping and audit
-     * recording. Using a channel attribute avoids threading the id through
-     * every handler signature.
-     */
-    private static final io.netty.util.AttributeKey<String> REQUEST_ID_KEY =
-            io.netty.util.AttributeKey.valueOf("novalink-request-id");
-
-    /**
      * Announcement manager (setter-injected after construction to keep the
      * already-long constructor stable). Required for /api/announcements.
      */
@@ -231,6 +220,20 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         // serializeNulls: contract fields like webhook.lastTriggered and
         // announcement.cron must be emitted as explicit JSON null, not omitted.
         this.gson = new com.google.gson.GsonBuilder().serializeNulls().create();
+        if (configManager != null) {
+            configManager.addCommitListener(committed -> {
+                applyFeatureConfig(committed.config().getFeatures());
+                com.nova.link.filter.SensitiveWordFilter filter = resolveSensitiveWordFilter();
+                if (filter != null) {
+                    filter.setCustomWords(committed.config().getFilter().getWords());
+                    filter.setCustomPatterns(committed.config().getFilter().getPatterns());
+                }
+                if (webSocketGateway != null) {
+                    webSocketGateway.getMessageHandler().broadcastSettingsUpdate(
+                            committed.revision(), committed.config().getFeatures());
+                }
+            });
+        }
     }
 
     /** Wires the announcement manager (called after construction). */
@@ -274,7 +277,6 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * Production wiring injects a fixed pool created via {@link #newWorkerPool}.
      */
     private volatile java.util.concurrent.Executor workerExecutor;
-
     /** Injects the worker executor (package-visible for tests, used by NovaLinkMain). */
     public void setWorkerExecutor(java.util.concurrent.Executor workerExecutor) {
         this.workerExecutor = workerExecutor;
@@ -483,11 +485,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         String uri = request.uri();
         HttpMethod method = request.method();
 
-        // PANEL-006: stamp every response with a per-request correlation id.
-        // Honor an incoming X-Request-Id header (truncated) so upstream LBs can
-        // thread their own trace id; otherwise generate a fresh UUID. The id is
-        // stored as a channel attribute so the audit hooks and response writers
-        // can read it without threading it through every handler signature.
+        // Keep correlation with the retained request across worker threads.
         String incomingRequestId = request.headers().get("X-Request-Id");
         String requestId;
         if (incomingRequestId != null && !incomingRequestId.isBlank()
@@ -496,7 +494,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         } else {
             requestId = java.util.UUID.randomUUID().toString();
         }
-        ctx.channel().attr(REQUEST_ID_KEY).set(requestId);
+        request.headers().set("X-Request-Id", requestId);
 
         // Handle CORS preflight (cheap; stays on the IO thread)
         if (method == HttpMethod.OPTIONS) {
@@ -543,9 +541,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         // Offload auth validation + business logic + response writing to the
         // worker pool. The request must be retained: SimpleChannelInboundHandler
         // releases it when channelRead0 returns, while the worker still needs
-        // the body. ctx.writeAndFlush is thread-safe. The channel attribute set
-        // above is visible to the worker because it is read off the channel,
-        // not off the IO thread's stack.
+        // the body and correlation header. ctx.writeAndFlush is thread-safe.
         request.retain();
         try {
             executor.execute(() -> {
@@ -853,7 +849,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * @param reason     free-form reason (may be null)
      * @param result     {@code "success"} or {@code "failure"}
      */
-    private void recordAudit(ChannelHandlerContext ctx, Claims claims,
+    private void recordAudit(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims,
                              String action, String resource,
                              String beforeHash, String afterHash,
                              String reason, String result) {
@@ -864,7 +860,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             String actor = panelUsername(claims);
             String role = claims != null ? resourcePolicy.resolveRole(claims).name() : null;
             String origin = resolveOrigin(ctx);
-            String requestId = currentRequestId(ctx);
+            String requestId = currentRequestId(request);
             String eventId = java.util.UUID.randomUUID().toString();
             AuditEvent event = new AuditEvent(
                     eventId, requestId, actor, role, origin, action, resource,
@@ -880,10 +876,10 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * Convenience for recording a successful mutation with no reason. Most P1
      * handlers call this on the happy path.
      */
-    private void recordAuditSuccess(ChannelHandlerContext ctx, Claims claims,
+    private void recordAuditSuccess(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims,
                                    String action, String resource,
                                    String beforeHash, String afterHash) {
-        recordAudit(ctx, claims, action, resource, beforeHash, afterHash, null, "success");
+        recordAudit(ctx, request, claims, action, resource, beforeHash, afterHash, null, "success");
     }
 
     /**
@@ -1410,17 +1406,17 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             // PANEL-006: audit the creation. No before-state (new resource);
             // after-hash is the SHA-256 of the channel JSON with no secrets
             // (channelToJson never emits the password).
-            recordAuditSuccess(ctx, claims, "channel.create", "channel:" + channel.getId(),
+            recordAuditSuccess(ctx, request, claims, "channel.create", "channel:" + channel.getId(),
                     null, AuditEvent.hashJson(gson.toJson(channelToJson(channel))));
 
         } catch (IllegalArgumentException e) {
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, e.getMessage());
-            recordAudit(ctx, claims, "channel.create", null,
+            recordAudit(ctx, request, claims, "channel.create", null,
                     null, null, e.getMessage(), "failure");
         } catch (Exception e) {
             logger.error("Error creating channel via API", e);
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
-            recordAudit(ctx, claims, "channel.create", null,
+            recordAudit(ctx, request, claims, "channel.create", null,
                     null, null, "invalid request body", "failure");
         }
     }
@@ -1480,7 +1476,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
 
         // PANEL-006: audit the deletion. No after-state (resource removed).
-        recordAuditSuccess(ctx, claims, "channel.delete", "channel:" + channelId,
+        recordAuditSuccess(ctx, request, claims, "channel.delete", "channel:" + channelId,
                 beforeHash, null);
     }
 
@@ -1571,13 +1567,13 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
 
             // PANEL-006: audit the update with before/after hashes.
-            recordAuditSuccess(ctx, claims, "channel.update", "channel:" + channelId,
+            recordAuditSuccess(ctx, request, claims, "channel.update", "channel:" + channelId,
                     beforeHash, AuditEvent.hashJson(gson.toJson(afterJson)));
 
         } catch (Exception e) {
             logger.error("Error updating channel via API", e);
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
-            recordAudit(ctx, claims, "channel.update", "channel:" + channelId,
+            recordAudit(ctx, request, claims, "channel.update", "channel:" + channelId,
                     beforeHash, null, "invalid request body", "failure");
         }
     }
@@ -1916,7 +1912,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                                 : "application/json; charset=UTF-8");
                 response.headers().set(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
                 addCorsHeaders(request, response);
-                stampRequestId(ctx, response);
+                stampRequestId(request, response);
                 boolean keepAlive = HttpUtil.isKeepAlive(request);
                 if (keepAlive) {
                     response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
@@ -2057,7 +2053,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             // Per-target audit event; reason carries the batch key so the
             // whole batch can be reconstructed from the audit trail alone.
             String auditAction = "player.batch_" + action;
-            recordAudit(ctx, claims, auditAction, "player:" + targetUuid,
+            recordAudit(ctx, request, claims, auditAction, "player:" + targetUuid,
                     null, null, auditReason,
                     "success".equals(itemStatus) ? "success" : "failure");
         }
@@ -2090,7 +2086,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json; charset=UTF-8");
         httpResponse.headers().set(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
         addCorsHeaders(request, httpResponse);
-        stampRequestId(ctx, httpResponse);
+        stampRequestId(request, httpResponse);
 
         // ---- cache + evict ----
         // Cache only the actually-applied response so a replay within the TTL
@@ -2210,7 +2206,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                     result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
                             : result.getMessage());
             // PANEL-006: audit the failed mute attempt.
-            recordAudit(ctx, claims, "player.mute", "player:" + targetUuid,
+            recordAudit(ctx, request, claims, "player.mute", "player:" + targetUuid,
                     null, null, reason, "failure");
             return;
         }
@@ -2241,7 +2237,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         // PANEL-006: audit the successful mute. No before/after payload hash
         // (the resource is a player, not a JSON document we serialize here);
         // the reason is recorded in the reason field.
-        recordAudit(ctx, claims, "player.mute", "player:" + targetUuid,
+        recordAudit(ctx, request, claims, "player.mute", "player:" + targetUuid,
                 null, null, reason, "success");
     }
 
@@ -2438,7 +2434,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                     result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
                             : result.getMessage());
             // PANEL-006: audit the failed ban attempt.
-            recordAudit(ctx, claims, "player.ban", "player:" + targetUuid,
+            recordAudit(ctx, request, claims, "player.ban", "player:" + targetUuid,
                     null, null, reason, "failure");
             return;
         }
@@ -2465,7 +2461,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 muteDurationSeconds(durationMs));
 
         // PANEL-006: audit the successful ban.
-        recordAudit(ctx, claims, "player.ban", "player:" + targetUuid,
+        recordAudit(ctx, request, claims, "player.ban", "player:" + targetUuid,
                 null, null, reason, "success");
     }
 
@@ -2734,32 +2730,14 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             response.addProperty("settingsRevision", configManager.getSettingsRevision());
             sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
             // PANEL-006: audit the reload.
-            recordAuditSuccess(ctx, claims, "config.reload", "config",
+            recordAuditSuccess(ctx, request, claims, "config.reload", "config",
                     null, null);
 
-            // §11.6 Project 20 (proposal 10): reload re-reads the config file,
-            // which may have changed feature flags. Broadcast the post-reload
-            // settings revision and features so panel clients can refresh.
-            // Fire AFTER the response + audit so a broadcast failure never
-            // masks the reload result.
-            if (webSocketGateway != null) {
-                try {
-                    com.nova.link.config.FeatureConfig reloadedFeatures =
-                            configManager.getConfig() != null
-                                    ? configManager.getConfig().getFeatures()
-                                    : null;
-                    webSocketGateway.getMessageHandler().broadcastSettingsUpdate(
-                            configManager.getSettingsRevision(), reloadedFeatures);
-                } catch (Exception e) {
-                    logger.debug("settings_update broadcast after reload failed: {}",
-                            e.getMessage());
-                }
-            }
         } catch (Exception e) {
             logger.error("Error reloading config via API", e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
                     NovaConstants.ERROR_INTERNAL + ": Reload failed: " + e.getMessage());
-            recordAudit(ctx, claims, "config.reload", "config",
+            recordAudit(ctx, request, claims, "config.reload", "config",
                     null, null, e.getMessage(), "failure");
         }
     }
@@ -2770,9 +2748,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * <p>Returns {filterEnabled, messageLogEnabled, crossServerChatEnabled,
      * privateMessagesEnabled, messageLogRetentionDays, revision}. The last two
      * are feature-detected by the frontend. {@code revision} (PANEL-010) is the
-     * optimistic-concurrency token callers echo back via {@code If-Match} (or
-     * {@code baseRevision} in the request body) on PUT; an ETag header is also
-     * set so standard HTTP conditional-request clients can use it directly.
+     * optimistic-concurrency token callers echo back via {@code If-Match} or
+     * {@code baseRevision} in the request body on PUT.
      */
     private void handleGetSettings(ChannelHandlerContext ctx, FullHttpRequest request) {
         if (configManager == null || configManager.getConfig() == null
@@ -2780,45 +2757,24 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE, "Settings not available");
             return;
         }
-        com.nova.link.config.FeatureConfig features = configManager.getConfig().getFeatures();
+        sendJsonResponse(ctx, request, HttpResponseStatus.OK, settingsJson(configManager.snapshot()));
+    }
+
+    private JsonObject settingsJson(ConfigManager.CommittedConfig snapshot) {
+        com.nova.link.config.FeatureConfig features = snapshot.config().getFeatures();
         JsonObject response = new JsonObject();
         response.addProperty("filterEnabled", features.isFilterEnabled());
         response.addProperty("messageLogEnabled", features.isMessageLogEnabled());
         response.addProperty("crossServerChatEnabled", features.isCrossServerChatEnabled());
         response.addProperty("privateMessagesEnabled", features.isPrivateMessagesEnabled());
         response.addProperty("messageLogRetentionDays", features.getMessageLogRetentionDays());
-        // PANEL-010: expose the settings revision so PUT callers can detect
-        // staleness before we accept their update.
-        long revision = configManager.getSettingsRevision();
-        response.addProperty("revision", revision);
-        // SendJsonResponse doesn't accept extra headers; we add the ETag here
-        // by post-processing the response object via a wrapper. The simpler
-        // route is to write the ETag through the channel after send. Since
-        // sendJsonResponse builds and writes the FullHttpResponse internally,
-        // we instead rely on the body-level `revision` field for the panel
-        // (the frontend uses baseRevision, not ETag). A standard ETag header
-        // is still useful for HTTP-native clients, so we emit it on the
-        // channel after the response is written is not possible — instead
-        // we accept the body-level revision as the contract.
-        sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
+        response.addProperty("revision", snapshot.revision());
+        return response;
     }
 
     /**
-     * PUT /api/settings - Updates the FeatureConfig switches.
-     *
-     * <p>Body: {filterEnabled?, messageLogEnabled?, crossServerChatEnabled?,
-     * privateMessagesEnabled?, messageLogRetentionDays?, baseRevision?}. Only
-     * present fields are applied. Persists via configManager.save() and applies
-     * to runtime immediately so the panel toggle is effective without a full
-     * reload.
-     *
-     * <p>PANEL-010: optimistic-concurrency protection. Callers MUST supply
-     * either an {@code If-Match: W/"<revision>"} header or a
-     * {@code baseRevision} body field; if the supplied revision does not match
-     * the current {@link ConfigManager#getSettingsRevision()}, the update is
-     * rejected with 409 Conflict and the current settings are returned so the
-     * caller can re-merge. On success the revision is incremented atomically
-     * (inside {@link ConfigManager#save()}).
+     * Updates supplied feature fields after persistence succeeds. If-Match or
+     * baseRevision enables optimistic concurrency; omission keeps legacy usage.
      */
     private void handleUpdateSettings(ChannelHandlerContext ctx, FullHttpRequest request, Claims claims) {
         if (configManager == null || configManager.getConfig() == null
@@ -2827,19 +2783,12 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
 
-        // §11.6 Project 20: ensure the config-history service is assembled and
-        // wired into ConfigManager BEFORE save() records a snapshot. The service
-        // is lazy (built on first config-history endpoint hit); without this
-        // warm-up the first settings save after startup would record no
-        // snapshot, and a subsequent rollback/diff would 404 on a revision the
-        // operator just wrote. No-op when the service is already built, and
-        // still 503s gracefully when no database provider is available.
+        // Initialize history before the first commit.
         configHistoryService();
 
         // PANEL-010: optimistic-concurrency check. Accept either the standard
         // If-Match header (W/"<rev>") or a body-level baseRevision field (the
         // panel JS uses the latter because it is simpler to set with fetch).
-        long currentRevision = configManager.getSettingsRevision();
         Long clientRevision = null;
         String ifMatch = request.headers().get(HttpHeaderNames.IF_MATCH);
         if (ifMatch != null && !ifMatch.isBlank()) {
@@ -2859,7 +2808,6 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             }
         }
 
-        com.nova.link.config.FeatureConfig features = configManager.getConfig().getFeatures();
         JsonObject json = null;
         try {
             String body = request.content().toString(CharsetUtil.UTF_8);
@@ -2883,106 +2831,57 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
 
-        // Stale revision → 409 with the current settings so the caller can
-        // re-merge. This MUST happen before any body field is applied to the
-        // live FeatureConfig, otherwise a rejected (stale) update would
-        // silently mutate the runtime — the exact race PANEL-010 guards
-        // against. We do this AFTER parsing the body so a malformed body still
-        // gets 400 (a client error that would mask a 409 otherwise). When
-        // baseRevision is absent entirely, we allow the update for backward
-        // compatibility (the panel will be updated to always send it).
-        if (clientRevision != null && clientRevision != currentRevision) {
-            JsonObject conflict = new JsonObject();
+        JsonObject body = json;
+        ConfigManager.CommittedConfig committed;
+        try {
+            committed = configManager.updateSettings(clientRevision, candidate -> {
+                if (body != null) {
+                    if (body.has("filterEnabled") && !body.get("filterEnabled").isJsonNull()) {
+                        candidate.getFeatures().setFilterEnabled(body.get("filterEnabled").getAsBoolean());
+                    }
+                    if (body.has("messageLogEnabled") && !body.get("messageLogEnabled").isJsonNull()) {
+                        candidate.getFeatures().setMessageLogEnabled(body.get("messageLogEnabled").getAsBoolean());
+                    }
+                    if (body.has("crossServerChatEnabled") && !body.get("crossServerChatEnabled").isJsonNull()) {
+                        candidate.getFeatures().setCrossServerChatEnabled(body.get("crossServerChatEnabled").getAsBoolean());
+                    }
+                    if (body.has("privateMessagesEnabled") && !body.get("privateMessagesEnabled").isJsonNull()) {
+                        candidate.getFeatures().setPrivateMessagesEnabled(body.get("privateMessagesEnabled").getAsBoolean());
+                    }
+                    if (body.has("messageLogRetentionDays") && !body.get("messageLogRetentionDays").isJsonNull()) {
+                        int days = body.get("messageLogRetentionDays").getAsInt();
+                        // Clamp to [0, 365] per the frontend contract.
+                        candidate.getFeatures().setMessageLogRetentionDays(Math.max(0, Math.min(365, days)));
+                    }
+                }
+
+            }, panelUsername(claims));
+        } catch (ConfigManager.RevisionConflict e) {
+            JsonObject conflict = settingsJson(e.current());
             conflict.addProperty("error", "Settings revision mismatch");
-            conflict.addProperty("message", "Settings were modified by another editor. "
-                    + "Refresh and re-apply your changes.");
+            conflict.addProperty("message", "Settings were modified by another editor. Refresh and re-apply your changes.");
             conflict.addProperty("status", 409);
-            conflict.addProperty("currentRevision", currentRevision);
+            conflict.addProperty("currentRevision", e.current().revision());
             conflict.addProperty("clientRevision", clientRevision);
-            // Include the current settings so the caller can merge.
-            conflict.addProperty("filterEnabled", features.isFilterEnabled());
-            conflict.addProperty("messageLogEnabled", features.isMessageLogEnabled());
-            conflict.addProperty("crossServerChatEnabled", features.isCrossServerChatEnabled());
-            conflict.addProperty("privateMessagesEnabled", features.isPrivateMessagesEnabled());
-            conflict.addProperty("messageLogRetentionDays", features.getMessageLogRetentionDays());
-            conflict.addProperty("revision", currentRevision);
             sendJsonResponse(ctx, request, HttpResponseStatus.CONFLICT, conflict);
             return;
-        }
-
-        // Revision is fresh (or absent for backward compat) — apply the body.
-        if (json != null) {
-            if (json.has("filterEnabled") && !json.get("filterEnabled").isJsonNull()) {
-                features.setFilterEnabled(json.get("filterEnabled").getAsBoolean());
-            }
-            if (json.has("messageLogEnabled") && !json.get("messageLogEnabled").isJsonNull()) {
-                features.setMessageLogEnabled(json.get("messageLogEnabled").getAsBoolean());
-            }
-            if (json.has("crossServerChatEnabled") && !json.get("crossServerChatEnabled").isJsonNull()) {
-                features.setCrossServerChatEnabled(json.get("crossServerChatEnabled").getAsBoolean());
-            }
-            if (json.has("privateMessagesEnabled") && !json.get("privateMessagesEnabled").isJsonNull()) {
-                features.setPrivateMessagesEnabled(json.get("privateMessagesEnabled").getAsBoolean());
-            }
-            if (json.has("messageLogRetentionDays") && !json.get("messageLogRetentionDays").isJsonNull()) {
-                int days = json.get("messageLogRetentionDays").getAsInt();
-                // Clamp to [0, 365] per the frontend contract.
-                features.setMessageLogRetentionDays(Math.max(0, Math.min(365, days)));
-            }
-        }
-
-        // Apply to runtime immediately.
-        applyFeatureConfig(features);
-
-        // Persist to disk. save() also bumps settingsRevision atomically.
-        try {
-            configManager.save();
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid settings value");
+            return;
         } catch (Exception e) {
             logger.error("Error persisting settings via API", e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                    NovaConstants.ERROR_INTERNAL + ": Settings apply succeeded but persist failed: " + e.getMessage());
+                    I18n.tr("api.settings.save_failed"));
             return;
         }
-
-        // §11.6 Project 20 (proposal 10): broadcast the new settings revision
-        // and feature flags to every authenticated panel session so clients
-        // can refetch instead of polling. Fire AFTER save() succeeded and
-        // AFTER the response is built (features object is already the post-
-        // mutation state). Null-gateway is a silent no-op (test/standalone
-        // harness without WS wiring).
-        if (webSocketGateway != null) {
-            try {
-                webSocketGateway.getMessageHandler().broadcastSettingsUpdate(
-                        configManager.getSettingsRevision(), features);
-            } catch (Exception e) {
-                logger.debug("settings_update broadcast after update failed: {}", e.getMessage());
-            }
-        }
-
-        JsonObject response = new JsonObject();
+        JsonObject response = settingsJson(committed);
         response.addProperty("success", true);
-        response.addProperty("filterEnabled", features.isFilterEnabled());
-        response.addProperty("messageLogEnabled", features.isMessageLogEnabled());
-        response.addProperty("crossServerChatEnabled", features.isCrossServerChatEnabled());
-        response.addProperty("privateMessagesEnabled", features.isPrivateMessagesEnabled());
-        response.addProperty("messageLogRetentionDays", features.getMessageLogRetentionDays());
-        // PANEL-010: return the new revision so the caller can use it as the
-        // baseRevision for its next update.
-        response.addProperty("revision", configManager.getSettingsRevision());
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
-
-        // PANEL-006: audit the settings update. beforeHash/afterHash are the
-        // SHA-256 of the settings JSON before and after the change (no secrets
-        // are present in FeatureConfig).
-        JsonObject settingsJson = new JsonObject();
-        settingsJson.addProperty("filterEnabled", features.isFilterEnabled());
-        settingsJson.addProperty("messageLogEnabled", features.isMessageLogEnabled());
-        settingsJson.addProperty("crossServerChatEnabled", features.isCrossServerChatEnabled());
-        settingsJson.addProperty("privateMessagesEnabled", features.isPrivateMessagesEnabled());
-        settingsJson.addProperty("messageLogRetentionDays", features.getMessageLogRetentionDays());
-        String afterHash = AuditEvent.hashJson(gson.toJson(settingsJson));
-        recordAuditSuccess(ctx, claims, "settings.update", "config:features",
-                null, afterHash);
+        JsonObject savedSettings = response.deepCopy();
+        savedSettings.remove("revision");
+        savedSettings.remove("success");
+        recordAuditSuccess(ctx, request, claims, "settings.update", "config:features", null,
+                AuditEvent.hashJson(gson.toJson(savedSettings)));
     }
 
     /**
@@ -2996,15 +2895,15 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * (via the {@link MessageLogService}).
      */
     private void applyFeatureConfig(com.nova.link.config.FeatureConfig features) {
-        if (features == null || messageRouter == null) {
+        if (features == null) {
             return;
         }
-        com.nova.link.channel.MessagePipeline pipeline = messageRouter.getPipeline();
-        pipeline.setCrossServerChatEnabled(features.isCrossServerChatEnabled());
-        pipeline.setMessageLogEnabled(features.isMessageLogEnabled());
-        com.nova.link.filter.SensitiveWordFilter filter = pipeline.getSensitiveWordFilter();
-        if (filter != null) {
-            filter.setEnabled(features.isFilterEnabled());
+        if (messageRouter != null) {
+            com.nova.link.channel.MessagePipeline pipeline = messageRouter.getPipeline();
+            pipeline.setCrossServerChatEnabled(features.isCrossServerChatEnabled());
+            pipeline.setMessageLogEnabled(features.isMessageLogEnabled());
+            com.nova.link.filter.SensitiveWordFilter filter = pipeline.getSensitiveWordFilter();
+            if (filter != null) { filter.setEnabled(features.isFilterEnabled()); }
         }
         // Private messages toggle: propagate to the AtomicBoolean the
         // PrivateMessageHandler reads. Wired via setPrivateMessagesEnabledFlag.
@@ -3318,24 +3217,6 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             response.addProperty("revision", newRevision);
             sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
 
-            // §11.6 Project 20 (proposal 10): broadcast the post-rollback
-            // settings revision and feature flags so panel clients see the
-            // rolled-back state without polling. Uses the live config's
-            // features (rollback re-reads the file into configLoader); the
-            // rollback service already verified the write succeeded.
-            if (webSocketGateway != null) {
-                try {
-                    com.nova.link.config.FeatureConfig rolledBackFeatures =
-                            configManager.getConfig() != null
-                                    ? configManager.getConfig().getFeatures()
-                                    : null;
-                    webSocketGateway.getMessageHandler().broadcastSettingsUpdate(
-                            newRevision, rolledBackFeatures);
-                } catch (Exception e) {
-                    logger.debug("settings_update broadcast after rollback failed: {}",
-                            e.getMessage());
-                }
-            }
         } catch (IllegalStateException e) {
             // Fail-closed: the rollback service could not complete the atomic
             // write; the live config is unchanged. Surface as NC-510.
@@ -3585,21 +3466,6 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             response.addProperty("revision", newRevision);
             sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
 
-            // Broadcast settings_update so panel clients refresh without
-            // polling (same pattern as rollback).
-            if (webSocketGateway != null) {
-                try {
-                    com.nova.link.config.FeatureConfig publishedFeatures =
-                            configManager.getConfig() != null
-                                    ? configManager.getConfig().getFeatures()
-                                    : null;
-                    webSocketGateway.getMessageHandler().broadcastSettingsUpdate(
-                            newRevision, publishedFeatures);
-                } catch (Exception e) {
-                    logger.debug("settings_update broadcast after publish failed: {}",
-                            e.getMessage());
-                }
-            }
         } catch (IllegalStateException e) {
             logger.error("Publish draft {} failed (fail-closed)", id, e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
@@ -3753,21 +3619,6 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             response.addProperty("revision", newRevision);
             sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
 
-            // Broadcast settings_update so panel clients refresh without
-            // polling (same pattern as rollback/publish).
-            if (webSocketGateway != null) {
-                try {
-                    com.nova.link.config.FeatureConfig restoredFeatures =
-                            configManager.getConfig() != null
-                                    ? configManager.getConfig().getFeatures()
-                                    : null;
-                    webSocketGateway.getMessageHandler().broadcastSettingsUpdate(
-                            newRevision, restoredFeatures);
-                } catch (Exception e) {
-                    logger.debug("settings_update broadcast after restore failed: {}",
-                            e.getMessage());
-                }
-            }
         } catch (IllegalStateException e) {
             logger.error("Restore from backup {} failed (fail-closed)", backupId, e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
@@ -4830,7 +4681,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
         int cleared = notificationStore.clearAll(panelUsername(claims));
-        recordAuditSuccess(ctx, claims, "notification.clear",
+        recordAuditSuccess(ctx, request, claims, "notification.clear",
                 "notifications", null, null);
         JsonObject response = new JsonObject();
         response.addProperty("cleared", cleared);
@@ -4855,7 +4706,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             return;
         }
         int cleared = notificationStore.clearBroadcast();
-        recordAuditSuccess(ctx, claims, "notification.clear_broadcast",
+        recordAuditSuccess(ctx, request, claims, "notification.clear_broadcast",
                 "notifications", null, null);
         JsonObject response = new JsonObject();
         response.addProperty("cleared", cleared);
@@ -5708,9 +5559,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * <p>Body: {enabled?, words?, patterns?}. Provided fields fully replace
      * the current value (arrays are swapped, enabled overwrites). Every regex
      * is validated individually — an invalid one returns 400 identifying the
-     * offending pattern. Applies to the runtime filter, then persists via
-     * configManager.save() without triggering a disk reload (same pattern as
-     * PUT /api/settings). Returns the updated full state.
+     * offending pattern. Commits the candidate configuration before applying
+     * the runtime filter, then returns the updated state.
      */
     private void handleUpdateFilter(ChannelHandlerContext ctx, FullHttpRequest request) {
         com.nova.link.filter.SensitiveWordFilter filter = resolveSensitiveWordFilter();
@@ -5767,34 +5617,22 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             }
         }
 
-        // Apply to the runtime filter.
-        if (words != null) {
-            filter.setCustomWords(words);
-        }
-        if (patterns != null) {
-            filter.setCustomPatterns(patterns);
-        }
-        if (enabled != null) {
-            filter.setEnabled(enabled);
-        }
-
-        // Mirror into the in-memory config, then persist (no disk reload).
-        com.nova.link.config.NovaLinkConfig config = configManager.getConfig();
-        if (words != null) {
-            config.getFilter().setWords(new ArrayList<>(words));
-        }
-        if (patterns != null) {
-            config.getFilter().setPatterns(new ArrayList<>(patterns));
-        }
-        if (enabled != null && config.getFeatures() != null) {
-            config.getFeatures().setFilterEnabled(enabled);
-        }
+        Boolean requestedEnabled = enabled;
+        List<String> requestedWords = words;
+        List<String> requestedPatterns = patterns;
         try {
-            configManager.save();
+            configManager.updateSettings(null, candidate -> {
+                candidate.getFilter().setWords(new ArrayList<>(requestedWords != null
+                        ? requestedWords : filter.getCustomWords()));
+                candidate.getFilter().setPatterns(new ArrayList<>(requestedPatterns != null
+                        ? requestedPatterns : filter.getCustomPatterns()));
+                candidate.getFeatures().setFilterEnabled(requestedEnabled != null
+                        ? requestedEnabled : filter.isEnabled());
+            }, null);
         } catch (Exception e) {
             logger.error("Error persisting filter config via API", e);
             sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                    NovaConstants.ERROR_INTERNAL + ": Filter apply succeeded but persist failed: " + e.getMessage());
+                    I18n.tr("api.filter.save_failed"));
             return;
         }
 
@@ -5928,13 +5766,13 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
 
             // PANEL-006: audit the webhook creation. webhookToJson never emits
             // the secret, so the after-hash is secret-safe.
-            recordAuditSuccess(ctx, claims, "webhook.create", "webhook:" + webhook.getId(),
+            recordAuditSuccess(ctx, request, claims, "webhook.create", "webhook:" + webhook.getId(),
                     null, AuditEvent.hashJson(gson.toJson(webhookJson)));
 
         } catch (Exception e) {
             logger.error("Error creating webhook", e);
             sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, "Invalid request body");
-            recordAudit(ctx, claims, "webhook.create", null,
+            recordAudit(ctx, request, claims, "webhook.create", null,
                     null, null, "invalid request body", "failure");
         }
     }
@@ -6004,7 +5842,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, afterJson);
 
         // PANEL-006: audit the webhook update with before/after hashes.
-        recordAuditSuccess(ctx, claims, "webhook.update", "webhook:" + webhookId,
+        recordAuditSuccess(ctx, request, claims, "webhook.update", "webhook:" + webhookId,
                 beforeHash, AuditEvent.hashJson(gson.toJson(afterJson)));
     }
 
@@ -6070,7 +5908,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         sendJsonResponse(ctx, request, HttpResponseStatus.OK, response);
 
         // PANEL-006: audit the webhook deletion. No after-state.
-        recordAuditSuccess(ctx, claims, "webhook.delete", "webhook:" + webhookId,
+        recordAuditSuccess(ctx, request, claims, "webhook.delete", "webhook:" + webhookId,
                 beforeHash, null);
     }
 
@@ -6289,7 +6127,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json; charset=UTF-8");
         response.headers().set(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
         addCorsHeaders(request, response);
-        stampRequestId(ctx, response);
+        stampRequestId(request, response);
 
         boolean keepAlive = HttpUtil.isKeepAlive(request);
         if (keepAlive) {
@@ -6312,7 +6150,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         json.addProperty("status", status.code());
         // PANEL-006: include the correlation id in the error body so callers
         // can quote it when reporting issues without scraping headers.
-        String rid = currentRequestId(ctx);
+        String rid = currentRequestId(request);
         if (rid != null) {
             json.addProperty("requestId", rid);
         }
@@ -6327,7 +6165,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
         addCorsHeaders(request, response);
         response.headers().set(HttpHeaderNames.CONTENT_LENGTH, 0);
-        stampRequestId(ctx, response);
+        stampRequestId(request, response);
         ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
     }
 
@@ -6356,32 +6194,13 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         response.headers().set(HttpHeaderNames.ACCESS_CONTROL_MAX_AGE, "86400");
     }
 
-    /**
-     * @return the per-request correlation id stored on the channel by
-     *         {@link #channelRead0}, or null when none is set (e.g. tests that
-     *         invoke handlers directly without going through channelRead0).
-     */
-    private String currentRequestId(ChannelHandlerContext ctx) {
-        if (ctx == null || ctx.channel() == null) {
-            return null;
-        }
-        try {
-            return ctx.channel().attr(REQUEST_ID_KEY).get();
-        } catch (Exception ignored) {
-            return null;
-        }
+    private String currentRequestId(FullHttpRequest request) {
+        return request != null ? request.headers().get("X-Request-Id") : null;
     }
 
-    /**
-     * Stamps the {@code X-Request-Id} response header from the channel
-     * attribute. No-op when no id is set, so direct handler invocations in
-     * tests (which skip channelRead0) still work without a request id.
-     */
-    private void stampRequestId(ChannelHandlerContext ctx, FullHttpResponse response) {
-        String rid = currentRequestId(ctx);
-        if (rid != null) {
-            response.headers().set("X-Request-Id", rid);
-        }
+    private void stampRequestId(FullHttpRequest request, FullHttpResponse response) {
+        String rid = currentRequestId(request);
+        if (rid != null) { response.headers().set("X-Request-Id", rid); }
     }
 
     /**

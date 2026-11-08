@@ -8,7 +8,7 @@ NovaLink 是一个包含 Java 后端、多个平台接入端、非 Java Bedrock 
 | --- | --- | --- |
 | JDK 17+ | 编译 Java 后端与多数 Java 模块 | 根构建对 Java 子项目设置 Java 17 源/目标兼容性；特定真实 E2E 平台可能需要不同 JDK。 |
 | Gradle Wrapper | 统一构建入口 | 使用仓库的 `./gradlew` 或 Windows 的 `gradlew.bat`。 |
-| Node.js | Admin Console | 仅在构建或开发 `Panel/web` 时需要。 |
+| Node.js | Admin Console 与 E2E bot | 面板与真实服务端测试分别使用各自锁定的依赖。 |
 | 各平台运行时 | 平台适配测试 | Bukkit、代理、Bedrock、Sponge、Loader 的要求按模块与 E2E 锁定配置变化。 |
 | PowerShell 与测试资源 | 真实 E2E | `realE2E` 是可选路径，需要实际服务端和机器人条件。 |
 
@@ -50,6 +50,8 @@ NovaLink 是一个包含 Java 后端、多个平台接入端、非 Java Bedrock 
 ```bash
 cd Panel/web
 npm ci
+npm run lint
+npm test
 npm run build
 ```
 
@@ -57,7 +59,7 @@ npm run build
 
 ## 5. 真实服务端 E2E
 
-真实 E2E 位于 `e2e/`，由根 Gradle 项目注册为**显式选择**的 `realE2E` 任务。普通 `build`、`test` 与 `check` 不会自动启动真实服务端；只有在传入 `-PenableRealE2E=true` 时，`check` 才会依赖该任务。[1]
+真实 E2E 源码位于 `test/`，由根 Gradle 项目注册为**显式选择**的 `realE2E` 任务。普通 `build`、`test` 与 `check` 不会自动启动真实服务端；只有在传入 `-PenableRealE2E=true` 时，`check` 才会依赖该任务。[1]
 
 ```bash
 # 运行默认平台集合的真实 E2E（需要准备完整前置条件）
@@ -70,7 +72,11 @@ npm run build
 ./gradlew check -PenableRealE2E=true
 ```
 
-真实 E2E 使用 PowerShell 编排真实服务端、机器人和 NovaLink 后端，需要匹配的服务端二进制、Node.js、相关 JDK 与平台运行环境。`e2e/README.md` 还区分了严格哈希校验的 pinned 下载模式与自动发现最新构建的 Auto 模式；不要把 Auto 模式当作固定可复现版本的替代。[1] [2]
+真实 E2E 使用 PowerShell 编排真实服务端、机器人和 NovaLink 后端，需要匹配的服务端二进制、Node.js、相关 JDK 与平台运行环境。`test/README.md` 还区分了严格哈希校验的 pinned 下载模式与自动发现最新构建的 Auto 模式；不要把 Auto 模式当作固定可复现版本的替代。[1] [2]
+
+维护 bot 生命周期、进程控制或独立证据验收时，参阅 [E2E 共享层](e2e-shared-layer.md)。Java、Bedrock 和 5 个 L1 编排入口已迁移到共享模块。
+
+[2026-11-08 项目审查](design-review-2026-11-08.md)记录了修复前的反例、R01—R09 的处理方式和本地验证结果。常规 CI 已接入面板测试、路由合成负例及 Windows 离线检查。
 
 | 何时考虑真实 E2E | 典型原因 |
 | --- | --- |
@@ -108,7 +114,7 @@ npm run build
 ## 参考资料
 
 [1]: ../../build.gradle "根构建、Java 版本与可选真实 E2E 任务"
-[2]: ../../e2e/README.md "真实服务端 E2E 环境、平台矩阵与下载模式"
+[2]: ../../test/README.md "真实服务端 E2E 环境、平台矩阵与下载模式"
 [3]: ../../settings.gradle "非 Java Bedrock 模块声明"
 [4]: ../../StarLink/core/src/main/java/com/nova/link/NovaLinkMain.java "后端启动路径"
 [5]: ../../Panel/web/package.json "Admin Console 构建脚本"

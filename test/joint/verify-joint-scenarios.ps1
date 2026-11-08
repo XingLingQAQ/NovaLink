@@ -10,14 +10,7 @@ $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($main, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw 'Main script did not parse' }
-$expectations = $ast.Find({ param($node)
-  $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Assert-BotExpectations'
-}, $true)
-. ([scriptblock]::Create($expectations.Extent.Text))
-$proxyCheck = $ast.Find({ param($node)
-  $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Assert-ProxyPluginLoaded'
-}, $true)
-. ([scriptblock]::Create($proxyCheck.Extent.Text))
+. (Join-Path $PSScriptRoot 'evidence-checks.ps1')
 $readyCheck = $ast.Find({ param($node)
   $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Wait-LogMarker'
 }, $true)
@@ -68,10 +61,10 @@ foreach ($field in @('received', 'sent')) {
 $proxyLog = [System.IO.Path]::GetTempFileName()
 try {
   [System.IO.File]::WriteAllText($proxyLog, 'Loaded plugin NovaChat version 1.0')
-  $verdict = Assert-ProxyPluginLoaded 'selftest/proxy' 'bungee' $proxyLog
+  $verdict = Assert-ProxyPluginLoaded 'selftest/proxy' 'bungee' (Read-LogText $proxyLog)
   Assert-Check (-not $verdict.pass) 'loader registration does not prove plugin enabled'
   [System.IO.File]::WriteAllText($proxyLog, 'NovaChat BungeeCord plugin enabled!')
-  $verdict = Assert-ProxyPluginLoaded 'selftest/proxy' 'bungee' $proxyLog
+  $verdict = Assert-ProxyPluginLoaded 'selftest/proxy' 'bungee' (Read-LogText $proxyLog)
   Assert-Check $verdict.pass 'plugin enable marker accepted'
   [System.IO.File]::WriteAllText($proxyLog, 'java.net.BindException: Address already in use')
   Assert-Check (-not (Wait-LogMarker $proxyLog 'Listening on' 1 'proxy')) 'bind failure stops readiness polling'

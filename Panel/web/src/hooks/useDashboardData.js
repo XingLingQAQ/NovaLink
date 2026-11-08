@@ -16,12 +16,8 @@ import {
   adaptMute,
   adaptBan,
 } from '../utils/adapters';
-import {
-  adaptSettingsResponse,
-  buildSettingsUpdateBody,
-  createInitialSettings,
-  isValidSettingsValue,
-} from '../lib/settingsContract';
+import { useSettings } from './useSettings';
+import { getApiBaseUrl } from '../services/connectionUrls';
 
 export function useDashboardData({ addToast, currentUser }) {
   const { t } = useTranslation();
@@ -48,36 +44,13 @@ export function useDashboardData({ addToast, currentUser }) {
 
   // Settings — persisted to the backend via GET/PUT /api/settings. The two
   // newer fields remain unsupported until GET explicitly returns valid values.
-  const [settings, setSettings] = useState(createInitialSettings);
-  const settingsRef = useRef(settings);
-  const [settingsLoading, setSettingsLoading] = useState(false);
-  // §11.6 提案 10 / item 20 缺口 B: last-seen settings revision from WS
-  // settings_update emits. Used to dedupe + power the "config updated by
-  // someone else" toast. Initialized from the last GET /api/settings.
-  const settingsRevisionRef = useRef(settings.revision);
+  const { settings, settingsLoading, fetchSettings, handleSettingChange,
+    handleSettingToggle, handleWsSettingsUpdate } = useSettings({
+    sessionKey: `${getApiBaseUrl()}:${currentUser?.username ?? ''}`,
+    addToast,
+    t,
+  });
 
-  // Fetch backend settings (GET /api/settings) and map to UI keys.
-  const fetchSettings = useCallback(async () => {
-    setSettingsLoading(true);
-    try {
-      const res = await api.getSettings();
-      if (res) {
-        const adapted = adaptSettingsResponse(res);
-        settingsRef.current = adapted;
-        setSettings(adapted);
-        if (typeof adapted.revision === 'number') {
-          settingsRevisionRef.current = adapted.revision;
-        }
-      }
-    } catch (err) {
-      console.warn('[fetchSettings] failed:', err);
-      addToast(tRef.current('common.settings_load_failed', { error: err.message }), 'error');
-    } finally {
-      setSettingsLoading(false);
-    }
-  }, [addToast]);
-
-  // --- Initial data fetch on mount (after auth) ---
   const fetchAllData = useCallback(async () => {
     setFetchError(null);
     // Per-endpoint failures are collected and surfaced as one visible toast.
@@ -480,103 +453,6 @@ export function useDashboardData({ addToast, currentUser }) {
       throw err;
     }
   }, [addToast, t]);
-
-  // Persist exactly one user-modified, backend-supported setting. Optimistic
-  // state is rolled back only when that same value is still current. PANEL-010:
-  // sends the last-known revision as baseRevision; a 409 response discards the
-  // optimistic update, refreshes server state, and surfaces the conflict.
-  const handleSettingChange = useCallback(async (key, value) => {
-    const previous = settingsRef.current;
-    if (!previous?.supported?.[key] || !isValidSettingsValue(key, value)) {
-      return false;
-    }
-
-    const next = { ...previous, [key]: value };
-    const body = buildSettingsUpdateBody(next, [key]);
-    if (Object.keys(body).length === 0) return false;
-
-    settingsRef.current = next;
-    setSettings(next);
-
-    try {
-      await api.updateSettings(body, previous.revision);
-      addToast(t('common.settings_save_success'), 'success');
-      return true;
-    } catch (err) {
-      // PANEL-010: 409 means another admin saved first. Discard the optimistic
-      // update, refresh server state, and surface a dedicated conflict toast so
-      // the operator knows their change was not lost silently.
-      if (err.status === 409) {
-        addToast(t('common.settings_conflict'), 'error');
-        // The 409 body carries the server's current settings; adopt it.
-        const serverState = err.data && typeof err.data === 'object' ? err.data : null;
-        if (serverState) {
-          const adapted = adaptSettingsResponse(serverState);
-          settingsRef.current = adapted;
-          setSettings(adapted);
-        } else {
-          // No body to adopt — re-fetch so the UI reflects the server truth.
-          fetchSettings();
-        }
-        return false;
-      }
-      addToast(t('common.settings_save_failed', { error: err.message }), 'error');
-      setSettings((current) => {
-        if (current[key] !== value) return current;
-        const rolledBack = { ...current, [key]: previous[key] };
-        settingsRef.current = rolledBack;
-        return rolledBack;
-      });
-      return false;
-    }
-  }, [addToast, t, fetchSettings]);
-
-  const handleSettingToggle = useCallback((key) => {
-    const current = settingsRef.current;
-    if (typeof current?.[key] !== 'boolean') return Promise.resolve(false);
-    if (navigator.vibrate) navigator.vibrate(5);
-    return handleSettingChange(key, !current[key]);
-  }, [handleSettingChange]);
-
-  // §11.6 提案 10 / item 20 缺口 B: SETTINGS_UPDATE WS handler.
-  // websocket.js has already discarded any stale-revision emit, so `message`
-  // here is the newest applied settings snapshot. SettingsView does NOT track a
-  // full-form dirty flag (its only draft is the retention number input), so a
-  // precise "dirty form" clobber-guard is not feasible without a larger
-  // SettingsView refactor. Honest degradation: when the revision advanced, we
-  // refresh the displayed settings (so the operator sees the server truth) and
-  // surface a toast telling them the config was updated by someone else. If the
-  // operator is mid-edit on the retention input, that draft is local state in
-  // SettingsView and is NOT overwritten by this refresh of the shared
-  // `settings` prop until its own useEffect re-syncs — the toast gives them a
-  // chance to re-apply. This mirrors the existing 409-conflict path.
-  const handleWsSettingsUpdate = useCallback((message) => {
-    if (!message || typeof message !== 'object') return;
-    const incomingRevision = typeof message.settingsRevision === 'number' ? message.settingsRevision : null;
-    // Dedupe: if we already saw this (or a newer) revision, no-op. The WS
-    // layer's guard already filtered older revisions, but a re-emitted same
-    // revision (e.g. on reconnect reset then re-broadcast) should not spam.
-    if (incomingRevision != null && incomingRevision === settingsRevisionRef.current) {
-      return;
-    }
-    if (incomingRevision != null) {
-      settingsRevisionRef.current = incomingRevision;
-    }
-    // Refresh displayed settings from the WS payload when the backend
-    // included a full settings object; otherwise re-fetch REST.
-    if (message.settings && typeof message.settings === 'object') {
-      const adapted = adaptSettingsResponse(message.settings);
-      if (incomingRevision != null) adapted.revision = incomingRevision;
-      settingsRef.current = adapted;
-      setSettings(adapted);
-    } else {
-      fetchSettings();
-    }
-    addToast(
-      tRef.current('common.settings_update_remote', { revision: incomingRevision != null ? incomingRevision : '?' }),
-      'info',
-    );
-  }, [addToast, fetchSettings]);
 
   // Adapt a raw WS notification message into state + toast (used by the WS layer).
   const handleWsNotification = useCallback((message) => {

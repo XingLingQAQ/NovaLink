@@ -60,11 +60,11 @@ class ConfigHistoryServiceRollbackConsistencyTest {
         }
 
         @Override
-        public void save() throws ConfigException {
+        protected void persist(com.nova.link.config.NovaLinkConfig candidate) throws ConfigException {
             if (failNextSave.get()) {
                 throw new ConfigException("simulated save failure (H4 test)");
             }
-            super.save();
+            super.persist(candidate);
         }
     }
 

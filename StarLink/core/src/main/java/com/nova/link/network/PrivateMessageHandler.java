@@ -163,7 +163,8 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
         // the server-authoritative identity, mirroring RestApiHandler's
         // JWT-derived senderId from BACK-002.
         PlayerState senderState = findPlayerByName(packet.getSenderName());
-        if (senderState == null) {
+        if (senderState == null || connection.getClientId() == null
+                || !connection.getClientId().equals(senderState.getClientId())) {
             logger.debug("PrivateMessage drop: unresolvable sender name '{}' (client {})",
                     packet.getSenderName(), connection.getClientId());
             return;

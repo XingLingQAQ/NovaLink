@@ -32,7 +32,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const JWT = require('jsonwebtoken');
+const { createBedrockClient } = require('./bedrock-client');
 const { L1Route } = require('./l1-route');
+const { createL1Lifecycle } = require('./l1-lifecycle');
 
 const HOST = process.env.SERVER_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.SERVER_PORT || '19132', 10);
@@ -44,69 +46,6 @@ const RESULTS = process.env.RESULTS_FILE || path.join(__dirname, 'results.json')
 const TIMEOUT_MS = parseInt(process.env.TIMEOUT_MS || '360000', 10);
 const RUN_ID = process.env.E2E_RUN_ID || crypto.randomUUID();
 const route = new L1Route(RUN_ID, USERNAME, RESULTS);
-let sequenceComplete = false;
-let intentionalQuit = false;
-
-// ---------------------------------------------------------------------------
-// Login JWT patch for PMMP 5.44+ (Bedrock protocol 944+ / OIDC offline login).
-//
-// bedrock-protocol's OIDC offline login (login.js:19-24) signs a JWT body of
-// {cpk, xid, xname, identity}. PMMP 5.44+ validates this against its
-// SelfSignedJwtBody DTO which REQUIRES {cpk, leguuid, xname, mid} and rejects
-// the `identity` field as "Unexpected JSON property". Without this patch PMMP
-// kicks the bot at login with:
-//   "Required property 'leguuid' of class SelfSignedJwtBody is missing"
-//   "Unexpected JSON property for SelfSignedJwtBody: identity"
-//
-// We monkeypatch client.createClientChain (set by bedrock-protocol's
-// src/handshake/login.js) to sign a body PMMP accepts: {cpk, leguuid, xname,
-// mid, xid}. BDS/Endstone/LeviLamina/Nukkit accept the same body (they use
-// looser login validation), so the patch is safe to always apply. The fields
-// map onto PMMP's SelfSignedJwtBody @required set:
-//   cpk     <- client.clientX509 (the bot's self-signed x509 public key)
-//   leguuid <- a stable UUID for the bot (derived from username so it persists)
-//   xname   <- the bot username
-//   mid     <- a PlayFab-style Minecraft ID (16 hex chars)
-//   xid      <- '0' (offline, no Xbox XUID)
-// The JWT options MUST also include audience:'api://auth-minecraft-services/multiplayer'
-// (mirroring login.js:23) -- PMMP 5.44 validates the `aud` claim and kicks with
-// "Invalid session. Reason: Invalid JWT audience" if it is absent.
-// ---------------------------------------------------------------------------
-const LOGIN_PATCH = process.env.BOT_LOGIN_PATCH !== '0'; // default ON; set to '0' to disable
-
-function applyLoginPatch(client) {
-  if (!LOGIN_PATCH) return;
-  if (typeof client.createClientChain !== 'function') return;
-  const orig = client.createClientChain.bind(client);
-  client.createClientChain = (mojangKey, offline) => {
-    // Call the original so clientIdentityChain / clientUserChain get populated
-    // for the non-OIDC path and the user chain (skin etc.).
-    orig(mojangKey, offline);
-    // Re-sign the identity chain (clientIdentityChain / multiplayerToken) with
-    // a body PMMP accepts. This mirrors login.js lines 16-24 but swaps the
-    // payload fields. We can only do this if the ECDH key pair is set up.
-    if (offline && client.ecdhKeyPair && client.ecdhKeyPair.privateKey) {
-      const algorithm = 'ES384';
-      const name = client.username || client.options.username;
-      const botUuid = crypto.createHash('sha1').update(name).digest('hex');
-      const leguuid = `${botUuid.slice(0,8)}-${botUuid.slice(8,12)}-${botUuid.slice(12,16)}-${botUuid.slice(16,20)}-${botUuid.slice(20,32)}`;
-      const mid = crypto.createHash('md5').update(name).digest('hex').slice(0, 16);
-      const token = JWT.sign({
-        cpk: client.clientX509,
-        leguuid,
-        xname: name,
-        mid,
-        xid: '0',
-      }, client.ecdhKeyPair.privateKey, {
-        algorithm, notBefore: 0, issuer: 'self', expiresIn: 60 * 60,
-        audience: 'api://auth-minecraft-services/multiplayer',
-        header: { x5u: client.clientX509, typ: undefined },
-      });
-      client.clientIdentityChain = token;
-      client.multiplayerToken = token;
-    }
-  };
-}
 
 const received = [];
 function record(kind, raw, text) {
@@ -120,10 +59,9 @@ function record(kind, raw, text) {
   console.log(`[MSG ${entry.t}] ${kind}: ${entry.text}`);
 }
 
-function writeResults(extra) {
-  const payload = Object.assign({
+const lifecycle = createL1Lifecycle({
+  snapshot: () => ({
     runId: RUN_ID,
-    sequenceComplete,
     platform: PLATFORM,
     host: HOST,
     port: PORT,
@@ -132,169 +70,25 @@ function writeResults(extra) {
     chatPhrase: CHAT_PHRASE,
     received,
     route: route.evidence(),
-  }, extra || {});
-  fs.writeFileSync(RESULTS, JSON.stringify(payload, null, 2));
-  console.log('results.json written:', RESULTS);
-}
-
-function failRun(error) {
-  writeResults({ error: String(error) });
-  process.exit(1);
-}
-
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  }),
+  write: payload => fs.writeFileSync(RESULTS, JSON.stringify(payload, null, 2)),
+  quit: () => { try { client.close() } catch {} },
+  cleanup: () => route.close(),
+  exit: code => process.exit(code),
+  timeoutMs: TIMEOUT_MS,
+  clock: { setTimeout, clearTimeout },
+});
+const sleep = lifecycle.sleep;
+const failRun = lifecycle.fail;
 
 console.log(`Connecting to ${PLATFORM} Bedrock server at ${HOST}:${PORT} as ${USERNAME} (mc ${MC_VERSION})...`);
 
-// Bedrock ClientData (user-chain) fields PMMP 5.44+ requires that
-// bedrock-protocol 3.59.0's login.js does NOT set (it only builds a partial
-// ClientData payload; 3.59.0 adds FilterProfanity/ClientIsEditorCapable/
-// ClientEditorConnectionIntent for 1.26.30+, but not the rest). Without these,
-// PMMP kicks the bot at login with:
-//   "Required property 'ClientEditorConnectionIntent' of class ClientData is missing"
-//   (and PartyId / IsPartyLeader / FilterProfanity / PersonaSkin / PremiumSkin /
-//    PieceTintColors / ClientIsEditorCapable, all @required in PMMP's ClientData DTO)
-//
-// login.js:87-88 spreads `options.skinData` into the ClientData JWT payload, so we
-// inject the missing fields via that documented hook. BDS/Endstone/LeviLamina/
-// Nukkit/PNX all accept the same extra fields (they validate ClientData loosely),
-// so this is safe to always apply. Values mirror what a vanilla Bedrock 1.26.x
-// client sends for a non-editor, non-party, non-persona skin session.
-const PMMP_CLIENT_DATA_FIELDS = {
-  ClientEditorConnectionIntent: 0, // int: 0 = not joining editor
-  ClientIsEditorCapable: false,    // bool
-  PartyId: '',                     // string: empty = not in a party
-  IsPartyLeader: false,            // bool
-  FilterProfanity: false,          // bool
-  PersonaSkin: false,              // bool: not a persona skin
-  PremiumSkin: false,              // bool: not a premium skin
-  PieceTintColors: [],             // array: no persona piece tints
-};
-
-// ---------------------------------------------------------------------------
-// Valid legacy Bedrock skin.
-//
-// bedrock-protocol's login.js:7 does `require('minecraft-data')('bedrock_'+ver).defaultSkin`
-// and spreads it into the ClientData JWT payload (login.js:51). The installed
-// minecraft-data 3.117.0 still ships a defaultSkin, and it is still a 256x256 PERSONA skin
-// (SkinData = 262144 raw RGBA bytes, PersonaSkin:true, PersonaPieces referencing
-// marketplace pack IDs). PMMP 5.44's Skin::__construct() only accepts legacy
-// sizes {8192, 16384, 65536} (Skin::ACCEPTED_SKIN_SIZES) and rejects 262144 with:
-//   "Invalid skin data size 262144 bytes (allowed sizes: 8192, 16384, 65536)"
-// (LegacySkinAdapter::fromSkinData also branches on isPersona(): true returns a
-// random Standard_Custom skin, but the persona bool + invalid size still trips
-// the size check first). BDS/Endstone/LeviLamina/Nukkit validate loosely and
-// accept the persona skin, so the kick is PMMP-specific.
-//
-// Fix: override the skin fields with a minimal VALID legacy 64x64 skin. PMMP's
-// LegacySkinAdapter::fromSkinData (non-persona branch) needs:
-//   - SkinData: raw RGBA bytes, length in {8192,16384,65536} (we use 16384 = 64x64x4)
-//   - SkinImageWidth/SkinImageHeight matching the data (64x64)
-//   - SkinResourcePatch: JSON with geometry.default (we use geometry.humanoid.custom,
-//     the vanilla legacy humanoid geometry name)
-//   - SkinId: non-empty (<= INT16_MAX)
-//   - PersonaSkin: false (take the legacy path, not the persona path)
-//   - CapeData: "" (empty; PMMP only validates cape length if non-empty)
-// Nukkit additionally requires a non-empty SkinGeometryData (see below), so the
-// geometry is emitted as JSON rather than "". PMMP only JSON-validates it when
-// non-empty, so a valid geometry satisfies both.
-// We generate the 64x64x4 solid-color RGBA buffer in-memory with pure Node
-// Buffer (no new deps). SkinData is raw RGBA pixels, NOT a PNG -- PMMP validates
-// the raw byte length against ACCEPTED_SKIN_SIZES, not image format.
-// ---------------------------------------------------------------------------
-function makeLegacySkinFields() {
-  const W = 64, H = 64;
-  // 4 bytes RGBA per pixel, solid "Steve-ish" tan (#b37b62 from vanilla), full alpha.
-  const pixel = Buffer.from([0xb3, 0x7b, 0x62, 0xff]);
-  const skinPixels = Buffer.allocUnsafe(W * H * 4);
-  for (let i = 0; i < W * H; i++) {
-    pixel.copy(skinPixels, i * 4);
-  }
-  // Bedrock skin string fields in the ClientData JWT (SkinResourcePatch,
-  // SkinGeometryData, SkinAnimationData, CapeData, SkinData) are base64-encoded.
-  // PMMP base64-decodes SkinResourcePatch before json_decode and rejects a plain
-  // JSON string with "SkinResourcePatch: Malformed base64, cannot be decoded".
-  // The minecraft-data defaultSkin encodes these the same way (base64-of-JSON).
-  // CapeData/SkinAnimationData stay "" (empty base64 = no data); PMMP only
-  // validates those when non-empty.
-  //
-  // SkinGeometryData must NOT be empty: Nukkit's Skin.isValidGeometry() (see
-  // cn.nukkit.utils.Skin) rejects null OR a string shorter than 2 chars before
-  // it ever looks at the JSON, and Skin.isValidSkin() separately rejects an
-  // empty geometryData. An empty value here therefore kicked the bot with
-  // "disconnectionScreen.invalidSkin" before the login completed, which is the
-  // second failure the hung-server timeout used to hide. A minimal custom
-  // humanoid geometry satisfies Nukkit's contract: >=2 chars, valid JSON
-  // (GSON.fromJson succeeds), and <=262144 bytes.
-  const resourcePatchJson = JSON.stringify({
-    geometry: { default: 'geometry.humanoid.custom' },
-  });
-  const geometryJson = JSON.stringify({
-    format_version: '1.14.0',
-    'minecraft:geometry': [{
-      description: {
-        identifier: 'geometry.humanoid.custom',
-        texture_width: W, texture_height: H,
-        visible_bounds_width: 2, visible_bounds_height: 2.5,
-        visible_bounds_offset: [0, 0.75, 0],
-      },
-      bones: [],
-    }],
-  });
-  return {
-    SkinId: 'bot-skin-e2e',
-    SkinData: skinPixels.toString('base64'),
-    SkinImageWidth: W,
-    SkinImageHeight: H,
-    SkinResourcePatch: Buffer.from(resourcePatchJson, 'utf8').toString('base64'),
-    SkinGeometryData: Buffer.from(geometryJson, 'utf8').toString('base64'),
-    SkinAnimationData: '',
-    CapeData: '',
-    CapeImageWidth: 0,
-    CapeImageHeight: 0,
-    CapeOnClassicSkin: false,
-    CapeId: '',
-    ArmSize: 'wide',
-    SkinColor: '#ffb37b62',
-    PersonaPieces: [],
-    AnimatedImageData: [],
-    PersonaSkin: false,
-    PremiumSkin: false,
-    SkinGeometryDataEngineVersion: '',
-  };
-}
-
-const SKIN_FIELDS = makeLegacySkinFields();
-
 function makeClient(username = USERNAME) {
-  // skinData is spread into the ClientData JWT payload AFTER minecraft-data's
-  // defaultSkin (login.js:51 then :87-88), so it overrides the 256x256 persona
-  // defaultSkin that PMMP rejects. Merge the legacy skin fields (SkinData/
-  // SkinResourcePatch/etc.) with the PMMP-required ClientData bool/string fields.
-  const skinData = Object.assign({}, SKIN_FIELDS, PMMP_CLIENT_DATA_FIELDS);
-  const createClient = PLATFORM === 'pnx' ? require('./pnx-client').createPnxClient : bedrock.createClient;
-  const c = createClient({
-    host: HOST,
-    port: PORT,
-    username,
-    offline: true,
-    version: MC_VERSION,
-    skipPing: false,
-    conLog: console.log,
-    skinData,
-  });
-  // Wrap sendLogin so our JWT patch (leguuid/mid instead of identity) is applied
-  // to the identity chain right before bedrock-protocol signs + sends it.
-  // sendLogin() calls this.createClientChain() which populates
-  // clientIdentityChain + multiplayerToken; our applyLoginPatch re-signs them.
-  if (PLATFORM !== 'pnx' && LOGIN_PATCH && typeof c.sendLogin === 'function') {
-    const origSendLogin = c.sendLogin.bind(c);
-    c.sendLogin = (...args) => {
-      try { applyLoginPatch(c); } catch (e) { console.log('[LOGIN_PATCH warn]', e && e.message); }
-      return origSendLogin(...args);
-    };
-  }
-  return c;
+  return createBedrockClient({
+    platform: PLATFORM, loginPatch: process.env.BOT_LOGIN_PATCH !== '0',
+    host: HOST, port: PORT, username, offline: true, version: MC_VERSION,
+    skipPing: false, conLog: console.log,
+  }, { bedrock, jwt: JWT });
 }
 
 let client = makeClient();
@@ -320,7 +114,7 @@ function attachListeners(c) {
   c.on('close', () => {
     record('close', 'connection closed', 'connection closed');
     console.log('[CLOSE] connection closed');
-    if (!intentionalQuit) failRun('connection closed before the bot quit');
+    lifecycle.disconnected('connection closed before the bot quit');
   });
 }
 
@@ -366,7 +160,7 @@ function sendCommand(command) {
   });
 }
 
-async function runSequence() {
+async function initializeRoute() {
   await route.start((username, recordReceiver) => {
     const receiver = makeClient(username);
     receiver.on('spawn', () => recordReceiver('spawn', 'spawned', 'spawned'));
@@ -381,6 +175,9 @@ async function runSequence() {
       close: () => receiver.close(),
     };
   });
+}
+
+async function runSequence() {
   const toggleControlsMode = PLATFORM !== 'pmmp';
   console.log('=== waiting for spawn ===');
   await sleep(15000);
@@ -427,31 +224,12 @@ async function runSequence() {
   await sleep(2500);
 
   console.log('=== sequence done ===');
-  sequenceComplete = true;
-  writeResults();
-  await sleep(1500);
-  intentionalQuit = true;
-  route.close();
-  try { client.close(); } catch {}
-  await sleep(1000);
-  writeResults();
-  process.exit(0);
 }
 
 client.once('spawn', () => {
   console.log('[SPAWN] bot spawned as Player');
   record('spawn', 'spawned', 'spawned');
-  runSequence().catch(e => {
-    console.log('[SEQERR]', e);
-    writeResults({ error: String(e) });
-    process.exit(1);
-  });
+  void lifecycle.run(initializeRoute, runSequence);
 });
 
-setTimeout(() => {
-  console.log('[TIMEOUT] reached, flushing results and exiting');
-  writeResults({ timedOut: true });
-  intentionalQuit = true;
-  try { client.close(); } catch {}
-  process.exit(2);
-}, TIMEOUT_MS);
+module.exports = lifecycle;

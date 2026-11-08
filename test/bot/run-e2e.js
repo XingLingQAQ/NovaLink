@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { L1Route } = require('./l1-route');
+const { createL1Lifecycle } = require('./l1-lifecycle');
 
 const HOST = process.env.E2E_MC_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.E2E_MC_PORT || '25565', 10);
@@ -25,8 +26,6 @@ const RESULTS = process.env.E2E_RESULTS_FILE || path.join(__dirname, 'results.js
 const TIMEOUT_MS = parseInt(process.env.E2E_TIMEOUT_MS || '360000', 10);
 const RUN_ID = process.env.E2E_RUN_ID || crypto.randomUUID();
 const route = new L1Route(RUN_ID, USERNAME, RESULTS);
-let sequenceComplete = false;
-let intentionalQuit = false;
 
 const received = [];
 function record(kind, raw, text) {
@@ -54,7 +53,6 @@ const bot = mineflayer.createBot({
   hideErrors: false,
 });
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 bot.on('messagestr', (msg, position, jsonMsg, sender, verified) => record('messagestr', msg, msg));
 bot.on('chat', (username, message) => record('chat', `<${username}> ${message}`, `<${username}> ${message}`));
@@ -63,7 +61,7 @@ bot.on('kicked', (reason) => { record('kicked', reason, plainText(reason)); fail
 bot.on('error', (err) => { record('error', err && err.message, err && err.stack); failRun(err); });
 bot.on('end', () => {
   record('end', 'connection ended', 'connection ended');
-  if (!intentionalQuit) failRun('connection ended before the bot quit');
+  lifecycle.disconnected('connection ended before the bot quit');
 });
 
 function sendCmd(cmd) {
@@ -72,10 +70,9 @@ function sendCmd(cmd) {
   bot.chat(cmd);
 }
 
-function writeResults(extra) {
-  const payload = Object.assign({
+const lifecycle = createL1Lifecycle({
+  snapshot: () => ({
     runId: RUN_ID,
-    sequenceComplete,
     platform: process.env.E2E_PLATFORM || 'bukkit',
     server: process.env.E2E_SERVER_ID || 'purpur',
     minecraftVersion: MC_VERSION,
@@ -84,17 +81,18 @@ function writeResults(extra) {
     port: PORT,
     received,
     route: route.evidence(),
-  }, extra || {});
-  fs.writeFileSync(RESULTS, JSON.stringify(payload, null, 2));
-  console.log('results.json written:', RESULTS);
-}
+  }),
+  write: payload => fs.writeFileSync(RESULTS, JSON.stringify(payload, null, 2)),
+  quit: () => { try { bot.quit('e2e done') } catch {} },
+  cleanup: () => route.close(),
+  exit: code => process.exit(code),
+  timeoutMs: TIMEOUT_MS,
+  clock: { setTimeout, clearTimeout },
+});
+const sleep = lifecycle.sleep;
+const failRun = lifecycle.fail;
 
-function failRun(error) {
-  writeResults({ error: String(error) });
-  process.exit(1);
-}
-
-async function runSequence() {
+async function initializeRoute() {
   await route.start((username, recordReceiver) => {
     const receiver = mineflayer.createBot({ host: HOST, port: PORT, username, auth: 'offline', version: MC_VERSION });
     receiver.on('spawn', () => recordReceiver('spawn', 'spawned', 'spawned'));
@@ -104,6 +102,9 @@ async function runSequence() {
     receiver.on('end', () => recordReceiver('end', 'ended', 'ended'));
     return { send: command => receiver.chat(command), close: () => receiver.quit('e2e route done') };
   });
+}
+
+async function runSequence() {
   console.log('=== waiting for spawn ===');
   await sleep(15000);
   console.log('=== starting L1 command sequence ===');
@@ -167,31 +168,12 @@ async function runSequence() {
   await sleep(3000);
 
   console.log('=== sequence done ===');
-  sequenceComplete = true;
-  writeResults();
-  await sleep(1500);
-  intentionalQuit = true;
-  route.close();
-  try { bot.quit('e2e done'); } catch {}
-  await sleep(1000);
-  writeResults();
-  process.exit(0);
 }
 
 bot.once('spawn', () => {
   console.log('[SPAWN] bot spawned as Player');
   record('spawn', 'spawned', 'spawned');
-  runSequence().catch(e => {
-    console.log('[SEQERR]', e);
-    writeResults({ error: String(e) });
-    process.exit(1);
-  });
+  void lifecycle.run(initializeRoute, runSequence);
 });
 
-setTimeout(() => {
-  console.log('[TIMEOUT] reached, flushing results and exiting');
-  writeResults({ timedOut: true });
-  intentionalQuit = true;
-  try { bot.quit('timeout'); } catch {}
-  process.exit(2);
-}, TIMEOUT_MS);
+module.exports = lifecycle;
