@@ -71,6 +71,10 @@ public class BanResult {
         return new BanResult(false, NovaConstants.ERROR_BAD_REQUEST, message);
     }
 
+    public static BanResult storageFailure(String message) {
+        return new BanResult(false, NovaConstants.ERROR_DATABASE_ERROR, message);
+    }
+
     public boolean isSuccess() {
         return success;
     }

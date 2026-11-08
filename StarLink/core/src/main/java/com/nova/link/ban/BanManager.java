@@ -106,11 +106,9 @@ public class BanManager extends AbstractModerationManager<BanInfo> {
         // Create ban info
         BanInfo banInfo = new BanInfo(channelId, expireTime, reason, operatorId);
 
-        // Store in cache
-        putInCache(targetPlayerId, cacheKeyFor(channelId), banInfo);
-
-        // Persist to database
-        persistToDb(targetPlayerId, banInfo);
+        if (!applyAndPersist(targetPlayerId, banInfo)) {
+            return BanResult.storageFailure("The ban could not be saved. Try again.");
+        }
 
         logger.info("Player {} banned in channel {} by {} for {} ms. Reason: {}",
                 targetPlayerId, channelId, operatorId, durationMs, reason);
@@ -129,9 +127,6 @@ public class BanManager extends AbstractModerationManager<BanInfo> {
                 logger.debug("Failed to create ban notification: {}", e.getMessage());
             }
         }
-
-        // Eject the banned player from channel membership (ban-specific).
-        onAppliedSuccessfully(targetPlayerId, channelId, channelId == null);
 
         return BanResult.success("Player banned successfully");
     }
@@ -227,11 +222,9 @@ public class BanManager extends AbstractModerationManager<BanInfo> {
             return validationResult;
         }
 
-        // Remove from cache
-        removeFromCache(targetPlayerId, cacheKeyFor(channelId));
-
-        // Remove from database
-        deleteFromDatabase(targetPlayerId, channelId);
+        if (!removeAndPersist(targetPlayerId, channelId)) {
+            return BanResult.storageFailure("The ban could not be removed. Try again.");
+        }
 
         logger.info("Player {} unbanned in channel {} by {}", targetPlayerId, channelId, operatorId);
 

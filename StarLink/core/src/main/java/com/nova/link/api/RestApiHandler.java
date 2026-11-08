@@ -2212,11 +2212,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         MuteResult result = muteManager.mutePlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, durationMs, reason, null, true);
         if (!result.isSuccess()) {
-            HttpResponseStatus status = NovaConstants.ERROR_NOT_FOUND.equals(result.getErrorCode())
-                    ? HttpResponseStatus.NOT_FOUND
-                    : (NovaConstants.ERROR_FORBIDDEN.equals(result.getErrorCode())
-                        ? HttpResponseStatus.FORBIDDEN
-                        : HttpResponseStatus.BAD_REQUEST);
+            HttpResponseStatus status = moderationErrorStatus(result.getErrorCode());
             sendJsonError(ctx, request, status,
                     result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
                             : result.getMessage());
@@ -2295,11 +2291,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         MuteResult result = muteManager.unmutePlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, null, true);
         if (!result.isSuccess()) {
-            HttpResponseStatus status = NovaConstants.ERROR_NOT_FOUND.equals(result.getErrorCode())
-                    ? HttpResponseStatus.NOT_FOUND
-                    : (NovaConstants.ERROR_FORBIDDEN.equals(result.getErrorCode())
-                        ? HttpResponseStatus.FORBIDDEN
-                        : HttpResponseStatus.BAD_REQUEST);
+            HttpResponseStatus status = moderationErrorStatus(result.getErrorCode());
             sendJsonError(ctx, request, status,
                     result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
                             : result.getMessage());
@@ -2440,11 +2432,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         BanResult result = banManager.banPlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, durationMs, reason, null, true);
         if (!result.isSuccess()) {
-            HttpResponseStatus status = NovaConstants.ERROR_NOT_FOUND.equals(result.getErrorCode())
-                    ? HttpResponseStatus.NOT_FOUND
-                    : (NovaConstants.ERROR_FORBIDDEN.equals(result.getErrorCode())
-                        ? HttpResponseStatus.FORBIDDEN
-                        : HttpResponseStatus.BAD_REQUEST);
+            HttpResponseStatus status = moderationErrorStatus(result.getErrorCode());
             sendJsonError(ctx, request, status,
                     result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
                             : result.getMessage());
@@ -2518,11 +2506,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         BanResult result = banManager.unbanPlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, null, true);
         if (!result.isSuccess()) {
-            HttpResponseStatus status = NovaConstants.ERROR_NOT_FOUND.equals(result.getErrorCode())
-                    ? HttpResponseStatus.NOT_FOUND
-                    : (NovaConstants.ERROR_FORBIDDEN.equals(result.getErrorCode())
-                        ? HttpResponseStatus.FORBIDDEN
-                        : HttpResponseStatus.BAD_REQUEST);
+            HttpResponseStatus status = moderationErrorStatus(result.getErrorCode());
             sendJsonError(ctx, request, status,
                     result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
                             : result.getMessage());
@@ -3735,8 +3719,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     /**
      * Maps a {@link ModerationException} {@code NC-###} error code to the
      * matching HTTP status, mirroring the {@code handleBanPlayer} convention.
-     * Unknown codes default to {@code BAD_REQUEST}; the NC-500 persistence
-     * failure maps to {@code INTERNAL_SERVER_ERROR}.
+     * Unknown codes default to {@code BAD_REQUEST}; NC-500 and NC-510 map to
+     * {@code INTERNAL_SERVER_ERROR}.
      */
     private static HttpResponseStatus moderationErrorStatus(String errorCode) {
         if (NovaConstants.ERROR_NOT_FOUND.equals(errorCode)) {
@@ -3745,7 +3729,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         if (NovaConstants.ERROR_FORBIDDEN.equals(errorCode)) {
             return HttpResponseStatus.FORBIDDEN;
         }
-        if (NovaConstants.ERROR_INTERNAL.equals(errorCode)) {
+        if (NovaConstants.ERROR_INTERNAL.equals(errorCode)
+                || NovaConstants.ERROR_DATABASE_ERROR.equals(errorCode)) {
             return HttpResponseStatus.INTERNAL_SERVER_ERROR;
         }
         if (NovaConstants.ERROR_CONFLICT.equals(errorCode)) {

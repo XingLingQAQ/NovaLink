@@ -154,14 +154,6 @@ public abstract class AbstractModerationManager<I> {
         cache.computeIfAbsent(playerId, k -> new ConcurrentHashMap<>()).put(cacheKey, info);
     }
 
-    /** Removes an info entry from the cache (no-op if absent). */
-    protected void removeFromCache(UUID playerId, String cacheKey) {
-        Map<String, I> playerInfos = cache.get(playerId);
-        if (playerInfos != null) {
-            playerInfos.remove(cacheKey);
-        }
-    }
-
     // ============================ query templates ============================
 
     /** Uses the same active-entry lookup as the notification/details path. */
@@ -304,44 +296,41 @@ public abstract class AbstractModerationManager<I> {
         }
     }
 
-    /** Persists an info entry to the database (best-effort; cache stays authoritative). */
-    protected void persistToDb(UUID playerId, I info) {
-        if (databaseProvider == null) {
-            return;
-        }
-        try {
-            saveToDb(playerId, info);
-        } catch (Exception e) {
-            logger().error("Failed to persist {} for player {}: {}", noun(), playerId, e.getMessage());
-            // Continue - entry is still in cache
-        }
+    /** Commits storage before publishing the restriction and its membership effects. */
+    protected boolean applyAndPersist(UUID playerId, I info) {
+        boolean[] applied = {false};
+        cache.compute(playerId, (id, current) -> {
+            try {
+                if (databaseProvider != null) saveToDb(id, info);
+            } catch (Exception error) {
+                logger().error("Failed to persist {} for player {}", noun(), id, error);
+                return current;
+            }
+            Map<String, I> entries = current != null ? current : new ConcurrentHashMap<>();
+            String channelId = getChannelId(info);
+            entries.put(cacheKeyFor(channelId), info);
+            onAppliedSuccessfully(id, channelId, channelId == null);
+            applied[0] = true;
+            return entries;
+        });
+        return applied[0];
     }
 
-    /** Explicit single-entry cleanup; expiry queries leave storage cleanup to the periodic task. */
-    protected void cleanupFromDatabase(UUID playerId, String channelId) {
-        if (databaseProvider == null) {
-            return;
-        }
-        try {
-            deleteFromDb(playerId, channelId);
-        } catch (Exception e) {
-            logger().error("Failed to cleanup {} from database: {}", noun(), e.getMessage());
-        }
-    }
-
-    /**
-     * Removes an entry from the database (best-effort). Used by the explicit
-     * unmute/unban path; logs the "delete" message.
-     */
-    protected void deleteFromDatabase(UUID playerId, String channelId) {
-        if (databaseProvider == null) {
-            return;
-        }
-        try {
-            deleteFromDb(playerId, channelId);
-        } catch (Exception e) {
-            logger().error("Failed to delete {} for player {}: {}", noun(), playerId, e.getMessage());
-        }
+    /** Serializes explicit removal with other writes for the same player. */
+    protected boolean removeAndPersist(UUID playerId, String channelId) {
+        boolean[] removed = {false};
+        cache.compute(playerId, (id, current) -> {
+            try {
+                if (databaseProvider != null) deleteFromDb(id, channelId);
+            } catch (Exception error) {
+                logger().error("Failed to delete {} for player {}", noun(), id, error);
+                return current;
+            }
+            if (current != null) current.remove(cacheKeyFor(channelId));
+            removed[0] = true;
+            return current;
+        });
+        return removed[0];
     }
 
     // ============================ cleanup ============================

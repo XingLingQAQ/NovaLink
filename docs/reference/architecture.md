@@ -132,6 +132,7 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 | --- | --- | --- |
 | 配置与 revision | `ConfigManager` | 在同一提交锁内校验版本、保存候选配置，再发布运行时和广播。 |
 | 玩家连接归属 | `ServerNetworkHandler` | 连接代际约束网络包处理；私信处理还验证玩家归属。 |
+| 禁言与封禁 | `AbstractModerationManager` | 同一玩家的应用和解除先提交存储，再发布缓存；失败保留旧限制，成功后才触发封禁移除成员。 |
 | 案件与申诉 | `ModerationManager` + `DatabaseProvider` | 业务层校验身份与状态；存储层条件更新，申诉与案件在一次原子操作中提交。 |
 | 活动状态与任务 | `CampaignManager` | 每个活动串行转换；发送成功才进入 `ACTIVE`，恢复时先检查结束时间。 |
 | 面板登录与 token | `AuthService` | 登录会话与 token 轮换分开计数；旧会话请求不能以新身份刷新或重试。 |

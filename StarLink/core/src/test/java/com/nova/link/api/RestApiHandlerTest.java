@@ -506,6 +506,37 @@ class RestApiHandlerTest {
         assertThat(db.loadChannel("staff").orElseThrow().getSlowModeSeconds()).isEqualTo(7);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"mute", "unmute", "ban", "unban"})
+    void moderationStorageFailuresReturn500WithoutChangingCommittedState(String action) throws Exception {
+        db.saveMute(targetId, new com.nova.link.database.MuteInfo("survival-chat", 0L, "committed", targetId));
+        db.saveBan(targetId, new com.nova.link.database.BanInfo("survival-chat", 0L, "committed", targetId));
+        DatabaseProvider failing = spy(db);
+        var failure = new com.nova.link.database.DatabaseException("simulated moderation failure");
+        doThrow(failure).when(failing).saveMute(any(), any());
+        doThrow(failure).when(failing).deleteMute(any(), any());
+        doThrow(failure).when(failing).saveBan(any(), any());
+        doThrow(failure).when(failing).deleteBan(any(), any());
+        var permissions = new PermissionManager();
+        var mutes = new MuteManager(failing, permissions, channelManager);
+        var bans = new BanManager(failing, permissions, channelManager);
+        mutes.loadAllMutes();
+        bans.loadAllBans();
+        var endpoint = new RestApiHandler(jwtService, new AuthManager(new IpBanManager(5, 60000)),
+                channelManager, playerStateManager, messageRouter, null, mutes, bans,
+                invitationManager, configManager, networkHandler, consoleCommandHandler, notificationStore);
+
+        Response response = dispatch(endpoint, HttpMethod.POST, "/api/players/" + targetId + "/" + action,
+                "{\"channelId\":\"survival-chat\",\"durationMs\":60000,\"reason\":\"unsaved\"}");
+
+        assertThat(response.status).isEqualTo(HttpResponseStatus.INTERNAL_SERVER_ERROR);
+        assertThat(response.body).contains("NC-510");
+        assertThat(mutes.getMuteInfo(targetId, "survival-chat").getReason()).isEqualTo("committed");
+        assertThat(bans.getBanInfo(targetId, "survival-chat").getReason()).isEqualTo("committed");
+        assertThat(channelManager.getChannel("survival-chat").isMember(targetId)).isTrue();
+        verify(capturedClient, never()).sendPacket(any());
+    }
+
     @Test
     @DisplayName("PUT /api/channels/{id} rejects negative slowModeSeconds with 400")
     void updateChannelSlowModeNegative() {

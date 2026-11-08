@@ -68,6 +68,10 @@ public class MuteResult {
         return new MuteResult(false, NovaConstants.ERROR_BAD_REQUEST, message);
     }
 
+    public static MuteResult storageFailure(String message) {
+        return new MuteResult(false, NovaConstants.ERROR_DATABASE_ERROR, message);
+    }
+
     public boolean isSuccess() {
         return success;
     }

@@ -117,11 +117,9 @@ public class MuteManager extends AbstractModerationManager<MuteInfo> {
         // Create mute info
         MuteInfo muteInfo = new MuteInfo(channelId, expireTime, reason, operatorId);
 
-        // Store in cache
-        putInCache(targetPlayerId, cacheKeyFor(channelId), muteInfo);
-
-        // Persist to database
-        persistToDb(targetPlayerId, muteInfo);
+        if (!applyAndPersist(targetPlayerId, muteInfo)) {
+            return MuteResult.storageFailure("The mute could not be saved. Try again.");
+        }
 
         logger.info("Player {} muted in channel {} by {} for {} ms. Reason: {}",
                 targetPlayerId, channelId, operatorId, durationMs, reason);
@@ -140,9 +138,6 @@ public class MuteManager extends AbstractModerationManager<MuteInfo> {
                 logger.debug("Failed to create mute notification: {}", e.getMessage());
             }
         }
-
-        // Hook for subclasses (ban ejects the player; mute does nothing).
-        onAppliedSuccessfully(targetPlayerId, channelId, channelId == null);
 
         return MuteResult.success("Player muted successfully");
     }
@@ -240,11 +235,9 @@ public class MuteManager extends AbstractModerationManager<MuteInfo> {
             return validationResult;
         }
 
-        // Remove from cache
-        removeFromCache(targetPlayerId, cacheKeyFor(channelId));
-
-        // Remove from database
-        deleteFromDatabase(targetPlayerId, channelId);
+        if (!removeAndPersist(targetPlayerId, channelId)) {
+            return MuteResult.storageFailure("The mute could not be removed. Try again.");
+        }
 
         logger.info("Player {} unmuted in channel {} by {}", targetPlayerId, channelId, operatorId);
 
