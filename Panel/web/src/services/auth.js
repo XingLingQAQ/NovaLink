@@ -53,7 +53,9 @@ export class AuthService {
     this.user = null;
     this.listeners = new Set();
     this._refreshPromise = null;
+    this._refreshScope = null;
     this._logoutPromise = null;
+    this._logoutScope = null;
     this._sessionGeneration = 0;
     this._loginGeneration = 0;
     this._storageHandler = (event) => this._handleStorageEvent(event);
@@ -172,10 +174,11 @@ export class AuthService {
 
   /**
    * Starts remote revocation with captured credentials, then clears local state
-   * immediately. Concurrent/repeated callers share one best-effort request.
+   * immediately. Repeated logout calls in one login share a best-effort request.
    */
   logout(apiUrl = '/api', { revoke = true, reason = 'logout' } = {}) {
-    if (this._logoutPromise) {
+    if (this._logoutPromise && (!this.token
+        || (this._logoutScope?.session === this._loginGeneration && this._logoutScope.apiUrl === apiUrl))) {
       this._clearLocalSession(reason);
       return this._logoutPromise;
     }
@@ -185,14 +188,15 @@ export class AuthService {
     const shouldRevoke = revoke && !!accessToken;
 
     const remoteLogout = shouldRevoke
-      ? this.fetchImpl(`${apiUrl}/auth/logout`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({ refreshToken }),
-        }).then(async (response) => {
+      ? (async () => {
+          const response = await this.fetchImpl(`${apiUrl}/auth/logout`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({ refreshToken }),
+          });
           const data = await readResponseData(response);
           if (!response.ok) {
             throw new AuthRequestError(
@@ -202,18 +206,22 @@ export class AuthService {
             );
           }
           return { revoked: true, error: null };
-        })
+        })()
       : Promise.resolve({ revoked: false, error: null });
 
-    this._clearLocalSession(reason);
-
-    this._logoutPromise = remoteLogout.catch((error) => {
+    const pending = remoteLogout.catch((error) => {
       console.warn('[Auth] Server session revocation was not confirmed:', error);
       return { revoked: false, error };
     }).finally(() => {
-      this._logoutPromise = null;
+      if (this._logoutPromise === pending) {
+        this._logoutPromise = null;
+        this._logoutScope = null;
+      }
     });
-    return this._logoutPromise;
+    this._logoutPromise = pending;
+    this._logoutScope = { session: this._loginGeneration, apiUrl };
+    this._clearLocalSession(reason);
+    return pending;
   }
 
   _clearLocalSession(reason) {
@@ -230,12 +238,16 @@ export class AuthService {
   }
 
   /**
-   * Rotates the token pair. A single promise is shared by every concurrent
-   * caller, which is required because the backend revokes the old refresh
-   * token as soon as it is used.
+   * Rotates one session's token pair. Concurrent callers in that session
+   * share the request because the backend invalidates each used refresh token.
    */
   refreshAccessToken(apiUrl = '/api') {
-    if (this._refreshPromise) return this._refreshPromise;
+    const requestGeneration = this._sessionGeneration;
+    const connectionGeneration = getConnectionGeneration();
+    if (this._refreshPromise && this._refreshScope?.session === requestGeneration
+        && this._refreshScope.connection === connectionGeneration && this._refreshScope.apiUrl === apiUrl) {
+      return this._refreshPromise;
+    }
     if (!this.refreshToken) {
       const error = new AuthRequestError('No refresh token available');
       void this.logout(apiUrl, { revoke: false, reason: 'refresh_failed' });
@@ -243,10 +255,7 @@ export class AuthService {
     }
 
     const refreshToken = this.refreshToken;
-    const requestGeneration = this._sessionGeneration;
-    const connectionGeneration = getConnectionGeneration();
-
-    this._refreshPromise = (async () => {
+    const request = (async () => {
       try {
         const response = await this.fetchImpl(`${apiUrl}/auth/refresh`, {
           method: 'POST',
@@ -284,12 +293,17 @@ export class AuthService {
           void this.logout(apiUrl, { revoke: false, reason: 'refresh_failed' });
         }
         throw error;
-      } finally {
-        this._refreshPromise = null;
       }
     })();
-
-    return this._refreshPromise;
+    const pending = request.finally(() => {
+      if (this._refreshPromise === pending) {
+        this._refreshPromise = null;
+        this._refreshScope = null;
+      }
+    });
+    this._refreshPromise = pending;
+    this._refreshScope = { session: requestGeneration, connection: connectionGeneration, apiUrl };
+    return pending;
   }
 
   getToken() {
