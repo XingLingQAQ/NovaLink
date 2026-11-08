@@ -43,6 +43,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
@@ -76,7 +81,7 @@ class BatchModerationTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        db = new MemoryProvider();
+        db = spy(new MemoryProvider());
         db.initialize();
         auditStore = new AuditStore(db);
 
@@ -219,7 +224,8 @@ class BatchModerationTest {
         ChannelHandlerContext ctx = mock(ChannelHandlerContext.class);
         // channelRead0 stores the per-request id as a channel attribute, so the
         // mock must return a real channel that supports AttributeMap.
-        when(ctx.channel()).thenReturn(new EmbeddedChannel());
+        EmbeddedChannel channel = new EmbeddedChannel();
+        when(ctx.channel()).thenReturn(channel);
         AtomicReference<Object> captured = new AtomicReference<>();
         ChannelPromise promise = mock(ChannelPromise.class);
         doAnswer(inv -> {
@@ -229,16 +235,21 @@ class BatchModerationTest {
 
         try {
             handler.channelRead0(ctx, request);
+            Object resp = captured.get();
+            if (resp instanceof FullHttpResponse response) {
+                try {
+                    return new Response(response.status(), response.content().toString(StandardCharsets.UTF_8));
+                } finally {
+                    response.release();
+                }
+            }
+            return new Response(null, "");
         } catch (Exception e) {
             throw new RuntimeException(e);
+        } finally {
+            request.release();
+            channel.finishAndReleaseAll();
         }
-
-        Object resp = captured.get();
-        if (resp instanceof FullHttpResponse response) {
-            return new Response(response.status(),
-                    response.content().toString(StandardCharsets.UTF_8));
-        }
-        return new Response(null, "");
     }
 
     private static class Response {
@@ -341,6 +352,11 @@ class BatchModerationTest {
         Response r2 = dispatch(HttpMethod.POST, "/api/moderation/batch", body);
         assertThat(r2.status).isEqualTo(HttpResponseStatus.OK);
         assertThat(r2.body).isEqualTo(body1);
+        String refreshed = jwtService.generateToken(UUID.randomUUID().toString(), "root", "SUPER_ADMIN");
+        JsonObject equivalent = JsonParser.parseString(body).getAsJsonObject();
+        equivalent.addProperty("ignoredMetadata", "retry");
+        assertThat(dispatchWithToken(refreshed, HttpMethod.POST, "/api/moderation/batch", equivalent.toString()).body)
+                .isEqualTo(body1);
 
         // No additional side effects: only one audit event (from the first call)
         // — the replay did not re-mute or re-audit.
@@ -349,6 +365,114 @@ class BatchModerationTest {
 
         // The single mute is still in place.
         assertThat(muteManager.isMuted(t1, "staff")).isTrue();
+    }
+
+    @Test
+    void idempotencyKeysBelongToTheAuthenticatedActor() {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        String key = "shared-by-two-admins";
+        assertThat(dispatch(HttpMethod.POST, "/api/moderation/batch",
+                batchBody("mute", List.of(first), "staff", 60000, "first", key, false)).status)
+                .isEqualTo(HttpResponseStatus.OK);
+        String alice = jwtService.generateToken(UUID.randomUUID().toString(), "alice", "ADMIN");
+        Response response = dispatchWithToken(alice, HttpMethod.POST, "/api/moderation/batch",
+                batchBody("mute", List.of(second), "staff", 60000, "second", key, false));
+        assertThat(response.status).isEqualTo(HttpResponseStatus.OK);
+        assertThat(response.body).contains(second.toString()).doesNotContain(first.toString());
+        assertThat(muteManager.isMuted(second, "staff")).isTrue();
+        assertThat(auditEvents()).extracting(AuditEvent::getActor).containsExactlyInAnyOrder("root", "alice");
+    }
+
+    @Test
+    void reusingAKeyWithDifferentModerationInputReturnsConflict() {
+        UUID target = UUID.randomUUID();
+        String body = batchBody("mute", List.of(target), "staff", 60000, "original", "request-bound", false);
+        assertThat(dispatch(HttpMethod.POST, "/api/moderation/batch", body).status).isEqualTo(HttpResponseStatus.OK);
+        for (String field : List.of("action", "targetIds", "channelId", "durationMs", "reason", "caseId")) {
+            JsonObject changed = JsonParser.parseString(body).getAsJsonObject();
+            switch (field) {
+                case "action" -> changed.addProperty(field, "ban");
+                case "targetIds" -> {
+                    JsonArray targets = new JsonArray();
+                    targets.add(UUID.randomUUID().toString());
+                    changed.add(field, targets);
+                }
+                case "channelId" -> changed.addProperty(field, "survival-chat");
+                case "durationMs" -> changed.addProperty(field, 120000);
+                case "reason" -> changed.addProperty(field, "changed");
+                case "caseId" -> changed.addProperty(field, "another-case");
+            }
+            assertThat(dispatch(HttpMethod.POST, "/api/moderation/batch", changed.toString()).status)
+                    .as("changed %s", field).isEqualTo(HttpResponseStatus.CONFLICT);
+        }
+        assertThat(auditEvents()).hasSize(1);
+        assertThat(muteManager.getMuteInfo(target, "staff").getReason()).isEqualTo("original");
+        assertThat(banManager.isBanned(target, "staff")).isFalse();
+    }
+
+    @Test
+    void previewWithAnAlreadyAppliedKeyStaysAPreview() {
+        UUID applied = UUID.randomUUID();
+        UUID previewed = UUID.randomUUID();
+        String key = "preview-and-apply";
+        dispatch(HttpMethod.POST, "/api/moderation/batch",
+                batchBody("mute", List.of(applied), "staff", 60000, "applied", key, false));
+        Response preview = dispatch(HttpMethod.POST, "/api/moderation/batch",
+                batchBody("ban", List.of(previewed), "staff", 60000, "preview", key, true));
+        assertThat(preview.status).isEqualTo(HttpResponseStatus.OK);
+        assertThat(preview.asJson().get("dryRun").getAsBoolean()).isTrue();
+        assertThat(preview.body).contains(previewed.toString()).doesNotContain(applied.toString());
+        assertThat(banManager.isBanned(previewed, "staff")).isFalse();
+        assertThat(auditEvents()).hasSize(1);
+        String fresh = batchBody("ban", List.of(previewed), "staff", 60000, "preview", "preview-first", true);
+        assertThat(dispatch(HttpMethod.POST, "/api/moderation/batch", fresh).asJson().get("dryRun").getAsBoolean()).isTrue();
+        JsonObject applying = JsonParser.parseString(fresh).getAsJsonObject();
+        applying.addProperty("dryRun", false);
+        assertThat(dispatch(HttpMethod.POST, "/api/moderation/batch", applying.toString()).status)
+                .isEqualTo(HttpResponseStatus.OK);
+        assertThat(banManager.isBanned(previewed, "staff")).isTrue();
+        assertThat(auditEvents()).hasSize(2);
+    }
+
+    @Test
+    void concurrentRetryCannotExecuteTheSameBatchTwice() throws Exception {
+        var saving = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var writes = new AtomicInteger();
+        doAnswer(invocation -> {
+            writes.incrementAndGet();
+            saving.countDown();
+            if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("save gate timed out");
+            return invocation.callRealMethod();
+        }).when(db).saveMute(any(), any());
+        UUID target = UUID.randomUUID();
+        String body = batchBody("mute", List.of(target), "staff", 60000, "once", "concurrent", false);
+        var worker = Executors.newSingleThreadExecutor();
+        var retry = new FutureTask<>(() -> dispatch(HttpMethod.POST, "/api/moderation/batch", body));
+        Thread retryThread = new Thread(retry, "batch-retry-test");
+        try {
+            var original = worker.submit(() -> dispatch(HttpMethod.POST, "/api/moderation/batch", body));
+            assertThat(saving.await(5, TimeUnit.SECONDS)).isTrue();
+            retryThread.start();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!retry.isDone() && retryThread.getState() != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+                Thread.yield();
+            }
+            assertThat(retry.isDone()).as("retry returns without waiting for another moderation mutation").isTrue();
+            assertThat(retry.get(5, TimeUnit.SECONDS).status).isEqualTo(HttpResponseStatus.CONFLICT);
+            release.countDown();
+            Response committed = original.get(5, TimeUnit.SECONDS);
+            assertThat(committed.status).isEqualTo(HttpResponseStatus.OK);
+            assertThat(dispatch(HttpMethod.POST, "/api/moderation/batch", body).body).isEqualTo(committed.body);
+            assertThat(writes.get()).isEqualTo(1);
+            assertThat(auditEvents()).hasSize(1);
+        } finally {
+            release.countDown();
+            worker.shutdownNow();
+            assertThat(worker.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+            retryThread.join(5000L);
+        }
     }
 
     @Test

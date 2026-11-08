@@ -80,8 +80,8 @@ import java.util.*;
  *
  * <p>Marked {@link ChannelHandler.Sharable @Sharable} because a single instance is
  * shared across every connection's pipeline (see {@code WebSocketServer.initChannel}).
- * The handler holds no per-channel state — only immutable service dependencies — so
- * sharing it is safe. Without {@code @Sharable}, Netty rejects the second connection
+ * Service dependencies and guarded caches are shared; request ordering is channel-local.
+ * Without {@code @Sharable}, Netty rejects the second connection
  * with {@code ChannelPipelineException: ... is not a @Sharable handler}.
  *
  * Requirements: 25.4 - REST API for external integration
@@ -1712,42 +1712,34 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      */
     static final long BATCH_IDEMPOTENCY_TTL_MILLIS = 10L * 60L * 1000L;
 
-    /**
-     * Upper bound on the idempotency cache size. A put past this cap triggers
-     * a sweep of expired entries; if the sweep does not free enough room the
-     * oldest entry (by recorded-at timestamp) is evicted. Bounded so the
-     * cache cannot grow unbounded in a long-running process.
-     */
+    /** Capacity includes running batches; only completed responses can be evicted. */
     static final int BATCH_IDEMPOTENCY_MAX_ENTRIES = 1024;
 
-    /**
-     * In-memory idempotency cache for batch moderation (§11.6 Project 17).
-     * Keyed by the caller-supplied {@code idempotencyKey}. A replay within
-     * {@link #BATCH_IDEMPOTENCY_TTL_MILLIS} returns the cached response with
-     * no side effects. <strong>Single-process only</strong>: the cache is not
-     * shared across backend instances, so in a horizontally-scaled deployment
-     * a replay routed to a different instance will re-execute. A shared store
-     * (Redis) would be required for cluster-wide idempotency; that is out of
-     * scope for this slice (no new persistence is introduced).
-     */
-    private final Map<String, CachedBatchResult> cachedBatchResults = new java.util.concurrent.ConcurrentHashMap<>();
+    /** Single-process cache; registration and eviction share its monitor. */
+    private final Map<BatchKey, BatchExecution> cachedBatchResults = new HashMap<>();
 
-    /**
-     * Cached response for a batch moderation request, used to make replays
-     * idempotent. The cached payload is stored as its already-serialized JSON
-     * string so a replay returns byte-identical bytes without re-running the
-     * per-target mutation logic.
-     */
+    private record BatchKey(String actor, String idempotencyKey) {}
+
+    private record BatchRequest(String action, List<UUID> targets, String channelId,
+                                long durationMs, String reason, String caseId) {}
+
+    private static final class BatchExecution {
+        final BatchRequest request;
+        volatile CachedBatchResult result;
+
+        BatchExecution(BatchRequest request) {
+            this.request = request;
+        }
+    }
+
     private static final class CachedBatchResult {
         final HttpResponseStatus status;
         final String body;
-        final String contentType;
         final long recordedAt;
 
-        CachedBatchResult(HttpResponseStatus status, String body, String contentType) {
+        CachedBatchResult(HttpResponseStatus status, String body) {
             this.status = status;
             this.body = body;
-            this.contentType = contentType;
             this.recordedAt = System.currentTimeMillis();
         }
 
@@ -1778,10 +1770,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * default branch — VIEWER is rejected with 403 before reaching here, the
      * same pattern used by {@code handleMutePlayer}).
      *
-     * <p>Idempotency: a replay carrying the same {@code idempotencyKey} within
-     * {@link #BATCH_IDEMPOTENCY_TTL_MILLIS} returns the cached response with
-     * no side effects. The cache is bounded ({@link #BATCH_IDEMPOTENCY_MAX_ENTRIES})
-     * and single-process (see {@link #cachedBatchResults} javadoc).
+     * <p>Idempotency is scoped to actor and effective request. Completed requests
+     * replay within the cache TTL; changed input or a running duplicate returns 409.
+     * Preview requests bypass the cache. Storage is bounded and single-process.
      *
      * <p>Partial failure: each target is applied independently. A per-target
      * failure does NOT abort the batch — the response is HTTP 200 with a
@@ -1916,33 +1907,6 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         boolean dryRun = json.has("dryRun") && !json.get("dryRun").isJsonNull()
                 && json.get("dryRun").getAsBoolean();
 
-        // ---- idempotency replay ----
-        CachedBatchResult cached = cachedBatchResults.get(idempotencyKey);
-        if (cached != null) {
-            if (cached.isExpired()) {
-                cachedBatchResults.remove(idempotencyKey, cached);
-            } else {
-                // Replay: return the cached response verbatim, no side effects.
-                ByteBuf buf = Unpooled.copiedBuffer(cached.body, CharsetUtil.UTF_8);
-                FullHttpResponse response = new DefaultFullHttpResponse(
-                        HttpVersion.HTTP_1_1, cached.status, buf);
-                response.headers().set(HttpHeaderNames.CONTENT_TYPE,
-                        cached.contentType != null ? cached.contentType
-                                : "application/json; charset=UTF-8");
-                response.headers().set(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
-                addCorsHeaders(request, response);
-                stampRequestId(request, response);
-                boolean keepAlive = HttpUtil.isKeepAlive(request);
-                if (keepAlive) {
-                    response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
-                    ctx.writeAndFlush(response);
-                } else {
-                    ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
-                }
-                return;
-            }
-        }
-
         // ---- manager availability ----
         boolean needsMute = action.equals("mute") || action.equals("unmute");
         boolean needsBan = action.equals("ban") || action.equals("unban");
@@ -1989,6 +1953,51 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             // dry-run is intentionally NOT cached: it is a side-effect-free
             // preview and cheap to re-run, so replay protection is unnecessary.
             sendJsonResponse(ctx, request, HttpResponseStatus.OK, preview);
+            return;
+        }
+
+        long effectiveDuration = 0L;
+        if (action.equals("mute") || action.equals("ban")) effectiveDuration = durationMs;
+        String effectiveCase = caseId;
+        if (effectiveCase != null && effectiveCase.isBlank()) effectiveCase = null;
+        BatchRequest batchRequest = new BatchRequest(action, List.copyOf(targetIds), channelId,
+                effectiveDuration, reason, effectiveCase);
+        BatchKey batchKey = new BatchKey(operatorUsername, idempotencyKey);
+        BatchExecution execution = new BatchExecution(batchRequest);
+        BatchExecution existing;
+        synchronized (cachedBatchResults) {
+            existing = cachedBatchResults.get(batchKey);
+            if (existing != null && existing.result != null && existing.result.isExpired()) {
+                cachedBatchResults.remove(batchKey);
+                existing = null;
+            }
+            if (existing == null) {
+                evictExpiredBatchResults();
+                if (cachedBatchResults.size() < BATCH_IDEMPOTENCY_MAX_ENTRIES) {
+                    cachedBatchResults.put(batchKey, execution);
+                } else {
+                    execution = null;
+                }
+            }
+        }
+        if (existing != null) {
+            if (!existing.request.equals(batchRequest)) {
+                sendJsonError(ctx, request, HttpResponseStatus.CONFLICT,
+                        "This idempotencyKey was used for different input. Use a new key for this batch.");
+                return;
+            }
+            CachedBatchResult cached = existing.result;
+            if (cached == null) {
+                sendJsonError(ctx, request, HttpResponseStatus.CONFLICT,
+                        "This batch is still processing. Retry the same request after it finishes.");
+            } else {
+                sendJsonResponse(ctx, request, cached.status, cached.body);
+            }
+            return;
+        }
+        if (execution == null) {
+            sendJsonError(ctx, request, HttpResponseStatus.SERVICE_UNAVAILABLE,
+                    "Too many moderation batches are running. Retry after an earlier batch finishes.");
             return;
         }
 
@@ -2099,59 +2108,26 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         // already returned with 4xx/5xx.
         HttpResponseStatus status = HttpResponseStatus.OK;
         String content = gson.toJson(response);
-        ByteBuf buf = Unpooled.copiedBuffer(content, CharsetUtil.UTF_8);
-        FullHttpResponse httpResponse = new DefaultFullHttpResponse(
-                HttpVersion.HTTP_1_1, status, buf);
-        httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json; charset=UTF-8");
-        httpResponse.headers().set(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
-        addCorsHeaders(request, httpResponse);
-        stampRequestId(request, httpResponse);
-
-        // ---- cache + evict ----
-        // Cache only the actually-applied response so a replay within the TTL
-        // returns byte-identical bytes with no side effects.
-        evictExpiredBatchResults();
-        cachedBatchResults.put(idempotencyKey,
-                new CachedBatchResult(status, content, "application/json; charset=UTF-8"));
-
-        boolean keepAlive = HttpUtil.isKeepAlive(request);
-        if (keepAlive) {
-            httpResponse.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
-            ctx.writeAndFlush(httpResponse);
-        } else {
-            ctx.writeAndFlush(httpResponse).addListener(ChannelFutureListener.CLOSE);
-        }
+        execution.result = new CachedBatchResult(status, content);
+        sendJsonResponse(ctx, request, status, content);
     }
 
-    /**
-     * Sweeps expired entries from {@link #cachedBatchResults} and, if the cache
-     * is still at capacity, evicts the oldest entry by recorded-at timestamp.
-     * Called on every non-dry-run put so the cache stays bounded without a
-     * dedicated cleaner thread.
-     */
+    /** Caller holds the cache monitor; running batches cannot be evicted. */
     private void evictExpiredBatchResults() {
-        if (cachedBatchResults.isEmpty()) {
-            return;
-        }
-        // Sweep expired entries (cheap on the common path where there are none).
-        boolean removedAny = false;
-        Iterator<Map.Entry<String, CachedBatchResult>> it =
+        Iterator<Map.Entry<BatchKey, BatchExecution>> it =
                 cachedBatchResults.entrySet().iterator();
         while (it.hasNext()) {
-            if (it.next().getValue().isExpired()) {
-                it.remove();
-                removedAny = true;
-            }
+            CachedBatchResult result = it.next().getValue().result;
+            if (result != null && result.isExpired()) it.remove();
         }
         if (cachedBatchResults.size() < BATCH_IDEMPOTENCY_MAX_ENTRIES) {
             return;
         }
-        // Still at/over capacity: evict the single oldest entry. A full sort
-        // is avoided — one eviction per put keeps the cache bounded over time.
-        Map.Entry<String, CachedBatchResult> oldest = null;
-        for (Map.Entry<String, CachedBatchResult> e : cachedBatchResults.entrySet()) {
-            if (oldest == null || e.getValue().recordedAt < oldest.getValue().recordedAt) {
-                oldest = e;
+        Map.Entry<BatchKey, BatchExecution> oldest = null;
+        for (Map.Entry<BatchKey, BatchExecution> entry : cachedBatchResults.entrySet()) {
+            CachedBatchResult result = entry.getValue().result;
+            if (result != null && (oldest == null || result.recordedAt < oldest.getValue().result.recordedAt)) {
+                oldest = entry;
             }
         }
         if (oldest != null) {
@@ -6127,7 +6103,11 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      */
     private void sendJsonResponse(ChannelHandlerContext ctx, FullHttpRequest request,
                                   HttpResponseStatus status, com.google.gson.JsonElement json) {
-        String content = gson.toJson(json);
+        sendJsonResponse(ctx, request, status, gson.toJson(json));
+    }
+
+    private void sendJsonResponse(ChannelHandlerContext ctx, FullHttpRequest request,
+                                  HttpResponseStatus status, String content) {
         ByteBuf buf = Unpooled.copiedBuffer(content, CharsetUtil.UTF_8);
 
         FullHttpResponse response = new DefaultFullHttpResponse(

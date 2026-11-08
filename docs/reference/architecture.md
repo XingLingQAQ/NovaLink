@@ -139,6 +139,7 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 | 频道邀请与删除 | `ChannelManager` + `InvitationManager` | 频道锁内创建和接受邀请；删除先清理邀请，再释放 ID。 |
 | 禁言与封禁 | `AbstractModerationManager` | 同一玩家的应用和解除先提交存储，再发布缓存；失败保留旧限制，成功后才触发封禁移除成员。 |
 | 案件与申诉 | `ModerationManager` + `DatabaseProvider` | 业务层校验身份与状态；存储层条件更新，申诉与案件在一次原子操作中提交。 |
+| 批量治理幂等 | `RestApiHandler` | 操作人与有效请求绑定 key；执行前登记，完成后发布原响应，进行中的记录不被淘汰。 |
 | 活动状态与任务 | `CampaignManager` | 每个活动串行转换；发送成功才进入 `ACTIVE`，恢复时先检查结束时间。 |
 | 面板登录与 token | `AuthService` | 登录会话与 token 轮换分开计数；旧会话请求不能以新身份刷新或重试。 |
 | 面板频道与玩家列表 | `useEntitySnapshot` | WebSocket 更新和较新读取使旧 REST 结果失效。 |
