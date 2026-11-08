@@ -231,4 +231,20 @@ class ChannelManagerPersistenceTest {
         }
     }
 
+    @Test
+    void configOverlayNeverOverwritesOrDeletesAStoredDynamicChannel() throws Exception {
+        var stored = new Channel("shared-id", "Stored runtime channel", ChannelScope.GLOBAL, null);
+        databaseProvider.saveChannel(stored);
+        var manager = new ChannelManager(databaseProvider);
+        var overlay = manager.createChannel(ChannelConfig.builder().id("shared-id")
+                .displayName("Config overlay").scope(ChannelScope.GLOBAL).build(), ChannelSource.CONFIG);
+
+        manager.updateChannel(overlay.getId(), "Updated config", null, null);
+        assertThat(databaseProvider.loadChannel(overlay.getId()).orElseThrow().getDisplayName())
+                .isEqualTo("Stored runtime channel");
+        assertThat(manager.deleteChannelIfCurrent(overlay)).isTrue();
+        assertThat(databaseProvider.loadChannel(overlay.getId()).orElseThrow().getDisplayName())
+                .isEqualTo("Stored runtime channel");
+    }
+
 }

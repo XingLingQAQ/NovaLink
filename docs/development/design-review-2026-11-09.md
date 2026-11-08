@@ -135,3 +135,15 @@ TCP 删除未清理缓存玩家的已加入频道和当前频道；直接调用�
 抽取 `ChannelStateCleanup`，由核心、REST、控制台和 TCP 复用。它清除缓存中引用该频道的玩家状态和原频道成员，不加载离线数据库记录。清理在频道锁内、ID 仍被原对象占用时完成，避免事后清理影响同名新频道。
 
 验证覆盖实际核心删除后的玩家、权限、监控会话、私有 ID，以及同名重建后的权限等级；TCP 覆盖两种管理器模式，并复核 REST 与控制台的成功、失败和未知频道路径。日志为 `.e2e-artifacts/review7-removal-before.log` 与 `review7-removal-final.log`。
+
+## 14. R30：重载写入的 CONFIG 频道在停机删除后复活
+
+位置：[ChannelManager 的持久化边界](../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java)。
+
+核心接入频道持久化后，重载新建的 CONFIG 频道也被写入数据库。存储记录不保留 CONFIG 来源，启动恢复统一标记为 DATABASE。实际 SQLite 反例先在运行中通过配置新增频道，再停止核心、从 YAML 删除频道、重新启动；该频道仍从数据库复活为动态频道。
+
+修复把来源归属落实到管理器：CONFIG 频道由配置文件负责，创建、更新和删除均不修改数据库中的动态记录。运行时和恢复的 DATABASE 频道仍按原约定持久化。配置临时覆盖同名动态记录时，移除配置对象不会改写或删除底层动态记录。
+
+验证覆盖上述实际核心重启过程、动态频道的 SQLite 重启与删除、频道持久化失败路径、配置覆盖下保留动态记录，以及重载对象身份检查。日志为 `.e2e-artifacts/review7-provenance-before.log` 与 `review7-provenance-final.log`。
+
+历史误写记录没有保存来源，无法与真实动态频道自动区分；本次保留这些现存记录，防止后续 CONFIG 写入。历史数据需要按原配置和实际频道用途确认后清理。

@@ -17,9 +17,8 @@ import java.util.stream.Collectors;
  *
  * <p><b>Persistence (P0-3):</b> when a {@link DatabaseProvider} is wired via
  * {@link #setDatabaseProvider(DatabaseProvider)} (or the accepting constructor),
- * every {@link #createChannel}, {@link #deleteChannel} and {@link #updateChannel}
- * write-through to the database so the REST and TCP paths stay consistent and
- * channels survive a backend restart. Mutations and member admission share the
+ * runtime/database channels write through on create, delete and update.
+ * CONFIG channels remain owned by the configuration file. Mutations and member admission share the
  * channel monitor. Create/update roll back on persistence failure; delete keeps
  * the channel registered until persistence succeeds. Failures propagate as
  * {@link IllegalStateException}.
@@ -196,7 +195,7 @@ public class ChannelManager {
         synchronized (channel) {
             if (channels.get(channelId) != channel) return false;
             try {
-                deletePersistedChannel(channelId);
+                deletePersistedChannel(channel);
             } catch (RuntimeException | DatabaseException error) {
                 throw new IllegalStateException(
                         "Failed to delete persisted channel '" + channelId + "': " + error.getMessage(), error);
@@ -491,7 +490,7 @@ public class ChannelManager {
      */
     private void persistChannel(Channel channel) throws DatabaseException {
         DatabaseProvider db = this.databaseProvider;
-        if (db == null || channel == null) {
+        if (db == null || channel == null || channel.getSource() == ChannelSource.CONFIG) {
             return;
         }
         db.saveChannel(channel);
@@ -502,11 +501,11 @@ public class ChannelManager {
      * Propagates {@link DatabaseException} (and any runtime exception) so the
      * caller can roll back the in-memory mutation (same rationale as {@link #persistChannel}).
      */
-    private void deletePersistedChannel(String channelId) throws DatabaseException {
+    private void deletePersistedChannel(Channel channel) throws DatabaseException {
         DatabaseProvider db = this.databaseProvider;
-        if (db == null || channelId == null) {
+        if (db == null || channel.getSource() == ChannelSource.CONFIG) {
             return;
         }
-        db.deleteChannel(channelId);
+        db.deleteChannel(channel.getId());
     }
 }

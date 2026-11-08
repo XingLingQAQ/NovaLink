@@ -313,6 +313,35 @@ class NovaLinkCoreLifecycleTest {
     }
 
     @Test
+    void configChannelAddedByReloadDoesNotReturnAfterOfflineRemoval() throws Exception {
+        String emptyConfig = minimalConfig(true, freePort(), freePort()).replace("type: memory", "type: sqlite");
+        Files.writeString(tempDir.resolve("novalink.yml"), emptyConfig, StandardCharsets.UTF_8);
+        NovaLinkCore core = newCore();
+        core.start(tempDir, loopbackEphemeral());
+        try {
+            core.getContext().getConfigManager().update(null, config -> {
+                var channel = new com.nova.link.config.GlobalChannelConfig();
+                channel.setDisplayName("File-owned");
+                channel.setMaxCapacity(50);
+                config.getGlobalChannels().put("file-owned", channel);
+            }, "test");
+            assertThat(core.getContext().getChannelManager().getChannel("file-owned").getSource())
+                    .isEqualTo(com.nova.link.channel.ChannelSource.CONFIG);
+        } finally {
+            core.stop();
+        }
+
+        Files.writeString(tempDir.resolve("novalink.yml"), emptyConfig, StandardCharsets.UTF_8);
+        core.start(tempDir, loopbackEphemeral());
+        try {
+            assertThat(core.getContext().getChannelManager().getChannel("file-owned")).isNull();
+            assertThat(core.getContext().getDatabaseProvider().loadChannel("file-owned")).isEmpty();
+        } finally {
+            core.stop();
+        }
+    }
+
+    @Test
     void expiredShutdownBudgetStillStopsEveryRegisteredComponent() throws Exception {
         NovaLinkCore core = newCore();
         var executor = Executors.newSingleThreadScheduledExecutor();
