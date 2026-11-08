@@ -450,6 +450,30 @@ public interface DatabaseProvider {
     // enforced here; it is enforced by ModerationManager as a hard 403 (not a
     // silent fallback like the per-user notification null-userId path).
 
+    /** Updates a case only if its workflow state still matches the expected snapshot. */
+    default boolean compareAndSetModerationCase(com.nova.link.moderation.ModerationCase expected,
+                                                com.nova.link.moderation.ModerationCase updated)
+            throws DatabaseException {
+        throw new UnsupportedOperationException("Atomic moderation transitions not supported by this provider");
+    }
+
+    /** Creates an appeal and advances the case together; false means the case changed or has an open appeal. */
+    default boolean createAppealAndUpdateCase(com.nova.link.moderation.Appeal appeal,
+                                              com.nova.link.moderation.ModerationCase expected,
+                                              com.nova.link.moderation.ModerationCase updated)
+            throws DatabaseException {
+        throw new UnsupportedOperationException("Atomic moderation transitions not supported by this provider");
+    }
+
+    /** Commits the review and case transition together, rejecting a stale case or appeal status. */
+    default boolean reviewAppealAndUpdateCase(com.nova.link.moderation.Appeal expectedAppeal,
+                                              com.nova.link.moderation.Appeal reviewedAppeal,
+                                              com.nova.link.moderation.ModerationCase expected,
+                                              com.nova.link.moderation.ModerationCase updated)
+            throws DatabaseException {
+        throw new UnsupportedOperationException("Atomic moderation transitions not supported by this provider");
+    }
+
     /**
      * Saves (inserts) a moderation case. The case {@code id} is assigned by the
      * caller (a UUID); persistence is upsert-style on id so a re-save of the

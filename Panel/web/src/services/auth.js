@@ -3,7 +3,7 @@
  * Owns the rotating access/refresh pair and emits explicit lifecycle reasons.
  */
 
-import { getApiBaseUrl } from './connectionUrls.js';
+import { getApiBaseUrl, getConnectionGeneration } from './connectionUrls.js';
 
 const TOKEN_KEY = 'nova_panel_token';
 const USER_KEY = 'nova_panel_user';
@@ -19,10 +19,11 @@ export class AuthRequestError extends Error {
   }
 }
 
-class AuthSessionChangedError extends Error {
+export class AuthSessionChangedError extends Error {
   constructor() {
     super('Authentication session changed while the request was in flight');
     this.name = 'AuthSessionChangedError';
+    this.code = 'AUTH_SESSION_CHANGED';
   }
 }
 
@@ -54,6 +55,7 @@ export class AuthService {
     this._refreshPromise = null;
     this._logoutPromise = null;
     this._sessionGeneration = 0;
+    this._loginGeneration = 0;
     this._storageHandler = (event) => this._handleStorageEvent(event);
 
     this._loadFromStorage();
@@ -97,6 +99,12 @@ export class AuthService {
         return;
       }
 
+      const currentFamily = this._parseToken(this.refreshToken)?.fid;
+      const nextFamily = this._parseToken(nextRefreshToken)?.fid;
+      if (!currentFamily || currentFamily !== nextFamily
+          || this.user?.username !== nextUser?.username) {
+        this._loginGeneration += 1;
+      }
       this.token = nextToken;
       this.refreshToken = nextRefreshToken;
       this.user = nextUser;
@@ -145,6 +153,7 @@ export class AuthService {
     this.refreshToken = data.refreshToken;
     this.user = data.user;
     this._sessionGeneration += 1;
+    this._loginGeneration += 1;
     this._saveToStorage();
     this._notifyListeners('login', previousToken);
     return { success: true, user: this.user };
@@ -156,6 +165,7 @@ export class AuthService {
     this.refreshToken = refreshToken;
     this.user = user || this._parseToken(token);
     this._sessionGeneration += 1;
+    this._loginGeneration += 1;
     this._saveToStorage();
     this._notifyListeners('login', previousToken);
   }
@@ -213,6 +223,7 @@ export class AuthService {
     this.refreshToken = null;
     this.user = null;
     this._sessionGeneration += 1;
+    this._loginGeneration += 1;
     this._saveToStorage();
     this._notifyListeners(reason, previousToken);
     return true;
@@ -233,6 +244,7 @@ export class AuthService {
 
     const refreshToken = this.refreshToken;
     const requestGeneration = this._sessionGeneration;
+    const connectionGeneration = getConnectionGeneration();
 
     this._refreshPromise = (async () => {
       try {
@@ -242,6 +254,11 @@ export class AuthService {
           body: JSON.stringify({ refreshToken }),
         });
         const data = await readResponseData(response);
+
+        if (this._sessionGeneration !== requestGeneration || this.refreshToken !== refreshToken
+            || getConnectionGeneration() !== connectionGeneration) {
+          throw new AuthSessionChangedError();
+        }
 
         if (!response.ok) {
           throw new AuthRequestError(
@@ -253,10 +270,6 @@ export class AuthService {
         if (!data?.token || !data?.refreshToken) {
           throw new AuthRequestError('Token refresh returned an incomplete token pair', response.status, data);
         }
-        if (this._sessionGeneration !== requestGeneration || this.refreshToken !== refreshToken) {
-          throw new AuthSessionChangedError();
-        }
-
         const previousToken = this.token;
         this.token = data.token;
         this.refreshToken = data.refreshToken;
@@ -265,6 +278,8 @@ export class AuthService {
         this._notifyListeners('refresh', previousToken);
         return this.token;
       } catch (error) {
+        if (this._sessionGeneration !== requestGeneration || this.refreshToken !== refreshToken
+            || getConnectionGeneration() !== connectionGeneration) throw new AuthSessionChangedError();
         if (!(error instanceof AuthSessionChangedError)) {
           void this.logout(apiUrl, { revoke: false, reason: 'refresh_failed' });
         }
@@ -279,6 +294,10 @@ export class AuthService {
 
   getToken() {
     return this.token;
+  }
+
+  getSessionId() {
+    return this._loginGeneration;
   }
 
   getRefreshToken() {

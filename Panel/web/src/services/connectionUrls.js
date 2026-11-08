@@ -1,6 +1,11 @@
-const DEFAULT_API_URL = '/api';
-
 import { validateApiUrl, validateWsUrl } from './connectionPolicy.js';
+
+const DEFAULT_API_URL = '/api';
+let connectionGeneration = 0;
+
+export function getConnectionGeneration() {
+  return connectionGeneration;
+}
 
 export function getApiBaseUrl() {
   const stored = typeof localStorage !== 'undefined'
@@ -51,6 +56,7 @@ export function getWsUrl() {
  *            ws:  {ok:boolean,value?:string,error?:string}}}
  */
 export function setConnectionUrls(apiUrl, wsUrl) {
+  const previousBase = getApiBaseUrl();
   const api = apiUrl == null ? { ok: true } : validateApiUrl(apiUrl);
   const ws = wsUrl == null ? { ok: true } : validateWsUrl(wsUrl);
   if (typeof localStorage === 'undefined') return { api, ws };
@@ -66,11 +72,14 @@ export function setConnectionUrls(apiUrl, wsUrl) {
   } else if (wsUrl != null) {
     localStorage.removeItem('nova_panel_ws_url');
   }
+  if (getApiBaseUrl() !== previousBase) connectionGeneration += 1;
   return { api, ws };
 }
 
 export function clearConnectionUrls() {
+  const previousBase = getApiBaseUrl();
   if (typeof localStorage === 'undefined') return;
   localStorage.removeItem('nova_panel_api_url');
   localStorage.removeItem('nova_panel_ws_url');
+  if (getApiBaseUrl() !== previousBase) connectionGeneration += 1;
 }

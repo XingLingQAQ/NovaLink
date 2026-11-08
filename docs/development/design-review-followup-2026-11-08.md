@@ -1,6 +1,6 @@
 # 第二轮设计、功能与测试审查
 
-本轮确认了 8 项待修问题，其中 2 项涉及操作身份与审核隔离，优先级为 P1。[上一轮 R01—R09](design-review-2026-11-08.md)的修复已推送；本报告记录后续发现、复现结果和修复条件。
+本轮确认的 R10—R17 共 8 项问题均已实现修复，并加入正式回归测试。[上一轮 R01—R09](design-review-2026-11-08.md)的修复已推送。第 1—8 节保留修复前的证据和验收条件，当前实现与验证记录见第 9 节。
 
 审查日期：2026-11-08。业务源码基线：`128ddd796da92bcf24cc36aa2cf1b69702f133ee`，已推送到 `origin/master`。随后提交 `ab5796efb1d7f448684f20774f64e5564c35d428` 修复了英文 CI 环境下的测试语言问题，业务源码未变。
 
@@ -17,7 +17,7 @@
 | R16 | P2 | 设置以外的面板数据仍有异步覆盖。 | 晚到 REST 覆盖较新 WebSocket 频道；旧申诉列表响应覆盖当前列表。 |
 | R17 | P2 | 线程池关停测试依赖固定等待，已造成远端 CI 失败。 | 首轮期望执行 1 个任务，实际执行 6 个；相同测试源码后续运行通过。 |
 
-建议先修 R10、R11。随后由同一负责人处理 R12、R13 的申诉状态和存储边界，再处理 R14、R15 的活动状态与调度。R16 应按业务域整理状态采用规则。R17 可单独修复测试同步条件。
+修复按审核与会话隔离、申诉事务、活动投递与恢复、面板快照及关停测试同步完成，明细见第 9 节。
 
 ## 2. 复现方法与适用范围
 
@@ -33,7 +33,7 @@
 
 ### R10：改派已申诉案件可以绕过自审限制
 
-位置：[ModerationManager.assignCase()](../../StarLink/core/src/main/java/com/nova/link/moderation/ModerationManager.java#L198)、[reviewAppeal()](../../StarLink/core/src/main/java/com/nova/link/moderation/ModerationManager.java#L387)和 [REST 指派入口](../../StarLink/core/src/main/java/com/nova/link/api/RestApiHandler.java#L4076)。
+位置：[ModerationManager.assignCase()](../../StarLink/core/src/main/java/com/nova/link/moderation/ModerationManager.java)、[reviewAppeal()](../../StarLink/core/src/main/java/com/nova/link/moderation/ModerationManager.java)和 [REST 指派入口](../../StarLink/core/src/main/java/com/nova/link/api/RestApiHandler.java)。
 
 `assignCase()` 只拒绝 `CLOSED`，允许把 `RESOLVED`、`APPEALED` 改为 `UNDER_REVIEW`，同时改写 `assignedModerator`。`reviewAppeal()` 又只将审核人与案件当前的 `assignedModerator` 比较。REST 的指派和审核都允许 ADMIN 操作。
 
@@ -50,7 +50,7 @@
 
 ### R11：旧请求可能以新账号身份重新执行
 
-位置：[api.js 的刷新重试](../../Panel/web/src/services/api.js#L32)和[动态构造认证头](../../Panel/web/src/services/api.js#L57)。
+位置：[api.js 的刷新重试](../../Panel/web/src/services/api.js)和[动态构造认证头](../../Panel/web/src/services/api.js)。
 
 请求发出时没有绑定会话身份。首次返回 401 后，`withTokenRefresh()` 调用当前全局认证服务；重试的 `runner()` 再读取当前 token。认证服务虽然保护了刷新请求自身的会话代际，却不知道这个刷新源于另一个会话的旧业务请求。
 
@@ -66,11 +66,11 @@
 
 ### R12：完成审核后仍能直接覆写决定
 
-位置：[ModerationManager.reviewAppeal()](../../StarLink/core/src/main/java/com/nova/link/moderation/ModerationManager.java#L387)、[MemoryProvider.updateAppealReview()](../../StarLink/storage/src/main/java/com/nova/link/database/MemoryProvider.java#L980)和 [JDBC 更新](../../StarLink/storage/src/main/java/com/nova/link/database/AbstractJdbcProvider.java#L1070)。
+位置：[ModerationManager.reviewAppeal()](../../StarLink/core/src/main/java/com/nova/link/moderation/ModerationManager.java)、[MemoryProvider.updateAppealReview()](../../StarLink/storage/src/main/java/com/nova/link/database/MemoryProvider.java)和 [JDBC 更新](../../StarLink/storage/src/main/java/com/nova/link/database/AbstractJdbcProvider.java)。
 
 业务入口仅校验目标状态不是 `PENDING`，没有检查申诉当前状态。存储更新也只使用申诉 ID 作为条件。Bob 先批准申诉后，Charlie 仍可再次提交拒绝，覆盖最终决定、审核人和备注。两次调用均成功。
 
-审核完成后，关联案件仍为 `APPEALED`。这与 [CaseStatus](../../StarLink/storage/src/main/java/com/nova/link/moderation/CaseStatus.java) 对待审申诉和结案的含义不一致。面板也[只为 PENDING 提供审核按钮](../../Panel/web/src/components/dashboard/AppealQueue.jsx#L255)，无法从现有交互解释后续改判。
+审核完成后，关联案件仍为 `APPEALED`。这与 [CaseStatus](../../StarLink/storage/src/main/java/com/nova/link/moderation/CaseStatus.java) 对待审申诉和结案的含义不一致。面板也[只为 PENDING 提供审核按钮](../../Panel/web/src/components/dashboard/AppealQueue.jsx)，无法从现有交互解释后续改判。
 
 应明确允许审核的源状态，以及批准、拒绝、升级分别对案件状态的影响。存储采用带源状态或版本条件的更新；已完成决定的纠正需要明确操作，不能沿用无条件审核写入。已有审计事件继续保留。
 
@@ -78,11 +78,11 @@
 
 ### R13：申诉和案件状态更新缺少共同事务
 
-位置：[ModerationManager.createAppeal()](../../StarLink/core/src/main/java/com/nova/link/moderation/ModerationManager.java#L314)。
+位置：[ModerationManager.createAppeal()](../../StarLink/core/src/main/java/com/nova/link/moderation/ModerationManager.java)。
 
 代码先保存申诉，再另行保存 `APPEALED` 案件。第二笔写入抛错时只记日志，仍记录成功并返回申诉。探针让这笔案件写入失败后，观察到申诉已存在、案件仍为 `RESOLVED`。再次提交通过了前置状态检查，最终留下 2 条 `PENDING` 申诉。
 
-应在现有 `DatabaseProvider` 边界内提供申诉创建与条件状态转换的一次操作。JDBC 层已有[事务处理模式](../../StarLink/storage/src/main/java/com/nova/link/database/AbstractJdbcProvider.java#L339)，可沿用连接、回滚和 auto-commit 恢复约定。内存实现也须原子完成两者，不能仅在 HTTP 层加锁。
+应在现有 `DatabaseProvider` 边界内提供申诉创建与条件状态转换的一次操作。JDBC 层已有[事务处理模式](../../StarLink/storage/src/main/java/com/nova/link/database/AbstractJdbcProvider.java)，可沿用连接、回滚和 auto-commit 恢复约定。内存实现也须原子完成两者，不能仅在 HTTP 层加锁。
 
 验收：任一写入失败时，两项都不生效；同一案件并发或重复申请不会产生多条待审申诉；成功后案件与申诉状态对应。
 
@@ -90,7 +90,7 @@
 
 ### R14：未投递的活动也被报告为成功
 
-位置：[CampaignManager.doActivate()](../../StarLink/core/src/main/java/com/nova/link/announcement/CampaignManager.java#L333)和 [deliverOnce()](../../StarLink/core/src/main/java/com/nova/link/announcement/CampaignManager.java#L497)。
+位置：[CampaignManager.doActivate()](../../StarLink/core/src/main/java/com/nova/link/announcement/CampaignManager.java)和 [deliverOnce()](../../StarLink/core/src/main/java/com/nova/link/announcement/CampaignManager.java)。
 
 `doActivate()` 先进入 `ACTIVE`，再执行投递，最后无论投递结果如何都返回成功。限流时 `deliverOnce()` 返回的 `NC-429` 只用于日志。发送回调抛出异常时，`deliverOnce()` 自身又吞掉错误并返回 `Delivered`。
 
@@ -102,7 +102,7 @@
 
 ### R15：恢复活动没有落实结束时间
 
-位置：[CampaignManager.loadPersistedCampaigns()](../../StarLink/core/src/main/java/com/nova/link/announcement/CampaignManager.java#L441)、[armActivation()](../../StarLink/core/src/main/java/com/nova/link/announcement/CampaignManager.java#L545)和 [doActivate()](../../StarLink/core/src/main/java/com/nova/link/announcement/CampaignManager.java#L333)。
+位置：[CampaignManager.loadPersistedCampaigns()](../../StarLink/core/src/main/java/com/nova/link/announcement/CampaignManager.java)、[armActivation()](../../StarLink/core/src/main/java/com/nova/link/announcement/CampaignManager.java)和 [doActivate()](../../StarLink/core/src/main/java/com/nova/link/announcement/CampaignManager.java)。
 
 恢复时仅按状态排除 `EXPIRED`、`REVOKED`，不按 `endAt` 判断时间窗口。已有 `ACTIVE` 记录不会重建到期任务。`SCHEDULED` 的开始时间已经过去时，恢复路径立即激活；若结束时间也已过去，激活既发送消息，也不安排到期任务。
 
@@ -119,7 +119,7 @@
 
 ### R16：REST 与 WebSocket、旧列表请求分别直接写状态
 
-位置：[useDashboardData.fetchAllData()](../../Panel/web/src/hooks/useDashboardData.js#L54)、[useWsOrchestration 的频道处理](../../Panel/web/src/hooks/useWsOrchestration.js#L122)和 [AppealQueue.fetchPage()](../../Panel/web/src/components/dashboard/AppealQueue.jsx#L77)。
+位置：[useDashboardData.fetchAllData()](../../Panel/web/src/hooks/useDashboardData.js)、[useWsOrchestration 的频道处理](../../Panel/web/src/hooks/useWsOrchestration.js)和 [AppealQueue.fetchPage()](../../Panel/web/src/components/dashboard/AppealQueue.jsx)。
 
 频道和玩家状态由两个 hook 分别调用同一 setter。WebSocket 服务的 revision 检查只覆盖 WebSocket 消息，不能约束晚到的 REST。实际 hook 挂载后，先采用 revision 100 的 WebSocket 频道 `new-channel`，再完成初始 REST，最终列表变成旧的 `old-channel`。
 
@@ -141,7 +141,7 @@
 
 ### R17：关停测试没有同步到关停开始
 
-位置：[ExecutorSplitTest.shutdownCancelsPendingTasks()](../../StarLink/core/src/test/java/com/nova/link/network/ExecutorSplitTest.java#L245)和 [ServerNetworkHandler.shutdown()](../../StarLink/core/src/main/java/com/nova/link/network/ServerNetworkHandler.java#L718)。
+位置：[ExecutorSplitTest.shutdownCancelsPendingTasks()](../../StarLink/core/src/test/java/com/nova/link/network/ExecutorSplitTest.java)和 [ServerNetworkHandler.shutdown()](../../StarLink/core/src/main/java/com/nova/link/network/ServerNetworkHandler.java)。
 
 首轮远端核心测试运行 1,418 项，只有这项失败：期望处理计数为 1，实际为 6。测试启动关停线程后固定等待 200 ms，随后释放阻塞任务。它没有确认连接已退休，或关停线程已进入执行器收尾阶段。源码未改变的下一次远端运行通过。
 
@@ -163,4 +163,25 @@
 
 首次远端失败日志另存于 `.e2e-artifacts/review-followup-ci-failed.log`，其中包含 R17 的失败用例、断言结果及源码行号。
 
-本轮未启动浏览器或 Minecraft 实服，也未执行外部数据库矩阵。R10—R17 的修复仍待实现；后续应将上述缺陷断言改写为正式回归测试，并针对存储事务和实际投递补充对应验证。
+初次审查未启动浏览器或 Minecraft 实服，也未执行外部数据库矩阵。原探针用于确认缺陷；修复后的正式验证见下节。
+
+## 9. 修复结果与正式验证
+
+| 编号 | 当前实现 | 正式回归入口 |
+| --- | --- | --- |
+| R10 | 仅 `OPEN`、`UNDER_REVIEW` 可指派；处理完成后保留责任人，未指派案件由处理人补齐；状态更新使用条件写入。 | `ModerationWorkflowTest`、`ModerationTransactionTest` |
+| R11 | 业务请求捕获登录会话和连接代际；响应、刷新、重试及读取响应体后检查身份。正常 token 轮换保持同一会话，旧刷新失败也不能清除新账号。 | `api.session.test.js` |
+| R12 | 已完成决定返回 `NC-409`；最终审核与案件 `CLOSED` 同步提交。`ESCALATED` 保持 `APPEALED`，仅高级审核可继续；原处理人仍被拒绝。面板提供对应入口并显示实际拒绝原因。 | `ModerationWorkflowTest`、`ModerationTransactionTest`、`RestApiHandlerTest`、`dashboard.interaction.test.js` |
+| R13 | 在 `DatabaseProvider` 内提供申诉与案件的原子操作；内存同步提交，JDBC 使用同一连接事务。 | `ModerationTransactionTest`：内存／SQLite 并发申请与审核，触发器注入插入／审核失败并验证回滚。 |
+| R14 | 回调或路由失败返回错误，限流返回 `NC-429`；成功后才进入 `ACTIVE` 并消耗配额。保留原活动供重试，并发激活只发送一次。 | `CampaignManagerTest`、`CampaignRecoveryTest`、`RestApiHandlerCampaignTest` |
+| R15 | 恢复时先执行结束时间判断；过期直接 `EXPIRED`，活跃活动只重建到期任务，计划活动恢复激活任务。 | `CampaignRecoveryTest`：实际调度器、到期事件及无重复投递断言。 |
+| R16 | 频道／玩家使用共享快照采用规则，覆盖初始、手动及操作后刷新；WebSocket 更新使先前读取失效。申诉列表的成功、失败及 finally 均受请求代际约束，清理时使旧请求失效。 | `dashboardSnapshots.test.js`、`dashboard.interaction.test.js`：实际挂载 hooks／组件、筛选切换及 Strict Mode 清理路径。 |
+| R17 | 使用连接退休事件同步关停开始；分别验证正常释放和超时强制中断，清理线程及连接。 | `ExecutorSplitTest`：延迟启动、优雅退出与强制结束，移除固定等待。 |
+
+升级审核通过 REST 根据有效 `SUPER_ADMIN` 角色授权；原五参数业务方法仍可审核 `PENDING`，需要继续处理 `ESCALATED` 的可信调用方使用带高级审核标志的重载。新错误码与活动重试方法见 [Admin REST API](../reference/admin-api.md)。
+
+全量后端回归还暴露了两个原有测试输入问题，已同步修正：配置草稿审计断言按目标操作筛选事件，避免依赖同毫秒记录的顺序；userinfo 安全用例改用确定的公网／回环 IP 字面量，双向验证实际 host，不再根据外部域名解析猜测 guard 的判定。
+
+本地 core／storage 全量测试通过，补充的竞争审核、定时投递失败重试和 HTTP 流程测试通过；核心最新运行共 1,430 项，0 失败、0 跳过。面板 197 项测试全部通过，lint 为 0 错误、1 个既有警告，生产构建通过。日志位于 `.e2e-artifacts/review2-backend-final.log`、`review2-acceptance-final.log`、`review2-panel-complete.log`、`review2-panel-lint-complete.log` 和 `review2-panel-build-complete.log`。
+
+存储事务在内存和 SQLite 上验证；MySQL、PostgreSQL 复用 JDBC 实现，本轮未连接外部数据库执行矩阵。活动测试验证真实调度与可控发送回调，核心接线检查路由结果；没有 Minecraft 玩家端送达确认协议。未启动浏览器或实服。

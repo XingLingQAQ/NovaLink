@@ -217,7 +217,7 @@ export function useWsOrchestration({
   // the token is still fresh.
   useEffect(() => {
     const timer = setInterval(() => {
-      authService.maybeRefreshToken(getApiBaseUrl());
+      void authService.maybeRefreshToken(getApiBaseUrl()).catch(() => {});
     }, 60 * 1000);
     return () => clearInterval(timer);
   }, []);

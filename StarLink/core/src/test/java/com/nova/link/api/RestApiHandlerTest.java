@@ -1810,6 +1810,28 @@ class RestApiHandlerTest {
         assertThat(resp.status).isEqualTo(HttpResponseStatus.FORBIDDEN);
     }
 
+    @Test
+    void completedAppealCannotBeOverwrittenAndEscalationHasSeniorContinuation() {
+        String caseId = dispatch(HttpMethod.POST, "/api/reports",
+                "{\"reportedPlayerId\":\"player-escalation\",\"reasonText\":\"spam\"}")
+                .asJson().get("caseId").getAsString();
+        dispatch(HttpMethod.POST, "/api/moderation/cases/" + caseId + "/assign", "{\"moderator\":\"other\"}");
+        dispatch(HttpMethod.POST, "/api/moderation/cases/" + caseId + "/resolve", "{\"action\":\"warn\"}");
+        String appealId = dispatch(HttpMethod.POST, "/api/appeals", "{\"caseId\":\"" + caseId
+                + "\",\"appellantId\":\"player-escalation\",\"reason\":\"review\"}")
+                .asJson().get("appealId").getAsString();
+        assertThat(dispatch(HttpMethod.POST, "/api/moderation/cases/" + caseId + "/assign", "{\"moderator\":\"admin\"}").status)
+                .isEqualTo(HttpResponseStatus.FORBIDDEN);
+        assertThat(dispatch(HttpMethod.POST, "/api/appeals/" + appealId + "/review", "{\"decision\":\"ESCALATED\"}").status)
+                .isEqualTo(HttpResponseStatus.OK);
+        assertThat(dispatch(HttpMethod.POST, "/api/appeals/" + appealId + "/review", "{\"decision\":\"APPROVED\"}").status)
+                .isEqualTo(HttpResponseStatus.OK);
+        assertThat(dispatch(HttpMethod.GET, "/api/moderation/cases/" + caseId, null).asJson().get("status").getAsString())
+                .isEqualTo("CLOSED");
+        assertThat(dispatch(HttpMethod.POST, "/api/appeals/" + appealId + "/review", "{\"decision\":\"DENIED\"}").status)
+                .isEqualTo(HttpResponseStatus.CONFLICT);
+    }
+
     // ====================== pagination offset overflow ======================
 
     /**

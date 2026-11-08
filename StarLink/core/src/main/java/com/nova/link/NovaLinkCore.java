@@ -669,17 +669,16 @@ public final class NovaLinkCore implements AutoCloseable {
                 () -> authManager.getPanelUsernamesWithRoleAtLeast(
                         com.nova.link.auth.PanelRole.ADMIN));
 
-        // §11.6 提案 06 (项目 19) — campaign 编排管理器。内存态（slice A，零迁移）；
-        // 复用同一个 AuditStore 记录 campaign 审计；投递回调走受信 MessageRouter 路径，
-        // 与 AnnouncementManager.setAnnouncementSender 同型。生产持久化为后续 slice。
+        // 活动共享审计与存储，路由拒绝会作为投递失败返回。
         CampaignManager campaignManager = new CampaignManager(permissionManager, channelManager);
         campaignManager.setAuditStore(auditStore);
         campaignManager.setDatabaseProvider(databaseProvider);
         campaignManager.setAnnouncementSender((channelId, content) -> {
             Map<String, String> placeholders = new HashMap<>();
             placeholders.put("_announcement", "true");
-            messageRouter.routeMessage(channelId, ConsoleSentinel.CONSOLE_SENTINEL,
+            var result = messageRouter.routeMessage(channelId, ConsoleSentinel.CONSOLE_SENTINEL,
                     ConsoleSentinel.CONSOLE_NAME, content, placeholders);
+            if (!result.isSuccess()) throw new IllegalStateException(result.getErrorMessage());
         });
         campaignManager.initialize();
         started.push(closeable("campaigns", campaignManager::shutdown));

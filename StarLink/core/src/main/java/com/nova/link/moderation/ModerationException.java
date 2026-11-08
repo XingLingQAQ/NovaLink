@@ -10,6 +10,7 @@ package com.nova.link.moderation;
  *   <li>{@code NC-403} — forbidden; notably the appeal-reviewer-must-differ-
  *       from-case-moderator rule (PANEL-007 hard 403, not a silent fallback).</li>
  *   <li>{@code NC-404} — case or appeal not found.</li>
+ *   <li>{@code NC-409} — stale workflow state or an already completed review.</li>
  *   <li>{@code NC-500} — persistence failure.</li>
  * </ul>
  *

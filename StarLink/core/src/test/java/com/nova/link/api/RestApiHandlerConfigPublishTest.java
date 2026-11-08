@@ -557,7 +557,9 @@ class RestApiHandlerConfigPublishTest {
         // Audit attributed to the approver, not the creator.
         List<AuditEvent> events = auditEvents();
         assertThat(events).hasSize(baseline + 1);
-        AuditEvent e = events.get(0); // newest first
+        AuditEvent e = events.stream()
+                .filter(event -> "settings.draft.approve".equals(event.getAction()))
+                .findFirst().orElseThrow();
         assertThat(e.getAction()).isEqualTo("settings.draft.approve");
         assertThat(e.getResource()).isEqualTo("draft:" + id);
         assertThat(e.getActor()).isEqualTo("bob");
@@ -637,7 +639,9 @@ class RestApiHandlerConfigPublishTest {
         // Audit: before+after hashes captured (publish is a live mutation).
         List<AuditEvent> events = auditEvents();
         assertThat(events).hasSize(baseline + 1);
-        AuditEvent e = events.get(0); // newest first
+        AuditEvent e = events.stream()
+                .filter(event -> "settings.draft.publish".equals(event.getAction()))
+                .findFirst().orElseThrow();
         assertThat(e.getAction()).isEqualTo("settings.draft.publish");
         assertThat(e.getResource()).isEqualTo("draft:" + id);
         assertThat(e.getActor()).isEqualTo("root");
@@ -693,7 +697,9 @@ class RestApiHandlerConfigPublishTest {
         // Audit recorded.
         List<AuditEvent> events = auditEvents();
         assertThat(events).hasSize(baseline + 1);
-        AuditEvent e = events.get(0);
+        AuditEvent e = events.stream()
+                .filter(event -> "settings.draft.discard".equals(event.getAction()))
+                .findFirst().orElseThrow();
         assertThat(e.getAction()).isEqualTo("settings.draft.discard");
         assertThat(e.getResource()).isEqualTo("draft:" + id);
         assertThat(e.getActor()).isEqualTo("root");
@@ -847,7 +853,9 @@ class RestApiHandlerConfigPublishTest {
         // Audit: before+after hashes captured (restore is a live mutation).
         List<AuditEvent> events = auditEvents();
         assertThat(events).hasSize(baseline + 1);
-        AuditEvent e = events.get(0);
+        AuditEvent e = events.stream()
+                .filter(event -> "settings.backup.restore".equals(event.getAction()))
+                .findFirst().orElseThrow();
         assertThat(e.getAction()).isEqualTo("settings.backup.restore");
         assertThat(e.getResource()).isEqualTo("backup:" + backupId);
         assertThat(e.getActor()).isEqualTo("root");

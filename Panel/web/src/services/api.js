@@ -5,9 +5,9 @@
  * All non-auth endpoints require `Authorization: Bearer <JWT>`.
  */
 
-import authService from './auth.js';
+import authService, { AuthSessionChangedError } from './auth.js';
 import i18n from '../i18n.js';
-import { getApiBaseUrl } from './connectionUrls.js';
+import { getApiBaseUrl, getConnectionGeneration } from './connectionUrls.js';
 
 export {
   clearConnectionUrls,
@@ -16,25 +16,25 @@ export {
   setConnectionUrls,
 } from './connectionUrls.js';
 
-/**
- * Single 401 → refresh → retry wrapper shared by apiFetch and getMetrics.
- * The `runner` callback performs the fetch and should rebuild its auth
- * header from `authService.getAuthHeader()` on each invocation, so a
- * successful refresh is picked up automatically on the retry. On a 401
- * from the first attempt we refresh the access token once and call
- * `runner` again; a refresh-induced 401 is surfaced, not retried, so we
- * never recurse infinitely. Centralizes the duplicated 401-handling
- * that previously lived in both apiFetch and getMetrics (MED1).
- * @param {function} runner - () => Promise<Response>
- * @param {string} base - API base URL (for refreshAccessToken)
- * @returns {Promise<Response>} the (possibly retried) fetch Response
- */
-async function withTokenRefresh(runner, base) {
+function captureRequestSession(base) {
+  const sessionId = authService.getSessionId();
+  const connection = getConnectionGeneration();
+  return () => {
+    if (authService.getSessionId() !== sessionId || getApiBaseUrl() !== base
+        || getConnectionGeneration() !== connection) throw new AuthSessionChangedError();
+  };
+}
+
+async function withTokenRefresh(runner, base, checkSession) {
+  checkSession();
   let response = await runner();
+  checkSession();
   if (response.status === 401) {
     const newToken = await authService.refreshAccessToken(base);
+    checkSession();
     if (newToken) {
       response = await runner();
+      checkSession();
     }
   }
   return response;
@@ -53,6 +53,7 @@ async function withTokenRefresh(runner, base) {
  */
 export async function apiFetch(path, options = {}, _isRetry = false) {
   const base = getApiBaseUrl();
+  const checkSession = captureRequestSession(base);
   const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
 
   const buildHeaders = () => ({
@@ -67,13 +68,16 @@ export async function apiFetch(path, options = {}, _isRetry = false) {
   try {
     // _isRetry guard: a refresh-induced 401 (or a refresh endpoint 401)
     // surfaces directly without recursing into withTokenRefresh again.
-    response = _isRetry ? await runner() : await withTokenRefresh(runner, base);
+    response = _isRetry ? await runner() : await withTokenRefresh(runner, base, checkSession);
+    checkSession();
   } catch (err) {
+    checkSession();
+    if (err instanceof AuthSessionChangedError) throw err;
     throw new Error(i18n.t('common.api_error_connect', { error: err.message || err }));
   }
 
   let data = null;
-  const text = await response.text();
+  const text = await response.text().finally(checkSession);
   if (text) {
     try {
       data = JSON.parse(text);
@@ -458,16 +462,19 @@ export async function getHealth() {
  */
 export async function getMetrics() {
   const base = getApiBaseUrl();
+  const checkSession = captureRequestSession(base);
   const url = `${base}/metrics`;
   const buildHeaders = () => ({ ...authService.getAuthHeader() });
   const runner = () => fetch(url, { headers: buildHeaders() });
   let response;
   try {
-    response = await withTokenRefresh(runner, base);
+    response = await withTokenRefresh(runner, base, checkSession);
   } catch (err) {
+    checkSession();
+    if (err instanceof AuthSessionChangedError) throw err;
     throw new Error(i18n.t('common.api_error_connect', { error: err.message || err }));
   }
-  const text = await response.text();
+  const text = await response.text().finally(checkSession);
   if (!response.ok) {
     const error = new Error(
       i18n.t('common.api_error_request', { status: response.status })

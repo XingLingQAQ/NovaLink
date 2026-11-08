@@ -56,6 +56,7 @@ class CampaignManagerTest {
                 .scope(ChannelScope.GLOBAL)
                 .build());
         manager = new CampaignManager(permissionManager, channelManager);
+        manager.setAnnouncementSender((channel, content) -> {});
         manager.initialize();
     }
 
@@ -297,10 +298,11 @@ class CampaignManagerTest {
         assertThat(a2.isSuccess()).as(a2.getMessage()).isTrue();
         assertThat(manager.currentHourDeliveryCount(CHANNEL_ID)).isEqualTo(2);
 
-        // Activate c3 (cap=2 → deliverOnce returns rateLimited; activation
-        // succeeds but the delivery is skipped).
+        // A rate-limited campaign stays retryable.
         CampaignResult a3 = manager.scheduleCampaign(c3.getCampaign().getId(), UUID.randomUUID(), true);
-        assertThat(a3.isSuccess()).as(a3.getMessage()).isTrue();
+        assertThat(a3.isSuccess()).isFalse();
+        assertThat(a3.getErrorCode()).isEqualTo(CampaignResult.CODE_RATE_LIMITED);
+        assertThat(c3.getCampaign().getStatus()).isEqualTo(CampaignStatus.PREVIEW);
         // Counter stays at the cap (the third delivery was rate-limited).
         assertThat(manager.currentHourDeliveryCount(CHANNEL_ID)).isEqualTo(2);
         // Only 2 actual sends happened.

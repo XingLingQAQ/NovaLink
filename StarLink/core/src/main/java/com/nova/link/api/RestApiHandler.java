@@ -3733,6 +3733,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         if (NovaConstants.ERROR_INTERNAL.equals(errorCode)) {
             return HttpResponseStatus.INTERNAL_SERVER_ERROR;
         }
+        if (NovaConstants.ERROR_CONFLICT.equals(errorCode)) {
+            return HttpResponseStatus.CONFLICT;
+        }
         return HttpResponseStatus.BAD_REQUEST;
     }
 
@@ -4492,7 +4495,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
      * <p>Body: {@code {decision, note}}. {@code decision} ∈
      * {@code {APPROVED, DENIED, ESCALATED}} maps directly to
      * {@link AppealStatus} via {@code valueOf}. The reviewer must differ from
-     * the case's assigned moderator (NC-403, surfaced to the UI as a self-review hint).
+     * the case's moderator (NC-403). Only SUPER_ADMIN can finalize ESCALATED
+     * appeals; completed decisions and stale writes return NC-409.
      */
     private void handleReviewAppeal(ChannelHandlerContext ctx, FullHttpRequest request,
                                     String appealId, Claims claims) {
@@ -4532,7 +4536,8 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         String reviewedBy = panelUsername(claims);
         String actor = reviewedBy;
         try {
-            Appeal updated = moderationManager.reviewAppeal(appealId, status, reviewedBy, note, actor);
+            Appeal updated = moderationManager.reviewAppeal(appealId, status, reviewedBy, note, actor,
+                    resourcePolicy.resolveRole(claims) == PanelRole.SUPER_ADMIN);
             JsonObject response = new JsonObject();
             response.addProperty("appealId", updated.getId());
             response.addProperty("status", updated.getStatus().name());

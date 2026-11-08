@@ -65,16 +65,18 @@ function AppealQueue({ theme, mode, onToast, role }) {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const requestGeneration = useRef(0);
 
   // Review modal state.
   const [reviewTarget, setReviewTarget] = useState(null);
   const [reviewDraft, setReviewDraft] = useState({ decision: '', note: '' });
   const [reviewPending, setReviewPending] = useState(false);
-  const [selfReviewHint, setSelfReviewHint] = useState(false);
+  const [reviewError, setReviewError] = useState(null);
 
   const canReview = can(role, 'appeals.review');
 
   const fetchPage = useCallback(async (pageToLoad, applied) => {
+    const generation = ++requestGeneration.current;
     setLoading(true);
     setError(null);
     try {
@@ -83,22 +85,26 @@ function AppealQueue({ theme, mode, onToast, role }) {
         size: PAGE_SIZE,
         status: applied.status,
       });
+      if (generation !== requestGeneration.current) return;
       const list = res && Array.isArray(res.items) ? res.items : [];
       setItems(list);
       setTotal(res && typeof res.total === 'number' ? res.total : list.length);
       setPage(pageToLoad);
     } catch (err) {
+      if (generation !== requestGeneration.current) return;
       setItems([]);
       setTotal(0);
       setPage(pageToLoad);
       setError(err.message || String(err));
     } finally {
-      setLoading(false);
+      if (generation === requestGeneration.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    const generation = requestGeneration;
     fetchPage(1, appliedRef.current);
+    return () => { generation.current++; };
   }, [fetchPage]);
 
   const handleSearch = useCallback(() => {
@@ -118,18 +124,18 @@ function AppealQueue({ theme, mode, onToast, role }) {
   const openReview = useCallback((appeal) => {
     setReviewTarget(appeal);
     setReviewDraft({ decision: '', note: '' });
-    setSelfReviewHint(false);
+    setReviewError(null);
   }, []);
 
   const closeReview = useCallback(() => {
     setReviewTarget(null);
-    setSelfReviewHint(false);
+    setReviewError(null);
   }, []);
 
   const handleReview = useCallback(async () => {
     if (!reviewTarget || !reviewDraft.decision) return;
     setReviewPending(true);
-    setSelfReviewHint(false);
+    setReviewError(null);
     try {
       await api.reviewAppeal(reviewTarget.appealId, {
         decision: reviewDraft.decision,
@@ -139,10 +145,8 @@ function AppealQueue({ theme, mode, onToast, role }) {
       closeReview();
       fetchPage(page, appliedRef.current);
     } catch (err) {
-      // 403 from the review endpoint means the backend blocked self-review
-      // (reviewer == case.assignedModerator). Surface the dedicated hint.
       if (err.status === 403) {
-        setSelfReviewHint(true);
+        setReviewError(t('appeals.toast_review_failed', { error: err.message || String(err) }));
       } else if (onToast) {
         onToast(t('appeals.toast_review_failed', { error: err.message }), 'error');
       }
@@ -252,7 +256,7 @@ function AppealQueue({ theme, mode, onToast, role }) {
                     <td className="px-4 py-2 whitespace-nowrap text-muted-foreground">{a.createdAt || '-'}</td>
                     {canReview && (
                       <td className="px-4 py-2 whitespace-nowrap">
-                        {a.status === 'PENDING' ? (
+                        {(a.status === 'PENDING' || (a.status === 'ESCALATED' && role === 'SUPER_ADMIN')) ? (
                           <Button
                             variant="outline"
                             size="sm"
@@ -342,11 +346,10 @@ function AppealQueue({ theme, mode, onToast, role }) {
               </div>
             )}
 
-            {/* Self-review hint — rendered when the backend returned 403. */}
-            {selfReviewHint && (
+            {reviewError && (
               <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
                 <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-                <p>{t('appeals.self_review_hint')}</p>
+                <p>{reviewError}</p>
               </div>
             )}
 
@@ -355,7 +358,8 @@ function AppealQueue({ theme, mode, onToast, role }) {
               <CustomSelect
                 theme={theme}
                 mode={mode}
-                options={DECISION_OPTIONS.map((o) => ({ value: o.value, label: t(o.label) }))}
+                options={DECISION_OPTIONS.filter((o) => reviewTarget?.status !== 'ESCALATED' || o.value !== 'ESCALATED')
+                  .map((o) => ({ value: o.value, label: t(o.label) }))}
                 defaultValue={reviewDraft.decision}
                 onChange={(v) => setReviewDraft((prev) => ({ ...prev, decision: v }))}
                 aria-label={t('appeals.decision_label')}

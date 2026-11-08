@@ -191,16 +191,16 @@ public class ModerationManager {
     /**
      * Assigns a moderator to a case and flips its status to
      * {@link CaseStatus#UNDER_REVIEW}. A case that has already been closed or
-     * resolved cannot be re-assigned ({@code NC-403}).
+     * resolved or appealed cannot be re-assigned ({@code NC-403}).
      *
      * @return the updated case
      */
     public ModerationCase assignCase(String caseId, String assignedModerator, String actor) {
         ModerationCase existing = requireCase(caseId);
-        if (existing.getStatus() == CaseStatus.CLOSED) {
-            throw new ModerationException(NovaConstants.ERROR_FORBIDDEN, "Cannot assign a closed case");
+        if (existing.getStatus() != CaseStatus.OPEN && existing.getStatus() != CaseStatus.UNDER_REVIEW) {
+            throw new ModerationException(NovaConstants.ERROR_FORBIDDEN, "Can only assign an OPEN or UNDER_REVIEW case");
         }
-        long now = System.currentTimeMillis();
+        long now = nextUpdate(existing);
         ModerationCase updated = new ModerationCase(
                 existing.getId(), existing.getSubjectPlayerId(), existing.getSubjectDisplayName(),
                 existing.getReporterName(), existing.getReporterSource(), existing.getSource(),
@@ -208,7 +208,7 @@ public class ModerationManager {
                 CaseStatus.UNDER_REVIEW, assignedModerator, existing.getResolutionAction(),
                 existing.getResolutionNote(), existing.getContentHash(),
                 existing.getCreatedAt(), now, existing.getClosedAt());
-        persistCase(updated, "moderation.case.assign", actor, existing.getContentHash());
+        persistCase(existing, updated, "moderation.case.assign", actor, existing.getContentHash());
         return updated;
     }
 
@@ -232,7 +232,7 @@ public class ModerationManager {
             throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "resolutionAction is required");
         }
         validateBounded("resolutionNote", resolutionNote, REASON_MAX);
-        long now = System.currentTimeMillis();
+        long now = nextUpdate(existing);
         CaseStatus nextStatus = action == ResolutionAction.DISMISSED
                 ? CaseStatus.CLOSED : CaseStatus.RESOLVED;
         // closedAt is only stamped when a case is actually closed (DISMISSED);
@@ -249,10 +249,10 @@ public class ModerationManager {
                 existing.getId(), existing.getSubjectPlayerId(), existing.getSubjectDisplayName(),
                 existing.getReporterName(), existing.getReporterSource(), existing.getSource(),
                 existing.getChannelId(), existing.getReason(), existing.getSnapshot(),
-                nextStatus, existing.getAssignedModerator(), action,
+                nextStatus, existing.getAssignedModerator() == null ? actor : existing.getAssignedModerator(), action,
                 resolutionNote, existing.getContentHash(),
                 existing.getCreatedAt(), now, closedAt);
-        persistCase(updated, "moderation.case.resolve", actor, existing.getContentHash());
+        persistCase(existing, updated, "moderation.case.resolve", actor, existing.getContentHash());
         return updated;
     }
 
@@ -323,27 +323,18 @@ public class ModerationManager {
         String appealId = UUID.randomUUID().toString();
         Appeal appeal = new Appeal(appealId, caseId, appellant, appealReason,
                 AppealStatus.PENDING, null, null, null, hash, now);
+        ModerationCase updated = caseState(existing, CaseStatus.APPEALED, nextUpdate(existing), null);
         try {
-            databaseProvider.saveAppeal(appeal);
+            if (!databaseProvider.createAppealAndUpdateCase(appeal, existing, updated)) {
+                recordAudit(actor, "moderation.appeal.create", "appeal:" + appealId,
+                        hash, null, appealReason, "failure");
+                throw new ModerationException(NovaConstants.ERROR_CONFLICT,
+                        "Case changed or already has an open appeal. Refresh and try again");
+            }
         } catch (DatabaseException e) {
             recordAudit(actor, "moderation.appeal.create", "appeal:" + appealId,
                     hash, null, appealReason, "failure");
             throw new ModerationException(NovaConstants.ERROR_INTERNAL, "Failed to persist appeal: " + e.getMessage());
-        }
-        // Flip the case to APPEALED so listings reflect the open appeal.
-        long nowCase = System.currentTimeMillis();
-        ModerationCase updated = new ModerationCase(
-                existing.getId(), existing.getSubjectPlayerId(), existing.getSubjectDisplayName(),
-                existing.getReporterName(), existing.getReporterSource(), existing.getSource(),
-                existing.getChannelId(), existing.getReason(), existing.getSnapshot(),
-                CaseStatus.APPEALED, existing.getAssignedModerator(), existing.getResolutionAction(),
-                existing.getResolutionNote(), existing.getContentHash(),
-                existing.getCreatedAt(), nowCase, existing.getClosedAt());
-        try {
-            databaseProvider.saveModerationCase(updated);
-        } catch (DatabaseException e) {
-            // Non-fatal: the appeal itself was saved. Log and continue.
-            logger.warn("Failed to flip case {} to APPEALED: {}", caseId, e.getMessage());
         }
         recordAudit(actor, "moderation.appeal.create", "appeal:" + appealId,
                 null, hash, appealReason, "success");
@@ -360,38 +351,38 @@ public class ModerationManager {
     }
 
     /**
-     * Reviews an appeal, setting its status to a reviewed value.
-     *
-     * <p><b>Hard 403 — reviewer isolation:</b> {@code reviewedBy} must differ
-     * from the case's {@code assignedModerator}. If they are the same (and the
-     * case had an assigned moderator), this throws {@link ModerationException}
-     * with code {@code NC-403} <em>before</em> persisting anything, and records
-     * a {@code moderation.appeal.review.failure} audit event so the attempted
-     * self-review is visible. This is deliberately NOT a silent fallback to a
-     * default reviewer — the per-user notification pattern uses a fallback for
-     * a missing userId, but the appeal-reviewer rule must fail loudly.
-     *
-     * <p>PANEL-007 contract drift: the locked frontend sends
-     * {@code APPROVED/DENIED/ESCALATED}; the original backend javadoc named
-     * {@code REJECTED}. All non-PENDING values are accepted here so the panel
-     * UI and legacy callers agree on the same {@link AppealStatus} name space
-     * (only {@link AppealStatus#PENDING} is rejected as a review outcome).
-     *
-     * @param appealId    the appeal UUID
-     * @param status      APPROVED, REJECTED, DENIED or ESCALATED (PENDING is invalid)
-     * @param reviewedBy  the reviewing operator's username
-     * @param reviewNote  a free-form note (may be null)
-     * @param actor       the panel username for audit attribution
-     * @return the updated appeal
+     * Reviews a PENDING appeal. Final decisions close the case; ESCALATED
+     * leaves it awaiting a senior reviewer. The original moderator cannot
+     * review their case (NC-403), and completed decisions cannot be replaced
+     * (NC-409). The review and case transition are persisted atomically.
      */
     public Appeal reviewAppeal(String appealId, AppealStatus status,
                                String reviewedBy, String reviewNote, String actor) {
+        return reviewAppeal(appealId, status, reviewedBy, reviewNote, actor, false);
+    }
+
+    /** The trusted caller supplies seniorReviewer to finalize ESCALATED appeals. */
+    public Appeal reviewAppeal(String appealId, AppealStatus status,
+                               String reviewedBy, String reviewNote, String actor, boolean seniorReviewer) {
         Appeal appeal = requireAppeal(appealId);
+        if (appeal.getStatus() != AppealStatus.PENDING && appeal.getStatus() != AppealStatus.ESCALATED) {
+            throw new ModerationException(NovaConstants.ERROR_CONFLICT,
+                    "Appeal already reviewed. Refresh the queue to see the decision");
+        }
+        if (appeal.getStatus() == AppealStatus.ESCALATED && !seniorReviewer) {
+            throw new ModerationException(NovaConstants.ERROR_FORBIDDEN, "Escalated appeals require a senior reviewer");
+        }
+        if (appeal.getStatus() == AppealStatus.ESCALATED && status == AppealStatus.ESCALATED) {
+            throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST, "Choose a final decision for an escalated appeal");
+        }
         if (status == null || status == AppealStatus.PENDING) {
             throw new ModerationException(NovaConstants.ERROR_BAD_REQUEST,
                     "Appeal review status must be APPROVED, REJECTED, DENIED or ESCALATED");
         }
         ModerationCase caseRecord = requireCase(appeal.getCaseId());
+        if (caseRecord.getStatus() != CaseStatus.APPEALED) {
+            throw new ModerationException(NovaConstants.ERROR_FORBIDDEN, "Case is not awaiting appeal review");
+        }
         String caseModerator = caseRecord.getAssignedModerator();
         if (caseModerator != null && !caseModerator.isBlank()
                 && caseModerator.equals(reviewedBy)) {
@@ -402,9 +393,18 @@ public class ModerationManager {
                     "Appeal reviewer must differ from the case moderator");
         }
         validateBounded("reviewNote", reviewNote, REASON_MAX);
-        long now = System.currentTimeMillis();
+        long now = nextUpdate(caseRecord);
+        CaseStatus nextStatus = status == AppealStatus.ESCALATED ? CaseStatus.APPEALED : CaseStatus.CLOSED;
+        Long closedAt = nextStatus == CaseStatus.CLOSED ? Long.valueOf(now) : null;
+        ModerationCase updated = caseState(caseRecord, nextStatus, now, closedAt);
+        Appeal reviewed = new Appeal(appeal.getId(), appeal.getCaseId(), appeal.getAppellant(),
+                appeal.getAppealReason(), status, reviewedBy, reviewNote, now, appeal.getContentHash(), appeal.getCreatedAt());
         try {
-            databaseProvider.updateAppealReview(appealId, status, reviewedBy, reviewNote, now);
+            if (!databaseProvider.reviewAppealAndUpdateCase(appeal, reviewed, caseRecord, updated)) {
+                recordAudit(actor, "moderation.appeal.review", "appeal:" + appealId,
+                        appeal.getContentHash(), null, reviewNote, "failure");
+                throw new ModerationException(NovaConstants.ERROR_CONFLICT, "Case or appeal changed during review. Refresh and try again");
+            }
         } catch (DatabaseException e) {
             recordAudit(actor, "moderation.appeal.review", "appeal:" + appealId,
                     appeal.getContentHash(), null, reviewNote, "failure");
@@ -412,8 +412,7 @@ public class ModerationManager {
         }
         recordAudit(actor, "moderation.appeal.review", "appeal:" + appealId,
                 null, appeal.getContentHash(), reviewNote, "success");
-        // Re-hydrate so the caller sees the reviewedBy/reviewedAt/status.
-        return requireAppeal(appealId);
+        return reviewed;
     }
 
     /**
@@ -516,9 +515,25 @@ public class ModerationManager {
         }
     }
 
-    private void persistCase(ModerationCase updated, String action, String actor, String contentHash) {
+    private static long nextUpdate(ModerationCase existing) {
+        return Math.max(System.currentTimeMillis(), existing.getUpdatedAt() + 1);
+    }
+
+    private static ModerationCase caseState(ModerationCase existing, CaseStatus status, long now, Long closedAt) {
+        return new ModerationCase(existing.getId(), existing.getSubjectPlayerId(), existing.getSubjectDisplayName(),
+                existing.getReporterName(), existing.getReporterSource(), existing.getSource(), existing.getChannelId(),
+                existing.getReason(), existing.getSnapshot(), status, existing.getAssignedModerator(),
+                existing.getResolutionAction(), existing.getResolutionNote(), existing.getContentHash(),
+                existing.getCreatedAt(), now, closedAt);
+    }
+
+    private void persistCase(ModerationCase expected, ModerationCase updated, String action, String actor, String contentHash) {
         try {
-            databaseProvider.saveModerationCase(updated);
+            if (!databaseProvider.compareAndSetModerationCase(expected, updated)) {
+                recordAudit(actor, action, "moderation_case:" + updated.getId(),
+                        contentHash, null, updated.getReason(), "failure");
+                throw new ModerationException(NovaConstants.ERROR_CONFLICT, "Case changed during update. Refresh and try again");
+            }
         } catch (DatabaseException e) {
             recordAudit(actor, action, "moderation_case:" + updated.getId(),
                     contentHash, null, updated.getReason(), "failure");

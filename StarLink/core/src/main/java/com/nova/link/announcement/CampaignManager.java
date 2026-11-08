@@ -33,15 +33,13 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 
 /**
- * In-memory campaign manager (§11.6 提案 06 — slice A: backend-only, zero
- * migration, reuses the existing announcements table for delivery).
+ * Campaign manager with optional persistence through {@link DatabaseProvider}.
  *
  * <p>A campaign is an orchestrated, scheduled, revocable announcement with a
  * strict PREVIEW → SCHEDULED → ACTIVE → {EXPIRED, REVOKED} state machine.
  * Campaigns never self-replicate: activation uses a one-shot
  * {@link ScheduledExecutorService#schedule} (no {@code scheduleAtFixedRate}),
- * mirroring the anti-orphan pattern from {@link AnnouncementManager}
- * (computeIfPresent atomic replace).
+ * with transitions and task replacement serialized on each campaign.
  *
  * <p><b>RBAC reality (honest gap):</b> docs 提案 06 requires separated
  * edit / publish / revoke capabilities. The current {@link PermissionManager}
@@ -64,7 +62,7 @@ import java.util.function.BiConsumer;
  * {@link com.nova.link.moderation.ModerationManager}.
  *
  * <p><b>Rate limit:</b> per-channel/per-hour delivery cap, enforced via a
- * sliding-hour counter ({@link #deliveryHourCounter}). The current hour is
+ * fixed-hour counter ({@link #deliveryHourCounter}). The current hour is
  * computed from {@link System#currentTimeMillis()} / 3_600_000 (no java.time
  * dependency). When the cap is exceeded, {@link CampaignResult#rateLimited}
  * is returned and the delivery is skipped.
@@ -273,94 +271,117 @@ public class CampaignManager {
         if (campaign == null) {
             return CampaignResult.notFound("Campaign not found: " + campaignId);
         }
-        if (!trustedOperator) {
-            CampaignResult denied = validatePermission(operatorId, campaign.getChannelId(),
-                    PermissionLevel.CLIENT_ADMIN, "campaign.publish");
-            if (denied != null) {
-                return denied;
+        synchronized (campaign) {
+            if (!trustedOperator) {
+                CampaignResult denied = validatePermission(operatorId, campaign.getChannelId(),
+                        PermissionLevel.CLIENT_ADMIN, "campaign.publish");
+                if (denied != null) {
+                    return denied;
+                }
             }
-        }
-        // Immediate activation path: startAt <= 0 → go straight to ACTIVE
-        // (PREVIEW → ACTIVE). This MUST be checked before the SCHEDULED
-        // transition check, because PREVIEW → SCHEDULED is also valid and
-        // would otherwise swallow the immediate-activation path.
-        if (campaign.getStartAt() <= 0) {
-            if (!CampaignStatus.isValidTransition(campaign.getStatus(), CampaignStatus.ACTIVE)) {
+            if (expireIfPast(campaign)) return CampaignResult.badRequest("Campaign has expired");
+            // Immediate activation path: startAt <= 0 → go straight to ACTIVE
+            // (PREVIEW → ACTIVE). This MUST be checked before the SCHEDULED
+            // transition check, because PREVIEW → SCHEDULED is also valid and
+            // would otherwise swallow the immediate-activation path.
+            if (campaign.getStartAt() <= 0) {
+                if (!CampaignStatus.isValidTransition(campaign.getStatus(), CampaignStatus.ACTIVE)) {
+                    return CampaignResult.badRequest(
+                            "Cannot schedule campaign in status " + campaign.getStatus());
+                }
+                return doActivate(campaign, operatorId);
+            }
+            if (!CampaignStatus.isValidTransition(campaign.getStatus(), CampaignStatus.SCHEDULED)) {
                 return CampaignResult.badRequest(
                         "Cannot schedule campaign in status " + campaign.getStatus());
             }
-            return doActivate(campaign, operatorId);
+            campaign.setStatus(CampaignStatus.SCHEDULED);
+            campaign.bumpScheduleRevision();
+            armActivation(campaign, operatorId);
+            persistCampaign(campaign);
+            recordAudit(operatorId == null ? null : operatorId.toString(),
+                    "campaign.schedule", "campaign:" + campaignId, null, null, null, "success");
+            logger.info("Campaign scheduled: {} by {} (rev={})",
+                    campaignId, operatorId, campaign.getScheduleRevision());
+            return CampaignResult.success("Campaign scheduled", campaign);
         }
-        if (!CampaignStatus.isValidTransition(campaign.getStatus(), CampaignStatus.SCHEDULED)) {
-            return CampaignResult.badRequest(
-                    "Cannot schedule campaign in status " + campaign.getStatus());
-        }
-        campaign.setStatus(CampaignStatus.SCHEDULED);
-        campaign.bumpScheduleRevision();
-        armActivation(campaign, operatorId);
-        persistCampaign(campaign);
-        recordAudit(operatorId == null ? null : operatorId.toString(),
-                "campaign.schedule", "campaign:" + campaignId, null, null, null, "success");
-        logger.info("Campaign scheduled: {} by {} (rev={})",
-                campaignId, operatorId, campaign.getScheduleRevision());
-        return CampaignResult.success("Campaign scheduled", campaign);
     }
 
     /**
-     * Activates a SCHEDULED campaign: SCHEDULED → ACTIVE, bumps revision,
-     * delivers once immediately (when a sender is wired and the rate limit
-     * allows).
+     * Activates a PREVIEW or SCHEDULED campaign after delivery succeeds.
+     * Failure preserves the source state for retry and does not consume quota.
      */
     public CampaignResult activateCampaign(String campaignId, UUID operatorId, boolean trustedOperator) {
         Campaign campaign = campaigns.get(campaignId);
         if (campaign == null) {
             return CampaignResult.notFound("Campaign not found: " + campaignId);
         }
-        if (!trustedOperator) {
-            CampaignResult denied = validatePermission(operatorId, campaign.getChannelId(),
-                    PermissionLevel.CLIENT_ADMIN, "campaign.publish");
-            if (denied != null) {
-                return denied;
+        synchronized (campaign) {
+            if (!trustedOperator) {
+                CampaignResult denied = validatePermission(operatorId, campaign.getChannelId(),
+                        PermissionLevel.CLIENT_ADMIN, "campaign.publish");
+                if (denied != null) {
+                    return denied;
+                }
             }
+            if (!CampaignStatus.isValidTransition(campaign.getStatus(), CampaignStatus.ACTIVE)) {
+                return CampaignResult.badRequest(
+                        "Cannot activate campaign in status " + campaign.getStatus());
+            }
+            return doActivate(campaign, operatorId);
         }
-        if (!CampaignStatus.isValidTransition(campaign.getStatus(), CampaignStatus.ACTIVE)) {
-            return CampaignResult.badRequest(
-                    "Cannot activate campaign in status " + campaign.getStatus());
-        }
-        return doActivate(campaign, operatorId);
     }
 
     private CampaignResult doActivate(Campaign campaign, UUID operatorId) {
+        if (expireIfPast(campaign)) return CampaignResult.badRequest("Campaign has expired");
+        CampaignResult deliveryResult = deliverOnce(campaign);
+        if (!deliveryResult.isSuccess()) {
+            cancelTask(campaign.getId());
+            armExpiry(campaign);
+            recordAudit(operatorId == null ? null : operatorId.toString(),
+                    "campaign.activate", "campaign:" + campaign.getId(), null, null, deliveryResult.getMessage(), "failure");
+            return deliveryResult;
+        }
         campaign.setStatus(CampaignStatus.ACTIVE);
         campaign.bumpScheduleRevision();
-        // Arm natural expiry if endAt is set.
-        if (campaign.getEndAt() > 0) {
-            long delay = campaign.getEndAt() - System.currentTimeMillis();
-            if (delay > 0 && scheduler != null && !scheduler.isShutdown()) {
-                try {
-                    ScheduledFuture<?> task = scheduler.schedule(
-                            () -> expireCampaign(campaign.getId()),
-                            delay, TimeUnit.MILLISECONDS);
-                    // Anti-orphan: atomically replace any existing task for this
-                    // campaign and cancel the previous one if present.
-                    ScheduledFuture<?> previous = scheduledTasks.put(campaign.getId(), task);
-                    if (previous != null && previous != task) {
-                        previous.cancel(false);
-                    }
-                } catch (RejectedExecutionException e) {
-                    logger.debug("Could not arm expiry for campaign {}: {}",
-                            campaign.getId(), e.toString());
-                }
-            }
-        }
-        CampaignResult deliveryResult = deliverOnce(campaign);
+        cancelTask(campaign.getId());
+        armExpiry(campaign);
         persistCampaign(campaign);
         recordAudit(operatorId == null ? null : operatorId.toString(),
                 "campaign.activate", "campaign:" + campaign.getId(), null, null, null, "success");
-        logger.info("Campaign activated: {} by {} (rev={}, delivery={})",
-                campaign.getId(), operatorId, campaign.getScheduleRevision(),
-                deliveryResult.isSuccess() ? "sent" : deliveryResult.getErrorCode());
         return CampaignResult.success("Campaign activated", campaign);
+    }
+
+    private void cancelTask(String campaignId) {
+        ScheduledFuture<?> task = scheduledTasks.remove(campaignId);
+        if (task != null) task.cancel(false);
+    }
+
+    private boolean expireIfPast(Campaign campaign) {
+        if (campaign.getEndAt() <= 0 || campaign.getEndAt() > System.currentTimeMillis()) return false;
+        if (campaign.getStatus() == CampaignStatus.REVOKED || campaign.getStatus() == CampaignStatus.EXPIRED) return true;
+        campaign.setStatus(CampaignStatus.EXPIRED);
+        campaign.bumpScheduleRevision();
+        cancelTask(campaign.getId());
+        persistCampaign(campaign);
+        recordAudit(null, "campaign.expire", "campaign:" + campaign.getId(), null, null, null, "success");
+        return true;
+    }
+
+    private void armExpiry(Campaign campaign) {
+        if (campaign.getEndAt() <= 0 || scheduler == null || scheduler.isShutdown()) return;
+        if (expireIfPast(campaign)) return;
+        try {
+            ScheduledFuture<?> task = scheduler.schedule(() -> {
+                synchronized (campaign) {
+                    expireIfPast(campaign);
+                }
+            }, Math.max(0, campaign.getEndAt() - System.currentTimeMillis()), TimeUnit.MILLISECONDS);
+            ScheduledFuture<?> previous = scheduledTasks.put(campaign.getId(), task);
+            if (previous != null) previous.cancel(false);
+        } catch (RejectedExecutionException error) {
+            logger.debug("Scheduler stopped before expiry was armed for {}", campaign.getId());
+        }
     }
 
     /**
@@ -372,29 +393,31 @@ public class CampaignManager {
         if (campaign == null) {
             return CampaignResult.notFound("Campaign not found: " + campaignId);
         }
-        if (!trustedOperator) {
-            CampaignResult denied = validatePermission(operatorId, campaign.getChannelId(),
-                    PermissionLevel.SUPER_ADMIN, "campaign.revoke");
-            if (denied != null) {
-                return denied;
+        synchronized (campaign) {
+            if (!trustedOperator) {
+                CampaignResult denied = validatePermission(operatorId, campaign.getChannelId(),
+                        PermissionLevel.SUPER_ADMIN, "campaign.revoke");
+                if (denied != null) {
+                    return denied;
+                }
             }
+            if (!CampaignStatus.isValidTransition(campaign.getStatus(), CampaignStatus.REVOKED)) {
+                return CampaignResult.badRequest(
+                        "Cannot revoke campaign in terminal status " + campaign.getStatus());
+            }
+            campaign.markRevoked(System.currentTimeMillis(), operatorId);
+            // Cancel any armed one-shot task (anti-orphan: if a concurrent path
+            // already removed the slot, there's nothing to cancel).
+            ScheduledFuture<?> task = scheduledTasks.remove(campaignId);
+            if (task != null) {
+                task.cancel(false);
+            }
+            persistCampaign(campaign);
+            recordAudit(operatorId == null ? null : operatorId.toString(),
+                    "campaign.revoke", "campaign:" + campaignId, null, null, null, "success");
+            logger.info("Campaign revoked: {} by {}", campaignId, operatorId);
+            return CampaignResult.success("Campaign revoked", campaign);
         }
-        if (!CampaignStatus.isValidTransition(campaign.getStatus(), CampaignStatus.REVOKED)) {
-            return CampaignResult.badRequest(
-                    "Cannot revoke campaign in terminal status " + campaign.getStatus());
-        }
-        campaign.markRevoked(System.currentTimeMillis(), operatorId);
-        // Cancel any armed one-shot task (anti-orphan: if a concurrent path
-        // already removed the slot, there's nothing to cancel).
-        ScheduledFuture<?> task = scheduledTasks.remove(campaignId);
-        if (task != null) {
-            task.cancel(false);
-        }
-        persistCampaign(campaign);
-        recordAudit(operatorId == null ? null : operatorId.toString(),
-                "campaign.revoke", "campaign:" + campaignId, null, null, null, "success");
-        logger.info("Campaign revoked: {} by {}", campaignId, operatorId);
-        return CampaignResult.success("Campaign revoked", campaign);
     }
 
     // ====================== read-only views ======================
@@ -419,25 +442,7 @@ public class CampaignManager {
 
     // ====================== internal helpers ======================
 
-    /**
-     * Loads persisted non-terminal campaigns (PREVIEW/SCHEDULED/ACTIVE) from
-     * the database into the in-memory map at startup. Terminal campaigns
-     * (EXPIRED/REVOKED) are NOT reloaded — their audit trail stays in the
-     * campaigns table but they do not re-enter the active campaign map. This
-     * mirrors {@link AnnouncementManager#loadPersistedAnnouncements()}.
-     *
-     * <p>Fail-open: when {@code databaseProvider} is null (slice A mode) or the
-     * load throws, this method returns 0 and the manager proceeds as a pure
-     * in-memory store. SCHEDULED campaigns with a future {@code startAt} are
-     * re-armed via {@link #armActivation(Campaign, UUID)} so their deferred
-     * activation fires after restart. ACTIVE campaigns with a future
-     * {@code endAt} have their expiry re-armed by {@link #doActivate} only on
-     * the next activation — here we simply restore them as ACTIVE without
-     * re-arming expiry (a missed expiry is acceptable: the campaign stays
-     * ACTIVE until manually revoked or re-activated).
-     *
-     * @return number of campaigns restored
-     */
+    /** Restores unexpired state and its next task without repeating an ACTIVE campaign's delivery. */
     public int loadPersistedCampaigns() {
         if (databaseProvider == null) {
             return 0;
@@ -451,13 +456,12 @@ public class CampaignManager {
                 if (status == CampaignStatus.EXPIRED || status == CampaignStatus.REVOKED) {
                     continue;
                 }
-                // Don't clobber a campaign that was already loaded (defensive
-                // — loadPersistedCampaigns should only be called once at startup).
-                campaigns.putIfAbsent(campaign.getId(), campaign);
-                // Re-arm deferred activation for SCHEDULED campaigns with a
-                // future startAt. Use a null operatorId (system restore).
-                if (status == CampaignStatus.SCHEDULED && campaign.getStartAt() > 0) {
-                    armActivation(campaign, null);
+                if (campaigns.putIfAbsent(campaign.getId(), campaign) != null) continue;
+                synchronized (campaign) {
+                    if (!expireIfPast(campaign)) {
+                        if (status == CampaignStatus.SCHEDULED) armActivation(campaign, null);
+                        else if (status == CampaignStatus.ACTIVE) armExpiry(campaign);
+                    }
                 }
                 restored++;
             }
@@ -496,7 +500,7 @@ public class CampaignManager {
      */
     private CampaignResult deliverOnce(Campaign campaign) {
         if (announcementSender == null) {
-            return CampaignResult.success("No sender wired (delivery skipped)");
+            return CampaignResult.internalError("Campaign delivery is unavailable");
         }
         long now = System.currentTimeMillis();
         long hourBucket = now / 3_600_000L;
@@ -511,88 +515,30 @@ public class CampaignManager {
                 return CampaignResult.rateLimited(
                         "Per-channel/per-hour rate limit exceeded for channel " + key);
             }
-            slot[1]++;
-        }
-        try {
-            announcementSender.accept(campaign.getChannelId(), campaign.getContent());
-        } catch (RuntimeException e) {
-            logger.warn("Campaign {} delivery threw: {}", campaign.getId(), e.toString());
+            try {
+                announcementSender.accept(campaign.getChannelId(), campaign.getContent());
+                slot[1]++;
+            } catch (RuntimeException e) {
+                logger.warn("Campaign {} delivery failed: {}", campaign.getId(), e.toString());
+                return CampaignResult.internalError("Campaign delivery failed");
+            }
         }
         return CampaignResult.success("Delivered");
     }
 
-    /** Scheduled one-shot: natural expiry ACTIVE → EXPIRED. */
-    private void expireCampaign(String campaignId) {
-        Campaign campaign = campaigns.get(campaignId);
-        if (campaign == null) {
-            return;
-        }
-        if (CampaignStatus.isValidTransition(campaign.getStatus(), CampaignStatus.EXPIRED)) {
-            campaign.setStatus(CampaignStatus.EXPIRED);
-            campaign.bumpScheduleRevision();
-            scheduledTasks.remove(campaignId);
-            persistCampaign(campaign);
-            recordAudit(null, "campaign.expire", "campaign:" + campaignId, null, null, null, "success");
-            logger.info("Campaign expired naturally: {}", campaignId);
-        }
-    }
-
-    /**
-     * Arms a one-shot activation task for a SCHEDULED campaign with a future
-     * {@code startAt}. Mirrors the computeIfPresent anti-orphan pattern from
-     * {@link AnnouncementManager#scheduleAnnouncement}.
-     */
     private void armActivation(Campaign campaign, UUID operatorId) {
-        if (campaign.getStartAt() <= 0) {
-            return;
-        }
-        if (scheduler == null || scheduler.isShutdown()) {
-            logger.warn("Scheduler not available, cannot arm activation for campaign: {}",
-                    campaign.getId());
-            return;
-        }
-        long delay = campaign.getStartAt() - System.currentTimeMillis();
-        if (delay <= 0) {
-            // Window already reached — activate immediately on the scheduler thread.
-            try {
-                ScheduledFuture<?> task = scheduler.schedule(() -> {
-                    if (CampaignStatus.isValidTransition(campaign.getStatus(),
-                            CampaignStatus.ACTIVE)) {
-                        doActivate(campaign, operatorId);
-                    }
-                }, 0, TimeUnit.MILLISECONDS);
-                // Anti-orphan: atomically replace any existing task for this
-                // campaign and cancel the previous one if present.
-                ScheduledFuture<?> previous = scheduledTasks.put(campaign.getId(), task);
-                if (previous != null && previous != task) {
-                    previous.cancel(false);
-                }
-            } catch (RejectedExecutionException e) {
-                logger.debug("Could not activate campaign {}: {}",
-                        campaign.getId(), e.toString());
-            }
-            return;
-        }
+        if (scheduler == null || scheduler.isShutdown() || expireIfPast(campaign)) return;
+        long delay = Math.max(0, campaign.getStartAt() - System.currentTimeMillis());
         try {
-            ScheduledFuture<?> task = scheduler.schedule(
-                    () -> {
-                        if (CampaignStatus.isValidTransition(campaign.getStatus(),
-                                CampaignStatus.ACTIVE)) {
-                            doActivate(campaign, operatorId);
-                        }
-                    },
-                    delay, TimeUnit.MILLISECONDS);
-            // Anti-orphan: atomically replace any existing task for this
-            // campaign and cancel the previous one if present. If a concurrent
-            // revoke already removed the slot, put re-adds it (legitimate — the
-            // campaign is SCHEDULED and should arm a task).
+            ScheduledFuture<?> task = scheduler.schedule(() -> {
+                synchronized (campaign) {
+                    if (campaign.getStatus() == CampaignStatus.SCHEDULED) doActivate(campaign, operatorId);
+                }
+            }, delay, TimeUnit.MILLISECONDS);
             ScheduledFuture<?> previous = scheduledTasks.put(campaign.getId(), task);
-            if (previous != null && previous != task) {
-                previous.cancel(false);
-            }
-        } catch (RejectedExecutionException e) {
-            logger.debug("Could not arm activation for campaign {}: {}",
-                    campaign.getId(), e.toString());
+            if (previous != null) previous.cancel(false);
+        } catch (RejectedExecutionException error) {
+            logger.debug("Scheduler stopped before activation was armed for {}", campaign.getId());
         }
     }
 

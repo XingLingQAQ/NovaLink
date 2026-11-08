@@ -105,28 +105,30 @@ test('moderation evidence 403 renders its failure in the opened case', async () 
   assert.ok(within(dialog).getByText('Report content'));
 });
 
-test('appeal self-review 403 keeps the decision and note and shows the actual refusal', async () => {
-  mock.method(api, 'listAppeals', async () => ({ items: [{ appealId: 'appeal-7', caseId: 'case-7', status: 'PENDING' }], total: 1 }));
-  const pending = deferred();
-  const review = mock.method(api, 'reviewAppeal', () => pending.promise);
-  render(React.createElement(AppealQueue, { role: 'SUPER_ADMIN', theme: 'clean', mode: 'light' }));
-  fireEvent.click(await screen.findByRole('button', { name: t('appeals.review_button') }));
-  const dialog = await screen.findByRole('dialog');
-  const select = within(dialog).getByRole('button', { name: t('appeals.decision_label') });
-  fireEvent.click(select);
-  fireEvent.click(within(dialog).getByRole('option', { name: t('appeals.decision_approved') }));
-  const note = within(dialog).getByPlaceholderText(t('appeals.review_note_placeholder'));
-  fireEvent.change(note, { target: { value: 'Evidence reviewed' } });
-  const submit = within(dialog).getByRole('button', { name: t('appeals.submit_review') });
-  fireEvent.click(submit);
-  fireEvent.click(submit);
-  assert.equal(review.mock.callCount(), 1);
-  await act(async () => pending.reject(Object.assign(new Error('Self review'), { status: 403 })));
-  assert.ok(within(dialog).getByText(t('appeals.self_review_hint')));
-  assert.equal(note.value, 'Evidence reviewed');
-  assert.ok(select.textContent.includes(t('appeals.decision_approved')));
-  assert.equal(submit.disabled, false);
-});
+for (const refusal of ['Self review', 'Escalated appeals require a senior reviewer']) {
+  test(`appeal 403 keeps the decision and note and shows the actual refusal: ${refusal}`, async () => {
+    mock.method(api, 'listAppeals', async () => ({ items: [{ appealId: 'appeal-7', caseId: 'case-7', status: 'PENDING' }], total: 1 }));
+    const pending = deferred();
+    const review = mock.method(api, 'reviewAppeal', () => pending.promise);
+    render(React.createElement(AppealQueue, { role: 'SUPER_ADMIN', theme: 'clean', mode: 'light' }));
+    fireEvent.click(await screen.findByRole('button', { name: t('appeals.review_button') }));
+    const dialog = await screen.findByRole('dialog');
+    const select = within(dialog).getByRole('button', { name: t('appeals.decision_label') });
+    fireEvent.click(select);
+    fireEvent.click(within(dialog).getByRole('option', { name: t('appeals.decision_approved') }));
+    const note = within(dialog).getByPlaceholderText(t('appeals.review_note_placeholder'));
+    fireEvent.change(note, { target: { value: 'Evidence reviewed' } });
+    const submit = within(dialog).getByRole('button', { name: t('appeals.submit_review') });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    assert.equal(review.mock.callCount(), 1);
+    await act(async () => pending.reject(Object.assign(new Error(refusal), { status: 403 })));
+    assert.ok(within(dialog).getByText(t('appeals.toast_review_failed', { error: refusal })));
+    assert.equal(note.value, 'Evidence reviewed');
+    assert.ok(select.textContent.includes(t('appeals.decision_approved')));
+    assert.equal(submit.disabled, false);
+  });
+}
 
 test('MessageHistory ignores the previous mount request and Enter cannot duplicate a pending load', async () => {
   const old = deferred(), current = deferred();
@@ -141,4 +143,70 @@ test('MessageHistory ignores the previous mount request and Enter cannot duplica
   await act(async () => old.resolve({ items: [{ id: 'old', content: 'Outdated response' }], total: 1 }));
   assert.equal(screen.queryByText('Outdated response'), null);
   assert.ok(screen.getByText('Current response'));
+});
+
+for (const oldFails of [false, true]) {
+  test(`AppealQueue ignores stale ${oldFails ? 'failure' : 'success'} without clearing the current load`, async () => {
+    const old = deferred(), current = deferred();
+    let reads = 0;
+    mock.method(api, 'listAppeals', () => ++reads === 1 ? old.promise : current.promise);
+    render(React.createElement(React.StrictMode, null, React.createElement(AppealQueue, { role: 'ADMIN' })));
+    assert.equal(reads, 2);
+    await act(async () => {
+      if (oldFails) old.reject(new Error('Stale error'));
+      else old.resolve({ items: [{ appealId: 'old', caseId: 'old-case', status: 'PENDING' }] });
+    });
+    assert.equal(screen.getByRole('button', { name: t('appeals.search') }).disabled, true);
+    assert.equal(screen.queryByText(/Stale error/), null);
+    await act(async () => current.resolve({ items: [{ appealId: 'current', caseId: 'new-case', status: 'PENDING' }], total: 1 }));
+    assert.ok(screen.getByText('current'));
+    assert.equal(screen.queryByText('old'), null);
+  });
+}
+
+test('AppealQueue keeps a newer completed list when the previous mount returns later', async () => {
+  const old = deferred();
+  let reads = 0;
+  mock.method(api, 'listAppeals', () => ++reads === 1 ? old.promise : Promise.resolve({ items: [{ appealId: 'current', status: 'PENDING' }], total: 1 }));
+  render(React.createElement(React.StrictMode, null, React.createElement(AppealQueue, { role: 'ADMIN' })));
+  await screen.findByText('current');
+  await act(async () => old.resolve({ items: [{ appealId: 'old', status: 'PENDING' }], total: 1 }));
+  assert.ok(screen.getByText('current'));
+  assert.equal(screen.queryByText('old'), null);
+});
+
+test('AppealQueue keeps the applied filter when an older read fails', async () => {
+  const old = deferred(), filtered = deferred();
+  let reads = 0;
+  const list = mock.method(api, 'listAppeals', () => {
+    reads++;
+    if (reads === 1) return old.promise;
+    if (reads === 2) return Promise.resolve({ items: [{ appealId: 'pending', status: 'PENDING' }], total: 1 });
+    return filtered.promise;
+  });
+  render(React.createElement(React.StrictMode, null, React.createElement(AppealQueue, { role: 'ADMIN' })));
+  await screen.findByText('pending');
+  fireEvent.click(screen.getByRole('button', { name: t('appeals.filter_status') }));
+  fireEvent.click(screen.getByRole('option', { name: t('appeals.status_denied') }));
+  fireEvent.click(screen.getByRole('button', { name: t('appeals.search') }));
+  assert.equal(list.mock.calls[2].arguments[0].status, 'DENIED');
+  await act(async () => old.reject(new Error('Old list error')));
+  assert.equal(screen.getByRole('button', { name: t('appeals.search') }).disabled, true);
+  assert.equal(screen.queryByText(/Old list error/), null);
+  await act(async () => filtered.resolve({ items: [{ appealId: 'filtered', status: 'DENIED' }], total: 1 }));
+  assert.ok(screen.getByText('filtered'));
+  assert.equal(screen.queryByText('pending'), null);
+});
+
+test('only a senior reviewer can continue an escalated appeal', async () => {
+  mock.method(api, 'listAppeals', async () => ({ items: [{ appealId: 'escalated', status: 'ESCALATED' }], total: 1 }));
+  const view = render(React.createElement(AppealQueue, { role: 'ADMIN' }));
+  await screen.findByText('escalated');
+  assert.equal(screen.queryByRole('button', { name: t('appeals.review_button') }), null);
+  view.rerender(React.createElement(AppealQueue, { role: 'SUPER_ADMIN' }));
+  fireEvent.click(screen.getByRole('button', { name: t('appeals.review_button') }));
+  const dialog = screen.getByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: t('appeals.decision_label') }));
+  assert.ok(within(dialog).getByRole('option', { name: t('appeals.decision_approved') }));
+  assert.equal(within(dialog).queryByRole('option', { name: t('appeals.decision_escalated') }), null);
 });

@@ -7,6 +7,7 @@ import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.KeepAlivePacket;
+import com.nova.chat.common.protocol.packets.HandshakePacket;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -235,50 +236,58 @@ class ExecutorSplitTest {
         }
     }
 
-    /**
-     * Asserts that a blocked control task is cancelled by shutdown (no leak):
-     * after shutdown, the blocking handler has not run more times than the
-     * single allowed entry, and shutdown returns within a reasonable bound.
-     */
     @Test
-    @DisplayName("shutdown cancels pending tasks without leaking")
+    @DisplayName("shutdown retires queued work before releasing the running handler")
     void shutdownCancelsPendingTasks() throws Exception {
+        checkShutdown(false);
+    }
+
+    @Test
+    @DisplayName("shutdown interrupts a blocked handler after the grace period")
+    void shutdownInterruptsBlockedHandler() throws Exception {
+        checkShutdown(true);
+    }
+
+    private void checkShutdown(boolean force) throws Exception {
         ServerNetworkHandler handler = new ServerNetworkHandler(1, true);
         ClientConnection conn = connection(handler);
-        CountDownLatch blockerEntered = new CountDownLatch(1);
-        CountDownLatch releaseBlocker = new CountDownLatch(1);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch retired = new CountDownLatch(1);
+        CountDownLatch startShutdown = new CountDownLatch(1);
+        CountDownLatch interrupted = new CountDownLatch(1);
         AtomicInteger handled = new AtomicInteger();
+        handler.setDisconnectListener((connection, active) -> retired.countDown());
+        Thread shutdownThread = new Thread(() -> { await(startShutdown); handler.shutdown(); });
         try {
-            handler.registerHandler(KeepAlivePacket.class, (connection, packet) -> {
-                blockerEntered.countDown();
+            // Authentication releases its generation lock before invoking business work.
+            handler.registerHandler(HandshakePacket.class, (connection, packet) -> {
                 handled.incrementAndGet();
-                await(releaseBlocker);
+                entered.countDown();
+                try { release.await(); }
+                catch (InterruptedException error) { interrupted.countDown(); Thread.currentThread().interrupt(); }
             });
-
-            // Block the single control thread, then queue 5 more control tasks.
-            handler.handlePacket(conn, new KeepAlivePacket(1L));
-            assertThat(blockerEntered.await(5, TimeUnit.SECONDS)).isTrue();
-            for (int i = 0; i < 5; i++) {
-                handler.handlePacket(conn, new KeepAlivePacket(2L + i));
-            }
-
-            // shutdown() drains the queue with shutdownNow(); pending tasks are
-            // cancelled. The blocking task completes when releaseBlocker flips.
-            // Run shutdown in a thread so we can assert it terminates.
-            Thread shutdownThread = new Thread(handler::shutdown);
+            handler.registerHandler(KeepAlivePacket.class, (connection, packet) -> handled.incrementAndGet());
+            handler.handlePacket(conn, new HandshakePacket());
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
             shutdownThread.start();
-            // Give shutdownNow a chance to cancel pending tasks. The blocking
-            // task is still running (releaseBlocker not yet counted down), but
-            // shutdownNow's drain must have cleared the queued ones.
-            Thread.sleep(200L);
-            releaseBlocker.countDown();
+            for (int i = 0; i < 5; i++) handler.handlePacket(conn, new KeepAlivePacket(2L + i));
+            assertThat(handler.getControlQueueDepth()).isEqualTo(5);
+            startShutdown.countDown();
+            assertThat(retired.await(5, TimeUnit.SECONDS)).isTrue();
+            if (force) assertThat(interrupted.await(10, TimeUnit.SECONDS)).isTrue();
+            else release.countDown();
             shutdownThread.join(10_000L);
             assertThat(shutdownThread.isAlive()).isFalse();
-            // Only the first blocker ran; the 5 queued tasks were cancelled.
             assertThat(handled.get()).isEqualTo(1);
+            assertThat(handler.getControlQueueDepth()).isZero();
+            assertThat(conn.isActive()).isFalse();
         } finally {
-            releaseBlocker.countDown();
+            startShutdown.countDown();
+            release.countDown();
+            shutdownThread.join(10_000L);
             handler.shutdown();
+            ((EmbeddedChannel) conn.getChannel()).finishAndReleaseAll();
         }
     }
 

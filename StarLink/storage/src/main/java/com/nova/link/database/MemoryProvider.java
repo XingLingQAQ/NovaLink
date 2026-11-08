@@ -793,7 +793,55 @@ public class MemoryProvider implements DatabaseProvider {
     private long caseEvidenceIdSeq = 0;
 
     @Override
-    public void saveModerationCase(com.nova.link.moderation.ModerationCase moderationCase) throws DatabaseException {
+    public synchronized boolean compareAndSetModerationCase(com.nova.link.moderation.ModerationCase expected,
+                                                            com.nova.link.moderation.ModerationCase updated)
+            throws DatabaseException {
+        checkConnection();
+        if (!matchesCase(expected)) return false;
+        moderationCases.put(updated.getId(), updated);
+        return true;
+    }
+
+    private boolean matchesCase(com.nova.link.moderation.ModerationCase expected) {
+        var current = moderationCases.get(expected.getId());
+        return current != null && current.getStatus() == expected.getStatus()
+                && current.getUpdatedAt() == expected.getUpdatedAt()
+                && java.util.Objects.equals(current.getAssignedModerator(), expected.getAssignedModerator());
+    }
+
+    @Override
+    public synchronized boolean createAppealAndUpdateCase(com.nova.link.moderation.Appeal appeal,
+                                                          com.nova.link.moderation.ModerationCase expected,
+                                                          com.nova.link.moderation.ModerationCase updated)
+            throws DatabaseException {
+        checkConnection();
+        if (!matchesCase(expected) || appeals.containsKey(appeal.getId())) return false;
+        for (var current : appeals.values()) {
+            if (expected.getId().equals(current.getCaseId())
+                    && (current.getStatus() == com.nova.link.moderation.AppealStatus.PENDING
+                    || current.getStatus() == com.nova.link.moderation.AppealStatus.ESCALATED)) return false;
+        }
+        appeals.put(appeal.getId(), appeal);
+        moderationCases.put(updated.getId(), updated);
+        return true;
+    }
+
+    @Override
+    public synchronized boolean reviewAppealAndUpdateCase(com.nova.link.moderation.Appeal expectedAppeal,
+                                                          com.nova.link.moderation.Appeal reviewedAppeal,
+                                                          com.nova.link.moderation.ModerationCase expected,
+                                                          com.nova.link.moderation.ModerationCase updated)
+            throws DatabaseException {
+        checkConnection();
+        var current = appeals.get(expectedAppeal.getId());
+        if (!matchesCase(expected) || current == null || current.getStatus() != expectedAppeal.getStatus()) return false;
+        appeals.put(reviewedAppeal.getId(), reviewedAppeal);
+        moderationCases.put(updated.getId(), updated);
+        return true;
+    }
+
+    @Override
+    public synchronized void saveModerationCase(com.nova.link.moderation.ModerationCase moderationCase) throws DatabaseException {
         checkConnection();
         if (moderationCase == null || moderationCase.getId() == null) {
             throw new DatabaseException("ModerationCase and id cannot be null");
@@ -803,7 +851,7 @@ public class MemoryProvider implements DatabaseProvider {
     }
 
     @Override
-    public Optional<com.nova.link.moderation.ModerationCase> getModerationCase(String caseId) throws DatabaseException {
+    public synchronized Optional<com.nova.link.moderation.ModerationCase> getModerationCase(String caseId) throws DatabaseException {
         checkConnection();
         if (caseId == null) {
             return Optional.empty();
@@ -812,7 +860,7 @@ public class MemoryProvider implements DatabaseProvider {
     }
 
     @Override
-    public List<com.nova.link.moderation.ModerationCase> listModerationCases(int offset, int limit, String status) throws DatabaseException {
+    public synchronized List<com.nova.link.moderation.ModerationCase> listModerationCases(int offset, int limit, String status) throws DatabaseException {
         checkConnection();
         List<com.nova.link.moderation.ModerationCase> sorted = new ArrayList<>(moderationCases.values());
         sorted.sort((a, b) -> {
@@ -850,7 +898,7 @@ public class MemoryProvider implements DatabaseProvider {
     }
 
     @Override
-    public int countModerationCases(String status) throws DatabaseException {
+    public synchronized int countModerationCases(String status) throws DatabaseException {
         checkConnection();
         boolean filterStatus = status != null && !status.isEmpty();
         if (!filterStatus) {
@@ -866,7 +914,7 @@ public class MemoryProvider implements DatabaseProvider {
     }
 
     @Override
-    public void saveCaseEvidence(com.nova.link.moderation.CaseEvidence evidence) throws DatabaseException {
+    public synchronized void saveCaseEvidence(com.nova.link.moderation.CaseEvidence evidence) throws DatabaseException {
         checkConnection();
         if (evidence == null || evidence.getCaseId() == null) {
             throw new DatabaseException("CaseEvidence and caseId cannot be null");
@@ -886,7 +934,7 @@ public class MemoryProvider implements DatabaseProvider {
     }
 
     @Override
-    public List<com.nova.link.moderation.CaseEvidence> listCaseEvidence(String caseId) throws DatabaseException {
+    public synchronized List<com.nova.link.moderation.CaseEvidence> listCaseEvidence(String caseId) throws DatabaseException {
         checkConnection();
         if (caseId == null) {
             return Collections.emptyList();
@@ -904,7 +952,7 @@ public class MemoryProvider implements DatabaseProvider {
     }
 
     @Override
-    public void saveAppeal(com.nova.link.moderation.Appeal appeal) throws DatabaseException {
+    public synchronized void saveAppeal(com.nova.link.moderation.Appeal appeal) throws DatabaseException {
         checkConnection();
         if (appeal == null || appeal.getId() == null) {
             throw new DatabaseException("Appeal and id cannot be null");
@@ -914,7 +962,7 @@ public class MemoryProvider implements DatabaseProvider {
     }
 
     @Override
-    public Optional<com.nova.link.moderation.Appeal> getAppeal(String appealId) throws DatabaseException {
+    public synchronized Optional<com.nova.link.moderation.Appeal> getAppeal(String appealId) throws DatabaseException {
         checkConnection();
         if (appealId == null) {
             return Optional.empty();
@@ -923,7 +971,7 @@ public class MemoryProvider implements DatabaseProvider {
     }
 
     @Override
-    public List<com.nova.link.moderation.Appeal> listAppeals(int offset, int limit, String status) throws DatabaseException {
+    public synchronized List<com.nova.link.moderation.Appeal> listAppeals(int offset, int limit, String status) throws DatabaseException {
         checkConnection();
         List<com.nova.link.moderation.Appeal> sorted = new ArrayList<>(appeals.values());
         sorted.sort((a, b) -> {
@@ -961,7 +1009,7 @@ public class MemoryProvider implements DatabaseProvider {
     }
 
     @Override
-    public int countAppeals(String status) throws DatabaseException {
+    public synchronized int countAppeals(String status) throws DatabaseException {
         checkConnection();
         boolean filterStatus = status != null && !status.isEmpty();
         if (!filterStatus) {
@@ -977,7 +1025,7 @@ public class MemoryProvider implements DatabaseProvider {
     }
 
     @Override
-    public void updateAppealReview(String appealId, com.nova.link.moderation.AppealStatus status,
+    public synchronized void updateAppealReview(String appealId, com.nova.link.moderation.AppealStatus status,
                                    String reviewedBy, String reviewNote, long reviewedAt)
             throws DatabaseException {
         checkConnection();

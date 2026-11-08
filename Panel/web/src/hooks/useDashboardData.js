@@ -17,6 +17,7 @@ import {
   adaptBan,
 } from '../utils/adapters';
 import { useSettings } from './useSettings';
+import { useEntitySnapshot } from './useEntitySnapshot';
 import { getApiBaseUrl } from '../services/connectionUrls';
 
 export function useDashboardData({ addToast, currentUser }) {
@@ -28,8 +29,8 @@ export function useDashboardData({ addToast, currentUser }) {
 
   // Data state — initialized empty, populated from real REST + WS.
   const [statusData, setStatusData] = useState(null);
-  const [channels, setChannels] = useState([]);
-  const [players, setPlayers] = useState([]);
+  const [channels, setChannels, beginChannelsRead] = useEntitySnapshot();
+  const [players, setPlayers, beginPlayersRead] = useEntitySnapshot();
   const [webhooks, setWebhooks] = useState([]);
   const [webhooksLoading, setWebhooksLoading] = useState(false);
   const [mutedPlayers, setMutedPlayers] = useState([]);
@@ -52,6 +53,8 @@ export function useDashboardData({ addToast, currentUser }) {
   });
 
   const fetchAllData = useCallback(async () => {
+    const adoptChannels = beginChannelsRead();
+    const adoptPlayers = beginPlayersRead();
     setFetchError(null);
     // Per-endpoint failures are collected and surfaced as one visible toast.
     const failedAreas = [];
@@ -67,11 +70,11 @@ export function useDashboardData({ addToast, currentUser }) {
       if (statusRes) setStatusData(statusRes);
 
       if (channelsRes && Array.isArray(channelsRes.channels)) {
-        setChannels(channelsRes.channels.map(adaptChannel).filter(Boolean));
+        adoptChannels(channelsRes.channels.map(adaptChannel).filter(Boolean));
       }
 
       if (playersRes && Array.isArray(playersRes.players)) {
-        setPlayers(playersRes.players.map(adaptPlayer).filter(Boolean));
+        adoptPlayers(playersRes.players.map(adaptPlayer).filter(Boolean));
       }
 
       if (mutesRes && Array.isArray(mutesRes.mutes)) {
@@ -112,7 +115,7 @@ export function useDashboardData({ addToast, currentUser }) {
       setFetchError(err.message || tRef.current('common.load_failed'));
       setInitialLoading(false);
     }
-  }, [addToast, fetchSettings]);
+  }, [addToast, fetchSettings, beginChannelsRead, beginPlayersRead]);
 
   // Trigger initial fetch on mount.
   useEffect(() => {
@@ -121,27 +124,29 @@ export function useDashboardData({ addToast, currentUser }) {
 
   // Refresh only the channels list (used after channel CRUD).
   const fetchChannels = useCallback(async () => {
+    const adoptChannels = beginChannelsRead();
     try {
       const channelsRes = await api.getChannels();
       if (channelsRes && Array.isArray(channelsRes.channels)) {
-        setChannels(channelsRes.channels.map(adaptChannel).filter(Boolean));
+        adoptChannels(channelsRes.channels.map(adaptChannel).filter(Boolean));
       }
     } catch (err) {
       console.warn('[fetchChannels] failed:', err);
     }
-  }, []);
+  }, [beginChannelsRead]);
 
   // Refresh only the players list (used after kick).
   const fetchPlayers = useCallback(async () => {
+    const adoptPlayers = beginPlayersRead();
     try {
       const playersRes = await api.getPlayers();
       if (playersRes && Array.isArray(playersRes.players)) {
-        setPlayers(playersRes.players.map(adaptPlayer).filter(Boolean));
+        adoptPlayers(playersRes.players.map(adaptPlayer).filter(Boolean));
       }
     } catch (err) {
       console.warn('[fetchPlayers] failed:', err);
     }
-  }, []);
+  }, [beginPlayersRead]);
 
   // Refresh only the mutes list (used after mute/unmute).
   const fetchMutes = useCallback(async () => {

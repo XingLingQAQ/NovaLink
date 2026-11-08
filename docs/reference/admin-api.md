@@ -28,6 +28,8 @@ NovaLink 管理网关在同一个 HTTP 服务中提供认证、REST 与 WebSocke
 
 登录与刷新由专门的 HTTP 认证处理器完成。登录账户来自后端认证管理器；超级管理员可映射到管理面板身份。不要把密码或 token 放进 URL、浏览器历史、公开脚本或日志。[2] [3]
 
+面板请求绑定发出时的登录会话和后端地址。退出、重新登录或切换后端后，旧请求以 `AUTH_SESSION_CHANGED` 结束，不会使用新账号凭据刷新或重发。同一登录会话中的正常 token 轮换仍可触发一次 401 刷新重试。业务请求和原始文本格式的 `/api/metrics` 使用同一规则。[6] [7]
+
 ## 3. 频道与消息
 
 | 方法与路径 | 作用 | 请求体或参数 | 风险提示 |
@@ -74,6 +76,24 @@ curl --request POST "https://panel.example.invalid/api/messages" \
 
 REST 层将这些操作视作后台发起的管理动作。自动化系统应在调用前完成 UUID、频道 ID、持续时间和理由校验，并保存操作请求与响应记录。[1]
 
+### 4.1 案件与申诉
+
+| 方法与路径 | 请求体 | 状态约束 |
+| --- | --- | --- |
+| `POST /api/moderation/cases/{id}/assign` | `moderator` | 仅 `OPEN`、`UNDER_REVIEW` 可指派，成功后为 `UNDER_REVIEW`。 |
+| `POST /api/moderation/cases/{id}/resolve` | `action`、`reason?`、`targetChannelId?`、`durationMs?` | `action` 为 `warn/mute/ban/kick/dismiss`；仅 `OPEN`、`UNDER_REVIEW` 可处理，`dismiss` 进入 `CLOSED`，其余进入 `RESOLVED`。 |
+| `POST /api/appeals` | `caseId`、`appellantId`、`reason` | 仅 `RESOLVED` 可申诉；创建 `PENDING` 申诉并将案件改为 `APPEALED`。 |
+| `GET /api/appeals` | 查询参数 `page?`、`size?`、`status?` | 分页读取申诉队列。 |
+| `POST /api/appeals/{id}/review` | `decision`、`note?` | `PENDING` 可审核；`ESCALATED` 仅可由 `SUPER_ADMIN` 提交最终决定。 |
+
+案件处理接口记录处理结论；`targetChannelId`、`durationMs` 随处理意图写入备注。实际禁言、封禁和踢出仍使用本节前面的玩家治理接口。[1]
+
+指派、处理、创建申诉和审核需要 ADMIN 或以上的管理身份。原案件处理人的身份在处理完成后保留，`RESOLVED`、`APPEALED`、`CLOSED` 不能通过指派退回处理中；原处理人始终不能审核该案件申诉，包括使用 `SUPER_ADMIN` 身份时。[1] [8]
+
+`decision` 可取 `APPROVED`、`DENIED`、`REJECTED` 或 `ESCALATED`。前三项为最终决定，申诉与案件一起提交，案件变为 `CLOSED` 并记录 `closedAt`。`ESCALATED` 保持案件为 `APPEALED`；后续高级审核必须选择最终决定，不能再次升级。已完成决定或并发写入冲突返回 `409`（`NC-409`），调用方应刷新队列后重新判断操作。[8]
+
+申诉创建与案件状态转换、审核结论与案件结案分别在同一存储操作中完成。内存实现使用同一同步边界；JDBC 实现使用单连接事务和带原状态、更新时间及责任人的条件更新。写入失败回滚，不留下单边状态；并发创建或审核只有一方提交。[9]
+
 ## 5. 客户端、配置与功能设置
 
 | 方法与路径 | 作用 | 请求体或参数 | 风险提示 |
@@ -119,13 +139,32 @@ curl --request PUT "https://panel.example.invalid/api/settings" \
 
 Webhook REST 路由存在并操作运行时管理器，但示例 YAML 中的 `webhooks` 段目前被标注为未由配置加载器解析。请不要把“REST 可创建”误写成“编辑 YAML 后自动加载”。[1] [4]
 
+### 6.1 公告活动
+
+| 方法与路径 | 作用 | 参数与结果 |
+| --- | --- | --- |
+| `POST /api/campaigns` | 创建 `PREVIEW` 活动 | `channelId`、`content`、`platforms` 必需；`deliveryPolicy?`、`startAt?`、`endAt?`、`rateLimitPerHour?` 可选。 |
+| `GET /api/campaigns`、`GET /api/campaigns/{id}` | 查看活动 | 列表可用 `channelId` 筛选。 |
+| `POST /api/campaigns/{id}/schedule` | 安排活动 | `startAt=0` 时立即尝试投递；其他值进入 `SCHEDULED` 并安排一次激活。 |
+| `POST /api/campaigns/{id}/activate` | 立即激活或重试 | 接受 `PREVIEW`、`SCHEDULED`；成功投递后进入 `ACTIVE`。 |
+| `POST /api/campaigns/{id}/revoke` | 撤销活动 | 需要 `SUPER_ADMIN`；撤销后取消任务。 |
+
+创建、安排和激活需要 ADMIN 或以上身份，并通过目标频道的资源权限检查。发送回调不可用、抛错或路由拒绝时，立即激活返回 `500`；频道当前小时配额用尽返回 `429`（业务层 `NC-429`）。失败保留原有 `PREVIEW` 或 `SCHEDULED` 状态，不消耗成功发送配额。排除故障或等待配额恢复后，在活动结束前调用同一活动的 `/activate` 重试；已经 `ACTIVE` 的活动拒绝再次激活，避免重复发送。[1] [10]
+
+`startAt`、`endAt` 使用 Unix 毫秒，`endAt=0` 表示不设结束时间。启动恢复时，超过结束时间的记录直接变为 `EXPIRED`，不补发；未到期的 `ACTIVE` 只恢复到期任务，`SCHEDULED` 恢复激活任务。定时激活失败后保留可重试状态，并在有结束时间时安排到期任务。[10]
+
+活动投递成功表示发送回调完成、核心消息路由接受消息；当前没有玩家端送达确认。活动持久化沿用现有尽力写入约定，失败记日志；接口结果主要描述本次运行时投递与状态变化。[10] [11]
+
 ## 7. 错误处理与集成建议
 
 | 状态 | 常见含义 | 集成器应做什么 |
 | --- | --- | --- |
 | `400 Bad Request` | 缺少字段、UUID/枚举错误、无效 JSON 或被禁止的命令 | 修正请求，不要无条件重试。 |
 | `401 Unauthorized` | 缺少、过期或无效 token | 按认证流程刷新/重新登录；不要记录 token。 |
+| `403 Forbidden` | 角色不足、状态不允许操作或原处理人尝试审核申诉 | 按实际错误原因调整操作人或流程。 |
 | `404 Not Found` | 频道、玩家、客户端或 Webhook 不存在 | 先刷新本地缓存，检查是否为并发删除。 |
+| `409 Conflict` | 设置版本过期、案件或申诉并发变化、决定已经完成 | 刷新当前快照，保留未提交内容后重新判断。 |
+| `429 Too Many Requests` | 活动当前小时发送配额用尽 | 等待配额恢复，并在结束时间前重试原活动。 |
 | `503 Service Unavailable` | 相关子系统未启用或不可用 | 进行健康检查与告警，而不是盲目重试。 |
 | `500 Internal Server Error` | 后端操作失败 | 保存脱敏请求 ID/时间与响应，查阅后端日志。 |
 
@@ -138,3 +177,9 @@ Webhook REST 路由存在并操作运行时管理器，但示例 YAML 中的 `we
 [3]: ../operations/security.md "NovaLink 管理面安全基线"
 [4]: ../../examples/novalink.yml "Webhook 示例段的当前解析边界"
 [5]: ../../StarLink/core/src/main/java/com/nova/link/config/ConfigManager.java "配置重载与保存"
+[6]: ../../Panel/web/src/services/api.js "请求会话绑定与刷新重试"
+[7]: ../../Panel/web/src/services/auth.js "登录会话与 token 轮换"
+[8]: ../../StarLink/core/src/main/java/com/nova/link/moderation/ModerationManager.java "审核隔离、状态转换与冲突处理"
+[9]: ../../StarLink/storage/src/main/java/com/nova/link/database/AbstractJdbcProvider.java "案件与申诉事务"
+[10]: ../../StarLink/core/src/main/java/com/nova/link/announcement/CampaignManager.java "活动投递、失败重试与恢复调度"
+[11]: ../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java "活动发送回调与路由结果"

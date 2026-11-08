@@ -173,6 +173,7 @@ class RestApiHandlerCampaignTest {
         // Backed by the same in-memory DB + a fresh canonical AuditStore (the
         // manager records its own audit internally, mirroring ModerationManager).
         campaignManager = new CampaignManager(permissionManager, channelManager);
+        campaignManager.setAnnouncementSender((channel, content) -> {});
         campaignManager.setAuditStore(new com.nova.link.audit.AuditStore(db));
         campaignManager.initialize();
         handler.setCampaignManager(campaignManager);
@@ -339,6 +340,27 @@ class RestApiHandlerCampaignTest {
         assertThat(json.get("scheduleRevision").getAsLong()).isGreaterThan(0L);
         // Manager state reflects the transition.
         assertThat(campaignManager.getCampaign(id).getStatus()).isEqualTo(CampaignStatus.ACTIVE);
+    }
+
+    @Test
+    void rateLimitReturns429AndSenderFailureReturns500WithRetryableState() {
+        String first = createCampaignId();
+        campaignManager.setAnnouncementSender((channel, content) -> { throw new IllegalStateException("injected"); });
+        assertThat(dispatch(HttpMethod.POST, "/api/campaigns/" + first + "/schedule", "{}").status)
+                .isEqualTo(HttpResponseStatus.INTERNAL_SERVER_ERROR);
+        assertThat(campaignManager.getCampaign(first).getStatus()).isEqualTo(CampaignStatus.PREVIEW);
+        campaignManager.setAnnouncementSender((channel, content) -> {});
+        assertThat(dispatch(HttpMethod.POST, "/api/campaigns/" + first + "/schedule", "{}").status)
+                .isEqualTo(HttpResponseStatus.OK);
+        for (int i = 0; i < 9; i++) {
+            String id = createCampaignId();
+            assertThat(dispatch(HttpMethod.POST, "/api/campaigns/" + id + "/schedule", "{}").status)
+                    .isEqualTo(HttpResponseStatus.OK);
+        }
+        String limited = createCampaignId();
+        assertThat(dispatch(HttpMethod.POST, "/api/campaigns/" + limited + "/schedule", "{}").status)
+                .isEqualTo(HttpResponseStatus.TOO_MANY_REQUESTS);
+        assertThat(campaignManager.getCampaign(limited).getStatus()).isEqualTo(CampaignStatus.PREVIEW);
     }
 
     @Test

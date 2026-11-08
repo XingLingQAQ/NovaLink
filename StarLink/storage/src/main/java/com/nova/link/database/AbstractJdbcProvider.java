@@ -4,6 +4,8 @@ import com.nova.link.announcement.Announcement;
 import com.nova.link.announcement.AnnouncementType;
 import com.nova.link.api.Webhook;
 import com.nova.link.database.dialect.MigrationDialect;
+import com.nova.link.moderation.Appeal;
+import com.nova.link.moderation.ModerationCase;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
@@ -1084,6 +1086,113 @@ public abstract class AbstractJdbcProvider implements DatabaseProvider {
             stmt.executeUpdate();
         } catch (SQLException e) {
             throw new DatabaseException("Failed to update appeal review: " + appealId, e);
+        }
+    }
+
+    @Override
+    public boolean compareAndSetModerationCase(ModerationCase expected, ModerationCase updated)
+            throws DatabaseException {
+        return moderationTransaction(conn -> updateCaseWorkflow(conn, expected, updated));
+    }
+
+    @Override
+    public boolean createAppealAndUpdateCase(Appeal appeal, ModerationCase expected, ModerationCase updated)
+            throws DatabaseException {
+        return moderationTransaction(conn -> {
+            if (!updateCaseWorkflow(conn, expected, updated)) return false;
+            try (PreparedStatement check = conn.prepareStatement(
+                    "SELECT COUNT(*) FROM appeals WHERE case_id = ? AND status IN ('PENDING', 'ESCALATED')")) {
+                check.setString(1, expected.getId());
+                try (ResultSet rows = check.executeQuery()) {
+                    if (rows.next() && rows.getInt(1) > 0) return false;
+                }
+            }
+            try (PreparedStatement insert = conn.prepareStatement("""
+                    INSERT INTO appeals (id, case_id, appellant, appeal_reason, status,
+                        reviewed_by, review_note, reviewed_at, content_hash, created_at)
+                    VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+                    """)) {
+                insert.setString(1, appeal.getId());
+                insert.setString(2, appeal.getCaseId());
+                insert.setString(3, appeal.getAppellant());
+                insert.setString(4, appeal.getAppealReason());
+                insert.setString(5, appeal.getStatus().name());
+                insert.setString(6, appeal.getContentHash());
+                insert.setLong(7, appeal.getCreatedAt());
+                insert.executeUpdate();
+            }
+            return true;
+        });
+    }
+
+    @Override
+    public boolean reviewAppealAndUpdateCase(Appeal expectedAppeal, Appeal reviewedAppeal,
+                                             ModerationCase expected, ModerationCase updated)
+            throws DatabaseException {
+        return moderationTransaction(conn -> {
+            if (!updateCaseWorkflow(conn, expected, updated)) return false;
+            try (PreparedStatement stmt = conn.prepareStatement("""
+                    UPDATE appeals SET status = ?, reviewed_by = ?, review_note = ?, reviewed_at = ?
+                    WHERE id = ? AND case_id = ? AND status = ?
+                    """)) {
+                stmt.setString(1, reviewedAppeal.getStatus().name());
+                stmt.setString(2, reviewedAppeal.getReviewedBy());
+                stmt.setString(3, reviewedAppeal.getReviewNote());
+                stmt.setLong(4, reviewedAppeal.getReviewedAt());
+                stmt.setString(5, expectedAppeal.getId());
+                stmt.setString(6, expected.getId());
+                stmt.setString(7, expectedAppeal.getStatus().name());
+                return stmt.executeUpdate() == 1;
+            }
+        });
+    }
+
+    private boolean updateCaseWorkflow(Connection conn, ModerationCase expected, ModerationCase updated)
+            throws SQLException {
+        try (PreparedStatement stmt = conn.prepareStatement("""
+                UPDATE moderation_cases SET status = ?, assigned_moderator = ?, resolution_action = ?,
+                    resolution_note = ?, updated_at = ?, closed_at = ?
+                WHERE id = ? AND status = ? AND updated_at = ?
+                    AND (assigned_moderator = ? OR (assigned_moderator IS NULL AND ? IS NULL))
+                """)) {
+            stmt.setString(1, updated.getStatus().name());
+            stmt.setString(2, updated.getAssignedModerator());
+            stmt.setString(3, updated.getResolutionAction() == null ? null : updated.getResolutionAction().name());
+            stmt.setString(4, updated.getResolutionNote());
+            stmt.setLong(5, updated.getUpdatedAt());
+            if (updated.getClosedAt() == null) stmt.setNull(6, java.sql.Types.BIGINT);
+            else stmt.setLong(6, updated.getClosedAt());
+            stmt.setString(7, expected.getId());
+            stmt.setString(8, expected.getStatus().name());
+            stmt.setLong(9, expected.getUpdatedAt());
+            stmt.setString(10, expected.getAssignedModerator());
+            stmt.setString(11, expected.getAssignedModerator());
+            return stmt.executeUpdate() == 1;
+        }
+    }
+
+    @FunctionalInterface
+    private interface ModerationWrite {
+        boolean execute(Connection connection) throws SQLException;
+    }
+
+    private boolean moderationTransaction(ModerationWrite write) throws DatabaseException {
+        try (Connection conn = getDataSource().getConnection()) {
+            boolean previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                boolean changed = write.execute(conn);
+                if (changed) conn.commit();
+                else conn.rollback();
+                return changed;
+            } catch (SQLException | RuntimeException error) {
+                conn.rollback();
+                throw error;
+            } finally {
+                conn.setAutoCommit(previousAutoCommit);
+            }
+        } catch (SQLException error) {
+            throw new DatabaseException("Failed to commit moderation transition", error);
         }
     }
 
