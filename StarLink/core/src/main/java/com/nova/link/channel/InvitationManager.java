@@ -235,43 +235,35 @@ public class InvitationManager {
             }
         }
 
-        // Check channel capacity
-        if (channel.getMaxCapacity() > 0 && channel.getMemberCount() >= channel.getMaxCapacity()) {
-            return InvitationResult.invalid(NovaConstants.ERROR_CONFLICT, "Channel is full");
-        }
-
-        // Atomically claim one use of the invitation. A single provider
-        // statement advances usedCount, stamps the accepter/timestamp, and
-        // flips used=true once the quota is exhausted — unified across the
-        // single-use (maxUses=1) and multi-use (maxUses>1) paths. The claim
-        // succeeds (returns 1) only when this caller actually advanced the
-        // count; 0 means exhausted/revoked/missing or lost the race.
-        //
-        // Previously the multi-use branch did load -> incrementUse -> save,
-        // which is NOT atomic: under concurrency N concurrent accepts could
-        // each pass the precheck and each increment, over-accepting beyond
-        // maxUses. The atomic UPDATE (synchronized block for MemoryProvider,
-        // WATCH/MULTI/EXEC for Redis) closes that hole.
-        int claimed = databaseProvider.claimInvitationUse(code, playerId, System.currentTimeMillis());
-        if (claimed != 1) {
-            // Diagnostic re-load to pick the right rejection code. This load
-            // only decides the error path (never accepts), so a stale read
-            // here cannot reintroduce the race.
-            Optional<Invitation> current = databaseProvider.loadInvitation(code);
-            if (current.isEmpty()) {
-                return InvitationResult.invalid(NovaConstants.ERROR_NOT_FOUND, "Invitation not found");
+        // Keep the seat available from quota claim through admission.
+        synchronized (channel) {
+            if (channelManager.getChannel(channelId) != channel) {
+                return InvitationResult.invalid(NovaConstants.ERROR_NOT_FOUND, "Channel no longer exists");
             }
-            Invitation state = current.get();
-            if (state.isRevoked() || state.isExpired()) {
-                return InvitationResult.invalid(NovaConstants.ERROR_INVITATION_EXPIRED, "Invitation has been revoked or expired");
+            if (channel.isMember(playerId)) {
+                return InvitationResult.invalid(NovaConstants.ERROR_CONFLICT, "Player is already a channel member");
             }
-            return InvitationResult.invalid(NovaConstants.ERROR_INVITATION_USED, "Invitation has already been used");
-        }
+            if (channel.getMaxCapacity() > 0 && channel.getMemberCount() >= channel.getMaxCapacity()) {
+                return InvitationResult.invalid(NovaConstants.ERROR_CONFLICT, "Channel is full");
+            }
 
-        // Add player to channel
-        boolean added = channelManager.addMember(channelId, playerId);
-        if (!added) {
-            return InvitationResult.invalid(NovaConstants.ERROR_INTERNAL, "Failed to add member to channel");
+            int claimed = databaseProvider.claimInvitationUse(code, playerId, System.currentTimeMillis());
+            if (claimed != 1) {
+                Optional<Invitation> current = databaseProvider.loadInvitation(code);
+                if (current.isEmpty()) {
+                    return InvitationResult.invalid(NovaConstants.ERROR_NOT_FOUND, "Invitation not found");
+                }
+                Invitation state = current.get();
+                if (state.isRevoked() || state.isExpired()) {
+                    return InvitationResult.invalid(NovaConstants.ERROR_INVITATION_EXPIRED, "Invitation has been revoked or expired");
+                }
+                return InvitationResult.invalid(NovaConstants.ERROR_INVITATION_USED, "Invitation has already been used");
+            }
+
+            boolean added = channelManager.addMember(channelId, playerId);
+            if (!added) {
+                return InvitationResult.invalid(NovaConstants.ERROR_INTERNAL, "Failed to add member to channel");
+            }
         }
 
         logger.info("Player {} accepted invitation {} and joined channel {}", playerId, code, channelId);

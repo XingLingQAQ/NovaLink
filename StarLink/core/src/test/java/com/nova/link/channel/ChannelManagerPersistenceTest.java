@@ -1,5 +1,6 @@
 package com.nova.link.channel;
 
+import com.nova.link.database.DatabaseException;
 import com.nova.link.database.MemoryProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -193,4 +194,41 @@ class ChannelManagerPersistenceTest {
         // Nothing in the DB.
         assertThat(databaseProvider.loadChannel("mem-only")).isEmpty();
     }
+
+    @Test
+    void invalidCapacityCannotPartiallyRenameAChannel() throws Exception {
+        var manager = new ChannelManager(databaseProvider);
+        var channel = manager.createChannel(ChannelConfig.builder().id("invalid").displayName("Original")
+                .scope(ChannelScope.GLOBAL).build());
+        long revision = channel.getRevision();
+        assertThatThrownBy(() -> manager.updateChannel("invalid", "Changed", 0, null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(channel.getDisplayName()).isEqualTo("Original");
+        assertThat(channel.getRevision()).isEqualTo(revision);
+        assertThat(databaseProvider.loadChannel("invalid").orElseThrow().getDisplayName()).isEqualTo("Original");
+    }
+
+    @Test
+    void failedDeletionKeepsTheChannelAndItsIndexes() throws Exception {
+        var failing = new MemoryProvider() {
+            @Override
+            public void deleteChannel(String channelId) throws DatabaseException {
+                throw new DatabaseException("simulated delete failure");
+            }
+        };
+        failing.initialize();
+        try {
+            var manager = new ChannelManager(failing);
+            var channel = manager.createChannel(ChannelConfig.builder().id("retained")
+                    .scope(ChannelScope.GLOBAL).build());
+            assertThatThrownBy(() -> manager.deleteChannel("retained"))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThat(manager.getChannel("retained")).isSameAs(channel);
+            assertThat(manager.getGlobalChannels()).containsExactly(channel);
+            assertThat(failing.loadChannel("retained")).isPresent();
+        } finally {
+            failing.shutdown();
+        }
+    }
+
 }

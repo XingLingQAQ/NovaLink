@@ -259,7 +259,7 @@ public class Channel {
      *
      * @param maxCapacity the new capacity (must be &gt; 0)
      */
-    public void setMaxCapacity(int maxCapacity) {
+    public synchronized void setMaxCapacity(int maxCapacity) {
         if (maxCapacity <= 0) {
             throw new IllegalArgumentException("maxCapacity must be a positive integer, got " + maxCapacity);
         }

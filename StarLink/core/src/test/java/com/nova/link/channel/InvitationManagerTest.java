@@ -12,6 +12,7 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -256,4 +257,51 @@ class InvitationManagerTest {
         assertThat(exhausted.getUsedCount()).isEqualTo(maxUses);
         assertThat(exhausted.isUsed()).isTrue();
     }
+
+    @Test
+    void anExistingMemberCannotConsumeInvitationQuota() throws Exception {
+        UUID member = UUID.randomUUID();
+        channelManager.addMember(CHANNEL_ID, member);
+        var invitation = invitationManager.createInvitation(CHANNEL_ID, UUID.randomUUID());
+        var rejected = invitationManager.acceptInvitation(invitation.getCode(), member, null);
+        assertThat(rejected.isSuccess()).isFalse();
+        assertThat(rejected.getErrorCode()).isEqualTo("NC-409");
+        assertThat(db.loadInvitation(invitation.getCode()).orElseThrow().getUsedCount()).isZero();
+        assertThat(invitationManager.acceptInvitation(invitation.getCode(), UUID.randomUUID(), null).isSuccess()).isTrue();
+    }
+
+    @Test
+    void invitationClaimAndAdmissionKeepTheLastSeatTogether() throws Exception {
+        Channel channel = channelManager.getChannel(CHANNEL_ID);
+        channel.setMaxCapacity(1);
+        UUID ordinary = UUID.randomUUID();
+        FutureTask<Boolean> joining = new FutureTask<>(() -> channelManager.addMember(CHANNEL_ID, ordinary));
+        Thread contender = new Thread(joining, "invitation-admission-test");
+        var interleavingDb = new MemoryProvider() {
+            @Override
+            public int claimInvitationUse(String code, UUID playerId, long now) throws DatabaseException {
+                contender.start();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!joining.isDone() && contender.getState() != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+                    Thread.yield();
+                }
+                assertThat(joining.isDone() || contender.getState() == Thread.State.BLOCKED).isTrue();
+                return super.claimInvitationUse(code, playerId, now);
+            }
+        };
+        interleavingDb.initialize();
+        try {
+            var manager = new InvitationManager(interleavingDb, channelManager);
+            var invitation = manager.createInvitation(CHANNEL_ID, UUID.randomUUID());
+            var accepted = manager.acceptInvitation(invitation.getCode(), UUID.randomUUID(), null);
+            assertThat(accepted.isSuccess()).isTrue();
+            assertThat(joining.get(5, TimeUnit.SECONDS)).isFalse();
+            assertThat(interleavingDb.loadInvitation(invitation.getCode()).orElseThrow().getUsedCount()).isEqualTo(1);
+            assertThat(channel.getMemberCount()).isEqualTo(1);
+        } finally {
+            contender.join(5000L);
+            interleavingDb.shutdown();
+        }
+    }
+
 }

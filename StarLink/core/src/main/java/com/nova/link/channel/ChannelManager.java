@@ -18,10 +18,10 @@ import java.util.stream.Collectors;
  * {@link #setDatabaseProvider(DatabaseProvider)} (or the accepting constructor),
  * every {@link #createChannel}, {@link #deleteChannel} and {@link #updateChannel}
  * write-through to the database so the REST and TCP paths stay consistent and
- * channels survive a backend restart. The in-memory mutation is applied first,
- * then the DB write; on DB failure the in-memory mutation is rolled back and an
- * {@link IllegalStateException} is propagated to the caller so the user sees an
- * error instead of a silent success that leaves the registry ahead of the sink.
+ * channels survive a backend restart. Mutations and member admission share the
+ * channel monitor. Create/update roll back on persistence failure; delete keeps
+ * the channel registered until persistence succeeds. Failures propagate as
+ * {@link IllegalStateException}.
  * When no provider is wired the helpers early-return and behave memory-only.
  *
  * Requirements: 3.1, 3.4
@@ -126,43 +126,40 @@ public class ChannelManager {
         channel.setOwnerId(config.getOwnerId());
         channel.setSlowModeSeconds(config.getSlowModeSeconds());
 
-        // Register the channel atomically: putIfAbsent returns null only when
-        // the key was absent. A non-null return means another thread won the
-        // race, so we reject instead of silently overwriting the existing channel.
-        if (channels.putIfAbsent(channelId, channel) != null) {
-            throw new IllegalArgumentException("Channel with ID '" + channelId + "' already exists");
-        }
-
-        // Index by scope
-        if (config.getScope() == ChannelScope.GLOBAL) {
-            globalChannels.add(channelId);
-        } else {
-            channelsByClient.computeIfAbsent(config.getClientId(), k -> ConcurrentHashMap.newKeySet())
-                    .add(channelId);
-        }
-
-        logger.info("Created channel: {} (scope={}, client={}, source={})",
-                channelId, config.getScope(), config.getClientId(), channel.getSource());
-        try {
-            persistChannel(channel);
-        } catch (RuntimeException | DatabaseException e) {
-            // Roll back the in-memory mutation so the registry does not get
-            // ahead of the DB, then surface the failure to the caller.
-            channels.remove(channelId);
-            if (config.getScope() == ChannelScope.GLOBAL) {
-                globalChannels.remove(channelId);
-            } else {
-                Set<String> clientChannels = channelsByClient.get(config.getClientId());
-                if (clientChannels != null) {
-                    clientChannels.remove(channelId);
-                }
+        synchronized (channel) {
+            if (channels.putIfAbsent(channelId, channel) != null) {
+                throw new IllegalArgumentException("Channel with ID '" + channelId + "' already exists");
             }
-            logger.warn("Rolled back in-memory create of channel '{}' after persistence failure: {}",
-                    channelId, e.getMessage());
-            throw new IllegalStateException(
-                    "Failed to persist channel '" + channelId + "': " + e.getMessage(), e);
+
+            // Index by scope
+            if (config.getScope() == ChannelScope.GLOBAL) {
+                globalChannels.add(channelId);
+            } else {
+                channelsByClient.computeIfAbsent(config.getClientId(), k -> ConcurrentHashMap.newKeySet())
+                        .add(channelId);
+            }
+
+            logger.info("Created channel: {} (scope={}, client={}, source={})",
+                    channelId, config.getScope(), config.getClientId(), channel.getSource());
+            try {
+                persistChannel(channel);
+            } catch (RuntimeException | DatabaseException e) {
+                if (config.getScope() == ChannelScope.GLOBAL) {
+                    globalChannels.remove(channelId);
+                } else {
+                    Set<String> clientChannels = channelsByClient.get(config.getClientId());
+                    if (clientChannels != null) {
+                        clientChannels.remove(channelId);
+                    }
+                }
+                channels.remove(channelId, channel);
+                logger.warn("Rolled back in-memory create of channel '{}' after persistence failure: {}",
+                        channelId, e.getMessage());
+                throw new IllegalStateException(
+                        "Failed to persist channel '" + channelId + "': " + e.getMessage(), e);
+            }
+            return channel;
         }
-        return channel;
     }
 
     /**
@@ -172,40 +169,26 @@ public class ChannelManager {
      * @return true if the channel was deleted, false if not found
      */
     public boolean deleteChannel(String channelId) {
-        Channel channel = channels.remove(channelId);
-        if (channel == null) {
-            return false;
-        }
-
-        // Remove from indexes
-        if (channel.getScope() == ChannelScope.GLOBAL) {
-            globalChannels.remove(channelId);
-        } else {
-            Set<String> clientChannels = channelsByClient.get(channel.getClientId());
-            if (clientChannels != null) {
-                clientChannels.remove(channelId);
+        Channel channel = channels.get(channelId);
+        if (channel == null) return false;
+        synchronized (channel) {
+            if (channels.get(channelId) != channel) return false;
+            try {
+                deletePersistedChannel(channelId);
+            } catch (RuntimeException | DatabaseException error) {
+                throw new IllegalStateException(
+                        "Failed to delete persisted channel '" + channelId + "': " + error.getMessage(), error);
             }
-        }
-
-        logger.info("Deleted channel: {}", channelId);
-        try {
-            deletePersistedChannel(channelId);
-        } catch (RuntimeException | DatabaseException e) {
-            // Restore the channel and its indexes so the registry does not
-            // get ahead of the DB, then surface the failure to the caller.
-            channels.put(channelId, channel);
             if (channel.getScope() == ChannelScope.GLOBAL) {
-                globalChannels.add(channelId);
+                globalChannels.remove(channelId);
             } else {
-                channelsByClient.computeIfAbsent(channel.getClientId(), k -> ConcurrentHashMap.newKeySet())
-                        .add(channelId);
+                Set<String> clientChannels = channelsByClient.get(channel.getClientId());
+                if (clientChannels != null) clientChannels.remove(channelId);
             }
-            logger.warn("Rolled back in-memory delete of channel '{}' after persistence failure: {}",
-                    channelId, e.getMessage());
-            throw new IllegalStateException(
-                    "Failed to delete persisted channel '" + channelId + "': " + e.getMessage(), e);
+            channels.remove(channelId, channel);
+            logger.info("Deleted channel: {}", channelId);
+            return true;
         }
-        return true;
     }
 
     /**
@@ -287,7 +270,9 @@ public class ChannelManager {
         if (channel == null) {
             return false;
         }
-        return channel.addMember(playerId);
+        synchronized (channel) {
+            return channels.get(channelId) == channel && channel.addMember(playerId);
+        }
     }
 
     /**
@@ -320,7 +305,7 @@ public class ChannelManager {
      *
      * @param channelId the channel ID to update
      * @param displayName the new display name (null to keep existing)
-     * @param maxCapacity the new max capacity (null or &lt;=0 to keep existing)
+     * @param maxCapacity the new max capacity (null to keep existing; otherwise positive)
      * @param permission the new permission node (null to keep existing)
      * @return the updated channel, or null if the channel was not found
      */
@@ -339,7 +324,7 @@ public class ChannelManager {
      *
      * @param channelId the channel ID to update
      * @param displayName the new display name (null to keep existing)
-     * @param maxCapacity the new max capacity (null or &lt;=0 to keep existing)
+     * @param maxCapacity the new max capacity (null to keep existing; otherwise positive)
      * @param permission the new permission node (ignored when permissionPresent is false)
      * @param permissionPresent when true, apply {@code permission} (may clear it); when false, leave untouched
      * @return the updated channel, or null if the channel was not found
@@ -351,50 +336,47 @@ public class ChannelManager {
         if (channel == null) {
             return null;
         }
-        // Snapshot the mutable fields so we can roll back on persistence failure
-        // and keep the registry consistent with the DB.
-        String prevDisplayName = channel.getDisplayName();
-        int prevMaxCapacity = channel.getMaxCapacity();
-        String prevPermission = channel.getPermission();
-        long prevRevision = channel.getRevision();
-        boolean changed = false;
-        if (displayName != null) {
-            channel.setDisplayName(displayName);
-            changed = true;
-        }
-        if (maxCapacity != null) {
-            if (maxCapacity <= 0) {
-                // Non-positive is an explicit error for a supplied value — do not
-                // silently ignore, since callers expect the supplied capacity to apply.
+        synchronized (channel) {
+            if (channels.get(channelId) != channel) return null;
+            if (maxCapacity != null && maxCapacity <= 0) {
                 throw new IllegalArgumentException("maxCapacity must be a positive integer, got " + maxCapacity);
             }
-            channel.setMaxCapacity(maxCapacity);
-            changed = true;
+            String prevDisplayName = channel.getDisplayName();
+            int prevMaxCapacity = channel.getMaxCapacity();
+            String prevPermission = channel.getPermission();
+            long prevRevision = channel.getRevision();
+            boolean changed = false;
+            if (displayName != null) {
+                channel.setDisplayName(displayName);
+                changed = true;
+            }
+            if (maxCapacity != null) {
+                channel.setMaxCapacity(maxCapacity);
+                changed = true;
+            }
+            if (permissionPresent) {
+                channel.setPermission(permission);
+                changed = true;
+            }
+            if (changed) {
+                channel.bumpRevision();
+            }
+            logger.info("Updated channel: {} (displayName={}, maxCapacity={}, permission={}, permissionPresent={})",
+                    channelId, displayName, maxCapacity, permission, permissionPresent);
+            try {
+                persistChannel(channel);
+            } catch (RuntimeException | DatabaseException e) {
+                channel.setDisplayName(prevDisplayName);
+                channel.setMaxCapacity(prevMaxCapacity);
+                channel.setPermission(prevPermission);
+                channel.setRevision(prevRevision);
+                logger.warn("Rolled back in-memory update of channel '{}' after persistence failure: {}",
+                        channelId, e.getMessage());
+                throw new IllegalStateException(
+                        "Failed to persist update of channel '" + channelId + "': " + e.getMessage(), e);
+            }
+            return channel;
         }
-        if (permissionPresent) {
-            channel.setPermission(permission);
-            changed = true;
-        }
-        if (changed) {
-            channel.bumpRevision();
-        }
-        logger.info("Updated channel: {} (displayName={}, maxCapacity={}, permission={}, permissionPresent={})",
-                channelId, displayName, maxCapacity, permission, permissionPresent);
-        try {
-            persistChannel(channel);
-        } catch (RuntimeException | DatabaseException e) {
-            // Restore the pre-update state so the registry does not get ahead
-            // of the DB, then surface the failure to the caller.
-            channel.setDisplayName(prevDisplayName);
-            channel.setMaxCapacity(prevMaxCapacity);
-            channel.setPermission(prevPermission);
-            channel.setRevision(prevRevision);
-            logger.warn("Rolled back in-memory update of channel '{}' after persistence failure: {}",
-                    channelId, e.getMessage());
-            throw new IllegalStateException(
-                    "Failed to persist update of channel '" + channelId + "': " + e.getMessage(), e);
-        }
-        return channel;
     }
 
     /**

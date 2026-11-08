@@ -48,6 +48,8 @@ NovaLink 管理网关在同一个 HTTP 服务中提供认证、REST 与 WebSocke
 
 创建频道的 `scope` 使用 `GLOBAL`、`SERVER` 或 `PRIVATE` 枚举语义。REST 管理创建的私有频道会使用后台的管理客户端标识；对外部系统而言，应先明确频道边界，再自动化创建。[1]
 
+频道更新先验证容量，再修改字段；提供非正容量时不会留下部分改名。邀请接受流程在同一频道锁内完成成员、容量检查和扣额入群；已有成员或频道满员返回 `NC-409`，保留邀请码剩余次数。频道删除持久化失败时保留运行时登记与索引。[12] [13]
+
 ### 示例：发送受控系统消息
 
 ```bash
@@ -186,3 +188,5 @@ Webhook REST 路由存在并操作运行时管理器，但示例 YAML 中的 `we
 [9]: ../../StarLink/storage/src/main/java/com/nova/link/database/AbstractJdbcProvider.java "案件与申诉事务"
 [10]: ../../StarLink/core/src/main/java/com/nova/link/announcement/CampaignManager.java "活动投递、失败重试与恢复调度"
 [11]: ../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java "活动发送回调与路由结果"
+[12]: ../../StarLink/core/src/main/java/com/nova/link/channel/InvitationManager.java "邀请校验、扣额与入群"
+[13]: ../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java "频道修改同步与持久化失败处理"

@@ -43,3 +43,15 @@
 修复新增 `DatabaseProvider.markInvitationRevoked()`，只修改现存记录的撤销时间，保留首次撤销时间和使用记录。JDBC 三种提供者共享一条字段级条件更新；内存在同一键的更新中设置撤销时间；Redis 使用 WATCH / MULTI / EXEC，根据最新数据提交，并保持原绝对过期时间。记录不存在时返回 false，不执行插入。邀请人的身份检查仍由业务入口负责。
 
 验证：`InvitationManagerTest` 与 `PrivateChannelInvitationPersistenceTest` 共 12 项通过，覆盖原有多次使用、身份约束和新增交错反例。另用独立临时 Redis 执行 `RedisInvitationRevocationTest`，实际并发领取和撤销，验证使用次数、首次撤销时间、TTL 与删除后不重建；1 项通过，临时进程已关闭。MySQL / PostgreSQL 复用 JDBC SQL，本轮未运行外部数据库矩阵。日志为 `.e2e-artifacts/review4-revocation-before.log`、`review4-revocation-final.log` 和 `review4-redis-final.log`。
+
+## 5. R21：入群失败仍消耗邀请次数
+
+位置：[InvitationManager.acceptInvitation()](../../StarLink/core/src/main/java/com/nova/link/channel/InvitationManager.java) 与 [ChannelManager](../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java)。
+
+原实现先检查容量，再扣除邀请次数，最后加入成员。已有成员重复领取时，扣额成功但加入返回 false；最后一个名额也可能在检查和加入之间被普通加入占用。已有成员反例已在原实现失败，持久化 `usedCount` 从 0 变为 1，邀请码无法再供其他玩家使用。
+
+修复在同一频道锁内检查频道身份、已有成员和容量，再完成持久化扣额与加入。普通加入、容量修改、频道创建、更新和删除使用同一同步边界；等候中的操作重新确认频道仍是当前登记对象。删除先持久化成功再移除登记与索引，失败时保留原频道。已有成员和频道满员返回 `NC-409`，不会扣除次数。
+
+同时修复频道更新的相邻缺陷：原实现先修改名称，再验证容量；无效容量会留下未持久化的部分改名。现在所有参数校验在字段修改之前完成。
+
+验证：首轮频道管理、邀请与跨客户端访问测试 50 项通过。后续受影响测试 23 项通过，包含删除持久化失败时保留登记与索引，以及 SQLite 邀请持久化路径。新增回归覆盖已有成员不扣额、普通加入与邀请争用最后一个名额、无效容量不留下改名。结果见 `.e2e-artifacts/review4-admission-before.log`、`review4-admission-final.log` 和 `review4-admission-boundaries.log`。
