@@ -124,6 +124,11 @@ public class ChannelManager {
      * @throws IllegalArgumentException if a channel with the same ID already exists
      */
     public Channel createChannel(ChannelConfig config, ChannelSource source) {
+        return createChannel(config, source, null);
+    }
+
+    /** Uses fallbackPersistence only for this operation when no provider is bound. */
+    public Channel createChannel(ChannelConfig config, ChannelSource source, DatabaseProvider fallbackPersistence) {
         Objects.requireNonNull(config, "Channel config cannot be null");
 
         String channelId = config.getId();
@@ -158,7 +163,7 @@ public class ChannelManager {
             logger.info("Created channel: {} (scope={}, client={}, source={})",
                     channelId, config.getScope(), config.getClientId(), channel.getSource());
             try {
-                persistChannel(channel);
+                persistChannel(channel, fallbackPersistence);
             } catch (RuntimeException | DatabaseException e) {
                 if (config.getScope() == ChannelScope.GLOBAL) {
                     globalChannels.remove(channelId);
@@ -171,7 +176,7 @@ public class ChannelManager {
                 channels.remove(channelId, channel);
                 logger.warn("Rolled back in-memory create of channel '{}' after persistence failure: {}",
                         channelId, e.getMessage());
-                throw new IllegalStateException(
+                throw new PersistenceException(
                         "Failed to persist channel '" + channelId + "': " + e.getMessage(), e);
             }
             return channel;
@@ -195,15 +200,21 @@ public class ChannelManager {
 
     /** Uses the caller's cleanup only when no core lifecycle cleanup is installed. */
     public boolean deleteChannelIfCurrent(Channel channel, Consumer<Channel> fallbackCleanup) {
+        return deleteChannelIfCurrent(channel, fallbackCleanup, null);
+    }
+
+    /** Commits fallback persistence before cleanup without rebinding the manager. */
+    public boolean deleteChannelIfCurrent(Channel channel, Consumer<Channel> fallbackCleanup,
+                                          DatabaseProvider fallbackPersistence) {
         if (channel == null) return false;
         Objects.requireNonNull(fallbackCleanup);
         String channelId = channel.getId();
         synchronized (channel) {
             if (channels.get(channelId) != channel) return false;
             try {
-                deleteStoredChannelState(channel);
+                deleteStoredChannelState(channel, fallbackPersistence);
             } catch (RuntimeException | DatabaseException error) {
-                throw new IllegalStateException(
+                throw new PersistenceException(
                         "Failed to delete persisted channel '" + channelId + "': " + error.getMessage(), error);
             }
             Consumer<Channel> cleanup = deletionCleanup;
@@ -495,7 +506,12 @@ public class ChannelManager {
      * temporarily-down sink must not leave the registry ahead of the DB.
      */
     private void persistChannel(Channel channel) throws DatabaseException {
+        persistChannel(channel, null);
+    }
+
+    private void persistChannel(Channel channel, DatabaseProvider fallbackPersistence) throws DatabaseException {
         DatabaseProvider db = this.databaseProvider;
+        if (db == null) db = fallbackPersistence;
         if (db == null || channel == null || channel.getSource() == ChannelSource.CONFIG) {
             return;
         }
@@ -503,8 +519,9 @@ public class ChannelManager {
     }
 
     /** Clears invitations before the channel ID is released; CONFIG definitions stay in YAML. */
-    private void deleteStoredChannelState(Channel channel) throws DatabaseException {
+    private void deleteStoredChannelState(Channel channel, DatabaseProvider fallbackPersistence) throws DatabaseException {
         DatabaseProvider db = this.databaseProvider;
+        if (db == null) db = fallbackPersistence;
         DatabaseProvider invitations = invitationProvider;
         if (invitations == null) invitations = db;
         boolean deleteDefinition = db != null && channel.getSource() != ChannelSource.CONFIG;
@@ -512,5 +529,11 @@ public class ChannelManager {
             invitations.deleteInvitationsForChannel(channel.getId());
         }
         if (deleteDefinition) db.deleteChannel(channel.getId());
+    }
+
+    public static final class PersistenceException extends IllegalStateException {
+        private PersistenceException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 }

@@ -217,6 +217,10 @@ public class ChannelActionHandler {
                     return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(),
                             NovaConstants.ERROR_BAD_REQUEST, "Unsupported channel action");
             }
+        } catch (ChannelManager.PersistenceException e) {
+            logger.error("Channel persistence failed for action {}", packet.getAction(), e);
+            return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(),
+                    NovaConstants.ERROR_DATABASE_ERROR, "Channel change could not be saved. Try again.");
         } catch (Exception e) {
             logger.error("Failed to handle channel action {} from client {}: {}",
                     packet.getAction(), connection.getClientId(), e.getMessage(), e);
@@ -425,7 +429,8 @@ public class ChannelActionHandler {
 
         PrivateChannelManager.PrivateChannelCreationResult created;
         try {
-            created = privateChannelManager.createPrivateChannel(displayName, clientId, playerId, packet.getPassword());
+            created = privateChannelManager.createPrivateChannel(displayName, clientId, playerId,
+                    packet.getPassword(), databaseProvider);
         } catch (NoSuchElementException e) {
             return new ChannelActionResponsePacket(false, ChannelAction.CREATE, "",
                     NovaConstants.ERROR_NOT_FOUND, "Channel no longer exists");
@@ -442,13 +447,6 @@ public class ChannelActionHandler {
                 logger.debug("Failed to grant channel admin for {} to {}: {}", created.getChannelId(), playerId, e.getMessage());
             }
 
-            if (!channelManager.isPersistenceEnabled()) {
-                try {
-                    databaseProvider.saveChannel(created.getChannel());
-                } catch (DatabaseException e) {
-                    logger.warn("Failed to persist private channel {}: {}", created.getChannelId(), e.getMessage());
-                }
-            }
             upsertPlayerState(connection, playerId, playerName, null, created.getChannelId(), platform);
         }
 
@@ -893,17 +891,9 @@ public class ChannelActionHandler {
             ChannelStateCleanup.clearMemberships(removed, playerStateManager);
             permissionManager.clearChannelAdmins(removed.getId());
             privateChannelManager.removeTrackedId(removed.getId());
-        });
+        }, databaseProvider);
         if (!deleted) {
             return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
-        }
-
-        if (!channelManager.isPersistenceEnabled()) {
-            try {
-                databaseProvider.deleteChannel(channelId);
-            } catch (Exception e) {
-                logger.warn("Failed to delete channel {} from database: {}", channelId, e.getMessage());
-            }
         }
 
         return new ChannelActionResponsePacket(true, ChannelAction.DELETE, channelId, "", "Channel deleted");

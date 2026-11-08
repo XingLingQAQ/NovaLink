@@ -305,3 +305,13 @@ JOIN 与 ACCEPT 在修改成员前检查封禁，但检查和入群之间没有�
 修复让私有创建者及 ID 登记在频道锁内检查对象身份；协议 CREATE 在同一对象锁内再次复核，随后提交权限、兼容存储和玩家状态。旧对象已被删除时返回 `NC-404`，不会污染替代频道。ACCEPT 增加成功回调，在扣额、入群成功后且频道锁释放前发布调用方状态。原三参数接受接口委托到同一实现，存储和邀请层不依赖协议包或网络处理器。
 
 验证：四个受控反例在原实现全部失败，覆盖频道创建返回前、私有创建返回后的同名替换，以及 CREATE、ACCEPT 在玩家状态发布前与删除交错。修复后 37 项定向检查通过，0 失败、0 跳过，包括旧结果拒绝、旧成员/权限/生成 ID/玩家状态不残留、替代定义不被覆盖、原持久化路径、邀请使用和封禁并发。日志为 `.e2e-artifacts/review14-admission-before.log` 与 `review14-admission-final.log`。
+
+## 29. R45：协议兼容装配吞掉频道存储失败，删除提前清理邀请
+
+位置：[ChannelManager 的创建和删除存储边界](../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java)、[PrivateChannelManager 的创建入口](../../StarLink/core/src/main/java/com/nova/link/channel/PrivateChannelManager.java)、[ChannelActionHandler 的 CREATE、DELETE](../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java)。
+
+频道管理器未绑定数据库时，协议 CREATE 先登记频道、成员与权限，再独立保存定义；DELETE 先删除运行时登记、邀请、权限和玩家状态，再删除数据库定义。两处存储异常均只记日志，响应仍成功。管理器已绑定数据库时虽然能回滚或保留状态，协议仍将其存储异常归为普通 `NC-500`。
+
+修复在既有频道创建和删除入口增加按次持久化参数，由同一频道锁与回滚逻辑处理。已绑定提供者优先，按次参数不重新绑定管理器。私有频道定义保存成功后才登记创建者；协议删除的存储先提交，再清理运行时。定义与邀请使用同一提供者时共用提供者删除入口，避免先单独清掉邀请再遇到定义删除失败。网络处理器删除重复保存/删除分支，并用类型化存储异常返回 `NC-510`；既有无参数及仅内存入口保留原契约。
+
+验证：四项故障反例在原实现全部失败：兼容装配仍返回成功，绑定装配返回错误的 `NC-500`。修复后 29 项定向检查通过，0 失败、0 跳过，覆盖两种装配下创建回滚、删除保留邀请/成员/权限/玩家状态、成功仅持久化一次、管理器配置不被改写、既有频道持久化与 CONFIG 规则，以及 R40、R44 并发回归。R44 的闸门移至新重载实际调用的同一创建交接点，仍验证旧结果不得污染替代频道。日志为 `.e2e-artifacts/review14-persistence-before.log` 与 `review14-persistence-final.log`。

@@ -1,5 +1,6 @@
 package com.nova.link.channel;
 import com.nova.chat.common.NovaConstants;
+import com.nova.link.database.DatabaseProvider;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -77,6 +78,12 @@ public class PrivateChannelManager {
             String clientId, 
             UUID ownerId, 
             String password) {
+        return createPrivateChannel(displayName, clientId, ownerId, password, null);
+    }
+
+    /** Uses operation-local persistence when the channel manager is memory-only. */
+    public PrivateChannelCreationResult createPrivateChannel(String displayName, String clientId, UUID ownerId,
+                                                             String password, DatabaseProvider fallbackPersistence) {
         
         // Validate required parameters
         if (clientId == null || clientId.trim().isEmpty()) {
@@ -109,7 +116,8 @@ public class PrivateChannelManager {
                 .build();
         
         // Create the channel
-        Channel channel = channelManager.createChannel(config);
+        Channel channel = fallbackPersistence == null ? channelManager.createChannel(config)
+                : channelManager.createChannel(config, ChannelSource.RUNTIME, fallbackPersistence);
         
         synchronized (channel) {
             if (channelManager.getChannel(channelId) != channel) {

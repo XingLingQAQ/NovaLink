@@ -7,10 +7,12 @@ import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
+import com.nova.link.channel.ChannelSource;
 import com.nova.link.channel.ChannelStateCleanup;
 import com.nova.link.channel.InvitationManager;
 import com.nova.link.channel.PrivateChannelManager;
 import com.nova.link.database.MemoryProvider;
+import com.nova.link.database.DatabaseProvider;
 import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -40,8 +42,8 @@ class ChannelAdmissionCommitTest {
         var armed = new AtomicBoolean(true);
         var retired = new AtomicReference<Channel>();
         var channels = new ChannelManager() {
-            @Override public Channel createChannel(ChannelConfig config) {
-                Channel channel = super.createChannel(config);
+            @Override public Channel createChannel(ChannelConfig config, ChannelSource source, DatabaseProvider fallback) {
+                Channel channel = super.createChannel(config, source, fallback);
                 if (beforeOwner && armed.getAndSet(false)) {
                     retired.set(channel);
                     replace(this, db, channel);
@@ -51,8 +53,8 @@ class ChannelAdmissionCommitTest {
         };
         var privateChannels = new PrivateChannelManager(channels) {
             @Override public PrivateChannelCreationResult createPrivateChannel(String name, String client,
-                                                                               UUID owner, String password) {
-                var result = super.createPrivateChannel(name, client, owner, password);
+                                                                               UUID owner, String password, DatabaseProvider fallback) {
+                var result = super.createPrivateChannel(name, client, owner, password, fallback);
                 if (!beforeOwner && armed.getAndSet(false)) {
                     retired.set(result.getChannel());
                     replace(channels, db, result.getChannel());
