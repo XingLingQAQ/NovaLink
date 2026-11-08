@@ -58,7 +58,7 @@ flowchart LR
 
 | 领域 | 位置 | 主要责任 |
 | --- | --- | --- |
-| 共享协议 | `NovaChat/common` | NovaProtocol 数据包、编解码、提及/物品展示辅助、扩展、事件与命令注册。 |
+| 共享协议 | `NovaChat/common` | NovaProtocol 数据包、编解码、心跳限速与请求 ID 记忆、提及/物品展示辅助、扩展、事件与命令注册。 |
 | 客户端运行时 | `NovaChat/client-core` | 接入端连接生命周期、重连策略、请求跟踪、频道/聊天状态和格式工具。 |
 | 存储共享层 | `StarLink/storage` | 数据提供者、迁移、持久化模型和玩家状态缓存；供后端和代理 lite 模式使用。 |
 | 中心后端 | `StarLink/core` | Netty 服务端、认证、频道、路由、治理流程、管理 API、WebSocket 与控制台。 |
@@ -86,6 +86,8 @@ Bukkit 子服 ────────────► NovaChat/Proxy/channel
 ```
 
 箭头表示模块依赖。`client-core` 提供接入端连接与状态工具，后端传输实现仍留在 `StarLink/core`。双方共用的数据包和编解码放在 `common`；Java 平台 API 留在各适配模块。[1] [2]
+
+`common/protocol/keepalive` 统一维护心跳发送预算与有界请求 ID 记忆。后端和客户端原有网络包下的公开类保留为委托入口，`ClientConnection.getKeepAliveBudget()` 的返回类型不变；请求 ID 按 UUID 值匹配，客户端重连仍清空旧连接记录。两端的网络处理和生命周期继续由各自模块负责。[14] [15]
 
 `StarLink/storage` 不依赖 `common`、Netty、JWT 或认证管理器。它承载 JDBC、Redis、内存实现和持久化模型；治理权限、消息分发和审核状态机仍由后端业务管理器负责。存储层与核心保留部分相同包名，包级可见性按 Java 包生效。[8]
 
@@ -173,3 +175,5 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 [11]: ../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java "核心装配与生命周期"
 [12]: ../../StarLink/plugin/bukkit/src/main/java/com/nova/link/bukkit/NovaLinkBukkitPlugin.java "Bukkit 后端宿主"
 [13]: ../../StarLink/core/src/main/java/com/nova/link/lifecycle/ShutdownBudget.java "共享停止预算与强制取消"
+[14]: ../../NovaChat/common/src/main/java/com/nova/chat/common/protocol/keepalive/KeepAliveBudget.java "共享心跳发送预算"
+[15]: ../../NovaChat/common/src/main/java/com/nova/chat/common/protocol/keepalive/RecentKeepAlives.java "共享请求 ID 记忆"

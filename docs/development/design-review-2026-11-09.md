@@ -64,4 +64,12 @@ lite 频道的 `slow-mode` 接受非负整数秒，但原清理固定删除一�
 
 修复将最后发送时间与保留截止时间一起保存，清理不得早于实际窗口结束。较短窗口继续保留至少一小时的历史，以维持原有间隔调整语义；拒绝请求不移动最后发送时间。若请求使用更长间隔，保留截止时间随之延长。断线仍可通过 `forgetPlayer()` 清除记录，过期长窗口仍会被回收。
 
-验证：注入毫秒时钟，不使用等待；覆盖长窗口跨清理、过期回收、间隔调整和断线清理，并运行 `LocalAuthorityTest` 检查真实 lite 聊天入口。结果见 `.e2e-artifacts/review5-slowmode-before.log` 与 `review5-slowmode-final.log`。
+验证：注入毫秒时钟，不使用等待；覆盖长窗口跨清理、过期回收、间隔调整和断线清理，并运行 `LocalAuthorityTest` 检查真实 lite 聊天入口，共 28 项通过。结果见 `.e2e-artifacts/review5-slowmode-before.log` 与 `review5-slowmode-final.log`。
+
+## 7. R23：两端心跳防护重复实现
+
+后端与 `client-core` 各维护一份 `KeepAliveBudget` 和 `RecentKeepAlives`，算法相同；客户端额外需要在连接代际变化时清空 ID。两端独立维护会让限速、TTL 或回声识别修复容易遗漏另一端。
+
+抽取到 `NovaChat/common` 的 `protocol/keepalive` 包，统一滑动窗口预算、容量淘汰、UUID 值匹配和 TTL 回收。原四个公开类保留构造器、常量与方法并委托共享实现；后端公开返回类型不变，客户端 `clear()` 入口不变。共享实现只使用 JDK，依赖沿用已有的 `core → common`、`client-core → common`，没有增加后端到客户端运行时的依赖。
+
+验证沿用已有 `KeepAliveHandlerTest`、`RecentKeepAlivesTest` 和 `CoreNetworkClientKeepAliveTest`，检查两端真实心跳处理、回声丢弃、发送上限、窗口恢复、容量与过期以及重连清理，共 28 项通过。未复制新测试集，结果见 `.e2e-artifacts/review5-heartbeat-shared.log`。
