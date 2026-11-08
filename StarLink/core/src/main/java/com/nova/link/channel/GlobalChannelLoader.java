@@ -102,8 +102,9 @@ public class GlobalChannelLoader {
         // Remove existing global channels
         List<Channel> existingGlobalChannels = channelManager.getGlobalChannels();
         for (Channel channel : existingGlobalChannels) {
-            channelManager.deleteChannel(channel.getId());
-            logger.debug("Removed global channel: {}", channel.getId());
+            if (channelManager.deleteChannelIfCurrent(channel)) {
+                logger.debug("Removed global channel: {}", channel.getId());
+            }
         }
         
         // Load new channels

@@ -221,8 +221,7 @@ public class ServerChannelLoader {
         List<Channel> existingChannels = channelManager.getChannelsByClient(clientId);
         for (Channel channel : existingChannels) {
             // Only remove SERVER scope channels (not PRIVATE)
-            if (channel.getScope() == ChannelScope.SERVER) {
-                channelManager.deleteChannel(channel.getId());
+            if (channel.getScope() == ChannelScope.SERVER && channelManager.deleteChannelIfCurrent(channel)) {
                 logger.debug("Removed server channel: {} for client '{}'", channel.getId(), clientId);
             }
         }

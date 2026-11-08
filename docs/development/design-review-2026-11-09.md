@@ -83,3 +83,13 @@ REST 原实现先调用频道更新并持久化，再单独设置 `slowModeSecon
 修复把慢速模式纳入同一频道锁内的字段验证、应用、revision、持久化和失败回滚；原四参数、五参数更新入口保留。REST 直接调用这一入口，存储失败返回 `500` 并记录失败审计。启动恢复完整传递慢速值，避免重启时关闭限速。
 
 验证：三个反例在原实现均失败，分别观察到持久化值 0、恢复值 0 和错误的 HTTP 400。修复后运行相关频道 REST 更新、持久化及启动恢复测试；恢复反例使用单连接 SQLite，调用实际启动恢复入口，并检查运行时与数据库中的值。日志为 `.e2e-artifacts/review6-channel-before.log` 和 `review6-channel-final.log`。
+
+## 9. R25：旧重载快照误删同名新频道
+
+位置：[核心重载清理](../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java) 与 [ChannelManager](../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java)。
+
+原清理先收集不再配置的 CONFIG 频道 ID，再按 ID 删除。收集后若旧频道已被删除、同一 ID 被用于新运行时频道，后续清理会删除这个新频道，违反重载保留动态频道的约定。确定性反例在返回旧快照前完成替换，原实现将新的 SERVER 频道及其持久化记录一起删除。
+
+新增 `deleteChannelIfCurrent()`，在频道锁内比较对象身份，再执行持久化删除、索引更新与移除登记。核心保留频道对象而非只有 ID；对象已被替换时跳过。原按 ID 删除入口保留并复用同一实现。旧版 `GlobalChannelLoader` 与 `ServerChannelLoader` 的快照清理也采用此入口。
+
+验证：原反例失败，修复后核心重载、频道管理与持久化共 32 项通过；随后只补跑重载的 4 个场景，覆盖核心保留替换频道、正常清理 CONFIG，以及两个旧版加载器保留同名替换对象。日志为 `.e2e-artifacts/review6-reload-before.log`、`review6-reload-final.log` 和 `review6-reload-entrypoints.log`。

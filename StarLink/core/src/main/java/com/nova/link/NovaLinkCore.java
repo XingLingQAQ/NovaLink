@@ -1384,18 +1384,19 @@ public final class NovaLinkCore implements AutoCloseable {
         // config. Non-CONFIG (DATABASE/RUNTIME) channels are never touched by
         // reload, so a previously-deleted config channel is not revived and a
         // dynamic channel is never overwritten.
-        java.util.List<String> staleConfigIds = new java.util.ArrayList<>();
+        java.util.List<Channel> staleConfigChannels = new java.util.ArrayList<>();
         for (Channel ch : channelManager.getAllChannels()) {
             if (ch == null || ch.getSource() != ChannelSource.CONFIG) {
                 continue;
             }
             if (!desiredIds.contains(ch.getId())) {
-                staleConfigIds.add(ch.getId());
+                staleConfigChannels.add(ch);
             }
         }
-        for (String staleId : staleConfigIds) {
-            channelManager.deleteChannel(staleId);
-            logger.info("Removed config channel '{}' (no longer in config after reload)", staleId);
+        for (Channel stale : staleConfigChannels) {
+            if (channelManager.deleteChannelIfCurrent(stale)) {
+                logger.info("Removed config channel '{}' (no longer in config after reload)", stale.getId());
+            }
         }
     }
 

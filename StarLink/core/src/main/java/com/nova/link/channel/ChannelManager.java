@@ -169,8 +169,13 @@ public class ChannelManager {
      * @return true if the channel was deleted, false if not found
      */
     public boolean deleteChannel(String channelId) {
-        Channel channel = channels.get(channelId);
+        return deleteChannelIfCurrent(channels.get(channelId));
+    }
+
+    /** Deletes only the observed instance, preserving a replacement with the same ID. */
+    public boolean deleteChannelIfCurrent(Channel channel) {
         if (channel == null) return false;
+        String channelId = channel.getId();
         synchronized (channel) {
             if (channels.get(channelId) != channel) return false;
             try {

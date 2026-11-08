@@ -105,7 +105,7 @@ Bukkit 子服 ────────────► NovaChat/Proxy/channel
 | --- | --- | --- |
 | `AuthManager` / `IpBanManager` | 客户端与管理身份认证、认证失败保护 | 客户端身份不能替代控制面管理员身份。 |
 | `ClientPermissionRegistry` | 客户端级全局频道权限 | 未显式配置时存在向后兼容的授权行为，生产应审阅。 |
-| `ChannelManager` | 频道定义与成员关系 | 配置化频道和运行时私有频道的生命周期不同。 |
+| `ChannelManager` | 频道定义与成员关系 | 频道写入与入群共用频道锁；重载清理按对象身份删除，保留同名新频道。 |
 | `MessageRouter` / `MessagePipeline` | 路由与消息处理协作 | 频道、禁言/封禁、过滤、日志、跨服开关与 WebSocket 广播在此交汇。 |
 | `DatabaseProvider` | 状态与运营数据提供者 | 由配置选择，不同提供者有不同持久化语义。 |
 | `WebSocketGateway` | HTTP 认证、REST、WebSocket 会话与周期推送 | 是管理控制面网关，而非独立聊天后端。 |
