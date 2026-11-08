@@ -91,6 +91,8 @@ Bukkit 子服 ────────────► NovaChat/Proxy/channel
 
 `StarLink/storage` 不依赖 `common`、Netty、JWT 或认证管理器。它承载 JDBC、Redis、内存实现和持久化模型；治理权限、消息分发和审核状态机仍由后端业务管理器负责。存储层与核心保留部分相同包名，包级可见性按 Java 包生效。[8]
 
+Redis 通知、审计和消息历史共用有序索引遍历，每批最多读取 128 个 ID，筛选后再计算页内偏移，收齐当前页即停止。需要逐条筛选的总数查询也分批读取；稀疏筛选和精确计数的时间成本仍随候选数量增长。遍历使用 `ZREVRANGEBYSCORE`（含分数）、`ZREVRANK` 和 `ZCOUNT`，Redis 命令白名单应允许这些读取。[19]
+
 代理 lite 模式通过 `LocalAuthority` 维护本地频道与治理状态，`LiteChannelStore` 经存储模块保存数据；relay 模式由 `BackendRouter` 按玩家所在子服选择后端连接和客户端身份。两种模式共享代理平台接口，不把完整后端装入代理进程。[9] [10]
 
 ## 4. 后端启动与运行时装配
@@ -190,3 +192,4 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 [16]: ../../StarLink/core/src/main/java/com/nova/link/channel/ChannelStateCleanup.java "共享频道成员与缓存玩家状态清理"
 [17]: ../../StarLink/core/src/main/java/com/nova/link/channel/InvitationManager.java "邀请创建、接受与频道生命周期"
 [18]: ../../StarLink/storage/src/main/java/com/nova/link/database/AbstractJdbcProvider.java "频道与邀请共享事务删除"
+[19]: ../../StarLink/storage/src/main/java/com/nova/link/database/RedisProvider.java "Redis 有序索引分批读取与筛选"

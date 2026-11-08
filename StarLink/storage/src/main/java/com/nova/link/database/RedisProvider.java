@@ -16,6 +16,7 @@ import redis.clients.jedis.Transaction;
 import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.params.SetParams;
 import redis.clients.jedis.resps.ScanResult;
+import redis.clients.jedis.resps.Tuple;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -52,6 +53,7 @@ public class RedisProvider implements DatabaseProvider {
     private static final String AUDIT_PREFIX = KEY_PREFIX + "audit:";
     private static final String AUDIT_INDEX = KEY_PREFIX + "audit_events";
     private static final String AUDIT_SEQ = KEY_PREFIX + "audit:seq";
+    private static final int INDEX_READ_BATCH_SIZE = 128;
 
     private static final String DELETE_UNCHANGED_HASH_ENTRY = """
             if redis.call('HGET', KEYS[1], ARGV[1]) == ARGV[2] then
@@ -692,10 +694,7 @@ public class RedisProvider implements DatabaseProvider {
             return Collections.emptyList();
         }
         try (Jedis jedis = jedisPool.getResource()) {
-            // ZREVRANGEBYSCORE gives descending-by-score (createdAt) ordering.
-            // Use +inf/-inf to fetch the whole indexed range, then slice in-memory
-            // so the unreadOnly filter + offset/limit are honored consistently.
-            List<String> ids = jedis.zrevrangeByScore(NOTIFICATION_INDEX, "+inf", "-inf");
+            Iterable<String> ids = indexIdsNewestFirst(jedis, NOTIFICATION_INDEX, "+inf", "-inf");
             List<Notification> result = new ArrayList<>();
             int collected = 0;
             int skipped = 0;
@@ -789,7 +788,7 @@ public class RedisProvider implements DatabaseProvider {
     @Override
     public int getUnreadCount() throws DatabaseException {
         try (Jedis jedis = jedisPool.getResource()) {
-            List<String> ids = jedis.zrangeByScore(NOTIFICATION_INDEX, "-inf", "+inf");
+            Iterable<String> ids = indexIdsNewestFirst(jedis, NOTIFICATION_INDEX, "+inf", "-inf");
             int count = 0;
             for (String idStr : ids) {
                 String json = jedis.get(NOTIFICATION_PREFIX + idStr);
@@ -834,7 +833,7 @@ public class RedisProvider implements DatabaseProvider {
             return Collections.emptyList();
         }
         try (Jedis jedis = jedisPool.getResource()) {
-            List<String> ids = jedis.zrevrangeByScore(NOTIFICATION_INDEX, "+inf", "-inf");
+            Iterable<String> ids = indexIdsNewestFirst(jedis, NOTIFICATION_INDEX, "+inf", "-inf");
             List<Notification> result = new ArrayList<>();
             int collected = 0;
             int skipped = 0;
@@ -915,7 +914,7 @@ public class RedisProvider implements DatabaseProvider {
             return getUnreadCount();
         }
         try (Jedis jedis = jedisPool.getResource()) {
-            List<String> ids = jedis.zrangeByScore(NOTIFICATION_INDEX, "-inf", "+inf");
+            Iterable<String> ids = indexIdsNewestFirst(jedis, NOTIFICATION_INDEX, "+inf", "-inf");
             int count = 0;
             for (String idStr : ids) {
                 String json = jedis.get(NOTIFICATION_PREFIX + idStr);
@@ -943,7 +942,7 @@ public class RedisProvider implements DatabaseProvider {
             return getUnreadCount(userId);
         }
         try (Jedis jedis = jedisPool.getResource()) {
-            List<String> ids = jedis.zrangeByScore(NOTIFICATION_INDEX, "-inf", "+inf");
+            Iterable<String> ids = indexIdsNewestFirst(jedis, NOTIFICATION_INDEX, "+inf", "-inf");
             int count = 0;
             for (String idStr : ids) {
                 String json = jedis.get(NOTIFICATION_PREFIX + idStr);
@@ -1062,7 +1061,7 @@ public class RedisProvider implements DatabaseProvider {
             return Collections.emptyList();
         }
         try (Jedis jedis = jedisPool.getResource()) {
-            List<String> ids = jedis.zrevrangeByScore(AUDIT_INDEX, "+inf", "-inf");
+            Iterable<String> ids = indexIdsNewestFirst(jedis, AUDIT_INDEX, "+inf", "-inf");
             boolean filterActor = actor != null && !actor.isEmpty();
             boolean filterAction = action != null && !action.isEmpty();
             List<com.nova.link.audit.AuditEvent> result = new ArrayList<>();
@@ -1108,7 +1107,7 @@ public class RedisProvider implements DatabaseProvider {
             }
         }
         try (Jedis jedis = jedisPool.getResource()) {
-            List<String> ids = jedis.zrangeByScore(AUDIT_INDEX, "-inf", "+inf");
+            Iterable<String> ids = indexIdsNewestFirst(jedis, AUDIT_INDEX, "+inf", "-inf");
             int count = 0;
             for (String idStr : ids) {
                 String json = jedis.get(AUDIT_PREFIX + idStr);
@@ -1420,10 +1419,64 @@ public class RedisProvider implements DatabaseProvider {
      * Ids from the time index, newest first, pre-narrowed by the filter's
      * from/to bounds so the ZSET does the time filtering.
      */
-    private List<String> messageIdsNewestFirst(Jedis jedis, MessageFilter filter) {
+    private Iterable<String> messageIdsNewestFirst(Jedis jedis, MessageFilter filter) {
         String max = filter.getTo() != null ? String.valueOf(filter.getTo()) : "+inf";
         String min = filter.getFrom() != null ? String.valueOf(filter.getFrom()) : "-inf";
-        return jedis.zrevrangeByScore(MESSAGE_INDEX, max, min);
+        return indexIdsNewestFirst(jedis, MESSAGE_INDEX, max, min);
+    }
+
+    private static Iterable<String> indexIdsNewestFirst(Jedis jedis, String index, String max, String min) {
+        return () -> new Iterator<>() {
+            private Iterator<Tuple> batch = Collections.emptyIterator();
+            private String upperBound = max;
+            private int offset;
+            private boolean exhausted;
+            private Tuple previous;
+            private Tuple resumedAfter;
+            private Tuple next;
+
+            @Override
+            public boolean hasNext() {
+                while (next == null) {
+                    if (!batch.hasNext()) {
+                        if (exhausted) return false;
+                        if (previous != null && previous != resumedAfter) {
+                            upperBound = String.valueOf(previous.getScore());
+                            Long rank = jedis.zrevrank(index, previous.getElement());
+                            offset = 0;
+                            if (rank != null) {
+                                long newer = jedis.zcount(index, "(" + upperBound, "+inf");
+                                offset = Math.toIntExact(Math.max(0L, rank - newer + 1L));
+                            }
+                            resumedAfter = previous;
+                        }
+                        List<Tuple> rows = jedis.zrevrangeByScoreWithScores(index, upperBound, min, offset, INDEX_READ_BATCH_SIZE);
+                        if (offset == 0 && !rows.isEmpty()) upperBound = String.valueOf(rows.get(0).getScore());
+                        offset = Math.addExact(offset, rows.size());
+                        exhausted = rows.size() < INDEX_READ_BATCH_SIZE;
+                        batch = rows.iterator();
+                        if (!batch.hasNext()) return false;
+                    }
+                    Tuple candidate = batch.next();
+                    // new entries ahead of the cursor can repeat a previous batch
+                    if (previous != null && (candidate.getScore() > previous.getScore()
+                            || (candidate.getScore() == previous.getScore()
+                            && candidate.getElement().compareTo(previous.getElement()) >= 0))) {
+                        continue;
+                    }
+                    next = candidate;
+                }
+                return true;
+            }
+
+            @Override
+            public String next() {
+                if (!hasNext()) throw new NoSuchElementException();
+                previous = next;
+                next = null;
+                return previous.getElement();
+            }
+        };
     }
 
     private ChatMessageRecord loadMessageRecord(Jedis jedis, String idStr) {
