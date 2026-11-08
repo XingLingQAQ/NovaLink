@@ -102,7 +102,8 @@ class NovaLinkChannelReloadTest {
                 return snapshot;
             }
         };
-        manager.createChannel(ChannelConfig.builder().id("reused").scope(scope).clientId("original").build());
+        manager.createChannel(ChannelConfig.builder().id("reused").scope(scope)
+                .clientId(scope == ChannelScope.GLOBAL ? null : "original").build());
 
         if (scope == ChannelScope.GLOBAL) {
             new GlobalChannelLoader(manager).reloadGlobalChannels(Map.of());
