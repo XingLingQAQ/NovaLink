@@ -801,23 +801,19 @@ public class ConsoleCommandHandler {
         if (ch == null) {
             return nl(I18n.tr("console.delete.not_found", id));
         }
-        // Remove all members first (clear membership side-effects).
-        for (UUID m : new ArrayList<>(ctx.getChannelManager().getChannelMembers(id))) {
-            ctx.getChannelManager().removeMember(id, m);
-            try {
-                ctx.getPlayerStateManager().leaveChannel(m, id);
-            } catch (Exception ignored) {
-                // non-fatal
+        synchronized (ch) {
+            if (!ctx.getChannelManager().deleteChannelIfCurrent(ch)) {
+                return nl(I18n.tr("console.delete.failed", id));
             }
-        }
-        boolean deleted = ctx.getChannelManager().deleteChannel(id);
-        if (deleted && ch.getScope() == ChannelScope.PRIVATE) {
-            ctx.getPrivateChannelManager().removeTrackedId(id);
-        }
-        if (deleted) {
+            for (UUID member : new ArrayList<>(ch.getMembers())) {
+                ch.removeMember(member);
+                ctx.getPlayerStateManager().leaveChannel(member, id);
+            }
+            if (ch.getScope() == ChannelScope.PRIVATE) {
+                ctx.getPrivateChannelManager().removeTrackedId(id);
+            }
             return nl(I18n.tr("console.delete.success", id));
         }
-        return nl(I18n.tr("console.delete.failed", id));
     }
 
     // ============================ stop ============================

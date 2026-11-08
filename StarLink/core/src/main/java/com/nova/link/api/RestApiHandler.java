@@ -1395,7 +1395,17 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
 
             // Runtime-created channels are tagged RUNTIME so config reload never
             // overwrites them and they are editable from the Panel.
-            Channel channel = channelManager.createChannel(config, ChannelSource.RUNTIME);
+            Channel channel;
+            try {
+                channel = channelManager.createChannel(config, ChannelSource.RUNTIME);
+            } catch (IllegalStateException e) {
+                logger.error("Failed to persist channel creation", e);
+                sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                        "Channel could not be saved. Try again.");
+                recordAudit(ctx, request, claims, "channel.create", null,
+                        null, null, "channel persistence failed", "failure");
+                return;
+            }
 
             JsonObject response = new JsonObject();
             response.addProperty("success", true);
@@ -1424,8 +1434,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     /**
      * DELETE /api/channels/{id} - Delete a channel (admin operation).
      *
-     * <p>Removes all members first (clears membership side-effects), mirroring
-     * {@code ConsoleCommandHandler.handleDelete}.
+     * <p>Persists deletion before clearing former members' channel state.
      * Requirements: 25.4
      */
     private void handleDeleteChannel(ChannelHandlerContext ctx, FullHttpRequest request,
@@ -1452,20 +1461,26 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         JsonObject beforeJson = channelToJson(channel, role);
         String beforeHash = AuditEvent.hashJson(gson.toJson(beforeJson));
 
-        // Remove all members first (clear membership side-effects).
-        for (UUID m : new java.util.ArrayList<>(channelManager.getChannelMembers(channelId))) {
-            channelManager.removeMember(channelId, m);
+        synchronized (channel) {
+            boolean deleted;
             try {
-                playerStateManager.leaveChannel(m, channelId);
-            } catch (Exception ignored) {
-                // non-fatal
+                deleted = channelManager.deleteChannelIfCurrent(channel);
+            } catch (IllegalStateException e) {
+                logger.error("Failed to persist channel deletion '{}'", channelId, e);
+                sendJsonError(ctx, request, HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                        "Channel could not be deleted. Try again.");
+                recordAudit(ctx, request, claims, "channel.delete", "channel:" + channelId,
+                        beforeHash, null, "channel persistence failed", "failure");
+                return;
             }
-        }
-
-        boolean deleted = channelManager.deleteChannel(channelId);
-        if (!deleted) {
-            sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
-            return;
+            if (!deleted) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, "Channel not found");
+                return;
+            }
+            for (UUID member : new java.util.ArrayList<>(channel.getMembers())) {
+                channel.removeMember(member);
+                playerStateManager.leaveChannel(member, channelId);
+            }
         }
 
         JsonObject response = new JsonObject();

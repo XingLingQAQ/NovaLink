@@ -40,7 +40,7 @@ NovaLink 管理网关在同一个 HTTP 服务中提供认证、REST 与 WebSocke
 | `GET /api/channels/{channelId}` | 获取频道详情 | 路径参数 | 频道不存在返回 `404`。 |
 | `POST /api/channels` | 创建频道 | `id?`、`displayName?`、`scope?`、`maxCapacity?`、`permission?` | 这是管理操作；未给 ID 时会生成 ID。 |
 | `PUT /api/channels/{channelId}` | 更新可变字段 | `displayName?`、`maxCapacity?`、`permission?`、`permissionPresent?`、`slowModeSeconds?` | 不应假设可修改所有频道结构或作用域。 |
-| `DELETE /api/channels/{channelId}` | 删除频道 | 无 | 先移除成员；应先确认业务影响。 |
+| `DELETE /api/channels/{channelId}` | 删除频道 | 无 | 持久化删除成功后清理成员；应先确认业务影响。 |
 | `GET /api/channels/{channelId}/members` | 查看成员 | 无 | 暴露玩家 UUID/名称，控制访问范围。 |
 | `POST /api/channels/{channelId}/invite` | 创建邀请 | `ttlMillis?` | 需要保护返回的邀请码。 |
 | `DELETE /api/channels/{channelId}/invitations/{code}` | 撤销频道邀请 | 无 | 保留使用次数、使用人和首次撤销时间；记录不存在时返回 `404`。 |
@@ -48,7 +48,7 @@ NovaLink 管理网关在同一个 HTTP 服务中提供认证、REST 与 WebSocke
 
 创建频道的 `scope` 使用 `GLOBAL`、`SERVER` 或 `PRIVATE` 枚举语义。REST 管理创建的私有频道会使用后台的管理客户端标识；对外部系统而言，应先明确频道边界，再自动化创建。[1]
 
-频道更新先验证容量，再修改字段；提供非正容量时不会留下部分改名。邀请接受流程在同一频道锁内完成成员、容量检查和扣额入群；已有成员或频道满员返回 `NC-409`，保留邀请码剩余次数。频道删除持久化失败时保留运行时登记与索引。[12] [13]
+频道更新先验证容量，再修改字段；提供非正容量时不会留下部分改名。邀请接受流程在同一频道锁内完成成员、容量检查和扣额入群；已有成员或频道满员返回 `NC-409`，保留邀请码剩余次数。频道删除持久化失败时保留运行时登记、索引、成员与玩家当前频道；创建或删除的存储失败返回 `500`，参数错误仍返回 `400`。[1] [12] [13]
 
 `slowModeSeconds` 为非负整数秒，0 表示关闭；省略时保留当前值。它与名称、容量、权限一起保存并更新 revision，启动恢复也保留该值。更新持久化失败返回 `500` 并恢复本次修改的字段；参数错误仍返回 `400`。[1] [11] [13]
 

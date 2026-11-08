@@ -398,6 +398,40 @@ class RestApiHandlerTest {
     }
 
     @Test
+    void failedChannelDeletionKeepsMembershipAndActiveChannel() throws Exception {
+        Channel channel = channelManager.getChannel("survival-chat");
+        playerStateManager.joinChannel(targetId, channel.getId());
+        playerStateManager.setActiveChannel(targetId, channel.getId());
+        db.saveChannel(channel);
+        DatabaseProvider failing = spy(db);
+        doThrow(new com.nova.link.database.DatabaseException("simulated delete failure"))
+                .when(failing).deleteChannel(channel.getId());
+        channelManager.setDatabaseProvider(failing);
+
+        Response response = dispatch(HttpMethod.DELETE, "/api/channels/" + channel.getId(), null);
+
+        assertThat(response.status).isEqualTo(HttpResponseStatus.INTERNAL_SERVER_ERROR);
+        assertThat(channelManager.getChannel(channel.getId())).isSameAs(channel);
+        assertThat(channel.isMember(targetId)).isTrue();
+        assertThat(playerStateManager.getPlayerState(targetId).hasJoinedChannel(channel.getId())).isTrue();
+        assertThat(playerStateManager.getPlayerState(targetId).getActiveChannel()).isEqualTo(channel.getId());
+    }
+
+    @Test
+    void failedChannelCreationReturns500AndLeavesNoChannel() throws Exception {
+        DatabaseProvider failing = spy(db);
+        doThrow(new com.nova.link.database.DatabaseException("simulated create failure"))
+                .when(failing).saveChannel(any(Channel.class));
+        channelManager.setDatabaseProvider(failing);
+
+        Response response = dispatch(HttpMethod.POST, "/api/channels", "{\"id\":\"unsaved\"}");
+
+        assertThat(response.status).isEqualTo(HttpResponseStatus.INTERNAL_SERVER_ERROR);
+        assertThat(channelManager.getChannel("unsaved")).isNull();
+        assertThat(db.loadChannel("unsaved")).isEmpty();
+    }
+
+    @Test
     @DisplayName("PUT /api/channels/{id} updates displayName and maxCapacity")
     void updateChannel() {
         Response resp = dispatch(HttpMethod.PUT, "/api/channels/staff",

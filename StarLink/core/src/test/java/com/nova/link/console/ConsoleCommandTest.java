@@ -50,6 +50,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -646,6 +647,27 @@ class ConsoleCommandTest {
         handler.dispatch("delete todelete");
         assertThat(channelManager.channelExists("todelete")).isFalse();
         assertThat(playerStateManager.getPlayerState(targetId).hasJoinedChannel("todelete")).isFalse();
+    }
+
+    @Test
+    void failedDeletionKeepsMembersAndTheirPlayerState() {
+        handler.dispatch("create retained");
+        channelManager.addMember("retained", targetId);
+        playerStateManager.joinChannel(targetId, "retained");
+        playerStateManager.setActiveChannel(targetId, "retained");
+        channelManager.setDatabaseProvider(new MemoryProvider() {
+            @Override
+            public void deleteChannel(String channelId) throws com.nova.link.database.DatabaseException {
+                throw new com.nova.link.database.DatabaseException("simulated delete failure");
+            }
+        });
+
+        assertThatThrownBy(() -> handler.dispatch("delete retained"))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(channelManager.getChannel("retained").isMember(targetId)).isTrue();
+        assertThat(playerStateManager.getPlayerState(targetId).hasJoinedChannel("retained")).isTrue();
+        assertThat(playerStateManager.getPlayerState(targetId).getActiveChannel()).isEqualTo("retained");
     }
 
     @Test

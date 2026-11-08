@@ -82,7 +82,7 @@ REST 原实现先调用频道更新，再单独设置 `slowModeSeconds`。频道
 
 修复把慢速模式纳入同一频道锁内的字段验证、应用、revision、持久化和失败回滚；原四参数、五参数更新入口保留。REST 直接调用这一入口，存储失败返回 `500` 并记录失败审计。启动恢复完整传递慢速值，避免重启时关闭限速。
 
-验证：三个反例在原实现均失败，分别观察到持久化值 0、恢复值 0 和错误的 HTTP 400。修复后运行相关频道 REST 更新、持久化及启动恢复测试；恢复反例使用单连接 SQLite，调用实际启动恢复入口，并检查运行时与数据库中的值。日志为 `.e2e-artifacts/review6-channel-before.log` 和 `review6-channel-final.log`。
+验证：三个反例在原实现均失败，分别观察到持久化值 0、恢复值 0 和错误的 HTTP 400。修复后相关频道 REST 更新、持久化及启动恢复测试共 20 项通过；恢复反例使用单连接 SQLite，调用实际启动恢复入口，并检查运行时与数据库中的值。日志为 `.e2e-artifacts/review6-channel-before.log` 和 `review6-channel-final.log`。
 
 ## 9. R25：旧重载快照误删同名新频道
 
@@ -112,4 +112,14 @@ REST 原实现先调用频道更新，再单独设置 `slowModeSeconds`。频道
 
 修复在配置频道与持久化频道加载结束后绑定同一个数据库提供者。这样启动加载不重写原记录，后续 REST、控制台和 TCP 经频道管理器统一持久化。TCP 原本另有一次显式保存和删除，带提供者时会各写两次；两个计数反例确认此问题。现在管理器已接持久化时只由管理器写入，独立内存模式的 TCP 调用仍保留原有显式保存行为。
 
-验证：实际启动核心、创建与更新 SQLite 频道、停止并重启、读取慢速值与名称、删除并检查数据库。另用 TCP 创建/删除验证带提供者与内存模式都只写一次，并检查原治理入口。日志为 `.e2e-artifacts/review6-wiring-before.log`、`review6-protocol-persistence-before.log` 和 `review6-wiring-final.log`。
+验证：实际启动核心、创建与更新 SQLite 频道、停止并重启、读取慢速值与名称、删除并检查数据库。另用 TCP 创建/删除验证带提供者与内存模式都只写一次，并检查原治理入口，共 13 项通过。日志为 `.e2e-artifacts/review6-wiring-before.log`、`review6-protocol-persistence-before.log` 和 `review6-wiring-final.log`。
+
+## 12. R28：频道删除失败仍清空成员，创建失败误报参数错误
+
+位置：[REST 频道管理](../../StarLink/core/src/main/java/com/nova/link/api/RestApiHandler.java) 与 [控制台删除](../../StarLink/core/src/main/java/com/nova/link/console/ConsoleCommandHandler.java)。
+
+原 REST 和控制台先移除频道成员、清除玩家已加入及当前频道，再调用持久化删除。数据库失败时频道登记仍在，但成员状态已丢失。REST 创建的持久化异常也被外围捕获，当作无效请求体返回 `400`。
+
+修复在原频道锁内先按对象身份删除，存储成功后才清理原对象的成员与玩家状态。失败不触发这些清理；对象已被替换时也不删除或清理新对象。REST 创建与删除的持久化失败返回 `500` 并记录失败审计；参数解析仍沿用原 `400` 路径。
+
+验证：原 REST 删除反例观察到成员丢失，创建反例观察到 HTTP 400。修复回归覆盖 REST 与控制台失败时保留成员、已加入频道与当前频道，并检查成功创建、正常删除和未知频道路径，共 11 项通过。日志为 `.e2e-artifacts/review6-delete-before.log` 与 `review6-delete-final.log`。
