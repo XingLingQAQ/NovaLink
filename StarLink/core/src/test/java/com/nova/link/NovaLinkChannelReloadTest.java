@@ -9,6 +9,9 @@ import com.nova.link.channel.GlobalChannelLoader;
 import com.nova.link.channel.ServerChannelLoader;
 import com.nova.link.channel.TemplateManager;
 import com.nova.link.config.NovaLinkConfig;
+import com.nova.link.config.ClientConfig;
+import com.nova.link.config.GlobalChannelConfig;
+import com.nova.link.config.ServerChannelConfig;
 import com.nova.link.database.MemoryProvider;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -76,6 +79,89 @@ class NovaLinkChannelReloadTest {
         } finally {
             provider.shutdown();
         }
+    }
+
+    @Test
+    void globalToServerReloadChangesTheRoutingBoundaryAndDropsOldMembers() throws Exception {
+        var manager = new ChannelManager();
+        var previous = manager.createChannel(ChannelConfig.builder().id("moved").scope(ChannelScope.GLOBAL)
+                .build(), ChannelSource.CONFIG);
+        previous.addMember(java.util.UUID.randomUUID());
+        var removed = new ArrayList<Channel>();
+        manager.setDeletionCleanup(removed::add);
+
+        apply(manager, serverConfig("primary", "moved", "Private to primary"));
+
+        var current = manager.getChannel("moved");
+        assertThat(current.getScope()).isEqualTo(ChannelScope.SERVER);
+        assertThat(current.getClientId()).isEqualTo("primary");
+        assertThat(current).isNotSameAs(previous);
+        assertThat(current.getRevision()).isGreaterThan(previous.getRevision());
+        assertThat(current.getMembers()).isEmpty();
+        assertThat(manager.getGlobalChannels()).isEmpty();
+        assertThat(manager.getChannelsByClient("primary")).containsExactly(current);
+        assertThat(removed).containsExactly(previous);
+    }
+
+    @Test
+    void reassigningAConfiguredChannelChangesItsClientIndex() throws Exception {
+        var manager = new ChannelManager();
+        manager.createChannel(ChannelConfig.builder().id("moved").scope(ChannelScope.SERVER)
+                .clientId("old-client").build(), ChannelSource.CONFIG);
+
+        apply(manager, serverConfig("new-client", "moved", "Moved"));
+
+        assertThat(manager.getChannel("moved").getClientId()).isEqualTo("new-client");
+        assertThat(manager.getChannelsByClient("old-client")).isEmpty();
+        assertThat(manager.getChannelsByClient("new-client")).containsExactly(manager.getChannel("moved"));
+    }
+
+    @Test
+    void duplicateDeclarationsKeepTheFirstDefinitionLikeStartup() throws Exception {
+        var manager = new ChannelManager();
+        var config = serverConfig("primary", "shared", "Server definition");
+        var global = new GlobalChannelConfig();
+        global.setDisplayName("Global definition");
+        global.setMaxCapacity(100);
+        config.getGlobalChannels().put("shared", global);
+
+        apply(manager, config);
+
+        assertThat(manager.getChannel("shared").getDisplayName()).isEqualTo("Global definition");
+        assertThat(manager.getChannel("shared").getScope()).isEqualTo(ChannelScope.GLOBAL);
+    }
+
+    @Test
+    void ordinaryReloadKeepsMembersAndSkipsDynamicChannels() throws Exception {
+        var manager = new ChannelManager();
+        var configured = manager.createChannel(ChannelConfig.builder().id("configured").scope(ChannelScope.SERVER)
+                .clientId("primary").build(), ChannelSource.CONFIG);
+        var member = java.util.UUID.randomUUID();
+        configured.addMember(member);
+        var dynamic = manager.createChannel(ChannelConfig.builder().id("dynamic").scope(ChannelScope.GLOBAL).build());
+        var config = serverConfig("primary", "configured", "New name");
+        config.getClients().get(0).getChannels().put("dynamic", new ServerChannelConfig());
+
+        apply(manager, config);
+
+        assertThat(manager.getChannel("configured")).isSameAs(configured);
+        assertThat(configured.getDisplayName()).isEqualTo("New name");
+        assertThat(configured.getMembers()).containsExactly(member);
+        assertThat(configured.getRevision()).isEqualTo(1L);
+        assertThat(manager.getChannel("dynamic")).isSameAs(dynamic);
+        assertThat(dynamic.getScope()).isEqualTo(ChannelScope.GLOBAL);
+    }
+
+    private static NovaLinkConfig serverConfig(String clientId, String channelId, String name) {
+        var channel = new ServerChannelConfig();
+        channel.setDisplayName(name);
+        channel.setScope("SERVER");
+        var client = new ClientConfig();
+        client.setUsername(clientId);
+        client.getChannels().put(channelId, channel);
+        var config = new NovaLinkConfig();
+        config.getClients().add(client);
+        return config;
     }
 
     @ParameterizedTest

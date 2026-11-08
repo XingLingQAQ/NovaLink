@@ -147,3 +147,13 @@ TCP 删除未清理缓存玩家的已加入频道和当前频道；直接调用�
 验证覆盖上述实际核心重启过程、动态频道的 SQLite 重启与删除、频道持久化失败路径、配置覆盖下保留动态记录，以及重载对象身份检查。日志为 `.e2e-artifacts/review7-provenance-before.log` 与 `review7-provenance-final.log`。
 
 历史误写记录没有保存来源，无法与真实动态频道自动区分；本次保留这些现存记录，防止后续 CONFIG 写入。历史数据需要按原配置和实际频道用途确认后清理。
+
+## 15. R31：重载未更新频道路由边界，重复 ID 混用定义
+
+位置：[NovaLinkCore 的配置频道应用](../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java)。
+
+原重载只改名称、权限和容量等字段，无法修改固定的 scope / clientId。GLOBAL 改为 SERVER 后仍按 GLOBAL 路由；客户端迁移则被直接忽略。重复频道 ID 在启动时保留第一个，但重载会用后一个声明修改前一个频道的属性，造成边界与名称来自不同定义。三个原实现反例分别观察到 GLOBAL、旧客户端及后一个声明的名称。
+
+修复在频道锁内确认当前对象与 CONFIG 来源。作用域或客户端绑定变化时，先按对象身份删除并执行清理，再建立新的 CONFIG 频道与索引，revision 高于旧对象；普通字段更新保留成员。每次配置应用只处理同一 ID 的第一个定义，与现有启动顺序一致，后续重复项记录警告。动态频道继续保留。
+
+验证：重载与实际核心配置增删重启共 9 项通过，覆盖边界变化、客户端迁移、重复定义、普通更新保留成员、跳过动态频道及已有替换对象保护；随后只补跑边界替换回归，确认 revision 继续递增。日志为 `.e2e-artifacts/review7-reload-boundaries-before.log`、`review7-reload-boundaries-final.log` 和 `review7-reload-revision.log`。

@@ -1318,8 +1318,11 @@ public final class NovaLinkCore implements AutoCloseable {
                         .slowModeSeconds(cfg.getSlowModeSeconds())
                         .build();
 
-                desiredIds.add(channelId);
-                upsertConfiguredChannel(channelManager, desired);
+                if (desiredIds.add(channelId)) {
+                    upsertConfiguredChannel(channelManager, desired);
+                } else {
+                    logger.warn("Ignoring duplicate configured channel ID '{}'", channelId);
+                }
             }
         }
 
@@ -1384,8 +1387,11 @@ public final class NovaLinkCore implements AutoCloseable {
                             .slowModeSeconds(channelCfg.getSlowModeSeconds())
                             .build();
 
-                    desiredIds.add(channelId);
-                    upsertConfiguredChannel(channelManager, desired);
+                    if (desiredIds.add(channelId)) {
+                        upsertConfiguredChannel(channelManager, desired);
+                    } else {
+                        logger.warn("Ignoring duplicate configured channel ID '{}'", channelId);
+                    }
                 }
             }
         }
@@ -1435,33 +1441,33 @@ public final class NovaLinkCore implements AutoCloseable {
             return;
         }
 
-        // PANEL-004: never overwrite a dynamic (non-CONFIG) channel. This covers
-        // DATABASE channels restored from persistence and RUNTIME channels
-        // created via REST/console. A deleted config channel that was recreated
-        // as dynamic stays dynamic and is not revived as CONFIG here.
-        if (existing.getSource() != ChannelSource.CONFIG) {
-            logger.debug("Skipping config reload for dynamic channel '{}' (source={})",
-                    desired.getId(), existing.getSource());
-            return;
-        }
-
-        // Avoid accidentally rewriting a CONFIG channel that belongs to a different client.
-        if (existing.getScope() != ChannelScope.GLOBAL) {
-            String existingClient = existing.getClientId();
-            String desiredClient = desired.getClientId();
-            if (existingClient != null && desiredClient != null && !existingClient.equals(desiredClient)) {
-                logger.warn("Config reload attempted to update channel '{}' for client '{}' but it belongs to client '{}' - ignored",
-                        desired.getId(), desiredClient, existingClient);
+        synchronized (existing) {
+            if (channelManager.getChannel(desired.getId()) != existing) return;
+            if (existing.getSource() != ChannelSource.CONFIG) {
+                logger.debug("Skipping config reload for dynamic channel '{}' (source={})",
+                        desired.getId(), existing.getSource());
                 return;
             }
+            if (existing.getScope() != desired.getScope()
+                    || !java.util.Objects.equals(existing.getClientId(), desired.getClientId())) {
+                if (channelManager.deleteChannelIfCurrent(existing)) {
+                    try {
+                        Channel replacement = channelManager.createChannel(desired, ChannelSource.CONFIG);
+                        replacement.setRevision(existing.getRevision() + 1L);
+                    } catch (IllegalArgumentException error) {
+                        logger.warn("Could not recreate configured channel '{}': {}",
+                                desired.getId(), error.getMessage());
+                    }
+                }
+                return;
+            }
+            existing.setDisplayName(desired.getDisplayName());
+            existing.setPermission(desired.getPermission());
+            existing.setMaxCapacity(desired.getMaxCapacity());
+            existing.setAllowedWorlds(desired.getAllowedWorlds());
+            existing.setSlowModeSeconds(desired.getSlowModeSeconds());
+            existing.bumpRevision();
         }
-
-        existing.setDisplayName(desired.getDisplayName());
-        existing.setPermission(desired.getPermission());
-        existing.setMaxCapacity(desired.getMaxCapacity());
-        existing.setAllowedWorlds(desired.getAllowedWorlds());
-        existing.setSlowModeSeconds(desired.getSlowModeSeconds());
-        existing.bumpRevision();
     }
 
     private static void loadPersistedChannels(ChannelManager channelManager, DatabaseProvider databaseProvider) {
