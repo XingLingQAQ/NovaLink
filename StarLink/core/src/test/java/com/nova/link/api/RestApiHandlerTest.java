@@ -538,6 +538,28 @@ class RestApiHandlerTest {
     }
 
     @Test
+    void invalidModerationDurationsReturn400WithoutChangingState() {
+        for (String action : java.util.List.of("mute", "ban")) {
+            for (String duration : java.util.List.of("-1", "9223372036854775807", "18446744073709551616", "0.5")) {
+                Response response = dispatch(HttpMethod.POST, "/api/players/" + targetId + "/" + action,
+                        "{\"channelId\":\"survival-chat\",\"durationMs\":" + duration + "}");
+                assertThat(response.status).as("%s duration %s", action, duration).isEqualTo(HttpResponseStatus.BAD_REQUEST);
+                Response preview = dispatch(HttpMethod.POST, "/api/moderation/batch",
+                        "{\"action\":\"" + action + "\",\"targetIds\":[\"" + targetId
+                                + "\"],\"channelId\":\"survival-chat\",\"durationMs\":" + duration
+                                + ",\"reason\":\"invalid\",\"idempotencyKey\":\"" + UUID.randomUUID()
+                                + "\",\"dryRun\":true}");
+                assertThat(preview.status).as("%s preview duration %s", action, duration)
+                        .isEqualTo(HttpResponseStatus.BAD_REQUEST);
+            }
+        }
+        assertThat(muteManager.isMuted(targetId, "survival-chat")).isFalse();
+        assertThat(banManager.isBanned(targetId, "survival-chat")).isFalse();
+        assertThat(channelManager.getChannel("survival-chat").isMember(targetId)).isTrue();
+        verify(capturedClient, never()).sendPacket(any());
+    }
+
+    @Test
     @DisplayName("PUT /api/channels/{id} rejects negative slowModeSeconds with 400")
     void updateChannelSlowModeNegative() {
         Response resp = dispatch(HttpMethod.PUT, "/api/channels/staff",

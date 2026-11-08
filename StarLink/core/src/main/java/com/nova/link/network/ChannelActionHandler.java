@@ -32,7 +32,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.TreeSet;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Handles channel action packets (join/leave/create/invite/accept/kick/mute/unmute/delete).
@@ -661,7 +660,13 @@ public class ChannelActionHandler {
             return permissionError;
         }
 
-        long durationMs = parseDurationMs(packet);
+        long durationMs;
+        try {
+            durationMs = parseDurationMs(packet);
+        } catch (IllegalArgumentException e) {
+            return new ChannelActionResponsePacket(false, ChannelAction.MUTE, channelId,
+                    NovaConstants.ERROR_BAD_REQUEST, e.getMessage());
+        }
         String reason = firstNonBlank(packet.getExtra("reason"), packet.getExtra("muteReason"), "Muted by admin");
 
         MuteResult result = muteManager.mutePlayer(
@@ -766,7 +771,13 @@ public class ChannelActionHandler {
             }
         }
 
-        long durationMs = parseDurationMs(packet);
+        long durationMs;
+        try {
+            durationMs = parseDurationMs(packet);
+        } catch (IllegalArgumentException e) {
+            return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId,
+                    NovaConstants.ERROR_BAD_REQUEST, e.getMessage());
+        }
         String reason = firstNonBlank(packet.getExtra("reason"), packet.getExtra("banReason"), "Banned by admin");
 
         BanResult result = banManager.banPlayer(
@@ -1054,34 +1065,31 @@ public class ChannelActionHandler {
     }
 
     /**
-     * Parses mute duration from packet extras.
+     * Parses moderation duration from packet extras.
      * Accepts either milliseconds ({@code durationMs}) or seconds ({@code duration}).
-     * Returns 0 for permanent when value is missing/invalid.
+     * Returns 0 for permanent when the value is missing.
      */
     private long parseDurationMs(ChannelActionPacket packet) {
-        String durationMsRaw = firstNonBlank(packet.getExtra("durationMs"), packet.getExtra("duration_ms"));
-        if (durationMsRaw != null) {
-            try {
-                long value = Long.parseLong(durationMsRaw.trim());
-                return Math.max(0L, value);
-            } catch (NumberFormatException ignored) {
-                // fall through
-            }
+        String raw = packet.getExtra("durationMs");
+        if (raw == null) {
+            raw = packet.getExtra("duration_ms");
         }
-
-        String durationSecRaw = firstNonBlank(packet.getExtra("duration"), packet.getExtra("durationSeconds"));
-        if (durationSecRaw != null) {
-            try {
-                long seconds = Long.parseLong(durationSecRaw.trim());
-                if (seconds <= 0) {
-                    return 0L;
-                }
-                return TimeUnit.SECONDS.toMillis(seconds);
-            } catch (NumberFormatException ignored) {
-                // fall through
+        long multiplier = 1L;
+        if (raw == null) {
+            raw = packet.getExtra("duration");
+            if (raw == null) {
+                raw = packet.getExtra("durationSeconds");
             }
+            multiplier = 1000L;
         }
-        return 0L;
+        if (raw == null) {
+            return 0L;
+        }
+        try {
+            return Math.multiplyExact(Long.parseLong(raw.trim()), multiplier);
+        } catch (NumberFormatException | ArithmeticException e) {
+            throw new IllegalArgumentException("Duration must be a whole number within range (0 = permanent).", e);
+        }
     }
 
     private void upsertPlayerState(ClientConnection connection,

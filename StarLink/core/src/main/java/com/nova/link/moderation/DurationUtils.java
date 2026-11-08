@@ -1,40 +1,26 @@
 package com.nova.link.moderation;
 
 /**
- * Shared duration-rendering helpers for the moderation subsystem.
- *
- * <p>Two distinct call-site conventions coexist in the codebase, and they
- * cannot collapse into one method because the value {@code 0} means different
- * things depending on the caller:
- *
- * <ul>
- *   <li>{@link #describeDuration(long)} — input is the <em>set</em> duration
- *       of a mute/ban (the value the operator chose). {@code 0} (and any
- *       negative, which never occurs in practice) means <em>permanent</em>.
- *       Used by {@code MuteManager} / {@code BanManager} notification messages
- *       and by {@code ConsoleCommandHandler} success lines, where the
- *       operator just chose {@code 0 = perm}.</li>
- *   <li>{@link #describeRemaining(long)} — input is the <em>remaining</em>
- *       milliseconds from {@code MuteInfo.getRemainingTime()} /
- *       {@code BanInfo.getRemainingTime()}. Those return {@code -1} for
- *       permanent entries, {@code 0} for an entry that has just expired, and a
- *       positive value while still active. So {@code -1 -> "permanent"},
- *       {@code 0 -> "expired"}. This is the exact semantics the old
- *       {@code ConsoleCommandHandler.describeDuration} relied on for its
- *       {@code mutes}/{@code bans} listing call sites.</li>
- * </ul>
- *
- * <p>Merging the two into one method would force either every
- * {@code remaining == 0} listing to read "permanent" (breaking the console
- * {@code mutes}/{@code bans} listing for just-expired entries) or every
- * set-duration {@code 0} notification to read "expired" (breaking the manager
- * notification for permanent mutes/bans). A single method cannot honour both
- * conventions, so two methods are provided.
+ * Moderation expiration and duration labels.
+ * Configured duration 0 means permanent; remaining time 0 means expired.
  */
 public final class DurationUtils {
 
     private DurationUtils() {
-        // utility class
+    }
+
+    public static long expirationTime(long durationMs) {
+        if (durationMs < 0) {
+            throw new IllegalArgumentException("Duration must be zero or positive (0 = permanent).");
+        }
+        if (durationMs == 0) {
+            return 0L;
+        }
+        try {
+            return Math.addExact(System.currentTimeMillis(), durationMs);
+        } catch (ArithmeticException e) {
+            throw new IllegalArgumentException("Duration is too large. Choose a shorter duration.", e);
+        }
     }
 
     /**

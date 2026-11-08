@@ -279,6 +279,22 @@ class ConsoleCommandTest {
         return sent;
     }
 
+    @Test
+    void invalidDurationsDoNotSendSuccessNotices() {
+        var sent = captureTargetServerPackets();
+        for (String duration : List.of("-1", "-1h", "9223372036854775807", "9223372036854775807d")) {
+            assertThatThrownBy(() -> ConsoleCommandHandler.parseDurationMs(duration))
+                    .as("duration %s", duration).isInstanceOf(IllegalArgumentException.class);
+            for (String action : List.of("mute", "ban")) {
+                String output = handler.dispatch(action + " Steve survival-chat " + duration + " invalid");
+                assertThat(output).doesNotContain("Muted", "Banned");
+            }
+        }
+        assertThat(muteManager.isMuted(targetId, "survival-chat")).isFalse();
+        assertThat(channelManager.getChannel("survival-chat").isMember(targetId)).isTrue();
+        assertThat(sent).isEmpty();
+    }
+
     private static ChannelActionResponsePacket onlyNotice(List<Packet> sent) {
         assertThat(sent).hasSize(1);
         assertThat(sent.get(0)).isInstanceOf(ChannelActionResponsePacket.class);

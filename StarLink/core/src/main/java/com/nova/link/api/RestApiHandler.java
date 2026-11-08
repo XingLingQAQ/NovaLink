@@ -46,6 +46,7 @@ import com.nova.link.moderation.CaseEvidence;
 import com.nova.link.moderation.CaseEvidenceType;
 import com.nova.link.moderation.CaseSource;
 import com.nova.link.moderation.CaseStatus;
+import com.nova.link.moderation.DurationUtils;
 import com.nova.link.moderation.ModerationCase;
 import com.nova.link.moderation.ModerationException;
 import com.nova.link.moderation.ModerationManager;
@@ -1894,17 +1895,20 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         long durationMs = 0L;
         if (json.has("durationMs") && !json.get("durationMs").isJsonNull()) {
             try {
-                durationMs = json.get("durationMs").getAsLong();
+                durationMs = json.get("durationMs").getAsBigDecimal().longValueExact();
             } catch (Exception e) {
                 sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
-                        "durationMs must be a number");
+                        "durationMs must be a whole number of milliseconds within range (0 = permanent)");
                 return;
             }
         }
-        if ((action.equals("mute") || action.equals("ban")) && durationMs < 0L) {
-            sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST,
-                    "durationMs must be ≥ 0 (0 = permanent)");
-            return;
+        if (action.equals("mute") || action.equals("ban")) {
+            try {
+                DurationUtils.expirationTime(durationMs);
+            } catch (IllegalArgumentException e) {
+                sendJsonError(ctx, request, HttpResponseStatus.BAD_REQUEST, e.getMessage());
+                return;
+            }
         }
 
         String caseId = json.has("caseId") && !json.get("caseId").isJsonNull()
@@ -2190,7 +2194,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                     channelId = json.get("channelId").getAsString();
                 }
                 if (json.has("durationMs") && !json.get("durationMs").isJsonNull()) {
-                    durationMs = json.get("durationMs").getAsLong();
+                    durationMs = json.get("durationMs").getAsBigDecimal().longValueExact();
                 }
                 if (json.has("reason") && !json.get("reason").isJsonNull()) {
                     reason = json.get("reason").getAsString();
@@ -2410,7 +2414,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                     channelId = json.get("channelId").getAsString();
                 }
                 if (json.has("durationMs") && !json.get("durationMs").isJsonNull()) {
-                    durationMs = json.get("durationMs").getAsLong();
+                    durationMs = json.get("durationMs").getAsBigDecimal().longValueExact();
                 }
                 if (json.has("reason") && !json.get("reason").isJsonNull()) {
                     reason = json.get("reason").getAsString();

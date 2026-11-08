@@ -871,23 +871,27 @@ public class ConsoleCommandHandler {
             return 0L;
         }
         char unit = s.charAt(s.length() - 1);
-        long value;
-        try {
-            if (Character.isDigit(unit)) {
-                // bare number -> treat as seconds
-                value = Long.parseLong(s);
-                return TimeUnit.SECONDS.toMillis(Math.max(0L, value));
+        long multiplier = 1000L;
+        if (!Character.isDigit(unit)) {
+            s = s.substring(0, s.length() - 1);
+            switch (unit) {
+                case 's': break;
+                case 'm': multiplier = 60_000L; break;
+                case 'h': multiplier = 3_600_000L; break;
+                case 'd': multiplier = 86_400_000L; break;
+                default: throw new IllegalArgumentException("unknown unit '" + unit + "' (use s/m/h/d)");
             }
-            value = Long.parseLong(s.substring(0, s.length() - 1));
+        }
+        try {
+            long value = Long.parseLong(s);
+            if (value < 0) {
+                throw new IllegalArgumentException("Duration must be zero or positive (0 = permanent).");
+            }
+            return Math.multiplyExact(value, multiplier);
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException("expected <number><s|m|h|d>, got " + raw);
-        }
-        switch (unit) {
-            case 's': return TimeUnit.SECONDS.toMillis(value);
-            case 'm': return TimeUnit.MINUTES.toMillis(value);
-            case 'h': return TimeUnit.HOURS.toMillis(value);
-            case 'd': return TimeUnit.DAYS.toMillis(value);
-            default: throw new IllegalArgumentException("unknown unit '" + unit + "' (use s/m/h/d)");
+        } catch (ArithmeticException e) {
+            throw new IllegalArgumentException("Duration is too large. Choose a shorter duration.", e);
         }
     }
 

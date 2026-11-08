@@ -111,8 +111,12 @@ public class MuteManager extends AbstractModerationManager<MuteInfo> {
             return validationResult;
         }
 
-        // Calculate expiration time
-        long expireTime = durationMs > 0 ? System.currentTimeMillis() + durationMs : 0;
+        long expireTime;
+        try {
+            expireTime = DurationUtils.expirationTime(durationMs);
+        } catch (IllegalArgumentException e) {
+            return MuteResult.badRequest(e.getMessage());
+        }
 
         // Create mute info
         MuteInfo muteInfo = new MuteInfo(channelId, expireTime, reason, operatorId);

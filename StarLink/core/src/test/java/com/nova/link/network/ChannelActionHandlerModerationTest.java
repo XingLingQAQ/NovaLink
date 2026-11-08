@@ -5,6 +5,7 @@ import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.link.auth.PermissionManager;
 import com.nova.link.auth.SuperAdminCredentials;
+import com.nova.link.ban.BanManager;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
@@ -36,6 +37,7 @@ class ChannelActionHandlerModerationTest {
     private ChannelManager channelManager;
     private PermissionManager permissionManager;
     private MuteManager muteManager;
+    private BanManager banManager;
     private ChannelActionHandler handler;
     private ClientConnection connection;
 
@@ -53,6 +55,7 @@ class ChannelActionHandlerModerationTest {
         PrivateChannelManager privateChannelManager = new PrivateChannelManager(channelManager);
         InvitationManager invitationManager = new InvitationManager(db, channelManager);
         muteManager = new MuteManager(db, permissionManager, channelManager);
+        banManager = new BanManager(db, permissionManager, channelManager);
 
         handler = new ChannelActionHandler(
                 channelManager,
@@ -61,7 +64,8 @@ class ChannelActionHandlerModerationTest {
                 privateChannelManager,
                 invitationManager,
                 permissionManager,
-                muteManager
+                muteManager,
+                banManager
         );
 
         superAdminId = UUID.randomUUID();
@@ -83,6 +87,50 @@ class ChannelActionHandlerModerationTest {
         connection = mock(ClientConnection.class);
         when(connection.isAuthenticated()).thenReturn(true);
         when(connection.getClientId()).thenReturn("Survival");
+    }
+
+    @Test
+    void invalidDurationsNeverBecomePermanentRestrictions() {
+        for (ChannelAction action : new ChannelAction[] {ChannelAction.MUTE, ChannelAction.BAN}) {
+            for (String[] input : new String[][] {
+                    {"durationMs", "-1"}, {"duration_ms", "9223372036854775807"},
+                    {"duration", "invalid"}, {"durationMs", " "},
+                    {"durationMs", "invalid"}, {"durationSeconds", "9223372036854775807"}}) {
+                var packet = new ChannelActionPacket(action, "local");
+                packet.addExtra("operatorId", superAdminId.toString());
+                packet.addExtra("targetId", targetId.toString());
+                packet.addExtra(input[0], input[1]);
+                if (input[0].equals("durationMs")) {
+                    packet.addExtra("duration", "60");
+                }
+                var response = handler.handle(connection, packet);
+                assertThat(response.isSuccess()).as("%s %s=%s", action, input[0], input[1]).isFalse();
+                assertThat(response.getErrorCode()).isEqualTo("NC-400");
+            }
+        }
+        assertThat(muteManager.isMuted(targetId, "local")).isFalse();
+        assertThat(banManager.isBanned(targetId, "local")).isFalse();
+        assertThat(channelManager.getChannel("local").isMember(targetId)).isTrue();
+    }
+
+    @Test
+    void omittedAndZeroDurationsStillMeanPermanent() {
+        for (ChannelAction action : new ChannelAction[] {ChannelAction.MUTE, ChannelAction.BAN}) {
+            for (String duration : new String[] {null, "0"}) {
+                var packet = new ChannelActionPacket(action, "local");
+                packet.addExtra("operatorId", superAdminId.toString());
+                packet.addExtra("targetId", targetId.toString());
+                if (duration != null) {
+                    packet.addExtra("durationMs", duration);
+                }
+                assertThat(handler.handle(connection, packet).isSuccess()).isTrue();
+                if (action == ChannelAction.MUTE) {
+                    assertThat(muteManager.getMuteInfo(targetId, "local").getExpireTime()).isZero();
+                } else {
+                    assertThat(banManager.getBanInfo(targetId, "local").getExpireTime()).isZero();
+                }
+            }
+        }
     }
 
     @Nested

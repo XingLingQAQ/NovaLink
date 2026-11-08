@@ -83,6 +83,8 @@ curl --request POST "https://panel.example.invalid/api/messages" \
 
 REST 层将这些操作视作后台发起的管理动作。自动化系统应在调用前完成 UUID、频道 ID、持续时间和理由校验，并保存操作请求与响应记录。[1]
 
+禁言与封禁的 `durationMs` 使用非负整数毫秒，省略或传 `0` 表示永久。负数、非整数、超出整数范围或使到期时间溢出的值返回 `400`；批量接口（含 `dryRun`）执行相同校验。非法时长不会修改原限制、移除成员或发送成功通知。[1] [15]
+
 频道级禁言或封禁过期后，仍检查有效的全局限制。查询即时忽略并淘汰过期缓存，数据库过期记录由每分钟清理任务回收；查询不会按已过期的旧快照删除刚续期的数据库记录。[14]
 
 禁言、解除禁言、封禁和解封先提交存储，再发布缓存及成功副作用；同一玩家的写入按相同顺序执行。存储失败返回 `500`（`NC-510`），保留本次操作前的限制，不发送成功通知，也不因失败封禁移除成员。无数据库的独立管理器仍可仅在内存中操作。[14]
@@ -197,3 +199,4 @@ Webhook REST 路由存在并操作运行时管理器，但示例 YAML 中的 `we
 [12]: ../../StarLink/core/src/main/java/com/nova/link/channel/InvitationManager.java "邀请校验、扣额与入群"
 [13]: ../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java "频道修改同步与持久化失败处理"
 [14]: ../../StarLink/core/src/main/java/com/nova/link/moderation/AbstractModerationManager.java "禁言与封禁共享缓存、查询与过期处理"
+[15]: ../../StarLink/core/src/main/java/com/nova/link/moderation/DurationUtils.java "时长与到期时间校验"

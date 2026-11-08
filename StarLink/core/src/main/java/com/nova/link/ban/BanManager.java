@@ -100,8 +100,12 @@ public class BanManager extends AbstractModerationManager<BanInfo> {
             return validationResult;
         }
 
-        // Calculate expiration time
-        long expireTime = durationMs > 0 ? System.currentTimeMillis() + durationMs : 0;
+        long expireTime;
+        try {
+            expireTime = DurationUtils.expirationTime(durationMs);
+        } catch (IllegalArgumentException e) {
+            return BanResult.badRequest(e.getMessage());
+        }
 
         // Create ban info
         BanInfo banInfo = new BanInfo(channelId, expireTime, reason, operatorId);
