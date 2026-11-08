@@ -1,5 +1,7 @@
 package com.nova.link.config;
 
+import com.nova.link.lifecycle.ShutdownBudget;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.nova.chat.common.protocol.packets.ConfigSyncPacket;
@@ -8,13 +10,14 @@ import com.nova.link.network.ServerNetworkHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.function.Consumer;
+import java.time.Duration;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.MessageDigest;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -407,18 +410,14 @@ public class ConfigManager {
      * Stops watching the configuration file.
      */
     public void stopWatching() {
+        stopWatching(new ShutdownBudget(Duration.ofSeconds(5)));
+    }
+
+    public void stopWatching(ShutdownBudget budget) {
         watching = false;
         
         if (watchExecutor != null) {
-            watchExecutor.shutdown();
-            try {
-                if (!watchExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    watchExecutor.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                watchExecutor.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
+            budget.stop(watchExecutor, Duration.ofSeconds(5));
             watchExecutor = null;
         }
         

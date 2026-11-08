@@ -1,5 +1,6 @@
 package com.nova.link.announcement;
 
+import com.nova.link.lifecycle.ShutdownBudget;
 import com.nova.link.audit.AuditEvent;
 import com.nova.link.audit.AuditStore;
 import com.nova.link.auth.PermissionLevel;
@@ -13,6 +14,7 @@ import com.nova.link.database.DatabaseProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -160,20 +162,16 @@ public class CampaignManager {
      * Shuts down the scheduler and cancels all armed one-shot tasks.
      */
     public void shutdown() {
+        shutdown(new ShutdownBudget(Duration.ofSeconds(5)));
+    }
+
+    public void shutdown(ShutdownBudget budget) {
         for (ScheduledFuture<?> task : scheduledTasks.values()) {
             task.cancel(false);
         }
         scheduledTasks.clear();
         if (scheduler != null) {
-            scheduler.shutdown();
-            try {
-                if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                    scheduler.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                scheduler.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
+            budget.stop(scheduler, Duration.ofSeconds(5));
         }
         campaigns.clear();
         deliveryHourCounter.clear();

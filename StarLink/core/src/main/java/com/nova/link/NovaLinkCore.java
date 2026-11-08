@@ -1,4 +1,9 @@
 package com.nova.link;
+
+import com.nova.link.lifecycle.ShutdownBudget;
+import java.util.function.Consumer;
+import java.time.Duration;
+
 import com.nova.chat.common.NovaConstants;
 
 import com.nova.chat.common.chat.MentionNotifier;
@@ -362,15 +367,15 @@ public final class NovaLinkCore implements AutoCloseable {
         // create/update/delete, restored here so they survive restarts.
         webhookManager.setDatabaseProvider(databaseProvider);
         webhookManager.loadPersistedWebhooks();
-        started.push(closeable("webhooks", webhookManager::shutdown));
+        started.push(closeable("webhooks", budget -> webhookManager.shutdown(budget)));
         PrivateChannelManager privateChannelManager = new PrivateChannelManager(channelManager);
         InvitationManager invitationManager = new InvitationManager(databaseProvider, channelManager);
         MuteManager muteManager = new MuteManager(databaseProvider, permissionManager, channelManager);
         muteManager.initialize();
-        started.push(closeable("mutes", muteManager::shutdown));
+        started.push(closeable("mutes", budget -> muteManager.shutdown(budget)));
         BanManager banManager = new BanManager(databaseProvider, permissionManager, channelManager);
         banManager.initialize();
-        started.push(closeable("bans", banManager::shutdown));
+        started.push(closeable("bans", budget -> banManager.shutdown(budget)));
         // Warm the moderation caches from the database so persisted mutes/bans
         // survive a backend restart (isMuted/isBanned only consult the cache).
         muteManager.loadAllMutes();
@@ -386,7 +391,7 @@ public final class NovaLinkCore implements AutoCloseable {
         AnnouncementManager announcementManager = new AnnouncementManager(permissionManager, channelManager);
         announcementManager.setDatabaseProvider(databaseProvider);
         announcementManager.initialize();
-        started.push(closeable("announcements", announcementManager::shutdown));
+        started.push(closeable("announcements", budget -> announcementManager.shutdown(budget)));
 
         loadConfiguredChannels(channelManager, config);
         loadPersistedChannels(channelManager, databaseProvider);
@@ -395,7 +400,7 @@ public final class NovaLinkCore implements AutoCloseable {
         // Network + routing
         int workerThreads = config.getServer().getWorkerThreads();
         ServerNetworkHandler networkHandler = new ServerNetworkHandler(workerThreads);
-        started.push(closeable("network-handler", networkHandler::shutdown));
+        started.push(closeable("network-handler", budget -> networkHandler.shutdown(budget)));
         // KeepAlive owner shared by the write-idle send path (NettyServer) and
         // the inbound handler below, so both consult the same loop guard and
         // per-connection flood budget.
@@ -423,7 +428,7 @@ public final class NovaLinkCore implements AutoCloseable {
         MessageLogService messageLogService = new MessageLogService(databaseProvider,
                 config.getFeatures().getMessageLogRetentionDays());
         messageLogService.initialize();
-        started.push(closeable("message-log", messageLogService::shutdown));
+        started.push(closeable("message-log", budget -> messageLogService.shutdown(budget.remaining())));
         messageRouter.setMessageLogService(messageLogService);
 
         // Apply FeatureConfig switches and the custom filter lists at startup
@@ -469,7 +474,7 @@ public final class NovaLinkCore implements AutoCloseable {
         // the host JVM, so it is the first thing rolled back on failure.
         configManager.setNetworkHandler(networkHandler);
         configManager.startWatching();
-        started.push(closeable("config-watcher", configManager::stopWatching));
+        started.push(closeable("config-watcher", budget -> configManager.stopWatching(budget)));
         configManager.addReloadListener(newConfig -> {
             applyConfiguredChannels(channelManager, newConfig);
             bootstrapPrivateChannelAdmins(permissionManager, channelManager);
@@ -681,7 +686,7 @@ public final class NovaLinkCore implements AutoCloseable {
             if (!result.isSuccess()) throw new IllegalStateException(result.getErrorMessage());
         });
         campaignManager.initialize();
-        started.push(closeable("campaigns", campaignManager::shutdown));
+        started.push(closeable("campaigns", budget -> campaignManager.shutdown(budget)));
         // Rehydrate non-terminal campaigns (PREVIEW/SCHEDULED/ACTIVE) from the
         // database now that the sender callback + scheduler are wired — mirrors
         // announcementManager.loadPersistedAnnouncements() above. Terminal
@@ -815,12 +820,12 @@ public final class NovaLinkCore implements AutoCloseable {
      * each (Netty's {@code shutdownGracefully()} defaults), ~4s minimum.
      */
     private void pushListenerTeardown(NettyServer tcpServer, WebSocketGateway webSocketGateway) {
-        listenerCloser = closeable("listeners", () -> {
+        listenerCloser = closeable("listeners", (ShutdownBudget budget) -> {
             CompletableFuture<Void> tcp = tcpServer.shutdown();
-            CompletableFuture<Void> ws = webSocketGateway.shutdown();
+            CompletableFuture<Void> ws = webSocketGateway.shutdown(budget);
             try {
                 CompletableFuture.allOf(tcp, ws)
-                        .get(STOP_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+                        .get(budget.remainingNanos(), TimeUnit.NANOSECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (java.util.concurrent.TimeoutException e) {
@@ -848,7 +853,7 @@ public final class NovaLinkCore implements AutoCloseable {
         AutoCloseable listeners = listenerCloser;
         listenerCloser = null;
         if (listeners != null) {
-            closeQuietly(listeners);
+            closeQuietly(listeners, deadline);
         }
 
         // 2. REST workers: await in-flight requests — they run JDBC queries and
@@ -856,13 +861,7 @@ public final class NovaLinkCore implements AutoCloseable {
         ExecutorService restPool = ctx.getRestWorkerPool();
         if (restPool != null) {
             try {
-                restPool.shutdown();
-                if (!restPool.awaitTermination(remainingMillis(deadline), TimeUnit.MILLISECONDS)) {
-                    restPool.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                restPool.shutdownNow();
-                Thread.currentThread().interrupt();
+                ShutdownBudget.until(deadline).stop(restPool);
             } catch (Exception e) {
                 logger.debug("Error shutting down REST worker pool: {}", e.toString());
             }
@@ -886,21 +885,18 @@ public final class NovaLinkCore implements AutoCloseable {
         AutoCloseable database = databaseCloser;
         databaseCloser = null;
         if (database != null) {
-            closeQuietly(database);
+            closeQuietly(database, deadline);
         }
     }
 
-    /** Drains {@link #started} in reverse start order, bounded by the deadline. */
+    /** Every registered component must stop, even when graceful time is exhausted. */
     private void drainStarted(long deadline) {
         AutoCloseable next;
         while ((next = started.poll()) != null) {
-            closeQuietly(next);
-            if (System.nanoTime() > deadline) {
-                logger.warn("NovaLink shutdown exceeded {} ms; remaining components skipped",
-                        STOP_TIMEOUT_MILLIS);
-                started.clear();
-                break;
-            }
+            closeQuietly(next, deadline);
+        }
+        if (System.nanoTime() > deadline) {
+            logger.warn("NovaLink shutdown exhausted its {} ms graceful budget", STOP_TIMEOUT_MILLIS);
         }
     }
 
@@ -917,13 +913,13 @@ public final class NovaLinkCore implements AutoCloseable {
         AutoCloseable listeners = listenerCloser;
         listenerCloser = null;
         if (listeners != null) {
-            closeQuietly(listeners);
+            closeQuietly(listeners, deadline);
         }
         drainStarted(deadline);
         AutoCloseable database = databaseCloser;
         databaseCloser = null;
         if (database != null) {
-            closeQuietly(database);
+            closeQuietly(database, deadline);
         }
     }
 
@@ -939,28 +935,36 @@ public final class NovaLinkCore implements AutoCloseable {
         }
     }
 
-    private static long remainingMillis(long deadlineNanos) {
-        long remaining = TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime());
-        return Math.max(0L, remaining);
-    }
-
-    private static void closeQuietly(AutoCloseable closeable) {
+    private static void closeQuietly(AutoCloseable closeable, long deadline) {
         try {
-            closeable.close();
+            if (closeable instanceof ShutdownStep step) step.close(ShutdownBudget.until(deadline));
+            else closeable.close();
         } catch (Exception e) {
             logger.debug("Error during component shutdown: {}", e.toString());
         }
     }
 
-    /** Wraps a shutdown action with a component label for diagnostics. */
     private static AutoCloseable closeable(String name, Runnable action) {
-        return () -> {
+        return closeable(name, budget -> action.run());
+    }
+
+    private static AutoCloseable closeable(String name, Consumer<ShutdownBudget> action) {
+        return new ShutdownStep(name, action);
+    }
+
+    private record ShutdownStep(String name, Consumer<ShutdownBudget> action) implements AutoCloseable {
+        private void close(ShutdownBudget budget) {
             try {
-                action.run();
+                action.accept(budget);
             } catch (Exception e) {
                 logger.warn("Failed to stop {}: {}", name, e.toString());
             }
-        };
+        }
+
+        @Override
+        public void close() {
+            close(new ShutdownBudget(Duration.ofMillis(STOP_TIMEOUT_MILLIS)));
+        }
     }
 
     /** Optional bind-endpoint overrides for embedded/test use. */

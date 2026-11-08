@@ -97,6 +97,8 @@ Bukkit 子服 ────────────► NovaChat/Proxy/channel
 
 核心只在初始化完成后发布 `BackendContext`；启动失败时回收已登记资源。正常停止依次关闭入口、等待 REST 工作线程、停止业务管理器、刷新玩家状态，最后关闭数据库。配置监听器和消息日志服务同属核心生命周期。[11]
 
+`ShutdownBudget` 在同一次停止或启动回滚中共享等待截止时间。预算用尽后，剩余组件仍收到停止请求；线程池转为取消排队任务和中断工作，不再清空未执行的清理队列。各管理器原有无参数停止入口保留。[13]
+
 | 子系统 | 主要责任 | 关键边界 |
 | --- | --- | --- |
 | `AuthManager` / `IpBanManager` | 客户端与管理身份认证、认证失败保护 | 客户端身份不能替代控制面管理员身份。 |
@@ -170,3 +172,4 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 [10]: ../../NovaChat/Proxy/common/src/main/java/com/nova/chat/proxy/relay/BackendRouter.java "relay 连接与身份选择"
 [11]: ../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java "核心装配与生命周期"
 [12]: ../../StarLink/plugin/bukkit/src/main/java/com/nova/link/bukkit/NovaLinkBukkitPlugin.java "Bukkit 后端宿主"
+[13]: ../../StarLink/core/src/main/java/com/nova/link/lifecycle/ShutdownBudget.java "共享停止预算与强制取消"

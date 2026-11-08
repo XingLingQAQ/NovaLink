@@ -1,5 +1,6 @@
 package com.nova.link.websocket;
 
+import com.nova.link.lifecycle.ShutdownBudget;
 import com.nova.link.api.RestApiHandler;
 import com.nova.link.api.WebhookManager;
 import com.nova.link.audit.AuditStore;
@@ -18,6 +19,7 @@ import com.nova.link.notification.NotificationStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -284,6 +286,10 @@ public class WebSocketGateway {
      * @return a CompletableFuture that completes when the gateway is stopped
      */
     public CompletableFuture<Void> shutdown() {
+        return shutdown(new ShutdownBudget(Duration.ofSeconds(5)));
+    }
+
+    public CompletableFuture<Void> shutdown(ShutdownBudget budget) {
         synchronized (lifecycleLock) {
             if (state == State.STOPPING || state == State.STOPPED) {
                 return CompletableFuture.completedFuture(null);
@@ -294,15 +300,7 @@ public class WebSocketGateway {
 
             // Stop status scheduler
             if (statusScheduler != null) {
-                statusScheduler.shutdown();
-                try {
-                    if (!statusScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                        statusScheduler.shutdownNow();
-                    }
-                } catch (InterruptedException e) {
-                    statusScheduler.shutdownNow();
-                    Thread.currentThread().interrupt();
-                }
+                budget.stop(statusScheduler, Duration.ofSeconds(5));
                 statusScheduler = null;
             }
 

@@ -1,4 +1,6 @@
 package com.nova.link.network;
+
+import com.nova.link.lifecycle.ShutdownBudget;
 import com.nova.chat.common.NovaConstants;
 
 import com.nova.chat.common.protocol.ChannelAction;
@@ -18,6 +20,7 @@ import com.nova.chat.common.protocol.packets.PrivateMessagePacket;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -716,6 +719,10 @@ public class ServerNetworkHandler {
      * Shuts down the handler and releases resources.
      */
     public void shutdown() {
+        shutdown(new ShutdownBudget(Duration.ofSeconds(10)));
+    }
+
+    public void shutdown(ShutdownBudget budget) {
         logger.info("Shutting down ServerNetworkHandler...");
 
         // Retire registrations before closing channels. This makes shutdown
@@ -735,8 +742,8 @@ public class ServerNetworkHandler {
         // OPS-001: drain BOTH executors. Pending queued tasks are cancelled
         // (shutdownNow) after a short grace period so a stuck handler cannot
         // leak threads past shutdown.
-        shutdownExecutor(controlExecutor, "control");
-        shutdownExecutor(messageExecutor, "message");
+        shutdownExecutor(controlExecutor, "control", budget);
+        shutdownExecutor(messageExecutor, "message", budget);
 
         logger.info("ServerNetworkHandler shut down successfully");
     }
@@ -745,18 +752,10 @@ public class ServerNetworkHandler {
      * OPS-001: drains one executor with a bounded grace period then cancels
      * any remaining queued tasks. Never throws (best-effort cleanup).
      */
-    private void shutdownExecutor(ExecutorService executor, String name) {
-        executor.shutdown();
-        try {
-            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
-                List<Runnable> pending = executor.shutdownNow();
-                if (!pending.isEmpty()) {
-                    logger.info("{} executor shutdown cancelled {} pending task(s)", name, pending.size());
-                }
-            }
-        } catch (InterruptedException e) {
-            executor.shutdownNow();
-            Thread.currentThread().interrupt();
+    private void shutdownExecutor(ExecutorService executor, String name, ShutdownBudget budget) {
+        List<Runnable> pending = budget.stop(executor, Duration.ofSeconds(5));
+        if (!pending.isEmpty()) {
+            logger.info("{} executor shutdown cancelled {} pending task(s)", name, pending.size());
         }
     }
 

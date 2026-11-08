@@ -1,5 +1,6 @@
 package com.nova.link;
 
+import com.nova.link.lifecycle.ShutdownBudget;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -9,6 +10,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.concurrent.Executors;
+import java.util.concurrent.CountDownLatch;
+import java.util.function.Consumer;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
@@ -232,6 +237,45 @@ class NovaLinkCoreLifecycleTest {
         assertThat(Path.of("data", "novalink.db").toAbsolutePath())
                 .as("no database file written into the JVM working directory")
                 .doesNotExist();
+    }
+
+    @Test
+    void expiredShutdownBudgetStillStopsEveryRegisteredComponent() throws Exception {
+        NovaLinkCore core = newCore();
+        var executor = Executors.newSingleThreadScheduledExecutor();
+        List<String> closed = new ArrayList<>();
+        var field = NovaLinkCore.class.getDeclaredField("started");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Deque<AutoCloseable> started = (Deque<AutoCloseable>) field.get(core);
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch interrupted = new CountDownLatch(1);
+        executor.submit(() -> {
+            running.countDown();
+            try { new CountDownLatch(1).await(); }
+            catch (InterruptedException error) { interrupted.countDown(); Thread.currentThread().interrupt(); }
+        });
+        var wrap = NovaLinkCore.class.getDeclaredMethod("closeable", String.class, Consumer.class);
+        wrap.setAccessible(true);
+        Consumer<ShutdownBudget> stopScheduler = budget -> {
+            budget.stop(executor);
+            closed.add("scheduler");
+        };
+        started.push((AutoCloseable) wrap.invoke(null, "scheduler", stopScheduler));
+        started.push(() -> { closed.add("failing"); throw new IllegalStateException("injected"); });
+        started.push(() -> closed.add("last-started"));
+        var drain = NovaLinkCore.class.getDeclaredMethod("drainStarted", long.class);
+        drain.setAccessible(true);
+        try {
+            assertThat(running.await(5, TimeUnit.SECONDS)).isTrue();
+            drain.invoke(core, System.nanoTime() - 1L);
+            assertThat(interrupted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(closed).containsExactly("last-started", "failing", "scheduler");
+            assertThat(executor.isShutdown()).isTrue();
+            assertThat(started).isEmpty();
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     /** Writes a config that lets the listeners bind on two currently-free ports. */

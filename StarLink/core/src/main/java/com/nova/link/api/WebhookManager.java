@@ -1,5 +1,7 @@
 package com.nova.link.api;
 
+import com.nova.link.lifecycle.ShutdownBudget;
+
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.nova.link.security.UrlGuard;
@@ -8,13 +10,13 @@ import org.slf4j.LoggerFactory;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import java.time.Duration;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
-import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -803,6 +805,10 @@ public class WebhookManager {
      * Shuts down the webhook manager.
      */
     public void shutdown() {
+        shutdown(new ShutdownBudget(SHUTDOWN_TIMEOUT));
+    }
+
+    public void shutdown(ShutdownBudget budget) {
         if (!shuttingDown.compareAndSet(false, true)) {
             return;
         }
@@ -815,7 +821,7 @@ public class WebhookManager {
         }
 
         deliveryExecutor.shutdown();
-        long deadline = System.nanoTime() + SHUTDOWN_TIMEOUT.toNanos();
+        long deadline = System.nanoTime() + Math.min(budget.remainingNanos(), SHUTDOWN_TIMEOUT.toNanos());
         boolean interrupted = false;
         boolean deliveryTerminated = false;
         try {

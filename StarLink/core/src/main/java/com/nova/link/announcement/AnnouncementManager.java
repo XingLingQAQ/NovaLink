@@ -1,5 +1,6 @@
 package com.nova.link.announcement;
 
+import com.nova.link.lifecycle.ShutdownBudget;
 import com.nova.link.auth.PermissionLevel;
 import com.nova.link.auth.PermissionManager;
 import com.nova.link.channel.Channel;
@@ -11,6 +12,7 @@ import com.nova.link.notification.NotificationStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.security.SecureRandom;
 import java.util.*;
 import java.util.concurrent.*;
@@ -149,6 +151,10 @@ public class AnnouncementManager {
      * Shuts down the announcement manager.
      */
     public void shutdown() {
+        shutdown(new ShutdownBudget(Duration.ofSeconds(5)));
+    }
+
+    public void shutdown(ShutdownBudget budget) {
         // Cancel all scheduled tasks
         for (ScheduledFuture<?> task : scheduledTasks.values()) {
             task.cancel(false);
@@ -156,15 +162,7 @@ public class AnnouncementManager {
         scheduledTasks.clear();
 
         if (scheduler != null) {
-            scheduler.shutdown();
-            try {
-                if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                    scheduler.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                scheduler.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
+            budget.stop(scheduler, Duration.ofSeconds(5));
         }
         announcements.clear();
         joinAnnouncementsByChannel.clear();

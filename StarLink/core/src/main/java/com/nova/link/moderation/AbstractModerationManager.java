@@ -1,5 +1,6 @@
 package com.nova.link.moderation;
 
+import com.nova.link.lifecycle.ShutdownBudget;
 import com.nova.link.auth.PermissionLevel;
 import com.nova.link.auth.PermissionManager;
 import com.nova.link.channel.ChannelManager;
@@ -7,6 +8,7 @@ import com.nova.link.console.ConsoleSentinel;
 import com.nova.link.database.DatabaseProvider;
 import org.slf4j.Logger;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -113,16 +115,12 @@ public abstract class AbstractModerationManager<I> {
      * clears the cache — matches the pre-refactor managers.
      */
     public void shutdown() {
+        shutdown(new ShutdownBudget(Duration.ofSeconds(5)));
+    }
+
+    public void shutdown(ShutdownBudget budget) {
         if (cleanupExecutor != null) {
-            cleanupExecutor.shutdown();
-            try {
-                if (!cleanupExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    cleanupExecutor.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                cleanupExecutor.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
+            budget.stop(cleanupExecutor, Duration.ofSeconds(5));
         }
         cache.clear();
         logger().info("{} shutdown", managerLogName());
