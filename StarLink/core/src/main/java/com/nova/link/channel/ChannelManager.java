@@ -82,6 +82,10 @@ public class ChannelManager {
         this.databaseProvider = databaseProvider;
     }
 
+    public boolean isPersistenceEnabled() {
+        return databaseProvider != null;
+    }
+
     /**
      * Creates a new channel with the given configuration, tagged as
      * {@link ChannelSource#RUNTIME}. Equivalent to

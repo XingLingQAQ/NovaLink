@@ -240,6 +240,39 @@ class NovaLinkCoreLifecycleTest {
     }
 
     @Test
+    void assembledChannelManagerPersistsChangesAcrossACoreRestart() throws Exception {
+        Files.writeString(tempDir.resolve("novalink.yml"),
+                minimalConfig(true, freePort(), freePort()).replace("type: memory", "type: sqlite"),
+                StandardCharsets.UTF_8);
+        NovaLinkCore core = newCore();
+        core.start(tempDir, loopbackEphemeral());
+        try {
+            var context = core.getContext();
+            var channels = context.getChannelManager();
+            channels.createChannel(com.nova.link.channel.ChannelConfig.builder().id("persistent")
+                    .scope(com.nova.link.channel.ChannelScope.GLOBAL).slowModeSeconds(5).build());
+            channels.updateChannel("persistent", "Saved", null, null, false, 9);
+            assertThat(context.getDatabaseProvider().loadChannel("persistent").orElseThrow()
+                    .getSlowModeSeconds()).isEqualTo(9);
+        } finally {
+            core.stop();
+        }
+
+        core.start(tempDir, loopbackEphemeral());
+        try {
+            var context = core.getContext();
+            var restored = context.getChannelManager().getChannel("persistent");
+            assertThat(restored).isNotNull();
+            assertThat(restored.getDisplayName()).isEqualTo("Saved");
+            assertThat(restored.getSlowModeSeconds()).isEqualTo(9);
+            assertThat(context.getChannelManager().deleteChannel("persistent")).isTrue();
+            assertThat(context.getDatabaseProvider().loadChannel("persistent")).isEmpty();
+        } finally {
+            core.stop();
+        }
+    }
+
+    @Test
     void expiredShutdownBudgetStillStopsEveryRegisteredComponent() throws Exception {
         NovaLinkCore core = newCore();
         var executor = Executors.newSingleThreadScheduledExecutor();

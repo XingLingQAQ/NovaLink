@@ -431,12 +431,12 @@ public class ChannelActionHandler {
             logger.debug("Failed to grant channel admin for {} to {}: {}", created.getChannelId(), playerId, e.getMessage());
         }
 
-        // Persist newly created channel
-        try {
-            databaseProvider.saveChannel(created.getChannel());
-        } catch (DatabaseException e) {
-            logger.warn("Failed to persist private channel {}: {}", created.getChannelId(), e.getMessage());
-            // Not fatal: channel still exists in memory for this process.
+        if (!channelManager.isPersistenceEnabled()) {
+            try {
+                databaseProvider.saveChannel(created.getChannel());
+            } catch (DatabaseException e) {
+                logger.warn("Failed to persist private channel {}: {}", created.getChannelId(), e.getMessage());
+            }
         }
 
         upsertPlayerState(connection, playerId, playerName, null, created.getChannelId(), platform);
@@ -879,16 +879,18 @@ public class ChannelActionHandler {
             }
         }
 
-        boolean deleted = channelManager.deleteChannel(channelId);
+        boolean deleted = channelManager.deleteChannelIfCurrent(channel);
         if (!deleted) {
             return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, NovaConstants.ERROR_NOT_FOUND, "Channel not found");
         }
 
         privateChannelManager.removeTrackedId(channelId);
-        try {
-            databaseProvider.deleteChannel(channelId);
-        } catch (Exception e) {
-            logger.warn("Failed to delete channel {} from database: {}", channelId, e.getMessage());
+        if (!channelManager.isPersistenceEnabled()) {
+            try {
+                databaseProvider.deleteChannel(channelId);
+            } catch (Exception e) {
+                logger.warn("Failed to delete channel {} from database: {}", channelId, e.getMessage());
+            }
         }
 
         return new ChannelActionResponsePacket(true, ChannelAction.DELETE, channelId, "", "Channel deleted");

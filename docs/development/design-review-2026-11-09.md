@@ -78,7 +78,7 @@ lite 频道的 `slow-mode` 接受非负整数秒，但原清理固定删除一�
 
 位置：[REST 频道更新](../../StarLink/core/src/main/java/com/nova/link/api/RestApiHandler.java)、[ChannelManager](../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java) 和 [核心启动恢复](../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java)。
 
-REST 原实现先调用频道更新并持久化，再单独设置 `slowModeSeconds`。接口与后续 GET 返回新值，存储仍是旧值。启动恢复构建频道时也漏传该字段，已经存好的值变为 0，并被初始化写入再次覆盖。另一个反例确认更新持久化失败被错误映射为 `400 Invalid request body`。
+REST 原实现先调用频道更新，再单独设置 `slowModeSeconds`。频道管理器接入持久化时，接口与后续 GET 返回新值，存储仍是旧值。启动恢复构建频道时也漏传该字段，运行时值变为 0；已接持久化的管理器还会把 0 再次写入存储。另一个反例确认更新持久化失败被错误映射为 `400 Invalid request body`。核心装配未接入频道持久化的独立遗漏见 R27。
 
 修复把慢速模式纳入同一频道锁内的字段验证、应用、revision、持久化和失败回滚；原四参数、五参数更新入口保留。REST 直接调用这一入口，存储失败返回 `500` 并记录失败审计。启动恢复完整传递慢速值，避免重启时关闭限速。
 
@@ -103,3 +103,13 @@ REST 原实现先调用频道更新并持久化，再单独设置 `slowModeSecon
 修复保存使用单条 `SET ... PXAT`，绝对截止时间与内容一起提交。领取、旧版标记在原 WATCH / MULTI / EXEC 内设置 `PEXPIREAT`，与撤销接口一致，保留记录自身的毫秒截止时间。
 
 验证：独立临时 Redis 中，保存、领取、旧标记三个原实现反例均改变了截止时间；修复后三种写入的 `PEXPIRETIME` 与邀请的 `expireTime` 完全相同。连同已有并发领取/撤销回归共 4 项通过，无跳过；临时 Redis 已关闭。日志为 `.e2e-artifacts/review6-expiry-before.log` 与 `review6-expiry-final.log`。
+
+## 11. R27：核心未接入频道持久化，TCP 又重复保存
+
+位置：[NovaLinkCore 装配](../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java) 与 [ChannelActionHandler](../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java)。
+
+频道管理器虽支持写入数据库，实际核心却一直使用无提供者的实例。真实 SQLite 核心启动反例在创建和更新频道后读取不到记录。此前直接构造带提供者管理器的测试只证明入口支持持久化，没有覆盖生产装配。
+
+修复在配置频道与持久化频道加载结束后绑定同一个数据库提供者。这样启动加载不重写原记录，后续 REST、控制台和 TCP 经频道管理器统一持久化。TCP 原本另有一次显式保存和删除，带提供者时会各写两次；两个计数反例确认此问题。现在管理器已接持久化时只由管理器写入，独立内存模式的 TCP 调用仍保留原有显式保存行为。
+
+验证：实际启动核心、创建与更新 SQLite 频道、停止并重启、读取慢速值与名称、删除并检查数据库。另用 TCP 创建/删除验证带提供者与内存模式都只写一次，并检查原治理入口。日志为 `.e2e-artifacts/review6-wiring-before.log`、`review6-protocol-persistence-before.log` 和 `review6-wiring-final.log`。

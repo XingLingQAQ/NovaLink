@@ -395,6 +395,7 @@ public final class NovaLinkCore implements AutoCloseable {
 
         loadConfiguredChannels(channelManager, config);
         loadPersistedChannels(channelManager, databaseProvider);
+        channelManager.setDatabaseProvider(databaseProvider);
         bootstrapPrivateChannelAdmins(permissionManager, channelManager);
 
         // Network + routing
