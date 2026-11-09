@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Manages player state persistence with caching support.
@@ -22,7 +23,7 @@ public class PlayerStateManager {
     private final Map<UUID, PlayerState> cache = new ConcurrentHashMap<>();
     
     // Track dirty states that need to be persisted
-    private final Set<UUID> dirtyStates = ConcurrentHashMap.newKeySet();
+    private final Map<UUID, Object> dirtyStates = new ConcurrentHashMap<>();
 
     public PlayerStateManager(DatabaseProvider databaseProvider) {
         this.databaseProvider = Objects.requireNonNull(databaseProvider, "Database provider cannot be null");
@@ -66,7 +67,7 @@ public class PlayerStateManager {
         PlayerState newState = new PlayerState(playerId, playerName);
         PlayerState existing = cache.putIfAbsent(playerId, newState);
         if (existing == null) {
-            dirtyStates.add(playerId);
+            markDirty(playerId);
             logger.debug("Created new player state: {}", playerId);
             return newState;
         }
@@ -137,17 +138,25 @@ public class PlayerStateManager {
             return false;
         }
 
-        try {
-            state.updateLastSeen();
-            databaseProvider.savePlayerState(state);
-            cache.put(state.getPlayerId(), state);
-            dirtyStates.remove(state.getPlayerId());
-            logger.debug("Saved player state: {}", state.getPlayerId());
-            return true;
-        } catch (DatabaseException e) {
-            logger.error("Failed to save player state: {}", state.getPlayerId(), e);
-            return false;
-        }
+        UUID playerId = state.getPlayerId();
+        AtomicBoolean saved = new AtomicBoolean();
+        cache.compute(playerId, (id, current) -> {
+            Object dirtyVersion = dirtyStates.get(id);
+            try {
+                state.updateLastSeen();
+                databaseProvider.savePlayerState(new PlayerState(state));
+                if (dirtyVersion != null) {
+                    dirtyStates.remove(id, dirtyVersion);
+                }
+                saved.set(true);
+                logger.debug("Saved player state: {}", id);
+                return state;
+            } catch (DatabaseException e) {
+                logger.error("Failed to save player state: {}", id, e);
+                return current;
+            }
+        });
+        return saved.get();
     }
 
     /**
@@ -157,7 +166,7 @@ public class PlayerStateManager {
      */
     public void markDirty(UUID playerId) {
         if (playerId != null && cache.containsKey(playerId)) {
-            dirtyStates.add(playerId);
+            dirtyStates.put(playerId, new Object());
         }
     }
 
@@ -168,7 +177,7 @@ public class PlayerStateManager {
      */
     public int saveAllDirty() {
         int count = 0;
-        for (UUID playerId : new HashSet<>(dirtyStates)) {
+        for (UUID playerId : new HashSet<>(dirtyStates.keySet())) {
             PlayerState state = cache.get(playerId);
             if (state != null && saveState(state)) {
                 count++;

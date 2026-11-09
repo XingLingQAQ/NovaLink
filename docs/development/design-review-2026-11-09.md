@@ -325,3 +325,13 @@ JOIN 与 ACCEPT 在修改成员前检查封禁，但检查和入群之间没有�
 修复从当前管理器记录派生状态，由 `PanelResourcePolicy.hasVisibleMute` 共享有效期与资源过滤。REST 列表、详情和 WebSocket 按需请求、广播使用同一规则，网关装配同一个 `MuteManager`。保留原五参数 WebSocket 构造及未接禁言管理器的独立 REST 调用：快照仅作为这些调用的来源，同样过滤过期和不可见限制。面板适配器的旧注释同步修正，不增加第二份禁言缓存。
 
 验证：两个原实现反例均失败，分别观察到实际禁言后的 `false` 与 VIEWER 对私有/过期快照的 `true`。修复后首轮资源治理、WebSocket 授权和共享策略共 13 项检查通过。扩充全局禁言及旧构造入口后，最终 3 项定向回归通过，0 失败、0 跳过；断言同时读取 REST 列表/详情、WebSocket 请求/广播，覆盖禁言、解除后旧快照、全局限制、私有范围、过期记录与旧构造入口。新增旧构造用例曾引用局部测试变量导致编译失败，已修正为独立网络替身后通过。日志为 `.e2e-artifacts/review15-player-mutes-before.log`、`review15-player-mutes-final.log` 和 `review15-player-mutes-exact-final.log`。
+
+## 31. R47：保存清除较新脏标记，并发写入可能倒序完成
+
+位置：[PlayerStateManager.saveState() / markDirty()](../../StarLink/storage/src/main/java/com/nova/link/database/PlayerStateManager.java)。
+
+原实现用 UUID 集合记录脏状态。保存途中若再次修改玩家状态，标脏仍是同一个集合元素。旧保存返回后无条件移除 UUID，新修改便不会在下一次刷新时落库。同一玩家的两次保存也没有顺序约束：旧快照写入较晚时，会覆盖已经保存的新值。
+
+修复让每次标脏产生新版本。保存先读取版本，再复制玩家状态并写入提供者，成功后只清除原版本。期间发生的新标脏或保存失败都会保留待保存记录。同一 UUID 的保存复用缓存原子更新边界，快照和数据库写入在其中串行执行，无需另建玩家锁表。核心与代理 lite 共用存储模块；直接保存未缓存对象、显式加载和布尔保存结果保持原契约。
+
+验证：[PlayerStateSaveRaceTest](../../StarLink/storage/src/test/java/com/nova/link/database/PlayerStateSaveRaceTest.java) 的两项反例在原实现失败，分别得到丢失的脏标记和倒序覆盖的旧值。修复后 3 项回归及现有 `playerStateManagerRoundTrip` 属性检查通过，0 失败、0 跳过；属性检查使用 100 组输入。覆盖保存中新修改的后续刷新、并发保存顺序、失败后保留并重试，以及未缓存对象的直接保存和重新加载。并发回归使用写入闸门与实际线程等待状态，无固定延时。仅执行这些定向检查，日志为 `.e2e-artifacts/review15-player-save-before.log`、`review15-player-save-order-before.log` 和 `review15-player-save-final.log`。

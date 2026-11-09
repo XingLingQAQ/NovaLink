@@ -138,6 +138,7 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 | --- | --- | --- |
 | 配置与 revision | `ConfigManager` | 在同一提交锁内校验版本、保存候选配置，再发布运行时和广播。 |
 | 玩家连接归属 | `ServerNetworkHandler` | 连接代际约束网络包处理；私信处理还验证玩家归属。 |
+| 玩家状态保存 | `PlayerStateManager` | 同一 UUID 的保存串行执行；成功只清除开始保存时读取的脏版本，期间的新修改留待下一次刷新。 |
 | 频道入群、邀请与删除 | `ChannelManager` + `ChannelActionHandler` + 邀请/私有频道管理器 | JOIN、CREATE、ACCEPT 的成员及玩家状态提交受频道锁约束；旧创建对象不得向同名新频道补写状态。删除先清理邀请再释放 ID。 |
 | 禁言与封禁 | `AbstractModerationManager` + `BanManager` | 同一玩家的应用和解除先提交存储，再发布缓存；失败保留旧限制，封禁成功后移除成员并清理在线玩家的已加入频道及当前频道。 |
 | 协议入群与封禁 | `BanManager` + `ChannelActionHandler` | JOIN、ACCEPT、CREATE 共用同一玩家的封禁写入边界，覆盖权限检查、邀请扣额、成员加入和玩家状态更新。 |
@@ -149,6 +150,8 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 | 面板设置 | `settingsStore` / `useSettings` | 使用服务器 revision 协调 REST 保存和 WebSocket 快照。 |
 
 面板玩家的 `muted` 从 `MuteManager` 当前限制派生，不再把 `PlayerState.mutes` 当作第二份运行时权威。REST 列表、详情及 WebSocket 请求、广播共用 `PanelResourcePolicy.hasVisibleMute`，只反映当前角色可见且未到期的禁言。网关向两种传输注入同一个管理器；旧 WebSocket 构造入口保留按玩家快照读取的方式，并执行相同过滤。[20] [25]
+
+`PlayerStateManager` 每次标脏都替换版本标记，保存时向提供者传入副本。保存成功后按原标记条件清除，失败保留待保存状态。同一 UUID 的保存复用缓存的原子更新边界，避免较旧快照最后覆盖数据库；直接保存未缓存对象和显式加载仍沿用原入口。核心与代理 lite 模式共用这一实现。[26]
 
 这些边界决定共享代码的位置。持久化事务放在提供者内；平台调度放在平台桥接内；前端快照采用规则放在实体状态入口。HTTP 处理器和组件调用这些入口，避免各自复制状态机。具体错误码和恢复操作见 [Admin REST API](admin-api.md)。
 
@@ -215,3 +218,4 @@ CREATE 先由频道管理器保存定义，再在登记创建者和生成 ID 时
 [23]: ../../StarLink/core/src/main/java/com/nova/link/channel/PrivateChannelManager.java "私有频道访问与成员加入"
 [24]: ../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java "频道存储提交、回滚及按次持久化"
 [25]: ../../StarLink/core/src/main/java/com/nova/link/websocket/WebSocketGateway.java "REST 与 WebSocket 的共享管理器装配"
+[26]: ../../StarLink/storage/src/main/java/com/nova/link/database/PlayerStateManager.java "玩家状态保存顺序与脏版本"
