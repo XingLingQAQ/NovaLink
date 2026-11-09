@@ -159,6 +159,69 @@ class NovaLinkCoreLifecycleTest {
     }
 
     @Test
+    void aDisconnectedClientReleasesItsPlayersButALateOldDisconnectDoesNot() throws Exception {
+        writeBootableConfig(tempDir);
+        NovaLinkCore core = newCore();
+        core.start(tempDir, loopbackEphemeral());
+        var oldChannel = new io.netty.channel.embedded.EmbeddedChannel();
+        var newChannel = new io.netty.channel.embedded.EmbeddedChannel();
+        var otherChannel = new io.netty.channel.embedded.EmbeddedChannel();
+        try {
+            var context = core.getContext();
+            var network = context.getNetworkHandler();
+            var players = context.getPlayerStateManager();
+            var channels = context.getChannelManager();
+            var oldConnection = new com.nova.link.network.ClientConnection(oldChannel);
+            var newConnection = new com.nova.link.network.ClientConnection(newChannel);
+            var otherConnection = new com.nova.link.network.ClientConnection(otherChannel);
+            network.onClientConnected(oldConnection);
+            network.onClientConnected(newConnection);
+            network.onClientConnected(otherConnection);
+            assertThat(network.activateAuthenticated(oldConnection, "proxy")).isTrue();
+            assertThat(network.activateAuthenticated(otherConnection, "other")).isTrue();
+            var global = channels.createChannel(com.nova.link.channel.ChannelConfig.builder()
+                    .id("global").scope(com.nova.link.channel.ChannelScope.GLOBAL).build());
+            var first = java.util.UUID.randomUUID();
+            var second = java.util.UUID.randomUUID();
+            var independent = java.util.UUID.randomUUID();
+            for (var id : List.of(first, second, independent)) {
+                var state = players.getOrCreateState(id, "Player");
+                state.setClientId(id.equals(independent) ? "other" : "proxy");
+                state.setDmEnabled(false);
+                players.joinChannel(id, "global");
+                players.joinChannel(id, "retired");
+                players.setActiveChannel(id, "active-only");
+                global.addMember(id);
+            }
+            assertThat(network.activateAuthenticated(newConnection, "proxy")).isTrue();
+            network.onClientDisconnected(oldConnection);
+            assertThat(players.getCacheSize()).isEqualTo(3);
+            assertThat(global.getMemberCount()).isEqualTo(3);
+
+            network.onClientDisconnected(newConnection);
+
+            assertThat(players.getCachedState(first)).isEmpty();
+            assertThat(players.getCachedState(second)).isEmpty();
+            assertThat(players.getAllPlayerStates()).singleElement()
+                    .satisfies(state -> assertThat(state.getPlayerId()).isEqualTo(independent));
+            assertThat(global.getMembers()).containsExactly(independent);
+            players.saveAllDirty();
+            for (var id : List.of(first, second)) {
+                var stored = context.getDatabaseProvider().loadPlayerState(id).orElseThrow();
+                assertThat(stored.getJoinedChannels()).isEmpty();
+                assertThat(stored.getActiveChannel()).isNull();
+                assertThat(stored.isDmEnabled()).isFalse();
+            }
+            assertThat(players.getCacheSize()).isEqualTo(1);
+        } finally {
+            core.stop();
+            oldChannel.finishAndReleaseAll();
+            newChannel.finishAndReleaseAll();
+            otherChannel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
     void dirtyPlayerStateIsPersistedBeforeShutdownAndTheFlushThreadStops() throws Exception {
         writeBootableConfig(tempDir);
         NovaLinkCore core = newCore();

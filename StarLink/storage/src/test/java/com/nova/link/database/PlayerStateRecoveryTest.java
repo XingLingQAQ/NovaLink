@@ -10,6 +10,50 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PlayerStateRecoveryTest {
     @Test
+    void detachingQueuesTheExpectedInstanceWithoutDatabaseIoAndKeepsFailedWritesRetryable() throws Exception {
+        var provider = new MemoryProvider() {
+            int writes;
+            boolean fail;
+
+            @Override
+            public void savePlayerState(PlayerState state) throws DatabaseException {
+                writes++;
+                if (fail) {
+                    throw new DatabaseException("injected detached write failure");
+                }
+                super.savePlayerState(state);
+            }
+        };
+        provider.initialize();
+        var manager = new PlayerStateManager(provider);
+        UUID player = UUID.randomUUID();
+        try {
+            var original = manager.getOrCreateState(player, "Player");
+            assertThat(manager.saveState(original)).isTrue();
+            manager.clearCache(false);
+            var current = manager.getOrCreateState(player, "Player");
+            assertThat(manager.detachState(original)).isFalse();
+            assertThat(manager.getCachedState(player)).containsSame(current);
+            current.setDmEnabled(false);
+
+            assertThat(manager.detachState(current)).isTrue();
+            assertThat(provider.writes).isEqualTo(1);
+            assertThat(manager.getAllPlayerStates()).isEmpty();
+            assertThat(manager.getDirtyCount()).isEqualTo(1);
+            provider.fail = true;
+            assertThat(manager.saveAllDirty()).isZero();
+            assertThat(manager.getDirtyCount()).isEqualTo(1);
+            provider.fail = false;
+            assertThat(manager.saveAllDirty()).isEqualTo(1);
+            assertThat(manager.getDirtyCount()).isZero();
+            assertThat(manager.getAllPlayerStates()).isEmpty();
+            assertThat(provider.loadPlayerState(player).orElseThrow().isDmEnabled()).isFalse();
+        } finally {
+            provider.shutdown();
+        }
+    }
+
+    @Test
     void preparingDoesNotPublishAPlayerOrReplaceANewerCachedState() throws Exception {
         var provider = new MemoryProvider();
         provider.initialize();

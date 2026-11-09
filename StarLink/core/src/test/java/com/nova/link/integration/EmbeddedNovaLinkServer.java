@@ -146,13 +146,6 @@ public class EmbeddedNovaLinkServer {
         messageRouter.setSensitiveWordFilter(sensitiveWordFilter);
         messageRouter.setPermissionChecker(clientPermissionRegistry.asChecker());
 
-        networkHandler.setDisconnectListener((connection, activeGenerationEnded) -> {
-            String clientId = connection != null ? connection.getClientId() : null;
-            if (activeGenerationEnded && clientId != null && !clientId.isBlank()) {
-                clientPermissionRegistry.clearClient(clientId);
-            }
-        });
-
         spyManager = new SpyManager(permissionManager, channelManager, networkHandler);
         messageRouter.setSpyManager(spyManager);
 
@@ -172,6 +165,14 @@ public class EmbeddedNovaLinkServer {
                 permissionManager,
                 muteManager
         );
+
+        networkHandler.setDisconnectListener((connection, activeGenerationEnded) -> {
+            String clientId = connection != null ? connection.getClientId() : null;
+            if (activeGenerationEnded && clientId != null && !clientId.isBlank()) {
+                channelActionHandler.disconnectClient(clientId);
+                clientPermissionRegistry.clearClient(clientId);
+            }
+        });
 
         // AUTH-002: pending-challenge cache for the 3-packet challenge-response
         // handshake. One per embedded server; entries self-expire (30s TTL).

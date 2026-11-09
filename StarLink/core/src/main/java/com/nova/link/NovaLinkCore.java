@@ -607,10 +607,7 @@ public final class NovaLinkCore implements AutoCloseable {
         // scheduling) now that the sender callback is wired.
         announcementManager.loadPersistedAnnouncements();
 
-        // Disconnect listener: clear permission grants AND surface a panel
-        // notification. Wired here (after notificationStore is created) so the
-        // notification side-channel is available. The permission cleanup is the
-        // original behavior; the notification is the new trigger.
+        // Client-wide cleanup stays inside active-generation retirement.
         networkHandler.setDisconnectListener((connection, activeGenerationEnded) -> {
             // Drop the connection's token bucket so the limiter map stays
             // bounded by the number of live connections.
@@ -627,6 +624,7 @@ public final class NovaLinkCore implements AutoCloseable {
             // generation may clear client-scoped permissions or announce the
             // client offline.
             if (activeGenerationEnded && clientId != null && !clientId.isBlank()) {
+                channelActionHandler.disconnectClient(clientId);
                 clientPermissionRegistry.clearClient(clientId);
                 logger.debug("Cleared permission grants for disconnected client '{}'", clientId);
                 if (notificationStore != null) {

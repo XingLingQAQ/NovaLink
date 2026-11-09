@@ -387,3 +387,17 @@ JOIN、CREATE、ACCEPT 在副作用前准备状态，原提交位置统一使用
 验证：3 项 SQLite 存储反例在原实现均失败，分别观察到频道 ID 拆分、世界过滤扩大与升级后再次拆分；新增测试初版有同名变量编译错误，修正后才执行反例。修复后 12 项定向检查通过，0 失败、0 跳过。覆盖实际文件关闭重开、单条及批量加载、v16 数据升级、v1 迁移至 v17 及重复启动、损坏或未知新格式拒绝、三种方言版本及 MySQL 加列检查，以及代理 lite 的 SQLite 重启恢复。旧值恰为合法 JSON 文本的用例加强后单独通过。未运行外部 MySQL、PostgreSQL 实例。
 
 日志为 `.e2e-artifacts/review19-string-collection-before.log`、`review19-string-collection-final.log`、`review19-string-collection-invalid.log`、`review19-string-collection-compatibility.log` 和 `review19-string-collection-legacy-final.log`。
+
+## 36. R52：客户端异常断开遗留在线玩家与频道成员
+
+位置：[核心断开监听](../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java)、[ChannelActionHandler 的退出与断开清理](../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java)、[PlayerStateManager.detachState()](../../StarLink/storage/src/main/java/com/nova/link/database/PlayerStateManager.java)。
+
+原断开监听只清理客户端权限、限流状态并发送通知，没有处理玩家缓存与频道成员。接入端异常掉线、来不及发送逐玩家退出包时，其全部玩家持续出现在在线名单，频道容量仍被占用；同名客户端重新连接后，旧玩家还可能被当作该连接上的在线目标。显式退出的成员与状态清理仅存在于协议 LEAVE 路径。
+
+修复在当前客户端代际结束时调用统一清理入口，按 `clientId` 选择玩家，复用显式退出的成员、已加入频道及当前频道清理。私信偏好和其他持久字段保留。显式退出与异常断开均复用现有入群、封禁的逐玩家边界；批量清理在边界内再次检查缓存实例及归属，避免删除已迁往其他客户端的状态。原网络代际保护保留，旧连接迟到的断开不触发客户端清理。
+
+共享存储层新增按实例移出缓存的 `detachState`，只登记待保存记录，无玩家数据库写入。异常断开因此不在网络回调中逐个保存；R50 刷新任务及原停机刷新消费待保存数据，失败仍可重试或重连恢复。清理成功后统一推送一次玩家列表更新。嵌入式集成服务器也装配同一清理入口；显式退出继续使用原立即保存方式。
+
+验证：新增真实核心装配反例在原实现失败，当前代际断开后仍能读到旧玩家缓存。修复后 21 项定向检查通过，0 失败、0 跳过。覆盖同名连接接管及旧断开无副作用、当前连接的多玩家清理、其他客户端保留、退场状态落库、原退出与私信离线路由。事件闸门另确认批量快照后的跨客户端迁移仍保留成员；存储回归确认按实例移出不写数据库、失败刷新可重试且保持离线。未运行全量套件。
+
+日志为 `.e2e-artifacts/review20-player-disconnect-before.log`、`review20-player-disconnect-final.log` 和 `review20-player-disconnect-races.log`。

@@ -354,7 +354,13 @@ public class ChannelActionHandler {
             return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
         if (isLogout(packet)) {
-            return handleLogout(connection, packet, playerId, playerName, channelId);
+            UUID departingPlayer = playerId;
+            Supplier<ChannelActionResponsePacket> logout =
+                    () -> handleLogout(connection, packet, departingPlayer, playerName, channelId);
+            if (banManager == null) {
+                return logout.get();
+            }
+            return banManager.withAdmission(playerId, logout);
         }
 
         Channel channel = channelManager.getChannel(channelId);
@@ -401,13 +407,7 @@ public class ChannelActionHandler {
                     NovaConstants.ERROR_FORBIDDEN, "Player does not belong to this client");
         }
         if (state != null) {
-            for (Channel channel : channelManager.getAllChannels()) {
-                channelManager.removeMember(channel.getId(), playerId);
-            }
-            for (String joinedChannel : new TreeSet<>(state.getJoinedChannels())) {
-                playerStateManager.leaveChannel(playerId, joinedChannel);
-            }
-            state.setActiveChannel(null);
+            clearPlayerMemberships(state);
             String platform = packet.getExtra("platform");
             if (platform != null && !platform.isBlank()) {
                 state.setPlatform(platform);
@@ -417,6 +417,49 @@ public class ChannelActionHandler {
             firePresenceWebhook("player.leave", playerId, playerName, clientId, channelId);
         }
         return new ChannelActionResponsePacket(true, ChannelAction.LEAVE, channelId, "", "Logged out");
+    }
+
+    /** Called only when the active client generation ends. */
+    public void disconnectClient(String clientId) {
+        if (clientId == null || clientId.isBlank()) {
+            return;
+        }
+        boolean changed = false;
+        for (PlayerState expected : new ArrayList<>(playerStateManager.getAllPlayerStates())) {
+            if (!clientId.equals(expected.getClientId())) {
+                continue;
+            }
+            Supplier<Boolean> departure = () -> {
+                PlayerState current = playerStateManager.getPlayerState(expected.getPlayerId());
+                if (current != expected || !clientId.equals(current.getClientId())) {
+                    return false;
+                }
+                clearPlayerMemberships(current);
+                return playerStateManager.detachState(current);
+            };
+            boolean removed;
+            if (banManager == null) {
+                removed = departure.get();
+            } else {
+                removed = banManager.withAdmission(expected.getPlayerId(), departure);
+            }
+            changed |= removed;
+        }
+        if (changed) {
+            notifyPlayerUpdate();
+        }
+    }
+
+    private void clearPlayerMemberships(PlayerState state) {
+        UUID playerId = state.getPlayerId();
+        for (Channel channel : channelManager.getAllChannels()) {
+            channelManager.removeMember(channel.getId(), playerId);
+        }
+        for (String joinedChannel : new TreeSet<>(state.getJoinedChannels())) {
+            playerStateManager.leaveChannel(playerId, joinedChannel);
+        }
+        state.setActiveChannel(null);
+        playerStateManager.markDirty(playerId);
     }
 
     private ChannelActionResponsePacket handleCreate(ClientConnection connection, ChannelActionPacket packet, UUID playerId) {

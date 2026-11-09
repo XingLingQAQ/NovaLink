@@ -4,6 +4,7 @@ import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.link.auth.PermissionManager;
+import com.nova.link.ban.BanManager;
 import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
@@ -18,6 +19,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -117,6 +122,65 @@ class ChannelActionHandlerLogoutTest {
                 throw new DatabaseException("injected logout save failure");
             }
             super.savePlayerState(state);
+        }
+    }
+
+    @Test
+    void aPlayerTransferredAfterTheDisconnectSnapshotIsNotRemoved() throws Exception {
+        var checked = new CountDownLatch(1);
+        var resume = new CountDownLatch(1);
+        var permissions = new PermissionManager();
+        var bans = new BanManager(databaseProvider, permissions, channelManager, playerStateManager) {
+            @Override
+            public <T> T withAdmission(UUID player, Supplier<T> admission) {
+                if (Thread.currentThread().getName().equals("disconnect-cleanup")) {
+                    checked.countDown();
+                    try {
+                        if (!resume.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("Disconnect gate timed out");
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(e);
+                    }
+                }
+                return super.withAdmission(player, admission);
+            }
+        };
+        var guarded = new ChannelActionHandler(channelManager, playerStateManager, databaseProvider,
+                new PrivateChannelManager(channelManager), new InvitationManager(databaseProvider, channelManager),
+                permissions, null, bans);
+        var join = new ChannelActionPacket(ChannelAction.JOIN, "global");
+        join.addExtra("playerId", playerId.toString());
+        join.addExtra("playerName", "Player");
+        assertThat(guarded.handle(connection, join).isSuccess()).isTrue();
+        var transferred = mock(ClientConnection.class);
+        when(transferred.isAuthenticated()).thenReturn(true);
+        when(transferred.getClientId()).thenReturn("other-client");
+        var departure = new FutureTask<>(() -> {
+            guarded.disconnectClient(CLIENT_ID);
+            return null;
+        });
+        Thread cleaner = new Thread(departure, "disconnect-cleanup");
+        try {
+            cleaner.start();
+            assertThat(checked.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(guarded.handle(transferred, join).isSuccess()).isTrue();
+            resume.countDown();
+            departure.get(5, TimeUnit.SECONDS);
+
+            assertThat(playerStateManager.getPlayerState(playerId).getClientId()).isEqualTo("other-client");
+            assertThat(playerStateManager.getJoinedChannels(playerId)).containsExactly("global");
+            assertThat(channelManager.getChannel("global").isMember(playerId)).isTrue();
+        } finally {
+            resume.countDown();
+            cleaner.join(5_000);
+            if (cleaner.isAlive()) {
+                cleaner.interrupt();
+                cleaner.join(5_000);
+            }
+            databaseProvider.shutdown();
+            assertThat(cleaner.isAlive()).isFalse();
         }
     }
 

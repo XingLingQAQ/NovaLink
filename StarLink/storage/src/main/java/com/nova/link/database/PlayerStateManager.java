@@ -261,6 +261,26 @@ public class PlayerStateManager {
     }
 
     /**
+     * Moves the expected online instance to pending persistence without database I/O.
+     */
+    public boolean detachState(PlayerState expected) {
+        if (expected == null) {
+            return false;
+        }
+        AtomicBoolean detached = new AtomicBoolean();
+        cache.computeIfPresent(expected.getPlayerId(), (id, current) -> {
+            if (current != expected) {
+                return current;
+            }
+            pendingStates.put(id, current);
+            dirtyStates.put(id, new Object());
+            detached.set(true);
+            return null;
+        });
+        return detached.get();
+    }
+
+    /**
      * Removes a player state from cache (e.g., when player disconnects).
      * Failed writes remain pending without appearing in the online cache.
      *
