@@ -257,9 +257,18 @@ public class SpyManager {
             if (!hasSpyAuthority(adminId)) {
                 continue;
             }
+            SpySession session = getSpySession(adminId, channelId);
+            if (session == null) {
+                continue;
+            }
+            String sourceClientId = session.getTargetClientId();
+            if (sourceClientId != null && !sourceClientId.isEmpty()
+                    && !sourceClientId.equals(message.getClientId())) {
+                continue;
+            }
             // Find the connection for this admin
             ClientConnection adminConnection = findAdminConnection(adminId);
-            if (adminConnection != null && adminConnection.isActive()) {
+            if (adminConnection != null && adminConnection.isAuthenticated() && adminConnection.isActive()) {
                 adminConnection.sendPacket(spyMessage);
                 logger.debug("Forwarded message from channel {} to spy admin {}", channelId, adminId);
             }

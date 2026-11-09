@@ -515,3 +515,19 @@ KICK、MUTE、UNMUTE、BAN、UNBAN、DELETE 各自读取请求中的操作者 UU
 验证：消息管线副通道的 10 项定向检查通过，0 失败、0 跳过。覆盖两种 Map、标记及来源保留、双向修改隔离，以及既有禁言、全局和服务端频道的监控与面板调用规则。未运行全量套件。
 
 日志为 `.e2e-artifacts/review29-spy-message-before.log` 和 `review29-spy-message-final.log`。
+
+## 46. R62：监控来源选择未生效，未认证连接仍可接收
+
+位置：[SpyManager.forwardToSpies()](../../StarLink/core/src/main/java/com/nova/link/spy/SpyManager.java)。
+
+启动监控虽保存 `targetClientId`，转发却只读取频道反向索引。同一全局频道上选择 alpha、beta 的管理员都会收到所有来源的消息，包括未知来源。接收连接只需存活，即使尚未认证，也会收到消息。两个新增反例均在原实现失败。
+
+修复在转发时读取管理员的当前监控记录，跳过已停止的记录，并比较所选来源与消息 `clientId`。指定来源时，未知来源也跳过；空值和空字符串继续表示全部来源。投递前检查连接认证及存活状态，沿用原管理员会话检查与失效清理。
+
+验证：6 项定向检查通过，0 失败、0 跳过。覆盖三名管理员的独立来源选择、未知来源、空来源选择、连接认证恢复、正常收发和原消息占位符隔离。测试使用实际管理器和消息管线，网络连接由夹具提供；未运行全量套件。
+
+日志为 `.e2e-artifacts/review30-spy-forwarding-before.log` 和 `review30-spy-forwarding-final.log`。
+
+## 后续检查
+
+SPY 的生产投递仍有独立缺口：AUTH 没有写入 `ClientConnection.superAdminUuid`，`findAdminConnection()` 却只按该字段查找。接入端也没有按 `_spy` 标记向指定管理员显示消息。后续需同时修复当前在线客户端定位和接入端定向显示，避免只补连接绑定后把监控消息交给普通频道显示流程。
