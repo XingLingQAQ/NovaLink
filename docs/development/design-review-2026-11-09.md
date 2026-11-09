@@ -542,6 +542,18 @@ KICK、MUTE、UNMUTE、BAN、UNBAN、DELETE 各自读取请求中的操作者 UU
 
 验证：22 个不同定向检查通过，0 失败、0 跳过，未运行全量套件。覆盖真实核心装配、两名管理员、迁移和离线，以及实际 Bukkit/代理显示入口。共享字节样本在 Java、PHP、Python、C++ 间往返一致；PHP/Python 还验证目标筛选，Bukkit 验证频道及回复对象保持不变，并覆盖代理双副本与仅后端副本的显示去重。Folia、Nukkit、PNX、Sponge 和模组公共层均编译通过。
 
-C++ 协议测试与网络文件编译通过；本地 LeviLamina SDK 的 `MolangScriptArgData` 复制赋值错误阻止聊天文件编译，MSVC 还报告原事件名称静态断言失败。完整插件构建及真实游戏环境验证尚未通过，LeviLamina 发布前需核对 SDK 与工具链，再重跑插件构建。本轮没有修改外部 SDK。
+C++ 协议测试与网络文件编译通过。首次手工编译聊天文件时漏传服务器 SDK 的 `LL_PLAT_S` 等定义，导致 `MolangScriptArgData` 复制赋值错误；MSVC 的事件名称静态断言也不代表项目指定的 clang-cl 构建失败。补齐服务器头文件路径和编译定义后，`ChatInterceptor.cpp` 使用 clang-cl 编译通过，见 `.e2e-artifacts/msvctest/review32-chat-compile.log`。完整插件链接及真实游戏环境尚未验证，发布前仍需完成这两项检查。本轮没有修改外部 SDK。
 
 证据见 `.e2e-artifacts/review31-spy-delivery-java.log`、`review31-spy-coordination-final.log`、`review31-spy-core-final.log`、`review31-spy-adapters-compile.log`、`review31-spy-delivery-python.log`、`review31-spy-delivery-php.log` 和 `msvctest/review31-*.log`。补跑核心检查时，长期运行的 Gradle 守护进程曾因 javac 推断耗尽堆；已调整新增断言，并使用新进程复核。
+
+## 48. R64：原生测试编译失败后仍运行旧程序，并报告成功
+
+位置：[LeviLamina Gradle 测试任务](../../NovaChat/Bedrock/levilamina/build.gradle)。
+
+`test` 任务设置 `ignoreExitValue = true`。显式编译测试目标失败后，`doLast` 仍调用 `xmake run`；旧测试程序返回成功即可让 Gradle 报告成功。缺少 xmake 时已有 `onlyIf` 跳过任务，无需靠忽略错误处理。
+
+修复移除该设置，让编译失败直接终止任务，并清理相邻的过期说明。测试运行失败仍沿用原异常报告。
+
+隔离复现复制真实构建脚本，用替身 xmake 记录调用。原实现收到编译退出码 23 后仍调用 `run`，最终显示 `BUILD SUCCESSFUL`；修复后 Gradle 返回失败，且未调用 `run`。正常编译路径仍执行测试并返回成功。两项修复后流程通过，未运行全量套件，也未用替身结果代替插件构建验证。
+
+证据见 `.e2e-artifacts/review32-wrapper-before.log`、`review32-wrapper-fixed-failure.log` 和 `review32-wrapper-fixed-success.log`，命令记录位于 `review32-gradle-wrapper/*.trace`。

@@ -6,7 +6,7 @@
 // tasks:
 //   - xmakeConfigure : `xmake f -m <mode>`
 //   - xmakeBuild     : `xmake build`
-//   - test           : placeholder for gtest once a test target exists
+//   - test           : build and run the standalone protocol tests
 //   - build          : depends on xmakeConfigure + xmakeBuild
 //   - clean          : `xmake clean` + remove build/.xmake
 //
@@ -134,24 +134,9 @@ tasks.register('test', Exec) {
     group = 'verification'
     description = 'Builds and runs the novachat-levilamina-tests target (gtest-style).'
     dependsOn tasks.named('xmakeBuild')
-    // The tests live in an ordinary xmake binary target named
-    // `novachat-levilamina-tests` (see xmake.lua), NOT in xmake's built-in
-    // `test` target -- so `xmake test` prints "nothing to test". Build the
-    // target explicitly then run it, mirroring bedrock-ci's
-    //   xmake build novachat-levilamina-tests
-    //   xmake run  novachat-levilamina-tests
-    // We chain both in one `xmake` invocation so a compile failure fails the
-    // task before the (possibly stale) run. `-y` is NOT passed: it is a
-    // configure/require option, and `xmake build <target> -y` rejects it as
-    // "'-y' is not a valid target name" (xmake v3.0.9). Packages are already
-    // installed by xmakeConfigure, so build never prompts.
+    // Exec must succeed before doLast can run a cached binary.
     commandLine 'xmake', 'build', 'novachat-levilamina-tests'
     workingDir projectDir
-    // Non-fatal: xmake test target may not exist yet (legacy). Kept as
-    // ignoreExitValue so a toolchain-less host where xmakeBuild self-skipped
-    // does not redden `gradle test` -- but when xmake IS present (nova-ci
-    // windows runner), the tests build + run for real.
-    ignoreExitValue = true
     onlyIf { xmakeAvailable }
     // After the tests target builds, run it. We do this in doLast (a second
     // xmake invocation) so the build + run are separate steps in the log and
