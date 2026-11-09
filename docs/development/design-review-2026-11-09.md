@@ -413,3 +413,15 @@ JOIN、CREATE、ACCEPT 在副作用前准备状态，原提交位置统一使用
 验证：全局和私有频道的两个反例在原实现均失败，旧客户端退群返回成功。修复后 33 项定向检查通过，0 失败、0 跳过。新增事件闸门确认迁移先于 LEAVE 进入边界时，旧请求重新读取归属并拒绝；原退出、私有邀请、Webhook 和读取失败重试检查也通过。未运行全量套件。
 
 日志为 `.e2e-artifacts/review21-player-departure-before.log` 和 `review21-player-departure-final.log`。
+
+## 38. R54：跨客户端 WHO 可冒用私有成员读取名单
+
+位置：[ChannelActionHandler.handleWho()](../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java)。
+
+原 WHO 仅凭请求中的成员 UUID，就允许跨客户端查询私有频道。无关客户端填写已有成员的 UUID 后，可以读取完整成员名单；玩家迁移后，旧客户端也继续拥有查询能力。
+
+修复在跨客户端的成员授权中检查当前在线玩家记录，要求成员的 `clientId` 与请求连接一致。失败返回 `NC-403`，响应不包含成员名单或人数，也不修改玩家归属。全局频道查询、本客户端绑定频道查询，以及受邀成员在当前客户端上的查询入口保留。
+
+验证：冒用成员身份和迁移后旧客户端查询的两个反例在原实现均失败，均收到成功响应。修复后，私有邀请与 WHO 共 19 项定向检查通过，0 失败、0 跳过。迁移后的新客户端仍能读取两名成员；跨客户端加入、退群及原公开查询检查也通过。未运行全量套件。
+
+日志为 `.e2e-artifacts/review22-private-who-before.log` 和 `review22-private-who-final.log`。

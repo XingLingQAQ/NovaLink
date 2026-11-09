@@ -987,9 +987,13 @@ public class ChannelActionHandler {
         if (requesterId == null) {
             requesterId = resolveOperatorId(packet);
         }
+        String clientId = connection.getClientId();
+        PlayerState requester = requesterId != null ? playerStateManager.getPlayerState(requesterId) : null;
+        boolean privateMemberOnClient = channel.getScope() == ChannelScope.PRIVATE
+                && requester != null && clientId != null && clientId.equals(requester.getClientId())
+                && channel.isMember(requesterId);
         if (channel.getScope() != ChannelScope.GLOBAL
-                && !(channel.getScope() == ChannelScope.PRIVATE && channel.isMember(requesterId))) {
-            String clientId = connection.getClientId();
+                && !privateMemberOnClient) {
             if (clientId == null || !clientId.equals(channel.getClientId())) {
                 return new ChannelActionResponsePacket(false, ChannelAction.WHO, channelId, NovaConstants.ERROR_FORBIDDEN,
                         "Cross-client channel access denied");

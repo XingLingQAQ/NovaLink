@@ -183,6 +183,38 @@ class PrivateChannelInvitationAccessTest {
         assertThat(route(outsider, "primary")).isEmpty();
     }
 
+    @Test
+    void anotherClientCannotReadPrivateMembersByClaimingAnExistingMembersIdentity() {
+        assertThat(action(secondary, invitee, ChannelAction.ACCEPT, invite()).isSuccess()).isTrue();
+
+        var response = action(unrelated, invitee, ChannelAction.WHO, channel.getId());
+
+        assertThat(response.isSuccess()).isFalse();
+        assertThat(response.getErrorCode()).isEqualTo("NC-403");
+        assertThat(response.getExtra("members")).isNull();
+        assertThat(response.getExtra("memberCount")).isNull();
+        assertThat(action(secondary, invitee, ChannelAction.WHO, channel.getId()).isSuccess()).isTrue();
+        assertThat(players.getPlayerState(invitee).getClientId()).isEqualTo("secondary");
+        assertThat(channel.isMember(invitee)).isTrue();
+    }
+
+    @Test
+    void aTransferredMemberCanReadPrivateMembersOnlyFromItsCurrentClient() {
+        assertThat(action(secondary, invitee, ChannelAction.ACCEPT, invite()).isSuccess()).isTrue();
+        assertThat(action(unrelated, invitee, ChannelAction.JOIN, channel.getId()).isSuccess()).isTrue();
+
+        var response = action(secondary, invitee, ChannelAction.WHO, channel.getId());
+
+        assertThat(response.isSuccess()).isFalse();
+        assertThat(response.getErrorCode()).isEqualTo("NC-403");
+        assertThat(response.getExtra("members")).isNull();
+        assertThat(response.getExtra("memberCount")).isNull();
+        var current = action(unrelated, invitee, ChannelAction.WHO, channel.getId());
+        assertThat(current.isSuccess()).isTrue();
+        assertThat(current.getExtra("members")).isEqualTo("Invitee, Owner");
+        assertThat(current.getExtra("memberCount")).isEqualTo("2");
+    }
+
     private String invite() {
         ChannelActionPacket packet = packet(owner, ChannelAction.INVITE, channel.getId());
         packet.addExtra("targetName", "Invitee");
