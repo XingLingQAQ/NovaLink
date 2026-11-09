@@ -643,19 +643,18 @@ public class ConsoleCommandHandler {
         if (ch == null) {
             return nl(I18n.tr("console.title.channel_not_found", channel));
         }
-        // Mirror AdminActionHandler.handleTitle.
         TitlePacket packet = new TitlePacket(channel, title, subtitle, ConsoleSentinel.CONSOLE_SENTINEL);
+        Set<String> recipients = ctx.getMessageRouter().routeTitle(ch, packet);
         if (ch.getScope() == ChannelScope.GLOBAL) {
-            ctx.getNetworkHandler().broadcastAuthenticated(packet);
             return nl(I18n.tr("console.title.global_success", channel));
         }
-        String targetClientId = ch.getClientId();
-        ClientConnection target = targetClientId != null ? ctx.getNetworkHandler().findByClientId(targetClientId) : null;
-        if (target == null || !target.isActive() || !target.isAuthenticated()) {
+        if (recipients.isEmpty()) {
             return nl(I18n.tr("console.title.client_not_connected", channel));
         }
-        target.sendPacket(packet);
-        return nl(I18n.tr("console.title.server_success", channel, targetClientId));
+        if (ch.getScope() == ChannelScope.PRIVATE) {
+            return nl(I18n.tr("console.title.private_success", channel, recipients.size()));
+        }
+        return nl(I18n.tr("console.title.server_success", channel, recipients.iterator().next()));
     }
 
     // ============================ reload ============================

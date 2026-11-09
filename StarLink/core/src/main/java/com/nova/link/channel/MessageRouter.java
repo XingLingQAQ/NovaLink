@@ -1,16 +1,19 @@
 package com.nova.link.channel;
 
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.link.ban.BanManager;
 import com.nova.link.filter.SensitiveWordFilter;
 import com.nova.link.log.ChatLogger;
 import com.nova.link.mute.MuteManager;
+import com.nova.link.network.ClientConnection;
 import com.nova.link.network.ServerNetworkHandler;
 import com.nova.link.spy.SpyManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -148,6 +151,21 @@ public class MessageRouter {
     public Set<String> calculateRecipients(Channel channel, String senderClientId) {
         Objects.requireNonNull(channel, "Channel cannot be null");
         return pipeline.calculateRecipients(channel);
+    }
+
+    /** Returns clients queued for delivery; player rendering has no acknowledgement. */
+    public Set<String> routeTitle(Channel channel, TitlePacket packet) {
+        Objects.requireNonNull(packet, "packet");
+        Set<String> recipients = new HashSet<>();
+        for (String clientId : calculateRecipients(channel, null)) {
+            ClientConnection connection = networkHandler.findByClientId(clientId);
+            if (connection == null || !connection.isAuthenticated() || !connection.isActive()) {
+                continue;
+            }
+            connection.sendPacket(packet);
+            recipients.add(clientId);
+        }
+        return recipients;
     }
 
     /**

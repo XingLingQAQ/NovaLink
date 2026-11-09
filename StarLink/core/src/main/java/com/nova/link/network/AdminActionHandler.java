@@ -16,7 +16,6 @@ import com.nova.link.channel.ChannelScope;
 import com.nova.link.channel.MessageRouter;
 import com.nova.link.config.ConfigException;
 import com.nova.link.config.ConfigManager;
-import com.nova.link.network.ClientConnection;
 import com.nova.link.network.ServerNetworkHandler;
 import com.nova.link.notification.NotificationStore;
 import com.nova.link.spy.SpyManager;
@@ -86,7 +85,7 @@ public class AdminActionHandler {
     }
 
     /**
-     * Sets the MessageRouter for routing messages (announce) and web panel forwarding.
+     * Sets the shared router for announcements, titles and web panel forwarding.
      */
     public void setMessageRouter(MessageRouter messageRouter) {
         this.messageRouter = messageRouter;
@@ -495,18 +494,17 @@ public class AdminActionHandler {
         applyIntExtra(packet, "stay", titlePacket::setStay);
         applyIntExtra(packet, "fadeOut", titlePacket::setFadeOut);
 
-        if (channel.getScope() == ChannelScope.GLOBAL) {
-            networkHandler.broadcastAuthenticated(titlePacket);
-        } else {
-            String targetClientId = channel.getClientId();
-            ClientConnection target = targetClientId != null ? networkHandler.findByClientId(targetClientId) : null;
-            if (target == null || !target.isActive() || !target.isAuthenticated()) {
-                return AdminActionResponsePacket.failure(AdminAction.STATUS, NovaConstants.ERROR_SERVICE_UNAVAILABLE, "Target client is not connected");
-            }
-            target.sendPacket(titlePacket);
+        MessageRouter router = messageRouter;
+        if (router == null) {
+            router = new MessageRouter(channelManager, networkHandler);
+        }
+        Set<String> recipients = router.routeTitle(channel, titlePacket);
+        if (channel.getScope() != ChannelScope.GLOBAL && recipients.isEmpty()) {
+            return AdminActionResponsePacket.failure(AdminAction.STATUS, NovaConstants.ERROR_SERVICE_UNAVAILABLE,
+                    "No connected client can receive this title. Reconnect a channel member and try again.");
         }
 
-        logger.info("Title sent to channel {}", channelId);
+        logger.info("Title sent to channel {} (clients={})", channelId, recipients.size());
         return AdminActionResponsePacket.success(AdminAction.STATUS, "Title sent");
     }
 

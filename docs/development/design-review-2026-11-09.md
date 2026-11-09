@@ -449,3 +449,17 @@ JOIN、CREATE、ACCEPT 在副作用前准备状态，原提交位置统一使用
 验证：新增反例在原实现收到成功响应，预期为 `NC-403`。修复后 16 项定向检查通过，0 失败、0 跳过。覆盖冒用、迁移后旧请求、退出后的邀请拒绝、合法新客户端邀请，以及真实 TCP 邀请与领取流程。事件闸门确认检查在逐玩家边界内执行，迁移先完成时不会创建邀请码。未运行全量套件。
 
 日志为 `.e2e-artifacts/review24-inviter-ownership-before.log` 和 `review24-inviter-ownership-final.log`。
+
+## 41. R57：标题只发往私有频道绑定客户端，漏掉受邀成员
+
+位置：[MessageRouter](../../StarLink/core/src/main/java/com/nova/link/channel/MessageRouter.java)、[AdminActionHandler.handleTitle()](../../StarLink/core/src/main/java/com/nova/link/network/AdminActionHandler.java) 和[控制台标题入口](../../StarLink/core/src/main/java/com/nova/link/console/ConsoleCommandHandler.java)。
+
+TCP 管理动作和控制台各自复制标题分发逻辑。私有频道只发往创建时的 `clientId`，跨客户端受邀成员收不到标题；创建者迁移后，原绑定客户端即使已无成员，仍会收到包。全局标题直接广播，绕过消息管线已有的客户端频道权限筛选。
+
+修复增加共享 `MessageRouter.routeTitle()`，复用原收件人计算，并在投递前检查连接认证与存活状态。私有频道按当前有效成员所在客户端分发，同一客户端只发一次；全局频道按原频道权限筛选。两个入口保留各自身份授权和错误呈现，不再复制作用域分发。控制台的私有标题成功提示报告实际客户端数；标题内容、时长、发送人和请求 ID 沿用原数据包。
+
+非全局标题无可投递连接时继续返回未连接错误，全局标题保留零收件人成功的原行为。独立 AdminActionHandler 仍可只装配频道管理器和网络：临时路由在缺少玩家状态装配时保留私有频道绑定客户端的原规则。投递集合表示调用了客户端发送入口，协议没有玩家显示确认。
+
+验证：私有标题的 TCP、控制台两个反例在原实现均失败，两个成员客户端都未收到包。修复后 9 项定向检查通过，0 失败、0 跳过。覆盖跨客户端成员、同客户端去重、无成员绑定客户端不接收、全局权限与失活连接筛选、服务端离线错误、独立装配和标题字段传递。原控制台全局及服务端标题检查也通过。未运行全量套件。
+
+日志为 `.e2e-artifacts/review25-title-routing-before.log` 和 `review25-title-routing-final.log`。
