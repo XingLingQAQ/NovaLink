@@ -145,6 +145,7 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 | 状态 | 写入所有者 | 并发规则 |
 | --- | --- | --- |
 | 配置与 revision | `ConfigManager` | 在同一提交锁内校验版本、保存候选配置，再发布运行时和广播。 |
+| 敏感词与正则规则 | `SensitiveWordFilter` | 规则写入串行执行；正则列表整批发布不可变快照，读取不持有更新锁。单词匹配先取本地快照，避免更新时重复读取已清空字段。 |
 | 玩家连接归属 | `ServerNetworkHandler` + `ChannelActionHandler` | 当前代际断开时按客户端移除在线玩家和成员；旧代际断开不清理新连接。玩家迁移、普通退群和退出清理共用逐玩家边界，并在清理前重查归属。 |
 | 玩家状态保存 | `PlayerStateManager` | 同一 UUID 的保存、加载、单人移除及删除串行执行；成功只清除原脏版本，退出后的失败写入单独保留待重试。 |
 | 频道入群、邀请与删除 | `ChannelManager` + `ChannelActionHandler` + 邀请/私有频道管理器 | JOIN、CREATE、ACCEPT 的成员及玩家状态提交受频道锁约束；旧创建对象不得向同名新频道补写状态。删除先清理邀请再释放 ID。 |

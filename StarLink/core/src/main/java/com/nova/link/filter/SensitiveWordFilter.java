@@ -31,7 +31,7 @@ public class SensitiveWordFilter {
     private final Set<String> sensitiveWords = ConcurrentHashMap.newKeySet();
     
     // Regex patterns for complex matching
-    private final List<Pattern> regexPatterns = Collections.synchronizedList(new ArrayList<>());
+    private volatile List<Pattern> regexPatterns = Collections.emptyList();
     
     // Compiled patterns for word matching (built from sensitiveWords)
     private volatile Pattern wordPattern = null;
@@ -160,7 +160,7 @@ public class SensitiveWordFilter {
      * 
      * @param word the word to add
      */
-    public void addWord(String word) {
+    public synchronized void addWord(String word) {
         if (word != null && !word.trim().isEmpty()) {
             sensitiveWords.add(word.trim().toLowerCase());
             rebuildWordPattern();
@@ -173,7 +173,7 @@ public class SensitiveWordFilter {
      * 
      * @param words the words to add
      */
-    public void addWords(Collection<String> words) {
+    public synchronized void addWords(Collection<String> words) {
         if (words != null) {
             for (String word : words) {
                 if (word != null && !word.trim().isEmpty()) {
@@ -191,7 +191,7 @@ public class SensitiveWordFilter {
      * @param word the word to remove
      * @return true if the word was removed
      */
-    public boolean removeWord(String word) {
+    public synchronized boolean removeWord(String word) {
         if (word != null && sensitiveWords.remove(word.trim().toLowerCase())) {
             rebuildWordPattern();
             log.debug("Removed sensitive word: {}", word);
@@ -206,14 +206,16 @@ public class SensitiveWordFilter {
      * @param regex the regex pattern string
      * @return true if the pattern was added successfully
      */
-    public boolean addRegexPattern(String regex) {
+    public synchronized boolean addRegexPattern(String regex) {
         if (regex == null || regex.trim().isEmpty()) {
             return false;
         }
         
         try {
             Pattern pattern = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
-            regexPatterns.add(pattern);
+            List<Pattern> updated = new ArrayList<>(regexPatterns);
+            updated.add(pattern);
+            regexPatterns = List.copyOf(updated);
             log.debug("Added regex pattern: {}", regex);
             return true;
         } catch (PatternSyntaxException e) {
@@ -228,8 +230,13 @@ public class SensitiveWordFilter {
      * @param regex the regex pattern string to remove
      * @return true if the pattern was removed
      */
-    public boolean removeRegexPattern(String regex) {
-        return regexPatterns.removeIf(p -> p.pattern().equals(regex));
+    public synchronized boolean removeRegexPattern(String regex) {
+        List<Pattern> updated = new ArrayList<>(regexPatterns);
+        boolean removed = updated.removeIf(p -> p.pattern().equals(regex));
+        if (removed) {
+            regexPatterns = List.copyOf(updated);
+        }
+        return removed;
     }
 
     // ==================== Panel-managed custom lists ====================
@@ -240,7 +247,7 @@ public class SensitiveWordFilter {
      *
      * @param words the new custom words (null treated as empty)
      */
-    public void setCustomWords(Collection<String> words) {
+    public synchronized void setCustomWords(Collection<String> words) {
         List<String> normalized = new ArrayList<>();
         if (words != null) {
             for (String word : words) {
@@ -264,7 +271,7 @@ public class SensitiveWordFilter {
      * @throws PatternSyntaxException when any pattern is invalid — callers
      *         should pre-validate to report which entry failed
      */
-    public void setCustomPatterns(List<String> patterns) {
+    public synchronized void setCustomPatterns(List<String> patterns) {
         List<String> sources = new ArrayList<>();
         List<Pattern> compiled = new ArrayList<>();
         if (patterns != null) {
@@ -276,10 +283,7 @@ public class SensitiveWordFilter {
                 sources.add(source);
             }
         }
-        synchronized (regexPatterns) {
-            regexPatterns.clear();
-            regexPatterns.addAll(compiled);
-        }
+        regexPatterns = List.copyOf(compiled);
         customPatterns = Collections.unmodifiableList(sources);
         log.debug("Custom regex patterns replaced ({} entries)", sources.size());
     }
@@ -316,8 +320,9 @@ public class SensitiveWordFilter {
         int totalMatches = 0;
         
         // Apply word pattern matching
-        if (wordPattern != null) {
-            Matcher matcher = wordPattern.matcher(result);
+        Pattern currentWordPattern = wordPattern;
+        if (currentWordPattern != null) {
+            Matcher matcher = currentWordPattern.matcher(result);
             StringBuffer sb = new StringBuffer();
             while (matcher.find()) {
                 matcher.appendReplacement(sb, REPLACEMENT);
@@ -357,7 +362,8 @@ public class SensitiveWordFilter {
         }
         
         // Check word pattern
-        if (wordPattern != null && wordPattern.matcher(message).find()) {
+        Pattern currentWordPattern = wordPattern;
+        if (currentWordPattern != null && currentWordPattern.matcher(message).find()) {
             return true;
         }
         
@@ -401,9 +407,9 @@ public class SensitiveWordFilter {
     /**
      * Clears all custom words and patterns, keeping only built-in words.
      */
-    public void reset() {
+    public synchronized void reset() {
         sensitiveWords.clear();
-        regexPatterns.clear();
+        regexPatterns = Collections.emptyList();
         customWords = Collections.emptyList();
         customPatterns = Collections.emptyList();
         loadBuiltinWordList();
@@ -412,9 +418,9 @@ public class SensitiveWordFilter {
     /**
      * Clears all words and patterns including built-in ones.
      */
-    public void clearAll() {
+    public synchronized void clearAll() {
         sensitiveWords.clear();
-        regexPatterns.clear();
+        regexPatterns = Collections.emptyList();
         builtinWords.clear();
         customWords = Collections.emptyList();
         customPatterns = Collections.emptyList();
