@@ -42,6 +42,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
@@ -1637,6 +1639,40 @@ class RestApiHandlerTest {
                 "{\"channelId\":\"staff\",\"content\":\"hi\"}");
         assertThat(resp.status).isEqualTo(HttpResponseStatus.NOT_FOUND);
         assertThat(resp.body).contains("NC-404");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"mute,403,NC-403", "ban,403,NC-403", "slow,429,NC-429"})
+    void sendMessageReportsThePolicyThatRejectedIt(String policy, int status, String code) {
+        when(capturedClient.isAuthenticated()).thenReturn(true);
+        when(capturedClient.isActive()).thenReturn(true);
+        when(networkHandler.getConnections()).thenReturn(java.util.Set.of(capturedClient));
+        String body = "{\"channelId\":\"staff\",\"content\":\"hello\"}";
+        switch (policy) {
+            case "mute" -> {
+                MuteManager rejecting = mock(MuteManager.class);
+                when(rejecting.isMuted(any(), eq("staff"))).thenReturn(true);
+                messageRouter.setMuteManager(rejecting);
+            }
+            case "ban" -> {
+                BanManager rejecting = mock(BanManager.class);
+                when(rejecting.isBanned(any(), eq("staff"))).thenReturn(true);
+                messageRouter.setBanManager(rejecting);
+            }
+            case "slow" -> {
+                channelManager.getChannel("staff").setSlowModeSeconds(30);
+                assertThat(dispatch(HttpMethod.POST, "/api/messages", body).status)
+                        .isEqualTo(HttpResponseStatus.OK);
+                clearInvocations(capturedClient);
+            }
+            default -> throw new AssertionError(policy);
+        }
+
+        Response response = dispatch(HttpMethod.POST, "/api/messages", body);
+
+        assertThat(response.status).isEqualTo(HttpResponseStatus.valueOf(status));
+        assertThat(response.body).contains(code);
+        verify(capturedClient, never()).sendPacket(any(com.nova.chat.common.protocol.packets.ChatMessagePacket.class));
     }
 
     @Test

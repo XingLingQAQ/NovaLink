@@ -101,4 +101,12 @@ class MessageRouterMuteFilterTest {
         ChatMessagePacket msg = new ChatMessagePacket(senderId, "MutedSteve", "s1", "global", "hello");
         assertThat(router.routeToChannel(channel, msg)).isEmpty();
     }
+
+    @Test
+    void trustedRouteStillAcceptsAValidMessageWithNoOnlineRecipients() {
+        RoutingResult result = router.routeMessage("global", senderId, "Operator", "hello", null);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getRecipientCount()).isZero();
+    }
 }

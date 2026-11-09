@@ -581,3 +581,17 @@ LeviLamina、PMMP 的工具探测按顺序读取标准输出和错误输出，En
 两个新增反例在原实现均失败。修复后 6 项定向检查通过，覆盖切换来源、恢复全部来源、禁止发言状态保留、其他管理员独立筛选、认证要求和正常收发。未运行全量套件。
 
 证据见 `.e2e-artifacts/review34-spy-retarget-before.log` 和 `review34-spy-retarget-final.log`。
+
+## 51. R67：控制面路由掩盖策略拒绝，REST 错报频道不存在
+
+位置：[MessageRouter](../../StarLink/core/src/main/java/com/nova/link/channel/MessageRouter.java)、[RoutingResult](../../StarLink/core/src/main/java/com/nova/link/channel/RoutingResult.java)、[RestApiHandler](../../StarLink/core/src/main/java/com/nova/link/api/RestApiHandler.java)。
+
+按频道 ID 发送的辅助入口先把流水线结果转为接收集合，再无条件构造成功结果。禁言、封禁和慢速模式的拒绝原因因此丢失，内部调用方误判成功；REST 则因接收数为 0 统一返回 `404`，提示错误的故障方向。
+
+修复直接读取流水线结果，通过 `RoutingResult` 返回错误代码及原因。禁言、封禁对应 `NC-403`，慢速模式对应 `NC-429`，并包含剩余等待时间。有效消息无人在线时，业务辅助入口仍返回成功和接收数 0；REST 继续按原约定对此返回 `404`。
+
+治理、活动和消息发送共用同一 HTTP 错误码映射，移除活动接口重复的转换分支。旧路由失败工厂入口保留 `NC-404` 语义，其他路由入口的签名和处理规则不变。[API 参考](../reference/admin-api.md) 已同步更新。
+
+三个 HTTP 反例在原实现均错误返回 `404`。修复后 8 项定向检查通过，覆盖三种拒绝、缺失频道、无人在线的业务及 HTTP 约定、正常服务器频道投递，以及复用转换后的活动失败、限额响应。未运行全量套件。
+
+证据见 `.e2e-artifacts/review35-routing-result-before.log`、`review35-routing-result-final.log` 和 `review35-routing-result-shared-status.log`。

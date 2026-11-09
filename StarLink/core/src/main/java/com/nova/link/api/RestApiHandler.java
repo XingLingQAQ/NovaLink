@@ -2209,7 +2209,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         MuteResult result = muteManager.mutePlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, durationMs, reason, null, true);
         if (!result.isSuccess()) {
-            HttpResponseStatus status = moderationErrorStatus(result.getErrorCode());
+            HttpResponseStatus status = statusForErrorCode(result.getErrorCode());
             sendJsonError(ctx, request, status,
                     result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
                             : result.getMessage());
@@ -2290,7 +2290,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         MuteResult result = muteManager.unmutePlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, null, true);
         if (!result.isSuccess()) {
-            HttpResponseStatus status = moderationErrorStatus(result.getErrorCode());
+            HttpResponseStatus status = statusForErrorCode(result.getErrorCode());
             sendJsonError(ctx, request, status,
                     result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
                             : result.getMessage());
@@ -2437,7 +2437,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         BanResult result = banManager.banPlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, durationMs, reason, null, true);
         if (!result.isSuccess()) {
-            HttpResponseStatus status = moderationErrorStatus(result.getErrorCode());
+            HttpResponseStatus status = statusForErrorCode(result.getErrorCode());
             sendJsonError(ctx, request, status,
                     result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
                             : result.getMessage());
@@ -2513,7 +2513,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         BanResult result = banManager.unbanPlayer(panelOperatorUuid(operatorUsername), targetUuid,
                 channelId, null, true);
         if (!result.isSuccess()) {
-            HttpResponseStatus status = moderationErrorStatus(result.getErrorCode());
+            HttpResponseStatus status = statusForErrorCode(result.getErrorCode());
             sendJsonError(ctx, request, status,
                     result.getErrorCode() != null ? result.getErrorCode() + ": " + result.getMessage()
                             : result.getMessage());
@@ -3728,12 +3728,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     // ==================== Moderation Endpoints (PANEL-007) ====================
 
     /**
-     * Maps a {@link ModerationException} {@code NC-###} error code to the
-     * matching HTTP status, mirroring the {@code handleBanPlayer} convention.
-     * Unknown codes default to {@code BAD_REQUEST}; NC-500 and NC-510 map to
-     * {@code INTERNAL_SERVER_ERROR}.
+     * Maps NC error codes to HTTP statuses; unknown codes use BAD_REQUEST.
      */
-    private static HttpResponseStatus moderationErrorStatus(String errorCode) {
+    private static HttpResponseStatus statusForErrorCode(String errorCode) {
         if (NovaConstants.ERROR_NOT_FOUND.equals(errorCode)) {
             return HttpResponseStatus.NOT_FOUND;
         }
@@ -3747,6 +3744,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         if (NovaConstants.ERROR_CONFLICT.equals(errorCode)) {
             return HttpResponseStatus.CONFLICT;
         }
+        if (NovaConstants.ERROR_TOO_MANY_REQUESTS.equals(errorCode)) {
+            return HttpResponseStatus.TOO_MANY_REQUESTS;
+        }
         return HttpResponseStatus.BAD_REQUEST;
     }
 
@@ -3759,7 +3759,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     private boolean handleModerationException(ChannelHandlerContext ctx, FullHttpRequest request,
                                               Exception e) {
         if (e instanceof ModerationException me) {
-            sendJsonError(ctx, request, moderationErrorStatus(me.getErrorCode()),
+            sendJsonError(ctx, request, statusForErrorCode(me.getErrorCode()),
                     me.getErrorCode() + ": " + me.getMessage());
             return true;
         }
@@ -4838,14 +4838,14 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
             RoutingResult result = messageRouter.routeMessage(
                     channelId, senderId, senderName, content, new HashMap<>());
 
-            // BACK-003: 404 when the channel/routing target does not exist OR
-            // routing produced zero recipients (e.g. channel exists but no
-            // client is online). Mirrors the existing NC-4xx idiom.
-            if (!result.isSuccess() || result.getRecipientCount() == 0) {
-                String detail = !result.isSuccess() && result.getErrorMessage() != null
-                        ? result.getErrorMessage()
-                        : "No recipients routed for channel " + channelId;
-                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND, NovaConstants.ERROR_NOT_FOUND + ": " + detail);
+            if (!result.isSuccess()) {
+                sendJsonError(ctx, request, statusForErrorCode(result.getErrorCode()),
+                        result.getErrorCode() + ": " + result.getErrorMessage());
+                return;
+            }
+            if (result.getRecipientCount() == 0) {
+                sendJsonError(ctx, request, HttpResponseStatus.NOT_FOUND,
+                        NovaConstants.ERROR_NOT_FOUND + ": No recipients routed for channel " + channelId);
                 return;
             }
 
@@ -5502,23 +5502,7 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         if (result == null || result.isSuccess()) {
             return HttpResponseStatus.OK;
         }
-        String code = result.getErrorCode();
-        if (code == null) {
-            return HttpResponseStatus.BAD_REQUEST;
-        }
-        switch (code) {
-            case com.nova.link.announcement.CampaignResult.CODE_NOT_FOUND:
-                return HttpResponseStatus.NOT_FOUND;
-            case com.nova.link.announcement.CampaignResult.CODE_FORBIDDEN:
-                return HttpResponseStatus.FORBIDDEN;
-            case com.nova.link.announcement.CampaignResult.CODE_RATE_LIMITED:
-                return HttpResponseStatus.TOO_MANY_REQUESTS;
-            case com.nova.link.announcement.CampaignResult.CODE_INTERNAL_ERROR:
-                return HttpResponseStatus.INTERNAL_SERVER_ERROR;
-            case com.nova.link.announcement.CampaignResult.CODE_BAD_REQUEST:
-            default:
-                return HttpResponseStatus.BAD_REQUEST;
-        }
+        return statusForErrorCode(result.getErrorCode());
     }
 
     /**

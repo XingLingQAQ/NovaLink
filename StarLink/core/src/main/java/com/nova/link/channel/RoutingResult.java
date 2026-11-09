@@ -1,5 +1,7 @@
 package com.nova.link.channel;
 
+import com.nova.chat.common.NovaConstants;
+
 import java.util.Collections;
 import java.util.Set;
 
@@ -14,15 +16,17 @@ public class RoutingResult {
     private final ChannelScope scope;
     private final Set<String> recipientClientIds;
     private final String errorMessage;
+    private final String errorCode;
 
     private RoutingResult(boolean success, String channelId, ChannelScope scope, 
-                          Set<String> recipientClientIds, String errorMessage) {
+                          Set<String> recipientClientIds, String errorMessage, String errorCode) {
         this.success = success;
         this.channelId = channelId;
         this.scope = scope;
         this.recipientClientIds = recipientClientIds != null ? 
                 Collections.unmodifiableSet(recipientClientIds) : Collections.emptySet();
         this.errorMessage = errorMessage;
+        this.errorCode = errorCode;
     }
 
     /**
@@ -34,7 +38,7 @@ public class RoutingResult {
      * @return a successful routing result
      */
     public static RoutingResult success(String channelId, ChannelScope scope, Set<String> recipientClientIds) {
-        return new RoutingResult(true, channelId, scope, recipientClientIds, null);
+        return new RoutingResult(true, channelId, scope, recipientClientIds, null, null);
     }
 
     /**
@@ -45,7 +49,11 @@ public class RoutingResult {
      * @return a failed routing result
      */
     public static RoutingResult failure(String channelId, String errorMessage) {
-        return new RoutingResult(false, channelId, null, Collections.emptySet(), errorMessage);
+        return failure(channelId, NovaConstants.ERROR_NOT_FOUND, errorMessage);
+    }
+
+    public static RoutingResult failure(String channelId, String errorCode, String errorMessage) {
+        return new RoutingResult(false, channelId, null, Collections.emptySet(), errorMessage, errorCode);
     }
 
     /**
@@ -100,6 +108,10 @@ public class RoutingResult {
      */
     public String getErrorMessage() {
         return errorMessage;
+    }
+
+    public String getErrorCode() {
+        return errorCode;
     }
 
     @Override

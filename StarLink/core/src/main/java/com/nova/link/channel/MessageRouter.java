@@ -1,5 +1,6 @@
 package com.nova.link.channel;
 
+import com.nova.chat.common.NovaConstants;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.link.ban.BanManager;
@@ -193,13 +194,11 @@ public class MessageRouter {
      * Routes a message to a channel by channel ID.
      * Convenience method for REST API integration (trusted path, no boundary re-check).
      *
-     * <p>Returns a {@link RoutingResult} so callers can distinguish a missing
-     * channel/routing target (failure) from a successful fan-out — including
-     * the zero-recipient case (channel exists but no client is online). The
-     * recipient set is available via {@link RoutingResult#getRecipientClientIds()}.
+     * <p>Policy rejections return an error code. A valid message with no online
+     * recipients retains the successful, zero-recipient result.
      *
      * @return a routing result (never null); {@link RoutingResult#isSuccess()}
-     *         is false when the channel does not exist
+     *         is false when the channel is missing or channel policy rejects the message
      */
     public RoutingResult routeMessage(String channelId, UUID senderId, String senderName,
                                      String content, Map<String, String> placeholders) {
@@ -221,7 +220,19 @@ public class MessageRouter {
             message.setPlaceholders(placeholders);
         }
 
-        Set<String> recipients = routeToChannel(channel, message);
-        return RoutingResult.success(channelId, channel.getScope(), recipients);
+        MessagePipelineResult result = pipeline.processForChannel(channel, message);
+        if (result.isDelivered() || result.getDropReason() == MessagePipelineResult.DropReason.NO_RECIPIENTS) {
+            return RoutingResult.success(channelId, channel.getScope(), result.getRecipients());
+        }
+        return switch (result.getDropReason()) {
+            case SENDER_MUTED -> RoutingResult.failure(channelId, NovaConstants.ERROR_FORBIDDEN,
+                    "Sender is muted in this channel. Wait for the mute to end or contact a moderator.");
+            case SENDER_BANNED -> RoutingResult.failure(channelId, NovaConstants.ERROR_FORBIDDEN,
+                    "Sender is banned from this channel. Contact a moderator to review the restriction.");
+            case SLOW_MODE -> RoutingResult.failure(channelId, NovaConstants.ERROR_TOO_MANY_REQUESTS,
+                    "Slow mode is active. Retry in " + result.getSlowModeRemainingSeconds() + "s.");
+            default -> RoutingResult.failure(channelId, NovaConstants.ERROR_BAD_REQUEST,
+                    "Message was rejected by channel policy.");
+        };
     }
 }
