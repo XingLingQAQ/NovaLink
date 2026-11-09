@@ -46,7 +46,7 @@ NovaLink 管理网关在同一个 HTTP 服务中提供认证、REST 与 WebSocke
 | `DELETE /api/channels/{channelId}/invitations/{code}` | 撤销频道邀请 | 无 | 保留使用次数、使用人和首次撤销时间；记录不存在时返回 `404`。 |
 | `POST /api/messages` | 以 API 身份向频道发送消息 | `channelId`、`content`、`senderName?` | 消息会进入路由；不要用于未审计批量推送。 |
 
-`POST /api/messages` 因禁言或封禁拒绝发送时返回 `403`（`NC-403`），慢速模式拒绝返回 `429`（`NC-429`），并提示剩余等待秒数。频道不存在或当前无可投递客户端仍返回 `404`。成功响应的 `recipientCount` 统计接入端数量。[1]
+`POST /api/messages` 因禁言或封禁拒绝发送时返回 `403`（`NC-403`），慢速模式拒绝返回 `429`（`NC-429`），并提示剩余等待秒数。消息内容超过 2048 个 UTF-8 字节返回 `400`（`NC-400`）；频道不存在或当前无可投递客户端仍返回 `404`。成功响应的 `recipientCount` 统计接入端数量。[1]
 
 创建频道的 `scope` 使用 `GLOBAL`、`SERVER` 或 `PRIVATE` 枚举语义。REST 管理创建的私有频道会使用后台的管理客户端标识；对外部系统而言，应先明确频道边界，再自动化创建。[1]
 

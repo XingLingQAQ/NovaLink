@@ -197,29 +197,13 @@ public class MessagePipeline {
      * @return structured result including recipients or drop reason
      */
     public MessagePipelineResult process(ChatMessagePacket message) {
-        // --- Stage 1: payload validation ---
         if (message == null) {
             return MessagePipelineResult.dropped(MessagePipelineResult.DropReason.NULL_MESSAGE, null);
         }
 
-        String content = message.getContent();
-        if (content == null || content.isBlank()) {
-            logger.debug("Pipeline drop EMPTY_CONTENT from {}", message.getSenderName());
-            return MessagePipelineResult.dropped(MessagePipelineResult.DropReason.EMPTY_CONTENT, message);
-        }
-        // Oversize gate enforces the same byte-unit ceiling as the wire protocol
-        // (ProtocolLimits.MAX_MESSAGE_CONTENT, 2048 UTF-8 bytes). Previously this
-        // checked NovaConstants.MAX_MESSAGE_LENGTH (256 chars), which silently
-        // dropped protocol-legal messages in the 256..682 Chinese-character
-        // range that the decoder happily accepts. See the cross-references on
-        // both constants for the unit contract. Content always arrives here as
-        // a decoded Java String, so we re-measure in UTF-8 bytes — the same
-        // unit the wire applies — which keeps routing and decoding aligned.
-        int contentBytes = utf8Length(content);
-        if (contentBytes > ProtocolLimits.MAX_MESSAGE_CONTENT) {
-            logger.warn("Pipeline drop OVERSIZED_CONTENT ({} UTF-8 bytes, {} chars) from {}",
-                    contentBytes, content.length(), message.getSenderName());
-            return MessagePipelineResult.dropped(MessagePipelineResult.DropReason.OVERSIZED_CONTENT, message);
+        MessagePipelineResult validation = validateContent(message);
+        if (validation != null) {
+            return validation;
         }
         if (message.getChannelId() == null || message.getChannelId().isBlank()) {
             logger.warn("Pipeline drop MISSING_CHANNEL_ID from {}", message.getSenderName());
@@ -264,6 +248,11 @@ public class MessagePipeline {
                                                    boolean enforceSenderClientBoundary) {
         Objects.requireNonNull(channel, "channel");
         Objects.requireNonNull(message, "message");
+
+        MessagePipelineResult validation = validateContent(message);
+        if (validation != null) {
+            return validation;
+        }
 
         // --- Stage 3: cross-client boundary (SERVER/PRIVATE) ---
         if (enforceSenderClientBoundary
@@ -343,6 +332,11 @@ public class MessagePipeline {
             }
         }
 
+        if (utf8Length(message.getContent()) > ProtocolLimits.MAX_MESSAGE_CONTENT) {
+            logger.warn("Pipeline drop OVERSIZED_CONTENT after filtering from {}", message.getSenderName());
+            return MessagePipelineResult.dropped(MessagePipelineResult.DropReason.OVERSIZED_CONTENT, message, channel);
+        }
+
         // --- Stage 6: scope fan-out ---
         Set<String> recipients = fanOut(channel, message);
         if (recipients.isEmpty()) {
@@ -414,6 +408,21 @@ public class MessagePipeline {
 
     private boolean isSenderMuted(UUID senderId, String channelId) {
         return muteManager != null && senderId != null && muteManager.isMuted(senderId, channelId);
+    }
+
+    private MessagePipelineResult validateContent(ChatMessagePacket message) {
+        String content = message.getContent();
+        if (content == null || content.isBlank()) {
+            logger.debug("Pipeline drop EMPTY_CONTENT from {}", message.getSenderName());
+            return MessagePipelineResult.dropped(MessagePipelineResult.DropReason.EMPTY_CONTENT, message);
+        }
+        int contentBytes = utf8Length(content);
+        if (contentBytes > ProtocolLimits.MAX_MESSAGE_CONTENT) {
+            logger.warn("Pipeline drop OVERSIZED_CONTENT ({} UTF-8 bytes, {} chars) from {}",
+                    contentBytes, content.length(), message.getSenderName());
+            return MessagePipelineResult.dropped(MessagePipelineResult.DropReason.OVERSIZED_CONTENT, message);
+        }
+        return null;
     }
 
     private boolean isSenderBanned(UUID senderId, String channelId) {

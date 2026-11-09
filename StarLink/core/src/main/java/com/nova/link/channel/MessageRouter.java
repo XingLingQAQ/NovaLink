@@ -231,6 +231,10 @@ public class MessageRouter {
                     "Sender is banned from this channel. Contact a moderator to review the restriction.");
             case SLOW_MODE -> RoutingResult.failure(channelId, NovaConstants.ERROR_TOO_MANY_REQUESTS,
                     "Slow mode is active. Retry in " + result.getSlowModeRemainingSeconds() + "s.");
+            case OVERSIZED_CONTENT -> RoutingResult.failure(channelId, NovaConstants.ERROR_BAD_REQUEST,
+                    "Message content exceeds the 2048-byte UTF-8 limit.");
+            case EMPTY_CONTENT -> RoutingResult.failure(channelId, NovaConstants.ERROR_BAD_REQUEST,
+                    "Message content is required.");
             default -> RoutingResult.failure(channelId, NovaConstants.ERROR_BAD_REQUEST,
                     "Message was rejected by channel policy.");
         };

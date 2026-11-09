@@ -595,3 +595,15 @@ LeviLamina、PMMP 的工具探测按顺序读取标准输出和错误输出，En
 三个 HTTP 反例在原实现均错误返回 `404`。修复后 8 项定向检查通过，覆盖三种拒绝、缺失频道、无人在线的业务及 HTTP 约定、正常服务器频道投递，以及复用转换后的活动失败、限额响应。未运行全量套件。
 
 证据见 `.e2e-artifacts/review35-routing-result-before.log`、`review35-routing-result-final.log` 和 `review35-routing-result-shared-status.log`。
+
+## 52. R68：可信发送入口绕过协议内容上限
+
+位置：[MessagePipeline.processForChannel](../../StarLink/core/src/main/java/com/nova/link/channel/MessagePipeline.java)、[MessageRouter.routeMessage](../../StarLink/core/src/main/java/com/nova/link/channel/MessageRouter.java)。
+
+TCP 入口会检查空内容和 2048 UTF-8 字节上限，但已解析频道的 REST、控制台和活动入口直接进入后半段流水线。它们可以绕过长度限制；过滤器把敏感词替换成更长文本时，原先也不会重新检查，最终可能发送超过协议字段上限的消息。
+
+修复提取共享内容校验，在两条流水线入口执行；敏感词过滤后再次检查编码长度。可信入口仍跳过游戏玩家的成员和客户端归属校验，保持管理消息语义。超限通过 `RoutingResult` 返回 `NC-400`，REST 返回 `400`，不会触发接收端发送、审计或活动成功回调。
+
+原实现的 2049 字节管理消息可发送，过滤后变长的消息也可继续发送。修复后 6 项定向检查通过，覆盖可信入口的空/超限校验、普通 TCP 入口、过滤后超限和 REST `400` 响应。API 文档已补充限制和错误码；未运行全量套件。
+
+证据见 `.e2e-artifacts/review36-trusted-payload-final2.log`。

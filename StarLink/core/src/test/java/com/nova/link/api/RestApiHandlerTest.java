@@ -1675,6 +1675,24 @@ class RestApiHandlerTest {
         verify(capturedClient, never()).sendPacket(any(com.nova.chat.common.protocol.packets.ChatMessagePacket.class));
     }
 
+    @ParameterizedTest
+    @CsvSource({"2048,200", "2049,400"})
+    void sendMessageEnforcesTheProtocolContentLimit(int bytes, int status) {
+        when(capturedClient.isAuthenticated()).thenReturn(true);
+        when(capturedClient.isActive()).thenReturn(true);
+        when(networkHandler.getConnections()).thenReturn(java.util.Set.of(capturedClient));
+
+        Response response = dispatch(HttpMethod.POST, "/api/messages",
+                "{\"channelId\":\"staff\",\"content\":\"" + "x".repeat(bytes) + "\"}");
+
+        assertThat(response.status).isEqualTo(HttpResponseStatus.valueOf(status));
+        verify(capturedClient, times(status == 200 ? 1 : 0))
+                .sendPacket(any(com.nova.chat.common.protocol.packets.ChatMessagePacket.class));
+        if (status == 400) {
+            assertThat(response.body).contains("NC-400", "2048", "UTF-8");
+        }
+    }
+
     @Test
     @DisplayName("POST /api/messages returns 400 when content is missing")
     void sendMessageMissingContent() {

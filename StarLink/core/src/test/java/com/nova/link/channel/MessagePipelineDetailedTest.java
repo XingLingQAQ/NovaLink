@@ -17,6 +17,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -135,6 +136,33 @@ class MessagePipelineDetailedTest {
     @Nested
     @DisplayName("Stage 1: Validation")
     class Validation {
+
+        @ParameterizedTest
+        @CsvSource({"blank,EMPTY_CONTENT", "oversized,OVERSIZED_CONTENT"})
+        void trustedEntryValidatesBeforeDelivery(String input, MessagePipelineResult.DropReason expected) {
+            String content = input.equals("blank") ? "   " : "汉".repeat(683);
+
+            MessagePipelineResult result = pipeline.processForChannel(
+                    channelManager.getChannel("global"), msg("global", content));
+
+            assertThat(result.isDelivered()).isFalse();
+            assertThat(result.getDropReason()).isEqualTo(expected);
+            verifyNoInteractions(networkHandler);
+        }
+
+        @ParameterizedTest
+        @ValueSource(booleans = {false, true})
+        void filteredContentCannotExceedTheWireLimit(boolean trusted) {
+            filter.addWord("a");
+            ChatMessagePacket message = msg("global", "a ".repeat(600));
+
+            MessagePipelineResult result = trusted
+                    ? pipeline.processForChannel(channelManager.getChannel("global"), message)
+                    : pipeline.process(message);
+
+            assertThat(result.getDropReason()).isEqualTo(MessagePipelineResult.DropReason.OVERSIZED_CONTENT);
+            verifyNoInteractions(networkHandler);
+        }
 
         @Test
         @DisplayName("null message → NULL_MESSAGE")
