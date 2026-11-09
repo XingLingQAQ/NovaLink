@@ -2,11 +2,74 @@ package com.nova.link.database;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PlayerStateRecoveryTest {
+    @Test
+    void preparingDoesNotPublishAPlayerOrReplaceANewerCachedState() throws Exception {
+        var provider = new MemoryProvider();
+        provider.initialize();
+        var manager = new PlayerStateManager(provider);
+        UUID player = UUID.randomUUID();
+        try {
+            var prepared = manager.prepareState(player, "Player");
+            assertThat(manager.getAllPlayerStates()).isEmpty();
+            assertThat(manager.getDirtyCount()).isZero();
+
+            var current = manager.getOrCreateState(player, "Player");
+            current.setDmEnabled(false);
+            manager.joinChannel(player, "current");
+            assertThat(manager.cachePreparedState(prepared)).isSameAs(current);
+            assertThat(manager.saveAllDirty()).isEqualTo(1);
+            var stored = provider.loadPlayerState(player).orElseThrow();
+            assertThat(stored.isDmEnabled()).isFalse();
+            assertThat(stored.getJoinedChannels()).containsExactly("current");
+        } finally {
+            provider.shutdown();
+        }
+    }
+
+    @Test
+    void aReadFailureCannotBecomeANewDefaultPlayerRecord() throws Exception {
+        var provider = new MemoryProvider() {
+            boolean fail;
+
+            @Override
+            public Optional<PlayerState> loadPlayerState(UUID player) throws DatabaseException {
+                if (fail) {
+                    throw new DatabaseException("injected player read failure");
+                }
+                return super.loadPlayerState(player);
+            }
+        };
+        provider.initialize();
+        var manager = new PlayerStateManager(provider);
+        UUID player = UUID.randomUUID();
+        try {
+            var stored = new PlayerState(player, "Player");
+            stored.setDmEnabled(false);
+            stored.addJoinedChannel("stored");
+            provider.savePlayerState(stored);
+            provider.fail = true;
+
+            assertThatThrownBy(() -> manager.getOrCreateState(player, "Player"))
+                    .isInstanceOf(IllegalStateException.class).hasCauseInstanceOf(DatabaseException.class);
+            assertThat(manager.getCachedState(player)).isEmpty();
+            assertThat(manager.getDirtyCount()).isZero();
+            assertThat(manager.saveAllDirty()).isZero();
+            provider.fail = false;
+            var restored = manager.getOrCreateState(player, "Player");
+            assertThat(restored.isDmEnabled()).isFalse();
+            assertThat(restored.getJoinedChannels()).containsExactly("stored");
+        } finally {
+            provider.shutdown();
+        }
+    }
+
     private static class FailingProvider extends MemoryProvider {
         boolean fail;
 

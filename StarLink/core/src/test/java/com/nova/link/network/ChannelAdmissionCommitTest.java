@@ -96,8 +96,8 @@ class ChannelAdmissionCommitTest {
         var publishing = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var players = new PlayerStateManager(db) {
-            @Override public PlayerState getOrCreateState(UUID id, String name) {
-                PlayerState state = super.getOrCreateState(id, name);
+            @Override public PlayerState cachePreparedState(PlayerState prepared) {
+                PlayerState state = super.cachePreparedState(prepared);
                 publishing.countDown();
                 try {
                     if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("State gate timed out");

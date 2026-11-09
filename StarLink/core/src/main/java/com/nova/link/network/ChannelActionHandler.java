@@ -174,8 +174,8 @@ public class ChannelActionHandler {
      * create, invite, accept, kick, mute/unmute, ban/unban, delete, who).
      *
      * <p>Rejects unauthenticated connections and null/malformed packets before
-     * dispatch, and wraps any handler exception into an {@code NC-500} response
-     * so a single bad action never drops the connection.
+     * dispatch. Storage failures return {@code NC-510}; other handler failures
+     * return {@code NC-500}, keeping the connection usable.
      *
      * @param connection the authenticated client connection
      * @param packet     the action request
@@ -217,6 +217,10 @@ public class ChannelActionHandler {
                     return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(),
                             NovaConstants.ERROR_BAD_REQUEST, "Unsupported channel action");
             }
+        } catch (PlayerStateManager.StateLoadException e) {
+            logger.error("Player state could not be loaded for action {}", packet.getAction(), e);
+            return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(),
+                    NovaConstants.ERROR_DATABASE_ERROR, "Player state could not be loaded. Try again.");
         } catch (ChannelManager.PersistenceException e) {
             logger.error("Channel persistence failed for action {}", packet.getAction(), e);
             return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(),
@@ -309,6 +313,8 @@ public class ChannelActionHandler {
                     NovaConstants.ERROR_FORBIDDEN, "You are banned from this channel");
         }
 
+        PlayerState prepared = playerStateManager.prepareState(playerId,
+                firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name")));
         if (channel.getScope() == ChannelScope.PRIVATE) {
             var result = privateChannelManager.joinPrivateChannel(
                     channelId,
@@ -325,7 +331,7 @@ public class ChannelActionHandler {
             return new ChannelActionResponsePacket(false, ChannelAction.JOIN, channelId, NovaConstants.ERROR_CHANNEL_FULL, "Channel is full");
         }
 
-        upsertPlayerState(connection, playerId,
+        upsertPlayerState(connection, prepared,
                 firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name")),
                 world, channelId, packet.getExtra("platform"));
         return new ChannelActionResponsePacket(true, ChannelAction.JOIN, channelId, "", "Joined channel");
@@ -368,10 +374,10 @@ public class ChannelActionHandler {
             return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, channelId, NovaConstants.ERROR_NOT_IN_CHANNEL, "Not in channel");
         }
 
+        PlayerState state = playerStateManager.getOrCreateState(playerId, playerName);
         channelManager.removeMember(channelId, playerId);
 
         // Update state (keep activeChannel null if leaving the active one; client decides fallback)
-        PlayerState state = playerStateManager.getOrCreateState(playerId, playerName);
         state.setClientId(connection.getClientId());
         if (platform != null && !platform.isBlank()) {
             state.setPlatform(platform);
@@ -427,6 +433,7 @@ public class ChannelActionHandler {
             return new ChannelActionResponsePacket(false, ChannelAction.CREATE, "", NovaConstants.ERROR_BAD_REQUEST, "Client ID is required");
         }
 
+        PlayerState prepared = playerStateManager.prepareState(playerId, playerName);
         PrivateChannelManager.PrivateChannelCreationResult created;
         try {
             created = privateChannelManager.createPrivateChannel(displayName, clientId, playerId,
@@ -447,7 +454,7 @@ public class ChannelActionHandler {
                 logger.debug("Failed to grant channel admin for {} to {}: {}", created.getChannelId(), playerId, e.getMessage());
             }
 
-            upsertPlayerState(connection, playerId, playerName, null, created.getChannelId(), platform);
+            upsertPlayerState(connection, prepared, playerName, null, created.getChannelId(), platform);
         }
 
         ChannelActionResponsePacket response = new ChannelActionResponsePacket(true, ChannelAction.CREATE, created.getChannelId(), "", "Private channel created");
@@ -540,8 +547,9 @@ public class ChannelActionHandler {
 
         InvitationResult result;
         try {
+            PlayerState prepared = playerStateManager.prepareState(playerId, playerName);
             result = invitationManager.acceptInvitation(inviteCode, playerId, connection.getClientId(),
-                    channelId -> upsertPlayerState(connection, playerId, playerName, world, channelId, platform));
+                    channelId -> upsertPlayerState(connection, prepared, playerName, world, channelId, platform));
         } catch (DatabaseException e) {
             return new ChannelActionResponsePacket(false, ChannelAction.ACCEPT, inviteCode, NovaConstants.ERROR_DATABASE_ERROR, "Database error while accepting invitation");
         }
@@ -1081,12 +1089,13 @@ public class ChannelActionHandler {
     }
 
     private void upsertPlayerState(ClientConnection connection,
-                                   UUID playerId,
+                                   PlayerState prepared,
                                    String playerName,
                                    String world,
                                    String activeChannel,
                                    String platform) {
-        PlayerState state = playerStateManager.getOrCreateState(playerId, playerName);
+        PlayerState state = playerStateManager.cachePreparedState(prepared);
+        UUID playerId = state.getPlayerId();
         if (playerName != null && !playerName.isBlank()) {
             state.setPlayerName(playerName);
         }

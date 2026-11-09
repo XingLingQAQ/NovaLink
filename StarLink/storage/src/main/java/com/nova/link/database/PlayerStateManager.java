@@ -33,11 +33,12 @@ public class PlayerStateManager {
 
     /**
      * Gets or creates a player state.
-     * First checks cache, then database, then creates new if not found.
+     * Uses cached or pending state first; creates only after a successful empty read.
      *
      * @param playerId the player UUID
      * @param playerName the player name (used when creating new state)
      * @return the player state
+     * @throws StateLoadException if an uncached player cannot be read
      */
     public PlayerState getOrCreateState(UUID playerId, String playerName) {
         if (playerId == null) {
@@ -49,17 +50,56 @@ public class PlayerStateManager {
             if (pending != null) {
                 return pending;
             }
-            try {
-                Optional<PlayerState> loaded = databaseProvider.loadPlayerState(id);
-                if (loaded.isPresent()) {
-                    return loaded.get();
-                }
-            } catch (DatabaseException e) {
-                logger.warn("Failed to load player state from database: {}", id, e);
+            Optional<PlayerState> loaded = readPersistedState(id);
+            if (loaded.isPresent()) {
+                return loaded.get();
             }
             dirtyStates.put(id, new Object());
             return new PlayerState(id, playerName);
         });
+    }
+
+    /**
+     * Reads a candidate without publishing it to the online cache.
+     * @throws StateLoadException if the stored state cannot be read
+     */
+    public PlayerState prepareState(UUID playerId, String playerName) {
+        if (playerId == null) {
+            throw new IllegalArgumentException("Player ID cannot be null");
+        }
+        AtomicReference<PlayerState> prepared = new AtomicReference<>();
+        cache.compute(playerId, (id, current) -> {
+            PlayerState candidate = current != null ? current : pendingStates.get(id);
+            if (candidate == null) {
+                candidate = readPersistedState(id).orElseGet(() -> new PlayerState(id, playerName));
+            }
+            prepared.set(candidate);
+            return current;
+        });
+        return prepared.get();
+    }
+
+    /** Publishes a candidate while preserving any current cached or pending state. */
+    public PlayerState cachePreparedState(PlayerState prepared) {
+        Objects.requireNonNull(prepared, "Prepared state cannot be null");
+        return cache.computeIfAbsent(prepared.getPlayerId(), id -> {
+            PlayerState pending = pendingStates.remove(id);
+            return pending != null ? pending : prepared;
+        });
+    }
+
+    private Optional<PlayerState> readPersistedState(UUID playerId) {
+        try {
+            return databaseProvider.loadPlayerState(playerId);
+        } catch (DatabaseException e) {
+            throw new StateLoadException("Could not load player state: " + playerId, e);
+        }
+    }
+
+    public static final class StateLoadException extends IllegalStateException {
+        private StateLoadException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 
     /**

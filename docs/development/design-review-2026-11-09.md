@@ -349,3 +349,15 @@ JOIN 与 ACCEPT 在修改成员前检查封禁，但检查和入群之间没有�
 验证：[PlayerStateRecoveryTest](../../StarLink/storage/src/test/java/com/nova/link/database/PlayerStateRecoveryTest.java) 的 3 项存储反例在原实现失败。修复后与 R47 保存回归、现有管理器往返属性检查、[协议退出](../../StarLink/core/src/test/java/com/nova/link/network/ChannelActionHandlerLogoutTest.java)及私信离线路由共 25 项定向检查通过，0 失败、0 跳过；属性检查包含 100 组输入。新增协议回归实际注入退出保存失败，确认偏好可重试落库，重试前后玩家均未回到在线名单。日志为 `.e2e-artifacts/review16-player-recovery-before.log` 和 `review16-player-recovery-final.log`。
 
 另执行代理 lite 的 SQLite 重启恢复和退群持久化两项既有检查，均通过。该调用方继续使用原加载与保存入口；日志为 `.e2e-artifacts/review16-lite-recovery-compatibility.log`。
+
+## 33. R49：读取异常被当作无记录，并在频道变更后才加载玩家
+
+位置：[PlayerStateManager.getOrCreateState()](../../StarLink/storage/src/main/java/com/nova/link/database/PlayerStateManager.java)、[ChannelActionHandler 的 JOIN、CREATE、ACCEPT 和普通 LEAVE](../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java)。
+
+原管理器捕获读取异常后继续创建默认状态并标脏。数据库中已有的频道和私信偏好可能在恢复后的保存中被默认值覆盖。协议又在加入成员、保存新频道与授权、扣除邀请码次数后才加载玩家；普通退群也先移除成员。仅让管理器抛错会使失败响应伴随已发生的副作用。
+
+修复将读取失败与正常无记录分开：前者抛出有原始原因的 `StateLoadException`，后者保留原创建行为。共享存储层提供 `prepareState` 和 `cachePreparedState`，让调用方先读候选而不发布在线记录，成功提交时再采用当前缓存或待重试实例。准备阶段不标脏，不引入核心模块依赖。已有缓存或待重试状态继续直接可用。
+
+JOIN、CREATE、ACCEPT 在副作用前准备状态，原提交位置统一使用准备结果，不再于扣额或授权后读取数据库。普通 LEAVE 将加载前移至成员移除之前。协议返回既有 `NC-510` 并提示重试。原频道身份检查和锁内状态提交保留；R44 回归的闸门随实际发布入口调整，仍验证删除必须等待成员及玩家状态提交完成。代理 lite 的写入已有运行时异常处理，读取失败现在进入该失败路径，不再保存默认玩家记录。
+
+验证：原实现的 4 项协议故障反例均错误返回成功，存储反例未抛出异常，5 项全部失败。修复后 35 项定向检查通过，0 失败、0 跳过。覆盖四种操作失败无副作用及恢复后重试、原私信偏好与频道保留、候选不提前上线及不覆盖新缓存、R47/R48 保存恢复、退出，以及频道创建失败回滚和删除并发边界。未运行全量套件。日志为 `.e2e-artifacts/review17-player-read-before.log`、`review17-player-read-final.log` 和 `review17-player-read-admission.log`。
