@@ -159,6 +159,42 @@ class NovaLinkCoreLifecycleTest {
     }
 
     @Test
+    void dirtyPlayerStateIsPersistedBeforeShutdownAndTheFlushThreadStops() throws Exception {
+        writeBootableConfig(tempDir);
+        NovaLinkCore core = newCore();
+        core.start(tempDir, loopbackEphemeral());
+        Thread flushThread = null;
+        try {
+            var context = core.getContext();
+            var players = context.getPlayerStateManager();
+            var player = java.util.UUID.randomUUID();
+            players.getOrCreateState(player, "Online");
+            players.joinChannel(player, "global");
+            players.setActiveChannel(player, "global");
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(35);
+            boolean persisted = false;
+            while (System.nanoTime() < deadline) {
+                var stored = context.getDatabaseProvider().loadPlayerState(player);
+                if (stored.isPresent() && "global".equals(stored.get().getActiveChannel())) {
+                    persisted = true;
+                    break;
+                }
+                Thread.sleep(25);
+            }
+            assertThat(persisted).as("online state is saved while the core is running").isTrue();
+            assertThat(players.getCachedState(player)).isPresent();
+            flushThread = Thread.getAllStackTraces().keySet().stream()
+                    .filter(thread -> thread.isAlive() && thread.getName().equals("NovaLink-PlayerState-Flush"))
+                    .findFirst().orElseThrow();
+        } finally {
+            core.stop();
+        }
+        flushThread.join(5_000);
+        assertThat(flushThread.isAlive()).isFalse();
+    }
+
+    @Test
     @DisplayName("stop() is idempotent: repeated calls never throw")
     void stopIsIdempotent() throws Exception {
         writeBootableConfig(tempDir);

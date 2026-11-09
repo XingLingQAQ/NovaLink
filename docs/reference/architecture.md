@@ -101,6 +101,10 @@ Redis 通知、审计和消息历史共用有序索引遍历，每批最多读�
 
 核心只在初始化完成后发布 `BackendContext`；启动失败时回收已登记资源。正常停止依次关闭入口、等待 REST 工作线程、停止业务管理器、刷新玩家状态，最后关闭数据库。配置监听器和消息日志服务同属核心生命周期。[11]
 
+`PlayerStateFlushService` 每隔 30 秒刷新一次玩家脏状态，间隔从上一轮结束后计算，单个任务串行运行。它调用共享 `PlayerStateManager.saveAllDirty()`，同时保存在线修改和重试离线写入；单轮异常不会取消后续调度。调度属于核心，存储模块仍仅提供状态与持久化操作，代理 lite 保留原逐次保存方式。[11] [27]
+
+刷新服务在启动时登记回收，失败回滚也会停止任务。正常关闭先停止周期刷新，再执行最后一次玩家保存，最后关闭数据库。服务停止复用 `ShutdownBudget`，等待最多 5 秒且受剩余预算限制；超时中断正在执行的任务，并取消后续轮次。[13] [27]
+
 TCP 频道 CREATE、DELETE 使用 `ChannelManager` 的存储提交边界。未绑定提供者的兼容装配可按次传入数据库，不改变管理器之后的存储配置；已绑定提供者优先。创建保存失败撤回登记与索引，删除失败保留登记、成员、权限、邀请和玩家状态。协议返回 `NC-510`，不再由网络层吞掉失败后报告成功。[22] [24]
 
 频道启动加载完成后，核心把数据库提供者绑定到 `ChannelManager`，后续动态频道创建、更新、删除统一持久化。CONFIG 频道由 YAML 管理，管理器不把它们写成动态记录，也不删除被配置覆盖的同名存储记录。加载阶段不反写配置与原存储记录；TCP 在管理器已接入持久化时省去重复写入，独立内存模式仍保留原来的保存入口。[11]
@@ -227,3 +231,4 @@ CREATE 准备玩家状态后，由频道管理器保存定义，再在登记创�
 [24]: ../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java "频道存储提交、回滚及按次持久化"
 [25]: ../../StarLink/core/src/main/java/com/nova/link/websocket/WebSocketGateway.java "REST 与 WebSocket 的共享管理器装配"
 [26]: ../../StarLink/storage/src/main/java/com/nova/link/database/PlayerStateManager.java "玩家状态保存顺序与脏版本"
+[27]: ../../StarLink/core/src/main/java/com/nova/link/database/PlayerStateFlushService.java "运行中玩家状态刷新与离线重试调度"

@@ -361,3 +361,15 @@ JOIN 与 ACCEPT 在修改成员前检查封禁，但检查和入群之间没有�
 JOIN、CREATE、ACCEPT 在副作用前准备状态，原提交位置统一使用准备结果，不再于扣额或授权后读取数据库。普通 LEAVE 将加载前移至成员移除之前。协议返回既有 `NC-510` 并提示重试。原频道身份检查和锁内状态提交保留；R44 回归的闸门随实际发布入口调整，仍验证删除必须等待成员及玩家状态提交完成。代理 lite 的写入已有运行时异常处理，读取失败现在进入该失败路径，不再保存默认玩家记录。
 
 验证：原实现的 4 项协议故障反例均错误返回成功，存储反例未抛出异常，5 项全部失败。修复后 35 项定向检查通过，0 失败、0 跳过。覆盖四种操作失败无副作用及恢复后重试、原私信偏好与频道保留、候选不提前上线及不覆盖新缓存、R47/R48 保存恢复、退出，以及频道创建失败回滚和删除并发边界。未运行全量套件。日志为 `.e2e-artifacts/review17-player-read-before.log`、`review17-player-read-final.log` 和 `review17-player-read-admission.log`。
+
+## 34. R50：生产核心缺少运行中的玩家状态刷新
+
+位置：[NovaLinkCore 的玩家管理器装配](../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java)、[PlayerStateFlushService](../../StarLink/core/src/main/java/com/nova/link/database/PlayerStateFlushService.java)。
+
+原核心仅在停止时调用 `saveAllDirty()`，退出路径另尝试单人保存。在线入群、退群或封禁清理的脏状态在运行中没有定期保存；退出保存失败后，R48 保留的数据也缺少自动重试消费者。仅靠内存待重试区不足以恢复运行中的持久化。
+
+修复为核心装配独立刷新服务，首次及每轮结束后等待 30 秒，再调用共享管理器的刷新入口。单线程顺序执行，避免慢存储下堆积周期任务；运行时异常记录后继续后续轮次。存储操作及离线归属仍由共享层负责，调度不引入存储到核心的依赖，也不改变代理 lite 的逐次保存入口。
+
+刷新服务接入核心回收队列，启动失败时同样停止。正常停止取消后续轮次，并按共享预算等待当前任务，最多 5 秒；预算耗尽后中断工作。核心随后保留原最终玩家保存和数据库最后关闭的顺序。
+
+验证：新增核心回归在原实现等待 35 秒后仍未观察到运行中保存，断言失败。修复后 4 项定向检查通过，0 失败、0 跳过。真实核心按生产间隔保存在线状态，正常停止后刷新线程退出；[刷新服务回归](../../StarLink/core/src/test/java/com/nova/link/database/PlayerStateFlushServiceTest.java)通过事件闸门验证离线失败写入自动重试、重试不重新上线、异常后继续下一轮，以及过期关闭预算中断工作。另运行既有首次启动失败回滚检查，确认后台线程回到基线。日志为 `.e2e-artifacts/review18-player-flush-before.log` 和 `review18-player-flush-final.log`。

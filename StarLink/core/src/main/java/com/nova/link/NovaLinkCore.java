@@ -363,6 +363,9 @@ public final class NovaLinkCore implements AutoCloseable {
         // Core managers
         ChannelManager channelManager = new ChannelManager();
         PlayerStateManager playerStateManager = new PlayerStateManager(databaseProvider);
+        PlayerStateFlushService playerStateFlushService = new PlayerStateFlushService(playerStateManager);
+        playerStateFlushService.initialize();
+        started.push(closeable("player-state-flush", playerStateFlushService::shutdown));
         WebhookManager webhookManager = new WebhookManager();
         // Webhooks persist in the schema v5 webhooks table: write-through on
         // create/update/delete, restored here so they survive restarts.
