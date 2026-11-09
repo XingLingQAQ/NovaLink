@@ -20,7 +20,9 @@ plugins {
 def pythonCmd = {
     def cmd = 'python'
     try {
-        def proc = ['python', '--version'].execute((List) null, projectDir)
+        def proc = new ProcessBuilder(['python', '--version'])
+                .directory(projectDir).redirectErrorStream(true).start()
+        proc.inputStream.eachLine {}
         proc.waitFor()
         if (proc.exitValue() == 0) return 'python'
     } catch (Exception ignored) {

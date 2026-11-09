@@ -557,3 +557,15 @@ C++ 协议测试与网络文件编译通过。首次手工编译聊天文件时�
 隔离复现复制真实构建脚本，用替身 xmake 记录调用。原实现收到编译退出码 23 后仍调用 `run`，最终显示 `BUILD SUCCESSFUL`；修复后 Gradle 返回失败，且未调用 `run`。正常编译路径仍执行测试并返回成功。两项修复后流程通过，未运行全量套件，也未用替身结果代替插件构建验证。
 
 证据见 `.e2e-artifacts/review32-wrapper-before.log`、`review32-wrapper-fixed-failure.log` 和 `review32-wrapper-fixed-success.log`，命令记录位于 `review32-gradle-wrapper/*.trace`。
+
+## 49. R65：原生工具探测和测试运行会因输出管道阻塞
+
+位置：[LeviLamina](../../NovaChat/Bedrock/levilamina/build.gradle)、[PMMP](../../NovaChat/Bedrock/pmmp/build.gradle)、[Endstone](../../NovaChat/Bedrock/endstone/build.gradle) 的 Gradle 构建入口。
+
+LeviLamina、PMMP 的工具探测按顺序读取标准输出和错误输出，Endstone 则直接等待进程结束。子进程先写满错误管道时，父进程仍等待标准输出关闭或子进程退出，双方互相等待。LeviLamina 的测试运行也有同样问题。
+
+修复沿用 PMMP 安装流程已有的 `ProcessBuilder.redirectErrorStream(true)`，合并两条输出管道，再持续读取。工具探测仍按退出码判定可用性，测试运行继续输出日志并报告失败退出码。
+
+隔离复现使用真实构建脚本与替身工具，向错误输出写入 256 KiB。原实现的三个探测入口和测试运行均阻塞，直到替身的 8 秒看门狗结束子进程才返回。修复后三个探测均成功；测试运行读完全部输出并成功结束，返回错误码 29 的路径也正确使 Gradle 失败。共 5 项定向检查通过，未运行全量套件。
+
+证据见 `.e2e-artifacts/review33-probes-before.log`、`review33-run-before.log`、`review33-probes-fixed.log`、`review33-run-fixed.log` 和 `review33-run-failure-fixed.log`，命令与输出完成记录位于 `review33-process-pipes/*.trace`。

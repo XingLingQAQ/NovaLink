@@ -28,17 +28,11 @@ plugins {
 
 def buildMode = project.findProperty('mode') ?: 'release'
 
-// True when the xmake executable is resolvable on PATH (config-time check).
-// We drain the process's stdout/stderr before waitFor() -- a bare waitFor()
-// deadlocks if the child writes more than the OS pipe buffer (xmake --version
-// under a vcvarsall/MSVC env prints extra env-detection lines that can fill
-// the pipe, leaving xmake blocked on write while we block on waitFor).
 def xmakeAvailable = {
     try {
-        def proc = ['xmake', '--version'].execute((List) null, projectDir)
-        // Consume stdout+stderr so the child never blocks on a full pipe.
-        proc.in.eachLine {}
-        proc.err.eachLine {}
+        def proc = new ProcessBuilder(['xmake', '--version'])
+                .directory(projectDir).redirectErrorStream(true).start()
+        proc.inputStream.eachLine {}
         proc.waitFor()
         return proc.exitValue() == 0
     } catch (Exception ignored) {
@@ -143,9 +137,9 @@ tasks.register('test', Exec) {
     // a run failure is clearly distinguishable from a build failure.
     doLast {
         if (xmakeAvailable) {
-            def runProc = ['xmake', 'run', 'novachat-levilamina-tests'].execute((List) null, projectDir)
-            runProc.in.eachLine { logger.lifecycle('[levilamina] ' + it) }
-            runProc.err.eachLine { logger.lifecycle('[levilamina] ' + it) }
+            def runProc = new ProcessBuilder(['xmake', 'run', 'novachat-levilamina-tests'])
+                    .directory(projectDir).redirectErrorStream(true).start()
+            runProc.inputStream.eachLine { logger.lifecycle('[levilamina] ' + it) }
             int code = runProc.waitFor()
             if (code != 0) {
                 throw new GradleException("[levilamina] tests failed (exit ${code})")

@@ -49,16 +49,11 @@ plugins {
 // a different probe: powershell's `--version` is NOT a valid flag (it is
 // parsed as a PS expression and exits 1), so we probe it with
 // `-Command "exit 0"` instead. curl's `--version`/`-V` both work.
-//
-// We DRAIN stdout+stderr before waitFor() -- a bare waitFor() deadlocks if
-// the child writes more than the OS pipe buffer (e.g. powershell -Command
-// under some envs prints banner lines that fill the pipe, leaving the child
-// blocked on write while we block on waitFor).
 def onPath = { String exe, List<String> probeArgs = ['--version'] ->
     try {
-        def proc = ([exe] + probeArgs).execute((List) null, projectDir)
-        proc.in.eachLine {}
-        proc.err.eachLine {}
+        def proc = new ProcessBuilder([exe] + probeArgs)
+                .directory(projectDir).redirectErrorStream(true).start()
+        proc.inputStream.eachLine {}
         proc.waitFor()
         return proc.exitValue() == 0
     } catch (Exception ignored) {
