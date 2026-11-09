@@ -503,3 +503,15 @@ KICK、MUTE、UNMUTE、BAN、UNBAN、DELETE 各自读取请求中的操作者 UU
 验证：13 个定向检查通过，0 失败、0 跳过。覆盖上述反例、有效会话收发、清理后重新认证、控制台监控，以及真实 TCP 的启动、注销与跨客户端拒绝。未运行全量套件。
 
 日志为 `.e2e-artifacts/review28-spy-authority-before.log` 和 `review28-spy-authority-final.log`。
+
+## 45. R61：监控副本修改原消息占位符，并中断不可变消息的转发
+
+位置：[SpyManager.createSpyMessage()](../../StarLink/core/src/main/java/com/nova/link/spy/SpyManager.java)。
+
+原实现把原消息的占位符 Map 直接赋给监控副本，再写入 `_spy` 和 `_spy_source_client`。可修改的 Map 因此混入监控标记，两个消息后续也会互相改写占位符。传入 `Map.of()` 时，添加标记抛出 `UnsupportedOperationException`，中断消息管线，后续 WebSocket 转发无法执行。
+
+修复只在创建监控副本时复制 Map，再添加监控标记，保留共享消息类型原有 setter 的引用赋值语义。新增两个反例使用实际消息管线和 `SpyManager`，分别复现原消息污染与不可变 Map 异常；原实现均失败。修复后普通投递、监控投递和面板转发均完成，原消息与监控副本的占位符也可独立修改。
+
+验证：消息管线副通道的 10 项定向检查通过，0 失败、0 跳过。覆盖两种 Map、标记及来源保留、双向修改隔离，以及既有禁言、全局和服务端频道的监控与面板调用规则。未运行全量套件。
+
+日志为 `.e2e-artifacts/review29-spy-message-before.log` 和 `review29-spy-message-final.log`。

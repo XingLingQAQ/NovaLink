@@ -19,6 +19,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -814,6 +816,43 @@ class MessagePipelineDetailedTest {
     @Nested
     @DisplayName("Stage 7: Side channels (spy / websocket)")
     class SideChannels {
+
+        @ParameterizedTest
+        @ValueSource(booleans = {false, true})
+        void spyCopyDoesNotMutateTheRoutedMessage(boolean immutablePlaceholders) {
+            ClientConnection owner = mockConn("Survival", true, true);
+            ClientConnection watcher = mockConn("Watcher", true, true);
+            when(watcher.getSuperAdminUuid()).thenReturn(superAdminId);
+            when(networkHandler.getConnections()).thenReturn(Set.of(owner, watcher));
+            when(networkHandler.findByClientId("Survival")).thenReturn(owner);
+            var spies = new SpyManager(permissionManager, channelManager, networkHandler);
+            assertThat(spies.startSpying(superAdminId, "local", null).isSuccess()).isTrue();
+            pipeline.setSpyManager(spies);
+            MessageRouter.WebSocketBroadcaster ws = mock(MessageRouter.WebSocketBroadcaster.class);
+            pipeline.setWebSocketBroadcaster(ws);
+            ChatMessagePacket packet = msg("local", "hello panel");
+            Map<String, String> original = Map.of("rank", "member", "channel_name", "Local");
+            packet.setPlaceholders(immutablePlaceholders ? original : new HashMap<>(original));
+
+            assertThat(pipeline.process(packet).isDelivered()).isTrue();
+
+            verify(owner).sendPacket(packet);
+            verify(ws).broadcastChatMessage("local", senderId.toString(), "Steve", "hello panel");
+            assertThat(packet.getPlaceholders()).containsExactlyInAnyOrderEntriesOf(original);
+            var captured = org.mockito.ArgumentCaptor.forClass(ChatMessagePacket.class);
+            verify(watcher).sendPacket(captured.capture());
+            ChatMessagePacket spyCopy = captured.getValue();
+            assertThat(spyCopy).isNotSameAs(packet);
+            assertThat(spyCopy.getPlaceholders()).containsAllEntriesOf(original)
+                    .containsEntry("_spy", "true")
+                    .containsEntry("_spy_source_client", "Survival");
+            spyCopy.addPlaceholder("rank", "spy-only");
+            assertThat(packet.getPlaceholders()).containsEntry("rank", "member");
+            if (!immutablePlaceholders) {
+                packet.addPlaceholder("channel_name", "renamed");
+                assertThat(spyCopy.getPlaceholders()).containsEntry("channel_name", "Local");
+            }
+        }
 
         @Test
         @DisplayName("successful delivery notifies spy and websocket")

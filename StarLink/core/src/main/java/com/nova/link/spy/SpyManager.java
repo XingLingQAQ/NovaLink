@@ -280,7 +280,7 @@ public class SpyManager {
                 original.getChannelId(),
                 original.getContent()
         );
-        spyMessage.setPlaceholders(original.getPlaceholders());
+        spyMessage.setPlaceholders(new HashMap<>(original.getPlaceholders()));
         // Add a placeholder to indicate this is a spy message
         spyMessage.addPlaceholder("_spy", "true");
         spyMessage.addPlaceholder("_spy_source_client", 
