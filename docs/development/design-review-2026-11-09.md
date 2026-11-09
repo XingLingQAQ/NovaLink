@@ -437,3 +437,15 @@ JOIN、CREATE、ACCEPT 在副作用前准备状态，原提交位置统一使用
 验证：同名计数的新回归在原实现得到 1，预期为 3。既有名单测试改用固定 UUID 检查完整顺序，原实现同样失败。修复后 WHO 的 8 项定向检查通过，0 失败、0 跳过。未运行全量套件。
 
 日志为 `.e2e-artifacts/review23-who-members-before.log` 和 `review23-who-members-final.log`。
+
+## 40. R56：INVITE 可冒用其他客户端的频道管理员
+
+位置：[ChannelActionHandler.handleInvite()](../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java)。
+
+原 INVITE 从请求读取邀请人 UUID 后，只检查其频道管理员权限。无关客户端填写拥有者的 UUID，即可创建邀请码；邀请人迁移或退出后，旧客户端也能继续使用保留的频道权限创建邀请。
+
+修复在现有逐玩家边界内读取邀请人在线状态，要求 `clientId` 与请求连接一致，再执行原频道权限、接收人校验和邀请码保存。失败返回 `NC-403`，不加载离线玩家，也不写入邀请。复用 `BanManager.withAdmission()`，与迁移、退出的锁顺序一致。合法管理员迁移到其他客户端后仍可创建邀请；REST 与邀请管理器的直接入口不增加在线前提。
+
+验证：新增反例在原实现收到成功响应，预期为 `NC-403`。修复后 16 项定向检查通过，0 失败、0 跳过。覆盖冒用、迁移后旧请求、退出后的邀请拒绝、合法新客户端邀请，以及真实 TCP 邀请与领取流程。事件闸门确认检查在逐玩家边界内执行，迁移先完成时不会创建邀请码。未运行全量套件。
+
+日志为 `.e2e-artifacts/review24-inviter-ownership-before.log` 和 `review24-inviter-ownership-final.log`。

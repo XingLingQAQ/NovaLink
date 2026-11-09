@@ -5,6 +5,7 @@ import com.nova.chat.common.protocol.packets.ChannelActionPacket;
 import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.link.auth.PermissionManager;
+import com.nova.link.ban.BanManager;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelConfig;
 import com.nova.link.channel.ChannelManager;
@@ -22,6 +23,11 @@ import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -35,6 +41,7 @@ class PrivateChannelInvitationAccessTest {
     private ChannelManager channels;
     private PlayerStateManager players;
     private InvitationManager invitations;
+    private PermissionManager permissions;
     private ChannelActionHandler handler;
     private MessageRouter router;
     private Channel channel;
@@ -52,7 +59,7 @@ class PrivateChannelInvitationAccessTest {
         channels = new ChannelManager();
         players = new PlayerStateManager(db);
         invitations = new InvitationManager(db, channels);
-        PermissionManager permissions = new PermissionManager();
+        permissions = new PermissionManager();
         PrivateChannelManager privateChannels = new PrivateChannelManager(channels);
         owner = UUID.randomUUID();
         invitee = UUID.randomUUID();
@@ -213,6 +220,81 @@ class PrivateChannelInvitationAccessTest {
         assertThat(current.isSuccess()).isTrue();
         assertThat(current.getExtra("members")).isEqualTo("Invitee, Owner");
         assertThat(current.getExtra("memberCount")).isEqualTo("2");
+    }
+
+    @Test
+    void onlyTheInvitersCurrentClientCanCreateInvitations() {
+        var request = packet(owner, ChannelAction.INVITE, channel.getId());
+        request.addExtra("targetId", invitee.toString());
+
+        assertThat(handler.handle(unrelated, request).getErrorCode()).isEqualTo("NC-403");
+        assertThat(db.getInvitationCount()).isZero();
+        assertThat(handler.handle(primary, request).isSuccess()).isTrue();
+        assertThat(db.getInvitationCount()).isEqualTo(1);
+
+        assertThat(action(secondary, owner, ChannelAction.JOIN, channel.getId()).isSuccess()).isTrue();
+        assertThat(handler.handle(primary, request).getErrorCode()).isEqualTo("NC-403");
+        assertThat(db.getInvitationCount()).isEqualTo(1);
+        assertThat(handler.handle(secondary, request).isSuccess()).isTrue();
+        assertThat(db.getInvitationCount()).isEqualTo(2);
+
+        var logout = packet(owner, ChannelAction.LEAVE, channel.getId());
+        logout.addExtra("logout", "true");
+        assertThat(handler.handle(secondary, logout).isSuccess()).isTrue();
+        assertThat(handler.handle(secondary, request).getErrorCode()).isEqualTo("NC-403");
+        assertThat(db.getInvitationCount()).isEqualTo(2);
+        assertThat(players.getPlayerState(owner)).isNull();
+    }
+
+    @Test
+    void anInvitationQueuedBeforeMigrationChecksOwnershipInsideThePlayerBoundary() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var armed = new AtomicBoolean(true);
+        var bans = new BanManager(db, permissions, channels, players) {
+            @Override
+            public <T> T withAdmission(UUID id, Supplier<T> operation) {
+                if (armed.compareAndSet(true, false)) {
+                    entered.countDown();
+                    try {
+                        if (!release.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("Invitation gate timed out");
+                        }
+                    } catch (InterruptedException error) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(error);
+                    }
+                }
+                return super.withAdmission(id, operation);
+            }
+        };
+        handler = new ChannelActionHandler(channels, players, db, new PrivateChannelManager(channels),
+                invitations, permissions, null, bans);
+        var request = packet(owner, ChannelAction.INVITE, channel.getId());
+        request.addExtra("targetId", invitee.toString());
+        var result = new FutureTask<>(() -> handler.handle(primary, request));
+        var inviting = new Thread(result, "player-invite");
+        try {
+            inviting.start();
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(action(secondary, owner, ChannelAction.JOIN, channel.getId()).isSuccess()).isTrue();
+            release.countDown();
+
+            var response = result.get(5, TimeUnit.SECONDS);
+            assertThat(response.isSuccess()).isFalse();
+            assertThat(response.getErrorCode()).isEqualTo("NC-403");
+            assertThat(db.getInvitationCount()).isZero();
+            assertThat(players.getPlayerState(owner).getClientId()).isEqualTo("secondary");
+            assertThat(channel.isMember(owner)).isTrue();
+        } finally {
+            release.countDown();
+            inviting.join(5_000);
+            if (inviting.isAlive()) {
+                inviting.interrupt();
+                inviting.join(5_000);
+            }
+            assertThat(inviting.isAlive()).isFalse();
+        }
     }
 
     private String invite() {

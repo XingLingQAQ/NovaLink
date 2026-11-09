@@ -527,6 +527,24 @@ public class ChannelActionHandler {
         if (channelId == null || channelId.isBlank()) {
             return new ChannelActionResponsePacket(false, ChannelAction.INVITE, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
+        UUID currentInviter = inviterId;
+        Supplier<ChannelActionResponsePacket> invitation =
+                () -> handleInviteForPlayer(connection, packet, currentInviter);
+        if (banManager == null) {
+            return invitation.get();
+        }
+        return banManager.withAdmission(inviterId, invitation);
+    }
+
+    private ChannelActionResponsePacket handleInviteForPlayer(ClientConnection connection,
+                                                              ChannelActionPacket packet, UUID inviterId) {
+        String channelId = packet.getChannelId();
+        String clientId = connection.getClientId();
+        PlayerState inviter = playerStateManager.getPlayerState(inviterId);
+        if (inviter == null || clientId == null || clientId.isBlank() || !clientId.equals(inviter.getClientId())) {
+            return new ChannelActionResponsePacket(false, ChannelAction.INVITE, channelId,
+                    NovaConstants.ERROR_FORBIDDEN, "Inviting player is not online on this client. Rejoin before inviting.");
+        }
 
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
