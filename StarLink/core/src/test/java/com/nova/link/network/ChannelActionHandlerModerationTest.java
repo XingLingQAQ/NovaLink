@@ -38,6 +38,8 @@ class ChannelActionHandlerModerationTest {
     private PermissionManager permissionManager;
     private MuteManager muteManager;
     private BanManager banManager;
+    private PlayerStateManager playerStateManager;
+    private PrivateChannelManager privateChannelManager;
     private ChannelActionHandler handler;
     private ClientConnection connection;
 
@@ -51,8 +53,8 @@ class ChannelActionHandlerModerationTest {
         permissionManager = new PermissionManager();
         DatabaseProvider db = new MemoryProvider();
         db.initialize();
-        PlayerStateManager playerStateManager = new PlayerStateManager(db);
-        PrivateChannelManager privateChannelManager = new PrivateChannelManager(channelManager);
+        playerStateManager = new PlayerStateManager(db);
+        privateChannelManager = new PrivateChannelManager(channelManager);
         InvitationManager invitationManager = new InvitationManager(db, channelManager);
         muteManager = new MuteManager(db, permissionManager, channelManager);
         banManager = new BanManager(db, permissionManager, channelManager);
@@ -74,6 +76,7 @@ class ChannelActionHandlerModerationTest {
 
         permissionManager.registerSuperAdmin(new SuperAdminCredentials(superAdminId, "hash"));
         permissionManager.authenticateSuperAdmin(superAdminId, "hash");
+        playerStateManager.getOrCreateState(superAdminId, "Admin").setClientId("Survival");
 
         channelManager.createChannel(ChannelConfig.builder()
                 .id("local")
@@ -221,29 +224,14 @@ class ChannelActionHandlerModerationTest {
         @Test
         @DisplayName("owner can delete private channel")
         void deletePrivate() {
-            PrivateChannelManager pcm = new PrivateChannelManager(channelManager);
-            // rebuild handler with same managers is unnecessary; use existing channelManager
-            var created = pcm.createPrivateChannel("Party", "Survival", superAdminId, "secret1");
+            var created = privateChannelManager.createPrivateChannel("Party", "Survival", superAdminId, "secret1");
             String channelId = created.getChannelId();
             permissionManager.grantChannelAdmin(channelId, superAdminId);
-
-            // re-create handler with same private manager reference for tracking cleanup
-            // (delete uses privateChannelManager.removeTrackedId; tracking is local to pcm)
-            // Use a handler that shares this pcm:
-            ChannelActionHandler localHandler = new ChannelActionHandler(
-                    channelManager,
-                    new PlayerStateManager(new MemoryProvider()),
-                    new MemoryProvider(),
-                    pcm,
-                    new InvitationManager(new MemoryProvider(), channelManager),
-                    permissionManager,
-                    muteManager
-            );
 
             ChannelActionPacket packet = new ChannelActionPacket(ChannelAction.DELETE, channelId);
             packet.addExtra("operatorId", superAdminId.toString());
 
-            ChannelActionResponsePacket response = localHandler.handle(connection, packet);
+            ChannelActionResponsePacket response = handler.handle(connection, packet);
             assertThat(response.isSuccess()).isTrue();
             assertThat(channelManager.getChannel(channelId)).isNull();
         }

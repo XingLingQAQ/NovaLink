@@ -200,17 +200,12 @@ public class ChannelActionHandler {
                 case INVITE:
                     return handleInvite(connection, packet);
                 case KICK:
-                    return handleKick(connection, packet);
                 case MUTE:
-                    return handleMute(connection, packet);
                 case UNMUTE:
-                    return handleUnmute(connection, packet);
                 case BAN:
-                    return handleBan(connection, packet);
                 case UNBAN:
-                    return handleUnban(connection, packet);
                 case DELETE:
-                    return handleDelete(connection, packet);
+                    return handleOperatorAction(connection, packet);
                 case WHO:
                     return handleWho(connection, packet);
                 default:
@@ -638,14 +633,34 @@ public class ChannelActionHandler {
         return response;
     }
 
-    private ChannelActionResponsePacket handleKick(ClientConnection connection, ChannelActionPacket packet) {
+    private ChannelActionResponsePacket handleOperatorAction(ClientConnection connection, ChannelActionPacket packet) {
         UUID operatorId = resolveOperatorId(packet);
+        if (operatorId == null) {
+            return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(),
+                    NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
+        }
+        if (!ConsoleSentinel.isConsole(operatorId)) {
+            PlayerState operator = playerStateManager.getPlayerState(operatorId);
+            String clientId = connection.getClientId();
+            if (operator == null || clientId == null || clientId.isBlank() || !clientId.equals(operator.getClientId())) {
+                return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(),
+                        NovaConstants.ERROR_FORBIDDEN, "Operator is not online on this client. Rejoin before moderating.");
+            }
+        }
+        return switch (packet.getAction()) {
+            case KICK -> handleKick(connection, packet, operatorId);
+            case MUTE -> handleMute(connection, packet, operatorId);
+            case UNMUTE -> handleUnmute(connection, packet, operatorId);
+            case BAN -> handleBan(connection, packet, operatorId);
+            case UNBAN -> handleUnban(connection, packet, operatorId);
+            case DELETE -> handleDelete(connection, packet, operatorId);
+            default -> throw new IllegalArgumentException("Unsupported operator action");
+        };
+    }
+
+    private ChannelActionResponsePacket handleKick(ClientConnection connection, ChannelActionPacket packet, UUID operatorId) {
         UUID targetId = resolveTargetId(packet);
         String channelId = packet.getChannelId();
-
-        if (operatorId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.KICK, channelId, NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
-        }
         if (targetId == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.KICK, channelId, NovaConstants.ERROR_BAD_REQUEST, "Target player ID is required");
         }
@@ -702,18 +717,14 @@ public class ChannelActionHandler {
         return response;
     }
 
-    private ChannelActionResponsePacket handleMute(ClientConnection connection, ChannelActionPacket packet) {
+    private ChannelActionResponsePacket handleMute(ClientConnection connection, ChannelActionPacket packet, UUID operatorId) {
         if (muteManager == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.MUTE, packet.getChannelId(),
                     NovaConstants.ERROR_SERVICE_UNAVAILABLE, "Mute system is not available");
         }
 
-        UUID operatorId = resolveOperatorId(packet);
         UUID targetId = resolveTargetId(packet);
         String channelId = packet.getChannelId();
-        if (operatorId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.MUTE, channelId, NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
-        }
         if (targetId == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.MUTE, channelId, NovaConstants.ERROR_BAD_REQUEST, "Target player ID is required");
         }
@@ -773,18 +784,14 @@ public class ChannelActionHandler {
         return response;
     }
 
-    private ChannelActionResponsePacket handleUnmute(ClientConnection connection, ChannelActionPacket packet) {
+    private ChannelActionResponsePacket handleUnmute(ClientConnection connection, ChannelActionPacket packet, UUID operatorId) {
         if (muteManager == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.UNMUTE, packet.getChannelId(),
                     NovaConstants.ERROR_SERVICE_UNAVAILABLE, "Mute system is not available");
         }
 
-        UUID operatorId = resolveOperatorId(packet);
         UUID targetId = resolveTargetId(packet);
         String channelId = packet.getChannelId();
-        if (operatorId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.UNMUTE, channelId, NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
-        }
         if (targetId == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.UNMUTE, channelId, NovaConstants.ERROR_BAD_REQUEST, "Target player ID is required");
         }
@@ -813,18 +820,14 @@ public class ChannelActionHandler {
         return new ChannelActionResponsePacket(true, ChannelAction.UNMUTE, channelId, "", "Player unmuted");
     }
 
-    private ChannelActionResponsePacket handleBan(ClientConnection connection, ChannelActionPacket packet) {
+    private ChannelActionResponsePacket handleBan(ClientConnection connection, ChannelActionPacket packet, UUID operatorId) {
         if (banManager == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.BAN, packet.getChannelId(),
                     NovaConstants.ERROR_SERVICE_UNAVAILABLE, "Ban system is not available");
         }
 
-        UUID operatorId = resolveOperatorId(packet);
         UUID targetId = resolveTargetId(packet);
         String channelId = packet.getChannelId();
-        if (operatorId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId, NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
-        }
         if (targetId == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.BAN, channelId, NovaConstants.ERROR_BAD_REQUEST, "Target player ID is required");
         }
@@ -881,18 +884,14 @@ public class ChannelActionHandler {
         return response;
     }
 
-    private ChannelActionResponsePacket handleUnban(ClientConnection connection, ChannelActionPacket packet) {
+    private ChannelActionResponsePacket handleUnban(ClientConnection connection, ChannelActionPacket packet, UUID operatorId) {
         if (banManager == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, packet.getChannelId(),
                     NovaConstants.ERROR_SERVICE_UNAVAILABLE, "Ban system is not available");
         }
 
-        UUID operatorId = resolveOperatorId(packet);
         UUID targetId = resolveTargetId(packet);
         String channelId = packet.getChannelId();
-        if (operatorId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, channelId, NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
-        }
         if (targetId == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.UNBAN, channelId, NovaConstants.ERROR_BAD_REQUEST, "Target player ID is required");
         }
@@ -924,12 +923,8 @@ public class ChannelActionHandler {
         return response;
     }
 
-    private ChannelActionResponsePacket handleDelete(ClientConnection connection, ChannelActionPacket packet) {
-        UUID operatorId = resolveOperatorId(packet);
+    private ChannelActionResponsePacket handleDelete(ClientConnection connection, ChannelActionPacket packet, UUID operatorId) {
         String channelId = packet.getChannelId();
-        if (operatorId == null) {
-            return new ChannelActionResponsePacket(false, ChannelAction.DELETE, channelId, NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
-        }
         if (channelId == null || channelId.isBlank()) {
             return new ChannelActionResponsePacket(false, ChannelAction.DELETE, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }

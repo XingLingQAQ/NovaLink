@@ -59,6 +59,7 @@ class ChannelActionPersistenceTest {
                     .getChannel();
             if (!wired) provider.saveChannel(channel);
             var state = players.getOrCreateState(owner, "Owner");
+            state.setClientId("primary");
             players.joinChannel(owner, channel.getId());
             players.setActiveChannel(owner, channel.getId());
             var packet = new ChannelActionPacket(ChannelAction.DELETE, channel.getId());
@@ -125,6 +126,7 @@ class ChannelActionPersistenceTest {
         if (!wired) provider.saveChannel(channel);
         var invitation = invitations.createInvitation(channel.getId(), owner);
         var state = players.getOrCreateState(owner, "Owner");
+        state.setClientId("primary");
         players.joinChannel(owner, channel.getId());
         players.setActiveChannel(owner, channel.getId());
         permissions.grantChannelAdmin(channel.getId(), owner);

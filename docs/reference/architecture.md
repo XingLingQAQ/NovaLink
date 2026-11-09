@@ -177,6 +177,10 @@ NovaLink 的**数据面**是平台接入端通过 NovaProtocol 发送并接收�
 
 协议 INVITE 在同一逐玩家边界内确认邀请人在线且属于请求客户端，再检查频道管理员权限与接收人。无关客户端、迁移后的旧客户端和已退出玩家均返回 `NC-403`，不创建邀请码。频道管理员迁移后仍可从当前客户端创建邀请；REST 和管理器的直接调用保留各自授权入口。[17] [21] [22]
 
+TCP 的 KICK、MUTE、UNMUTE、BAN、UNBAN、DELETE 共用操作者入口。玩家操作者须在授权时在线且属于请求客户端，否则返回 `NC-403`，不进入具体动作；缺少身份返回 `NC-400`。通过身份检查后仍执行原角色、作用域和时长限制。已认证接入端的控制台继续使用原 `ConsoleSentinel` 协议；REST、本地控制台及管理器直接调用保留各自授权方式。[22]
+
+管理动作的归属检查是执行入口的一次授权判断，已授权请求继续按原业务边界提交。它不持有操作者的封禁锁再写入目标玩家，避免自封或两个管理员互相封禁时形成嵌套锁。目标封禁的提交仍由 `BanManager` 的逐玩家边界负责。[21] [22]
+
 这些边界决定共享代码的位置。持久化事务放在提供者内；平台调度放在平台桥接内；前端快照采用规则放在实体状态入口。HTTP 处理器和组件调用这些入口，避免各自复制状态机。具体错误码和恢复操作见 [Admin REST API](admin-api.md)。
 
 `BanManager.withAdmission` 复用封禁缓存的逐玩家原子更新边界，不另建玩家锁表。封禁先提交时，后续入群拒绝；入群先执行时，后续封禁移除其成员资格。全局封禁还阻止通过 CREATE 自动加入新私有频道。回调内不能再修改封禁，避免重入同一缓存更新；频道容量与邀请扣额继续由频道锁协调。[21]
@@ -193,9 +197,9 @@ CREATE 准备玩家状态后，由频道管理器保存定义，再在登记创�
 
 私有频道的跨客户端 WHO 查询同时检查成员资格和当前玩家归属。请求中的 UUID 必须对应请求客户端上的在线成员，才可读取其他客户端绑定的私有频道名单；玩家迁移后，旧客户端失去这项查询权限。全局频道和客户端查询自身绑定频道的原入口保留。[22] [26]
 
-TCP 管理动作和控制台发送标题时，共用 `MessageRouter.routeTitle()`。收件人复用消息管线的频道规则：全局频道按客户端权限筛选，服务端频道使用绑定客户端，私有频道使用当前在线成员所在客户端。发送前再次检查连接认证和存活状态，同一客户端只投递一次。客户端继续按玩家当前频道显示标题；返回的客户端集合表示已调用投递，不代表玩家已看到标题。[5] [11]
+TCP 管理动作和控制台发送标题时，共用 `MessageRouter.routeTitle()`。收件人复用消息管线的频道规则：全局频道按客户端权限筛选，服务端频道使用绑定客户端，私有频道使用当前在线成员所在客户端。发送前再次检查连接认证和存活状态，同一客户端只投递一次。客户端继续按玩家当前频道显示标题；返回的客户端集合表示已调用投递，不代表玩家已看到标题。[29] [30]
 
-非全局标题没有可投递客户端时，TCP 返回 `NC-503`，控制台提示目标未连接；全局频道保留零收件人时成功的原行为。独立使用 `AdminActionHandler` 而未装配共享路由时，使用相同路由实现，并保留私有频道按绑定客户端投递的原装配方式。[5]
+非全局标题没有可投递客户端时，TCP 返回 `NC-503`，控制台提示目标未连接；全局频道保留零收件人时成功的原行为。独立使用 `AdminActionHandler` 而未装配共享路由时，使用相同路由实现，并保留私有频道按绑定客户端投递的原装配方式。[29] [30]
 
 控制面通过 `PanelResourcePolicy` 共享频道资源授权。VIEWER 可见 `GLOBAL`，ADMIN 可见并管理 `GLOBAL` 与 `SERVER`，`PRIVATE` 仅向 SUPER_ADMIN 开放。频道级禁言、封禁、解除限制及踢出复用这一策略，限制列表在投影与计数前过滤；批量预览、执行和缓存重放在副作用或缓存读取前检查当前角色。没有频道 ID 的全局限制继续由 ADMIN 及以上管理；已删除频道的遗留限制仅向 SUPER_ADMIN 展示并提供单人解除入口。[20]
 
@@ -244,10 +248,12 @@ TCP 管理动作和控制台发送标题时，共用 `MessageRouter.routeTitle()
 [19]: ../../StarLink/storage/src/main/java/com/nova/link/database/RedisProvider.java "Redis 有序索引分批读取与筛选"
 [20]: ../../StarLink/core/src/main/java/com/nova/link/auth/PanelResourcePolicy.java "控制面共享资源授权"
 [21]: ../../StarLink/core/src/main/java/com/nova/link/ban/BanManager.java "封禁与入群共享串行边界"
-[22]: ../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java "协议 JOIN 的频道身份与状态提交"
+[22]: ../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java "协议频道动作、身份检查与状态提交"
 [23]: ../../StarLink/core/src/main/java/com/nova/link/channel/PrivateChannelManager.java "私有频道访问与成员加入"
 [24]: ../../StarLink/core/src/main/java/com/nova/link/channel/ChannelManager.java "频道存储提交、回滚及按次持久化"
 [25]: ../../StarLink/core/src/main/java/com/nova/link/websocket/WebSocketGateway.java "REST 与 WebSocket 的共享管理器装配"
 [26]: ../../StarLink/storage/src/main/java/com/nova/link/database/PlayerStateManager.java "玩家状态保存顺序与脏版本"
 [27]: ../../StarLink/core/src/main/java/com/nova/link/database/PlayerStateFlushService.java "运行中玩家状态刷新与离线重试调度"
 [28]: ../../StarLink/storage/src/main/java/com/nova/link/database/JdbcStringCollections.java "JDBC 集合编码与旧格式读取"
+[29]: ../../StarLink/core/src/main/java/com/nova/link/network/AdminActionHandler.java "TCP 管理动作与标题入口"
+[30]: ../../StarLink/core/src/main/java/com/nova/link/channel/MessageRouter.java "共享消息与标题路由"

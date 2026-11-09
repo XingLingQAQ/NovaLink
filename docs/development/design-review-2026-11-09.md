@@ -463,3 +463,17 @@ TCP 管理动作和控制台各自复制标题分发逻辑。私有频道只发�
 验证：私有标题的 TCP、控制台两个反例在原实现均失败，两个成员客户端都未收到包。修复后 9 项定向检查通过，0 失败、0 跳过。覆盖跨客户端成员、同客户端去重、无成员绑定客户端不接收、全局权限与失活连接筛选、服务端离线错误、独立装配和标题字段传递。原控制台全局及服务端标题检查也通过。未运行全量套件。
 
 日志为 `.e2e-artifacts/review25-title-routing-before.log` 和 `review25-title-routing-final.log`。
+
+## 42. R58：六种管理动作可借用已迁移玩家的权限
+
+位置：[ChannelActionHandler.handleOperatorAction()](../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java)。
+
+KICK、MUTE、UNMUTE、BAN、UNBAN、DELETE 各自读取请求中的操作者 UUID，然后直接查询权限。管理员迁移后，旧客户端仍能借用其权限执行全部六种动作；离线后保留的超级管理员会话或频道管理员权限也能被使用。全局 BAN、UNBAN 没有频道检查，不能只在频道权限入口补校验。
+
+修复合并六种动作的操作者解析与身份校验。玩家操作者必须在授权时在线，且当前 `clientId` 与请求连接一致；否则返回 `NC-403`，不进入目标解析、存储修改或通知。角色、频道范围和时长限制仍由原处理器及管理器负责。接入端控制台沿用原 `ConsoleSentinel` 协议；REST、本地控制台和直接管理器调用不增加玩家在线前提。
+
+该入口只执行一次身份授权检查，随后按原业务边界提交。不持有操作者的封禁锁再调用目标玩家的封禁写入，避免自封重入或两个管理员互相封禁形成嵌套锁。JOIN、INVITE、LEAVE 的原逐玩家串行规则保留。
+
+验证：六种旧客户端反例在原实现全部返回成功。修复后共 29 个不同定向检查通过，覆盖迁移及离线拒绝、当前客户端操作、全局 BAN/UNBAN、接入端控制台、自封、原权限与持久化失败处理，以及真实 TCP 删除。首轮 28 项通过，另一个旧删除夹具因使用未初始化的独立存储失败；改为复用已初始化的共同夹具后，单独重跑该项通过。未运行全量套件。
+
+日志为 `.e2e-artifacts/review26-moderation-identity-before.log`、`review26-moderation-identity-final.log` 和 `review26-moderation-delete-final.log`。
