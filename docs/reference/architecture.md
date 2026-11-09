@@ -183,6 +183,8 @@ TCP `AdminActionPacket` 经 `AdminActionHandler.handleFromClient()` 校验连接
 
 超级管理员会话仍按 UUID 维护。成功 JOIN 迁移归属后，新客户端可继续使用已有会话，旧客户端失去使用和注销权限；玩家离线后，即使会话尚未到期，TCP 请求也会拒绝。当前客户端的 AUTH 继续检查密码和 IP 封禁。控制台哨兵跳过玩家在线检查，保留原管理员授权；原 `handle()` 重载和单参数构造入口供调用方管理身份。[29]
 
+`SpyManager` 在启动、转发监控消息及监控发言前检查超级管理员会话。检测到过期或撤销时，清除该管理员的全部监控和频道反向索引；监控发言返回 `NC-403`。显式 LOGOUT 同步清理监控，到期会话在下一次监控操作时清理。重新认证后，已清理的监控需要重新启动。[29] [31]
+
 管理动作的归属检查是执行入口的一次授权判断，已授权请求继续按原业务边界提交。它不持有操作者的封禁锁再写入目标玩家，避免自封或两个管理员互相封禁时形成嵌套锁。目标封禁的提交仍由 `BanManager` 的逐玩家边界负责。[21] [22]
 
 这些边界决定共享代码的位置。持久化事务放在提供者内；平台调度放在平台桥接内；前端快照采用规则放在实体状态入口。HTTP 处理器和组件调用这些入口，避免各自复制状态机。具体错误码和恢复操作见 [Admin REST API](admin-api.md)。
@@ -261,3 +263,4 @@ TCP 管理动作和控制台发送标题时，共用 `MessageRouter.routeTitle()
 [28]: ../../StarLink/storage/src/main/java/com/nova/link/database/JdbcStringCollections.java "JDBC 集合编码与旧格式读取"
 [29]: ../../StarLink/core/src/main/java/com/nova/link/network/AdminActionHandler.java "TCP 管理动作与标题入口"
 [30]: ../../StarLink/core/src/main/java/com/nova/link/channel/MessageRouter.java "共享消息与标题路由"
+[31]: ../../StarLink/core/src/main/java/com/nova/link/spy/SpyManager.java "监控授权与会话清理"

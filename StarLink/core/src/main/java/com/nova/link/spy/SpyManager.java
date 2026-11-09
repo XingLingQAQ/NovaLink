@@ -66,7 +66,7 @@ public class SpyManager {
         }
 
         // Verify super admin session
-        if (!permissionManager.hasSuperAdminSession(adminId)) {
+        if (!hasSpyAuthority(adminId)) {
             return SpyResult.failure(NovaConstants.ERROR_FORBIDDEN, "Super admin authentication required for spy mode");
         }
 
@@ -254,6 +254,9 @@ public class SpyManager {
         ChatMessagePacket spyMessage = createSpyMessage(message);
 
         for (UUID adminId : spies) {
+            if (!hasSpyAuthority(adminId)) {
+                continue;
+            }
             // Find the connection for this admin
             ClientConnection adminConnection = findAdminConnection(adminId);
             if (adminConnection != null && adminConnection.isActive()) {
@@ -321,6 +324,11 @@ public class SpyManager {
             return SpyResult.failure(NovaConstants.ERROR_BAD_REQUEST, "Message content is required");
         }
 
+        if (!hasSpyAuthority(adminId)) {
+            return SpyResult.failure(NovaConstants.ERROR_FORBIDDEN,
+                    "Super admin authentication required. Authenticate again and restart monitoring.");
+        }
+
         // Verify admin is spying on this channel
         if (!isSpying(adminId, channelId)) {
             return SpyResult.failure(NovaConstants.ERROR_FORBIDDEN, "Not monitoring channel: " + channelId);
@@ -365,6 +373,14 @@ public class SpyManager {
             logger.info("Super admin {} sent message to global channel {}", adminId, channelId);
             return SpyResult.success("Message sent to global channel: " + channelId);
         }
+    }
+
+    private boolean hasSpyAuthority(UUID adminId) {
+        if (permissionManager.hasSuperAdminSession(adminId)) {
+            return true;
+        }
+        stopAllSpying(adminId);
+        return false;
     }
 
     /**

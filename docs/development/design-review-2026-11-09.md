@@ -491,3 +491,15 @@ KICK、MUTE、UNMUTE、BAN、UNBAN、DELETE 各自读取请求中的操作者 UU
 验证：新增真实 TCP 反例在原实现允许无关客户端为另一客户端的玩家执行 AUTH。最终 21 个不同定向检查通过，0 失败、0 跳过。覆盖全部 AdminAction 的跨客户端拒绝及请求 ID、当前客户端认证与注销、迁移后会话可用、退出后拒绝、原治理操作和标题直接调用。另以真实核心装配确认跨客户端注销被拒绝且会话保留；独立入口检查确认 IP 封禁及恢复、控制台与直接调用契约。未运行全量套件。
 
 日志为 `.e2e-artifacts/review27-admin-client-before.log`、`review27-admin-client-final.log` 和 `review27-admin-core-final.log`。
+
+## 44. R60：管理员会话失效后仍能监控和发言
+
+位置：[SpyManager](../../StarLink/core/src/main/java/com/nova/link/spy/SpyManager.java) 和 [AdminActionHandler.handleLogout()](../../StarLink/core/src/main/java/com/nova/link/network/AdminActionHandler.java)。
+
+原实现只在启动监控时检查超级管理员会话。已启动的监控继续按索引收取消息，监控发言只检查监控记录与发送开关；会话撤销或过期后，两种操作仍成功。显式 LOGOUT 也只撤销管理员会话，留下全部监控记录。
+
+新增 5 个反例在原实现全部失败，覆盖撤销、过期后的接收与发送，以及注销后的残留记录。修复复用原会话检查与批量停止入口，在启动、转发和监控发言前检查授权。检测到失效时清除全部监控及反向索引，发言返回 `NC-403`。显式 LOGOUT 同步清理；空闲会话到期后，下次监控操作触发清理，重新认证不会恢复已清理的记录。
+
+验证：13 个定向检查通过，0 失败、0 跳过。覆盖上述反例、有效会话收发、清理后重新认证、控制台监控，以及真实 TCP 的启动、注销与跨客户端拒绝。未运行全量套件。
+
+日志为 `.e2e-artifacts/review28-spy-authority-before.log` 和 `review28-spy-authority-final.log`。

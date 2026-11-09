@@ -260,6 +260,9 @@ public class AdminActionHandler {
         }
 
         permissionManager.revokeSuperAdminSession(playerId);
+        if (spyManager != null) {
+            spyManager.stopAllSpying(playerId);
+        }
         logger.info("Super admin session revoked for player: {}", playerId);
         return AdminActionResponsePacket.success(AdminAction.LOGOUT, "Super admin session revoked");
     }
