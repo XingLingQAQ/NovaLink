@@ -16,6 +16,8 @@ import com.nova.link.channel.ChannelScope;
 import com.nova.link.channel.MessageRouter;
 import com.nova.link.config.ConfigException;
 import com.nova.link.config.ConfigManager;
+import com.nova.link.console.ConsoleSentinel;
+import com.nova.link.database.PlayerStateManager;
 import com.nova.link.network.ServerNetworkHandler;
 import com.nova.link.notification.NotificationStore;
 import com.nova.link.spy.SpyManager;
@@ -44,6 +46,7 @@ public class AdminActionHandler {
     private static final Logger logger = LoggerFactory.getLogger(AdminActionHandler.class);
 
     private final PermissionManager permissionManager;
+    private final PlayerStateManager playerStateManager;
     private SpyManager spyManager;
 
     // IP ban manager for rate-limiting brute-force attempts on super-admin auth.
@@ -58,7 +61,32 @@ public class AdminActionHandler {
     private volatile NotificationStore notificationStore;
 
     public AdminActionHandler(PermissionManager permissionManager) {
+        this(permissionManager, null);
+    }
+
+    public AdminActionHandler(PermissionManager permissionManager, PlayerStateManager playerStateManager) {
         this.permissionManager = permissionManager;
+        this.playerStateManager = playerStateManager;
+    }
+
+    /** Network ingress; direct handle overloads retain caller-owned authorization. */
+    public AdminActionResponsePacket handleFromClient(ClientConnection connection, AdminActionPacket packet) {
+        if (packet == null || packet.getAction() == null) {
+            return AdminActionResponsePacket.failure(null, NovaConstants.ERROR_BAD_REQUEST, "Invalid admin action packet");
+        }
+        if (connection == null || !connection.isAuthenticated()) {
+            return AdminActionResponsePacket.failure(packet.getAction(), NovaConstants.ERROR_UNAUTHORIZED, "Not authenticated");
+        }
+        UUID playerId = packet.getPlayerId();
+        if (playerId == null) {
+            return AdminActionResponsePacket.failure(packet.getAction(), NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
+        }
+        if (!ConsoleSentinel.isConsole(playerId)
+                && (playerStateManager == null || !playerStateManager.isOnlineOnClient(playerId, connection.getClientId()))) {
+            return AdminActionResponsePacket.failure(packet.getAction(), NovaConstants.ERROR_FORBIDDEN,
+                    "Operator is not online on this client. Rejoin before managing.");
+        }
+        return handle(packet, connection.getRemoteAddress());
     }
 
     /**

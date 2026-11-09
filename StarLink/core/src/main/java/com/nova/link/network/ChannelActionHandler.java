@@ -639,13 +639,10 @@ public class ChannelActionHandler {
             return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(),
                     NovaConstants.ERROR_BAD_REQUEST, "Operator ID is required");
         }
-        if (!ConsoleSentinel.isConsole(operatorId)) {
-            PlayerState operator = playerStateManager.getPlayerState(operatorId);
-            String clientId = connection.getClientId();
-            if (operator == null || clientId == null || clientId.isBlank() || !clientId.equals(operator.getClientId())) {
-                return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(),
-                        NovaConstants.ERROR_FORBIDDEN, "Operator is not online on this client. Rejoin before moderating.");
-            }
+        if (!ConsoleSentinel.isConsole(operatorId)
+                && !playerStateManager.isOnlineOnClient(operatorId, connection.getClientId())) {
+            return new ChannelActionResponsePacket(false, packet.getAction(), packet.getChannelId(),
+                    NovaConstants.ERROR_FORBIDDEN, "Operator is not online on this client. Rejoin before moderating.");
         }
         return switch (packet.getAction()) {
             case KICK -> handleKick(connection, packet, operatorId);

@@ -307,7 +307,7 @@ public class IntegrationTestHelper {
         spyManager = new SpyManager(permissionManager, channelManager, networkHandler);
         messageRouter.setSpyManager(spyManager);
 
-        adminActionHandler = new AdminActionHandler(permissionManager);
+        adminActionHandler = new AdminActionHandler(permissionManager, playerStateManager);
         adminActionHandler.setSpyManager(spyManager);
         adminActionHandler.setChannelManager(channelManager);
         adminActionHandler.setNetworkHandler(networkHandler);
@@ -503,15 +503,7 @@ public class IntegrationTestHelper {
             networkHandler.registerHandler(AdminActionPacket.class, new PacketHandler<AdminActionPacket>() {
                 @Override
                 public void handle(ClientConnection connection, AdminActionPacket packet) {
-                    if (!connection.isAuthenticated()) {
-                        AdminActionResponsePacket response = AdminActionResponsePacket.failure(
-                            packet.getAction(), "NC-401", "Not authenticated"
-                        );
-                        response.setRequestId(packet.getRequestId());
-                        connection.sendPacket(response);
-                        return;
-                    }
-                    AdminActionResponsePacket response = adminActionHandler.handle(packet, connection.getRemoteAddress());
+                    AdminActionResponsePacket response = adminActionHandler.handleFromClient(connection, packet);
                     response.setRequestId(packet.getRequestId());
                     connection.sendPacket(response);
                 }

@@ -477,3 +477,17 @@ KICK、MUTE、UNMUTE、BAN、UNBAN、DELETE 各自读取请求中的操作者 UU
 验证：六种旧客户端反例在原实现全部返回成功。修复后共 29 个不同定向检查通过，覆盖迁移及离线拒绝、当前客户端操作、全局 BAN/UNBAN、接入端控制台、自封、原权限与持久化失败处理，以及真实 TCP 删除。首轮 28 项通过，另一个旧删除夹具因使用未初始化的独立存储失败；改为复用已初始化的共同夹具后，单独重跑该项通过。未运行全量套件。
 
 日志为 `.e2e-artifacts/review26-moderation-identity-before.log`、`review26-moderation-identity-final.log` 和 `review26-moderation-delete-final.log`。
+
+## 43. R59：AdminAction 未验证玩家所属客户端
+
+位置：[AdminActionHandler.handleFromClient()](../../StarLink/core/src/main/java/com/nova/link/network/AdminActionHandler.java)、[核心 TCP 注册入口](../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java) 和 [PlayerStateManager.isOnlineOnClient()](../../StarLink/storage/src/main/java/com/nova/link/database/PlayerStateManager.java)。
+
+原 TCP 注册入口只检查连接已经认证，随后按请求里的玩家 UUID 操作超级管理员会话，没有验证玩家当前归属。无关客户端可使用另一客户端玩家的有效会话；LOGOUT 甚至无条件撤销包内 UUID 的会话。玩家迁移或退出后，旧客户端仍可继续发送管理动作。
+
+修复增加独立网络入口，校验连接认证、玩家 UUID 及当前在线归属后，再进入原业务处理。归属查询只读在线缓存，频道治理动作也使用这一共享入口，不把存储读取或默认玩家创建混入授权。核心与两套嵌入式服务器改为装配同一网络入口，删除重复连接检查。原单参数构造和 `handle()` 重载保持调用方管理身份的用法。
+
+超级管理员会话继续按 UUID 维护，不绑定首次认证客户端。玩家成功 JOIN 迁移后，新客户端可继续使用已有会话，旧客户端返回 `NC-403`；离线记录也不能凭未过期会话通过网络入口。AUTH 同样先验证玩家归属，再检查原密码和 IP 限流。控制台哨兵跳过在线玩家检查，仍执行原管理员会话授权。
+
+验证：新增真实 TCP 反例在原实现允许无关客户端为另一客户端的玩家执行 AUTH。最终 21 个不同定向检查通过，0 失败、0 跳过。覆盖全部 AdminAction 的跨客户端拒绝及请求 ID、当前客户端认证与注销、迁移后会话可用、退出后拒绝、原治理操作和标题直接调用。另以真实核心装配确认跨客户端注销被拒绝且会话保留；独立入口检查确认 IP 封禁及恢复、控制台与直接调用契约。未运行全量套件。
+
+日志为 `.e2e-artifacts/review27-admin-client-before.log`、`review27-admin-client-final.log` 和 `review27-admin-core-final.log`。

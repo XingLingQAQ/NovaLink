@@ -159,6 +159,61 @@ class NovaLinkCoreLifecycleTest {
     }
 
     @Test
+    void registeredAdminHandlerRejectsAnotherClientsLogout() throws Exception {
+        writeBootableConfig(tempDir);
+        NovaLinkCore core = newCore();
+        core.start(tempDir, loopbackEphemeral());
+        var responses = new java.util.concurrent.LinkedBlockingQueue<com.nova.chat.common.protocol.packets.AdminActionResponsePacket>();
+        var ownerChannel = new io.netty.channel.embedded.EmbeddedChannel();
+        var otherChannel = new io.netty.channel.embedded.EmbeddedChannel(new io.netty.channel.ChannelOutboundHandlerAdapter() {
+            @Override
+            public void write(io.netty.channel.ChannelHandlerContext context, Object message,
+                              io.netty.channel.ChannelPromise promise) {
+                if (message instanceof com.nova.chat.common.protocol.packets.AdminActionResponsePacket response) {
+                    responses.add(response);
+                }
+                context.write(message, promise);
+            }
+        });
+        try {
+            var context = core.getContext();
+            var network = context.getNetworkHandler();
+            var owner = new com.nova.link.network.ClientConnection(ownerChannel);
+            var other = new com.nova.link.network.ClientConnection(otherChannel);
+            network.onClientConnected(owner);
+            network.onClientConnected(other);
+            assertThat(network.activateAuthenticated(owner, "owner")).isTrue();
+            assertThat(network.activateAuthenticated(other, "other")).isTrue();
+            var player = java.util.UUID.randomUUID();
+            context.getPlayerStateManager().getOrCreateState(player, "Admin").setClientId("owner");
+            var permissions = context.getPermissionManager();
+            permissions.registerSuperAdmin(new com.nova.link.auth.SuperAdminCredentials(player, "test-hash"));
+            assertThat(permissions.authenticateSuperAdmin(player, "test-hash").isSuccess()).isTrue();
+            var logout = com.nova.chat.common.protocol.packets.AdminActionPacket.createLogoutPacket(player);
+
+            network.handlePacket(other, logout);
+
+            var denied = responses.poll(5, TimeUnit.SECONDS);
+            assertThat(denied).isNotNull();
+            assertThat(denied.isSuccess()).isFalse();
+            assertThat(denied.getErrorCode()).isEqualTo("NC-403");
+            assertThat(denied.getRequestId()).isEqualTo(logout.getRequestId());
+            assertThat(permissions.hasSuperAdminSession(player)).isTrue();
+
+            context.getPlayerStateManager().getPlayerState(player).setClientId("other");
+            network.handlePacket(other, logout);
+            var accepted = responses.poll(5, TimeUnit.SECONDS);
+            assertThat(accepted).isNotNull();
+            assertThat(accepted.isSuccess()).isTrue();
+            assertThat(permissions.hasSuperAdminSession(player)).isFalse();
+        } finally {
+            core.stop();
+            ownerChannel.finishAndReleaseAll();
+            otherChannel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
     void aDisconnectedClientReleasesItsPlayersButALateOldDisconnectDoesNot() throws Exception {
         writeBootableConfig(tempDir);
         NovaLinkCore core = newCore();

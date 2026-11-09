@@ -507,7 +507,7 @@ public final class NovaLinkCore implements AutoCloseable {
             }
         });
 
-        AdminActionHandler adminActionHandler = new AdminActionHandler(permissionManager);
+        AdminActionHandler adminActionHandler = new AdminActionHandler(permissionManager, playerStateManager);
         adminActionHandler.setSpyManager(spyManager);
         adminActionHandler.setChannelManager(channelManager);
         adminActionHandler.setNetworkHandler(networkHandler);
@@ -1773,16 +1773,7 @@ public final class NovaLinkCore implements AutoCloseable {
 
         // Admin action handler (super admin auth / spy / reload / status)
         networkHandler.registerHandler(AdminActionPacket.class, (connection, packet) -> {
-            if (!connection.isAuthenticated()) {
-                AdminActionResponsePacket response = AdminActionResponsePacket.failure(
-                        packet.getAction(), NovaConstants.ERROR_UNAUTHORIZED, "Not authenticated"
-                );
-                response.setRequestId(packet.getRequestId());
-                connection.sendPacket(response);
-                return;
-            }
-
-            AdminActionResponsePacket response = adminActionHandler.handle(packet, connection.getRemoteAddress());
+            AdminActionResponsePacket response = adminActionHandler.handleFromClient(connection, packet);
             response.setRequestId(packet.getRequestId());
             connection.sendPacket(response);
         });

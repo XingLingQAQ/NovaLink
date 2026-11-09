@@ -123,6 +123,14 @@ public class PlayerStateManager {
         return cache.get(playerId);
     }
 
+    public boolean isOnlineOnClient(UUID playerId, String clientId) {
+        if (playerId == null || clientId == null || clientId.isBlank()) {
+            return false;
+        }
+        PlayerState state = cache.get(playerId);
+        return state != null && clientId.equals(state.getClientId());
+    }
+
     /**
      * Gets all cached player states.
      * Returns only online/cached players.

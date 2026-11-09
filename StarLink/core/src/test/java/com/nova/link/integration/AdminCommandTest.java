@@ -1,6 +1,7 @@
 package com.nova.link.integration;
 
 import com.nova.chat.common.protocol.AdminAction;
+import com.nova.chat.common.protocol.ChannelAction;
 import com.nova.chat.common.protocol.PlatformType;
 import com.nova.chat.common.protocol.packets.*;
 import com.nova.link.auth.SuperAdminCredentials;
@@ -58,6 +59,76 @@ class AdminCommandTest {
     }
 
     @Test
+    void otherClientsCannotUseOrRevokeAnAdminsSession() throws Exception {
+        helper.registerClient("SessionOwner", "password");
+        helper.registerClient("OtherClient", "password");
+        var owner = helper.createClient(PlatformType.BUKKIT);
+        var other = helper.createClient(PlatformType.BUKKIT);
+        try {
+            owner.connect().get(5, TimeUnit.SECONDS);
+            owner.authenticate("SessionOwner", "password").get(5, TimeUnit.SECONDS);
+            other.connect().get(5, TimeUnit.SECONDS);
+            other.authenticate("OtherClient", "password").get(5, TimeUnit.SECONDS);
+            UUID playerId = registerSuperAdmin(owner.getPlayerUuid());
+            joinPlayer(owner, playerId);
+            var auth = AdminActionPacket.createAuthPacket(playerId, IntegrationTestHelper.hashPassword(SUPER_ADMIN_PASSWORD));
+            owner.sendPacket(auth);
+            assertThat(owner.waitForPacket(AdminActionResponsePacket.class, 5, TimeUnit.SECONDS).isSuccess()).isTrue();
+
+            for (AdminAction action : AdminAction.values()) {
+                var borrowed = new AdminActionPacket();
+                borrowed.setAction(action);
+                borrowed.setPlayerId(playerId);
+                borrowed.setPasswordHash(IntegrationTestHelper.hashPassword(SUPER_ADMIN_PASSWORD));
+                borrowed.setTarget("global");
+                other.sendPacket(borrowed);
+                var response = other.waitForPacket(AdminActionResponsePacket.class, 5, TimeUnit.SECONDS);
+                assertThat(response.isSuccess()).as("%s cannot borrow another client's player", action).isFalse();
+                assertThat(response.getErrorCode()).isEqualTo("NC-403");
+                assertThat(response.getRequestId()).isEqualTo(borrowed.getRequestId());
+                assertThat(helper.getPermissionManager().hasSuperAdminSession(playerId)).isTrue();
+            }
+
+            var status = new AdminActionPacket();
+            status.setAction(AdminAction.STATUS);
+            status.setPlayerId(playerId);
+            owner.sendPacket(status);
+            assertThat(owner.waitForPacket(AdminActionResponsePacket.class, 5, TimeUnit.SECONDS).isSuccess()).isTrue();
+
+            joinPlayer(other, playerId);
+            owner.sendPacket(status);
+            assertThat(owner.waitForPacket(AdminActionResponsePacket.class, 5, TimeUnit.SECONDS).getErrorCode()).isEqualTo("NC-403");
+            other.sendPacket(status);
+            assertThat(other.waitForPacket(AdminActionResponsePacket.class, 5, TimeUnit.SECONDS).isSuccess()).isTrue();
+            other.sendPacket(AdminActionPacket.createLogoutPacket(playerId));
+            assertThat(other.waitForPacket(AdminActionResponsePacket.class, 5, TimeUnit.SECONDS).isSuccess()).isTrue();
+            assertThat(helper.getPermissionManager().hasSuperAdminSession(playerId)).isFalse();
+
+            other.sendPacket(auth);
+            assertThat(other.waitForPacket(AdminActionResponsePacket.class, 5, TimeUnit.SECONDS).isSuccess()).isTrue();
+            var logout = new ChannelActionPacket(ChannelAction.LEAVE, "global");
+            logout.addExtra("playerId", playerId.toString());
+            logout.addExtra("logout", "true");
+            other.sendPacket(logout);
+            assertThat(other.waitForPacket(ChannelActionResponsePacket.class, 5, TimeUnit.SECONDS).isSuccess()).isTrue();
+            other.sendPacket(status);
+            assertThat(other.waitForPacket(AdminActionResponsePacket.class, 5, TimeUnit.SECONDS).getErrorCode()).isEqualTo("NC-403");
+            assertThat(helper.getPermissionManager().hasSuperAdminSession(playerId)).isTrue();
+        } finally {
+            other.disconnect();
+            owner.disconnect();
+        }
+    }
+
+    private static void joinPlayer(IntegrationTestHelper.TestClient client, UUID playerId) throws Exception {
+        var join = new ChannelActionPacket(ChannelAction.JOIN, "global");
+        join.addExtra("playerId", playerId.toString());
+        join.addExtra("playerName", "Admin");
+        client.sendPacket(join);
+        assertThat(client.waitForPacket(ChannelActionResponsePacket.class, 5, TimeUnit.SECONDS).isSuccess()).isTrue();
+    }
+
+    @Test
     @Order(1)
     @DisplayName("Super admin authentication should succeed with valid password")
     void testSuperAdminAuth() throws Exception {
@@ -67,7 +138,8 @@ class AdminCommandTest {
         client.connect().get(5, TimeUnit.SECONDS);
         client.authenticate("AdminClient", "password").get(5, TimeUnit.SECONDS);
 
-        UUID playerId = registerSuperAdmin(UUID.randomUUID());
+        UUID playerId = registerSuperAdmin(client.getPlayerUuid());
+        joinPlayer(client, playerId);
         AdminActionPacket authPacket = AdminActionPacket.createAuthPacket(
             playerId,
             IntegrationTestHelper.hashPassword(SUPER_ADMIN_PASSWORD)
@@ -94,7 +166,8 @@ class AdminCommandTest {
         client.connect().get(5, TimeUnit.SECONDS);
         client.authenticate("AdminClient2", "password").get(5, TimeUnit.SECONDS);
 
-        UUID playerId = registerSuperAdmin(UUID.randomUUID());
+        UUID playerId = registerSuperAdmin(client.getPlayerUuid());
+        joinPlayer(client, playerId);
         AdminActionPacket authPacket = AdminActionPacket.createAuthPacket(
             playerId,
             IntegrationTestHelper.hashPassword("wrong-password")
@@ -124,7 +197,8 @@ class AdminCommandTest {
         client.connect().get(5, TimeUnit.SECONDS);
         client.authenticate("LogoutClient", "password").get(5, TimeUnit.SECONDS);
 
-        UUID playerId = registerSuperAdmin(UUID.randomUUID());
+        UUID playerId = registerSuperAdmin(client.getPlayerUuid());
+        joinPlayer(client, playerId);
         AdminActionPacket authPacket = AdminActionPacket.createAuthPacket(
             playerId,
             IntegrationTestHelper.hashPassword(SUPER_ADMIN_PASSWORD)
@@ -157,6 +231,7 @@ class AdminCommandTest {
 
         // Random UUID never registered and never AUTHed → no super admin session.
         UUID playerId = UUID.randomUUID();
+        joinPlayer(client, playerId);
         AdminActionPacket spyPacket = AdminActionPacket.createSpyStartPacket(playerId, "global");
         client.sendPacket(spyPacket);
 
@@ -181,7 +256,8 @@ class AdminCommandTest {
         client.connect().get(5, TimeUnit.SECONDS);
         client.authenticate("SuperSpyClient", "password").get(5, TimeUnit.SECONDS);
 
-        UUID playerId = registerSuperAdmin(UUID.randomUUID());
+        UUID playerId = registerSuperAdmin(client.getPlayerUuid());
+        joinPlayer(client, playerId);
         AdminActionPacket authPacket = AdminActionPacket.createAuthPacket(
             playerId,
             IntegrationTestHelper.hashPassword(SUPER_ADMIN_PASSWORD)
@@ -212,7 +288,8 @@ class AdminCommandTest {
         client.connect().get(5, TimeUnit.SECONDS);
         client.authenticate("StatusClient", "password").get(5, TimeUnit.SECONDS);
 
-        UUID playerId = registerSuperAdmin(UUID.randomUUID());
+        UUID playerId = registerSuperAdmin(client.getPlayerUuid());
+        joinPlayer(client, playerId);
         AdminActionPacket authPacket = AdminActionPacket.createAuthPacket(
             playerId,
             IntegrationTestHelper.hashPassword(SUPER_ADMIN_PASSWORD)
