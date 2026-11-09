@@ -335,3 +335,17 @@ JOIN 与 ACCEPT 在修改成员前检查封禁，但检查和入群之间没有�
 修复让每次标脏产生新版本。保存先读取版本，再复制玩家状态并写入提供者，成功后只清除原版本。期间发生的新标脏或保存失败都会保留待保存记录。同一 UUID 的保存复用缓存原子更新边界，快照和数据库写入在其中串行执行，无需另建玩家锁表。核心与代理 lite 共用存储模块；直接保存未缓存对象、显式加载和布尔保存结果保持原契约。
 
 验证：[PlayerStateSaveRaceTest](../../StarLink/storage/src/test/java/com/nova/link/database/PlayerStateSaveRaceTest.java) 的两项反例在原实现失败，分别得到丢失的脏标记和倒序覆盖的旧值。修复后 3 项回归及现有 `playerStateManagerRoundTrip` 属性检查通过，0 失败、0 跳过；属性检查使用 100 组输入。覆盖保存中新修改的后续刷新、并发保存顺序、失败后保留并重试，以及未缓存对象的直接保存和重新加载。并发回归使用写入闸门与实际线程等待状态，无固定延时。仅执行这些定向检查，日志为 `.e2e-artifacts/review15-player-save-before.log`、`review15-player-save-order-before.log` 和 `review15-player-save-final.log`。
+
+## 32. R48：退出或清缓存时丢弃保存失败的数据
+
+位置：[PlayerStateManager 的缓存与保存生命周期](../../StarLink/storage/src/main/java/com/nova/link/database/PlayerStateManager.java)。调用方包括协议退出和代理 lite 存储。
+
+`removeFromCache(true)` 忽略保存结果，随后删除缓存及脏标记；`clearCache(true)` 也在刷新失败后清空两者。玩家重新登录便读回数据库中的旧值，后续刷新无从找回丢失的状态。直接把失败状态留在在线缓存又会使面板和私信查找继续认为玩家在线。
+
+修复将失败写入保存在独立的内存待重试区，在线缓存照常移除。刷新在逐 UUID 原子更新边界内选择当前状态，持久化成功后按脏版本清理，返回原在线缓存归属。退出、显式加载和删除复用同一边界，避免刷新重新发布离线状态。原保存实现提取为内部 `persistState`，直接保存仍保留成功后缓存传入对象的契约。
+
+重新登录优先取回待重试状态，避免恢复旧频道或旧偏好。显式数据库加载先提交待重试离线写入，失败返回空值并保留数据。带保存的清缓存保留失败记录；不带保存的清缓存仍显式丢弃数据。删除成功会清除待重试记录，失败保留原状态。待重试记录供当前进程中的后续刷新或重连恢复。
+
+验证：[PlayerStateRecoveryTest](../../StarLink/storage/src/test/java/com/nova/link/database/PlayerStateRecoveryTest.java) 的 3 项存储反例在原实现失败。修复后与 R47 保存回归、现有管理器往返属性检查、[协议退出](../../StarLink/core/src/test/java/com/nova/link/network/ChannelActionHandlerLogoutTest.java)及私信离线路由共 25 项定向检查通过，0 失败、0 跳过；属性检查包含 100 组输入。新增协议回归实际注入退出保存失败，确认偏好可重试落库，重试前后玩家均未回到在线名单。日志为 `.e2e-artifacts/review16-player-recovery-before.log` 和 `review16-player-recovery-final.log`。
+
+另执行代理 lite 的 SQLite 重启恢复和退群持久化两项既有检查，均通过。该调用方继续使用原加载与保存入口；日志为 `.e2e-artifacts/review16-lite-recovery-compatibility.log`。

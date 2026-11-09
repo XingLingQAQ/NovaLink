@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Manages player state persistence with caching support.
@@ -24,6 +25,7 @@ public class PlayerStateManager {
     
     // Track dirty states that need to be persisted
     private final Map<UUID, Object> dirtyStates = new ConcurrentHashMap<>();
+    private final Map<UUID, PlayerState> pendingStates = new ConcurrentHashMap<>();
 
     public PlayerStateManager(DatabaseProvider databaseProvider) {
         this.databaseProvider = Objects.requireNonNull(databaseProvider, "Database provider cannot be null");
@@ -42,37 +44,22 @@ public class PlayerStateManager {
             throw new IllegalArgumentException("Player ID cannot be null");
         }
 
-        // Check cache first
-        PlayerState cached = cache.get(playerId);
-        if (cached != null) {
-            return cached;
-        }
-
-        // Try to load from database
-        try {
-            Optional<PlayerState> loaded = databaseProvider.loadPlayerState(playerId);
-            if (loaded.isPresent()) {
-                PlayerState state = loaded.get();
-                // Use putIfAbsent so a concurrent caller that already cached a
-                // (possibly newer) state wins; we return whichever is canonical.
-                PlayerState existing = cache.putIfAbsent(playerId, state);
-                logger.debug("Loaded player state from database: {}", playerId);
-                return existing != null ? existing : state;
+        return cache.computeIfAbsent(playerId, id -> {
+            PlayerState pending = pendingStates.remove(id);
+            if (pending != null) {
+                return pending;
             }
-        } catch (DatabaseException e) {
-            logger.warn("Failed to load player state from database: {}", playerId, e);
-        }
-
-        // Create new state
-        PlayerState newState = new PlayerState(playerId, playerName);
-        PlayerState existing = cache.putIfAbsent(playerId, newState);
-        if (existing == null) {
-            markDirty(playerId);
-            logger.debug("Created new player state: {}", playerId);
-            return newState;
-        }
-        // Another thread cached a state between our check and the put; return it.
-        return existing;
+            try {
+                Optional<PlayerState> loaded = databaseProvider.loadPlayerState(id);
+                if (loaded.isPresent()) {
+                    return loaded.get();
+                }
+            } catch (DatabaseException e) {
+                logger.warn("Failed to load player state from database: {}", id, e);
+            }
+            dirtyStates.put(id, new Object());
+            return new PlayerState(id, playerName);
+        });
     }
 
     /**
@@ -107,7 +94,8 @@ public class PlayerStateManager {
     }
 
     /**
-     * Loads a player state from the database.
+     * Loads from the database after committing any pending offline write.
+     * Returns empty if that write cannot be committed.
      *
      * @param playerId the player UUID
      * @return the player state, or empty if not found
@@ -117,14 +105,25 @@ public class PlayerStateManager {
             return Optional.empty();
         }
 
-        try {
-            Optional<PlayerState> state = databaseProvider.loadPlayerState(playerId);
-            state.ifPresent(s -> cache.put(playerId, s));
-            return state;
-        } catch (DatabaseException e) {
-            logger.error("Failed to load player state: {}", playerId, e);
-            return Optional.empty();
-        }
+        AtomicReference<Optional<PlayerState>> loaded = new AtomicReference<>(Optional.empty());
+        cache.compute(playerId, (id, current) -> {
+            PlayerState pending = pendingStates.get(id);
+            if (pending != null) {
+                if (!persistState(pending) || dirtyStates.containsKey(id)) {
+                    return current;
+                }
+                pendingStates.remove(id);
+            }
+            try {
+                Optional<PlayerState> state = databaseProvider.loadPlayerState(id);
+                loaded.set(state);
+                return state.orElse(current);
+            } catch (DatabaseException e) {
+                logger.error("Failed to load player state: {}", id, e);
+                return current;
+            }
+        });
+        return loaded.get();
     }
 
     /**
@@ -141,22 +140,35 @@ public class PlayerStateManager {
         UUID playerId = state.getPlayerId();
         AtomicBoolean saved = new AtomicBoolean();
         cache.compute(playerId, (id, current) -> {
-            Object dirtyVersion = dirtyStates.get(id);
-            try {
-                state.updateLastSeen();
-                databaseProvider.savePlayerState(new PlayerState(state));
-                if (dirtyVersion != null) {
-                    dirtyStates.remove(id, dirtyVersion);
-                }
+            if (persistState(state)) {
+                pendingStates.remove(id);
                 saved.set(true);
-                logger.debug("Saved player state: {}", id);
                 return state;
-            } catch (DatabaseException e) {
-                logger.error("Failed to save player state: {}", id, e);
-                return current;
             }
+            if (current == null) {
+                pendingStates.put(id, state);
+            }
+            return current;
         });
         return saved.get();
+    }
+
+    private boolean persistState(PlayerState state) {
+        UUID playerId = state.getPlayerId();
+        Object dirtyVersion = dirtyStates.get(playerId);
+        try {
+            state.updateLastSeen();
+            databaseProvider.savePlayerState(new PlayerState(state));
+            if (dirtyVersion != null) {
+                dirtyStates.remove(playerId, dirtyVersion);
+            }
+            logger.debug("Saved player state: {}", playerId);
+            return true;
+        } catch (DatabaseException e) {
+            dirtyStates.putIfAbsent(playerId, new Object());
+            logger.error("Failed to save player state: {}", playerId, e);
+            return false;
+        }
     }
 
     /**
@@ -165,21 +177,43 @@ public class PlayerStateManager {
      * @param playerId the player UUID
      */
     public void markDirty(UUID playerId) {
-        if (playerId != null && cache.containsKey(playerId)) {
-            dirtyStates.put(playerId, new Object());
+        if (playerId == null) {
+            return;
+        }
+        PlayerState state = cache.get(playerId);
+        if (state != null) {
+            dirtyStates.compute(playerId, (id, previous) -> {
+                if (cache.get(id) == state || pendingStates.get(id) == state) {
+                    return new Object();
+                }
+                return previous;
+            });
         }
     }
 
     /**
-     * Saves all dirty states to the database.
+     * Saves dirty states, including offline retries, without recaching offline players.
      *
      * @return number of states saved
      */
     public int saveAllDirty() {
         int count = 0;
         for (UUID playerId : new HashSet<>(dirtyStates.keySet())) {
-            PlayerState state = cache.get(playerId);
-            if (state != null && saveState(state)) {
+            AtomicBoolean saved = new AtomicBoolean();
+            cache.compute(playerId, (id, current) -> {
+                if (!dirtyStates.containsKey(id)) {
+                    return current;
+                }
+                PlayerState state = current != null ? current : pendingStates.get(id);
+                if (state != null && persistState(state)) {
+                    if (!dirtyStates.containsKey(id)) {
+                        pendingStates.remove(id);
+                    }
+                    saved.set(true);
+                }
+                return current;
+            });
+            if (saved.get()) {
                 count++;
             }
         }
@@ -188,7 +222,7 @@ public class PlayerStateManager {
 
     /**
      * Removes a player state from cache (e.g., when player disconnects).
-     * Optionally saves to database before removing.
+     * Failed writes remain pending without appearing in the online cache.
      *
      * @param playerId the player UUID
      * @param saveFirst whether to save before removing
@@ -198,15 +232,23 @@ public class PlayerStateManager {
             return;
         }
 
-        if (saveFirst) {
-            PlayerState state = cache.get(playerId);
-            if (state != null) {
-                saveState(state);
+        cache.compute(playerId, (id, current) -> {
+            PlayerState state = current != null ? current : pendingStates.get(id);
+            if (saveFirst && state != null) {
+                pendingStates.put(id, state);
+                persistState(state);
+            } else if (!saveFirst) {
+                pendingStates.remove(id);
+                dirtyStates.remove(id);
             }
-        }
-
-        cache.remove(playerId);
-        dirtyStates.remove(playerId);
+            return null;
+        });
+        dirtyStates.compute(playerId, (id, version) -> {
+            if (version == null && !cache.containsKey(id)) {
+                pendingStates.remove(id);
+            }
+            return version;
+        });
         logger.debug("Removed player state from cache: {}", playerId);
     }
 
@@ -221,16 +263,21 @@ public class PlayerStateManager {
             return false;
         }
 
-        try {
-            databaseProvider.deletePlayerState(playerId);
-            cache.remove(playerId);
-            dirtyStates.remove(playerId);
-            logger.debug("Deleted player state: {}", playerId);
-            return true;
-        } catch (DatabaseException e) {
-            logger.error("Failed to delete player state: {}", playerId, e);
-            return false;
-        }
+        AtomicBoolean deleted = new AtomicBoolean();
+        cache.compute(playerId, (id, current) -> {
+            try {
+                databaseProvider.deletePlayerState(id);
+                pendingStates.remove(id);
+                dirtyStates.remove(id);
+                deleted.set(true);
+                logger.debug("Deleted player state: {}", id);
+                return null;
+            } catch (DatabaseException e) {
+                logger.error("Failed to delete player state: {}", id, e);
+                return current;
+            }
+        });
+        return deleted.get();
     }
 
     // ==================== Channel Membership Operations ====================
@@ -384,7 +431,7 @@ public class PlayerStateManager {
     }
 
     /**
-     * Gets the number of dirty states.
+     * Gets the number of dirty states, including pending offline writes.
      *
      * @return dirty count
      */
@@ -393,16 +440,26 @@ public class PlayerStateManager {
     }
 
     /**
-     * Clears the cache (for testing or shutdown).
+     * Clears the online cache, retaining failed writes when saving first.
      *
      * @param saveFirst whether to save all dirty states first
      */
     public void clearCache(boolean saveFirst) {
         if (saveFirst) {
             saveAllDirty();
+            for (UUID playerId : new HashSet<>(cache.keySet())) {
+                cache.computeIfPresent(playerId, (id, state) -> {
+                    if (dirtyStates.containsKey(id)) {
+                        pendingStates.put(id, state);
+                    }
+                    return null;
+                });
+            }
+        } else {
+            cache.clear();
+            pendingStates.clear();
+            dirtyStates.clear();
         }
-        cache.clear();
-        dirtyStates.clear();
     }
 
     /**

@@ -9,6 +9,7 @@ import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
 import com.nova.link.channel.InvitationManager;
 import com.nova.link.channel.PrivateChannelManager;
+import com.nova.link.database.DatabaseException;
 import com.nova.link.database.MemoryProvider;
 import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
@@ -42,7 +43,7 @@ class ChannelActionHandlerLogoutTest {
 
     private static final String CLIENT_ID = "velocity-proxy";
 
-    private MemoryProvider databaseProvider;
+    private FailingPlayerSaveProvider databaseProvider;
     private ChannelManager channelManager;
     private PlayerStateManager playerStateManager;
     private ChannelActionHandler handler;
@@ -52,7 +53,7 @@ class ChannelActionHandlerLogoutTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        databaseProvider = new MemoryProvider();
+        databaseProvider = new FailingPlayerSaveProvider();
         databaseProvider.initialize();
         channelManager = new ChannelManager();
         playerStateManager = new PlayerStateManager(databaseProvider);
@@ -105,6 +106,38 @@ class ChannelActionHandlerLogoutTest {
         assertThat(playerStateManager.getAllPlayerStates())
                 .as("network-wide online roster")
                 .noneMatch(state -> state.getPlayerId().equals(playerId));
+    }
+
+    private static class FailingPlayerSaveProvider extends MemoryProvider {
+        boolean fail;
+
+        @Override
+        public void savePlayerState(PlayerState state) throws DatabaseException {
+            if (fail) {
+                throw new DatabaseException("injected logout save failure");
+            }
+            super.savePlayerState(state);
+        }
+    }
+
+    @Test
+    void failedLogoutWriteRetriesWithoutPuttingThePlayerBackOnline() throws Exception {
+        assertThat(joinThenLeave(false, "global").isSuccess()).isTrue();
+        var state = playerStateManager.getPlayerState(playerId);
+        assertThat(playerStateManager.saveState(state)).isTrue();
+        state.setDmEnabled(false);
+        databaseProvider.fail = true;
+
+        assertThat(leave(true, "global").isSuccess()).isTrue();
+        assertPlayerEvicted();
+        assertThat(playerStateManager.getDirtyCount()).isEqualTo(1);
+        assertThat(databaseProvider.loadPlayerState(playerId).orElseThrow().isDmEnabled()).isTrue();
+        databaseProvider.fail = false;
+
+        assertThat(playerStateManager.saveAllDirty()).isEqualTo(1);
+        assertPlayerEvicted();
+        assertThat(playerStateManager.getDirtyCount()).isZero();
+        assertThat(databaseProvider.loadPlayerState(playerId).orElseThrow().isDmEnabled()).isFalse();
     }
 
     @Test
