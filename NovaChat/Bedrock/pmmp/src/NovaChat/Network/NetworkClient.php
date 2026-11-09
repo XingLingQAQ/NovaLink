@@ -699,6 +699,8 @@ class NetworkClient {
             $this->handleChannelUpdate($packet);
         } elseif ($packet instanceof \NovaChat\Protocol\PrivateMessagePacket) {
             $this->handlePrivateMessage($packet);
+        } elseif ($packet instanceof \NovaChat\Protocol\SpyMessagePacket) {
+            $this->plugin->getChatHandler()?->handleSpyMessage($packet);
         } elseif ($packet instanceof KeepAlivePacket) {
             // Server responded to keep-alive, connection is healthy
             $this->plugin->debug("Keep-alive response received");

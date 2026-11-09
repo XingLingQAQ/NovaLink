@@ -32,6 +32,8 @@ public final class NovaProtocol {
      * HANDSHAKE_AUTHENTICATE (0x17). The legacy 0x01 packet is still registered
      * so existing integration paths compile, but the live client/server flows
      * now use the new dance. Old v2 clients are rejected with NC-420.
+     * v3 (additive): SpyMessagePacket (0x18) directs monitoring to one player.
+     * Older clients discard the unknown packet instead of rendering channel chat.
      */
     public static final int PROTOCOL_VERSION = 3;
 
@@ -42,10 +44,10 @@ public final class NovaProtocol {
     /**
      * Creates a new PacketRegistry with all core packet types registered.
      *
-     * <p>Core set (13 ids): HANDSHAKE, HANDSHAKE_RESPONSE, CHAT_MESSAGE,
+     * <p>Core set (14 ids): HANDSHAKE, HANDSHAKE_RESPONSE, CHAT_MESSAGE,
      * CHANNEL_ACTION, CHANNEL_ACTION_RESPONSE, CONFIG_SYNC, KEEP_ALIVE, TITLE,
      * ADMIN_ACTION, ADMIN_ACTION_RESPONSE, ITEM_DISPLAY, MENTION,
-     * PRIVATE_MESSAGE.
+     * PRIVATE_MESSAGE, SPY_MESSAGE.
      *
      * <p>AUTH-002 challenge-response handshake (3 ids): HANDSHAKE_INIT (0x15),
      * HANDSHAKE_CHALLENGE (0x16), HANDSHAKE_AUTHENTICATE (0x17).
@@ -77,6 +79,7 @@ public final class NovaProtocol {
 
         // Private message packet (cross-server /msg + /reply)
         registry.register(PacketIds.PRIVATE_MESSAGE, PrivateMessagePacket.class, PrivateMessagePacket::new);
+        registry.register(PacketIds.SPY_MESSAGE, SpyMessagePacket.class, SpyMessagePacket::new);
 
         // AUTH-002 challenge-response handshake (replaces the replayable 0x01 flow).
         // Wire format MUST stay byte-for-byte identical with the PHP/Python/C++ forks.

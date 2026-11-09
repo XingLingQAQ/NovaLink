@@ -7,6 +7,7 @@ import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
 import com.nova.chat.common.protocol.packets.PrivateMessagePacket;
+import com.nova.chat.common.protocol.packets.SpyMessagePacket;
 import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.proxy.platform.ProxyPlatform;
 import com.nova.chat.proxy.platform.ProxyPlayer;
@@ -68,7 +69,8 @@ public final class RelayBackendLinks implements BackendRouter {
             MentionPacket.class,
             TitlePacket.class,
             ItemDisplayPacket.class,
-            PrivateMessagePacket.class);
+            PrivateMessagePacket.class,
+            SpyMessagePacket.class);
 
     /** Creates the platform network facade for one identity. */
     public interface ClientFactory {

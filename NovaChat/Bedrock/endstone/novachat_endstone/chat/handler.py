@@ -27,6 +27,7 @@ from novachat_endstone.protocol.packet import (
     MentionPacket,
     ItemDisplayPacket,
     PrivateMessagePacket,
+    SpyMessagePacket,
 )
 
 if TYPE_CHECKING:
@@ -241,6 +242,7 @@ class ChatHandler:
             PacketIds.PRIVATE_MESSAGE,
             self._handle_private_message
         )
+        self._network_client.register_handler(PacketIds.SPY_MESSAGE, self._handle_spy_message)
     
     def on_player_chat(self, event: Any) -> None:
         """
@@ -726,6 +728,16 @@ class ChatHandler:
                 self._post_to_main_thread(_deliver_item)
         except Exception as e:
             self._logger.error(f"Error handling item display: {e}")
+
+    def _handle_spy_message(self, packet: SpyMessagePacket) -> None:
+        def deliver():
+            player = self._find_player_by_uuid(str(packet.target_id))
+            if player:
+                message = packet.message
+                player.send_message(
+                    f"[SPY] [{message.client_id}/{message.channel_id}] {message.sender_name}: {message.content}"
+                )
+        self._post_to_main_thread(deliver)
 
     def _handle_private_message(self, packet: PrivateMessagePacket) -> None:
         """

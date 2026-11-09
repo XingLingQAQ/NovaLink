@@ -625,6 +625,17 @@ class ChatHandler implements Listener {
         }
     }
 
+    public function handleSpyMessage(\NovaChat\Protocol\SpyMessagePacket $packet): void {
+        $message = $packet->message;
+        foreach ($this->plugin->getServer()->getOnlinePlayers() as $player) {
+            if ($player->getUniqueId()->toString() === $packet->targetId) {
+                MessageRenderer::sendMessage($player,
+                    "[SPY] [{$message->clientId}/{$message->channelId}] {$message->senderName}: {$message->content}");
+                return;
+            }
+        }
+    }
+
     /**
      * Handles an incoming private message packet from the backend.
      *

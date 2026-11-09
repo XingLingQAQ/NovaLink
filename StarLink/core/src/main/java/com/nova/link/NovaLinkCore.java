@@ -496,7 +496,7 @@ public final class NovaLinkCore implements AutoCloseable {
             applyFilterConfig(sensitiveWordFilter, newConfig.getFilter());
         });
 
-        SpyManager spyManager = new SpyManager(permissionManager, channelManager, networkHandler);
+        SpyManager spyManager = new SpyManager(permissionManager, channelManager, networkHandler, playerStateManager);
         messageRouter.setSpyManager(spyManager);
         channelManager.setDeletionCleanup(channel -> {
             ChannelStateCleanup.clearMemberships(channel, playerStateManager);

@@ -89,6 +89,7 @@ class PacketIds(IntEnum):
     HANDSHAKE_INIT = 0x15  # Client -> Server
     HANDSHAKE_CHALLENGE = 0x16  # Server -> Client
     HANDSHAKE_AUTHENTICATE = 0x17  # Client -> Server
+    SPY_MESSAGE = 0x18
 
 
 class Packet(ABC):
@@ -808,6 +809,24 @@ class UnknownPacket(Packet):
         return cls(unknown_id=-1)
 
 
+@dataclass
+class SpyMessagePacket(Packet):
+    target_id: uuid.UUID
+    message: ChatMessagePacket
+
+    @property
+    def packet_id(self) -> int:
+        return PacketIds.SPY_MESSAGE
+
+    def encode(self, buffer: PacketBuffer) -> None:
+        buffer.write_uuid(self.target_id)
+        self.message.encode(buffer)
+
+    @classmethod
+    def decode(cls, buffer: PacketBuffer) -> "SpyMessagePacket":
+        return cls(target_id=buffer.read_uuid(), message=ChatMessagePacket.decode(buffer))
+
+
 # Packet registry for decoding
 PACKET_REGISTRY: Dict[int, type] = {
     PacketIds.HANDSHAKE: HandshakePacket,
@@ -827,6 +846,7 @@ PACKET_REGISTRY: Dict[int, type] = {
     PacketIds.ITEM_DISPLAY: ItemDisplayPacket,
     PacketIds.MENTION: MentionPacket,
     PacketIds.PRIVATE_MESSAGE: PrivateMessagePacket,
+    PacketIds.SPY_MESSAGE: SpyMessagePacket,
 }
 
 

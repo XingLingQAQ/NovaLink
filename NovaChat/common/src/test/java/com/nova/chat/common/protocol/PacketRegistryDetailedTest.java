@@ -63,7 +63,8 @@ class PacketRegistryDetailedTest {
             // AUTH-002 challenge-response handshake (3-packet dance).
             PacketIds.HANDSHAKE_INIT,         // 0x15
             PacketIds.HANDSHAKE_CHALLENGE,    // 0x16
-            PacketIds.HANDSHAKE_AUTHENTICATE  // 0x17
+            PacketIds.HANDSHAKE_AUTHENTICATE, // 0x17
+            PacketIds.SPY_MESSAGE            // 0x18
     };
 
     /**
@@ -85,6 +86,7 @@ class PacketRegistryDetailedTest {
         CORE_PACKET_CLASSES.put(PacketIds.HANDSHAKE, HandshakePacket.class);
         CORE_PACKET_CLASSES.put(PacketIds.HANDSHAKE_RESPONSE, HandshakeResponsePacket.class);
         CORE_PACKET_CLASSES.put(PacketIds.CHAT_MESSAGE, ChatMessagePacket.class);
+        CORE_PACKET_CLASSES.put(PacketIds.SPY_MESSAGE, SpyMessagePacket.class);
         CORE_PACKET_CLASSES.put(PacketIds.CHANNEL_ACTION, ChannelActionPacket.class);
         CORE_PACKET_CLASSES.put(PacketIds.CHANNEL_ACTION_RESPONSE, ChannelActionResponsePacket.class);
         CORE_PACKET_CLASSES.put(PacketIds.CONFIG_SYNC, ConfigSyncPacket.class);

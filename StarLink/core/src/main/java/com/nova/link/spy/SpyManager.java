@@ -2,9 +2,11 @@ package com.nova.link.spy;
 import com.nova.chat.common.NovaConstants;
 
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.SpyMessagePacket;
 import com.nova.link.auth.PermissionManager;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelManager;
+import com.nova.link.database.PlayerStateManager;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.ServerNetworkHandler;
 import org.slf4j.Logger;
@@ -37,12 +39,19 @@ public class SpyManager {
     private final PermissionManager permissionManager;
     private final ChannelManager channelManager;
     private final ServerNetworkHandler networkHandler;
+    private final PlayerStateManager playerStateManager;
 
     public SpyManager(PermissionManager permissionManager, ChannelManager channelManager, 
                       ServerNetworkHandler networkHandler) {
+        this(permissionManager, channelManager, networkHandler, null);
+    }
+
+    public SpyManager(PermissionManager permissionManager, ChannelManager channelManager,
+                      ServerNetworkHandler networkHandler, PlayerStateManager playerStateManager) {
         this.permissionManager = Objects.requireNonNull(permissionManager);
         this.channelManager = Objects.requireNonNull(channelManager);
         this.networkHandler = Objects.requireNonNull(networkHandler);
+        this.playerStateManager = playerStateManager;
         this.spySessions = new ConcurrentHashMap<>();
         this.channelSpies = new ConcurrentHashMap<>();
     }
@@ -269,7 +278,7 @@ public class SpyManager {
             // Find the connection for this admin
             ClientConnection adminConnection = findAdminConnection(adminId);
             if (adminConnection != null && adminConnection.isAuthenticated() && adminConnection.isActive()) {
-                adminConnection.sendPacket(spyMessage);
+                adminConnection.sendPacket(new SpyMessagePacket(adminId, spyMessage));
                 logger.debug("Forwarded message from channel {} to spy admin {}", channelId, adminId);
             }
         }
@@ -289,6 +298,7 @@ public class SpyManager {
                 original.getChannelId(),
                 original.getContent()
         );
+        spyMessage.setRequestId(original.getRequestId());
         spyMessage.setPlaceholders(new HashMap<>(original.getPlaceholders()));
         // Add a placeholder to indicate this is a spy message
         spyMessage.addPlaceholder("_spy", "true");
@@ -304,6 +314,10 @@ public class SpyManager {
      * @return the connection, or null if not found
      */
     private ClientConnection findAdminConnection(UUID adminId) {
+        if (playerStateManager != null) {
+            var state = playerStateManager.getPlayerState(adminId);
+            return state != null ? networkHandler.findByClientId(state.getClientId()) : null;
+        }
         for (ClientConnection connection : networkHandler.getConnections()) {
             if (adminId.equals(connection.getSuperAdminUuid())) {
                 return connection;

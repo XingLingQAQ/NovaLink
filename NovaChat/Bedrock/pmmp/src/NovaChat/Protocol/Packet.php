@@ -38,6 +38,7 @@ abstract class Packet {
     public const HANDSHAKE_CHALLENGE = 0x16;
     /** Handshake authenticate (Client → Server). */
     public const HANDSHAKE_AUTHENTICATE = 0x17;
+    public const SPY_MESSAGE = 0x18;
 
     // Alias for backward compatibility
     public const TITLE_MESSAGE = self::TITLE;
@@ -144,6 +145,7 @@ abstract class Packet {
             self::ITEM_DISPLAY => new ItemDisplayPacket(),
             self::MENTION => new MentionPacket(),
             self::PRIVATE_MESSAGE => new PrivateMessagePacket(),
+            self::SPY_MESSAGE => new SpyMessagePacket(),
             self::HANDSHAKE_INIT => new HandshakeInitPacket(),
             self::HANDSHAKE_CHALLENGE => new HandshakeChallengePacket(),
             self::HANDSHAKE_AUTHENTICATE => new HandshakeAuthenticatePacket(),

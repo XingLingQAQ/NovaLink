@@ -132,6 +132,8 @@ public class AsyncChatInterceptor implements Listener {
                 plugin.getNetworkClient().getChannelResponseTracker(),
                 new FoliaChannelResponseAdapter());
         plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
+        plugin.getNetworkClient().registerHandler(
+                com.nova.chat.common.protocol.packets.SpyMessagePacket.class, this::handleSpyMessage);
         plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
         plugin.getNetworkClient().registerHandler(
                 com.nova.chat.common.protocol.packets.AdminActionResponsePacket.class,
@@ -143,6 +145,18 @@ public class AsyncChatInterceptor implements Listener {
         plugin.getNetworkClient().registerHandler(
                 com.nova.chat.common.protocol.packets.PrivateMessagePacket.class,
                 this::handlePrivateMessage);
+    }
+
+    private void handleSpyMessage(com.nova.chat.common.protocol.packets.SpyMessagePacket packet) {
+        Player player = plugin.getServer().getPlayer(packet.getTargetId());
+        if (player != null) {
+            String line = messageFormatter.translateColorCodes(com.nova.chat.client.format.SpyMessageFormatter.format(packet));
+            scheduler.runForPlayer(player, () -> {
+                if (player.isOnline()) {
+                    player.sendMessage(line);
+                }
+            });
+        }
     }
 
     /**

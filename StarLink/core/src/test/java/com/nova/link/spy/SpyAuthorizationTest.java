@@ -2,6 +2,7 @@ package com.nova.link.spy;
 
 import com.nova.chat.common.protocol.packets.AdminActionPacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.SpyMessagePacket;
 import com.nova.link.auth.PermissionManager;
 import com.nova.link.auth.SuperAdminCredentials;
 import com.nova.link.channel.ChannelConfig;
@@ -99,10 +100,11 @@ class SpyAuthorizationTest {
     @Test
     void authorizedMonitoringStillReceivesAndCanSend() {
         spies.forwardToSpies(message());
-        var captured = org.mockito.ArgumentCaptor.forClass(ChatMessagePacket.class);
+        var captured = org.mockito.ArgumentCaptor.forClass(SpyMessagePacket.class);
         verify(adminClient).sendPacket(captured.capture());
-        assertThat(captured.getValue().getContent()).isEqualTo("observed");
-        assertThat(captured.getValue().getPlaceholders()).containsEntry("_spy", "true");
+        assertThat(captured.getValue().getTargetId()).isEqualTo(admin);
+        assertThat(captured.getValue().getMessage().getContent()).isEqualTo("observed");
+        assertThat(captured.getValue().getMessage().getPlaceholders()).containsEntry("_spy", "true");
         assertThat(spies.sendToMonitoredChannel(admin, "watched", "reply").isSuccess()).isTrue();
         verify(targetClient).sendPacket(any(ChatMessagePacket.class));
         assertThat(spies.getTotalSpySessionCount()).isEqualTo(2);

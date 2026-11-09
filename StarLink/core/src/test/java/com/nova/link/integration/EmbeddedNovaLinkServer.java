@@ -146,7 +146,7 @@ public class EmbeddedNovaLinkServer {
         messageRouter.setSensitiveWordFilter(sensitiveWordFilter);
         messageRouter.setPermissionChecker(clientPermissionRegistry.asChecker());
 
-        spyManager = new SpyManager(permissionManager, channelManager, networkHandler);
+        spyManager = new SpyManager(permissionManager, channelManager, networkHandler, playerStateManager);
         messageRouter.setSpyManager(spyManager);
 
         adminActionHandler = new AdminActionHandler(permissionManager, playerStateManager);

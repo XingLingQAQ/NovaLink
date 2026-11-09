@@ -75,6 +75,9 @@ public final class PacketIds {
     /** Handshake authenticate (Client → Server). Registered: {@code HandshakeAuthenticatePacket}. */
     public static final int HANDSHAKE_AUTHENTICATE = 0x17;
 
+    /** Monitoring message directed to one administrator (Server → Client). */
+    public static final int SPY_MESSAGE = 0x18;
+
     // ==================== Reserved / orphan IDs (no Java packet class yet) ====================
     // These constants are kept for protocol-ID stability with PHP/Python clients and
     // future Java support. They are intentionally NOT registered in NovaProtocol until

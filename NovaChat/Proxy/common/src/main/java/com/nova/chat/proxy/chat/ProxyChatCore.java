@@ -25,6 +25,8 @@ import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
 import com.nova.chat.common.protocol.packets.PrivateMessagePacket;
+import com.nova.chat.common.protocol.packets.SpyMessagePacket;
+import com.nova.chat.client.format.SpyMessageFormatter;
 import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.proxy.config.ProxyConfigView;
 import com.nova.chat.proxy.platform.ProxyPlatform;
@@ -179,6 +181,7 @@ public class ProxyChatCore {
         client.registerHandler(TitlePacket.class, this::handleTitle);
         client.registerHandler(ItemDisplayPacket.class, this::handleItemDisplay);
         client.registerHandler(PrivateMessagePacket.class, this::handlePrivateMessage);
+        client.registerHandler(SpyMessagePacket.class, packet -> handleSpyMessage(packet, null, null));
     }
 
     /**
@@ -254,6 +257,8 @@ public class ProxyChatCore {
             handleItemDisplay(itemDisplay, scopeServers);
         } else if (packet instanceof PrivateMessagePacket privateMessage) {
             handlePrivateMessage(privateMessage, scopeServers);
+        } else if (packet instanceof SpyMessagePacket spyMessage) {
+            handleSpyMessage(spyMessage, scopeServers, null);
         } else {
             platform.logDebug("Relay has no handler for "
                     + packet.getClass().getSimpleName());
@@ -518,6 +523,14 @@ public class ProxyChatCore {
         handlePrivateMessage(packet, scopeServers, null);
     }
 
+    private void handleSpyMessage(SpyMessagePacket packet, Set<String> scopeServers, UUID onlyRecipient) {
+        ProxyPlayer target = platform.getPlayer(packet.getTargetId());
+        if (target != null && inScope(target, scopeServers, onlyRecipient)) {
+            renderCoordination.deliver(packet, target, "", () ->
+                    platform.sendMessage(target, SpyMessageFormatter.format(packet)));
+        }
+    }
+
     private void handlePrivateMessage(PrivateMessagePacket packet, Set<String> scopeServers, UUID onlyRecipient) {
         if (privateMessageService == null) {
             return;
@@ -580,6 +593,7 @@ public class ProxyChatCore {
         else if (packet instanceof ItemDisplayPacket item) handleItemDisplay(item, null, recipient);
         else if (packet instanceof MentionPacket mention) handleMention(mention, null, recipient);
         else if (packet instanceof PrivateMessagePacket message) handlePrivateMessage(message, null, recipient);
+        else if (packet instanceof SpyMessagePacket message) handleSpyMessage(message, null, recipient);
     }
 
     private static boolean inScope(ProxyPlayer player, Set<String> servers, UUID recipient) {

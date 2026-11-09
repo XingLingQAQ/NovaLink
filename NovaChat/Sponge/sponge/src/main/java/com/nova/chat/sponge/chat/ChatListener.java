@@ -116,6 +116,8 @@ public class ChatListener {
                 plugin.getNetworkClient().getChannelResponseTracker(),
                 new SpongeChannelResponseAdapter());
         plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
+        plugin.getNetworkClient().registerHandler(
+                com.nova.chat.common.protocol.packets.SpyMessagePacket.class, this::handleSpyMessage);
         plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
         plugin.getNetworkClient().registerHandler(MentionPacket.class, this::handleMention);
         plugin.getNetworkClient().registerHandler(TitlePacket.class, this::handleTitle);
@@ -123,6 +125,13 @@ public class ChatListener {
         plugin.getNetworkClient().registerHandler(
                 com.nova.chat.common.protocol.packets.PrivateMessagePacket.class,
                 this::handlePrivateMessage);
+    }
+
+    private void handleSpyMessage(com.nova.chat.common.protocol.packets.SpyMessagePacket packet) {
+        Sponge.server().scheduler().executor(plugin.getContainer()).execute(() ->
+                Sponge.server().player(packet.getTargetId()).ifPresent(player ->
+                        player.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
+                                com.nova.chat.client.format.SpyMessageFormatter.format(packet)))));
     }
 
     /**

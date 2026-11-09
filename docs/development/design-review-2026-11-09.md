@@ -528,6 +528,20 @@ KICK、MUTE、UNMUTE、BAN、UNBAN、DELETE 各自读取请求中的操作者 UU
 
 日志为 `.e2e-artifacts/review30-spy-forwarding-before.log` 和 `review30-spy-forwarding-final.log`。
 
-## 后续检查
+## 47. R63：生产监控无法定位管理员，接入端缺少定向显示
 
-SPY 的生产投递仍有独立缺口：AUTH 没有写入 `ClientConnection.superAdminUuid`，`findAdminConnection()` 却只按该字段查找。接入端也没有按 `_spy` 标记向指定管理员显示消息。后续需同时修复当前在线客户端定位和接入端定向显示，避免只补连接绑定后把监控消息交给普通频道显示流程。
+位置：[SpyManager](../../StarLink/core/src/main/java/com/nova/link/spy/SpyManager.java)、[核心装配](../../StarLink/core/src/main/java/com/nova/link/NovaLinkCore.java) 和各接入端的消息处理入口。
+
+原转发只扫描 `ClientConnection.superAdminUuid`，生产 AUTH 却没有写入该字段，正常管理员无法收到监控消息。这个连接级单值也无法表示同一客户端的多名管理员。即使补上字段，原普通聊天包没有目标 UUID，接入端只按当前频道显示，无法保证仅向监控管理员展示。
+
+修复由核心及嵌入式服务器向 `SpyManager` 注入在线玩家管理器。每次转发按管理员当前归属查询客户端，离线跳过；迁移后继续使用同一管理员会话和监控记录，从新客户端接收。原三参数构造继续支持独立装配的连接字段定位，不给这些调用增加玩家缓存前提。
+
+新增独立服务端包 `SpyMessagePacket`（`0x18`），载荷为目标管理员 UUID 与原聊天载荷，使用原字符串和 Map 限制。后端不依赖 `client-core`；Java 适配在 `client-core` 共用显示格式，各自保留主线程或区域线程调度。PHP、Python、C++ 同步注册和解码，只向指定在线玩家显示，不触发频道广播或私信回复记录。
+
+代理 relay 注册新包并保留后端范围，Bukkit 的直连与代理下发共用目标筛选。监控包沿用原消息请求 ID，代理与 Bukkit 的显示协调支持新类型；监控内容仅向目标玩家提供，不向其他玩家发显示协调副本。旧接入端忽略未知类型，使用监控需同步更新后端和接入端。
+
+验证：22 个不同定向检查通过，0 失败、0 跳过，未运行全量套件。覆盖真实核心装配、两名管理员、迁移和离线，以及实际 Bukkit/代理显示入口。共享字节样本在 Java、PHP、Python、C++ 间往返一致；PHP/Python 还验证目标筛选，Bukkit 验证频道及回复对象保持不变，并覆盖代理双副本与仅后端副本的显示去重。Folia、Nukkit、PNX、Sponge 和模组公共层均编译通过。
+
+C++ 协议测试与网络文件编译通过；本地 LeviLamina SDK 的 `MolangScriptArgData` 复制赋值错误阻止聊天文件编译，MSVC 还报告原事件名称静态断言失败。完整插件构建及真实游戏环境验证尚未通过，LeviLamina 发布前需核对 SDK 与工具链，再重跑插件构建。本轮没有修改外部 SDK。
+
+证据见 `.e2e-artifacts/review31-spy-delivery-java.log`、`review31-spy-coordination-final.log`、`review31-spy-core-final.log`、`review31-spy-adapters-compile.log`、`review31-spy-delivery-python.log`、`review31-spy-delivery-php.log` 和 `msvctest/review31-*.log`。补跑核心检查时，长期运行的 Gradle 守护进程曾因 javac 推断耗尽堆；已调整新增断言，并使用新进程复核。

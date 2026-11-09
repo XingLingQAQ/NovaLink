@@ -512,6 +512,9 @@ std::unique_ptr<Packet> NetworkClient::decodePacket(PacketBuffer& buffer) {
         case PacketIds::PRIVATE_MESSAGE:
             packet = std::make_unique<PrivateMessagePacket>();
             break;
+        case PacketIds::SPY_MESSAGE:
+            packet = std::make_unique<SpyMessagePacket>();
+            break;
         default:
             return nullptr;
     }

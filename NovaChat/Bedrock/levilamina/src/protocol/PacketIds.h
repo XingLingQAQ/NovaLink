@@ -72,6 +72,7 @@ struct PacketIds {
     static constexpr uint8_t HANDSHAKE_CHALLENGE = 0x16;
     /** Handshake authenticate (Client -> Server). */
     static constexpr uint8_t HANDSHAKE_AUTHENTICATE = 0x17;
+    static constexpr uint8_t SPY_MESSAGE = 0x18;
 };
 
 /**

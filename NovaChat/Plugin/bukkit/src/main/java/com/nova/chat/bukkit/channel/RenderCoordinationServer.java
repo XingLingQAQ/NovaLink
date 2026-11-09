@@ -80,6 +80,8 @@ public final class RenderCoordinationServer {
         byte[] packetBytes = null;
         for (Session session : java.util.List.copyOf(sessions.values())) {
             if (!session.ownsRendering || !current(session)) continue;
+            if (packet instanceof com.nova.chat.common.protocol.packets.SpyMessagePacket spy
+                    && !session.player.getUniqueId().equals(spy.getTargetId())) continue;
             UUID playerId = session.player.getUniqueId();
             deferred.add(playerId);
             Key key = new Key(packet.getPacketId(), packet.getRequestId());

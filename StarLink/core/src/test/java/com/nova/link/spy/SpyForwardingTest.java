@@ -1,6 +1,7 @@
 package com.nova.link.spy;
 
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.SpyMessagePacket;
 import com.nova.link.auth.PermissionManager;
 import com.nova.link.auth.SuperAdminCredentials;
 import com.nova.link.channel.ChannelConfig;
@@ -47,13 +48,13 @@ class SpyForwardingTest {
         spies.forwardToSpies(fromBeta);
         spies.forwardToSpies(unknown);
 
-        var alphaPackets = org.mockito.ArgumentCaptor.forClass(ChatMessagePacket.class);
+        var alphaPackets = org.mockito.ArgumentCaptor.forClass(SpyMessagePacket.class);
         verify(alpha).sendPacket(alphaPackets.capture());
-        assertThat(alphaPackets.getValue().getClientId()).isEqualTo("alpha");
-        var betaPackets = org.mockito.ArgumentCaptor.forClass(ChatMessagePacket.class);
+        assertThat(alphaPackets.getValue().getMessage().getClientId()).isEqualTo("alpha");
+        var betaPackets = org.mockito.ArgumentCaptor.forClass(SpyMessagePacket.class);
         verify(beta).sendPacket(betaPackets.capture());
-        assertThat(betaPackets.getValue().getClientId()).isEqualTo("beta");
-        verify(all, times(3)).sendPacket(any(ChatMessagePacket.class));
+        assertThat(betaPackets.getValue().getMessage().getClientId()).isEqualTo("beta");
+        verify(all, times(3)).sendPacket(any(SpyMessagePacket.class));
         assertThat(spies.getTotalSpySessionCount()).isEqualTo(3);
     }
 
@@ -64,7 +65,7 @@ class SpyForwardingTest {
         spies.forwardToSpies(message("alpha"));
         spies.forwardToSpies(message("beta"));
 
-        verify(all, times(2)).sendPacket(any(ChatMessagePacket.class));
+        verify(all, times(2)).sendPacket(any(SpyMessagePacket.class));
     }
 
     @Test
@@ -77,7 +78,7 @@ class SpyForwardingTest {
         verify(client, never()).sendPacket(any());
         when(client.isAuthenticated()).thenReturn(true);
         spies.forwardToSpies(message("alpha"));
-        verify(client).sendPacket(any(ChatMessagePacket.class));
+        verify(client).sendPacket(any(SpyMessagePacket.class));
     }
 
     private ClientConnection monitor(String source) {

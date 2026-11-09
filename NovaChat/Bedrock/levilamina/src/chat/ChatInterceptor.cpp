@@ -453,6 +453,16 @@ void ChatInterceptor::registerPacketHandlers() {
         }
     );
 
+    networkClient->registerHandler(PacketIds::SPY_MESSAGE,
+        [this](std::unique_ptr<Packet> packet) {
+            const auto& spy = static_cast<const SpyMessagePacket&>(*packet);
+            const auto& message = spy.getMessage();
+            displayMessageByUuid(spy.getTargetId().toString(), convertColorCodes(
+                "[SPY] [" + message.getClientId() + "/" + message.getChannelId() + "] "
+                + message.getSenderName() + ": " + message.getContent()));
+        }
+    );
+
     // Handle PrivateMessage packets — render the echo line to the sender and
     // the received line to the target. The backend delivers a completed
     // PrivateMessagePacket to BOTH the sender's client (echo) and the target's

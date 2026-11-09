@@ -16,6 +16,7 @@ import com.nova.chat.common.protocol.packets.ChannelActionResponsePacket;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
 import com.nova.chat.common.protocol.packets.PrivateMessagePacket;
+import com.nova.chat.common.protocol.packets.SpyMessagePacket;
 import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.channel.RenderCoordinationProtocol;
 import com.nova.chat.channel.ProxyChannelProtocol;
@@ -114,6 +115,27 @@ class NetworkClientChannelExclusionTest {
     private final List<Runnable> retryTasks = new ArrayList<>();
     private final List<Runnable> offerRetries = new ArrayList<>();
     private final List<byte[]> controls = new ArrayList<>();
+
+    @Test
+    void spyDeliveryTargetsOnlyTheAdminWithoutChangingChannelsOrReplyState() {
+        var packet = new SpyMessagePacket(DIRECT_ID,
+                new ChatMessagePacket(SENDER_ID, "Sender", "remote", "private", "observed"));
+
+        core.handlePacket(packet);
+        while (!mainTasks.isEmpty()) mainTasks.remove().run();
+
+        verify(direct).sendMessage("[SPY] [remote/private] Sender: observed");
+        verify(proxied, never()).sendMessage(anyString());
+        assertThat(chatInterceptor.getState(DIRECT_ID).getActiveChannel()).isEqualTo("global");
+        assertThat(plugin.getPrivateMessageService().getReplyTarget(DIRECT_ID)).isEmpty();
+
+        client.dispatchChannelPacket(packet, Set.of(DIRECT_ID));
+        while (!mainTasks.isEmpty()) mainTasks.remove().run();
+        verify(direct, times(1)).sendMessage(anyString());
+        core.handlePacket(packet);
+        while (!mainTasks.isEmpty()) mainTasks.remove().run();
+        verify(direct, times(1)).sendMessage(anyString());
+    }
 
     @BeforeEach
     void setUp() throws Exception {
@@ -407,6 +429,24 @@ class NetworkClientChannelExclusionTest {
         runMainThreadTask();
         verify(proxied, times(1)).sendMessage(anyString());
         verify(direct, times(1)).sendMessage(anyString());
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void coordinatedSpyCopyRendersOnceOnlyToItsTarget(boolean backendOnly) {
+        coordinatedPeers();
+        negotiateOnly();
+        var packet = new SpyMessagePacket(PROXIED_ID,
+                new ChatMessagePacket(SENDER_ID, "Sender", "remote", "private", "observed"));
+        core.handlePacket(packet);
+        runMainThreadTask();
+        if (!backendOnly) {
+            proxyCore.handleInbound(null, Set.of("bukkit"), packet);
+        }
+        drainControl();
+
+        verify(proxied, times(1)).sendMessage("[SPY] [remote/private] Sender: observed");
+        verify(direct, never()).sendMessage(anyString());
     }
 
     @Test

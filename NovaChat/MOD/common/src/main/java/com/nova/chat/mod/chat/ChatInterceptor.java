@@ -115,6 +115,7 @@ public class ChatInterceptor implements ChatHandler {
                 networkClient.getChannelResponseTracker(),
                 new ModChannelResponseAdapter());
         networkClient.registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
+        networkClient.registerHandler(com.nova.chat.common.protocol.packets.SpyMessagePacket.class, this::handleSpyMessage);
         networkClient.registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
         networkClient.registerHandler(MentionPacket.class, this::handleMention);
         networkClient.registerHandler(TitlePacket.class, this::handleTitle);
@@ -129,6 +130,13 @@ public class ChatInterceptor implements ChatHandler {
                 com.nova.chat.common.protocol.packets.AdminActionResponsePacket.class,
                 new AdminResponseRenderer(platform, networkClient::consumePendingAdminRequest,
                         line -> platform.logWarn("[NovaChat console] " + line)));
+    }
+
+    private void handleSpyMessage(com.nova.chat.common.protocol.packets.SpyMessagePacket packet) {
+        if (platform.isPlayerOnline(packet.getTargetId())) {
+            platform.sendMessage(packet.getTargetId(), messageFormatter.parseColors(
+                    com.nova.chat.client.format.SpyMessageFormatter.format(packet)));
+        }
     }
 
     /**

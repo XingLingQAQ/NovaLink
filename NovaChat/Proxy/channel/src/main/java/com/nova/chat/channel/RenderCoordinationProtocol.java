@@ -230,7 +230,7 @@ public final class RenderCoordinationProtocol {
     }
 
     private static boolean supportedPacket(int packetId) {
-        return packetId == 3 || packetId == 9 || packetId == 16 || packetId == 18 || packetId == 20;
+        return packetId == 3 || packetId == 9 || packetId == 16 || packetId == 18 || packetId == 20 || packetId == 24;
     }
 
     private static boolean isZeroOrNull(UUID id) {

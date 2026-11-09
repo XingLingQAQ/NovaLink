@@ -352,6 +352,28 @@ private:
     std::vector<std::pair<std::string, std::string>> mPlaceholders;
 };
 
+class SpyMessagePacket : public Packet {
+public:
+    [[nodiscard]] uint8_t getPacketId() const override { return PacketIds::SPY_MESSAGE; }
+
+    void write(PacketBuffer& buf) const override {
+        buf.writeUUID(mTargetId);
+        mMessage.write(buf);
+    }
+
+    void read(PacketBuffer& buf) override {
+        mTargetId = buf.readUUID();
+        mMessage.read(buf);
+    }
+
+    [[nodiscard]] const UUID& getTargetId() const { return mTargetId; }
+    [[nodiscard]] const ChatMessagePacket& getMessage() const { return mMessage; }
+
+private:
+    UUID mTargetId;
+    ChatMessagePacket mMessage;
+};
+
 /**
  * Keep-alive heartbeat packet.
  * Packet ID: 0x07, Direction: Bidirectional

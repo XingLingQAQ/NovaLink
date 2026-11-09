@@ -116,6 +116,8 @@ public class ChatInterceptor implements Listener {
                 plugin.getNetworkClient().getChannelResponseTracker(),
                 new NukkitChannelResponseAdapter());
         plugin.getNetworkClient().registerHandler(ChatMessagePacket.class, this::handleIncomingMessage);
+        plugin.getNetworkClient().registerHandler(
+                com.nova.chat.common.protocol.packets.SpyMessagePacket.class, this::handleSpyMessage);
         plugin.getNetworkClient().registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
         plugin.getNetworkClient().registerHandler(MentionPacket.class, this::handleMention);
         plugin.getNetworkClient().registerHandler(TitlePacket.class, this::handleTitle);
@@ -123,6 +125,16 @@ public class ChatInterceptor implements Listener {
         plugin.getNetworkClient().registerHandler(
                 com.nova.chat.common.protocol.packets.PrivateMessagePacket.class,
                 this::handlePrivateMessage);
+    }
+
+    private void handleSpyMessage(com.nova.chat.common.protocol.packets.SpyMessagePacket packet) {
+        plugin.getServer().getScheduler().scheduleTask(plugin, () -> {
+            Player player = findOnlinePlayer(packet.getTargetId());
+            if (player != null) {
+                player.sendMessage(messageFormatter.translateColorCodes(
+                        com.nova.chat.client.format.SpyMessageFormatter.format(packet)));
+            }
+        });
     }
 
     /**

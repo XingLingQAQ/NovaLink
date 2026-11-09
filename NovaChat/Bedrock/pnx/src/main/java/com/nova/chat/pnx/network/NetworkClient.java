@@ -116,6 +116,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
      */
     private void registerPnxHandlers() {
         registerHandler(ChatMessagePacket.class, this::handleChatMessage);
+        registerHandler(com.nova.chat.common.protocol.packets.SpyMessagePacket.class, this::handleSpyMessage);
         registerHandler(TitlePacket.class, this::handleTitleMessage);
         registerHandler(ChannelActionResponsePacket.class, this::handleChannelActionResponse);
         registerHandler(MentionPacket.class, this::handleMentionMessage);
@@ -264,6 +265,13 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         return !response.isSuccess()
                 && response.getAction() == AdminAction.STATUS
                 && "NC-403".equals(response.getErrorCode());
+    }
+
+    private void handleSpyMessage(com.nova.chat.common.protocol.packets.SpyMessagePacket packet) {
+        plugin.getServer().getScheduler().scheduleTask(plugin, () ->
+                plugin.getServer().getPlayer(packet.getTargetId()).ifPresent(player ->
+                        player.sendMessage(plugin.getMessageFormatter().colorize(
+                                com.nova.chat.client.format.SpyMessageFormatter.format(packet)))));
     }
 
     /**

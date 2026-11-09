@@ -29,6 +29,8 @@ import com.nova.chat.common.protocol.packets.ConfigSyncPacket;
 import com.nova.chat.common.protocol.packets.ItemDisplayPacket;
 import com.nova.chat.common.protocol.packets.MentionPacket;
 import com.nova.chat.common.protocol.packets.PrivateMessagePacket;
+import com.nova.chat.common.protocol.packets.SpyMessagePacket;
+import com.nova.chat.client.format.SpyMessageFormatter;
 import com.nova.chat.common.protocol.packets.TitlePacket;
 import com.nova.chat.client.privatemsg.PrivateMessageService;
 
@@ -145,6 +147,7 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         registerHandler(MentionPacket.class, this::handleMention);
         registerHandler(ItemDisplayPacket.class, this::handleItemDisplay);
         registerHandler(PrivateMessagePacket.class, this::handlePrivateMessage);
+        registerHandler(SpyMessagePacket.class, this::handleSpyMessage);
         onAuthenticated(() -> plugin.getServer().getScheduler().runTask(plugin, this::restoreOnlineMemberships));
     }
 
@@ -226,6 +229,8 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
             handleItemDisplay(itemDisplay, excluded);
         } else if (packet instanceof PrivateMessagePacket privateMessage) {
             handlePrivateMessage(privateMessage, excluded);
+        } else if (packet instanceof SpyMessagePacket spyMessage) {
+            handleSpyMessage(spyMessage, excluded, true);
         } else if (packet instanceof ChannelActionResponsePacket response) {
             handleChannelActionResponse(response);
         } else {
@@ -425,6 +430,23 @@ public class NetworkClient extends AbstractPlatformNetworkClient {
         // Sound.valueOf(String) removal API.
         player.playSound(player.getLocation(),
                 org.bukkit.Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+    }
+
+    private void handleSpyMessage(SpyMessagePacket packet) {
+        handleSpyMessage(packet, plugin.getChatInterceptor().coordinateBackend(packet), false);
+    }
+
+    private void handleSpyMessage(SpyMessagePacket packet, java.util.Set<UUID> excluded, boolean downstream) {
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            var interceptor = plugin.getChatInterceptor();
+            UUID targetId = packet.getTargetId();
+            var player = plugin.getServer().getPlayer(targetId);
+            if (player != null && !excluded.contains(targetId)
+                    && !interceptor.isProxyRenderedPlayer(targetId, downstream)
+                    && !interceptor.isDuplicateRecipient(packet, targetId)) {
+                player.sendMessage(interceptor.getMessageFormatter().translateColorCodes(SpyMessageFormatter.format(packet)));
+            }
+        });
     }
 
     /**

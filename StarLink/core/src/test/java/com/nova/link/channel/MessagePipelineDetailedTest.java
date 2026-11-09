@@ -2,6 +2,7 @@ package com.nova.link.channel;
 
 import com.nova.chat.common.protocol.ProtocolLimits;
 import com.nova.chat.common.protocol.packets.ChatMessagePacket;
+import com.nova.chat.common.protocol.packets.SpyMessagePacket;
 import com.nova.link.auth.ClientPermissionRegistry;
 import com.nova.link.auth.PermissionManager;
 import com.nova.link.auth.SuperAdminCredentials;
@@ -839,9 +840,10 @@ class MessagePipelineDetailedTest {
             verify(owner).sendPacket(packet);
             verify(ws).broadcastChatMessage("local", senderId.toString(), "Steve", "hello panel");
             assertThat(packet.getPlaceholders()).containsExactlyInAnyOrderEntriesOf(original);
-            var captured = org.mockito.ArgumentCaptor.forClass(ChatMessagePacket.class);
+            var captured = org.mockito.ArgumentCaptor.forClass(SpyMessagePacket.class);
             verify(watcher).sendPacket(captured.capture());
-            ChatMessagePacket spyCopy = captured.getValue();
+            assertThat(captured.getValue().getTargetId()).isEqualTo(superAdminId);
+            ChatMessagePacket spyCopy = captured.getValue().getMessage();
             assertThat(spyCopy).isNotSameAs(packet);
             assertThat(spyCopy.getPlaceholders()).containsAllEntriesOf(original)
                     .containsEntry("_spy", "true")

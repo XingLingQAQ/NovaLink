@@ -99,6 +99,16 @@ attempt > 10 → 停止自动重连，等待人为干预
 
 ## 7. 集成验收清单
 
+### 定向监控消息
+
+`SpyMessagePacket`（`0x18`）由后端发送给管理员当前所在客户端。帧内请求 ID 沿用原聊天请求 ID，载荷依次为目标管理员 UUID、聊天发送人 UUID、发送人名称、来源客户端、频道 ID、内容和占位符 Map。字符串与 Map 使用原 `ChatMessagePacket` 编码及长度限制。[7]
+
+接入端仅向目标 UUID 对应的在线玩家显示 `[SPY] [来源/频道] 发送人: 内容`。显示不要求管理员切到被监控频道，也不写入私信回复记录。代理与 Bukkit 的双入口按包类型和请求 ID 去重，后端监控副本保留原消息身份。[7] [8]
+
+这是协议 v3 的新增包类型。旧接入端忽略未知包，不会把监控载荷当作普通频道消息；启用监控时需同步更新后端与接入端。Java、PHP、Python 和 C++ 共用[字节样本](../../NovaChat/Bedrock/test-fixtures/spy-message.hex)。
+
+### 接入检查
+
 | 验收项 | 合格信号 | 失败时首先检查 |
 | --- | --- | --- |
 | TCP 连通 | 接入端能完成网络连接 | 地址、端口、防火墙、允许 IP。 |
@@ -117,3 +127,5 @@ attempt > 10 → 停止自动重连，等待人为干预
 [4]: ../../README.md "平台接入模块概览"
 [5]: ../../StarLink/core/src/main/java/com/nova/link/config/ConfigManager.java "ConfigSync 广播与脱敏序列化"
 [6]: ../../StarLink/core/src/main/java/com/nova/link/NovaLinkMain.java "客户端凭据注册与握手权限引导"
+[7]: ../../NovaChat/common/src/main/java/com/nova/chat/common/protocol/packets/SpyMessagePacket.java "监控消息目标与载荷"
+[8]: ../../NovaChat/Plugin/bukkit/src/main/java/com/nova/chat/bukkit/network/NetworkClient.java "Bukkit 定向显示与代理去重"

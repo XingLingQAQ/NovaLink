@@ -189,6 +189,10 @@ TCP `AdminActionPacket` 经 `AdminActionHandler.handleFromClient()` 校验连接
 
 转发按管理员的当前监控记录筛选消息。指定 `targetClientId` 时只接收来源 `clientId` 相同的消息，未知来源不匹配；未指定或传空字符串时保留全部来源。投递前同时检查连接认证和存活状态。[31]
 
+核心把在线玩家管理器注入 `SpyManager`。每次投递按管理员当前 `clientId` 查找有效连接，迁移后使用新客户端，离线时跳过。同一客户端可以接收多名管理员各自的 `SpyMessagePacket`，包内目标 UUID 决定显示玩家，不依赖连接上的单个管理员字段。原三参数构造保留独立装配时按连接字段定位的方式。[11] [26] [31]
+
+监控使用独立的 `0x18` 服务端消息包，载荷为目标 UUID 与聊天内容。接入端仅向目标玩家显示来源、频道、发送人和内容，不修改当前频道或私信回复对象。Java 接入端共用 `SpyMessageFormatter`，调度仍由平台负责；代理与 Bukkit 复用按包类型和原消息请求 ID 的显示去重。旧接入端忽略未知包，使用监控需同时更新后端和接入端。[32] [33]
+
 管理动作的归属检查是执行入口的一次授权判断，已授权请求继续按原业务边界提交。它不持有操作者的封禁锁再写入目标玩家，避免自封或两个管理员互相封禁时形成嵌套锁。目标封禁的提交仍由 `BanManager` 的逐玩家边界负责。[21] [22]
 
 这些边界决定共享代码的位置。持久化事务放在提供者内；平台调度放在平台桥接内；前端快照采用规则放在实体状态入口。HTTP 处理器和组件调用这些入口，避免各自复制状态机。具体错误码和恢复操作见 [Admin REST API](admin-api.md)。
@@ -268,3 +272,5 @@ TCP 管理动作和控制台发送标题时，共用 `MessageRouter.routeTitle()
 [29]: ../../StarLink/core/src/main/java/com/nova/link/network/AdminActionHandler.java "TCP 管理动作与标题入口"
 [30]: ../../StarLink/core/src/main/java/com/nova/link/channel/MessageRouter.java "共享消息与标题路由"
 [31]: ../../StarLink/core/src/main/java/com/nova/link/spy/SpyManager.java "监控授权与会话清理"
+[32]: ../../NovaChat/common/src/main/java/com/nova/chat/common/protocol/packets/SpyMessagePacket.java "定向监控消息协议"
+[33]: ../../NovaChat/client-core/src/main/java/com/nova/chat/client/format/SpyMessageFormatter.java "Java 接入端共享监控显示"

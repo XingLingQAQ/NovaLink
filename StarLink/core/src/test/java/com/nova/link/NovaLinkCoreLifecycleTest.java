@@ -159,6 +159,69 @@ class NovaLinkCoreLifecycleTest {
     }
 
     @Test
+    void spyDeliveryUsesCurrentPlayerClientAndTargetsEachAdmin() throws Exception {
+        writeBootableConfig(tempDir);
+        NovaLinkCore core = newCore();
+        core.start(tempDir, loopbackEphemeral());
+        var firstChannel = new io.netty.channel.embedded.EmbeddedChannel();
+        var nextChannel = new io.netty.channel.embedded.EmbeddedChannel();
+        try {
+            var context = core.getContext();
+            var network = context.getNetworkHandler();
+            var first = new com.nova.link.network.ClientConnection(firstChannel);
+            var next = new com.nova.link.network.ClientConnection(nextChannel);
+            network.onClientConnected(first);
+            network.onClientConnected(next);
+            assertThat(network.activateAuthenticated(first, "first")).isTrue();
+            assertThat(network.activateAuthenticated(next, "next")).isTrue();
+            var admin = java.util.UUID.randomUUID();
+            var secondAdmin = java.util.UUID.randomUUID();
+            var channel = context.getChannelManager().createChannel(com.nova.link.channel.ChannelConfig.builder()
+                    .id("monitored").scope(com.nova.link.channel.ChannelScope.GLOBAL).build());
+            for (var id : List.of(admin, secondAdmin)) {
+                context.getPlayerStateManager().getOrCreateState(id, "Admin").setClientId("first");
+                context.getPermissionManager().registerSuperAdmin(
+                        new com.nova.link.auth.SuperAdminCredentials(id, "test-hash"));
+                context.getPermissionManager().authenticateSuperAdmin(id, "test-hash");
+                assertThat(context.getSpyManager().startSpying(id, channel.getId(), null).isSuccess()).isTrue();
+            }
+            assertThat(first.getSuperAdminUuid()).isNull();
+            var message = new com.nova.chat.common.protocol.packets.ChatMessagePacket(
+                    java.util.UUID.randomUUID(), "Sender", "source", channel.getId(), "observed");
+
+            context.getSpyManager().forwardToSpies(message);
+
+            var targets = new java.util.HashSet<java.util.UUID>();
+            for (int i = 0; i < 2; i++) {
+                Object received = firstChannel.readOutbound();
+                assertThat(received).isInstanceOf(com.nova.chat.common.protocol.packets.SpyMessagePacket.class);
+                targets.add(((com.nova.chat.common.protocol.packets.SpyMessagePacket) received).getTargetId());
+            }
+            assertThat(targets).containsExactlyInAnyOrder(admin, secondAdmin);
+            assertThat((Object) nextChannel.readOutbound()).isNull();
+
+            context.getPlayerStateManager().getPlayerState(admin).setClientId("next");
+            context.getSpyManager().stopAllSpying(secondAdmin);
+            context.getSpyManager().forwardToSpies(message);
+
+            assertThat((Object) firstChannel.readOutbound()).isNull();
+            var migrated = (com.nova.chat.common.protocol.packets.SpyMessagePacket) nextChannel.readOutbound();
+            assertThat(migrated.getTargetId()).isEqualTo(admin);
+            org.junit.jupiter.api.Assertions.assertEquals(message.getRequestId(), migrated.getRequestId());
+            assertThat(migrated.getMessage().getContent()).isEqualTo("observed");
+
+            context.getPlayerStateManager().removeFromCache(admin, false);
+            context.getSpyManager().forwardToSpies(message);
+            assertThat((Object) firstChannel.readOutbound()).isNull();
+            assertThat((Object) nextChannel.readOutbound()).isNull();
+        } finally {
+            core.stop();
+            firstChannel.finishAndReleaseAll();
+            nextChannel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
     void registeredAdminHandlerRejectsAnotherClientsLogout() throws Exception {
         writeBootableConfig(tempDir);
         NovaLinkCore core = newCore();

@@ -304,7 +304,7 @@ public class IntegrationTestHelper {
         messageRouter.setMuteManager(muteManager);
         messageRouter.setSensitiveWordFilter(sensitiveWordFilter);
 
-        spyManager = new SpyManager(permissionManager, channelManager, networkHandler);
+        spyManager = new SpyManager(permissionManager, channelManager, networkHandler, playerStateManager);
         messageRouter.setSpyManager(spyManager);
 
         adminActionHandler = new AdminActionHandler(permissionManager, playerStateManager);
