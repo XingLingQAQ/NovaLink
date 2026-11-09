@@ -401,3 +401,15 @@ JOIN、CREATE、ACCEPT 在副作用前准备状态，原提交位置统一使用
 验证：新增真实核心装配反例在原实现失败，当前代际断开后仍能读到旧玩家缓存。修复后 21 项定向检查通过，0 失败、0 跳过。覆盖同名连接接管及旧断开无副作用、当前连接的多玩家清理、其他客户端保留、退场状态落库、原退出与私信离线路由。事件闸门另确认批量快照后的跨客户端迁移仍保留成员；存储回归确认按实例移出不写数据库、失败刷新可重试且保持离线。未运行全量套件。
 
 日志为 `.e2e-artifacts/review20-player-disconnect-before.log`、`review20-player-disconnect-final.log` 和 `review20-player-disconnect-races.log`。
+
+## 37. R53：普通退群可修改其他客户端的玩家状态
+
+位置：[ChannelActionHandler.handleLeave()](../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java)。
+
+原普通 LEAVE 只检查频道作用域和成员资格，没有检查玩家当前属于哪个客户端。玩家迁移后，旧客户端仍可移除其全局频道或既有私有频道成员，随后把玩家的 `clientId` 改回自己。该路径也没有进入入群与显式退出共用的逐玩家边界。
+
+修复将两种 LEAVE 的归属检查移入同一逐玩家边界，先检查当前在线记录，再执行退群或退出。记录属于其他客户端时返回 `NC-403`，成员、当前频道、平台及归属保持原值，不标脏，也不发送玩家更新或离开 Webhook。复用现有 `BanManager.withAdmission()`，不增加锁表。成功 JOIN 的归属迁移、受邀成员跨客户端退群，以及无缓存时先读取再清理的原入口继续可用。
+
+验证：全局和私有频道的两个反例在原实现均失败，旧客户端退群返回成功。修复后 33 项定向检查通过，0 失败、0 跳过。新增事件闸门确认迁移先于 LEAVE 进入边界时，旧请求重新读取归属并拒绝；原退出、私有邀请、Webhook 和读取失败重试检查也通过。未运行全量套件。
+
+日志为 `.e2e-artifacts/review21-player-departure-before.log` 和 `review21-player-departure-final.log`。

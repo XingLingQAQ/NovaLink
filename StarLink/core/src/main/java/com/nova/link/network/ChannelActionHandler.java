@@ -342,9 +342,6 @@ public class ChannelActionHandler {
         if (playerId == null) {
             playerId = getUuid(packet.getExtra("player_uuid"), packet.getExtra("uuid"));
         }
-        String playerName = firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name"));
-        String platform = packet.getExtra("platform");
-
         if (playerId == null) {
             return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, packet.getChannelId(), NovaConstants.ERROR_BAD_REQUEST, "Player ID is required");
         }
@@ -353,15 +350,31 @@ public class ChannelActionHandler {
         if (channelId == null || channelId.isBlank()) {
             return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, "", NovaConstants.ERROR_BAD_REQUEST, "Channel ID is required");
         }
-        if (isLogout(packet)) {
-            UUID departingPlayer = playerId;
-            Supplier<ChannelActionResponsePacket> logout =
-                    () -> handleLogout(connection, packet, departingPlayer, playerName, channelId);
-            if (banManager == null) {
-                return logout.get();
-            }
-            return banManager.withAdmission(playerId, logout);
+        UUID departingPlayer = playerId;
+        Supplier<ChannelActionResponsePacket> departure =
+                () -> handleLeaveForPlayer(connection, packet, departingPlayer);
+        if (banManager == null) {
+            return departure.get();
         }
+        return banManager.withAdmission(playerId, departure);
+    }
+
+    private ChannelActionResponsePacket handleLeaveForPlayer(ClientConnection connection,
+                                                             ChannelActionPacket packet, UUID playerId) {
+        String channelId = packet.getChannelId();
+        String clientId = connection.getClientId();
+        PlayerState current = playerStateManager.getPlayerState(playerId);
+        if (clientId == null || clientId.isBlank()
+                || (current != null && !clientId.equals(current.getClientId()))) {
+            return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, channelId,
+                    NovaConstants.ERROR_FORBIDDEN, "Player does not belong to this client");
+        }
+
+        String playerName = firstNonBlank(packet.getExtra("playerName"), packet.getExtra("player_name"));
+        if (isLogout(packet)) {
+            return handleLogout(connection, packet, playerId, playerName, channelId);
+        }
+        String platform = packet.getExtra("platform");
 
         Channel channel = channelManager.getChannel(channelId);
         if (channel == null) {
@@ -370,7 +383,6 @@ public class ChannelActionHandler {
 
         if (channel.getScope() != ChannelScope.GLOBAL
                 && !(channel.getScope() == ChannelScope.PRIVATE && channel.isMember(playerId))) {
-            String clientId = connection.getClientId();
             if (clientId == null || !clientId.equals(channel.getClientId())) {
                 return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, channelId, NovaConstants.ERROR_FORBIDDEN, "Cross-client channel access denied");
             }
@@ -401,11 +413,6 @@ public class ChannelActionHandler {
                                                       UUID playerId, String playerName, String channelId) {
         String clientId = connection.getClientId();
         PlayerState state = playerStateManager.getPlayerState(playerId);
-        if (clientId == null || clientId.isBlank()
-                || (state != null && !clientId.equals(state.getClientId()))) {
-            return new ChannelActionResponsePacket(false, ChannelAction.LEAVE, channelId,
-                    NovaConstants.ERROR_FORBIDDEN, "Player does not belong to this client");
-        }
         if (state != null) {
             clearPlayerMemberships(state);
             String platform = packet.getExtra("platform");
