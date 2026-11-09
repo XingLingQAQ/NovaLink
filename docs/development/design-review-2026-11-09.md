@@ -569,3 +569,15 @@ LeviLamina、PMMP 的工具探测按顺序读取标准输出和错误输出，En
 隔离复现使用真实构建脚本与替身工具，向错误输出写入 256 KiB。原实现的三个探测入口和测试运行均阻塞，直到替身的 8 秒看门狗结束子进程才返回。修复后三个探测均成功；测试运行读完全部输出并成功结束，返回错误码 29 的路径也正确使 Gradle 失败。共 5 项定向检查通过，未运行全量套件。
 
 证据见 `.e2e-artifacts/review33-probes-before.log`、`review33-run-before.log`、`review33-probes-fixed.log`、`review33-run-fixed.log` 和 `review33-run-failure-fixed.log`，命令与输出完成记录位于 `review33-process-pipes/*.trace`。
+
+## 50. R66：重复启动监控后仍使用旧来源
+
+位置：[SpyManager.startSpying](../../StarLink/core/src/main/java/com/nova/link/spy/SpyManager.java)、[SpySession](../../StarLink/core/src/main/java/com/nova/link/spy/SpySession.java)。
+
+会话按管理员 UUID 和频道 ID 判等。重复启动时，新会话无法加入集合，接口却仍返回成功；从来源 alpha 改为 beta，或取消来源筛选，都继续使用旧选择。
+
+修复更新已有会话的来源，保留起始时间和发言开关。同一管理员的启动更新通过已有映射的 `compute` 串行执行；来源使用 `volatile`，转发线程可读取更新。会话身份和频道反向索引不变。
+
+两个新增反例在原实现均失败。修复后 6 项定向检查通过，覆盖切换来源、恢复全部来源、禁止发言状态保留、其他管理员独立筛选、认证要求和正常收发。未运行全量套件。
+
+证据见 `.e2e-artifacts/review34-spy-retarget-before.log` 和 `review34-spy-retarget-final.log`。

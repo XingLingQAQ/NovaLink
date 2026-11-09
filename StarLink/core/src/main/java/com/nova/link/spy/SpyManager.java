@@ -94,11 +94,20 @@ public class SpyManager {
             }
         }
 
-        // Create spy session
-        SpySession session = new SpySession(adminId, channelId, targetClientId);
-        
-        // Add to admin's sessions
-        spySessions.computeIfAbsent(adminId, k -> ConcurrentHashMap.newKeySet()).add(session);
+        spySessions.compute(adminId, (id, sessions) -> {
+            if (sessions == null) {
+                sessions = ConcurrentHashMap.newKeySet();
+            }
+            SpySession existing = sessions.stream()
+                    .filter(session -> session.getChannelId().equals(channelId))
+                    .findFirst().orElse(null);
+            if (existing == null) {
+                sessions.add(new SpySession(adminId, channelId, targetClientId));
+            } else {
+                existing.setTargetClientId(targetClientId);
+            }
+            return sessions;
+        });
         
         // Add to channel's spies index
         channelSpies.computeIfAbsent(channelId, k -> ConcurrentHashMap.newKeySet()).add(adminId);

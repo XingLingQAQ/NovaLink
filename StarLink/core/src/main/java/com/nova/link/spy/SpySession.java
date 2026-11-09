@@ -19,7 +19,7 @@ public class SpySession {
     private final String channelId;
     
     /** Optional: specific server/client to monitor (null = all) */
-    private final String targetClientId;
+    private volatile String targetClientId;
     
     /** When the spy session was started */
     private final long startedAt;
@@ -45,6 +45,10 @@ public class SpySession {
 
     public String getTargetClientId() {
         return targetClientId;
+    }
+
+    void setTargetClientId(String targetClientId) {
+        this.targetClientId = targetClientId;
     }
 
     public long getStartedAt() {

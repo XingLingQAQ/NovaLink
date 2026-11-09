@@ -69,6 +69,38 @@ class SpyForwardingTest {
     }
 
     @Test
+    void restartingMonitoringChangesItsSourceWithoutResettingTheSession() {
+        var client = monitor("alpha");
+        UUID admin = client.getSuperAdminUuid();
+        SpySession session = spies.getSpySessions(admin).iterator().next();
+        session.setCanSend(false);
+
+        assertThat(spies.startSpying(admin, "global", "beta").isSuccess()).isTrue();
+        assertThat(spies.getSpySessions(admin)).containsExactly(session);
+        assertThat(session.getTargetClientId()).isEqualTo("beta");
+        assertThat(session.canSend()).isFalse();
+        assertThat(spies.getTotalSpySessionCount()).isEqualTo(1);
+        spies.forwardToSpies(message("alpha"));
+        spies.forwardToSpies(message("beta"));
+
+        var received = org.mockito.ArgumentCaptor.forClass(SpyMessagePacket.class);
+        verify(client).sendPacket(received.capture());
+        assertThat(received.getValue().getMessage().getClientId()).isEqualTo("beta");
+    }
+
+    @Test
+    void restartingWithNoSourceRestoresMonitoringAllClients() {
+        var client = monitor("alpha");
+
+        assertThat(spies.startSpying(client.getSuperAdminUuid(), "global", null).isSuccess()).isTrue();
+        spies.forwardToSpies(message("alpha"));
+        spies.forwardToSpies(message("beta"));
+
+        verify(client, times(2)).sendPacket(any(SpyMessagePacket.class));
+        assertThat(spies.getTotalSpySessionCount()).isEqualTo(1);
+    }
+
+    @Test
     void unauthenticatedConnectionCannotReceiveEvenWithAnActiveAdminSession() {
         var client = monitor("alpha");
         when(client.isAuthenticated()).thenReturn(false);
