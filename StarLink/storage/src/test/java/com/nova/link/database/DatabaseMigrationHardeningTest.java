@@ -141,7 +141,7 @@ class DatabaseMigrationHardeningTest {
     }
 
     @Test
-    void upgradesLegacyV1MetadataThroughV14AndRerunDoesNothing() throws Exception {
+    void upgradesLegacyV1MetadataThroughCurrentVersionAndRerunDoesNothing() throws Exception {
         SQLiteDialect baseDialect = new SQLiteDialect();
         try (HikariDataSource dataSource = sqliteDataSource(tempDir.resolve("legacy-v1.db"), 2)) {
             try (Connection connection = dataSource.getConnection()) {
@@ -174,12 +174,12 @@ class DatabaseMigrationHardeningTest {
 
             migration.migrate();
 
-            assertThat(migration.getVersion()).isEqualTo(16);
+            assertThat(migration.getVersion()).isEqualTo(17);
             assertThat(queryInts(dataSource,
                     "SELECT version FROM migration_execution_probe ORDER BY version"))
-                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
+                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17);
             assertThat(queryInt(dataSource,
-                    "SELECT COUNT(*) FROM novalink_migrations WHERE status = 'COMPLETED'")).isEqualTo(16);
+                    "SELECT COUNT(*) FROM novalink_migrations WHERE status = 'COMPLETED'")).isEqualTo(17);
             assertThat(queryInt(dataSource,
                     "SELECT COUNT(*) FROM novalink_migrations WHERE checksum IS NULL")).isZero();
             assertThat(queryInt(dataSource,
@@ -256,8 +256,8 @@ class DatabaseMigrationHardeningTest {
 
             assertThat(queryInts(dataSource,
                     "SELECT version FROM migration_execution_probe ORDER BY version"))
-                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
-            assertThat(queryInt(dataSource, "SELECT COUNT(*) FROM novalink_migrations")).isEqualTo(16);
+                    .containsExactly(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17);
+            assertThat(queryInt(dataSource, "SELECT COUNT(*) FROM novalink_migrations")).isEqualTo(17);
         }
     }
 

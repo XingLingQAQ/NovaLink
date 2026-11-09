@@ -22,7 +22,7 @@ public class MySQLDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
     private static final String MIGRATION_LOCK_NAME = "novalink_schema_migration";
-    private static final int CURRENT_VERSION = 16;
+    private static final int CURRENT_VERSION = 17;
 
     @Override
     public int getCurrentVersion() {
@@ -648,6 +648,32 @@ public class MySQLDialect implements MigrationDialect {
                 statements.add("CALL novalink_add_invitation_target()");
                 statements.add("DROP PROCEDURE IF EXISTS novalink_add_invitation_target");
             }
+            case 17 -> {
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_collection_formats");
+                statements.add("""
+                    CREATE PROCEDURE novalink_add_collection_formats()
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = DATABASE()
+                              AND table_name = 'players'
+                              AND column_name = 'joined_channels_format'
+                        ) THEN
+                            ALTER TABLE players ADD COLUMN joined_channels_format INTEGER NOT NULL DEFAULT 0;
+                        END IF;
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = DATABASE()
+                              AND table_name = 'channels'
+                              AND column_name = 'allowed_worlds_format'
+                        ) THEN
+                            ALTER TABLE channels ADD COLUMN allowed_worlds_format INTEGER NOT NULL DEFAULT 0;
+                        END IF;
+                    END
+                    """);
+                statements.add("CALL novalink_add_collection_formats()");
+                statements.add("DROP PROCEDURE IF EXISTS novalink_add_collection_formats");
+            }
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -673,6 +699,7 @@ public class MySQLDialect implements MigrationDialect {
             case 14 -> "Add campaigns table for persisted campaign orchestration (PANEL proposal 06)";
             case 15 -> "Add config_drafts and config_backups tables for staged draft/publish workflow and explicit backup/restore (PANEL proposal 10)";
             case 16 -> "Bind invitations to an optional recipient UUID";
+            case 17 -> "Version player channel and allowed world collection encoding";
             default -> "Unknown migration";
         };
     }

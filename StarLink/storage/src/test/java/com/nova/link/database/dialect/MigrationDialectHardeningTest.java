@@ -56,6 +56,20 @@ class MigrationDialectHardeningTest {
     }
 
     @Test
+    void collectionFormatColumnsDefaultToLegacyAndMysqlGuardsBothForRetry() {
+        for (MigrationDialect dialect : List.of(new MySQLDialect(), new PostgreSQLDialect(), new SQLiteDialect())) {
+            String migration = String.join("\n", dialect.getMigrationStatements(17));
+            assertThat(migration).contains("joined_channels_format INTEGER NOT NULL DEFAULT 0");
+            assertThat(migration).contains("allowed_worlds_format INTEGER NOT NULL DEFAULT 0");
+        }
+        String mysql = String.join("\n", new MySQLDialect().getMigrationStatements(17));
+        assertThat(mysql).contains("column_name = 'joined_channels_format'");
+        assertThat(mysql).contains("column_name = 'allowed_worlds_format'");
+        assertThat(mysql).contains("information_schema.columns");
+        assertThat(mysql).doesNotContain("ADD COLUMN IF NOT EXISTS");
+    }
+
+    @Test
     void postgresAlterIsAlsoIdempotentForInterruptedRetry() {
         String migration = String.join("\n", new PostgreSQLDialect().getMigrationStatements(2));
 

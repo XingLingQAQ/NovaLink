@@ -30,7 +30,7 @@ public class PostgreSQLDialect implements MigrationDialect {
 
     private static final String MIGRATION_TABLE = "novalink_migrations";
     private static final long MIGRATION_LOCK_KEY = 0x4E4F56414C494E4BL;
-    private static final int CURRENT_VERSION = 16;
+    private static final int CURRENT_VERSION = 17;
 
     @Override
     public int getCurrentVersion() {
@@ -528,6 +528,10 @@ public class PostgreSQLDialect implements MigrationDialect {
             }
 
             case 16 -> statements.add("ALTER TABLE invitations ADD COLUMN IF NOT EXISTS target_player_id VARCHAR(36)");
+            case 17 -> {
+                statements.add("ALTER TABLE players ADD COLUMN IF NOT EXISTS joined_channels_format INTEGER NOT NULL DEFAULT 0");
+                statements.add("ALTER TABLE channels ADD COLUMN IF NOT EXISTS allowed_worlds_format INTEGER NOT NULL DEFAULT 0");
+            }
             default -> throw new IllegalArgumentException("Unknown migration version: " + version);
         }
 
@@ -553,6 +557,7 @@ public class PostgreSQLDialect implements MigrationDialect {
             case 14 -> "Add campaigns table for persisted campaign orchestration (PANEL proposal 06)";
             case 15 -> "Add config_drafts and config_backups tables for staged draft/publish workflow and explicit backup/restore (PANEL proposal 10)";
             case 16 -> "Bind invitations to an optional recipient UUID";
+            case 17 -> "Version player channel and allowed world collection encoding";
             default -> "Unknown migration";
         };
     }

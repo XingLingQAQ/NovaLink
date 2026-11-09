@@ -373,3 +373,17 @@ JOIN、CREATE、ACCEPT 在副作用前准备状态，原提交位置统一使用
 刷新服务接入核心回收队列，启动失败时同样停止。正常停止取消后续轮次，并按共享预算等待当前任务，最多 5 秒；预算耗尽后中断工作。核心随后保留原最终玩家保存和数据库最后关闭的顺序。
 
 验证：新增核心回归在原实现等待 35 秒后仍未观察到运行中保存，断言失败。修复后 4 项定向检查通过，0 失败、0 跳过。真实核心按生产间隔保存在线状态，正常停止后刷新线程退出；[刷新服务回归](../../StarLink/core/src/test/java/com/nova/link/database/PlayerStateFlushServiceTest.java)通过事件闸门验证离线失败写入自动重试、重试不重新上线、异常后继续下一轮，以及过期关闭预算中断工作。另运行既有首次启动失败回滚检查，确认后台线程回到基线。日志为 `.e2e-artifacts/review18-player-flush-before.log` 和 `review18-player-flush-final.log`。
+
+## 35. R51：逗号编码破坏频道 ID 和世界过滤边界
+
+位置：三种 JDBC 提供者的玩家 `joined_channels` 和频道 `allowed_worlds` 读写，以及共享编码器 [JdbcStringCollections](../../StarLink/storage/src/main/java/com/nova/link/database/JdbcStringCollections.java)。
+
+原实现把集合用逗号拼接，再按逗号拆分。频道 ID 与世界名允许包含逗号，存储恢复却会将一个元素拆成多个。玩家的当前频道仍保留完整 ID，与已加入频道集合分叉；允许世界 `lobby,staff` 恢复成 `lobby` 和 `staff`，扩大可访问范围。末尾空字符串也会丢失。三种 JDBC 提供者复制了相同逻辑。
+
+修复在共享存储层统一 JSON 字符串数组编码，三种 JDBC 提供者均使用同一实现。schema v17 追加 `joined_channels_format` 和 `allowed_worlds_format`，旧记录默认 `0`，新保存原子写入内容及格式 `1`。读取按格式选择旧规则或 JSON，不按内容猜测。旧行保持原意，下一次保存升级格式；损坏的新格式及未知格式返回存储异常，不静默改成无过滤。Redis 和内存格式不变。
+
+新迁移保留旧版本 SQL。MySQL 延用信息表检查和存储过程，分别检查两列，支持部分完成后的重试；PostgreSQL 使用已有的条件加列方式，SQLite 随迁移事务提交。旧数据中已经丢失的逗号边界无法推断，需按原配置重新保存。
+
+验证：3 项 SQLite 存储反例在原实现均失败，分别观察到频道 ID 拆分、世界过滤扩大与升级后再次拆分；新增测试初版有同名变量编译错误，修正后才执行反例。修复后 12 项定向检查通过，0 失败、0 跳过。覆盖实际文件关闭重开、单条及批量加载、v16 数据升级、v1 迁移至 v17 及重复启动、损坏或未知新格式拒绝、三种方言版本及 MySQL 加列检查，以及代理 lite 的 SQLite 重启恢复。旧值恰为合法 JSON 文本的用例加强后单独通过。未运行外部 MySQL、PostgreSQL 实例。
+
+日志为 `.e2e-artifacts/review19-string-collection-before.log`、`review19-string-collection-final.log`、`review19-string-collection-invalid.log`、`review19-string-collection-compatibility.log` 和 `review19-string-collection-legacy-final.log`。

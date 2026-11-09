@@ -79,13 +79,14 @@ public class SQLiteProvider extends AbstractJdbcProvider {
         }
 
         String sql = """
-            INSERT INTO players (player_id, player_name, client_id, current_world, joined_channels, active_channel, platform, dm_enabled, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO players (player_id, player_name, client_id, current_world, joined_channels, joined_channels_format, active_channel, platform, dm_enabled, last_seen)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
             ON CONFLICT(player_id) DO UPDATE SET
                 player_name = excluded.player_name,
                 client_id = excluded.client_id,
                 current_world = excluded.current_world,
                 joined_channels = excluded.joined_channels,
+                joined_channels_format = 1,
                 active_channel = excluded.active_channel,
                 platform = excluded.platform,
                 dm_enabled = excluded.dm_enabled,
@@ -99,7 +100,7 @@ public class SQLiteProvider extends AbstractJdbcProvider {
             stmt.setString(2, state.getPlayerName());
             stmt.setString(3, state.getClientId());
             stmt.setString(4, state.getCurrentWorld());
-            stmt.setString(5, String.join(",", state.getJoinedChannels()));
+            stmt.setString(5, JdbcStringCollections.encode(state.getJoinedChannels()));
             stmt.setString(6, state.getActiveChannel());
             stmt.setString(7, state.getPlatform());
             stmt.setBoolean(8, state.isDmEnabled());
@@ -148,10 +149,8 @@ public class SQLiteProvider extends AbstractJdbcProvider {
                     state.setClientId(rs.getString("client_id"));
                     state.setCurrentWorld(rs.getString("current_world"));
 
-                    String joinedChannels = rs.getString("joined_channels");
-                    if (joinedChannels != null && !joinedChannels.isEmpty()) {
-                        state.setJoinedChannels(new HashSet<>(Arrays.asList(joinedChannels.split(","))));
-                    }
+                    state.setJoinedChannels(new HashSet<>(JdbcStringCollections.decode(
+                            rs.getString("joined_channels"), rs.getInt("joined_channels_format"))));
 
                     state.setActiveChannel(rs.getString("active_channel"));
                     state.setPlatform(rs.getString("platform"));
@@ -248,13 +247,14 @@ public class SQLiteProvider extends AbstractJdbcProvider {
         }
 
         String sql = """
-            INSERT INTO channels (channel_id, display_name, scope, client_id, permission, max_capacity, allowed_worlds, password, owner_id, slow_mode_seconds, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO channels (channel_id, display_name, scope, client_id, permission, max_capacity, allowed_worlds, allowed_worlds_format, password, owner_id, slow_mode_seconds, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
             ON CONFLICT(channel_id) DO UPDATE SET
                 display_name = excluded.display_name,
                 permission = excluded.permission,
                 max_capacity = excluded.max_capacity,
                 allowed_worlds = excluded.allowed_worlds,
+                allowed_worlds_format = 1,
                 password = excluded.password,
                 owner_id = excluded.owner_id,
                 slow_mode_seconds = excluded.slow_mode_seconds
@@ -269,7 +269,7 @@ public class SQLiteProvider extends AbstractJdbcProvider {
             stmt.setString(4, channel.getClientId());
             stmt.setString(5, channel.getPermission());
             stmt.setInt(6, channel.getMaxCapacity());
-            stmt.setString(7, String.join(",", channel.getAllowedWorlds()));
+            stmt.setString(7, JdbcStringCollections.encode(channel.getAllowedWorlds()));
             stmt.setString(8, channel.getPassword());
             stmt.setString(9, channel.getOwnerId() != null ? channel.getOwnerId().toString() : null);
             stmt.setInt(10, channel.getSlowModeSeconds());
@@ -322,10 +322,8 @@ public class SQLiteProvider extends AbstractJdbcProvider {
                     channel.setPermission(rs.getString("permission"));
                     channel.setMaxCapacity(rs.getInt("max_capacity"));
 
-                    String allowedWorlds = rs.getString("allowed_worlds");
-                    if (allowedWorlds != null && !allowedWorlds.isEmpty()) {
-                        channel.setAllowedWorlds(Arrays.asList(allowedWorlds.split(",")));
-                    }
+                    channel.setAllowedWorlds(JdbcStringCollections.decode(
+                            rs.getString("allowed_worlds"), rs.getInt("allowed_worlds_format")));
 
                     channel.setPassword(rs.getString("password"));
 

@@ -91,6 +91,10 @@ Bukkit 子服 ────────────► NovaChat/Proxy/channel
 
 `StarLink/storage` 不依赖 `common`、Netty、JWT 或认证管理器。它承载 JDBC、Redis、内存实现和持久化模型；治理权限、消息分发和审核状态机仍由后端业务管理器负责。存储层与核心保留部分相同包名，包级可见性按 Java 包生效。[8]
 
+三种 JDBC 提供者共用 `JdbcStringCollections` 保存玩家已加入频道和频道允许世界。schema v17 为两列分别增加格式字段：`0` 按旧逗号规则读取，`1` 保存及读取 JSON 字符串数组。新保存同时更新内容和格式；旧行不批量改写，原值即使看起来像 JSON，也按旧格式解释。未知格式或损坏的新数据返回存储错误，避免把世界限制误读为空列表。[28]
+
+这一编码保留逗号、引号、反斜杠及空字符串。旧逗号数据已丢失的元素边界无法自动恢复，需按原配置修正并重新保存。v17 在已有迁移之后追加格式列，不修改旧迁移 SQL；核心与代理 lite 随存储模块使用相同版本。Redis 和内存提供者保留各自已有的集合表示。[28]
+
 Redis 通知、审计和消息历史共用有序索引遍历，每批最多读取 128 个 ID，筛选后再计算页内偏移，收齐当前页即停止。需要逐条筛选的总数查询也分批读取；稀疏筛选和精确计数的时间成本仍随候选数量增长。遍历使用 `ZREVRANGEBYSCORE`（含分数）、`ZREVRANK` 和 `ZCOUNT`，Redis 命令白名单应允许这些读取。[19]
 
 代理 lite 模式通过 `LocalAuthority` 维护本地频道与治理状态，`LiteChannelStore` 经存储模块保存数据；relay 模式由 `BackendRouter` 按玩家所在子服选择后端连接和客户端身份。两种模式共享代理平台接口，不把完整后端装入代理进程。[9] [10]
@@ -232,3 +236,4 @@ CREATE 准备玩家状态后，由频道管理器保存定义，再在登记创�
 [25]: ../../StarLink/core/src/main/java/com/nova/link/websocket/WebSocketGateway.java "REST 与 WebSocket 的共享管理器装配"
 [26]: ../../StarLink/storage/src/main/java/com/nova/link/database/PlayerStateManager.java "玩家状态保存顺序与脏版本"
 [27]: ../../StarLink/core/src/main/java/com/nova/link/database/PlayerStateFlushService.java "运行中玩家状态刷新与离线重试调度"
+[28]: ../../StarLink/storage/src/main/java/com/nova/link/database/JdbcStringCollections.java "JDBC 集合编码与旧格式读取"
