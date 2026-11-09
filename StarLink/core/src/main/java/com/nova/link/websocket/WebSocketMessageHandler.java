@@ -8,8 +8,10 @@ import com.nova.link.auth.PanelResourcePolicy;
 import com.nova.link.auth.PanelRole;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelManager;
+import com.nova.link.database.MuteInfo;
 import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
+import com.nova.link.mute.MuteManager;
 import com.nova.link.network.ClientConnection;
 import com.nova.link.network.ServerNetworkHandler;
 import io.jsonwebtoken.Claims;
@@ -37,6 +39,7 @@ public class WebSocketMessageHandler {
     private final ChannelManager channelManager;
     private final ServerNetworkHandler networkHandler;
     private final PlayerStateManager playerStateManager;
+    private final MuteManager muteManager;
     private final Gson gson;
 
     // Session management
@@ -57,12 +60,19 @@ public class WebSocketMessageHandler {
     public WebSocketMessageHandler(JwtService jwtService, AuthManager authManager,
                                    ChannelManager channelManager, ServerNetworkHandler networkHandler,
                                    PlayerStateManager playerStateManager) {
+        this(jwtService, authManager, channelManager, networkHandler, playerStateManager, null);
+    }
+
+    public WebSocketMessageHandler(JwtService jwtService, AuthManager authManager,
+                                   ChannelManager channelManager, ServerNetworkHandler networkHandler,
+                                   PlayerStateManager playerStateManager, MuteManager muteManager) {
         this.jwtService = jwtService;
         this.authManager = authManager;
         this.channelManager = channelManager;
         this.resourcePolicy = new PanelResourcePolicy(authManager, channelManager);
         this.networkHandler = networkHandler;
         this.playerStateManager = playerStateManager;
+        this.muteManager = muteManager;
         this.gson = new Gson();
     }
 
@@ -370,7 +380,6 @@ public class WebSocketMessageHandler {
                 if (resourcePolicy.canViewInfrastructureSource(role)) {
                     playerData.put("server", state.getClientId());
                 }
-                playerData.put("muted", state.getMutes() != null && !state.getMutes().isEmpty());
                 playerData.put("platform", state.getPlatform() != null
                         && !state.getPlatform().isEmpty()
                         ? state.getPlatform() : "Java");
@@ -379,9 +388,12 @@ public class WebSocketMessageHandler {
                 if (resourcePolicy.canViewInfrastructureSource(role)) {
                     playerData.put("server", null);
                 }
-                playerData.put("muted", false);
                 playerData.put("platform", "Java");
             }
+            Collection<MuteInfo> mutes = List.of();
+            if (muteManager != null) mutes = muteManager.getActiveMutes(playerId);
+            else if (state != null) mutes = state.getMutes().values();
+            playerData.put("muted", resourcePolicy.hasVisibleMute(role, mutes));
             playerList.add(playerData);
         }
 

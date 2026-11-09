@@ -93,6 +93,8 @@ curl --request POST "https://panel.example.invalid/api/messages" \
 | `GET /api/mutes` | 查看活跃禁言 | 无 | 仅返回可见范围的记录，包含离线玩家；`total` 为过滤后的条数。 |
 | `GET /api/bans` | 查看封禁 | 无 | 按玩家聚合可见范围的封禁；没有可见封禁的玩家不会出现在列表中。 |
 
+玩家列表、详情和 WebSocket `player_update` 的 `muted` 表示当前身份可见范围内至少有一条有效禁言。该值读取 `MuteManager` 的当前记录，禁言、解除和到期后重新获取即反映当前状态；私有及不可见频道的限制不会通过这个标记泄漏。未接入禁言管理器的独立调用使用玩家快照，并执行相同的有效期和资源过滤。[1] [18] [21]
+
 REST 层将这些操作视作后台发起的管理动作。自动化系统应在调用前完成 UUID、频道 ID、持续时间和理由校验，并保存操作请求与响应记录。[1]
 
 频道级治理与频道访问共用 `PanelResourcePolicy`：VIEWER 只能读取全局限制及 `GLOBAL` 频道限制；ADMIN 可读取和管理全局、`GLOBAL`、`SERVER` 范围；`PRIVATE` 仅限 SUPER_ADMIN。单人禁言、解禁言、封禁、解封及踢出都检查目标频道，频道不可见与不存在统一返回 `404 Channel not found`。省略 `channelId` 仍表示全局禁言或封禁。[18]
@@ -239,3 +241,4 @@ Webhook REST 路由存在并操作运行时管理器，但示例 YAML 中的 `we
 [18]: ../../StarLink/core/src/main/java/com/nova/link/auth/PanelResourcePolicy.java "频道与治理资源可见性"
 [19]: ../../StarLink/core/src/main/java/com/nova/link/ban/BanManager.java "封禁与协议入群串行协调"
 [20]: ../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java "JOIN 与频道删除的对象身份校验"
+[21]: ../../StarLink/core/src/main/java/com/nova/link/websocket/WebSocketMessageHandler.java "玩家广播与按需快照的禁言状态投影"

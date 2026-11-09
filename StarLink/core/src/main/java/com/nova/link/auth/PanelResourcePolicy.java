@@ -3,6 +3,7 @@ package com.nova.link.auth;
 import com.nova.link.channel.Channel;
 import com.nova.link.channel.ChannelManager;
 import com.nova.link.channel.ChannelScope;
+import com.nova.link.database.MuteInfo;
 import io.jsonwebtoken.Claims;
 
 import java.util.LinkedHashSet;
@@ -86,6 +87,13 @@ public final class PanelResourcePolicy {
 
     public boolean canManageModeration(PanelRole role, String channelId) {
         return role != null && role.atLeast(PanelRole.ADMIN) && canViewModeration(role, channelId);
+    }
+
+    public boolean hasVisibleMute(PanelRole role, Iterable<MuteInfo> mutes) {
+        for (MuteInfo mute : mutes) {
+            if (!mute.isExpired() && canViewModeration(role, mute.getChannelId())) return true;
+        }
+        return false;
     }
 
     /** Server/client source metadata is operational data and requires ADMIN or above. */

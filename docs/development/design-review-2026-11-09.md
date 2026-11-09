@@ -315,3 +315,13 @@ JOIN 与 ACCEPT 在修改成员前检查封禁，但检查和入群之间没有�
 修复在既有频道创建和删除入口增加按次持久化参数，由同一频道锁与回滚逻辑处理。已绑定提供者优先，按次参数不重新绑定管理器。私有频道定义保存成功后才登记创建者；协议删除的存储先提交，再清理运行时。定义与邀请使用同一提供者时共用提供者删除入口，避免先单独清掉邀请再遇到定义删除失败。网络处理器删除重复保存/删除分支，并用类型化存储异常返回 `NC-510`；既有无参数及仅内存入口保留原契约。
 
 验证：四项故障反例在原实现全部失败：兼容装配仍返回成功，绑定装配返回错误的 `NC-500`。修复后 29 项定向检查通过，0 失败、0 跳过，覆盖两种装配下创建回滚、删除保留邀请/成员/权限/玩家状态、成功仅持久化一次、管理器配置不被改写、既有频道持久化与 CONFIG 规则，以及 R40、R44 并发回归。R44 的闸门移至新重载实际调用的同一创建交接点，仍验证旧结果不得污染替代频道。日志为 `.e2e-artifacts/review14-persistence-before.log` 与 `review14-persistence-final.log`。
+
+## 30. R46：面板玩家禁言标记读取旧快照，并暴露不可见限制
+
+位置：[REST 玩家投影](../../StarLink/core/src/main/java/com/nova/link/api/RestApiHandler.java)、[WebSocket 玩家投影](../../StarLink/core/src/main/java/com/nova/link/websocket/WebSocketMessageHandler.java)、[共享资源策略](../../StarLink/core/src/main/java/com/nova/link/auth/PanelResourcePolicy.java)。
+
+原两种传输都用 `PlayerState.mutes` 是否非空判断玩家被禁言，实际治理由 `MuteManager` 独立维护。玩家上线后禁言不会改变旧快照，标记仍为正常；解除或到期后，旧记录又可能让标记持续为禁言。任何非空记录还会让无权查看其频道的账号得到禁言标记，泄漏不可见限制的存在。
+
+修复从当前管理器记录派生状态，由 `PanelResourcePolicy.hasVisibleMute` 共享有效期与资源过滤。REST 列表、详情和 WebSocket 按需请求、广播使用同一规则，网关装配同一个 `MuteManager`。保留原五参数 WebSocket 构造及未接禁言管理器的独立 REST 调用：快照仅作为这些调用的来源，同样过滤过期和不可见限制。面板适配器的旧注释同步修正，不增加第二份禁言缓存。
+
+验证：两个原实现反例均失败，分别观察到实际禁言后的 `false` 与 VIEWER 对私有/过期快照的 `true`。修复后首轮资源治理、WebSocket 授权和共享策略共 13 项检查通过。扩充全局禁言及旧构造入口后，最终 3 项定向回归通过，0 失败、0 跳过；断言同时读取 REST 列表/详情、WebSocket 请求/广播，覆盖禁言、解除后旧快照、全局限制、私有范围、过期记录与旧构造入口。新增旧构造用例曾引用局部测试变量导致编译失败，已修正为独立网络替身后通过。日志为 `.e2e-artifacts/review15-player-mutes-before.log`、`review15-player-mutes-final.log` 和 `review15-player-mutes-exact-final.log`。

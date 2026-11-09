@@ -6069,7 +6069,9 @@ public class RestApiHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 .forEach(channels::add);
         json.add("joinedChannels", channels);
 
-        json.addProperty("muted", state.getMutes() != null && !state.getMutes().isEmpty());
+        var mutes = muteManager != null ? muteManager.getActiveMutes(state.getPlayerId())
+                : state.getMutes().values();
+        json.addProperty("muted", resourcePolicy.hasVisibleMute(role, mutes));
         json.addProperty("platform", state.getPlatform() != null
                 && !state.getPlatform().isEmpty()
                 ? state.getPlatform() : "Java");

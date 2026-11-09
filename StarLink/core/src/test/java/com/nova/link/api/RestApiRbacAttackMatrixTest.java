@@ -21,6 +21,7 @@ import com.nova.link.console.ConsoleSentinel;
 import com.nova.link.database.ChatMessageRecord;
 import com.nova.link.database.DatabaseProvider;
 import com.nova.link.database.MemoryProvider;
+import com.nova.link.database.MuteInfo;
 import com.nova.link.database.PlayerState;
 import com.nova.link.database.PlayerStateManager;
 import com.nova.link.filter.SensitiveWordFilter;
@@ -213,7 +214,7 @@ class RestApiRbacAttackMatrixTest {
         // The WebSocket handler is constructed with the SAME authManager so
         // role downgrades are observable by both REST and WS in the same test.
         wsHandler = new WebSocketMessageHandler(
-                jwtService, authManager, channelManager, networkHandler, playerStateManager);
+                jwtService, authManager, channelManager, networkHandler, playerStateManager, muteManager);
 
         viewerToken = jwtService.generateToken("viewer1", "viewer1", "VIEWER");
         adminToken = jwtService.generateToken("mod", "mod", "ADMIN");
@@ -358,6 +359,91 @@ class RestApiRbacAttackMatrixTest {
 
     @Nested
     class ModerationResourceScope {
+        @Test
+        void playerMuteIndicatorsFollowCommittedMutesRatherThanTheLoadedSnapshot() {
+            assertPlayerMuteIndicator(viewerToken, "viewer1", "VIEWER", false);
+            assertThat(muteManager.mutePlayer(ConsoleSentinel.CONSOLE_SENTINEL, targetId,
+                    "staff", 0L, "current", null).isSuccess()).isTrue();
+            assertPlayerMuteIndicator(viewerToken, "viewer1", "VIEWER", true);
+
+            playerStateManager.getPlayerState(targetId).addMute("staff",
+                    new MuteInfo("staff", 0L, "old snapshot", ConsoleSentinel.CONSOLE_SENTINEL));
+            assertThat(muteManager.unmutePlayer(ConsoleSentinel.CONSOLE_SENTINEL,
+                    targetId, "staff", null).isSuccess()).isTrue();
+            assertPlayerMuteIndicator(viewerToken, "viewer1", "VIEWER", false);
+            assertThat(muteManager.mutePlayer(ConsoleSentinel.CONSOLE_SENTINEL, targetId,
+                    null, 0L, "global", null).isSuccess()).isTrue();
+            assertPlayerMuteIndicator(viewerToken, "viewer1", "VIEWER", true);
+        }
+
+        @Test
+        void playerMuteIndicatorsRespectScopeAndIgnoreExpiredSnapshots() {
+            var state = playerStateManager.getPlayerState(targetId);
+            state.addMute("private-staff", new MuteInfo("private-staff", 0L, "hidden", ConsoleSentinel.CONSOLE_SENTINEL));
+            state.addMute("staff", new MuteInfo("staff", System.currentTimeMillis() - 60_000,
+                    "expired", ConsoleSentinel.CONSOLE_SENTINEL));
+            assertThat(muteManager.mutePlayer(ConsoleSentinel.CONSOLE_SENTINEL, targetId,
+                    "private-staff", 0L, "hidden", null).isSuccess()).isTrue();
+            assertPlayerMuteIndicator(viewerToken, "viewer1", "VIEWER", false);
+            assertPlayerMuteIndicator(adminToken, "mod", "ADMIN", false);
+            assertPlayerMuteIndicator(superAdminToken, "root", "SUPER_ADMIN", true);
+            assertThat(muteManager.unmutePlayer(ConsoleSentinel.CONSOLE_SENTINEL,
+                    targetId, "private-staff", null).isSuccess()).isTrue();
+            assertPlayerMuteIndicator(superAdminToken, "root", "SUPER_ADMIN", false);
+        }
+
+        @Test
+        void legacyWebSocketMuteIndicatorsFilterTheProvidedSnapshot() {
+            wsHandler = new WebSocketMessageHandler(jwtService, authManager, channelManager,
+                    mock(ServerNetworkHandler.class), playerStateManager);
+            var state = playerStateManager.getPlayerState(targetId);
+            state.addMute("private-staff", new MuteInfo("private-staff", 0L, "hidden", ConsoleSentinel.CONSOLE_SENTINEL));
+            state.addMute("staff", new MuteInfo("staff", System.currentTimeMillis() - 60_000,
+                    "expired", ConsoleSentinel.CONSOLE_SENTINEL));
+            SessionFixture viewer = wsAuthenticated("viewer1", "VIEWER");
+            SessionFixture root = wsAuthenticated("root", "SUPER_ADMIN");
+            try {
+                wsHandler.handleMessage(viewer.session, "{\"type\":\"get_players\"}");
+                wsHandler.handleMessage(root.session, "{\"type\":\"get_players\"}");
+                assertThat(viewer.readJson().getAsJsonArray("players").get(0).getAsJsonObject()
+                        .get("muted").getAsBoolean()).isFalse();
+                assertThat(root.readJson().getAsJsonArray("players").get(0).getAsJsonObject()
+                        .get("muted").getAsBoolean()).isTrue();
+            } finally {
+                wsHandler.unregisterSession(viewer.session);
+                wsHandler.unregisterSession(root.session);
+                viewer.channel.finishAndReleaseAll();
+                root.channel.finishAndReleaseAll();
+            }
+        }
+
+        private void assertPlayerMuteIndicator(String token, String username, String role, boolean expected) {
+            Response players = dispatch(token, HttpMethod.GET, "/api/players", null);
+            JsonObject player = null;
+            for (var row : players.asJson().getAsJsonArray("players")) {
+                if (row.getAsJsonObject().get("uuid").getAsString().equals(targetId.toString())) {
+                    player = row.getAsJsonObject();
+                }
+            }
+            assertThat(player).isNotNull();
+            assertThat(player.get("muted").getAsBoolean()).as("REST list: %s", role).isEqualTo(expected);
+            Response detail = dispatch(token, HttpMethod.GET, "/api/players/" + targetId, null);
+            assertThat(detail.asJson().get("muted").getAsBoolean()).as("REST detail: %s", role).isEqualTo(expected);
+            SessionFixture session = wsAuthenticated(username, role);
+            try {
+                wsHandler.handleMessage(session.session, "{\"type\":\"get_players\"}");
+                JsonObject snapshot = session.readJson();
+                assertThat(snapshot.getAsJsonArray("players").get(0).getAsJsonObject()
+                        .get("muted").getAsBoolean()).as("WebSocket request: %s", role).isEqualTo(expected);
+                wsHandler.broadcastPlayerUpdate();
+                assertThat(session.readJson().getAsJsonArray("players").get(0).getAsJsonObject()
+                        .get("muted").getAsBoolean()).as("WebSocket broadcast: %s", role).isEqualTo(expected);
+            } finally {
+                wsHandler.unregisterSession(session.session);
+                session.channel.finishAndReleaseAll();
+            }
+        }
+
         @Test
         void privateModerationCannotBypassTheSharedResourcePolicy() throws Exception {
             muteManager.mutePlayer(ConsoleSentinel.CONSOLE_SENTINEL, targetId, "private-staff", 0L, "committed", null);

@@ -221,8 +221,7 @@ export function adaptChannel(channelJson) {
 
 /**
  * Adapt a REST /api/players player state JSON object to the component player shape.
- * Backend has no "muted" field; we default muted to false (mute state is managed
- * by the backend MuteManager, which is not exposed via REST). `platform` is the
+ * `muted` reports an active mute visible to this panel account. `platform` is the
  * PlatformType enum name (e.g. "BUKKIT", "NUKKIT") or null; we keep null/blank
  * mapped to the "Java" sentinel (the backend's own player_update fallback) so
  * platformLabel() treats missing values as Java rather than "unknown". The raw
