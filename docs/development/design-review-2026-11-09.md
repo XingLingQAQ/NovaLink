@@ -425,3 +425,15 @@ JOIN、CREATE、ACCEPT 在副作用前准备状态，原提交位置统一使用
 验证：冒用成员身份和迁移后旧客户端查询的两个反例在原实现均失败，均收到成功响应。修复后，私有邀请与 WHO 共 19 项定向检查通过，0 失败、0 跳过。迁移后的新客户端仍能读取两名成员；跨客户端加入、退群及原公开查询检查也通过。未运行全量套件。
 
 日志为 `.e2e-artifacts/review22-private-who-before.log` 和 `review22-private-who-final.log`。
+
+## 39. R55：WHO 按名字去重导致成员人数少计
+
+位置：[ChannelActionHandler.handleWho()](../../StarLink/core/src/main/java/com/nova/link/network/ChannelActionHandler.java)。
+
+原实现用忽略大小写的 `TreeSet` 保存显示名，再用集合大小作为成员数。三个不同 UUID 使用 `Alice`、`Alice` 和 `ALICE` 时，名单和人数均缩成一项。无缓存名字的 UUID 也混入同一排序集合，可能排在玩家名字前，与原接口说明的顺序不符。
+
+修复改用列表，为每个成员保留一项。名字与无名称 UUID 分别排序，再把 UUID 接在名字后。人数取本次生成的完整列表大小，与同次响应的名单一致；协议字段和客户端格式化入口保留。
+
+验证：同名计数的新回归在原实现得到 1，预期为 3。既有名单测试改用固定 UUID 检查完整顺序，原实现同样失败。修复后 WHO 的 8 项定向检查通过，0 失败、0 跳过。未运行全量套件。
+
+日志为 `.e2e-artifacts/review23-who-members-before.log` 和 `review23-who-members-final.log`。

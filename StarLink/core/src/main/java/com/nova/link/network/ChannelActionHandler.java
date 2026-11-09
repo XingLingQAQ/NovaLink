@@ -1000,11 +1000,8 @@ public class ChannelActionHandler {
             }
         }
 
-        // Resolve display names for each member UUID, preferring the cached
-        // player name; fall back to the UUID string when no state is cached
-        // (e.g. a member who joined but whose state has not propagated yet).
         Collection<UUID> memberIds = channel.getMembers();
-        TreeSet<String> names = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        List<String> names = new ArrayList<>();
         List<String> unknownIds = new ArrayList<>();
         for (UUID memberId : memberIds) {
             PlayerState state = playerStateManager.getPlayerState(memberId);
@@ -1014,7 +1011,8 @@ public class ChannelActionHandler {
                 unknownIds.add(memberId.toString());
             }
         }
-        // Append UUID fallbacks after named entries, preserving sort stability.
+        names.sort(String.CASE_INSENSITIVE_ORDER);
+        unknownIds.sort(String.CASE_INSENSITIVE_ORDER);
         names.addAll(unknownIds);
 
         String membersCsv = String.join(", ", names);

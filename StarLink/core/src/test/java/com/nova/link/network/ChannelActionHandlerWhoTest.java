@@ -19,9 +19,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -69,7 +66,7 @@ class ChannelActionHandlerWhoTest {
 
         aliceId = UUID.randomUUID();
         bobId = UUID.randomUUID();
-        carolId = UUID.randomUUID();
+        carolId = new UUID(0L, 1L);
         requesterId = UUID.randomUUID();
 
         // Seed player names via getOrCreateState so the cache has display names.
@@ -111,17 +108,28 @@ class ChannelActionHandlerWhoTest {
             assertThat(response.getExtra("memberCount")).isEqualTo("3");
             assertThat(response.getExtra("displayName")).isEqualTo("Local Chat");
 
-            // Alice, Bob are named; Carol falls back to her UUID. Names are sorted
-            // case-insensitively, UUID fallbacks appended after named entries.
             String members = response.getExtra("members");
-            Set<String> memberSet = new HashSet<>(Arrays.asList(members.split(", ")));
-            assertThat(memberSet).contains("Alice", "Bob", carolId.toString());
-            // Alice should sort before Bob.
-            assertThat(members.indexOf("Alice")).isLessThan(members.indexOf("Bob"));
+            assertThat(members).isEqualTo("Alice, Bob, " + carolId);
 
             // Requester identity is echoed back for client-side routing.
             assertThat(response.getExtra("requesterId")).isEqualTo(requesterId.toString());
             assertThat(response.getExtra("requesterName")).isEqualTo("Requester");
+        }
+
+        @Test
+        void memberNamesDoNotCollapsePlayersWithEqualNames() {
+            channelManager.createChannel(ChannelConfig.builder().id("same-names").scope(ChannelScope.GLOBAL).build());
+            playerStateManager.getPlayerState(bobId).setPlayerName("Alice");
+            playerStateManager.getOrCreateState(carolId, "ALICE");
+            channelManager.addMember("same-names", aliceId);
+            channelManager.addMember("same-names", bobId);
+            channelManager.addMember("same-names", carolId);
+
+            var response = handler.handle(connection, new ChannelActionPacket(ChannelAction.WHO, "same-names"));
+
+            assertThat(response.isSuccess()).isTrue();
+            assertThat(response.getExtra("memberCount")).isEqualTo("3");
+            assertThat(response.getExtra("members").split(", ")).containsExactlyInAnyOrder("Alice", "Alice", "ALICE");
         }
 
         @Test
