@@ -324,29 +324,35 @@ public class PrivateMessageHandler implements PacketHandler<PrivateMessagePacket
         packet.setSenderClientId(connection.getClientId());
         packet.setTimestamp(System.currentTimeMillis());
 
-        // Dual delivery: target's client + echo to the sender's client. When
-        // both share the connection, one packet carries both render roles.
-        targetConnection.sendPacket(packet);
-        if (targetConnection != connection) {
-            connection.sendPacket(packet);
-        }
-        logger.debug("PrivateMessage delivered {} -> {} (clients {} -> {})",
-                packet.getSenderName(), packet.getTargetName(),
-                connection.getClientId(), targetClientId);
-
-        // [DM] audit only — never the messages history table, never the panel.
-        if (chatLogger != null) {
-            try {
-                chatLogger.logPrivateMessage(
-                        packet.getSenderId() != null ? packet.getSenderId().toString() : null,
-                        packet.getSenderName(),
-                        packet.getTargetId() != null ? packet.getTargetId().toString() : null,
-                        packet.getTargetName(),
-                        packet.getContent());
-            } catch (Exception e) {
-                logger.debug("ChatLogger failed: {}", e.getMessage());
+        targetConnection.sendPacket(packet).whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                logger.debug("PrivateMessage target write failed (client {}): {}",
+                        targetClientId, failure.getMessage());
+                sendError(connection, packet, NovaConstants.ERROR_NOT_FOUND,
+                        I18n.tr("network.error.player_not_online", packet.getTargetName()), "not_online");
+                return;
             }
-        }
+            if (targetConnection != connection) {
+                connection.sendPacket(packet);
+            }
+            logger.debug("PrivateMessage delivered {} -> {} (clients {} -> {})",
+                    packet.getSenderName(), packet.getTargetName(),
+                    connection.getClientId(), targetClientId);
+
+            // [DM] audit only — never the messages history table, never the panel.
+            if (chatLogger != null) {
+                try {
+                    chatLogger.logPrivateMessage(
+                            packet.getSenderId() != null ? packet.getSenderId().toString() : null,
+                            packet.getSenderName(),
+                            packet.getTargetId() != null ? packet.getTargetId().toString() : null,
+                            packet.getTargetName(),
+                            packet.getContent());
+                } catch (Exception e) {
+                    logger.debug("ChatLogger failed: {}", e.getMessage());
+                }
+            }
+        });
     }
 
     /** Case-insensitive exact name match over the network-wide player cache. */

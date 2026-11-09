@@ -99,6 +99,10 @@ attempt > 10 → 停止自动重连，等待人为干预
 
 ## 7. 集成验收清单
 
+### 私信写入与回显
+
+后端通过 `PrivateMessagePacket`（`0x14`）向目标客户端发送私信。目标连接写入成功后，才向发送者连接回显并记录 `[DM]` 审计；双方共用连接时只发送一次。写入失败返回 `NC-404`、`detail=not_online`，不发送成功回显。这里确认的是服务端网络写入完成，协议没有玩家端送达回执。[9]
+
 ### 定向监控消息
 
 `SpyMessagePacket`（`0x18`）由后端发送给管理员当前所在客户端。帧内请求 ID 沿用原聊天请求 ID，载荷依次为目标管理员 UUID、聊天发送人 UUID、发送人名称、来源客户端、频道 ID、内容和占位符 Map。字符串与 Map 使用原 `ChatMessagePacket` 编码及长度限制。[7]
@@ -129,3 +133,4 @@ attempt > 10 → 停止自动重连，等待人为干预
 [6]: ../../StarLink/core/src/main/java/com/nova/link/NovaLinkMain.java "客户端凭据注册与握手权限引导"
 [7]: ../../NovaChat/common/src/main/java/com/nova/chat/common/protocol/packets/SpyMessagePacket.java "监控消息目标与载荷"
 [8]: ../../NovaChat/Plugin/bukkit/src/main/java/com/nova/chat/bukkit/network/NetworkClient.java "Bukkit 定向显示与代理去重"
+[9]: ../../StarLink/core/src/main/java/com/nova/link/network/PrivateMessageHandler.java "私信校验、写入结果与回显"

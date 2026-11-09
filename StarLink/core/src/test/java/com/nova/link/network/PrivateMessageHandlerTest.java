@@ -349,6 +349,35 @@ class PrivateMessageHandlerTest {
         assertThat(packet.getTimestamp()).isPositive();
     }
 
+    @Test
+    void failedTargetWriteDoesNotEchoOrAuditTheMessage() {
+        when(creativeConn.sendPacket(any(PrivateMessagePacket.class))).thenReturn(
+                CompletableFuture.failedFuture(new IllegalStateException("target disconnected")));
+
+        handler(null).handle(survivalConn, packet("Alex"));
+
+        assertThat(capturedError(survivalConn).getExtra("detail")).isEqualTo("not_online");
+        verify(survivalConn, never()).sendPacket(any(PrivateMessagePacket.class));
+        verify(chatLogger, never()).logPrivateMessage(anyString(), anyString(),
+                anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void echoAndAuditWaitForTheTargetWriteToFinish() {
+        CompletableFuture<Void> targetWrite = new CompletableFuture<>();
+        when(creativeConn.sendPacket(any(PrivateMessagePacket.class))).thenReturn(targetWrite);
+        PrivateMessagePacket message = packet("Alex");
+
+        handler(null).handle(survivalConn, message);
+
+        verify(survivalConn, never()).sendPacket(any());
+        verify(chatLogger, never()).logPrivateMessage(anyString(), anyString(),
+                anyString(), anyString(), anyString());
+        targetWrite.complete(null);
+        verify(survivalConn).sendPacket(message);
+        verify(chatLogger).logPrivateMessage(steveId.toString(), "Steve", alexId.toString(), "Alex", "hi there");
+    }
+
     // ==================== H3 fix: sender-identity spoofing containment ====================
 
     @Test

@@ -619,3 +619,15 @@ TCP 入口会检查空内容和 2048 UTF-8 字节上限，但已解析频道的 
 4 项定向检查通过，覆盖过滤与检测各自和热更新重叠时完成旧规则匹配、后续使用新规则、非法批次保持原规则，以及增删与重置的既有行为。并发检查用门闩控制匹配顺序，不依赖反复执行或延时碰撞。未运行全量套件。
 
 证据见 `.e2e-artifacts/review38-filter-reload-final2.log`。
+
+## 54. R70：私信目标写入失败后仍返回成功回显
+
+位置：[PrivateMessageHandler](../../StarLink/core/src/main/java/com/nova/link/network/PrivateMessageHandler.java)。
+
+原实现忽略 `ClientConnection.sendPacket()` 返回的 Future。目标连接写入失败或仍在等待时，后端已经向发送者回显消息，并记录成功审计。接入端据此显示发送成功、更新回复对象，掩盖真正的投递失败。
+
+修复把回显和成功审计移到目标写入成功之后。失败沿用 `NC-404` 与 `detail=not_online`，保持原有离线提示及隐私边界；双方共用连接时仍只发送一次。完成回调不阻塞工作线程，也不新增重试或玩家端确认协议。
+
+两个新增反例在原实现均失败。修复后 4 项定向检查通过，覆盖写入失败、等待写入完成、正常跨连接回显，以及同连接单次发送。这里验证服务端网络写入结果；玩家端是否显示仍由接入端处理，未运行真实游戏或全量套件。
+
+证据见 `.e2e-artifacts/review39-private-write-before.log` 和 `review39-private-write-final.log`。[接入参考](../reference/protocol-and-clients.md) 已补充写入与回显约定。
